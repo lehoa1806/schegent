@@ -93,6 +93,7 @@ import { lookupRecord } from './control-ledger-store';
 import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
 import {
   buildAttemptHandoffDelivery,
+  releaseTerminalHandoffPinsIfConfirmed,
   settleAndPrepareTransitionHandoff
 } from './phase-handoff-execution-bridge';
 
@@ -271,6 +272,11 @@ export interface ComposableWorkflowCoordinatorDeps {
   readonly repeatExecutor?: RepeatExecutor;
   readonly forEachExecutor?: ForEachExecutor;
   readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator;
+  /**
+   * FR-R7-14 (14-08) — When `true` (e.g. staging writers in `WorkflowControlService`),
+   * defer terminal handoff pin release to the outer real CAS commit.
+   */
+  readonly deferTerminalPinRelease?: boolean;
   readonly workspaceRoot?: string;
   readonly resolveExecutionFence?: (
     run: ConnectedWorkflowRun,
@@ -350,13 +356,24 @@ async function persistRunStep(
   writer: ConnectedRunWriter,
   next: ConnectedWorkflowRun,
   expectedRevision: number,
-  buildResult: (persisted: ConnectedWorkflowRun) => ComposableWorkflowStepResult
+  buildResult: (persisted: ConnectedWorkflowRun) => ComposableWorkflowStepResult,
+  onCommitted?: (persisted: ConnectedWorkflowRun) => void
 ): Promise<ComposableWorkflowStepResult> {
   const written = await writer.compareAndSetConnectedRun(next, expectedRevision);
   if (written.outcome === 'stale') {
     return { outcome: 'rejected-stale', current: written.current };
   }
+  onCommitted?.(written.run);
   return buildResult(written.run);
+}
+
+function terminalPinCommitCallback(
+  deps: ComposableWorkflowCoordinatorDeps
+): ((persisted: ConnectedWorkflowRun) => void) | undefined {
+  if (deps.deferTerminalPinRelease === true || deps.phaseHandoffCoordinator === undefined) {
+    return undefined;
+  }
+  return (persisted) => releaseTerminalHandoffPinsIfConfirmed(deps.phaseHandoffCoordinator, persisted);
 }
 
 /**
@@ -1182,12 +1199,17 @@ async function settleAttemptInternal(
       }
     }
 
-    deps.phaseHandoffCoordinator?.releaseTerminalRunPins(nextRun.connectedRunId);
-    return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
-      outcome: 'workflow-completed',
-      run: persisted,
-      outputs: publicOutputs.resolvedByPort
-    }));
+    return persistRunStep(
+      deps.connectedRuns,
+      nextRun,
+      expectedRevision,
+      (persisted) => ({
+        outcome: 'workflow-completed',
+        run: persisted,
+        outputs: publicOutputs.resolvedByPort
+      }),
+      terminalPinCommitCallback(deps)
+    );
   }
 
   // `transition.outcome === 'transition'` with `transition.target.kind === 'node'`
@@ -1332,14 +1354,19 @@ async function failFrameAndPropagate(
     }
   }
 
-  deps.phaseHandoffCoordinator?.releaseTerminalRunPins(nextRun.connectedRunId);
-  return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
-    outcome: 'workflow-failed',
-    run: persisted,
-    invocationId: frame.invocationId,
-    failureCode,
-    ...(detail !== undefined ? { detail } : {})
-  }));
+  return persistRunStep(
+    deps.connectedRuns,
+    nextRun,
+    expectedRevision,
+    (persisted) => ({
+      outcome: 'workflow-failed',
+      run: persisted,
+      invocationId: frame.invocationId,
+      failureCode,
+      ...(detail !== undefined ? { detail } : {})
+    }),
+    terminalPinCommitCallback(deps)
+  );
 }
 
 async function cancelFrameAndPropagate(
@@ -1400,10 +1427,15 @@ async function cancelFrameAndPropagate(
     }
   }
 
-  deps.phaseHandoffCoordinator?.releaseTerminalRunPins(nextRun.connectedRunId);
-  return persistRunStep(deps.connectedRuns, nextRun, expectedRevision, (persisted) => ({
-    outcome: 'workflow-canceled',
-    run: persisted,
-    invocationId: frame.invocationId
-  }));
+  return persistRunStep(
+    deps.connectedRuns,
+    nextRun,
+    expectedRevision,
+    (persisted) => ({
+      outcome: 'workflow-canceled',
+      run: persisted,
+      invocationId: frame.invocationId
+    }),
+    terminalPinCommitCallback(deps)
+  );
 }

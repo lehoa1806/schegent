@@ -220,7 +220,17 @@ describe('FR-R4-F04 T8 — the deletion notice, the retained-items view and the 
     for (const named of ['session directory', 'raw transcripts', 'verbose diagnostics', 'failure records', 'private recovery checkpoint']) {
       expect(text, named).toContain(named);
     }
-    for (const kept of ['audit log', 'runtime log', 'metrics rollup', 'Run history', 'legacy transport']) {
+    for (const kept of [
+      'audit log',
+      'runtime log',
+      'metrics rollup',
+      'Run history',
+      'legacy transport',
+      'SQLite store',
+      'SQLite backups',
+      'OTLP telemetry spool',
+      'Backend CLI session stores'
+    ]) {
       expect(text, kept).toContain(kept);
     }
     expect(DELETE_EVIDENCE_TEXT.confirmLabel).toBe('Delete evidence');
@@ -242,7 +252,17 @@ describe('FR-R4-F04 T8 — the deletion notice, the retained-items view and the 
     expect(shownRows).toHaveLength(1);
     const rows = shownRows[0] ?? [];
     expect(rows.some((row) => row.includes(`${RUN}.txt`) && row.includes('run-history')), 'the retained history description').toBe(true);
-    for (const store of ['Audit log', 'Runtime log', 'Metrics rollup', 'Run history']) {
+    for (const store of [
+      'Audit log',
+      'Runtime log',
+      'Metrics rollup',
+      'Run history',
+      'SQLite application store',
+      'SQLite store backups',
+      'External artifact & handoff files',
+      'Opt-in OTLP telemetry spool',
+      'Backend CLI session stores'
+    ]) {
       expect(rows.some((row) => row.startsWith(store)), store).toBe(true);
     }
     expect(rows.some((row) => row.startsWith('Legacy transport') && row.includes('ages out 2026-12-01')), 'the legacy row carries its date').toBe(true);

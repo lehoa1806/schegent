@@ -316,7 +316,7 @@ function readAcpVisibility(
       : conn.all<{ readonly kind: string }>(
           `SELECT kind FROM acp_observation_ledger
            WHERE attempt_id = ? AND origin = 'live'
-           ORDER BY observed_at_ms DESC LIMIT 64`,
+           ORDER BY observed_at_ms DESC, connection_generation DESC, host_receive_seq DESC LIMIT 64`,
           attemptId
         );
   const authRows =

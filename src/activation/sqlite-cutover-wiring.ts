@@ -18,10 +18,16 @@ import type { SanitizedLogger } from '../lib/logger';
 import { createSideEffectFailureReporter, type SideEffectFailureReport } from '../lib/side-effect-failure-reporter';
 import type { AcpRunnerObservationEvent } from '../runner/acp-backed-runner';
 import {
+  createSqliteAcpDurableRuntimeStore,
+  type AcpDurableRuntimeStore,
+  type AcpSessionBindingStore
+} from '../services/acp-runtime/acp-durable-runtime-store';
+import {
   createArtifactLifecycleService,
   DENY_ALL_ACCESS_POLICY,
   type ArtifactLifecycleService
 } from '../services/artifact-lifecycle';
+import { SqliteCutoverStoreRegistry } from './sqlite-cutover-registry';
 import {
   buildContainedProbeAndReader,
   buildDurableHandoffSeam,
@@ -91,7 +97,6 @@ import {
   registerProductionWorkflowComposition,
   type ProductionWorkflowComposition
 } from '../services/workflow-execution/production-workflow-composition';
-import type { WorkspaceLockManager } from '../state/lock';
 import type { SwitchableOperationalMemento } from '../state/sqlite-operational-backing';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import {
@@ -102,54 +107,25 @@ import {
   readTelemetryExportUserSettings
 } from './uncached-settings-accessors';
 
-const operationalMementoByStore = new WeakMap<WorkspaceStateStore, SwitchableOperationalMemento>();
-const catalogFsByStore = new WeakMap<WorkspaceStateStore, SwitchableCatalogFsAdapter>();
-const workspaceLockByStore = new WeakMap<
-  WorkspaceStateStore,
-  { readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'>; readonly disposables: vscode.Disposable[] }
->();
-const coordinatorByStore = new WeakMap<WorkspaceStateStore, SqliteCutoverCoordinator>();
+export {
+  CutoverRegistrationOrderError,
+  EXPECTED_CUTOVER_REGISTRATION_ORDER,
+  type CutoverRegistrationSnapshot,
+  type CutoverRegistrationSlot
+} from './sqlite-cutover-registry';
 
-export function registerOperationalMementoForStore(
-  store: WorkspaceStateStore,
-  memento: SwitchableOperationalMemento
-): void {
-  operationalMementoByStore.set(store, memento);
-}
+const cutoverRegistry = new SqliteCutoverStoreRegistry<SqliteCutoverCoordinator>();
 
-export function getOperationalMementoForStore(
-  store: WorkspaceStateStore
-): SwitchableOperationalMemento | undefined {
-  return operationalMementoByStore.get(store);
-}
-
-export function registerCatalogFsForStore(
-  store: WorkspaceStateStore,
-  catalogFs: SwitchableCatalogFsAdapter
-): void {
-  catalogFsByStore.set(store, catalogFs);
-}
-
-export function registerWorkspaceLockForStore(
-  store: WorkspaceStateStore,
-  lock: Pick<WorkspaceLockManager, 'hasPrimacy'>,
-  disposables: vscode.Disposable[]
-): void {
-  workspaceLockByStore.set(store, { lock, disposables });
-}
-
-export function getWorkspaceLockForStore(store: WorkspaceStateStore): {
-  readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
-  readonly disposables: vscode.Disposable[];
-} | undefined {
-  return workspaceLockByStore.get(store);
-}
-
-export function getSqliteCutoverCoordinator(
-  store: WorkspaceStateStore
-): SqliteCutoverCoordinator | undefined {
-  return coordinatorByStore.get(store);
-}
+export const registerOperationalMementoForStore = cutoverRegistry.registerOperationalMemento.bind(cutoverRegistry);
+export const getOperationalMementoForStore = cutoverRegistry.getOperationalMemento.bind(cutoverRegistry);
+export const registerCatalogFsForStore = cutoverRegistry.registerCatalogFs.bind(cutoverRegistry);
+export const registerWorkspaceLockForStore = cutoverRegistry.registerWorkspaceLock.bind(cutoverRegistry);
+export const getWorkspaceLockForStore = cutoverRegistry.getWorkspaceLock.bind(cutoverRegistry);
+export const getSqliteCutoverCoordinator = cutoverRegistry.getCoordinator.bind(cutoverRegistry);
+export const inspectCutoverRegistrations = cutoverRegistry.inspect.bind(cutoverRegistry);
+export const assertCutoverRegistrationOrder = cutoverRegistry.assertCompleteAndOrdered.bind(cutoverRegistry);
+export const resetCutoverStage2 = cutoverRegistry.resetStage2.bind(cutoverRegistry);
+export const disposeCutoverStore = cutoverRegistry.dispose.bind(cutoverRegistry);
 
 export function deriveWorkspaceScopeId(workspaceRoot: string): string {
   return createHash('sha256').update(workspaceRoot, 'utf8').digest('hex').slice(0, 16);
@@ -179,6 +155,7 @@ export interface SqliteCutoverServices {
   readonly laneService: LaneService;
   readonly runLaneCoordinator: RunLaneCoordinator;
   readonly phaseHandoffCoordinator: PhaseHandoffCoordinator;
+  readonly acpRuntimeStore: AcpDurableRuntimeStore;
   readonly reportingService: ReportingService;
   readonly changeReviewService: ChangeReviewService;
   readonly workflowComposition: ProductionWorkflowComposition;
@@ -206,6 +183,8 @@ export interface SqliteCutoverCoordinator {
   getReportingService(): ReportingService | null;
   getChangeReviewService(): ChangeReviewService | null;
   getPhaseContextApi(): PhaseContextApi;
+  getAcpSessionBindingStore(): AcpSessionBindingStore | null;
+  allocateAcpConnectionGeneration(): number | null;
   getProtectedRunIds(): ReadonlySet<string>;
   getDatabaseProtectedPaths(): readonly string[];
   onTerminalRun(summary: TerminalRunSummary): void;
@@ -523,6 +502,10 @@ async function openPrimarySqliteServices(
       resolveExecutionRoot: (runId) => runLaneCoordinator.resolveExecutionRootSyncOrCached(runId),
       resolveLaneId: (runId) => runLaneCoordinator.resolveLaneIdForRun(runId)
     });
+    const acpRuntimeStore = createSqliteAcpDurableRuntimeStore(
+      sqliteStore.writerConnection,
+      scopeId
+    );
 
     const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     const reportingService = createReportingService({
@@ -609,6 +592,7 @@ async function openPrimarySqliteServices(
       laneService,
       runLaneCoordinator,
       phaseHandoffCoordinator,
+      acpRuntimeStore,
       reportingService,
       changeReviewService,
       workflowComposition,
@@ -627,6 +611,7 @@ async function openPrimarySqliteServices(
 export function createSqliteCutoverCoordinator(
   deps: CreateSqliteCutoverCoordinatorDeps
 ): SqliteCutoverCoordinator {
+  cutoverRegistry.assertNotDisposed(deps.store, 'coordinator');
   const scopeId = deriveWorkspaceScopeId(deps.workspaceRoot);
   const globalStorageRoot = deps.context.globalStorageUri.fsPath;
   const legacyStorageRoot = deps.context.storageUri?.fsPath;
@@ -639,8 +624,8 @@ export function createSqliteCutoverCoordinator(
       ? path.join(legacyStorageRoot, 'sqlite', scopeId, 'schegent-state.db')
       : null;
 
-  const operationalMemento = getOperationalMementoForStore(deps.store);
-  const catalogFs = catalogFsByStore.get(deps.store);
+  const operationalMemento = cutoverRegistry.getOperationalMemento(deps.store);
+  const catalogFs = cutoverRegistry.getCatalogFs(deps.store);
   operationalMemento?.requireDurableBatch();
 
   const relSegments = ['sqlite', scopeId] as const;
@@ -792,10 +777,8 @@ export function createSqliteCutoverCoordinator(
       operationalMemento?.detachSqlite();
       catalogFs?.detachSqlite();
     }
-    coordinatorByStore.delete(deps.store);
+    cutoverRegistry.unregisterCoordinator(deps.store, coordinator);
   };
-
-  deps.disposables.push({ dispose: close });
 
   const isClosed = (): boolean => closed;
   const openAndWirePrimary = async (): Promise<SqliteCutoverServices | null> => {
@@ -851,26 +834,30 @@ export function createSqliteCutoverCoordinator(
     getSqliteStore: () => activeServices?.sqliteStore ?? null,
     hasInFlightSqliteRun() {
       if (activeServices === null) return false;
-      const conn = activeServices.sqliteStore.writerConnection;
       try {
-        const activeRelational = Number(
-          conn.scalar(
-            `SELECT COUNT(*) FROM runs WHERE status NOT IN ('succeeded', 'failed', 'cancelled', 'aborted')`
-          ) ?? 0
+        return activeServices.sqliteStore.readPool.withReadConnection(
+          activeServices.sqliteStore.writerConnection,
+          (conn) => {
+            const activeRelational = Number(
+              conn.scalar(
+                `SELECT COUNT(*) FROM runs WHERE status NOT IN ('succeeded', 'failed', 'cancelled', 'aborted')`
+              ) ?? 0
+            );
+            if (activeRelational > 0) return true;
+            const activeOpRuns = Number(
+              conn.scalar(
+                `SELECT COUNT(*) FROM operational_runs WHERE status NOT IN ('completed', 'failed', 'canceled')`
+              ) ?? 0
+            );
+            if (activeOpRuns > 0) return true;
+            const activeQueue = Number(
+              conn.scalar(
+                `SELECT COUNT(*) FROM operational_queue_meta WHERE in_flight_id IS NOT NULL`
+              ) ?? 0
+            );
+            return activeQueue > 0;
+          }
         );
-        if (activeRelational > 0) return true;
-        const activeOpRuns = Number(
-          conn.scalar(
-            `SELECT COUNT(*) FROM operational_runs WHERE status NOT IN ('completed', 'failed', 'canceled')`
-          ) ?? 0
-        );
-        if (activeOpRuns > 0) return true;
-        const activeQueue = Number(
-          conn.scalar(
-            `SELECT COUNT(*) FROM operational_queue_meta WHERE in_flight_id IS NOT NULL`
-          ) ?? 0
-        );
-        return activeQueue > 0;
       } catch {
         // Fail closed when SQLite active-run state cannot be read.
         return true;
@@ -896,6 +883,18 @@ export function createSqliteCutoverCoordinator(
           reportSideEffectFailure('restore-handoff-reopen', err);
           errors.push(err);
         }
+        try {
+          activeServices.phaseHandoffCoordinator.reloadFromStore();
+        } catch (err) {
+          reportSideEffectFailure('restore-handoff-reopen', err);
+          errors.push(err);
+        }
+        try {
+          activeServices.acpRuntimeStore.resetInMemoryState();
+        } catch (err) {
+          reportSideEffectFailure('acp-observation-ledger', err);
+          errors.push(err);
+        }
       }
       if (errors.length > 0) throw errors[0];
     },
@@ -910,6 +909,9 @@ export function createSqliteCutoverCoordinator(
     getReportingService: () => activeServices?.reportingService ?? null,
     getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
+    getAcpSessionBindingStore: () => activeServices?.acpRuntimeStore.sessionBindings ?? null,
+    allocateAcpConnectionGeneration: () =>
+      activeServices?.acpRuntimeStore.allocateConnectionGeneration() ?? null,
     getProtectedRunIds: () => querySqliteProtectedRunIds(activeServices, reportSideEffectFailure),
     getDatabaseProtectedPaths,
     onTerminalRun(summary) {
@@ -955,39 +957,19 @@ export function createSqliteCutoverCoordinator(
     },
     recordAcpObservation(event) {
       if (activeServices === null) return;
-      const conn = activeServices.sqliteStore.writerConnection;
       const now = Date.now();
-      const obs = event.observation;
-      const sessionId = obs.acpSessionId || `${event.attemptId}-session`;
-      const connectionGeneration = Math.max(1, obs.generation || 1);
-      const hostReceiveSeq = Math.max(1, obs.hostReceiveSeq || 1);
-      const eventKind = obs.kind === 'display' ? `display:${obs.event.kind}` : obs.kind;
-      const observationKey = `${event.projection.profileId}:${connectionGeneration}:${hostReceiveSeq}`;
-      const payloadSha256 = createHash('sha256')
-        .update(JSON.stringify({ kind: eventKind, turnId: obs.turnId, origin: obs.origin }), 'utf8')
-        .digest('hex');
+      const sessionId = event.observation.acpSessionId || `${event.attemptId}-session`;
       try {
-        conn.run(
-          `INSERT INTO acp_observation_ledger (
-            observation_key, profile_id, connection_generation, host_receive_seq,
-            acp_session_id, turn_id, attempt_id, origin, kind, payload_sha256, observed_at_ms
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(profile_id, connection_generation, host_receive_seq) DO NOTHING`,
-          observationKey,
-          event.projection.profileId,
-          connectionGeneration,
-          hostReceiveSeq,
-          sessionId,
-          obs.turnId || 'idle',
-          obs.attemptId ?? event.attemptId,
-          obs.origin,
-          eventKind,
-          payloadSha256,
+        activeServices.acpRuntimeStore.recordObservation(
+          {
+            profileId: event.projection.profileId,
+            attemptId: event.attemptId,
+            observation: event.observation
+          },
           now
         );
-        const streamKey = `${event.runId ?? 'adhoc'}:${event.attemptId}`;
         activeServices.liveLogIndex.openStream({
-          streamKey,
+          streamKey: `${event.runId ?? 'adhoc'}:${event.attemptId}`,
           generation: sessionId,
           captureMode: 'captured',
           nowMs: now
@@ -1012,7 +994,10 @@ export function createSqliteCutoverCoordinator(
     close
   };
 
-  coordinatorByStore.set(deps.store, coordinator);
+  cutoverRegistry.registerCoordinator(deps.store, coordinator, {
+    allowMissingCatalogFs: catalogFs === undefined && !deps.isWorkspaceTrusted()
+  });
+  deps.disposables.push({ dispose: close });
   return coordinator;
 }
 

@@ -356,7 +356,17 @@ describe('FR-R4-F04 T7 — deletion removes directories and the checkpoint, and 
     const without = await deleteRunEvidence(workspace, RUN, deps({ legacyAgesOutBy: () => null }));
     expect(without.outcome).toBe('completed');
     if (without.outcome !== 'completed') throw new Error('unreachable');
-    expect(without.keptStores.map((kept) => kept.store)).toEqual(['audit-log', 'runtime-log', 'metrics-rollup', 'run-history']);
+    expect(without.keptStores.map((kept) => kept.store)).toEqual([
+      'audit-log',
+      'runtime-log',
+      'metrics-rollup',
+      'run-history',
+      'sqlite-store',
+      'sqlite-backups',
+      'external-artifacts-and-handoffs',
+      'telemetry-spool',
+      'provider-cli-stores'
+    ]);
 
     await seedNested(RUN);
     const aged = '2026-12-01T00:00:00.000Z';
@@ -364,7 +374,7 @@ describe('FR-R4-F04 T7 — deletion removes directories and the checkpoint, and 
     expect(withLegacy.outcome).toBe('completed');
     if (withLegacy.outcome !== 'completed') throw new Error('unreachable');
     expect(withLegacy.keptStores).toContainEqual({ store: 'legacy-transport', agesOutBy: aged });
-    expect(withLegacy.keptStores).toHaveLength(5);
+    expect(withLegacy.keptStores).toHaveLength(10);
   });
 
   it('reports the checkpoint as absent when the Run never took one', async () => {
@@ -378,5 +388,38 @@ describe('FR-R4-F04 T7 — deletion removes directories and the checkpoint, and 
     expect(result.outcome).toBe('completed');
     if (result.outcome !== 'completed') throw new Error('unreachable');
     expect(result.checkpoint).toBe('absent');
+  });
+
+  it('never deletes F05/F15 external artifact or handoff staging subtrees declared in keptStores (FR-R7-14 14-14)', async () => {
+    await seedNested(RUN);
+    const keptPaths = [
+      path.join(workspace, '.schegent', 'results', RUN, 'att-1', 'output.json'),
+      path.join(workspace, '.schegent', 'immutable-results', `${RUN}-att-1`, 'output.json'),
+      path.join(workspace, '.schegent', 'handoff-materialized', `${RUN}-att-1`, 'handoff.txt'),
+      path.join(workspace, '.schegent', 'transcripts', `${RUN}.log`)
+    ];
+    for (const file of keptPaths) {
+      await fsp.mkdir(path.dirname(file), { recursive: true });
+      await fsp.writeFile(file, 'kept-artifact\n');
+    }
+
+    const result = await deleteRunEvidence(workspace, RUN, deps());
+    expect(result.outcome).toBe('completed');
+    for (const file of keptPaths) {
+      expect(await fsp.readFile(file, 'utf8'), file).toBe('kept-artifact\n');
+    }
+  });
+
+  posixOnly('refuses when .schegent itself is a symlink pointing inside the workspace', async () => {
+    const decoy = path.join(workspace, 'src-decoy');
+    await fsp.mkdir(decoy, { recursive: true });
+    const decoyFile = path.join(decoy, `${RUN}.ts`);
+    await fsp.writeFile(decoyFile, 'keep source\n');
+    await fsp.rm(path.join(workspace, '.schegent'), { recursive: true, force: true });
+    await fsp.symlink(decoy, path.join(workspace, '.schegent'));
+
+    const result = await deleteRunEvidence(workspace, RUN, deps());
+    expect(result.outcome).toBe('refused');
+    expect(await fsp.readFile(decoyFile, 'utf8')).toBe('keep source\n');
   });
 });

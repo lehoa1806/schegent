@@ -11,6 +11,7 @@
  */
 import {
   ACP_RUNTIME_LIMITS,
+  type AcpPermissionDecision,
   type AcpPermissionOptionKind,
   type AcpPermissionPolicy,
   type AcpPermissionRequest
@@ -68,24 +69,19 @@ export function parsePermissionParams(params: unknown): PermissionParams {
   return { ok: true, sessionId: params['sessionId'], toolCallId, toolTitle, options };
 }
 
-function policyChoice(request: AcpPermissionRequest, policy: AcpPermissionPolicy | undefined): string | null {
-  if (policy === undefined) return null;
-  try {
-    const choice = policy(request);
-    return choice === 'undecided' ? null : choice.optionId;
-  } catch {
-    return null;
-  }
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
 }
 
-/** The answer to one permission request. */
-export function decidePermission(
-  request: AcpPermissionRequest,
-  policy: AcpPermissionPolicy | undefined,
-  cancelling: boolean
-): PermissionAnswer {
-  if (cancelling) return CANCELLED;
-  const chosen = policyChoice(request, policy);
+function extractOptionId(choice: AcpPermissionDecision): string | null {
+  return choice === 'undecided' ? null : choice.optionId;
+}
+
+function answerFromChoice(request: AcpPermissionRequest, chosen: string | null): PermissionAnswer {
   if (chosen !== null && request.options.some((option) => option.optionId === chosen)) {
     return { outcome: 'selected', optionId: chosen };
   }
@@ -94,4 +90,47 @@ export function decidePermission(
     if (fallback !== undefined) return { outcome: 'selected', optionId: fallback.optionId };
   }
   return CANCELLED;
+}
+
+/** The synchronous answer to one permission request (fails closed on an async policy). */
+export function decidePermission(
+  request: AcpPermissionRequest,
+  policy: AcpPermissionPolicy | undefined,
+  cancelling: boolean
+): PermissionAnswer {
+  if (cancelling) return CANCELLED;
+  if (policy === undefined) return answerFromChoice(request, null);
+  try {
+    const raw = policy(request);
+    if (isPromiseLike(raw)) return answerFromChoice(request, null);
+    return answerFromChoice(request, extractOptionId(raw));
+  } catch {
+    return answerFromChoice(request, null);
+  }
+}
+
+/**
+ * Evaluates a permission policy that may return synchronously or asynchronously.
+ * Keeps a synchronous return on the fast path and returns a Promise only when the policy does;
+ * any thrown error or rejected promise fails closed to the rejection fallback.
+ */
+export function decidePermissionMaybeAsync(
+  request: AcpPermissionRequest,
+  policy: AcpPermissionPolicy | undefined,
+  cancelling: boolean
+): PermissionAnswer | Promise<PermissionAnswer> {
+  if (cancelling) return CANCELLED;
+  if (policy === undefined) return answerFromChoice(request, null);
+  try {
+    const raw = policy(request);
+    if (isPromiseLike<AcpPermissionDecision>(raw)) {
+      return Promise.resolve(raw).then(
+        (decision) => answerFromChoice(request, extractOptionId(decision)),
+        () => answerFromChoice(request, null)
+      );
+    }
+    return answerFromChoice(request, extractOptionId(raw));
+  } catch {
+    return answerFromChoice(request, null);
+  }
 }

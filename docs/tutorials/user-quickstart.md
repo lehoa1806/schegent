@@ -26,17 +26,38 @@ run gives an agent the ability to write to the open workspace. Create an empty d
 mkdir -p /tmp/schegent-tutorial && cd /tmp/schegent-tutorial && git init
 ```
 
-**Rollback.** Closing the window and deleting the directory removes the folder and VS Code's own
-per-workspace state, which VS Code discards with the folder.
+**Rollback and what survives deleting the workspace folder.** Closing the window and deleting
+`/tmp/schegent-tutorial` removes the checkout, `.schegent/` inside it, and VS Code's own per-workspace
+state — **it does not remove every copy created by running Schegent**. The following external remnants
+survive deleting the workspace directory and require separate cleanup if you want them gone (see the
+full 8-copy inventory in [What Schegent keeps on this machine](../operations/evidence-retention-disclosure.md)):
 
-The backend grant is a different matter. It is a User setting, so deleting the folder does not
-remove it. To undo only what this walkthrough added: if the modal added a backend, remove that one
-id from `schegent.backend.uncontainedBackends`. Either choose **Revoke permission to run
-unsandboxed** from that backend's actions menu in Schegent's Settings, under Backends, or edit the
-list back to the value you recorded in
-[Record your backend grant list](#record-your-backend-grant-list). A backend you had
-granted before the walkthrough stays granted. Whichever surface wrote the grant, the result is the
-same: the id the walkthrough added is absent from the list.
+- **Folder-scoped SQLite store**: `<globalStorageUri>/sqlite/<scope>/schegent-state.db` (`-wal`, `-shm`).
+- **SQLite backups** (if you ran `Schegent: Back Up Store`): `<globalStorageUri>/sqlite/<scope>/backups/`.
+- **External audit head checkpoint**: `<globalStorageUri>/audit-checkpoints/<key>.json` (retire before
+  deleting the workspace via `Schegent: Reset Audit History Checkpoint`, or remove manually from
+  `<globalStorageUri>`).
+- **Private Git recovery checkpoints**: `<globalStorageUri>/checkpoints/<runId>/` (removed per Run by
+  `Schegent: Delete Run Evidence`, or aged after 14 days / 256 MiB, or removed manually).
+- **Opt-in OTLP telemetry spool** (only if you enabled `schegent.telemetry.export.enabled`):
+  `<globalStorageUri>/telemetry-spool/` (plus any metrics already sent to an external OTLP collector).
+- **Vendor-owned backend CLI histories** in your home directory: `<home>/.claude/`, `<home>/.codex/`,
+  and `<home>/.gemini/antigravity/` (owned and deleted outside Schegent).
+- **Machine-scoped backend grant**: `schegent.backend.uncontainedBackends` is an `application`-scoped
+  User setting, so deleting the folder does not remove it. To undo only what this walkthrough added:
+  if the modal added a backend, remove that one id from `schegent.backend.uncontainedBackends`. Either
+  choose **Revoke permission to run unsandboxed** from that backend's actions menu in Schegent's
+  Settings, under Backends, or edit the list back to the value you recorded in
+  [Record your backend grant list](#record-your-backend-grant-list). A backend you had granted before
+  the walkthrough stays granted. Whichever surface wrote the grant, the result is the same: the id the
+  walkthrough added is absent from the list.
+
+**Platform qualification scope.** Source buildability (`npm ci && npm --prefix webview-ui ci && npm run build`)
+and the observed Linux arm64 unit leg (`npm run verify:linux`, headless unit/contract verification in a
+container) are **not** editor or backend qualifications. Local **macOS arm64** is the only platform
+with observed editor-host and backend qualification evidence; Linux desktop editors, Windows editors,
+and Remote hosts (Remote SSH, Dev Container, WSL) remain **unqualified** (and remote hosts refuse ACP
+launch before spawn). See [the qualification matrix](../release/qualification-matrix.md).
 
 The workflow used here — `Spec-kit Bugfix` — declares **no** `sideEffects: git` on any phase. That is
 why it is the one this tutorial uses. `Spec-kit New Feature` does, on two phases, and is not a first

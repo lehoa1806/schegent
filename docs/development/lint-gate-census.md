@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **239** | 2026-11-19 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 214 | 2026-11-19 | hand verdict |
-| Marked `partially redundant` | 25 | 2026-11-19 | hand verdict |
-| Marked `redundant` | 0 | 2026-11-19 | hand verdict |
+| Gate files | **240** | 2026-11-23 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 215 | 2026-11-23 | hand verdict |
+| Marked `partially redundant` | 25 | 2026-11-23 | hand verdict |
+| Marked `redundant` | 0 | 2026-11-23 | hand verdict |
 
 <!-- census:prose -->
 The three verdict rows sum to the gate-file count, so they are one measurement and carry one
@@ -581,4 +581,5 @@ is decided about this one entry.
 | `webview-host-import-direction.test.ts` | FR-R3-110 — webview to host imports are contracts, or types | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `webview-posture-derivation.test.ts` | FR-R3-144 T024 — the webview never computes a containment answer (FR-008, A-3) | `webview-host-import-direction.test.ts` (the import route only) | partially redundant | that gate stops the webview *calling* the policy — a value import from `src/services/` is refused, so `judgeBackendContainment` is unreachable from the bundle. It cannot see the failure this one exists for: a re-implementation needs no import at all, just three quoted states and a ternary, and it would be a second authority for one security answer that parts company with the first the next time a backend's mechanism changes. Rule 3 is wholly outside the sibling's reach for the same reason — the grant list is read through `getConfiguration`, never imported. Load-bearing probe: change `grant: posture.grant` to `grant: mechanism === 'none' ? 'not-granted' : 'not-required'` anywhere under `webview-ui/src`; the import gate stays green and this one fails on rules 1 and 2. Its own vocabulary is derived from the policy's tables rather than transcribed, and asserted non-empty, so a policy refactor cannot quietly empty it FR-R4-F06 extended it to the launch-authority notice: the webview renders the host's sentence as text and derives nothing from a posture. |
 | `workflow-graph-effective-catalog.test.ts` | Feature 083 T043 — validateWorkflowGraph takes only the effective Pipeline catalog | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
+| `workflow-nesting-limit-parity.test.ts` | FR-R7-14 (14-21) — host and webview MAX_WORKFLOW_NESTING_DEPTH stay in lockstep | — | unique | no sibling gate, type, generated contract or compiler flag compares `src/config/workflow-closure-resolver.ts` against `webview-ui/src/components/PipelineBuilderEditors/workflow-catalog-state.ts`; includes a negative control verifying drift and missing-export detection |
 | `workflow-trigger-branches.test.ts` | workflow trigger branches (FR-R3-020, OPS-N1) | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

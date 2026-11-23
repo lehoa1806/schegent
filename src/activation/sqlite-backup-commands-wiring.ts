@@ -122,60 +122,56 @@ export function registerSqliteBackupCommands(
   const ui = createVscodeBackupRestoreUi(deps.notifier);
   const inspectExternalDependency = createWorkspaceExternalDependencyInspector(deps.workspaceRoot);
 
-  const buildApi = () => {
-    const getCoordinator = () => getSqliteCutoverCoordinator(deps.store);
-    const scopeId = getCoordinator()?.scopeId ?? deriveWorkspaceScopeId(deps.workspaceRoot);
+  const getCoordinator = () => getSqliteCutoverCoordinator(deps.store);
+  const scopeId = getCoordinator()?.scopeId ?? deriveWorkspaceScopeId(deps.workspaceRoot);
 
-    return createStoreBackupRestoreApi({
-      getSqliteStore: () => getCoordinator()?.getSqliteStore() ?? null,
-      ensurePrimaryStore: async () => {
-        const services = await getCoordinator()?.activatePrimary();
-        return services?.sqliteStore ?? null;
-      },
-      trustedRootDir: () => getCoordinator()?.storageRoot ?? deps.globalStorageRoot,
-      scopeId,
-      hasPrimacy: () => deps.lock.hasPrimacy(),
-      hasInFlightRun: () => hasAnyInFlightRun(deps),
-      reloadAfterRestore: async () => {
-        const errors: unknown[] = [];
-        try {
-          await getCoordinator()?.reloadAfterRestore();
-        } catch (err) {
-          errors.push(err);
-        }
-        try {
-          await deps.refreshCatalog?.();
-        } catch (err) {
-          errors.push(err);
-        }
-        try {
-          deps.projector.kick();
-        } catch (err) {
-          errors.push(err);
-        }
-        if (errors.length > 0) {
-          throw errors[0];
-        }
-      },
-      inspectExternalDependency,
-      auditWriter: deps.auditWriter,
-      logger: deps.logger
-    });
-  };
+  const api = createStoreBackupRestoreApi({
+    getSqliteStore: () => getCoordinator()?.getSqliteStore() ?? null,
+    ensurePrimaryStore: async () => {
+      const services = await getCoordinator()?.activatePrimary();
+      return services?.sqliteStore ?? null;
+    },
+    trustedRootDir: () => getCoordinator()?.storageRoot ?? deps.globalStorageRoot,
+    scopeId,
+    hasPrimacy: () => deps.lock.hasPrimacy(),
+    hasInFlightRun: () => hasAnyInFlightRun(deps),
+    reloadAfterRestore: async () => {
+      const errors: unknown[] = [];
+      try {
+        await getCoordinator()?.reloadAfterRestore();
+      } catch (err) {
+        errors.push(err);
+      }
+      try {
+        await deps.refreshCatalog?.();
+      } catch (err) {
+        errors.push(err);
+      }
+      try {
+        deps.projector.kick();
+      } catch (err) {
+        errors.push(err);
+      }
+      if (errors.length > 0) {
+        throw errors[0];
+      }
+    },
+    inspectExternalDependency,
+    auditWriter: deps.auditWriter,
+    logger: deps.logger
+  });
 
   return [
-    registerGuardedCommand(guard, 'schegent.backupStore', () =>
-      runBackupStore({ api: buildApi(), ui })
-    ),
+    registerGuardedCommand(guard, 'schegent.backupStore', () => runBackupStore({ api, ui })),
     registerGuardedCommand(guard, 'schegent.verifyStoreBackup', (backupId?: unknown) =>
       runVerifyStoreBackup(
-        { api: buildApi(), ui },
+        { api, ui },
         typeof backupId === 'string' && backupId.length > 0 ? { backupId } : undefined
       )
     ),
     registerGuardedCommand(guard, 'schegent.restoreStoreBackup', (backupId?: unknown) =>
       runRestoreStoreBackup(
-        { api: buildApi(), ui },
+        { api, ui },
         typeof backupId === 'string' && backupId.length > 0 ? { backupId } : undefined
       )
     )

@@ -13,6 +13,7 @@
  *
  * Zero `vscode`, `child_process`, or audit-writer imports.
  */
+import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,9 +42,18 @@ import {
 } from '../lib/protected-path-match';
 import { openAcpConnection } from '../services/acp-runtime/acp-client';
 import {
+  createInMemoryAcpSessionBindingStore,
+  isEphemeralBridgeSessionId,
+  isValidProviderSessionId,
+  normalizeAcpWorkspaceRoot,
+  type AcpPersistedSessionBinding,
+  type AcpSessionBindingStore
+} from '../services/acp-runtime/acp-durable-runtime-store';
+import {
   ACP_PROFILE_IDS,
   getBuiltinAcpProfile,
   resolveAcpProfileLaunch,
+  type AcpHostLocality,
   type AcpProfilePlatform
 } from '../services/acp-runtime/profiles';
 import {
@@ -58,6 +68,7 @@ import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 import { AcpOpenWorkTracker } from './acp-open-work-tracker';
+import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 import { AcpStreamEncoder } from './acp-stream-encoder';
 import { nextInvocationId } from './invocation-identity';
 import {
@@ -114,6 +125,12 @@ export interface AcpBackedRunnerOptions {
    */
   readonly primeAuthority?: () => Promise<boolean>;
   readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
+  /** FR-R7-14 (14-04): durable backend + workspace-root session binding store for bridged profiles. */
+  readonly sessionBindingStore?: AcpSessionBindingStore;
+  /** FR-R7-14 (14-06): persistent monotonic connection-generation allocator across host restarts. */
+  readonly allocateConnectionGeneration?: () => number;
+  /** FR-R7-14 (14-11): host locality classification (`'local'` vs `'remote'`) evaluated before spawn. */
+  readonly hostLocality?: AcpHostLocality;
   /**
    * The platform the profile's qualification is judged against; omitted, this host's. Tests pin it
    * so a qualified turn, or an unqualified refusal, is exercised whatever the host is.
@@ -148,7 +165,7 @@ function resolveProtectedDatabasePaths(
 
 function encodeUsageResultLine(
   kind: BackendRunnerKind,
-  sessionId: string,
+  sessionId: string | undefined,
   durationMs: number,
   usage: AcpUsageUpdate | null
 ): string {
@@ -157,14 +174,14 @@ function encodeUsageResultLine(
   if (kind === 'codex') {
     return `${JSON.stringify({
       type: 'turn.completed',
-      session_id: sessionId,
+      ...(sessionId !== undefined ? { session_id: sessionId } : {}),
       usage: { input_tokens: 0, output_tokens: 0 }
     })}\n`;
   }
   if (kind === 'agy') {
     return `${JSON.stringify({
       event: 'result',
-      session_id: sessionId,
+      ...(sessionId !== undefined ? { session_id: sessionId } : {}),
       result: {
         duration_seconds: Math.max(0, durationMs / 1_000),
         num_turns: 1,
@@ -175,7 +192,7 @@ function encodeUsageResultLine(
   const row: Record<string, unknown> = {
     type: 'result',
     subtype: 'success',
-    session_id: sessionId,
+    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
     duration_ms: Math.max(0, Math.round(durationMs)),
     num_turns: 1,
     usage: { input_tokens: 0, output_tokens: 0 }
@@ -201,10 +218,15 @@ export class AcpBackedRunner implements BackendRunner {
   private readonly inner: BackendRunner;
   private readonly activeExecutions = new Map<string, ActiveAcpExecution>();
   private readonly sessionRoots = new Map<string, string>();
+  private readonly fallbackSessionBindingStore = createInMemoryAcpSessionBindingStore();
   private closed = false;
 
   public constructor(private readonly options: AcpBackedRunnerOptions) {
     this.inner = options.inner;
+  }
+
+  private get sessionBindingStore(): AcpSessionBindingStore {
+    return this.options.sessionBindingStore ?? this.fallbackSessionBindingStore;
   }
 
   public get hasActiveProcess(): boolean {
@@ -222,8 +244,9 @@ export class AcpBackedRunner implements BackendRunner {
     if (request.review === undefined && request.legacyDrain === true && this.options.allowLegacyDrain !== false) {
       return this.inner.invoke(request, outputSink);
     }
+    const label = getBackendDescriptor(this.options.kind).runnerLabel;
     if (this.closed) {
-      throw new Error(`acp-backed-runner (${this.options.kind}): runner is closed`);
+      throw new SpawnRefusedAfterCloseError(label);
     }
 
     const expectedProfileId = ACP_PROFILE_IDS[this.options.kind];
@@ -232,15 +255,21 @@ export class AcpBackedRunner implements BackendRunner {
       throw new AcpProfileMismatchError(this.options.kind, configuredRaw, expectedProfileId);
     }
 
+    const basePlatform = this.options.platform ?? { os: process.platform, arch: process.arch };
+    const effectivePlatform: AcpProfilePlatform =
+      basePlatform.locality !== undefined
+        ? basePlatform
+        : this.options.hostLocality !== undefined
+          ? { ...basePlatform, locality: this.options.hostLocality }
+          : basePlatform;
     const profile = getBuiltinAcpProfile(this.options.kind, {
       ...(request.model !== undefined ? { model: request.model } : {}),
-      ...(this.options.platform !== undefined ? { platform: this.options.platform } : {})
+      platform: effectivePlatform
     });
-    const generation = ++nextAcpGeneration;
-    const label = getBackendDescriptor(this.options.kind).runnerLabel;
+    let generation = 0;
     const invocationId = nextInvocationId(label);
     const runId = request.runId ?? null;
-    const attemptId = sanitizeHostToken(request.attemptId, sanitizeHostToken(invocationId, `attempt-${generation}`));
+    const attemptId = sanitizeHostToken(request.attemptId, sanitizeHostToken(invocationId, 'attempt-1'));
     const rootId = sanitizeHostToken(runId ?? undefined, 'adhoc-root');
     const maxDurationMs = armedMaxDurationMs(request);
 
@@ -268,7 +297,7 @@ export class AcpBackedRunner implements BackendRunner {
     let sawTerminalResult = false;
     let acpTurnSettled = false;
     let backgroundWorkOpenAtResult = false;
-    let killed = false;
+    let killed: boolean = false as boolean;
     let timedOut: boolean = false as boolean;
     let deadlineExceeded: boolean = false as boolean;
     let teardownOutcome: TreeTeardownOutcome | null = null;
@@ -379,7 +408,7 @@ export class AcpBackedRunner implements BackendRunner {
     };
 
     const gate = this.options.authorityGate;
-    const verifyResourceLink = (uri: string): boolean => {
+    const verifyResourceLink = (uri: string): boolean | Promise<boolean> => {
       if (!hasSafeCanonicalFileUriShape(uri)) return false;
       let filePath: string;
       try {
@@ -389,21 +418,28 @@ export class AcpBackedRunner implements BackendRunner {
       }
       const liveProtectedPaths = resolveProtectedDatabasePaths(this.options.protectedDatabasePaths);
       if (gate && activeSessionId !== null) {
-        // Authorize via gate FIRST using the raw `filePath` so workspace trust, primacy,
-        // generation, raw + canonical protected-path rules, and execution-root containment
-        // are all enforced before any extra filesystem checks.
-        const decision = gate.authorize({
-          requestKind: 'filesystem',
-          acpSessionId: activeSessionId,
-          connectionGeneration: generation,
-          mutating: false,
-          targetPath: filePath
-        });
-        if (!decision.allowed) return false;
-        if (liveProtectedPaths.length > 0 && isTargetProtectedPathSync(filePath, liveProtectedPaths)) {
-          return false;
-        }
-        return true;
+        // Authorize via gate FIRST using the raw `filePath` so workspace trust, awaited live
+        // primacy (14-07), generation, raw + canonical protected-path rules, and execution-root
+        // containment are all enforced before any extra filesystem checks.
+        return gate
+          .authorizeAsync({
+            requestKind: 'filesystem',
+            acpSessionId: activeSessionId,
+            connectionGeneration: generation,
+            attemptId,
+            mutating: false,
+            targetPath: filePath
+          })
+          .then(
+            (decision) => {
+              if (!decision.allowed) return false;
+              if (liveProtectedPaths.length > 0 && isTargetProtectedPathSync(filePath, liveProtectedPaths)) {
+                return false;
+              }
+              return true;
+            },
+            () => false
+          );
       }
       const canon = canonicalizePathWithTailSync(filePath);
       if (!canon.ok) return false;
@@ -476,6 +512,9 @@ export class AcpBackedRunner implements BackendRunner {
       teardownPromise: settleTeardown
     });
 
+    const isBridgeProfile = profile.kind === 'bridge';
+    const normalizedWorkspaceRoot = normalizeAcpWorkspaceRoot(request.cwd);
+    let persistedCliSessionId: string | undefined;
     let exitCode: number | null = 1;
     try {
       if (request.cancellationSignal?.aborted) {
@@ -501,207 +540,345 @@ export class AcpBackedRunner implements BackendRunner {
         });
       }
 
-      if (tee !== null) {
-        await tee.writer.prepare(tee.target);
-      }
-
-      request.cancellationSignal?.addEventListener('abort', onAbort);
-      resetIdleTimer();
-      if (maxDurationMs !== null) {
-        deadlineTimer = setTimeout(() => {
-          deadlineExceeded = true;
-          timedOut = false;
-          cancelExecution();
-        }, maxDurationMs);
-        deadlineTimer.unref();
-      }
-
-      const env = buildSpawnEnv(request);
-      const spawnEnv = request.review === undefined ? env : { ...buildLaneGitEnv(env), GIT_OPTIONAL_LOCKS: '0' };
-      const launchSpec = resolveAcpProfileLaunch({
-        kind: this.options.kind,
-        resolvedCliPath: request.cliPath,
-        cwd: request.cwd,
-        env: spawnEnv,
-        ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
-        ...(request.review !== undefined ? { nativeReview: request.review } : {}),
-        ...(request.model !== undefined ? { model: request.model } : {}),
-        ...(request.effort !== undefined ? { effort: request.effort } : {}),
-        ...(this.options.bridgeScriptPath !== undefined
-          ? { bridgeScriptPath: this.options.bridgeScriptPath }
-          : {})
-      });
-
-      const opened = await openAcpConnection({
-        profile,
-        generation,
-        launch: (validatedProfile) => {
-          const created = this.options.launchTransport
-            ? this.options.launchTransport(validatedProfile, request, generation)
-            : spawnStdioTransport(launchSpec);
-          transport = created;
-          created.onStderr((chunk) => {
-            resetIdleTimer();
-            emitChunk('stderr', Buffer.from(chunk).toString('utf8'));
-          });
-          this.options.monitorHook?.({
-            kind: 'started',
-            runId,
-            invocationId,
-            helperInvocation: request.helperInvocation === true,
-            maxDurationMs,
-            pid: created.pid ?? null
-          });
-          return created;
-        },
-        ...(gate !== undefined ? { permissionPolicy: gate.createPermissionPolicy(generation) } : {}),
-        verifyResourceLink,
-        onObservation: (observation) => {
-          resetIdleTimer();
-          if (connection !== null) {
-            this.options.onAcpObservation?.({
-              backendKind: this.options.kind,
-              runId,
-              invocationId,
-              attemptId,
-              observation,
-              projection: connection.describe()
-            });
+      // FR-R7-14 (14-04): resolve and verify durable bridged provider session bindings BEFORE
+      // launching any bridge or child CLI process so missing/mismatched bindings refuse cleanly.
+      const isResumeRequested = request.isContinue === true || request.sessionReuse === true;
+      let matchedBridgeBinding: AcpPersistedSessionBinding | null = null;
+      let bridgeResumeRefusal: string | null = null;
+      if (isBridgeProfile && isResumeRequested && request.resumeSessionOrigin !== 'legacy-cli') {
+        const resumeId = request.resumeSessionId;
+        if (!isValidAcpSessionToken(resumeId)) {
+          if (request.isContinue === true) {
+            bridgeResumeRefusal = 'missing-session-id';
           }
-          // F13-FR-07: history replay is historical observation only; never emit as live output or new usage.
-          if (observation.origin !== 'live') {
-            return;
-          }
-          if (observation.kind === 'display') {
-            openWorkTracker.observe(observation.event);
-            for (const encodedLine of streamEncoder.push(observation.event)) {
-              emitChunk('stdout', encodedLine);
-            }
-          } else if (observation.kind === 'usage') {
-            latestUsage = observation.usage;
+        } else if (isEphemeralBridgeSessionId(resumeId)) {
+          bridgeResumeRefusal = 'ephemeral-session-id';
+        } else {
+          const binding = this.sessionBindingStore.getBinding(resumeId);
+          if (binding === null) {
+            bridgeResumeRefusal = 'binding-missing';
+          } else if (binding.backend !== this.options.kind) {
+            bridgeResumeRefusal = 'backend-mismatch';
+          } else if (binding.workspaceRoot !== normalizedWorkspaceRoot) {
+            bridgeResumeRefusal = 'workspace-root-mismatch';
+          } else if (!isValidProviderSessionId(binding.providerSessionId)) {
+            bridgeResumeRefusal = 'invalid-provider-session';
+          } else {
+            matchedBridgeBinding = binding;
           }
         }
-      });
+      }
 
-      if (!opened.ok) {
-        warnings.push(`acp-open-refused:${opened.refusal}${opened.detail ? `:${opened.detail}` : ''}`);
+      if (bridgeResumeRefusal !== null) {
+        warnings.push(`acp-session-resume-unrecoverable:${bridgeResumeRefusal}`);
+        exitCode = 1;
+      } else if (profile.qualification !== 'qualified') {
+        warnings.push('acp-open-refused:profile-unqualified');
+        exitCode = 1;
+      } else if (this.options.primeAuthority !== undefined && !(await this.options.primeAuthority())) {
+        if (this.isClosed()) {
+          throw new SpawnRefusedAfterCloseError(label);
+        }
+        warnings.push('acp-ownership-unverified');
         exitCode = 1;
       } else {
-        connection = opened.connection;
-        const normalizedCwd = path.resolve(request.cwd);
-        const resumeId = request.resumeSessionId;
-        const priorSessionRoot = isValidAcpSessionToken(resumeId)
-          ? this.sessionRoots.get(resumeId)
-          : undefined;
-        const rootMismatchOnResume =
-          priorSessionRoot !== undefined && priorSessionRoot !== normalizedCwd;
-        if (rootMismatchOnResume) {
-          // F10-FR-19: session reuse/load cannot retain a prior lane's cwd or grants; open a fresh session.
-          warnings.push('acp-session-rebind-fresh-root');
+        if (this.isClosed()) {
+          throw new SpawnRefusedAfterCloseError(label);
         }
-        // BUG-001 (FR-008): load ACP-owned sessions tracked in `sessionRoots` even when
-        // `resumeSessionOrigin` is omitted by standalone continuations, while still refusing
-        // `'legacy-cli'` and unknown pre-cutover IDs (`F13-FR-21`) and cross-lane roots (`F10-FR-19`).
-        const canLoadResumeSession =
-          !rootMismatchOnResume &&
-          (request.isContinue === true || request.sessionReuse === true) &&
-          (request.resumeSessionOrigin === 'acp' ||
-            (request.resumeSessionOrigin === undefined && priorSessionRoot !== undefined));
-        const sessionRes =
-          canLoadResumeSession && isValidAcpSessionToken(resumeId)
-            ? await connection.loadSession(resumeId, request.cwd, { mayLoad: true })
-            : await connection.newSession(request.cwd);
+        const turnOwnershipGeneration = this.options.currentOwnershipGeneration?.();
+        if (!killed && request.cancellationSignal?.aborted !== true && tee !== null) {
+          await tee.writer.prepare(tee.target);
+        }
+        if (this.isClosed()) {
+          throw new SpawnRefusedAfterCloseError(label);
+        }
 
-        if (!sessionRes.ok) {
-          warnings.push(`acp-session-failed:${sessionRes.reason}`);
+        request.cancellationSignal?.addEventListener('abort', onAbort);
+        const abortedDuringSetup = killed || request.cancellationSignal?.aborted === true;
+        const ownershipShifted =
+          turnOwnershipGeneration !== undefined &&
+          this.options.currentOwnershipGeneration?.() !== turnOwnershipGeneration;
+        if (abortedDuringSetup) {
+          killed = true;
+          exitCode = 130;
+        } else if (ownershipShifted) {
+          warnings.push('acp-ownership-unverified');
           exitCode = 1;
         } else {
-          activeSessionId = sessionRes.sessionId;
-          if (!this.sessionRoots.has(activeSessionId) && this.sessionRoots.size >= 512) {
-            const oldestKey = this.sessionRoots.keys().next().value;
-            if (oldestKey !== undefined) this.sessionRoots.delete(oldestKey);
-          }
-          this.sessionRoots.set(activeSessionId, normalizedCwd);
+        const allocatedGeneration = this.options.allocateConnectionGeneration?.();
+        generation =
+          typeof allocatedGeneration === 'number' &&
+          Number.isSafeInteger(allocatedGeneration) &&
+          allocatedGeneration >= 1
+            ? allocatedGeneration
+            : nextAcpGeneration + 1;
+        nextAcpGeneration = Math.max(nextAcpGeneration, generation);
+        resetIdleTimer();
+        if (maxDurationMs !== null) {
+          deadlineTimer = setTimeout(() => {
+            deadlineExceeded = true;
+            timedOut = false;
+            cancelExecution();
+          }, maxDurationMs);
+          deadlineTimer.unref();
+        }
 
-          // F10-FR-19: verify access to accepted F15 upstream artifact versions before prompt dispatch.
-          let missingUpstream = false;
-          if (request.authorizedUpstreamInputPaths !== undefined) {
-            for (const upstreamPath of request.authorizedUpstreamInputPaths) {
-              try {
-                await fs.access(upstreamPath);
-              } catch {
-                missingUpstream = true;
-                break;
+        const env = buildSpawnEnv(request);
+        const spawnEnv = request.review === undefined ? env : { ...buildLaneGitEnv(env), GIT_OPTIONAL_LOCKS: '0' };
+        const launchSpec = resolveAcpProfileLaunch({
+          kind: this.options.kind,
+          resolvedCliPath: request.cliPath,
+          cwd: request.cwd,
+          env: spawnEnv,
+          ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
+          ...(request.review !== undefined ? { nativeReview: request.review } : {}),
+          ...(request.model !== undefined ? { model: request.model } : {}),
+          ...(request.effort !== undefined ? { effort: request.effort } : {}),
+          ...(this.options.bridgeScriptPath !== undefined
+            ? { bridgeScriptPath: this.options.bridgeScriptPath }
+            : {})
+        });
+
+        const opened = await openAcpConnection({
+          profile,
+          generation,
+          launch: (validatedProfile) => {
+            const created = this.options.launchTransport
+              ? this.options.launchTransport(validatedProfile, request, generation)
+              : spawnStdioTransport(launchSpec);
+            transport = created;
+            created.onStderr((chunk) => {
+              resetIdleTimer();
+              emitChunk('stderr', Buffer.from(chunk).toString('utf8'));
+            });
+            this.options.monitorHook?.({
+              kind: 'started',
+              runId,
+              invocationId,
+              helperInvocation: request.helperInvocation === true,
+              maxDurationMs,
+              pid: created.pid ?? null
+            });
+            return created;
+          },
+          ...(gate !== undefined ? { permissionPolicy: gate.createPermissionPolicy(generation) } : {}),
+          verifyResourceLink,
+          onObservation: (observation) => {
+            resetIdleTimer();
+            if (connection !== null) {
+              this.options.onAcpObservation?.({
+                backendKind: this.options.kind,
+                runId,
+                invocationId,
+                attemptId,
+                observation,
+                projection: connection.describe()
+              });
+            }
+            // F13-FR-07: history replay is historical observation only; never emit as live output or new usage.
+            if (observation.origin !== 'live') {
+              return;
+            }
+            if (observation.kind === 'display') {
+              openWorkTracker.observe(observation.event);
+              for (const encodedLine of streamEncoder.push(observation.event)) {
+                emitChunk('stdout', encodedLine);
+              }
+            } else if (observation.kind === 'usage') {
+              latestUsage = observation.usage;
+            }
+          }
+        });
+
+        if (!opened.ok) {
+          warnings.push(`acp-open-refused:${opened.refusal}${opened.detail ? `:${opened.detail}` : ''}`);
+          exitCode = 1;
+        } else {
+          connection = opened.connection;
+          let sessionRes;
+          if (isBridgeProfile) {
+            sessionRes =
+              matchedBridgeBinding !== null
+                ? await connection.loadSession(matchedBridgeBinding.persistedSessionId, request.cwd, {
+                    mayLoad: true,
+                    providerSessionId: matchedBridgeBinding.providerSessionId
+                  })
+                : await connection.newSession(request.cwd);
+          } else {
+            const normalizedCwd = normalizeAcpWorkspaceRoot(request.cwd);
+            const resumeId = request.resumeSessionId;
+            const priorSessionRoot = isValidAcpSessionToken(resumeId)
+              ? this.sessionRoots.get(resumeId)
+              : undefined;
+            const rootMismatchOnResume =
+              priorSessionRoot !== undefined && priorSessionRoot !== normalizedCwd;
+            if (rootMismatchOnResume) {
+              // F10-FR-19: session reuse/load cannot retain a prior lane's cwd or grants; open a fresh session.
+              warnings.push('acp-session-rebind-fresh-root');
+            }
+            // BUG-001 (FR-008): load ACP-owned sessions tracked in `sessionRoots` even when
+            // `resumeSessionOrigin` is omitted by standalone continuations, while still refusing
+            // `'legacy-cli'` and unknown pre-cutover IDs (`F13-FR-21`) and cross-lane roots (`F10-FR-19`).
+            const canLoadResumeSession =
+              !rootMismatchOnResume &&
+              isResumeRequested &&
+              (request.resumeSessionOrigin === 'acp' ||
+                (request.resumeSessionOrigin === undefined && priorSessionRoot !== undefined));
+            sessionRes =
+              canLoadResumeSession && isValidAcpSessionToken(resumeId)
+                ? await connection.loadSession(resumeId, request.cwd, { mayLoad: true })
+                : await connection.newSession(request.cwd);
+          }
+
+          if (!sessionRes.ok) {
+            warnings.push(`acp-session-failed:${sessionRes.reason}`);
+            exitCode = 1;
+          } else {
+            activeSessionId = sessionRes.sessionId;
+            if (!isBridgeProfile) {
+              const normalizedCwd = normalizeAcpWorkspaceRoot(request.cwd);
+              if (!this.sessionRoots.has(activeSessionId) && this.sessionRoots.size >= 512) {
+                const oldestKey = this.sessionRoots.keys().next().value;
+                if (oldestKey !== undefined) this.sessionRoots.delete(oldestKey);
+              }
+              this.sessionRoots.set(activeSessionId, normalizedCwd);
+            }
+
+            // F10-FR-19: verify access to accepted F15 upstream artifact versions before prompt dispatch.
+            let missingUpstream = false;
+            if (request.authorizedUpstreamInputPaths !== undefined) {
+              for (const upstreamPath of request.authorizedUpstreamInputPaths) {
+                try {
+                  await fs.access(upstreamPath);
+                } catch {
+                  missingUpstream = true;
+                  break;
+                }
+              }
+            }
+            if (missingUpstream) {
+              warnings.push('acp-upstream-artifact-inaccessible');
+              exitCode = 1;
+            } else {
+              gate?.registerScope({
+                attemptId,
+                profileId: profile.profileId,
+                acpSessionId: activeSessionId,
+                connectionGeneration: generation,
+                ownershipGeneration: turnOwnershipGeneration ?? 1,
+                executionRoot: request.cwd,
+                primaryWorkspaceRoot: this.options.primaryWorkspaceRoot ?? request.cwd,
+                ...(this.options.protectedDatabasePaths !== undefined
+                  ? { protectedDatabasePaths: () => resolveProtectedDatabasePaths(this.options.protectedDatabasePaths) }
+                  : {}),
+                ...(request.authorizedUpstreamInputPaths !== undefined
+                  ? { authorizedUpstreamInputPaths: request.authorizedUpstreamInputPaths }
+                  : {}),
+                ...(request.authorizedOutputPaths !== undefined
+                  ? { authorizedOutputPaths: request.authorizedOutputPaths }
+                  : {}),
+                ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {})
+              });
+
+              const blocks: readonly AcpPromptBlock[] =
+                request.acpPromptBlocks && request.acpPromptBlocks.length > 0
+                  ? request.acpPromptBlocks
+                  : [{ type: 'text', text: request.prompt }];
+
+              const outcome = await connection.prompt({
+                sessionId: activeSessionId,
+                attemptId,
+                rootId,
+                blocks
+              });
+
+              const elapsedMs = Date.now() - startedAtMs;
+              for (const encodedLine of streamEncoder.flush()) {
+                emitChunk('stdout', encodedLine);
+              }
+
+              if (isBridgeProfile) {
+                const dispatchedOutcome =
+                  outcome.kind === 'completed' ||
+                  outcome.kind === 'cancelled' ||
+                  outcome.kind === 'uncertain' ||
+                  outcome.kind === 'rejected';
+                if (dispatchedOutcome) {
+                  const observedProviderId = connection.providerSessionIdOf(activeSessionId);
+                  const hasValidObservedId =
+                    observedProviderId !== null && isValidProviderSessionId(observedProviderId);
+                  if (matchedBridgeBinding !== null || hasValidObservedId) {
+                    const sameEpochBefore =
+                      turnOwnershipGeneration === undefined ||
+                      this.options.currentOwnershipGeneration?.() === turnOwnershipGeneration;
+                    const canPersistBinding =
+                      sameEpochBefore &&
+                      (this.options.primeAuthority === undefined ||
+                        (await this.options.primeAuthority())) &&
+                      (turnOwnershipGeneration === undefined ||
+                        this.options.currentOwnershipGeneration?.() === turnOwnershipGeneration);
+                    if (canPersistBinding) {
+                      if (matchedBridgeBinding !== null) {
+                        persistedCliSessionId = matchedBridgeBinding.persistedSessionId;
+                        const effectiveProviderId = hasValidObservedId
+                          ? observedProviderId
+                          : matchedBridgeBinding.providerSessionId;
+                        this.sessionBindingStore.putBinding({
+                          persistedSessionId: matchedBridgeBinding.persistedSessionId,
+                          backend: this.options.kind,
+                          workspaceRoot: normalizedWorkspaceRoot,
+                          providerSessionId: effectiveProviderId,
+                          updatedAtMs: Date.now()
+                        });
+                      } else if (hasValidObservedId) {
+                        const mintedSessionId = `acp-sess-${this.options.kind}-${randomUUID()}`;
+                        this.sessionBindingStore.putBinding({
+                          persistedSessionId: mintedSessionId,
+                          backend: this.options.kind,
+                          workspaceRoot: normalizedWorkspaceRoot,
+                          providerSessionId: observedProviderId,
+                          updatedAtMs: Date.now()
+                        });
+                        persistedCliSessionId = mintedSessionId;
+                      }
+                    } else if (matchedBridgeBinding !== null) {
+                      persistedCliSessionId = matchedBridgeBinding.persistedSessionId;
+                    }
+                  }
+                }
+              } else {
+                persistedCliSessionId = activeSessionId;
+              }
+
+              if (outcome.kind === 'completed') {
+                emitChunk(
+                  'stdout',
+                  encodeUsageResultLine(this.options.kind, persistedCliSessionId, elapsedMs, latestUsage)
+                );
+                sawTerminalResult = true;
+                acpTurnSettled = request.review === undefined
+                  ? outcome.stopReason !== 'refusal'
+                  : outcome.stopReason === 'end_turn';
+                backgroundWorkOpenAtResult = acpTurnSettled && openWorkTracker.hasOpenWork;
+                exitCode = request.review === undefined || acpTurnSettled ? 0 : 1;
+              } else if (outcome.kind === 'cancelled') {
+                exitCode = 130;
+              } else if (outcome.kind === 'uncertain') {
+                warnings.push(`acp-turn-uncertain:${outcome.reason}`);
+                exitCode = 1;
+              } else if (outcome.kind === 'refused') {
+                warnings.push(`acp-prompt-refused:${outcome.reason}${outcome.detail ? `:${outcome.detail}` : ''}`);
+                exitCode = 1;
+              } else if (outcome.kind === 'rejected') {
+                warnings.push(`acp-prompt-rejected:${outcome.code}`);
+                exitCode = 1;
+              } else {
+                warnings.push(`acp-prompt-not-dispatched:${outcome.reason}`);
+                exitCode = 1;
               }
             }
           }
-          if (missingUpstream) {
-            warnings.push('acp-upstream-artifact-inaccessible');
-            exitCode = 1;
-          } else if (this.options.primeAuthority !== undefined && !(await this.options.primeAuthority())) {
-            warnings.push('acp-ownership-unverified');
-            exitCode = 1;
-          } else {
-            gate?.registerScope({
-              attemptId,
-              profileId: profile.profileId,
-              acpSessionId: activeSessionId,
-              connectionGeneration: generation,
-              ownershipGeneration: this.options.currentOwnershipGeneration?.() ?? 1,
-              executionRoot: request.cwd,
-              primaryWorkspaceRoot: this.options.primaryWorkspaceRoot ?? request.cwd,
-              ...(this.options.protectedDatabasePaths !== undefined
-                ? { protectedDatabasePaths: () => resolveProtectedDatabasePaths(this.options.protectedDatabasePaths) }
-                : {}),
-              ...(request.authorizedUpstreamInputPaths !== undefined
-                ? { authorizedUpstreamInputPaths: request.authorizedUpstreamInputPaths }
-                : {}),
-              ...(request.authorizedOutputPaths !== undefined
-                ? { authorizedOutputPaths: request.authorizedOutputPaths }
-                : {}),
-              ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {})
-            });
-
-            const blocks: readonly AcpPromptBlock[] =
-              request.acpPromptBlocks && request.acpPromptBlocks.length > 0
-                ? request.acpPromptBlocks
-                : [{ type: 'text', text: request.prompt }];
-
-            const outcome = await connection.prompt({
-              sessionId: activeSessionId,
-              attemptId,
-              rootId,
-              blocks
-            });
-
-            const elapsedMs = Date.now() - startedAtMs;
-            for (const encodedLine of streamEncoder.flush()) {
-              emitChunk('stdout', encodedLine);
-            }
-            if (outcome.kind === 'completed') {
-              emitChunk('stdout', encodeUsageResultLine(this.options.kind, activeSessionId, elapsedMs, latestUsage));
-              sawTerminalResult = true;
-              acpTurnSettled = request.review === undefined
-                ? outcome.stopReason !== 'refusal'
-                : outcome.stopReason === 'end_turn';
-              backgroundWorkOpenAtResult = acpTurnSettled && openWorkTracker.hasOpenWork;
-              exitCode = request.review === undefined || acpTurnSettled ? 0 : 1;
-            } else if (outcome.kind === 'cancelled') {
-              exitCode = 130;
-            } else if (outcome.kind === 'uncertain') {
-              warnings.push(`acp-turn-uncertain:${outcome.reason}`);
-              exitCode = 1;
-            } else if (outcome.kind === 'refused') {
-              warnings.push(`acp-prompt-refused:${outcome.reason}${outcome.detail ? `:${outcome.detail}` : ''}`);
-              exitCode = 1;
-            } else if (outcome.kind === 'rejected') {
-              warnings.push(`acp-prompt-rejected:${outcome.code}`);
-              exitCode = 1;
-            } else {
-              warnings.push(`acp-prompt-not-dispatched:${outcome.reason}`);
-              exitCode = 1;
-            }
-          }
+        }
         }
       }
     } finally {
@@ -712,7 +889,7 @@ export class AcpBackedRunner implements BackendRunner {
         emitChunk('stdout', encodedLine);
       }
       if (activeSessionId !== null) {
-        gate?.revokeSession(activeSessionId);
+        gate?.revokeSession(activeSessionId, generation);
       }
       await settleTeardown();
       if (tee !== null) {
@@ -749,10 +926,14 @@ export class AcpBackedRunner implements BackendRunner {
       warnings: mergedWarnings,
       diagnosticsCaptured: teeResult?.streamCaptured === true,
       commandDisplay: `acp:${profile.profileId}`,
-      cliSessionId: activeSessionId ?? undefined,
+      cliSessionId: isBridgeProfile ? persistedCliSessionId : (activeSessionId ?? undefined),
       effectiveFatalSignatures: request.effectiveFatalSignatures,
       liveStreamText
     });
+  }
+
+  private isClosed(): boolean {
+    return this.closed;
   }
 
   public cancelActive(): boolean {

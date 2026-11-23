@@ -16,9 +16,10 @@ export type ReleaseAdvisoryReason =
   | 'advisory-lockfile-mismatch'
   | 'advisory-observed-after-now'
   | 'advisory-stale'
-  | 'dispositions-unusable';
+  | 'dispositions-unusable'
+  | 'advisory-uncovered';
 
-/** The seven refusal reasons, in the order they are checked. */
+/** The eight refusal reasons, in the order they are checked. */
 export declare const RELEASE_ADVISORY_REASONS: readonly ReleaseAdvisoryReason[];
 
 export type AdvisoryCompleteness = 'complete' | 'unavailable' | 'incomplete';

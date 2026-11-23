@@ -157,6 +157,14 @@ move, the finding is the movement.
 - **It does not measure a real backend's output volume.** The fill is generated. What a real phase
   produces is the operator's workload and the reason the model in §5 takes it as an input rather than
   assuming it.
+- **Measurement boundaries and re-measurement triggers (`FR-R7-14` / `14-20`).** The 2,000-file,
+  5.9 MiB fixture exercises up to eight simulated streams in one process; it does **not** measure live
+  queue wait, provider API/CLI latency, real checkout write contention or duplicate effects, webview
+  render scheduling, or time-to-interactive editor responsiveness. Before increasing concurrency/capacity
+  ceilings or broadening performance claims beyond this fixture, repeat concurrency measurements with
+  real workloads on the proposed storage and editor configuration and report **queue wait separately
+  from provider latency**, alongside process memory, open file descriptors, checkout contention, and
+  duplicate-effect exposure.
 
 ## 7. Re-running this
 

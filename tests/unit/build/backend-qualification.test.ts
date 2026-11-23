@@ -32,12 +32,19 @@ const FRESH = '2026-08-26T12:00:00.000Z';
 const STALE = '2026-07-01T12:00:00.000Z';
 
 const record = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
-  version: 1,
+  version: 2,
+  mode: 'live',
   qualifiedAt: FRESH,
   commit: 'abc123',
   platform: 'darwin arm64 node 24.19.0',
   versions: { claude: '2.1.246 (Claude Code)', codex: 'codex-cli 0.149.0', agy: '1.1.20' },
   states: { claude: 'ok', codex: 'ok', agy: 'ok' },
+  transports: { claude: 'acp-stdio-bridge', codex: 'acp-stdio-bridge', agy: 'acp-native' },
+  profiles: {
+    claude: 'claude-acp-bridge',
+    codex: 'codex-acp-bridge',
+    agy: 'agy-acp-native'
+  },
   ...overrides
 });
 
@@ -117,8 +124,9 @@ describe('FR-051 / FR-054 — the record must describe the installed CLI surface
 
   it('refuses when an installed CLI was never qualified at all', () => {
     const verdict = decide({ record: record({ versions: { claude: '2.1.246' } }) });
-    expect(verdict.reason).toBe('version-drift');
-    expect(verdict.message).toContain('never qualified');
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('incomplete-qualification');
+    expect(verdict.message).toContain('missing observed version');
   });
 
   it('ignores a backend that is not installed on this machine', () => {
@@ -305,16 +313,18 @@ describe('FR-058 / FR-059 — the cadence gates the release path only', () => {
     expect(record.commit).toBe('abc123');
     expect(record.qualifiedAt).toBe(NOW);
 
-    // And the record it produces is one the gate can actually decide on — the two halves driven
-    // into each other rather than each against its own fixture.
-    const verdict = q.decideQualification({
+    // FR-R7-14 (14-10): a partially degraded or unavailable record MUST be refused by the gate.
+    const refused = q.decideQualification({
       record,
       head: 'abc123',
       installedVersions: { claude: '2.1.246', codex: '0.149.0', agy: null },
       changedPaths: [],
       now: NOW
     });
-    expect(verdict.ok, verdict.message).toBe(true);
+    expect(refused.ok).toBe(false);
+    expect(refused.reason).toBe('incomplete-qualification');
+    expect(refused.message).toContain('codex: state=degraded');
+    expect(refused.message).toContain('agy: state=unavailable');
   });
 
   it('records what the canary observed rather than inferring it', () => {
@@ -330,5 +340,132 @@ describe('FR-058 / FR-059 — the cadence gates the release path only', () => {
     expect(built.states.codex).toBe('degraded');
     expect(built.versions.codex).toBeNull();
     expect(built.qualifiedAt).toBe(NOW);
+  });
+});
+
+describe('FR-R7-14 (14-10) — shipped-transport v2 qualification, fingerprinting, and fixture mode', () => {
+  it.each([
+    'skipped-not-authenticated',
+    'skipped-no-live-path',
+    'unavailable',
+    'drifted',
+    'degraded'
+  ])('refuses when any advertised backend has state %s', (badState) => {
+    const verdict = decide({
+      record: record({ states: { claude: 'ok', codex: badState, agy: 'ok' } })
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('incomplete-qualification');
+    expect(verdict.message).toContain(`codex: state=${badState}`);
+  });
+
+  it('refuses transport mismatch, missing transports, wrong profiles, v1 records, and missing mode', () => {
+    const wrongTransport = decide({
+      record: record({
+        transports: { claude: 'direct-cli', codex: 'acp-stdio-bridge', agy: 'acp-native' }
+      })
+    });
+    expect(wrongTransport.ok).toBe(false);
+    expect(wrongTransport.reason).toBe('transport-mismatch');
+    expect(wrongTransport.message).toContain('claude');
+
+    const missingTransports = decide({
+      record: record({ transports: undefined })
+    });
+    expect(missingTransports.ok).toBe(false);
+    expect(missingTransports.reason).toBe('transport-mismatch');
+
+    const wrongProfiles = decide({
+      record: record({
+        profiles: { claude: 'legacy-cli', codex: 'codex-acp-bridge', agy: 'agy-acp-native' }
+      })
+    });
+    expect(wrongProfiles.ok).toBe(false);
+    expect(wrongProfiles.reason).toBe('transport-mismatch');
+
+    const legacyV1 = decide({ record: record({ version: 1 }) });
+    expect(legacyV1.ok).toBe(false);
+    expect(legacyV1.reason).toBe('unsupported-qualification-version');
+
+    const missingMode = decide({ record: record({ mode: undefined }) });
+    expect(missingMode.ok).toBe(false);
+    expect(missingMode.reason).toBe('invalid-qualification-mode');
+  });
+
+  it('refuses fixture-mode records for live releases and accepts them when requireLive is false', () => {
+    const fixtureRec = record({ mode: 'fixture', sourceFingerprint: 'a'.repeat(64) });
+    const liveVerdict = decide({
+      record: fixtureRec,
+      expectedFingerprint: 'a'.repeat(64),
+      requireLive: true
+    });
+    expect(liveVerdict.ok).toBe(false);
+    expect(liveVerdict.reason).toBe('fixture-only-qualification');
+
+    const fixtureVerdict = decide({
+      record: fixtureRec,
+      expectedFingerprint: 'a'.repeat(64),
+      requireLive: false
+    });
+    expect(fixtureVerdict.ok, fixtureVerdict.message).toBe(true);
+  });
+
+  it('invalidates qualification when bridge, descriptor, or profile source fingerprint changes', () => {
+    expect(q.QUALIFICATION_PATHS).toContain('src/contracts/backend-descriptors.ts');
+    expect(q.QUALIFICATION_PATHS).toContain('src/contracts/acp-runtime.ts');
+    expect(q.QUALIFICATION_PATHS).toContain('src/services/acp-runtime/');
+    expect(q.QUALIFICATION_PATHS).toContain('esbuild.config.mjs');
+
+    const liveFp = q.computeQualificationSourceFingerprint();
+    expect(liveFp).toMatch(/^[0-9a-f]{64}$/);
+
+    const matched = decide({
+      record: record({ sourceFingerprint: liveFp }),
+      expectedFingerprint: liveFp
+    });
+    expect(matched.ok, matched.message).toBe(true);
+
+    const drifted = decide({
+      record: record({ sourceFingerprint: '0'.repeat(64) }),
+      expectedFingerprint: liveFp
+    });
+    expect(drifted.ok).toBe(false);
+    expect(drifted.reason).toBe('fingerprint-mismatch');
+  });
+
+  it('qualifies all three advertised backends end-to-end through shipped transport in fixture mode', async () => {
+    const { runFixtureQualification } = (await import(
+      '../../../scripts/backend-canary-run.mjs' as string
+    )) as {
+      runFixtureQualification: (opts?: { now?: string }) => Promise<{
+        results: Array<{ backend: string; state: string; transport: string }>;
+        record: Record<string, unknown>;
+      }>;
+    };
+    const { results, record: fixtureRecord } = await runFixtureQualification({ now: NOW });
+    expect(results.map((r) => [r.backend, r.state, r.transport])).toEqual([
+      ['claude', 'ok', 'acp-stdio-bridge'],
+      ['codex', 'ok', 'acp-stdio-bridge'],
+      ['agy', 'ok', 'acp-native']
+    ]);
+    expect(fixtureRecord.version).toBe(2);
+    expect(fixtureRecord.mode).toBe('fixture');
+    const fp = q.computeQualificationSourceFingerprint();
+    expect(fixtureRecord.sourceFingerprint).toBe(fp);
+
+    const verdict = q.decideQualification({
+      record: fixtureRecord,
+      head: String(fixtureRecord.commit ?? 'abc123'),
+      installedVersions: {
+        claude: '2.1.302 (Claude Code fixture)',
+        codex: 'codex-cli 0.159.2',
+        agy: '1.4.2'
+      },
+      changedPaths: [],
+      expectedFingerprint: fp,
+      requireLive: false,
+      now: NOW
+    });
+    expect(verdict.ok, verdict.message).toBe(true);
   });
 });

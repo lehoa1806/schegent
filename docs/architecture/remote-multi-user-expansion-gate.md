@@ -271,6 +271,32 @@ tenant-shared storage, brokered credentials, or a concurrency ceiling beyond the
 queue registry's declared maximum. Each change invalidates a premise rather
 than merely requesting a documentation refresh.
 
+**Private-scope expansion posture (`FR-R7-14` / `14-23`).** Under the current
+private-scope release posture
+([`docs/architecture/release-posture-engineering-preview.md`](../../../docs/architecture/release-posture-engineering-preview.md)),
+proposing expansion across any of the five frozen boundaries requires a named
+use case, owner, and supporting evidence before implementation:
+
+- **Remote or multi-user service**: delegated identity, authority, custody, and
+  the threat model and exit criteria in this gate.
+- **MCP boundary tool**: explicit resource, minimum-data, capability, and audit
+  owner (`src/services/acp-runtime/acp-client.ts` sends `mcpServers: []` only,
+  enforced by `tests/lint/expansion-freeze.test.ts`).
+- **Offline inference**: qualified local model, provisioning, resource bounds,
+  no-egress verification, and output-quality evaluation
+  ([`local-first-not-offline.md`](../concepts/local-first-not-offline.md)).
+- **Localization**: demonstrated non-English audience, delivery date, and
+  maintenance owner ([`english-only-not-localizable.md`](../concepts/english-only-not-localizable.md)).
+- **New backend beyond `claude` / `codex` / `agy`**: demonstrated negotiation,
+  containment qualification, session identity, usage accounting, and shipped-transport
+  canary evidence (`src/contracts/backend-descriptors.ts`).
+
+The existing desktop queue, Svelte stores, and descriptor contracts remain in
+place for the current private scope; commercial demand, cross-model equivalence,
+and competitive speed/cost gains remain unmeasured.
+
 <!-- Source: docs/architecture/local-queue-parallelism-ratification.md -->
 <!-- Source: src/queue/queue-registry.ts -->
 <!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/contracts/backend-descriptors.ts -->
+<!-- Source: src/services/acp-runtime/acp-client.ts -->

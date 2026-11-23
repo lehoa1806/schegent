@@ -13,6 +13,7 @@ import {
   STORAGE_AUTHORITIES,
   type BackupDependencyManifest,
   type BackupExternalDependency,
+  type BackupRestoreRejectionCode,
   type StorageAuthority
 } from '../../contracts/sqlite-store/schema-types';
 import { NON_OWNER_BITS } from '../../lib/narrow-mode';
@@ -21,10 +22,25 @@ import { openReadOnlyNoFollowSync, walkDirectoriesWithinRoot } from '../../lib/s
 export const SAFE_BACKUP_FILENAME_PATTERN = /^[A-Za-z0-9._-]+\.(?:db|sqlite|sqlite3)$/;
 export const SAFE_BACKUP_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 export const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+/**
+ * Calibrated supported backup/restore database image ceiling (512 MiB).
+ * Verified on macOS arm64 / local APFS (see `docs/operations/sqlite-large-restore-measurement.md`)
+ * via SQLite-native `ATTACH` + `INSERT INTO ... SELECT` and async chunked SHA-256 so restore
+ * stays well inside the 5 s `WorkspaceLockManager` heartbeat and 15 s staleness envelope.
+ */
 export const MAX_BACKUP_DATABASE_BYTES = 512 * 1024 * 1024;
+export const MAX_RESTORE_IMAGE_BYTES = MAX_BACKUP_DATABASE_BYTES;
 export const MAX_BACKUP_MANIFEST_BYTES = 16 * 1024 * 1024;
 export const MANIFEST_SUFFIX = '.manifest.json';
 export const SQLITE_SIDECAR_SUFFIXES = Object.freeze(['-wal', '-shm', '-journal'] as const);
+
+export interface FileStatFingerprint {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
+}
 
 const STORAGE_AUTHORITY_SET = new Set<string>(STORAGE_AUTHORITIES);
 const FILE_FORBIDDEN_MODE_BITS = NON_OWNER_BITS | 0o100; // 0o177: group/other + owner execute
@@ -35,9 +51,37 @@ function isOwnerOnlyDirMode(mode: number): boolean {
   return (mode & NON_OWNER_BITS) === 0;
 }
 
-function isOwnerOnlyFileMode(mode: number): boolean {
+export function isOwnerOnlyFileMode(mode: number): boolean {
   if (process.platform === 'win32') return true;
   return (mode & FILE_FORBIDDEN_MODE_BITS) === 0;
+}
+
+export function statFileFingerprintSync(resolvedPath: string): FileStatFingerprint | null {
+  try {
+    const st = lstatSync(resolvedPath, { bigint: true });
+    if (st.isSymbolicLink() || !st.isFile() || !isOwnerOnlyFileMode(Number(st.mode))) {
+      return null;
+    }
+    return {
+      dev: st.dev,
+      ino: st.ino,
+      size: st.size,
+      mtimeNs: st.mtimeNs,
+      ctimeNs: st.ctimeNs
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function fingerprintsMatch(a: FileStatFingerprint, b: FileStatFingerprint): boolean {
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeNs === b.mtimeNs &&
+    a.ctimeNs === b.ctimeNs
+  );
 }
 
 function readBoundedUtf8FileSync(
@@ -88,10 +132,21 @@ function readBoundedUtf8FileSync(
 
 export function validateBackupPathBeforeOpen(
   backupDatabasePath: string,
-  trustedRootDir?: string
+  trustedRootDir?: string,
+  maxDatabaseBytes: number = MAX_BACKUP_DATABASE_BYTES,
+  maxManifestBytes: number = MAX_BACKUP_MANIFEST_BYTES
 ):
-  | { readonly ok: true; readonly resolvedPath: string; readonly fileBytes: number }
-  | { readonly ok: false; readonly error: string } {
+  | {
+      readonly ok: true;
+      readonly resolvedPath: string;
+      readonly fileBytes: number;
+      readonly companionManifestBytes?: number | undefined;
+    }
+  | {
+      readonly ok: false;
+      readonly error: string;
+      readonly reasonCode?: BackupRestoreRejectionCode | undefined;
+    } {
   if (backupDatabasePath.length === 0 || backupDatabasePath.includes('\0')) {
     return { ok: false, error: 'Backup database path is empty or contains a NUL byte' };
   }
@@ -160,6 +215,7 @@ export function validateBackupPathBeforeOpen(
     return { ok: false, error: 'Backup database file permissions must be owner-only (0600)' };
   }
   const companionManifestPath = path.join(parentDir, manifestFileNameFor(leafName));
+  let companionManifestBytes: number | undefined;
   try {
     const manifestStat = lstatSync(companionManifestPath);
     if (manifestStat.isSymbolicLink() || !manifestStat.isFile()) {
@@ -171,6 +227,14 @@ export function validateBackupPathBeforeOpen(
         error: 'Backup companion manifest permissions must be owner-only (0600)'
       };
     }
+    if (manifestStat.size > maxManifestBytes) {
+      return {
+        ok: false,
+        reasonCode: 'BACKUP_MANIFEST_BOUND_EXCEEDED',
+        error: `Backup companion manifest size (${manifestStat.size} bytes) exceeds maximum limit (${maxManifestBytes} bytes)`
+      };
+    }
+    companionManifestBytes = manifestStat.size;
   } catch (err) {
     const code = (err as { code?: unknown } | null)?.code;
     if (code !== 'ENOENT') {
@@ -198,13 +262,14 @@ export function validateBackupPathBeforeOpen(
       };
     }
   }
-  if (stat.size > MAX_BACKUP_DATABASE_BYTES) {
+  if (stat.size > maxDatabaseBytes) {
     return {
       ok: false,
-      error: `Backup database size (${stat.size} bytes) exceeds maximum limit (${MAX_BACKUP_DATABASE_BYTES} bytes)`
+      reasonCode: 'RESTORE_IMAGE_BOUND_EXCEEDED',
+      error: `Backup database size (${stat.size} bytes) exceeds maximum limit (${maxDatabaseBytes} bytes)`
     };
   }
-  return { ok: true, resolvedPath: resolvedTarget, fileBytes: stat.size };
+  return { ok: true, resolvedPath: resolvedTarget, fileBytes: stat.size, companionManifestBytes };
 }
 
 export function computeFileDigestSync(
@@ -212,7 +277,11 @@ export function computeFileDigestSync(
   expectedMaxBytes: number
 ):
   | { readonly ok: true; readonly byteLength: number; readonly sha256: string }
-  | { readonly ok: false; readonly error: string } {
+  | {
+      readonly ok: false;
+      readonly error: string;
+      readonly reasonCode?: BackupRestoreRejectionCode | undefined;
+    } {
   let fd: number | null = null;
   try {
     fd = openReadOnlyNoFollowSync(resolvedPath);
@@ -226,6 +295,7 @@ export function computeFileDigestSync(
     if (preStat.size > expectedMaxBytes) {
       return {
         ok: false,
+        reasonCode: 'RESTORE_IMAGE_BOUND_EXCEEDED',
         error: `Backup database size (${preStat.size} bytes) exceeds maximum limit (${expectedMaxBytes} bytes)`
       };
     }
@@ -248,6 +318,7 @@ export function computeFileDigestSync(
     if (postStat.size > expectedMaxBytes) {
       return {
         ok: false,
+        reasonCode: 'RESTORE_IMAGE_BOUND_EXCEEDED',
         error: `Backup database size (${postStat.size} bytes) exceeds maximum limit (${expectedMaxBytes} bytes)`
       };
     }
@@ -417,6 +488,7 @@ export interface ListedBackupEntry {
   readonly schemaVersion: number | null;
   readonly databaseBytes: number;
   readonly manifestStatus: 'valid' | 'missing' | 'invalid';
+  readonly manifestErrorCode?: BackupRestoreRejectionCode | undefined;
   readonly manifest?: BackupDependencyManifest | undefined;
 }
 
@@ -471,19 +543,21 @@ export async function listBackupsInRoot(
     const fallbackId = name.replace(/\.(?:db|sqlite|sqlite3)$/, '');
     const manifestPath = path.join(dirPath, manifestFileNameFor(name));
     let manifestStatus: 'valid' | 'missing' | 'invalid' = 'missing';
+    let manifestErrorCode: BackupRestoreRejectionCode | undefined;
     let manifest: BackupDependencyManifest | undefined;
     if (!isOwnerOnlyFileMode(dbStat.mode)) {
       manifestStatus = 'invalid';
+    } else if (dbStat.size > MAX_BACKUP_DATABASE_BYTES) {
+      manifestStatus = 'invalid';
+      manifestErrorCode = 'RESTORE_IMAGE_BOUND_EXCEEDED';
     } else {
       try {
         const mStat = lstatSync(manifestPath);
-        if (
-          mStat.isSymbolicLink() ||
-          !mStat.isFile() ||
-          !isOwnerOnlyFileMode(mStat.mode) ||
-          mStat.size > MAX_BACKUP_MANIFEST_BYTES
-        ) {
+        if (mStat.isSymbolicLink() || !mStat.isFile() || !isOwnerOnlyFileMode(mStat.mode)) {
           manifestStatus = 'invalid';
+        } else if (mStat.size > MAX_BACKUP_MANIFEST_BYTES) {
+          manifestStatus = 'invalid';
+          manifestErrorCode = 'BACKUP_MANIFEST_BOUND_EXCEEDED';
         } else {
           const bounded = readBoundedUtf8FileSync(manifestPath, MAX_BACKUP_MANIFEST_BYTES);
           if (!bounded.ok) {
@@ -513,6 +587,7 @@ export async function listBackupsInRoot(
       schemaVersion: manifest?.schemaVersion ?? null,
       databaseBytes: dbStat.size,
       manifestStatus,
+      ...(manifestErrorCode !== undefined ? { manifestErrorCode } : {}),
       manifest
     });
   }

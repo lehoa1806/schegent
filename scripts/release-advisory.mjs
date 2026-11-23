@@ -14,10 +14,13 @@
 // comparison and is a different decision. Exactly seven days is accepted and one millisecond more
 // is not; a capture observed after `now` is refused so clock skew cannot make one fresh.
 //
-// WHY AN UNCOVERED FINDING IS NOT A REFUSAL. The requirement names exactly seven refusals
-// (data-model section 6). A finding with no covering disposition is reported with its verdict
-// (`not-recorded`, `expired` or `does-not-cover`) and counted in the record; refusing for it would
-// be a new requirement, and `accepted` is a label and never a waiver (feature 249's DL4).
+// WHY AN UNCOVERED FINDING IS REFUSED (FR-R7-14 / 14-12). Every finding observed in a fresh,
+// complete capture must be covered by a non-expired disposition in `advisory-dispositions.json`
+// (`verdict === 'covers'`). Any finding with `not-recorded`, `expired` or `does-not-cover`
+// refuses release preparation with `advisory-uncovered` while still listing every finding and its
+// verdict. `accepted` remains a human disposition label, never a silent suppression or waiver;
+// `npm run security:audit` and `npm run security:advisory-diff` remain report-only outside release
+// verdicts.
 //
 // The coverage rule is feature 249's own, reached through the function it exports, so a finding
 // shows the same verdict here as in a comparison. Nothing here edits the list or a capture.
@@ -32,7 +35,7 @@ export const RELEASE_ADVISORY_BUDGET_DAYS = 7;
 /** The tracked disposition list, relative to the repository root (data-model section 7). */
 export const DISPOSITIONS_PATH = 'docs/release/advisory-dispositions.json';
 
-/** The refusal reasons, in the order they are checked (data-model section 6). */
+/** The refusal reasons, in the order they are checked (data-model section 6 + FR-R7-14 14-12). */
 export const RELEASE_ADVISORY_REASONS = Object.freeze([
   'advisory-capture-missing',
   'advisory-incomplete',
@@ -40,7 +43,8 @@ export const RELEASE_ADVISORY_REASONS = Object.freeze([
   'advisory-lockfile-mismatch',
   'advisory-observed-after-now',
   'advisory-stale',
-  'dispositions-unusable'
+  'dispositions-unusable',
+  'advisory-uncovered'
 ]);
 
 const MS_PER_HOUR = 3_600_000;
@@ -230,6 +234,7 @@ export function evaluateReleaseAdvisory({ captures, lockBlobs, dispositionsText,
   } = assessDispositions(dispositionsText);
   const verdicts = Object.fromEntries(VERDICTS.map((verdict) => [verdict, 0]));
   const findings = [];
+  const actionableByTree = [];
   const records = [];
   let refusal = null;
 
@@ -254,6 +259,7 @@ export function evaluateReleaseAdvisory({ captures, lockBlobs, dispositionsText,
       if (found) refusal = { ...found, tree, detail: assessed.detail };
     }
 
+    const actionableFindings = [];
     if (assessed.completeness !== 'complete') continue;
     for (const item of capture.findings) {
       const subject = {
@@ -262,11 +268,19 @@ export function evaluateReleaseAdvisory({ captures, lockBlobs, dispositionsText,
         tree,
         candidate: { locations: item.locations }
       };
-      const { verdict } = dispositionList
+      const matched = dispositionList
         ? dispositionOf(subject, dispositionList, now)
-        : { verdict: 'unknown' };
+        : { verdict: 'unknown', entries: [] };
+      const { verdict, entries } = matched;
+      const hasResolvedDisposition =
+        verdict === 'covers' &&
+        entries.some(
+          (entry) =>
+            entry.result === 'covers' &&
+            (entry.status === 'accepted' || entry.status === 'inapplicable')
+        );
       if (verdict in verdicts) verdicts[verdict] += 1;
-      findings.push({
+      const entryRecord = {
         tree,
         advisory: item.ids.canonical,
         url: item.url,
@@ -274,7 +288,14 @@ export function evaluateReleaseAdvisory({ captures, lockBlobs, dispositionsText,
         severity: item.severity,
         usage: usageOf(item, bundledByTree?.[tree] ?? null),
         disposition: verdict
-      });
+      };
+      findings.push(entryRecord);
+      if (verdict === 'covers' && !hasResolvedDisposition) {
+        actionableFindings.push(entryRecord);
+      }
+    }
+    if (actionableFindings.length > 0) {
+      actionableByTree.push(...actionableFindings);
     }
   }
 
@@ -294,6 +315,41 @@ export function evaluateReleaseAdvisory({ captures, lockBlobs, dispositionsText,
     (a, b) =>
       byCodeUnit(a.tree, b.tree) || byCodeUnit(a.package, b.package) || byCodeUnit(a.advisory, b.advisory)
   );
+
+  if (!refusal) {
+    const actionableKeys = new Set(
+      actionableByTree.map((item) => `${item.tree}\0${item.package}\0${item.advisory}`)
+    );
+    const uncovered = findings.filter(
+      (item) =>
+        item.disposition !== 'covers' ||
+        actionableKeys.has(`${item.tree}\0${item.package}\0${item.advisory}`)
+    );
+    if (uncovered.length > 0) {
+      const first = uncovered.at(0);
+      const breakdownParts = ['not-recorded', 'expired', 'does-not-cover']
+        .filter((kind) => verdicts[kind] > 0)
+        .map((kind) => `${verdicts[kind]} ${kind}`);
+      if (actionableKeys.size > 0) {
+        breakdownParts.push(`${actionableKeys.size} actionable`);
+      }
+      const breakdown = breakdownParts.join(', ');
+      const firstStatus = actionableKeys.has(`${first.tree}\0${first.package}\0${first.advisory}`)
+        ? 'status=actionable'
+        : first.disposition;
+      const sample = `${escapeForTerminal(first.tree)} ${escapeForTerminal(first.package)} ${escapeForTerminal(first.advisory)} (${firstStatus})`;
+      const verb = uncovered.length === 1 ? 'lacks' : 'lack';
+      refusal = {
+        reason: 'advisory-uncovered',
+        message:
+          `${plural(uncovered.length, 'advisory finding')} ${verb} a valid non-expired accepted/inapplicable disposition ` +
+          `(${breakdown}); first uncovered: ${sample}. Patch the dependency or record a dated disposition ` +
+          `with owner, rationale, and expiry in ${DISPOSITIONS_PATH}`,
+        tree: first.tree,
+        detail: `${uncovered.length}-uncovered`
+      };
+    }
+  }
 
   return {
     budgetDays: RELEASE_ADVISORY_BUDGET_DAYS,

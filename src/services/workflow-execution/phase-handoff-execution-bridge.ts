@@ -9,15 +9,18 @@ import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { FrozenPhaseHandoffDelivery } from '../../contracts/run-request';
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
-import type {
-  ConnectedWorkflowRun,
-  NodeAttemptRecord,
-  WorkflowInvocationFrame
+import {
+  resolveRootInvocationId,
+  type ConnectedWorkflowRun,
+  type NodeAttemptRecord,
+  type WorkflowInvocationFrame
 } from '../../state/connected-workflow-run';
 import {
   normalizeNodePathForHandoff,
   type PhaseHandoffCoordinator
 } from '../phase-context/phase-handoff-coordinator';
+import { isTerminalInvocationStatus } from './workflow-control-transition-table';
+import type { ConnectedRunWriter } from './workflow-launcher';
 
 export function resolvePhaseTargetInstructions(
   run: ConnectedWorkflowRun,
@@ -196,4 +199,41 @@ export function approvePendingPhaseHandoffForContinue(
     }
   }
   return true;
+}
+
+/**
+ * FR-R7-14 (14-08) — Release handoff artifact pins only when the run's root
+ * invocation frame is durably confirmed terminal (`completed`, `failed`, or `canceled`).
+ * Idempotent across repeated recoveries; never touches active, paused, or waiting runs.
+ */
+export function releaseTerminalHandoffPinsIfConfirmed(
+  coordinator: Pick<PhaseHandoffCoordinator, 'releaseTerminalRunPins'> | undefined,
+  run: ConnectedWorkflowRun
+): void {
+  if (coordinator === undefined) {
+    return;
+  }
+  const rootId = resolveRootInvocationId(run);
+  const rootFrame = run.invocations?.[rootId];
+  if (rootFrame !== undefined && isTerminalInvocationStatus(rootFrame.status)) {
+    coordinator.releaseTerminalRunPins(run.connectedRunId);
+  }
+}
+
+/**
+ * FR-R7-14 (14-08) — Commit a recovered `ConnectedWorkflowRun` via CAS and release
+ * terminal handoff pins strictly after `'written'` confirms a terminal root status.
+ */
+export async function commitRecoveredRunAndReleaseTerminalPins(
+  connectedRuns: ConnectedRunWriter,
+  coordinator: Pick<PhaseHandoffCoordinator, 'releaseTerminalRunPins'> | undefined,
+  nextRun: ConnectedWorkflowRun,
+  expectedRevision: number
+): Promise<ConnectedWorkflowRun> {
+  const written = await connectedRuns.compareAndSetConnectedRun(nextRun, expectedRevision);
+  if (written.outcome === 'written') {
+    releaseTerminalHandoffPinsIfConfirmed(coordinator, written.run);
+    return written.run;
+  }
+  return written.current ?? nextRun;
 }

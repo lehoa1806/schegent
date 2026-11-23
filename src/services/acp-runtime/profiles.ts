@@ -31,14 +31,27 @@ export const ACP_PROFILE_IDS: BackendMap<BuiltinAcpProfileId> = mapBackends(
   (descriptor) => descriptor.acpProfile.profileId
 );
 
+export type AcpHostLocality = 'local' | 'remote';
+
 export interface AcpProfilePlatform {
   readonly os: string;
   readonly arch: string;
+  readonly locality?: AcpHostLocality;
 }
 
-/** Observed ACP release qualification matrix (`darwin/arm64` per single-platform host evidence). */
+/**
+ * Classifies whether the extension host is executing locally or attached to a remote VS Code
+ * authority (`vscode.env.remoteName`). Any non-empty remote authority name classifies as `'remote'`.
+ */
+export function classifyHostLocality(remoteName: string | undefined): AcpHostLocality {
+  return typeof remoteName === 'string' && remoteName.trim().length > 0 ? 'remote' : 'local';
+}
+
+/** Observed ACP release qualification matrix (local `darwin/arm64` per single-platform host evidence). */
 export function acpQualificationForPlatform(platform: AcpProfilePlatform): AcpQualification {
-  return platform.os === 'darwin' && platform.arch === 'arm64' ? 'qualified' : 'unqualified';
+  return platform.os === 'darwin' && platform.arch === 'arm64' && (platform.locality ?? 'local') === 'local'
+    ? 'qualified'
+    : 'unqualified';
 }
 
 export function getBuiltinAcpProfile(

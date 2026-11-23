@@ -298,6 +298,7 @@ export class WorkflowControlService {
     return {
       connectedRuns: writer,
       dispatchPhase: this.deps.dispatchPhase,
+      deferTerminalPinRelease: writer !== this.deps.connectedRuns,
       ...(controlAdmission !== undefined ? { controlAdmission } : {}),
       ...(repeatExecutor !== undefined ? { repeatExecutor } : {}),
       ...(forEachExecutor !== undefined ? { forEachExecutor } : {}),
@@ -769,12 +770,11 @@ export class WorkflowControlService {
     }
 
     const finalRootFrame = written.run.invocations?.[rootId];
-    if (
-      finalRootFrame !== undefined &&
-      isTerminalInvocationStatus(finalRootFrame.status) &&
-      this.deps.releaseQueueLease !== undefined
-    ) {
-      await this.deps.releaseQueueLease(queueId, written.run.connectedRunId);
+    if (finalRootFrame !== undefined && isTerminalInvocationStatus(finalRootFrame.status)) {
+      this.deps.phaseHandoffCoordinator?.releaseTerminalRunPins(written.run.connectedRunId);
+      if (this.deps.releaseQueueLease !== undefined) {
+        await this.deps.releaseQueueLease(queueId, written.run.connectedRunId);
+      }
     }
 
     return {

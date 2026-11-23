@@ -38,6 +38,7 @@ import {
 } from '../../../src/services/workflow-execution/connected-run-coordinator';
 import { createComposableWorkflowRunSnapshot } from '../../../src/services/workflow-execution/connected-run-factory';
 import { WorkflowControlService } from '../../../src/services/workflow-execution/workflow-control-service';
+import { WorkflowRecoveryService } from '../../../src/services/workflow-execution/workflow-recovery-service';
 import type { ConnectedWorkflowRun } from '../../../src/state/connected-workflow-run';
 
 function sha256Hex(content: string | Buffer): string {
@@ -701,6 +702,669 @@ describe('FR-R6-F15 (F15-B) — End-to-End Phase Context Handoff Integration', (
       failure: 'stale-revision',
       detail: 'review-revalidation-required'
     });
+
+    sqlite.close();
+  });
+
+  it('14-08: keeps handoff pins and artifact bytes alive across stale CAS conflicts and write failures on all terminal exits (success, failure, cancellation) and across store reopen + retention', async () => {
+    const cases: readonly {
+      readonly label: string;
+      readonly exitMode: 'completed' | 'failed' | 'canceled' | 'control-cancel';
+      readonly faultMode: 'stale' | 'throw';
+    }[] = [
+      { label: 'success-stale', exitMode: 'completed', faultMode: 'stale' },
+      { label: 'success-throw', exitMode: 'completed', faultMode: 'throw' },
+      { label: 'failure-stale', exitMode: 'failed', faultMode: 'stale' },
+      { label: 'failure-throw', exitMode: 'failed', faultMode: 'throw' },
+      { label: 'cancel-stale', exitMode: 'canceled', faultMode: 'stale' },
+      { label: 'cancel-throw', exitMode: 'canceled', faultMode: 'throw' },
+      { label: 'control-cancel-stale', exitMode: 'control-cancel', faultMode: 'stale' },
+      { label: 'control-cancel-throw', exitMode: 'control-cancel', faultMode: 'throw' }
+    ];
+
+    const workflow: WorkflowDefinition = {
+      workflowId: 'wf-pin-safety',
+      name: 'Pin Safety Workflow',
+      version: 1,
+      startNodeIds: ['n1'],
+      nodes: [
+        { nodeId: 'n1', kind: 'phase', phaseId: 'phase-a' },
+        { nodeId: 'n2', kind: 'phase', phaseId: 'phase-b' }
+      ],
+      connections: [
+        {
+          from: { nodeId: 'n1' },
+          to: { nodeId: 'n2' },
+          contextPolicy: {
+            version: 1,
+            approval: 'automatic',
+            session: 'fresh',
+            selectors: [{ selectorId: 'from-n1', sourceNodePath: 'n1', required: true, priority: 0 }]
+          }
+        }
+      ]
+    };
+
+    for (const tc of cases) {
+      const rootDir = await makeTempDir(`f15b-14-08-${tc.label}-`);
+      const dbDir = await makeTempDir(`f15b-14-08-db-${tc.label}-`);
+      const dbPath = path.join(dbDir, 'schegent-state.db');
+
+      const reportsDir = path.join(rootDir, '.schegent', 'reports');
+      await fsp.mkdir(reportsDir, { recursive: true });
+      const artifactRel = '.schegent/reports/pinned-spec.bin';
+      const artifactAbs = path.join(rootDir, artifactRel);
+      const artifactBytes = Buffer.from([0x00, 0x01, ...Buffer.from(`pinned-bytes-${tc.label}`, 'utf8')]);
+      await fsp.writeFile(artifactAbs, artifactBytes);
+      const artifactDigest = sha256Hex(artifactBytes);
+      const artifactId = `out-spec-${artifactDigest.slice(0, 8)}`;
+
+      const openLifecycle = (conn: SqliteApplicationStore['writerConnection']) =>
+        createArtifactLifecycleService({
+          conn,
+          nowMs: () => 1_700_000_000_000,
+          fs: makeNodeLifecycleFs(),
+          probe: makeProbe(rootDir),
+          audit: { recordLifecycleMutation: () => undefined },
+          scanRoots: [
+            {
+              rootId: 'reports',
+              root: reportsDir,
+              retentionClass: 'generated-reports-handoff-exports',
+              storeKind: 'report'
+            }
+          ],
+          accessPolicy: DENY_ALL_ACCESS_POLICY,
+          resolveOwner: (ownerKind) => (ownerKind === 'handoff' ? 'live' : 'settled'),
+          workspaceRoot: rootDir,
+          workspaceId: 'ws-14-08'
+        });
+
+      const sqlite1 = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      const lifecycle1 = openLifecycle(sqlite1.writerConnection);
+      const regRes = lifecycle1.registerArtifact({
+        artifactId,
+        ownerRunId: `run-${tc.label}`,
+        ownerAttemptId: 'att-seed',
+        sensitivity: 'content',
+        retentionClass: 'generated-reports-handoff-exports',
+        storeKind: 'report',
+        immutability: 'immutable',
+        digest: { algorithm: 'sha256', value: artifactDigest },
+        byteSize: artifactBytes.byteLength,
+        mediaType: 'application/octet-stream',
+        displayName: 'pinned-spec.bin',
+        producerIdentity: 'test',
+        locator: { storageTier: 'workspace_file', uriOrRelpath: artifactRel }
+      });
+      expect(regRes.ok).toBe(true);
+
+      const handoffStore1 = createSqliteHandoffStore(sqlite1.writerConnection);
+      const coordinator1 = createPhaseHandoffCoordinator({
+        store: handoffStore1,
+        primaryWorkspaceRoot: rootDir,
+        workspaceId: 'ws-14-08',
+        lifecycle: lifecycle1
+      });
+
+      const snap = createComposableWorkflowRunSnapshot({
+        connectedRunId: `run-${tc.label}`,
+        workflow,
+        effectiveWorkflows: [workflow],
+        effectivePhases: [PHASE_A, PHASE_B],
+        startedAt: 1000
+      });
+      expect(snap.outcome).toBe('created');
+      if (snap.outcome !== 'created') continue;
+
+      let currentRun: ConnectedWorkflowRun = snap.run;
+      const rootInvId = snap.rootInvocationId;
+      let faultActive = false;
+
+      const runWriter = {
+        get: (id: string): ConnectedWorkflowRun | null =>
+          currentRun.connectedRunId === id ? currentRun : null,
+        async compareAndSetConnectedRun(next: ConnectedWorkflowRun, expectedRev: number) {
+          if (faultActive) {
+            if (tc.faultMode === 'throw') {
+              throw new Error(`injected-cas-write-failure-${tc.label}`);
+            }
+            return { outcome: 'stale' as const, current: currentRun };
+          }
+          if (currentRun.revision !== expectedRev) {
+            return { outcome: 'stale' as const, current: currentRun };
+          }
+          currentRun = Object.freeze({ ...next, revision: expectedRev + 1 });
+          return { outcome: 'written' as const, run: currentRun };
+        }
+      };
+
+      const coordDeps = {
+        connectedRuns: runWriter,
+        phaseHandoffCoordinator: coordinator1,
+        workspaceRoot: rootDir,
+        dispatchPhase: async (inp: PhaseAttemptDispatchInput) => ({
+          outcome: 'dispatched' as const,
+          queueItemId: `q-${inp.attemptId}`
+        })
+      };
+
+      // Dispatch n1, stage contribution referencing our managed artifact, complete n1 -> dispatches n2 with active handoff pin!
+      const step1 = await dispatchComposableNode(coordDeps, {
+        run: currentRun,
+        invocationId: rootInvId,
+        nodeId: 'n1',
+        startedAt: 1100
+      });
+      expect(step1.outcome).toBe('phase-dispatched');
+      if (step1.outcome !== 'phase-dispatched') continue;
+
+      const stagingN1 = allocateAttemptStagingPaths(rootDir, currentRun.connectedRunId, step1.attemptId);
+      await fsp.mkdir(path.dirname(stagingN1.contributionAbsPath), { recursive: true });
+      const n1Attempt = currentRun.invocations![rootInvId]!.attemptsByNodeId['n1']![0]!;
+      const normOccId = rootInvId.replace(/[^A-Za-z0-9._:-]/g, '-');
+      const n1Contrib = {
+        schemaVersion: PHASE_CONTEXT_CONTRIBUTION_VERSION,
+        producer: {
+          nodePath: n1Attempt.nodePath.replace(/^\/+/, ''),
+          occurrenceId: normOccId,
+          attemptId: step1.attemptId
+        },
+        coverage: 'complete' as const,
+        outcomes: ['Prepared artifact for n2'],
+        decisions: [],
+        constraints: [],
+        unresolvedIssues: [],
+        summary: null,
+        artifacts: []
+      };
+      await fsp.writeFile(stagingN1.contributionAbsPath, JSON.stringify(n1Contrib), 'utf8');
+
+      const step2 = await completeComposableNodeAttempt(coordDeps, {
+        run: currentRun,
+        invocationId: rootInvId,
+        nodeId: 'n1',
+        attemptIndex: n1Attempt.attemptIndex,
+        status: 'completed',
+        completedAt: 1200,
+        declaredOutputs: {
+          spec: { portId: 'spec', type: 'file', value: artifactRel }
+        }
+      });
+      expect(step2.outcome).toBe('phase-dispatched');
+
+      // Confirm protective handoff reference is active before terminal transition.
+      const refsBefore = lifecycle1.listReferences(artifactId);
+      expect(refsBefore.ok).toBe(true);
+      expect(refsBefore.ok && refsBefore.value.some((r) => r.ownerType === 'handoff' && r.active)).toBe(
+        true
+      );
+
+      // Inject fault on terminal exit!
+      faultActive = true;
+      const n2Attempt = currentRun.invocations![rootInvId]!.attemptsByNodeId['n2']![0]!;
+      if (tc.exitMode === 'control-cancel') {
+        const controlService = new WorkflowControlService({
+          connectedRuns: runWriter,
+          phaseHandoffCoordinator: coordinator1,
+          workspaceRoot: rootDir,
+          dispatchPhase: coordDeps.dispatchPhase
+        });
+        if (tc.faultMode === 'throw') {
+          await expect(
+            controlService.executeCommand({
+              runId: currentRun.connectedRunId,
+              commandId: `cmd-cancel-${tc.label}`,
+              expectedRevision: currentRun.revision,
+              operation: 'cancel',
+              now: 1300
+            })
+          ).rejects.toThrow(`injected-cas-write-failure-${tc.label}`);
+        } else {
+          const cancelRes = await controlService.executeCommand({
+            runId: currentRun.connectedRunId,
+            commandId: `cmd-cancel-${tc.label}`,
+            expectedRevision: currentRun.revision,
+            operation: 'cancel',
+            now: 1300
+          });
+          expect(cancelRes.accepted).toBe(false);
+          expect(!cancelRes.accepted && cancelRes.refusalCode).toBe('stale-revision');
+        }
+      } else if (tc.faultMode === 'throw') {
+        await expect(
+          completeComposableNodeAttempt(coordDeps, {
+            run: currentRun,
+            invocationId: rootInvId,
+            nodeId: 'n2',
+            attemptIndex: n2Attempt.attemptIndex,
+            status: tc.exitMode,
+            completedAt: 1300
+          })
+        ).rejects.toThrow(`injected-cas-write-failure-${tc.label}`);
+      } else {
+        const staleRes = await completeComposableNodeAttempt(coordDeps, {
+          run: currentRun,
+          invocationId: rootInvId,
+          nodeId: 'n2',
+          attemptIndex: n2Attempt.attemptIndex,
+          status: tc.exitMode,
+          completedAt: 1300
+        });
+        expect(staleRes.outcome).toBe('rejected-stale');
+      }
+
+      // Close and REOPEN SQLite store, then run retention deletion against the artifact!
+      sqlite1.close();
+      const sqlite2 = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      const lifecycle2 = openLifecycle(sqlite2.writerConnection);
+
+      const refsAfterReopen = lifecycle2.listReferences(artifactId);
+      expect(refsAfterReopen.ok).toBe(true);
+      expect(
+        refsAfterReopen.ok && refsAfterReopen.value.some((r) => r.ownerType === 'handoff' && r.active)
+      ).toBe(true);
+      expect(lifecycle2.isProtected(artifactId).protected).toBe(true);
+
+      const preview = lifecycle2.previewDeletion({ artifactIds: [artifactId] });
+      expect(preview.ok).toBe(true);
+      if (preview.ok) {
+        expect(preview.value.summary.protectedCount).toBeGreaterThanOrEqual(1);
+        expect(preview.value.summary.affectedCount).toBe(0);
+        await lifecycle2.executeDeletion({
+          artifactIds: [artifactId],
+          previewId: preview.value.previewId,
+          confirmation: 'confirmed',
+          authority: { trusted: true, primary: true, auditHealthy: true }
+        });
+      }
+      // Artifact bytes MUST survive retention on disk!
+      expect(await fsp.readFile(artifactAbs)).toEqual(artifactBytes);
+
+      // Now clear the fault and commit the winning terminal transition -> pins MUST release!
+      faultActive = false;
+      const coordinator2 = createPhaseHandoffCoordinator({
+        store: createSqliteHandoffStore(sqlite2.writerConnection),
+        primaryWorkspaceRoot: rootDir,
+        workspaceId: 'ws-14-08',
+        lifecycle: lifecycle2
+      });
+      if (tc.exitMode === 'control-cancel') {
+        const controlService2 = new WorkflowControlService({
+          connectedRuns: runWriter,
+          phaseHandoffCoordinator: coordinator2,
+          workspaceRoot: rootDir,
+          dispatchPhase: coordDeps.dispatchPhase
+        });
+        const okCancel = await controlService2.executeCommand({
+          runId: currentRun.connectedRunId,
+          commandId: `cmd-cancel-win-${tc.label}`,
+          expectedRevision: currentRun.revision,
+          operation: 'cancel',
+          now: 1400
+        });
+        expect(okCancel.accepted).toBe(true);
+      } else {
+        const winRes = await completeComposableNodeAttempt(
+          { ...coordDeps, phaseHandoffCoordinator: coordinator2 },
+          {
+            run: currentRun,
+            invocationId: rootInvId,
+            nodeId: 'n2',
+            attemptIndex: n2Attempt.attemptIndex,
+            status: tc.exitMode,
+            completedAt: 1400
+          }
+        );
+        expect(winRes.outcome).not.toBe('rejected-stale');
+      }
+
+      const refsAfterWin = lifecycle2.listReferences(artifactId);
+      expect(refsAfterWin.ok).toBe(true);
+      expect(
+        refsAfterWin.ok && refsAfterWin.value.some((r) => r.ownerType === 'handoff' && r.active)
+      ).toBe(false);
+      expect(lifecycle2.isProtected(artifactId).protected).toBe(false);
+
+      sqlite2.close();
+    }
+  });
+
+  it('14-08: reconciles interrupted post-commit terminal pin cleanup idempotently across repeated recoveries while keeping non-terminal runs pinned', async () => {
+    const rootDir = await makeTempDir('f15b-14-08-rec-');
+    const sqlite = SqliteApplicationStore.openInMemory();
+    const lifecycle = createArtifactLifecycleService({
+      conn: sqlite.writerConnection,
+      nowMs: () => 1_700_000_000_000,
+      fs: makeNodeLifecycleFs(),
+      probe: makeProbe(rootDir),
+      audit: { recordLifecycleMutation: () => undefined },
+      scanRoots: [],
+      accessPolicy: DENY_ALL_ACCESS_POLICY,
+      resolveOwner: (ownerKind) => (ownerKind === 'handoff' ? 'live' : 'settled'),
+      workspaceRoot: rootDir,
+      workspaceId: 'ws-rec'
+    });
+    const coordinator = createPhaseHandoffCoordinator({
+      store: createSqliteHandoffStore(sqlite.writerConnection),
+      primaryWorkspaceRoot: rootDir,
+      workspaceId: 'ws-rec',
+      lifecycle
+    });
+
+    const workflow: WorkflowDefinition = {
+      workflowId: 'wf-rec-pins',
+      name: 'Recovery Pin Workflow',
+      version: 1,
+      startNodeIds: ['n1'],
+      nodes: [
+        { nodeId: 'n1', kind: 'phase', phaseId: 'phase-a' },
+        { nodeId: 'n2', kind: 'phase', phaseId: 'phase-b' }
+      ],
+      connections: [
+        {
+          from: { nodeId: 'n1' },
+          to: { nodeId: 'n2' },
+          contextPolicy: {
+            version: 1,
+            approval: 'automatic',
+            session: 'fresh',
+            selectors: [{ selectorId: 'from-n1', sourceNodePath: 'n1', required: true, priority: 0 }]
+          }
+        }
+      ]
+    };
+
+    const runs = new Map<string, ConnectedWorkflowRun>();
+    let staleNextRecoveryCas = false;
+    const store = {
+      get: (id: string) => runs.get(id) ?? null,
+      list: () => [...runs.values()],
+      async compareAndSetConnectedRun(next: ConnectedWorkflowRun, expectedRev: number) {
+        const cur = runs.get(next.connectedRunId) ?? null;
+        if (staleNextRecoveryCas || cur === null || cur.revision !== expectedRev) {
+          return { outcome: 'stale' as const, current: cur };
+        }
+        const updated = Object.freeze({ ...next, revision: expectedRev + 1 });
+        runs.set(updated.connectedRunId, updated);
+        return { outcome: 'written' as const, run: updated };
+      }
+    };
+
+    const setupRunAtN2 = async (runId: string) => {
+      const payloadBytes = Buffer.from([0x00, 0x01, ...Buffer.from(`payload-${runId}`, 'utf8')]);
+      const digest = sha256Hex(payloadBytes);
+      const artifactId = `out-spec-${digest.slice(0, 8)}`;
+      const artifactRel = `.schegent/reports/${artifactId}.bin`;
+      const artifactAbs = path.join(rootDir, artifactRel);
+      await fsp.mkdir(path.dirname(artifactAbs), { recursive: true });
+      await fsp.writeFile(artifactAbs, payloadBytes);
+
+      lifecycle.registerArtifact({
+        artifactId,
+        ownerRunId: runId,
+        ownerAttemptId: `att-${runId}`,
+        sensitivity: 'content',
+        retentionClass: 'generated-reports-handoff-exports',
+        storeKind: 'report',
+        immutability: 'immutable',
+        digest: { algorithm: 'sha256', value: digest },
+        byteSize: payloadBytes.byteLength,
+        mediaType: 'application/octet-stream',
+        displayName: `${artifactId}.bin`,
+        producerIdentity: 'test',
+        locator: { storageTier: 'workspace_file', uriOrRelpath: artifactRel }
+      });
+      const snap = createComposableWorkflowRunSnapshot({
+        connectedRunId: runId,
+        workflow,
+        effectiveWorkflows: [workflow],
+        effectivePhases: [PHASE_A, PHASE_B],
+        startedAt: 1000
+      });
+      if (snap.outcome !== 'created') throw new Error('snapshot failed');
+      runs.set(runId, snap.run);
+
+      const deps = {
+        connectedRuns: store,
+        phaseHandoffCoordinator: coordinator,
+        workspaceRoot: rootDir,
+        dispatchPhase: async (inp: PhaseAttemptDispatchInput) => ({
+          outcome: 'dispatched' as const,
+          queueItemId: `q-${inp.attemptId}`
+        })
+      };
+      const s1 = await dispatchComposableNode(deps, {
+        run: runs.get(runId)!,
+        invocationId: snap.rootInvocationId,
+        nodeId: 'n1',
+        startedAt: 1100
+      });
+      if (s1.outcome !== 'phase-dispatched') throw new Error('dispatch n1 failed');
+      const staging = allocateAttemptStagingPaths(rootDir, runId, s1.attemptId);
+      await fsp.mkdir(path.dirname(staging.contributionAbsPath), { recursive: true });
+      const n1Att = runs.get(runId)!.invocations![snap.rootInvocationId]!.attemptsByNodeId['n1']![0]!;
+      await fsp.writeFile(
+        staging.contributionAbsPath,
+        JSON.stringify({
+          schemaVersion: PHASE_CONTEXT_CONTRIBUTION_VERSION,
+          producer: {
+            nodePath: n1Att.nodePath.replace(/^\/+/, ''),
+            occurrenceId: snap.rootInvocationId.replace(/[^A-Za-z0-9._:-]/g, '-'),
+            attemptId: s1.attemptId
+          },
+          coverage: 'complete',
+          outcomes: ['done n1'],
+          decisions: [],
+          constraints: [],
+          unresolvedIssues: [],
+          summary: null,
+          artifacts: []
+        }),
+        'utf8'
+      );
+      const s2 = await completeComposableNodeAttempt(deps, {
+        run: runs.get(runId)!,
+        invocationId: snap.rootInvocationId,
+        nodeId: 'n1',
+        attemptIndex: n1Att.attemptIndex,
+        status: 'completed',
+        completedAt: 1200,
+        declaredOutputs: {
+          spec: { portId: 'spec', type: 'file', value: artifactRel }
+        }
+      });
+      if (s2.outcome !== 'phase-dispatched') throw new Error('advance n2 failed');
+      return { rootInvId: snap.rootInvocationId, deps, artifactId };
+    };
+
+    // Run 1: wins terminal CAS commit, then crashes BEFORE pin cleanup (simulated via deferTerminalPinRelease: true).
+    const r1 = await setupRunAtN2('run-interrupted-terminal');
+    const r1N2 = runs.get('run-interrupted-terminal')!.invocations![r1.rootInvId]!.attemptsByNodeId['n2']![0]!;
+    const r1Done = await completeComposableNodeAttempt(
+      { ...r1.deps, deferTerminalPinRelease: true },
+      {
+        run: runs.get('run-interrupted-terminal')!,
+        invocationId: r1.rootInvId,
+        nodeId: 'n2',
+        attemptIndex: r1N2.attemptIndex,
+        status: 'completed',
+        completedAt: 1300
+      }
+    );
+    expect(r1Done.outcome).toBe('workflow-completed');
+    expect(lifecycle.isProtected(r1.artifactId).protected).toBe(true);
+
+    // Run 2: stays non-terminal (paused after interruption); MUST remain pinned!
+    const r2 = await setupRunAtN2('run-still-active');
+    expect(lifecycle.isProtected(r2.artifactId).protected).toBe(true);
+
+    // Run 3: orphaned queue/task -> canceled during recovery (Branch 2).
+    const r3 = await setupRunAtN2('run-orphaned');
+    expect(lifecycle.isProtected(r3.artifactId).protected).toBe(true);
+
+    const recovery = new WorkflowRecoveryService({
+      connectedRuns: store,
+      phaseHandoffCoordinator: coordinator,
+      dispatchPhase: async (inp) => ({ outcome: 'dispatched', queueItemId: `q-${inp.attemptId}` }),
+      isQueueOrTaskPresent: (_q, runId) => runId !== 'run-orphaned'
+    });
+
+    // First test stale CAS on Branch 2 (orphaned run) -> pin MUST NOT release on stale!
+    staleNextRecoveryCas = true;
+    await recovery.reconcileRun('run-orphaned', 2000);
+    expect(lifecycle.isProtected(r3.artifactId).protected).toBe(true);
+    staleNextRecoveryCas = false;
+
+    // Run recovery TWICE across all runs -> terminal runs released idempotently, non-terminal run stays pinned!
+    await recovery.reconcileAllRuns(2100);
+    expect(lifecycle.isProtected(r1.artifactId).protected).toBe(false);
+    expect(lifecycle.isProtected(r3.artifactId).protected).toBe(false);
+    expect(lifecycle.isProtected(r2.artifactId).protected).toBe(true);
+
+    await recovery.reconcileAllRuns(2200);
+    expect(lifecycle.isProtected(r1.artifactId).protected).toBe(false);
+    expect(lifecycle.isProtected(r3.artifactId).protected).toBe(false);
+    expect(lifecycle.isProtected(r2.artifactId).protected).toBe(true);
+
+    sqlite.close();
+  });
+
+  it('14-09: reloadFromStore clears stale in-memory state and resolves a restored handoffId reusing (runId, invocationId, targetNodeId)', async () => {
+    const rootDir = await makeTempDir('f15b-14-09-restore-');
+    const sqlite = SqliteApplicationStore.openInMemory();
+    let clockMs = 1_700_000_000_000;
+    const store = createSqliteHandoffStore(sqlite.writerConnection, () => {
+      clockMs += 1000;
+      return clockMs;
+    });
+    const coordinator = createPhaseHandoffCoordinator({
+      store,
+      primaryWorkspaceRoot: rootDir,
+      workspaceId: 'ws-restore'
+    });
+
+    const workflow: WorkflowDefinition = {
+      workflowId: 'wf-restore',
+      name: 'Restore Workflow',
+      version: 1,
+      startNodeIds: ['n1'],
+      nodes: [
+        { nodeId: 'n1', kind: 'phase', phaseId: 'phase-a' },
+        { nodeId: 'n2', kind: 'phase', phaseId: 'phase-b' }
+      ],
+      connections: [
+        {
+          from: { nodeId: 'n1' },
+          to: { nodeId: 'n2' },
+          contextPolicy: {
+            version: 1,
+            approval: 'automatic',
+            session: 'fresh',
+            selectors: [{ selectorId: 'from-n1', sourceNodePath: 'n1', required: true, priority: 0 }]
+          }
+        }
+      ]
+    };
+
+    const snap = createComposableWorkflowRunSnapshot({
+      connectedRunId: 'run-reused-id',
+      workflow,
+      effectiveWorkflows: [workflow],
+      effectivePhases: [PHASE_A, PHASE_B],
+      startedAt: 1000
+    });
+    expect(snap.outcome).toBe('created');
+    if (snap.outcome !== 'created') return;
+
+    const rootInvId = snap.rootInvocationId;
+    const frame = snap.run.invocations![rootInvId]!;
+    const frameNodePath = frame.nodePath.replace(/^\/+/, '') || 'root';
+    const n1Attempt = {
+      attemptId: 'att-n1-before-restore',
+      attemptIndex: 1,
+      rootRunId: snap.run.connectedRunId,
+      invocationId: rootInvId,
+      parentInvocationId: null,
+      nodePath: `${frameNodePath}/n1`,
+      nodeId: 'n1',
+      nodeKind: 'phase' as const,
+      targetDefinitionId: 'phase-a',
+      status: 'completed' as const,
+      startedAt: 1010,
+      completedAt: 1020,
+      inputEnvelope: {
+        envelopeId: 'env-n1',
+        invocationId: rootInvId,
+        targetNodeId: 'n1',
+        source: 'launch' as const,
+        inputsByPort: {},
+        localInputs: [],
+        outputTargetOverrides: [],
+        acceptedAt: 1005
+      },
+      declaredOutputs: {}
+    };
+
+    expect(
+      (await coordinator.recordSettledAttempt({ run: snap.run, frame, attempt: n1Attempt })).ok
+    ).toBe(true);
+    const prepBefore = await coordinator.prepareTransitionHandoff({
+      run: snap.run,
+      frame,
+      workflow,
+      connection: workflow.connections[0]!,
+      connectionIndex: 0,
+      fromNodeId: 'n1',
+      fromAttempt: n1Attempt,
+      targetNodeId: 'n2',
+      targetInstructions: PHASE_B.instruction!,
+      targetBackendId: 'claude'
+    });
+    expect(prepBefore.kind).toBe('accepted');
+    if (prepBefore.kind !== 'accepted') return;
+    const preRestoreHandoffId = prepBefore.handoffId;
+    expect(
+      coordinator.resolvePendingHandoffForTarget(snap.run.connectedRunId, rootInvId, 'n2')
+    ).toBe(preRestoreHandoffId);
+
+    // Simulate in-place SQLite backup restore replacing the row with a different handoffId for the same (runId, invocationId, targetNodeId).
+    const preRow = sqlite.writerConnection.get<{
+      record_json: string;
+      record_bytes: number;
+      created_at_ms: number;
+      updated_at_ms: number;
+    }>(
+      `SELECT record_json, record_bytes, created_at_ms, updated_at_ms FROM phase_handoff_records WHERE handoff_id = ?`,
+      preRestoreHandoffId
+    );
+    expect(preRow).toBeDefined();
+    const restoredHandoffId = 'handoff-restored-replacement-id';
+    const parsedEnv = JSON.parse(preRow!.record_json) as {
+      record: { handoffId: string };
+    };
+    parsedEnv.record.handoffId = restoredHandoffId;
+    const restoredJson = JSON.stringify(parsedEnv);
+    sqlite.writerConnection.run(`DELETE FROM phase_handoff_records WHERE handoff_id = ?`, preRestoreHandoffId);
+    sqlite.writerConnection.run(
+      `INSERT INTO phase_handoff_records (
+        handoff_id, run_id, source_attempt_id, target_phase_id,
+        revision, status, record_json, record_bytes, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, 1, 'accepted', ?, ?, ?, ?)`,
+      restoredHandoffId,
+      snap.run.connectedRunId,
+      n1Attempt.attemptId,
+      'n2',
+      restoredJson,
+      Buffer.byteLength(restoredJson, 'utf8'),
+      preRow!.created_at_ms,
+      preRow!.updated_at_ms + 5000
+    );
+
+    coordinator.reloadFromStore();
+    expect(
+      coordinator.resolvePendingHandoffForTarget(snap.run.connectedRunId, rootInvId, 'n2')
+    ).toBe(restoredHandoffId);
 
     sqlite.close();
   });
