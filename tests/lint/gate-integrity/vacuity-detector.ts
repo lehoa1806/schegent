@@ -41,8 +41,10 @@
 // survives the census mutation, so the measured rate stays 0.0% over the wider
 // set. The rule this keeps re-teaching: extracting a walk into a helper removes
 // the caller from every meta-gate that reads for the walk by name.
+// FR-R7-08 follow-up — `globTestSpecifications` is the Vitest test discovery
+// used by test-gates-parity, replacing its direct filesystem walk.
 export const SCANS =
-  /filesMatching|matchingRelativePaths|filesUnder|linesMatching|readdirSync|collect\w*Files|walk\(|scanWebviewSources|filesReferencing/;
+  /filesMatching|matchingRelativePaths|filesUnder|linesMatching|readdirSync|collect\w*Files|walk\(|scanWebviewSources|filesReferencing|globTestSpecifications/;
 
 /** Asserts that a collected set of offenders is empty. */
 export const ASSERTS_EMPTY = /\.toEqual\(\s*\[\s*\]\s*\)/;

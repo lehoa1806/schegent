@@ -106,9 +106,11 @@ function buildChangeLines(
     }
   }
 
-  for (const prior of previousGrant.files) {
-    if (!currByName.has(prior.name)) {
-      lines.push(`  - removed: ${prior.name} (was sha256:${shortDigest(prior.digest)})`);
+  if (!scan.scanError) {
+    for (const prior of previousGrant.files) {
+      if (!currByName.has(prior.name)) {
+        lines.push(`  - removed: ${prior.name} (was sha256:${shortDigest(prior.digest)})`);
+      }
     }
   }
 
@@ -122,7 +124,7 @@ export function buildAgentConfigAckPrompt(
   const count = scan.entries.length;
   const noun = count === 1 ? 'file' : 'files';
   const hasChange = previousGrant !== undefined && previousGrant !== null;
-  const message = scan.scanError && count === 0
+  const message = scan.scanError
     ? `Schegent could not finish scanning repository agent configuration for uncontained '${scan.backend}'.`
     : hasChange
       ? `Repository agent configuration changed for uncontained '${scan.backend}' (${count} ${noun}).`

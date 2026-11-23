@@ -33,6 +33,7 @@ import { AUDIT_PAYLOAD_MAX_BYTES } from '../audit/audit-payload';
 import * as path from 'node:path';
 
 import { SETTINGS_SCHEMA } from '../config/settings-schema';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { CATALOG_RETENTION_BOUND } from '../contracts/catalog-store';
 import { FAILURE_RECORD_DIR, FAILURE_RECORD_MAX_BYTES, FAILURE_RECORD_RETAINED_MAX } from '../contracts/failure-record';
 import { MONITOR_STALL_THRESHOLD_MS } from '../contracts/monitor-events';
@@ -455,7 +456,7 @@ export function renderRetentionDisclosure(): string {
  * Schegent neither writes nor sweeps them.
  */
 export interface BackendOwnedRetentionRow {
-  readonly backend: 'claude' | 'codex' | 'agy';
+  readonly backend: BackendRunnerKind;
   readonly store: string;
   readonly locationPattern: string;
   readonly contentClass: string;

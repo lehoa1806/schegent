@@ -296,3 +296,17 @@ In addition to the four baseline workloads (`idle`, `active`, `large-history`, `
 2. **Disposition**: Host-internal per-slice revision tracking is **deferred**; no production code changes ship in `src/`, preserving content-equality soundness (zero stale-slice risk from missed revision bumps) and leaving `SnapshotSyncMeta`, `SNAPSHOT_RESYNC_REQUEST`, `SUPPRESSIBLE_SNAPSHOT_SLICES`, and `webview-ui/src/lib/snapshot-merge.ts` untouched.
 3. **Full-resync payload size exclusion**: Host-internal per-slice change detection does not reduce full-resync serialized payload size (~780 KiB on `large-history`, already bounded below the 1 MiB ceiling by `FR-R5-F09` / `FR-R5-F12`). Shrinking full resyncs (e.g., via paged history) remains a separate concern outside `FR-R7-09`.
 4. **Platform qualification**: Measured on `darwin/arm64` (Node `v24.22.2`); `linux` and `win32` remain listed under section 7's pending qualification. Re-evaluate only if catalog sizes grow substantially or host routine flush p95 reaches the 8 ms threshold on a supported platform.
+
+### Dual-consumer fallback rerun (2026-11-22)
+
+The original table reported fallback and comparison time for a single consumer. The rerun recorded both comparison passes for each sample and summed their elapsed times before computing percentiles. The sidebar and dashboard each had their own transport and shared the same projected snapshot on every sample. The environment was macOS 27.0 arm64 with Node `v24.22.2`, using 200 samples after 20 warm-up samples per workload. Stage exit counts matched the per-slice table above.
+
+| Workload | 1-consumer fallback (ms) | 2-consumer fallback (ms) | 1-consumer comparison (ms) | 2-consumer comparison (ms) | 1-consumer flush (ms) | 2-consumer flush (ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| `idle` | 0 / 0 / 0 | 0 / 0 / 0 | 0.0005 / 0.0009 / 0.0026 | 0.0010 / 0.0015 / 0.0030 | 0.0254 / 0.0537 / 0.1209 | 0.0337 / 0.0714 / 0.1384 |
+| `active` | 0 / 0 / 0 | 0 / 0 / 0 | 0.0024 / 0.0037 / 0.0261 | 0.0047 / 0.0073 / 0.0285 | 0.0327 / 0.0504 / 0.0857 | 0.0442 / 0.0652 / 0.1892 |
+| `large-history` | 0 / 0 / 0 | 0 / 0 / 0 | 0.0023 / 0.0028 / 0.0037 | 0.0045 / 0.0056 / 0.0063 | 0.2602 / 0.3799 / 1.2604 | 0.2822 / 0.4024 / 1.2961 |
+| `large-history-2x` | 0 / 0 / 0 | 0 / 0 / 0 | 0.0020 / 0.0024 / 0.0035 | 0.0041 / 0.0046 / 0.0056 | 0.2471 / 0.2894 / 0.4734 | 0.2670 / 0.3189 / 0.4948 |
+| `large-history-with-catalogs` | 0.0481 / 0.0543 / 0.0652 | 0.0959 / 0.1072 / 0.2445 | 0.0506 / 0.0576 / 0.0678 | 0.1007 / 0.1122 / 0.2501 | 0.3339 / 0.4181 / 0.6630 | 0.4047 / 0.5049 / 0.7373 |
+
+Values are p50 / p95 / max. Both consumers' fallback and flush p95 stayed below 8 ms on all five workloads, so the revision implementation remains deferred.

@@ -342,6 +342,49 @@ describe('FR-R7-02 — Migration 9 per-entity operational rows, incremental writ
     }
   });
 
+  it.each([
+    { key: KEYS.queue, value: { default: { requests: [{ id: 'duplicate' }, { id: 'duplicate' }] } } },
+    { key: KEYS.run, value: { default: { status: 'failed' } } }
+  ])('rolls back the full Migration 9 backfill for a malformed $key map', ({ key, value }) => {
+    const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
+    try {
+      SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, MIGRATIONS_UP_TO_8);
+      const valid = JSON.stringify({ default: makeQueue([makeTask('default', 0)]) });
+      const invalid = JSON.stringify(value);
+      seedSchema8KvDoc(conn, 'a-valid', KEYS.queue, valid);
+      seedSchema8KvDoc(conn, 'z-invalid', key, invalid);
+
+      expect(() => SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1)).toThrow(
+        /MIGRATION_9_INVALID_SOURCE_SHAPE/
+      );
+      expect(conn.scalar("SELECT meta_value FROM schema_meta WHERE meta_key = 'schema_version'")).toBe('8');
+      expect(conn.all('SELECT payload_json FROM operational_kv_documents ORDER BY doc_namespace')).toEqual([
+        { payload_json: valid }, { payload_json: invalid }
+      ]);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('preserves recognized pre-map and absent state for the workspace-state migration', () => {
+    const conn = new NodeSqliteConnection({ databasePath: ':memory:' });
+    try {
+      SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW, MIGRATIONS_UP_TO_8);
+      const queue = JSON.stringify(makeQueue([makeTask('default', 0)]));
+      const run = JSON.stringify(makeRun('default', 'default-task-0000', 'legacy-run'));
+      seedSchema8KvDoc(conn, 'legacy', KEYS.queue, queue);
+      seedSchema8KvDoc(conn, 'legacy', KEYS.run, run);
+      seedSchema8KvDoc(conn, 'legacy-absent', KEYS.run, 'null');
+
+      expect(SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW + 1).schemaVersion).toBe(9);
+      expect(conn.all('SELECT payload_json FROM operational_kv_documents ORDER BY doc_namespace, doc_key')).toEqual([
+        { payload_json: queue }, { payload_json: run }, { payload_json: 'null' }
+      ]);
+    } finally {
+      conn.close();
+    }
+  });
+
   it('refuses an older schema-8 reader on a schema-9 database without modifying the database file (US2 AC-2, SC-005)', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-m9-oldreader-'));
     tempDirs.push(dir);

@@ -12,6 +12,7 @@
     type BuilderLifecycle,
     type PortablePhaseDefinition
   } from '../../lib/snapshot-types';
+  import { SUPPORTED_BACKENDS } from '../../lib/generated/backend-kinds';
   import { savedDefectsOutsideIssues, type WorkflowDraftError } from './workflow-catalog-state';
   import type { WorkflowGraphActions } from './workflow-catalog-actions';
   import type { MutableWorkflow } from './types';
@@ -45,7 +46,6 @@
   const p: Props = $props();
 
   const UNTITLED_WORKFLOW = 'Untitled Workflow';
-  const RUNNER_OPTIONS = ['claude', 'codex', 'agy'] as const;
 
   const title = $derived(p.row.name || UNTITLED_WORKFLOW);
   /** Counted in the Issues list, since Save stays disabled for each one. */
@@ -254,7 +254,7 @@
               onchange={(event) => setRunner(event.currentTarget.value)}
             >
               <option value="">Inherit</option>
-              {#each RUNNER_OPTIONS as runner (runner)}
+              {#each SUPPORTED_BACKENDS as runner (runner)}
                 <option value={runner}>{runner}</option>
               {/each}
             </select>

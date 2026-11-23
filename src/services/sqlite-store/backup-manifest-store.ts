@@ -326,7 +326,8 @@ export function parseAndValidateBackupManifest(rawJson: string): BackupDependenc
   if (
     typeof obj.createdAtMs !== 'number' ||
     !Number.isSafeInteger(obj.createdAtMs) ||
-    obj.createdAtMs < 0
+    obj.createdAtMs < 0 ||
+    Number.isNaN(new Date(obj.createdAtMs).getTime())
   ) {
     return null;
   }

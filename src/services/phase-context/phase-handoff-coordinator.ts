@@ -6,6 +6,7 @@
  * Zero `vscode` or `node:fs` imports (docs/hard-rules.md rules 13, 69).
  */
 import { ACP_PROTOCOL_VERSION } from '../../contracts/acp-runtime';
+import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
 import type {
   AcceptedRevision,
   HandoffExplanation,
@@ -139,7 +140,7 @@ export function normalizeNodePathForHandoff(raw: string): string {
 }
 
 function defaultTargetProfile(backendId: string): TargetProfileResolution {
-  const normalized = normalizeHandoffIdentifier(backendId || 'claude', 'claude');
+  const normalized = normalizeHandoffIdentifier(backendId || DEFAULT_BACKEND, DEFAULT_BACKEND);
   return {
     profile: {
       profileId: `${normalized}-acp`,

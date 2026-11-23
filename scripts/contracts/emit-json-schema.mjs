@@ -13,6 +13,22 @@ import {
 } from './descriptor-dsl.mjs';
 
 /**
+ * Bound the trimmed content while permitting whitespace around it on the wire.
+ * Non-whitespace endpoints prevent the padding from counting toward the bound.
+ */
+function trimmedLengthPattern(min = 0, max = Infinity) {
+  const alternatives = [];
+  if (min === 0) alternatives.push('');
+  if (min <= 1 && max >= 1) alternatives.push('\\S');
+  if (max >= 2) {
+    const innerMin = Math.max(0, min - 2);
+    const innerMax = Number.isFinite(max) ? max - 2 : '';
+    alternatives.push(`\\S[\\s\\S]{${innerMin},${innerMax}}\\S`);
+  }
+  return `^\\s*(?:${alternatives.join('|')})\\s*(?![\\s\\S])`;
+}
+
+/**
  * Convert a descriptor SchemaNode into a Draft 2020-12 JSON Schema object.
  *
  * @param {object} node
@@ -29,8 +45,10 @@ export function toJsonSchema(node) {
   switch (node.kind) {
     case 'string': {
       const schema = { ...base, type: 'string' };
-      if (node.minLen !== undefined) schema.minLength = node.minLen;
-      if (node.maxLen !== undefined) schema.maxLength = node.maxLen;
+      if (!node.trim) {
+        if (node.minLen !== undefined) schema.minLength = node.minLen;
+        if (node.maxLen !== undefined) schema.maxLength = node.maxLen;
+      }
       if (node.format === 'safePathSegment') {
         schema.minLength = schema.minLength ?? 1;
         schema.maxLength = schema.maxLength ?? 256;
@@ -50,13 +68,23 @@ export function toJsonSchema(node) {
       } else if (node.pattern) {
         schema.pattern = node.pattern;
       }
+      if (node.trim && (node.minLen !== undefined || node.maxLen !== undefined)) {
+        const pattern = trimmedLengthPattern(node.minLen, node.maxLen);
+        if (schema.pattern === undefined) schema.pattern = pattern;
+        else schema.allOf = [{ pattern }];
+      }
       return schema;
     }
 
     case 'integer': {
       const schema = { ...base, type: 'integer' };
-      if (node.min !== undefined) schema.minimum = node.min;
-      if (node.max !== undefined) schema.maximum = node.max;
+      if (node.safe) {
+        schema.minimum = Math.max(node.min ?? Number.MIN_SAFE_INTEGER, Number.MIN_SAFE_INTEGER);
+        schema.maximum = Math.min(node.max ?? Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+      } else {
+        if (node.min !== undefined) schema.minimum = node.min;
+        if (node.max !== undefined) schema.maximum = node.max;
+      }
       return schema;
     }
 
@@ -121,11 +149,20 @@ export function toJsonSchema(node) {
         if (field.nullable) {
           propSchema = { anyOf: [propSchema, { type: 'null' }] };
         }
+        if (field.nullWhenAbsent) {
+          propSchema = { ...propSchema, default: null };
+        }
+        if (field.ignoreInvalid) {
+          propSchema = {
+            description: 'The host drops values that do not match the first schema.',
+            anyOf: [propSchema, {}]
+          };
+        }
         if (field.doc && !propSchema.description && !propSchema.$ref) {
           propSchema = { description: field.doc.trim(), ...propSchema };
         }
         properties[key] = propSchema;
-        if (!field.optional && !field.undefinable) {
+        if (!field.optional && !field.undefinable && !field.nullWhenAbsent) {
           required.push(key);
         }
       }
@@ -137,6 +174,13 @@ export function toJsonSchema(node) {
       };
       if (required.length > 0) schema.required = required;
       if (Array.isArray(node.anyOf) && node.anyOf.length > 0) schema.anyOf = node.anyOf;
+      // A JSON array cannot carry named fields. A closed object validator can
+      // normalize an empty array when there are no required fields, but it
+      // rejects the indexed keys of a populated array.
+      if (node.allowArray && required.length === 0 && schema.anyOf === undefined) {
+        const array = node.closed === false ? { type: 'array' } : { type: 'array', maxItems: 0 };
+        return { anyOf: [schema, array] };
+      }
       return schema;
     }
 
@@ -181,12 +225,15 @@ export function commandToJsonSchema(cmd) {
     required.push('payload');
   } else if (cmd.payloadMode === 'optional' || cmd.payloadMode === 'optional-empty-object') {
     properties.payload = toJsonSchema(cmd.payload);
+  } else {
+    properties.payload = { not: {} };
   }
 
   return {
     ...(cmd.doc ? { description: cmd.doc.trim() } : {}),
     type: 'object',
-    additionalProperties: false,
+    // The host selects known envelope fields and discards the others.
+    additionalProperties: true,
     required,
     properties
   };

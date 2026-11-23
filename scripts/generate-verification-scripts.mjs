@@ -15,6 +15,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { invokedAsScript } from './invoked-as-script.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -85,17 +86,19 @@ export function generateAggregateScripts(spec) {
  * Collects every script name transitively reached from `entry` in execution order,
  * using `scripts` for command expansion.
  */
-function expandOrder(entry, scripts, seen = new Set()) {
+function expandOrder(entry, scripts, reportCycle, ancestors = []) {
   const out = [];
-  if (seen.has(entry)) return out;
-  const nextSeen = new Set(seen);
-  nextSeen.add(entry);
+  if (ancestors.includes(entry)) {
+    reportCycle([...ancestors, entry]);
+    return out;
+  }
+  const path = [...ancestors, entry];
   out.push(entry);
   const body = Object.hasOwn(scripts, entry) ? scripts[entry] : undefined;
   if (typeof body !== 'string') return out;
   for (const match of body.matchAll(NPM_RUN_PATTERN)) {
     const target = match[1];
-    if (target) out.push(...expandOrder(target, scripts, nextSeen));
+    if (target) out.push(...expandOrder(target, scripts, reportCycle, path));
   }
   return out;
 }
@@ -197,6 +200,11 @@ export function validateStepList(spec, manifestScripts) {
     combinedScripts[name] = body;
   }
 
+  const orders = new Map();
+  const readOrder = (entry) => expandOrder(entry, combinedScripts, (path) => {
+    errors.push(`recursive verification script chain: ${path.join(' → ')}`);
+  });
+
   // Every target referenced by an aggregate must be a declared step or aggregate.
   for (const aggName of GENERATED_AGGREGATES) {
     const agg = spec.aggregates[aggName];
@@ -211,7 +219,8 @@ export function validateStepList(spec, manifestScripts) {
     }
 
     // Enforce requiresWebviewBuild ordering in every generated aggregate.
-    const order = expandOrder(aggName, combinedScripts);
+    const order = readOrder(aggName);
+    orders.set(aggName, order);
     const buildIdx = order.indexOf('build:webview');
     for (let idx = 0; idx < order.length; idx += 1) {
       const step = stepsByName.get(order[idx]);
@@ -233,7 +242,7 @@ export function validateStepList(spec, manifestScripts) {
   };
   for (const tier of EXPECTED_TIERS) {
     const entry = tierToScript[tier];
-    const reached = new Set(expandOrder(entry, combinedScripts));
+    const reached = new Set(orders.get(entry) ?? readOrder(entry));
     const currentRank = TIER_ORDER.get(tier) ?? 0;
     for (const step of spec.steps) {
       if (step.firstTier === tier && !reached.has(step.name)) {
@@ -288,65 +297,38 @@ export function checkManifestParity(spec, manifestScripts) {
  * entries, key order, unicode escapes (`\u2014`, `\u2192`), and whitespace verbatim.
  */
 export function applyGeneratedScripts(packageJsonText, generated) {
-  const parsed = JSON.parse(packageJsonText);
-  if (!parsed || typeof parsed.scripts !== 'object' || parsed.scripts === null) {
-    throw new Error('package.json has no scripts object');
+  JSON.parse(packageJsonText);
+  const source = ts.parseJsonText('package.json', packageJsonText);
+  const root = source.statements[0];
+  const manifest = root && ts.isExpressionStatement(root) ? root.expression : undefined;
+  const propertiesNamed = (object, name) => object.properties.filter(
+    (property) => ts.isPropertyAssignment(property) &&
+      ts.isStringLiteral(property.name) && property.name.text === name
+  );
+  const scripts = manifest && ts.isObjectLiteralExpression(manifest)
+    ? propertiesNamed(manifest, 'scripts')
+    : [];
+  const scriptObject = scripts[0]?.initializer;
+  if (scripts.length !== 1 || !scriptObject || !ts.isObjectLiteralExpression(scriptObject)) {
+    throw new Error('Expected exactly one top-level scripts object in package.json');
   }
 
-  const scriptsKeyMatch = /"scripts"\s*:\s*\{/.exec(packageJsonText);
-  if (!scriptsKeyMatch) {
-    throw new Error('package.json has no "scripts" object literal');
-  }
-  const blockStart = scriptsKeyMatch.index + scriptsKeyMatch[0].length;
-  // Locate the closing brace of the `"scripts"` object (flat string-valued map).
-  let blockEnd = -1;
-  let inString = false;
-  let escaped = false;
-  for (let i = blockStart; i < packageJsonText.length; i += 1) {
-    const ch = packageJsonText[i];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-    } else if (ch === '}') {
-      blockEnd = i;
-      break;
-    }
-  }
-  if (blockEnd === -1) {
-    throw new Error('Could not locate closing brace of "scripts" object in package.json');
-  }
-
-  let scriptsSlice = packageJsonText.slice(blockStart, blockEnd);
+  const edits = [];
   for (const name of GENERATED_AGGREGATES) {
-    if (!Object.prototype.hasOwnProperty.call(generated, name)) continue;
-    const escapedKey = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const entryPattern = new RegExp(
-      `("${escapedKey}"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`,
-      'g'
-    );
-    const matches = [...scriptsSlice.matchAll(entryPattern)];
-    if (matches.length !== 1) {
-      throw new Error(
-        `Expected exactly 1 "${name}" entry in package.json scripts, found ${matches.length}`
-      );
+    if (!Object.hasOwn(generated, name)) continue;
+    const entries = propertiesNamed(scriptObject, name);
+    const value = entries[0]?.initializer;
+    if (entries.length !== 1 || !value || !ts.isStringLiteral(value)) {
+      throw new Error(`Expected exactly one string entry for "${name}" in package.json scripts`);
     }
-    const serializedValue = JSON.stringify(generated[name]);
-    scriptsSlice = scriptsSlice.replace(
-      entryPattern,
-      (_match, prefix) => `${prefix}${serializedValue}`
-    );
+    edits.push({ start: value.getStart(source), end: value.getEnd(), text: JSON.stringify(generated[name]) });
   }
 
-  return `${packageJsonText.slice(0, blockStart)}${scriptsSlice}${packageJsonText.slice(blockEnd)}`;
+  let updated = packageJsonText;
+  for (const { start, end, text } of edits.sort((a, b) => b.start - a.start)) {
+    updated = updated.slice(0, start) + text + updated.slice(end);
+  }
+  return updated;
 }
 
 if (invokedAsScript(import.meta.url)) {

@@ -1,4 +1,5 @@
 import type { AuditAppendListener, AuditDisposable } from '../../audit/audit-log-writer';
+import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { Disposable, StoreChangeListener } from '../../state/workspace-state';
@@ -197,7 +198,7 @@ export class StateProjectorRuntime {
       externalSanitize: this.externalSanitize,
       monitor: this.deps.monitor ?? null,
       history: this.deps.history ?? null,
-      defaultRunnerKind: this.deps.defaultRunnerKind ?? 'claude',
+      defaultRunnerKind: this.deps.defaultRunnerKind ?? DEFAULT_BACKEND,
       auditTail: this.auditTailState.snapshot(),
       bookkeepers: this.bookkeepers,
       telemetry: this.stagedTelemetry

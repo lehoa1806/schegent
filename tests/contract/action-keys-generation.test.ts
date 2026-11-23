@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { JsonSchemaNode } from '../helpers/json-schema-validator';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const GENERATOR_SCRIPT = 'scripts/generate-contract-schemas.mjs';
@@ -238,6 +239,110 @@ describe('contract generation freshness — negative controls (T035 & FR-R7-05 /
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('stale generated file: src/contracts/generated/validators/queue-core.ts');
     expect(result.output).toContain('scripts/contracts/ipc-descriptors/queue-core.mjs');
+  });
+
+  it('refuses to regenerate an empty sidebar schema', () => {
+    const emitter = path.join(sandbox, 'scripts/contracts/emit-json-schema.mjs');
+    const original = fs.readFileSync(emitter, 'utf8');
+    const buildSchema = 'export function buildSidebarIpcJsonSchema(spec) {';
+    expect(original).toContain(buildSchema);
+    fs.writeFileSync(emitter, original.replace(buildSchema, `${buildSchema}\n  return {};`));
+
+    const result = runGenerator(sandbox, []);
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('sidebar-ipc.schema.json: generated properties, required, $defs missing or empty');
+  });
+
+  it('refuses to generate when a live host message lacks a descriptor', () => {
+    const descriptor = path.join(sandbox, 'scripts/contracts/ipc-descriptors/host-messages.mjs');
+    const original = fs.readFileSync(descriptor, 'utf8');
+    const message = 'MSG_PHASE_LOG_BATCH';
+    const definition = new RegExp(`,\\n\\n {2}d\\.hostMessage\\(\\{\\n {4}type: '${message}',[\\s\\S]*?\\n {2}\\}\\)`);
+    expect(original).toMatch(definition);
+    fs.writeFileSync(descriptor, original.replace(definition, ''));
+
+    const result = runGenerator(sandbox, []);
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain(`IPC host message descriptor mismatch: missing=[${message}]`);
+  });
+
+  it('refuses to regenerate a sidebar schema with an unresolved nested reference', () => {
+    const descriptor = path.join(sandbox, 'scripts/contracts/ipc-descriptors/host-messages.mjs');
+    const original = fs.readFileSync(descriptor, 'utf8');
+    const entryReference = "entry: d.ref('PhaseLogWireEntry')";
+    expect(original).toContain(entryReference);
+    fs.writeFileSync(descriptor, original.replace(
+      entryReference,
+      "entry: d.ref('PhaseLogWireEntry', { jsonRef: 'MissingPhaseLogWireEntry' })"
+    ));
+
+    const result = runGenerator(sandbox, []);
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain(
+      'sidebar-ipc.schema.json: unresolved schema reference #/$defs/MissingPhaseLogWireEntry at #/$defs/LiveLogBatchEntry/properties/entry'
+    );
+  });
+
+  it('generates the separate IPC envelope and snapshot body versions from their descriptors', () => {
+    const ipcDescriptor = path.join(sandbox, 'scripts/contracts/ipc-descriptors/host-messages.mjs');
+    const snapshotDescriptor = path.join(sandbox, 'scripts/contracts/snapshot-descriptors.mjs');
+    const ipcSource = fs.readFileSync(ipcDescriptor, 'utf8');
+    const snapshotSource = fs.readFileSync(snapshotDescriptor, 'utf8');
+    expect(ipcSource).toContain('SIDEBAR_IPC_SCHEMA_VERSION = 3');
+    expect(snapshotSource).toContain('SNAPSHOT_SCHEMA_VERSION = 4');
+    fs.writeFileSync(ipcDescriptor, ipcSource.replace('SIDEBAR_IPC_SCHEMA_VERSION = 3', 'SIDEBAR_IPC_SCHEMA_VERSION = 30'));
+    fs.writeFileSync(snapshotDescriptor, snapshotSource.replace('SNAPSHOT_SCHEMA_VERSION = 4', 'SNAPSHOT_SCHEMA_VERSION = 40'));
+
+    const result = runGenerator(sandbox, []);
+    expect(result.status, result.output).toBe(0);
+    const readGenerated = (relativePath: string): string => fs.readFileSync(path.join(sandbox, relativePath), 'utf8');
+    expect(readGenerated('src/contracts/generated/sidebar-ipc-types.ts')).toContain('SIDEBAR_IPC_SCHEMA_VERSION = 30');
+    expect(readGenerated('src/contracts/generated/snapshot-types.ts')).toContain('SCHEMA_VERSION = 40');
+    expect(readGenerated('webview-ui/src/lib/generated/snapshot-mirror.ts')).toContain('SCHEMA_VERSION = 40');
+    const schema = JSON.parse(readGenerated('src/contracts/generated/schemas/sidebar-ipc.schema.json')) as JsonSchemaNode;
+    expect(schema.properties?.['schemaVersion']?.const).toBe(30);
+    expect(schema.properties?.['snapshotSchemaVersion']?.const).toBe(40);
+    expect(schema.$defs?.['WorkflowSnapshot']?.properties?.['schemaVersion']?.const).toBe(40);
+  });
+
+  it('propagates host message fields into TypeScript and every snapshot wire schema variant', () => {
+    const descriptor = path.join(sandbox, 'scripts/contracts/ipc-descriptors/host-messages.mjs');
+    const original = fs.readFileSync(descriptor, 'utf8');
+    const snapshotFields = 'const stateSnapshotFields = {';
+    const logEntryFields = '  PhaseLogWireEntry: d.obj({';
+    expect(original).toContain(snapshotFields);
+    expect(original).toContain(logEntryFields);
+    fs.writeFileSync(
+      descriptor,
+      original
+        .replace(snapshotFields, `${snapshotFields}\n  propagationProbe: d.bool(),`)
+        .replace(logEntryFields, `${logEntryFields}\n    propagationProbe: d.int({ min: 0 }),`)
+    );
+
+    const stale = runCheck(sandbox);
+    expect(stale.output).toContain('stale generated file: src/contracts/generated/sidebar-ipc-types.ts');
+    expect(stale.output).toContain('stale generated file: src/contracts/generated/schemas/sidebar-ipc.schema.json');
+    expect(stale.output).toContain('scripts/contracts/ipc-descriptors/host-messages.mjs');
+
+    const regen = runGenerator(sandbox, []);
+    expect(regen.status, regen.output).toBe(0);
+    const generated = fs.readFileSync(
+      path.join(sandbox, 'src/contracts/generated/sidebar-ipc-types.ts'), 'utf8'
+    );
+    expect(generated).toContain('interface StateSnapshotMessage<S> {\n  readonly propagationProbe: boolean;');
+    expect(generated).toContain('interface PhaseLogWireEntry {\n  readonly propagationProbe: number;');
+    const schema = JSON.parse(
+      fs.readFileSync(path.join(sandbox, 'src/contracts/generated/schemas/sidebar-ipc.schema.json'), 'utf8')
+    ) as JsonSchemaNode;
+    expect(schema.$defs?.['PhaseLogWireEntry']?.properties?.['propagationProbe']).toEqual({
+      type: 'integer', minimum: 0
+    });
+    const variants = schema.$defs?.['HostMessage_STATE_SNAPSHOT']?.oneOf;
+    expect(variants).toHaveLength(3);
+    for (const variant of variants ?? []) {
+      expect(variant.properties?.['propagationProbe']).toEqual({ type: 'boolean' });
+      expect(variant.required).toContain('propagationProbe');
+    }
   });
 
   it('emits all 71 inbound commands and 3 host messages as the live IPC types with zero hand-written CommandBase subclasses', () => {

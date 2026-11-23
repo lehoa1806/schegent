@@ -5,6 +5,7 @@
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
+import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { FrozenPhaseHandoffDelivery } from '../../contracts/run-request';
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
@@ -80,7 +81,7 @@ export async function settleAndPrepareTransitionHandoff(params: {
     targetPhase !== undefined
       ? resolvePhaseTargetInstructions(params.run, targetPhase)
       : params.run.launchContext?.instructions ?? '';
-  const targetBackendId = targetPhase?.runner ?? 'claude';
+  const targetBackendId = targetPhase?.runner ?? DEFAULT_BACKEND;
 
   const prepared = await params.coordinator.prepareTransitionHandoff({
     run: params.run,
@@ -145,7 +146,7 @@ export async function buildAttemptHandoffDelivery(params: {
     targetNodePath: normalizeNodePathForHandoff(params.pendingAttempt.nodePath),
     targetOccurrenceId: params.frame.invocationId,
     targetInstructions: resolvePhaseTargetInstructions(params.run, params.phase),
-    backendId: params.phase.runner ?? 'claude',
+    backendId: params.phase.runner ?? DEFAULT_BACKEND,
     previousSessionAttempt:
       prevPhaseAttempt !== undefined
         ? {
@@ -154,7 +155,7 @@ export async function buildAttemptHandoffDelivery(params: {
               occurrenceId: params.frame.invocationId,
               attemptId: prevPhaseAttempt.attemptId
             },
-            backendId: prevPhaseDef?.runner ?? 'claude'
+            backendId: prevPhaseDef?.runner ?? DEFAULT_BACKEND
           }
         : null
   });
