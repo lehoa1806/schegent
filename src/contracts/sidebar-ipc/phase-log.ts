@@ -13,7 +13,11 @@ export type {
   ReadPhaseLogCommand,
   StartPhaseLogTailCommand,
   AckPhaseLogTailCommand,
-  StopPhaseLogTailCommand
+  StopPhaseLogTailCommand,
+  PhaseLogWireEntry,
+  LiveLogBatchEntry,
+  LiveLogBatchMode,
+  PhaseLogBatchPayload
 } from '../generated/sidebar-ipc-types';
 
 // Selection fields are identifiers only. Host-owned snapshot data resolves
@@ -132,47 +136,6 @@ export interface PhaseLogTailCounters {
   readonly replayAttempts: number;
   readonly deliveryGaps: number;
   readonly sourceResets: number;
-}
-
-/** A display entry as it crosses the boundary: sanitized and budgeted. */
-export interface PhaseLogWireEntry {
-  readonly seq: number;
-  readonly kind:
-    | 'assistant-text'
-    | 'tool-use'
-    | 'tool-result'
-    | 'system'
-    | 'result'
-    | 'truncated-head'
-    | 'tail-ended'
-    | 'coverage-gap';
-  readonly ts: string | null;
-  readonly body: Readonly<Record<string, unknown>>;
-  readonly bodyTruncated: Readonly<Record<string, { readonly originalLength: number }>> | null;
-}
-
-/**
- * FR-R6-F07 (FR-004) — one entry with its source position. `at` is the end
- * byte offset of the record that produced it and `n` its ordinal among that
- * record's entries, so `(at, n)` identifies the entry within one generation.
- */
-export interface LiveLogBatchEntry {
-  readonly at: number;
-  readonly n: number;
-  readonly entry: PhaseLogWireEntry;
-}
-
-export type LiveLogBatchMode = 'continue' | 'resume' | 'reset';
-
-/** FR-R6-F07 — the `MSG_PHASE_LOG_BATCH` payload, at most 256 KiB serialized. */
-export interface PhaseLogBatchPayload {
-  readonly protocol: 1;
-  readonly tailSessionId: string;
-  readonly batchSeq: number;
-  readonly generation: string;
-  readonly mode: LiveLogBatchMode;
-  readonly toCursor: string | null;
-  readonly entries: readonly LiveLogBatchEntry[];
 }
 
 export interface StopPhaseLogTailRequest {

@@ -18,7 +18,6 @@ import { readFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
@@ -145,7 +144,7 @@ describe('FR-R7-08 — test:gates parity and single verification step list', () 
     ).toEqual([syntheticDir]);
   });
 
-  it('SC-001: test:gates resolves the exact same lint, parity, and contract test files as test:host', () => {
+  it('SC-001: test:gates resolves the exact same lint, parity, and contract test files as test:host', async () => {
     const scripts = loadManifestScripts();
     const gatePaths = explicitPathsFromVitestCommand(scripts['test:gates'] ?? '');
 
@@ -154,20 +153,24 @@ describe('FR-R7-08 — test:gates parity and single verification step list', () 
       .map(includeDirectory)
       .filter((dir) => !NON_GATE_HOST_DIRS.has(dir));
 
-    const collectTests = (dirs: readonly string[]): readonly string[] =>
-      dirs
-        .flatMap((dir) =>
-          filesUnder(resolve(REPO_ROOT, dir), { extensions: ['.ts'] })
-            .filter((abs) => abs.endsWith('.test.ts'))
-            .map((abs) => relative(REPO_ROOT, abs).split(sep).join('/'))
-        )
-        .sort();
+    const { createVitest } = await import('vitest/node');
+    const discovery = await createVitest('test', { root: REPO_ROOT, watch: false });
+    try {
+      const listTests = async (filters: string[]): Promise<string[]> =>
+        (await discovery.globTestSpecifications(filters))
+          .map(({ moduleId }) => relative(REPO_ROOT, moduleId).split(sep).join('/'))
+          .sort();
 
-    const fromTestGates = collectTests(gatePaths);
-    const fromTestHostGovernance = collectTests(hostGovernanceDirs);
+      const fromTestGates = await listTests([...gatePaths]);
+      const fromTestHostGovernance = (await listTests([])).filter((file) =>
+        hostGovernanceDirs.some((dir) => file.startsWith(`${dir}/`))
+      );
 
-    expect(fromTestGates.length, 'vacuity control: governance suites must be non-empty').toBeGreaterThan(200);
-    expect(fromTestGates).toEqual(fromTestHostGovernance);
+      expect(fromTestGates.length, 'vacuity control: governance suites must be non-empty').toBeGreaterThan(200);
+      expect(fromTestGates).toEqual(fromTestHostGovernance);
+    } finally {
+      await discovery.close();
+    }
   });
 
   it('SC-004: committed package.json matches scripts/verification-steps.json and hand-edits fail --check', () => {
@@ -189,6 +192,34 @@ describe('FR-R7-08 — test:gates parity and single verification step list', () 
       expect(result.ok, `hand-editing "${agg}" must fail --check`).toBe(false);
       expect(result.drifted.map((d) => d.name)).toContain(agg);
     }
+  });
+
+  it('FR-002: updates only the root scripts object and preserves escaped property names', () => {
+    const manifest = String.raw`{
+  "metadata": { "scripts": { "verify:edit": "keep" } },
+  "scr\u0069pts": {
+    "verify\u003aedit" : "old", "verify:push": "stay"
+  }
+}`;
+    const updated = generator.applyGeneratedScripts(manifest, { 'verify:edit': 'npm run test:gates' });
+    expect(updated).toBe(manifest.replace('"old"', '"npm run test:gates"'));
+    expect(JSON.parse(updated).scripts['verify:edit']).toBe('npm run test:gates');
+  });
+
+  it('FR-001: rejects recursive aggregate chains even if they contain all required targets', () => {
+    const spec = generator.loadStepList();
+    const gate = spec.aggregates.gate;
+    if (gate?.kind !== 'composite') throw new Error('Expected a composite gate definition');
+    const recursive = {
+      ...spec,
+      aggregates: {
+        ...spec.aggregates,
+        gate: { ...gate, steps: ['gate', ...gate.steps] }
+      }
+    };
+    expect(generator.validateStepList(recursive, loadManifestScripts())).toContain(
+      'recursive verification script chain: gate → gate'
+    );
   });
 
   it('FR-006: verify:linux (GC-18) is placed in the release tier and fails clearly without a container runtime', () => {

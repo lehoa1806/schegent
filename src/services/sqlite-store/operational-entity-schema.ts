@@ -17,8 +17,10 @@
 import type { NodeSqliteConnection } from './sqlite-driver';
 import {
   computeCanonicalSha256,
-  hasOwnDefinedEntries
+  hasOwnDefinedEntries,
+  isPlainRecord
 } from '../../lib/operational-value-helpers';
+import { isWorkflowRun } from '../../state/run-state-migrator';
 import {
   deleteOperationalQueueScopeInTx,
   deleteOperationalRunScopeInTx,
@@ -169,7 +171,9 @@ export function backfillOperationalEntitiesInTx(
 
     if (row.doc_key === OPERATIONAL_QUEUE_DOC_KEY) {
       if (!isOperationalQueueMap(parsed)) {
-        continue;
+        // The workspace-state migrator still owns the pre-v10 single-queue document.
+        if (parsed === null || (isPlainRecord(parsed) && Array.isArray(parsed.requests))) continue;
+        throw new Error(`MIGRATION_9_INVALID_SOURCE_SHAPE: scope '${row.doc_namespace}' key '${row.doc_key}' is neither a queue map nor a legacy queue`);
       }
 
       if (!hasOwnDefinedEntries(parsed)) {
@@ -225,7 +229,9 @@ export function backfillOperationalEntitiesInTx(
       migratedTasks += expectedTasks;
     } else if (row.doc_key === OPERATIONAL_RUN_DOC_KEY) {
       if (!isOperationalRunMap(parsed)) {
-        continue;
+        // A pre-v11 single Run needs the workspace registry to choose its queue.
+        if (parsed === null || isWorkflowRun(parsed)) continue;
+        throw new Error(`MIGRATION_9_INVALID_SOURCE_SHAPE: scope '${row.doc_namespace}' key '${row.doc_key}' is neither a Run map nor a legacy Run`);
       }
 
       if (!hasOwnDefinedEntries(parsed)) {

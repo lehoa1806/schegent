@@ -15,11 +15,13 @@
 // `CMD_SAVE_MODELS.models[k]`, matching JSON wire semantics where holes
 // serialize as `null` while rejecting sparse in-process payloads too.
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { COMMAND_TYPES, type CommandType } from '../../../src/contracts/sidebar-ipc';
 import { validateInboundMessage } from '../../../src/contracts/runtime-validators';
+import { validateAgainstSchema, type JsonSchemaNode } from '../../helpers/json-schema-validator';
 
 interface DifferentialCase {
   readonly label: string;
@@ -132,6 +134,11 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
         }
       }
     },
+    {
+      label: 'padding is excluded from the maximum description length',
+      raw: msg('CMD_START', { description: `\u00a0${STR_4096}\n` }),
+      expected: { ok: true, payload: { description: STR_4096 } }
+    },
     { label: 'missing payload', raw: msg('CMD_START'), expected: { ok: false, reason: 'missing-payload' } },
     { label: 'extra field', raw: msg('CMD_START', { description: 'ok', extra: 1 }), expected: { ok: false, reason: 'unexpected-payload-fields' } },
     { label: 'non-string description', raw: msg('CMD_START', { description: 42 }), expected: { ok: false, reason: 'description-not-string' } },
@@ -188,6 +195,8 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
   CMD_PAUSE_QUEUE: [
     { label: 'no payload', raw: msg('CMD_PAUSE_QUEUE'), expected: { ok: true, hasPayloadKey: false } },
     { label: 'empty object payload', raw: msg('CMD_PAUSE_QUEUE', {}), expected: { ok: true, payload: undefined } },
+    { label: 'empty array payload normalizes as an empty object', raw: msg('CMD_PAUSE_QUEUE', []), expected: { ok: true, payload: undefined } },
+    { label: 'populated array has unexpected indexed fields', raw: msg('CMD_PAUSE_QUEUE', [1]), expected: { ok: false, reason: 'unexpected-payload-fields' } },
     { label: 'valid min queueId', raw: msg('CMD_PAUSE_QUEUE', { queueId: 'q' }), expected: { ok: true, payload: { queueId: 'q' } } },
     { label: 'valid boundary reason and max queueId', raw: msg('CMD_PAUSE_QUEUE', { queueId: STR_256, reason: STR_500 }), expected: { ok: true, payload: { queueId: STR_256, reason: STR_500 } } },
     { label: 'null payload', raw: msg('CMD_PAUSE_QUEUE', null), expected: { ok: false, reason: 'invalid-payload' } },
@@ -203,6 +212,8 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
     { label: 'valid min queueId', raw: msg('CMD_RESUME_QUEUE', { queueId: 'q' }), expected: { ok: true, payload: { queueId: 'q' } } },
     { label: 'valid max queueId', raw: msg('CMD_RESUME_QUEUE', { queueId: STR_256 }), expected: { ok: true, payload: { queueId: STR_256 } } },
     { label: 'empty object', raw: msg('CMD_RESUME_QUEUE', {}), expected: { ok: true, payload: undefined } },
+    { label: 'empty array payload normalizes as an empty object', raw: msg('CMD_RESUME_QUEUE', []), expected: { ok: true, payload: undefined } },
+    { label: 'populated array has unexpected indexed fields', raw: msg('CMD_RESUME_QUEUE', [1]), expected: { ok: false, reason: 'unexpected-payload-fields' } },
     { label: 'rejects unaccepted prompt field', raw: msg('CMD_RESUME_QUEUE', { queueId: 'default', prompt: 'hi' }), expected: { ok: false, reason: 'unexpected-payload-fields' } },
     { label: 'empty queueId', raw: msg('CMD_RESUME_QUEUE', { queueId: '' }), expected: { ok: false, reason: 'invalid-queueId' } },
     { label: 'bad queueId', raw: msg('CMD_RESUME_QUEUE', { queueId: STR_257 }), expected: { ok: false, reason: 'invalid-queueId' } }
@@ -432,6 +443,7 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
 
   CMD_OPEN_DASHBOARD: [
     { label: 'valid', raw: msg('CMD_OPEN_DASHBOARD'), expected: { ok: true, hasPayloadKey: false } },
+    { label: 'ignores unused envelope fields', raw: { ...msg('CMD_OPEN_DASHBOARD'), extensionField: true }, expected: { ok: true, hasPayloadKey: false } },
     { label: 'unexpected payload', raw: msg('CMD_OPEN_DASHBOARD', { a: 1 }), expected: { ok: false, reason: 'unexpected-payload' } }
   ],
 
@@ -683,6 +695,8 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
     { label: 'empty sessionId', raw: msg('CMD_ACK_PHASE_LOG_TAIL', { sessionId: '', batchSeq: 0 }), expected: { ok: false, reason: 'invalid-sessionId' } },
     { label: 'over-length sessionId', raw: msg('CMD_ACK_PHASE_LOG_TAIL', { sessionId: STR_257, batchSeq: 0 }), expected: { ok: false, reason: 'invalid-sessionId' } },
     { label: 'negative batchSeq', raw: msg('CMD_ACK_PHASE_LOG_TAIL', { sessionId: 's1', batchSeq: -1 }), expected: { ok: false, reason: 'invalid-batchSeq' } },
+    { label: 'largest safe batchSeq', raw: msg('CMD_ACK_PHASE_LOG_TAIL', { sessionId: 's1', batchSeq: Number.MAX_SAFE_INTEGER }), expected: { ok: true, payload: { sessionId: 's1', batchSeq: Number.MAX_SAFE_INTEGER } } },
+    { label: 'unsafe batchSeq', raw: msg('CMD_ACK_PHASE_LOG_TAIL', { sessionId: 's1', batchSeq: Number.MAX_SAFE_INTEGER + 1 }), expected: { ok: false, reason: 'invalid-batchSeq' } },
     { label: 'bad resync', raw: msg('CMD_ACK_PHASE_LOG_TAIL', { sessionId: 's1', batchSeq: 1, resync: 'yes' }), expected: { ok: false, reason: 'invalid-resync' } },
     { label: 'bad duplicate', raw: msg('CMD_ACK_PHASE_LOG_TAIL', { sessionId: 's1', batchSeq: 1, duplicate: 'no' }), expected: { ok: false, reason: 'invalid-duplicate' } }
   ],
@@ -690,6 +704,8 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
   // ---- Family 8: analytics-reporting (5) ------------------------------------
   CMD_READ_METRICS: [
     { label: 'valid empty', raw: msg('CMD_READ_METRICS', {}), expected: { ok: true, payload: {} } },
+    { label: 'empty array payload normalizes as an empty object', raw: msg('CMD_READ_METRICS', []), expected: { ok: true, payload: {} } },
+    { label: 'populated array has unexpected indexed fields', raw: msg('CMD_READ_METRICS', [1]), expected: { ok: false, reason: 'unexpected-payload-fields' } },
     { label: 'valid with flags', raw: msg('CMD_READ_METRICS', { includeArchives: true, runIds: ['r1'] }), expected: { ok: true, payload: { includeArchives: true, runIds: ['r1'] } } },
     { label: 'valid max 64 runIds', raw: msg('CMD_READ_METRICS', { runIds: MAX_RUN_IDS }), expected: { ok: true, payload: { runIds: MAX_RUN_IDS } } },
     { label: 'non-boolean includeArchives', raw: msg('CMD_READ_METRICS', { includeArchives: 'yes' }), expected: { ok: false, reason: 'invalid-payload-field' } },
@@ -982,6 +998,18 @@ describe('FR-R7-05 (SC-001) & FR-R7-11 (Task 12) — 71-command differential val
     const declared = [...COMMAND_TYPES].sort();
     expect(covered).toEqual(declared);
     expect(covered).toHaveLength(71);
+  });
+
+  it('matches the pinned inbound acceptance decisions after JSON serialization', () => {
+    const schemaPath = path.resolve(__dirname, '../../../src/contracts/generated/schemas/sidebar-ipc.schema.json');
+    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8')) as JsonSchemaNode;
+    for (const [command, cases] of Object.entries(CORPUS)) {
+      for (const tc of cases) {
+        const wire: unknown = JSON.parse(JSON.stringify(tc.raw));
+        const result = validateAgainstSchema(schema, wire, `#/$defs/Command_${command}`);
+        expect(result.valid, `${command}: ${tc.label}`).toBe(tc.expected.ok);
+      }
+    }
   });
 
   it('enforces envelope front-door guards identically', () => {

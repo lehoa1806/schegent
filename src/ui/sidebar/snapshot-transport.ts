@@ -7,7 +7,7 @@ import {
   type SuppressibleSnapshotSlice
 } from '../../contracts/snapshot-bounds';
 import { STATE_SNAPSHOT, type StateSnapshotMessage } from './messages';
-import type { WorkflowSnapshot } from './snapshot';
+import { SCHEMA_VERSION, type WorkflowSnapshot } from '../../contracts/generated/snapshot-types';
 
 export interface PreparedSnapshotPost<TSnapshot = unknown> {
   readonly message: StateSnapshotMessage<TSnapshot>;
@@ -15,12 +15,12 @@ export interface PreparedSnapshotPost<TSnapshot = unknown> {
   readonly markFailed: () => void;
 }
 
-function isV4Snapshot(value: unknown): value is WorkflowSnapshot {
+function isWorkflowSnapshot(value: unknown): value is WorkflowSnapshot {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
   const candidate = value as { schemaVersion?: unknown; queues?: unknown };
-  return candidate.schemaVersion === 4 && Array.isArray(candidate.queues);
+  return candidate.schemaVersion === SCHEMA_VERSION && Array.isArray(candidate.queues);
 }
 
 /**
@@ -112,7 +112,7 @@ export class SnapshotTransport {
   ): PreparedSnapshotPost<TSnapshot> {
     const revision = this.nextRevision++;
 
-    if (!isV4Snapshot(snapshot)) {
+    if (!isWorkflowSnapshot(snapshot)) {
       const sync: SnapshotSyncMeta = Object.freeze({ mode: 'full', revision });
       return {
         message: { type: STATE_SNAPSHOT, payload: snapshot, sync },

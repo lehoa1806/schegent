@@ -7,19 +7,13 @@
 //   - inline trailing/leading comments on code lines still count as code;
 //   - strings, multi-line template literals (with `${expr}`), and regex
 //     literals containing comment markers (`//`, `/* ... */`) are counted as code;
-//   - SC-003: adding a three-line comment (and a JSDoc block) to the real
-//     `src/controller/phase-runner.ts` source leaves its code-line count and
-//     ceiling verdict completely unchanged.
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+// The PhaseRunner ceiling control lives with its configured budget.
 import { describe, expect, it } from 'vitest';
 import {
   countCodeLines,
   methodCodeLineCount,
   topLevelFunctionCodeLines
 } from './code-lines';
-
-const REPO_ROOT = resolve(__dirname, '..', '..');
 
 describe('FR-R7-08 — lexical TypeScript code-line counter', () => {
   it('excludes line comments, block comments, JSDoc blocks, and blank lines', () => {
@@ -93,33 +87,5 @@ describe('FR-R7-08 — lexical TypeScript code-line counter', () => {
     ]);
     expect(methodCodeLineCount(source, 'public async drive(', 'fixture.ts')).toBe(3);
     expect(methodCodeLineCount(source, 'public async missing(', 'fixture.ts')).toBe(-1);
-  });
-
-  it('SC-003: adding a three-line comment to src/controller/phase-runner.ts changes no code-line count or ceiling result', () => {
-    const phaseRunnerPath = resolve(REPO_ROOT, 'src/controller/phase-runner.ts');
-    const original = readFileSync(phaseRunnerPath, 'utf8');
-    const baselineCount = countCodeLines(original, phaseRunnerPath);
-    expect(baselineCount, 'vacuity control: phase-runner.ts has substantial code').toBeGreaterThan(500);
-
-    const threeLineComment = [
-      '// Explanatory comment line 1 added to verify FR-R7-08 SC-003.',
-      '// Explanatory comment line 2 explaining coordinator shell intent.',
-      '// Explanatory comment line 3 — must not raise the measured code count.',
-      '',
-      '/**',
-      ' * Additional JSDoc block with @remarks tag.',
-      ' */',
-      ''
-    ].join('\n');
-
-    const withCommentAtTop = `${threeLineComment}${original}`;
-    const withCommentInBody = original.replace(
-      'export class PhaseRunner',
-      `${threeLineComment}export class PhaseRunner`
-    );
-
-    expect(withCommentInBody).not.toBe(original);
-    expect(countCodeLines(withCommentAtTop, phaseRunnerPath)).toBe(baselineCount);
-    expect(countCodeLines(withCommentInBody, phaseRunnerPath)).toBe(baselineCount);
   });
 });

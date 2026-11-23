@@ -19,6 +19,7 @@ import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
 import type { RunOutputRecord } from '../../../contracts/run-results';
+import type { BackendMap } from '../../../contracts/backend-descriptors';
 import type { BackendRunnerKind } from '../../../contracts/backend-kinds';
 import type { UncontainedGrantOutcome } from '../../../services/uncontained-grant-writer';
 import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
@@ -335,7 +336,7 @@ export interface RouterDeps {
    * Decision 6) and is out of feature 099's scope. Read fresh per save so the
    * revision gate compares against the configuration as it stands now.
    */
-  readonly readModelsConfig?: () => Record<BackendRunnerKind, readonly string[]>;
+  readonly readModelsConfig?: () => BackendMap<readonly string[]>;
   readonly getCatalog?: () => PipelineCatalog;
   /**
    * Feature 102 (T038, FR-022) — the published version behind `getCatalog`'s copy

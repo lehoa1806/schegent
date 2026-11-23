@@ -12,6 +12,7 @@
  * - Zero `vscode` imports and zero direct `child_process` imports (spawns via `stdio-transport`).
  */
 import { ACP_PROTOCOL_VERSION, ACP_RUNTIME_LIMITS } from '../../../contracts/acp-runtime';
+import { getBackendDescriptor } from '../../../contracts/backend-descriptors';
 import { isNativeReviewKind, type NativeReviewKind } from '../../../contracts/process-definitions';
 import {
   codexSecurityLaunch, isReviewCommit, isReviewExclusion, summarizeSecurityScan, type NativeReviewInvocation
@@ -549,7 +550,7 @@ export function startAcpStdioBridgeServer(
             }
           },
           agentInfo: {
-            name: config.backend === 'claude' ? 'Schegent Claude ACP Bridge' : 'Schegent Codex ACP Bridge',
+            name: `Schegent ${getBackendDescriptor(config.backend).displayLabel} ACP Bridge`,
             version: ACP_STDIO_BRIDGE_VERSION
           },
           authMethods: []

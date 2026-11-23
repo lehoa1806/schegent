@@ -10,8 +10,9 @@
 // existing workspaces unstick themselves on the next window open, with no
 // operator action and no destructive command.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { reconcileOrphanedRuns } from '../../../src/state/orphaned-run-reconciler';
+import * as runTransition from '../../../src/state/run-transition-decision';
 import type { RunStateMap } from '../../../src/state/run-state-migrator';
 import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow-run';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
@@ -102,6 +103,21 @@ describe('reconcileOrphanedRuns — a Run may not outlive its Task row', () => {
 
     expect(result.runs).toEqual({ alpha: { ...orphan, status: 'canceled', lastTransitionAt: 7, creditPause: null } });
     expect(result.events[0]?.priorStatus).toBe('running');
+  });
+
+  it('preserves an orphan when the shared recovery decision refuses cancellation', () => {
+    const run = makeRun({ id: 'R-refused', featureId: 'gone', status: 'paused' });
+    const decision = vi.spyOn(runTransition, 'decideRunTransition').mockReturnValue({
+      allowed: false, from: 'paused', to: 'canceled', actor: 'recovery', reasonCode: 'actor-not-permitted'
+    });
+    try {
+      expect(reconcileOrphanedRuns({ default: run }, NO_ROW_ANYWHERE, 9)).toEqual({
+        runs: { default: run }, changed: false, events: []
+      });
+      expect(decision).toHaveBeenCalledWith({ current: run, targetStatus: 'canceled', actor: 'recovery' });
+    } finally {
+      decision.mockRestore();
+    }
   });
 
   // The whole point of the predicate being asked over EVERY queue rather than

@@ -16,7 +16,7 @@
  * `SIDEBAR_IPC_SCHEMA_VERSION` says what it versions where the bare name did not. The value is
  * unchanged — this is a naming fix so the compiler can find every site, not a version bump.
  */
-export const SIDEBAR_IPC_SCHEMA_VERSION = 3 as const;
+export { GENERATED_SIDEBAR_IPC_SCHEMA_VERSION as SIDEBAR_IPC_SCHEMA_VERSION } from './generated/sidebar-ipc-types';
 // -- Command literals (webview → host) ---------------------------------------
 
 export const CMD_START = 'CMD_START' as const;

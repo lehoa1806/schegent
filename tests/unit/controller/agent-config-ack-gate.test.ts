@@ -246,6 +246,30 @@ describe('AgentConfigAckGate (FR-R7-04, SC-002, SC-005, SC-006)', () => {
     expect(firstCall![0].persistable).toBe(false);
   });
 
+  it('refuses a persistent choice when the scan permits only one-time approval', async () => {
+    const appendAudit = vi.fn<AgentConfigAckGateDeps['appendAudit']>(async () => undefined);
+    const persistGrant = vi.fn();
+    const gate = new AgentConfigAckGate({
+      scan: async () => makeScan('claude', [
+        { name: 'CLAUDE.md', status: 'unreadable', unreadableReason: 'io-failed' }
+      ]),
+      hasGrant: () => false,
+      latestGrantForBackend: () => null,
+      persistGrant,
+      request: async () => 'persist',
+      appendAudit,
+      logger: { warn: vi.fn() }
+    });
+
+    await expect(gate.ensureAcknowledged(ctx(), 'claude')).rejects.toBeInstanceOf(
+      AgentConfigAcknowledgementRefusedError
+    );
+    expect(persistGrant).not.toHaveBeenCalled();
+    expect(appendAudit).toHaveBeenCalledWith(expect.objectContaining({
+      payload: { backend: 'claude', fileCount: 1, decision: 'denied' }
+    }));
+  });
+
   it('rejects a cross-backend grant mismatch even when fingerprint lookup is invoked', async () => {
     const request = vi.fn<
       (scan: RepoAgentConfigScanResult, previousGrant: AgentConfigGrant | null) => Promise<'this-run'>

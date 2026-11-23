@@ -141,8 +141,10 @@ export async function recordAgentConfigGrant(
   warned: GrantsWarningState,
   grant: AgentConfigGrant
 ): Promise<void> {
-  const next = writeAgentConfigGrant(getAgentConfigGrants(ctx, warned), grant);
-  await ctx.memento.update(KEYS.agentConfigGrants, next);
+  await ctx.serialize(KEYS.agentConfigGrants, async () => {
+    const next = writeAgentConfigGrant(getAgentConfigGrants(ctx, warned), grant);
+    await ctx.memento.update(KEYS.agentConfigGrants, next);
+  });
 }
 
 export async function forgetAgentConfigGrant(
@@ -150,17 +152,24 @@ export async function forgetAgentConfigGrant(
   warned: GrantsWarningState,
   fingerprint: string
 ): Promise<boolean> {
-  const next = forgetAgentConfigGrantInMap(getAgentConfigGrants(ctx, warned), fingerprint);
-  if (next === null) return false;
-  await ctx.memento.update(KEYS.agentConfigGrants, next);
-  return true;
+  let removed = false;
+  await ctx.serialize(KEYS.agentConfigGrants, async () => {
+    const next = forgetAgentConfigGrantInMap(getAgentConfigGrants(ctx, warned), fingerprint);
+    if (next === null) return;
+    await ctx.memento.update(KEYS.agentConfigGrants, next);
+    removed = true;
+  });
+  return removed;
 }
 
 export async function forgetAllAgentConfigGrants(
   ctx: WorkspaceStateFamilyContext,
   warned: GrantsWarningState
 ): Promise<number> {
-  const count = Object.keys(getAgentConfigGrants(ctx, warned)).length;
-  await ctx.memento.update(KEYS.agentConfigGrants, {});
+  let count = 0;
+  await ctx.serialize(KEYS.agentConfigGrants, async () => {
+    count = Object.keys(getAgentConfigGrants(ctx, warned)).length;
+    await ctx.memento.update(KEYS.agentConfigGrants, {});
+  });
   return count;
 }

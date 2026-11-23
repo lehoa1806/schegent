@@ -149,6 +149,19 @@ export async function resolveTrustedSqliteLocation(
     };
   }
 
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = await openWithinRoot(request.trustedRootDir, [...request.relativeSegments, `${dbFileName}${suffix}`], { flags: 'r' });
+    if (sidecar.outcome === 'opened') {
+      await sidecar.handle.close();
+    } else if (sidecar.reason !== 'io-failed' || sidecar.errno !== 'ENOENT') {
+      return {
+        status: 'refused',
+        reason: 'symlink_or_containment_refused',
+        operatorDiagnostic: `Refused database sidecar under trusted root: ${sidecar.reason}.`
+      };
+    }
+  }
+
   // Pre-create and narrow the database file with 0o600 permissions and O_NOFOLLOW
   // via openWithinRoot so SQLite opens an already-narrowed regular file.
   const fileSegments = [...request.relativeSegments, dbFileName];

@@ -176,6 +176,7 @@ export function reportRelocationOutcome(
   logger: SanitizedLogger,
   notify: (message: string) => void
 ): void {
+  const notices: string[] = [];
   if (outcome.outcome === 'relocated') {
     logger.info('sqlite cutover: relocated legacy store into folder-keyed global storage', {
       relocatedFromPath: outcome.relocatedFromPath,
@@ -189,8 +190,8 @@ export function reportRelocationOutcome(
     });
     if (outcome.newlyDiscoveredConflictPaths.length > 0) {
       const preservedList = outcome.newlyDiscoveredConflictPaths.join(', ');
-      notify(
-        `Schegent found more than one operational store for this folder and selected the most recently written database without merging rows. The unselected database was left unmodified at: ${preservedList}`
+      notices.push(
+        `Schegent found more than one operational store for this folder and selected the most recently written database. The other data is available at ${preservedList}.`
       );
     }
   } else if (outcome.outcome === 'fallback_legacy_preserved') {
@@ -198,8 +199,8 @@ export function reportRelocationOutcome(
       reason: outcome.reason,
       activeDatabasePath: outcome.activeDatabasePath
     });
-    notify(
-      `Schegent could not relocate the SQLite store to global storage (${outcome.reason}); the existing legacy store remains active in place at: ${outcome.activeDatabasePath}`
+    notices.push(
+      `Schegent could not relocate the SQLite store to global storage (${outcome.reason}). The legacy store remains active at ${outcome.activeDatabasePath}.`
     );
   }
   if (
@@ -207,10 +208,11 @@ export function reportRelocationOutcome(
     outcome.diagnostics &&
     outcome.diagnostics.length > 0
   ) {
-    notify(
+    notices.push(
       `Schegent SQLite store relocation reported diagnostic conditions (${outcome.diagnostics.join(', ')}). Review the Schegent output log for details.`
     );
   }
+  if (notices.length > 0) notify(notices.join(' '));
 }
 
 export function buildSecretPort(

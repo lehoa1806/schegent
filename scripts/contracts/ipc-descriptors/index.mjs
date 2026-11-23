@@ -12,6 +12,7 @@ import { ANALYTICS_REPORTING_COMMANDS } from './analytics-reporting.mjs';
 import { EXECUTION_WORKFLOW_COMMANDS } from './execution-workflow.mjs';
 import {
   HOST_MESSAGES,
+  HOST_MESSAGE_DEFINITIONS,
   SHARED_IPC_DEFS,
   SIDEBAR_IPC_SCHEMA_VERSION
 } from './host-messages.mjs';
@@ -81,4 +82,4 @@ export const ALL_IPC_COMMANDS = Object.freeze(
   IPC_COMMAND_FAMILIES.flatMap((entry) => entry.commands)
 );
 
-export { HOST_MESSAGES, SHARED_IPC_DEFS, SIDEBAR_IPC_SCHEMA_VERSION };
+export { HOST_MESSAGES, HOST_MESSAGE_DEFINITIONS, SHARED_IPC_DEFS, SIDEBAR_IPC_SCHEMA_VERSION };

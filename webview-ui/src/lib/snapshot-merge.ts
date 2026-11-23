@@ -7,7 +7,7 @@ import {
   type SnapshotResyncRequestMessage,
   type SnapshotSyncMeta
 } from '../../../src/contracts/snapshot-bounds.js';
-import type { WorkflowSnapshot } from './snapshot-types';
+import { SCHEMA_VERSION, type WorkflowSnapshot } from './snapshot-types.js';
 
 export const RECONCILED_SLICE_KEYS = [
   ...SUPPRESSIBLE_SNAPSHOT_SLICES,
@@ -105,7 +105,7 @@ export function reconcileSnapshotMessage(
     }
   }
 
-  if (merged.schemaVersion !== 4) {
+  if (merged.schemaVersion !== SCHEMA_VERSION) {
     return { outcome: 'unknown-schema', schemaVersion: merged.schemaVersion };
   }
   if (!Array.isArray(merged.queues)) {

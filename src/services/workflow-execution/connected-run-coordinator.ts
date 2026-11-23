@@ -21,6 +21,7 @@
 // No `vscode` import and no I/O of its own: child facts and the write path
 // arrive as ports.
 
+import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type {
   ControlAdmissionPort,
@@ -540,7 +541,7 @@ async function dispatchNodeInternal(
         nodeId,
         attemptId: pendingAttempt.attemptId,
         attemptIndex: pendingAttempt.attemptIndex,
-        backend: phase.runner ?? 'claude',
+        backend: phase.runner ?? DEFAULT_BACKEND,
         hasSideEffects: phase.sideEffects !== 'none',
         fence
       });

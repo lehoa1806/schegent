@@ -117,13 +117,5 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     role: 'Spend and usage',
     how: 'record',
     note: 'behaviour: function-valued JSONL usage row discriminators, envelope extractors, and token/cost field mappings per backend'
-  },
-
-  // ---- Runtime container type signature left untouched due to pre-existing unrelated working-tree edit
-  {
-    path: 'src/ui/sidebar/commands/router-types.ts',
-    role: 'Export and IPC',
-    how: 'record',
-    note: 'behaviour-neutral runtime RouterDeps.readModelsConfig type signature (untouched during FR-R7-06 due to pre-existing working-tree edit)'
   }
 ];

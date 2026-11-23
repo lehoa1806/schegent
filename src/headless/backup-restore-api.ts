@@ -281,6 +281,14 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
     });
   };
 
+  const hasWorkspaceOwnership = async (): Promise<boolean> => {
+    try {
+      return await deps.hasPrimacy();
+    } catch {
+      return false;
+    }
+  };
+
   const appendAudit = async (
     eventType: 'store-backup' | 'store-restore',
     payload: StoreBackupRestoreAuditPayload
@@ -340,13 +348,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
   return {
     async createBackup(options): Promise<CreateStoreBackupResult> {
       const backupId = options?.backupId ?? generateBackupId(nowMs());
-      let isOwner = false;
-      try {
-        isOwner = await deps.hasPrimacy();
-      } catch {
-        isOwner = false;
-      }
-      if (!isOwner) {
+      if (!(await hasWorkspaceOwnership())) {
         logNotWorkspaceOwner('backup', backupId);
         return {
           status: 'refused',
@@ -358,6 +360,14 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
       let failureFallback: 'STORE_OPEN_FAILED' | 'BACKUP_FAILED' = 'STORE_OPEN_FAILED';
       try {
         const store = await resolvePrimaryStore();
+        if (!(await hasWorkspaceOwnership())) {
+          logNotWorkspaceOwner('backup', backupId);
+          return {
+            status: 'refused',
+            reasonCode: 'NOT_WORKSPACE_OWNER',
+            message: 'Workspace ownership fence was lost before backup; backup refused.'
+          };
+        }
         if (store === null) {
           await appendAudit('store-backup', {
             operation: 'backup',
@@ -446,13 +456,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
     },
 
     async restoreBackup(backupId, options): Promise<GuardedRestoreResult> {
-      let isOwner = false;
-      try {
-        isOwner = await deps.hasPrimacy();
-      } catch {
-        isOwner = false;
-      }
-      if (!isOwner) {
+      if (!(await hasWorkspaceOwnership())) {
         logNotWorkspaceOwner('restore', backupId);
         return {
           status: 'refused',
@@ -521,13 +525,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
         auditBackupId = entry.backupId;
 
         // Re-check ownership fence and in-flight Runs immediately before opening the write transaction.
-        let stillOwner = false;
-        try {
-          stillOwner = await deps.hasPrimacy();
-        } catch {
-          stillOwner = false;
-        }
-        if (!stillOwner) {
+        if (!(await hasWorkspaceOwnership())) {
           logNotWorkspaceOwner('restore', entry.backupId);
           return {
             status: 'refused',

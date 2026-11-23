@@ -6,9 +6,10 @@ import ts from 'typescript';
 import {
   ALL_IPC_COMMANDS,
   HOST_MESSAGES,
+  HOST_MESSAGE_DEFINITIONS,
   IPC_COMMAND_FAMILIES,
   SHARED_IPC_DEFS,
-  SIDEBAR_IPC_SCHEMA_VERSION as DESCRIPTOR_IPC_SCHEMA_VERSION
+  SIDEBAR_IPC_SCHEMA_VERSION as sidebarIpcSchemaVersion
 } from './contracts/ipc-descriptors/index.mjs';
 import {
   HOST_SNAPSHOT_IMPORTS,
@@ -401,47 +402,55 @@ function projectFatalSignatures(sourcePath) {
 }
 
 /**
- * Refuse to write TypeScript that does not parse.
- *
- * `contracts:check` verifies that a generated file matches what the generator
- * would emit today. It cannot verify that what the generator emits is *valid*,
- * because deterministic corruption matches itself. This is where that is caught,
- * at the point of generation, rather than several targets later in a typecheck
- * that names a file the author was told never to edit.
+ * Check that the generated JSON still contains the expected schema or inventory.
+ * A deterministic generator can produce a valid but empty JSON object.
  */
-/**
- * Refuse to write a schema with nothing in it.
- *
- * `assertParses` covers the two TypeScript emissions; the JSON artifacts are
- * `JSON.stringify` output and are valid JSON by construction, which is a weaker
- * guarantee than it looks. The failure this catches is the same class:
- * `contracts:check` compares a file to a regeneration of itself, so a generator
- * that deterministically emits `{}` — an extractor that stopped matching, a
- * renamed source symbol — produces a stable empty schema, and stable output is
- * what the check calls correct.
- *
- * Every schema here declares `properties` and `required` today; a family
- * manifest declares `families`. Emitting one of those empty is not a smaller
- * contract, it is a contract that stopped being derived.
- */
-function assertSubstantive(relativePath, content) {
+function assertSubstantive(relativePath, content, requiredKeys) {
   const parsed = JSON.parse(content);
-  const emptyOf = (key) => {
+  const degenerate = requiredKeys.filter((key) => {
     const value = parsed[key];
-    if (value === undefined) return false;
-    return (Array.isArray(value) ? value.length : Object.keys(value).length) === 0;
-  };
-  const degenerate = ['properties', 'required', 'families', '$defs'].filter(emptyOf);
+    return value === null || typeof value !== 'object' || Object.keys(value).length === 0;
+  });
   if (degenerate.length > 0) {
     throw new Error(
-      `refusing to write ${relativePath}: ${degenerate.join(' and ')} came out empty. ` +
-        `This is a generator defect, not a source defect — contracts:check cannot catch it, ` +
-        `because a deterministically empty schema matches a regeneration of itself.`
+      `refusing to write ${relativePath}: generated ${degenerate.join(', ')} missing or empty`
     );
   }
   return content;
 }
 
+function assertLocalSchemaReferences(relativePath, schema) {
+  const inspect = (node, location) => {
+    if (node === null || typeof node !== 'object') return;
+    if (typeof node.$ref === 'string' && node.$ref.startsWith('#/')) {
+      const tokens = node.$ref.slice(2).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+      const target = tokens.reduce(
+        (current, token) => current !== null && typeof current === 'object' && Object.hasOwn(current, token)
+          ? current[token]
+          : undefined,
+        schema
+      );
+      if (typeof target !== 'boolean' && (target === null || typeof target !== 'object' || Array.isArray(target))) {
+        throw new Error(`refusing to write ${relativePath}: unresolved schema reference ${node.$ref} at ${location}`);
+      }
+    }
+    for (const keyword of ['$defs', 'properties']) {
+      for (const [key, child] of Object.entries(node[keyword] ?? {})) {
+        inspect(child, `${location}/${keyword}/${key}`);
+      }
+    }
+    for (const keyword of ['allOf', 'anyOf', 'oneOf']) {
+      (node[keyword] ?? []).forEach((child, index) => inspect(child, `${location}/${keyword}/${index}`));
+    }
+    for (const keyword of ['additionalProperties', 'items', 'not', 'propertyNames']) {
+      inspect(node[keyword], `${location}/${keyword}`);
+    }
+  };
+  inspect(schema, '#');
+  return schema;
+}
+
+/** Refuse to write TypeScript that does not parse. */
 function assertParses(relativePath, content) {
   const parsed = ts.createSourceFile(relativePath, content, ts.ScriptTarget.Latest, true);
   const diagnostics = parsed.parseDiagnostics ?? [];
@@ -501,20 +510,26 @@ const settings = Object.keys(settingsProperties)
 
 const commandTypes = sidebar.stringArray('COMMAND_TYPES');
 const hostMessageTypes = sidebar.stringArray('HOST_MESSAGE_TYPES');
-const sidebarIpcSchemaVersion = sidebar.numberConst('SIDEBAR_IPC_SCHEMA_VERSION');
-if (sidebarIpcSchemaVersion !== DESCRIPTOR_IPC_SCHEMA_VERSION) {
-  throw new Error(
-    `SIDEBAR_IPC_SCHEMA_VERSION mismatch: sidebar-ipc.ts=${sidebarIpcSchemaVersion} vs descriptor=${DESCRIPTOR_IPC_SCHEMA_VERSION}`
-  );
+const sidebarIpcSchemaPath = 'src/contracts/generated/schemas/sidebar-ipc.schema.json';
+const ipcDescriptorSources = [
+  'scripts/contracts/ipc-descriptors/index.mjs',
+  'scripts/contracts/ipc-descriptors/host-messages.mjs',
+  ...IPC_COMMAND_FAMILIES.map(({ sourcePath }) => sourcePath)
+];
+function assertDescriptorCoverage(label, types, descriptors) {
+  const registered = new Set(descriptors.map(({ type }) => type));
+  const missing = types.filter((type) => !registered.has(type));
+  const extra = [...registered].filter((type) => !types.includes(type));
+  const duplicateCount = descriptors.length - registered.size + types.length - new Set(types).size;
+  if (missing.length > 0 || extra.length > 0 || duplicateCount > 0) {
+    throw new Error(
+      `IPC ${label} descriptor mismatch: missing=[${missing.join(', ')}], ` +
+      `extra=[${extra.join(', ')}], duplicates=${duplicateCount}`
+    );
+  }
 }
-const descriptorCommandTypes = ALL_IPC_COMMANDS.map((cmd) => cmd.type);
-const missingCommandDescriptors = commandTypes.filter((t) => !descriptorCommandTypes.includes(t));
-const extraCommandDescriptors = descriptorCommandTypes.filter((t) => !commandTypes.includes(t));
-if (missingCommandDescriptors.length > 0 || extraCommandDescriptors.length > 0) {
-  throw new Error(
-    `IPC descriptor mismatch: missing=[${missingCommandDescriptors.join(', ')}], extra=[${extraCommandDescriptors.join(', ')}]`
-  );
-}
+assertDescriptorCoverage('command', commandTypes, ALL_IPC_COMMANDS);
+assertDescriptorCoverage('host message', hostMessageTypes, HOST_MESSAGES);
 const workflowSnapshotDecl = SNAPSHOT_DECLARATIONS.find((decl) => decl.name === 'WorkflowSnapshot');
 if (!workflowSnapshotDecl) {
   throw new Error('scripts/contracts/snapshot-descriptors.mjs: missing WorkflowSnapshot descriptor');
@@ -745,12 +760,17 @@ const generated = new Map([
         generatedBy: 'scripts/generate-contract-schemas.mjs',
         generatedSchemaVersion: GENERATED_SCHEMA_VERSION,
         families: contractFamilies
-      })
+      }),
+      ['families']
     )
   ],
   ...Object.entries(schemas).map(([relativePath, schema]) => [
     relativePath,
-    assertSubstantive(relativePath, json(schema))
+    assertSubstantive(
+      relativePath,
+      json(assertLocalSchemaReferences(relativePath, schema)),
+      relativePath === sidebarIpcSchemaPath ? ['properties', 'required', '$defs'] : ['properties', 'required']
+    )
   ]),
   [
     'webview-ui/src/lib/retry-condition.ts',
@@ -794,6 +814,7 @@ const generated = new Map([
         schemaVersion: sidebarIpcSchemaVersion,
         commands: ALL_IPC_COMMANDS,
         hostMessages: HOST_MESSAGES,
+        hostMessageDefinitions: HOST_MESSAGE_DEFINITIONS,
         sourcePath: 'scripts/contracts/ipc-descriptors/index.mjs'
       })
     )
@@ -852,20 +873,20 @@ const generated = new Map([
 ]);
 
 const artifactSources = new Map([
-  ['src/contracts/generated/sidebar-ipc-types.ts', 'scripts/contracts/ipc-descriptors/index.mjs'],
+  ['src/contracts/generated/sidebar-ipc-types.ts', ipcDescriptorSources.join(', ')],
   ['src/contracts/generated/snapshot-types.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
   ['webview-ui/src/lib/generated/snapshot-mirror.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
   [
     'webview-ui/src/lib/generated/backend-kinds.ts',
-    'src/contracts/backend-kinds.ts'
+    'src/contracts/backend-kinds.ts, src/contracts/backend-descriptors.ts'
   ],
   [
     'webview-ui/src/lib/generated/backend-descriptors.ts',
     'src/contracts/backend-kinds.ts, src/contracts/backend-descriptors.ts'
   ],
   [
-    'src/contracts/generated/schemas/sidebar-ipc.schema.json',
-    'scripts/contracts/ipc-descriptors/index.mjs, scripts/contracts/snapshot-descriptors.mjs'
+    sidebarIpcSchemaPath,
+    [...ipcDescriptorSources, 'scripts/contracts/snapshot-descriptors.mjs'].join(', ')
   ],
   ...IPC_COMMAND_FAMILIES.map((family) => [family.outputPath, family.sourcePath])
 ]);

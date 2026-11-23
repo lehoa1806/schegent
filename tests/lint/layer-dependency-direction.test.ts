@@ -10,7 +10,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, extname, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
@@ -38,7 +38,7 @@ export interface ParsedValueEdge {
 
 /**
  * Extract every relative runtime VALUE import, value re-export, bare side-effect
- * import, and dynamic relative `import('...')` call using the TypeScript AST parser
+ * import, and literal `import()` or `require()` using the TypeScript AST parser
  * (`ts.createSourceFile`), avoiding cross-statement regex bleed or comment/string
  * misparses.
  */
@@ -56,6 +56,14 @@ export function extractRelativeValueEdges(
   };
 
   const visit = (node: ts.Node): void => {
+    if (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly) {
+      const reference = node.moduleReference;
+      if (ts.isExternalModuleReference(reference) && ts.isStringLiteralLike(reference.expression)) {
+        pushEdge(node, reference.expression.text);
+      }
+      return;
+    }
+
     if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const clause = node.importClause;
       if (clause === undefined) {
@@ -95,7 +103,8 @@ export function extractRelativeValueEdges(
 
     if (
       ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
     ) {
       const firstArg = node.arguments.at(0);
       if (firstArg !== undefined && ts.isStringLiteralLike(firstArg)) {
@@ -120,7 +129,7 @@ export function layerOfSourcePath(relPath: string, allowBareDir = false): string
   const nested = /^(?:src|fixture)\/([a-z0-9-]+)\//.exec(normalized);
   const nestedLayer = nested?.at(1);
   if (nestedLayer !== undefined) return nestedLayer;
-  if (/^(?:src|fixture)\/[^/]+\.tsx?$/.test(normalized)) return 'root';
+  if (/^(?:src|fixture)\/[^/]+\.(?:tsx?|[cm]ts)$/.test(normalized)) return 'root';
   if (allowBareDir) {
     const bare = /^(?:src|fixture)\/([a-z0-9-]+)$/.exec(normalized);
     const bareLayer = bare?.at(1);
@@ -136,7 +145,23 @@ function resolveRelativeTarget(
 ): string | null {
   const fromAbs = resolve(REPO_ROOT, fromRelPath);
   const base = resolve(dirname(fromAbs), specifier);
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, resolve(base, 'index.ts')]) {
+  const extension = extname(base);
+  const stem = base.slice(0, -extension.length);
+  const emittedTargets: Readonly<Record<string, readonly string[]>> = {
+    '.js': [`${stem}.ts`, `${stem}.tsx`],
+    '.jsx': [`${stem}.tsx`],
+    '.cjs': [`${stem}.cts`],
+    '.mjs': [`${stem}.mts`]
+  };
+  const candidates = [
+    ...(emittedTargets[extension] ?? []),
+    base,
+    `${base}.ts`,
+    `${base}.tsx`,
+    resolve(base, 'index.ts'),
+    resolve(base, 'index.tsx')
+  ];
+  for (const candidate of candidates) {
     const rel = relative(REPO_ROOT, candidate).split('\\').join('/');
     if (knownFiles.has(rel)) return rel;
   }
@@ -240,8 +265,8 @@ export function findTransitiveLayerReach(
 
 function loadSourceTree(): ReadonlyMap<string, string> {
   const map = new Map<string, string>();
-  for (const abs of filesUnder(SRC_ROOT, { extensions: ['.ts'] })) {
-    if (/\.d\.ts$/.test(abs)) continue;
+  for (const abs of filesUnder(SRC_ROOT, { extensions: ['.ts', '.tsx', '.cts', '.mts'] })) {
+    if (/\.d\.[cm]?ts$/.test(abs)) continue;
     const rel = relative(REPO_ROOT, abs).split('\\').join('/');
     map.set(rel, readFileSync(abs, 'utf8'));
   }
@@ -399,6 +424,31 @@ describe('FR-R7-07 — layer-level value-import direction gate', () => {
     );
     expect(breaches).toEqual([
       'fixture/state/entry.ts -> fixture/lib/bridge.ts -> fixture/controller/ctrl.ts'
+    ]);
+  });
+
+  it('enforces layer boundaries for CommonJS and emitted JavaScript specifiers', () => {
+    const sources = new Map([
+      ['fixture/state/entry.ts', [
+        "import blocked = require('../services/blocked.cjs');",
+        "import type Ignored = require('../queue/types.js');",
+        "import { bridge } from '../config/bridge.js';"
+      ].join('\n')],
+      ['fixture/config/bridge.ts', "export const bridge = require('../controller/runtime.js');"],
+      ['fixture/services/blocked.cts', 'export const blocked = true;'],
+      ['fixture/queue/types.ts', 'export interface Ignored {}'],
+      ['fixture/controller/runtime.ts', 'export const runtime = true;']
+    ]);
+
+    expect(findLayerViolations(sources, LAYER_ALLOWED_VALUE_IMPORTS).map((edge) => edge.target))
+      .toEqual(['fixture/services/blocked.cts']);
+    expect(findTransitiveLayerReach(
+      buildValueImportGraph(sources),
+      'fixture/state/entry.ts',
+      new Set(STATE_FORBIDDEN_TRANSITIVE_LAYERS)
+    )).toEqual([
+      'fixture/state/entry.ts -> fixture/services/blocked.cts',
+      'fixture/state/entry.ts -> fixture/config/bridge.ts -> fixture/controller/runtime.ts'
     ]);
   });
 });

@@ -192,8 +192,7 @@ At 100,000 retained attempts, warm filtered 200-row reads meet p95 ≤ 500 ms
 
 ## Known limits
 
-These are accepted for this release and recorded in the feature review
-(`docs/audits/305-usage-metrics-accounting-review.md` in the workspace):
+The workspace tracks these release limits and their follow-up tasks in FR-R7-16, under “305 Usage and metrics accounting.”
 
 - **The deadline is checked between statements.** A read runs synchronously, so one slow
   statement is not interrupted; the 5-second deadline and a headless caller's abort signal are
