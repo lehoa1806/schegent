@@ -162,8 +162,8 @@
     type="button"
     class="btn btn-primary"
     data-testid="workflows-save-all"
-    disabled={saveDisabled}
-    onclick={onsave}>{savePending ? 'Saving…' : 'Save'}</button
+    aria-disabled={saveDisabled ? 'true' : 'false'}
+    onclick={() => { if (!saveDisabled) onsave(); }}>{savePending ? 'Saving…' : 'Save'}</button
   >
 </div>
 

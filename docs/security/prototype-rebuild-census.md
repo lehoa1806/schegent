@@ -8,6 +8,7 @@ key named `__proto__` the assignment creates no own property, it invokes the
 target's prototype.
 
 **Measured**: 2026-09-06, on `develop` plus the `205-sanitizer-proto-key` fix.
+**Targeted refresh**: 2026-11-23 — re-derived the two `changed-fields.ts` entries (`:85`, `:86`) after commit `e1676422` removed nine blank lines; the full-tree census below remains as measured on 2026-09-06.
 **Feature**: FR-R3-166 (`specs/205-sanitizer-proto-key`, 2026-09-05) — FR-010, FR-011, FR-012.
 **Companion**: [threat-model.md](./threat-model.md) T1, T15, T20.
 
@@ -214,7 +215,7 @@ All 71 step-1 hits that step 2 dropped, grouped by the reason they were dropped.
 `src/contracts/validators/shared.ts:77`.
 
 **Iterates to read, filter, or collect into an array, `Map`, or `Set`** (23):
-`spawn-identity-recorder.ts:45`, `changed-fields.ts:94`, `:95`, `history-store.ts:129`,
+`spawn-identity-recorder.ts:45`, `changed-fields.ts:85`, `:86`, `history-store.ts:129`,
 `queue-manager.ts:1758`, `:1786`, `configuration-trust-dispositions.ts:265`,
 `workflow-export-selection.ts:86`, `workspace-state-migrations.ts:103`, `workspace-state-queue.ts:189`, `:209`, `workspace-state-runs.ts:224`, `:234`,
 `connected-workflow-run.ts:296`, `schedule-watchdog.ts:167`, `stage2-producers.ts:251`,

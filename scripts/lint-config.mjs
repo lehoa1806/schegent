@@ -119,8 +119,10 @@ const BASELINED_SVELTE_RULES = {
   'svelte/prefer-writable-derived': 'warn'
 };
 
-// Carried over from `eslintConfig.ignorePatterns`: 7 of the 10, dropping exactly
-// `webview-ui/`, `*.mjs` and `*.config.js` and adding none (FR-005, SC-008).
+// Carried over from `eslintConfig.ignorePatterns` (dropping `webview-ui/`,
+// `*.mjs` and `*.config.js`; FR-005, SC-008) plus the documented scratch and
+// generated artifact directories excluded by the host lint input-set contract
+// (FR-R7-15 W14).
 //
 // `webview-ui/` is absent by design rather than by oversight: the webview is no
 // longer excluded from linting, it is linted by its own pass over its own tsconfig
@@ -133,7 +135,14 @@ const CARRIED_IGNORES = [
   '.specify/**',
   'specs/**',
   'docs/**',
-  '.claude/**'
+  '.claude/**',
+  'scratch/**',
+  '.tmp/**',
+  'coverage/**',
+  '.vscode-test/**',
+  '.release/**',
+  'tests/visual/.artifacts/**',
+  'tests/soak/.artifacts/**'
 ];
 
 /**

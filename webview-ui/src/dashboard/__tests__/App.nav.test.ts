@@ -71,11 +71,11 @@ function buildSnapshot(): WorkflowSnapshot {
 afterEach(() => cleanup());
 
 /**
- * FR-R3-068 — the wait budget for the two lazily imported route assertions below.
+ * FR-R3-068 — the wait budget for every lazily imported route assertion below.
  *
  * WHY AN EXPLICIT NUMBER AT ALL
  *
- * Both waits sit on a route component reached through `import()` in
+ * Every wait sits on a route component reached through `import()` in
  * `route-loader.ts`, and this file mocks only `lib/vscode-api` — so the import is
  * real and carries a first-time transform. `vi.waitFor`'s default is 1000 ms and
  * is NOT governed by `--testTimeout`; raising that looks like a fix and changes
@@ -144,13 +144,14 @@ const MIN_MARGIN_OVER_WORST_CASE = 2;
  * below this budget would leave a broken import killed by the runner and
  * reported as a bare "test timed out", while a check written against a
  * hardcoded 5000 stayed green. The bound below reads the timeout actually in
- * force from the two tests it governs instead.
+ * force from every test it governs instead.
  */
 const BUDGET_SHARE_OF_PER_TEST_TIMEOUT = 0.7;
 
 /**
- * The two tests whose waits spend this budget, named so both bounds are checked
- * against *their* task rather than against the bounds test's own.
+ * Every test whose waits spend this budget, paired with its sequential wait
+ * count, named so both bounds are checked against *their* task rather than
+ * against the bounds test's own.
  *
  * Reading the bounds test's own task catches a `testTimeout` or `retry` from the
  * config or the command line, and nothing else. Vitest also takes both per test
@@ -161,8 +162,13 @@ const BUDGET_SHARE_OF_PER_TEST_TIMEOUT = 0.7;
  *
  * A rename fails the lookup below rather than quietly checking nothing.
  */
-const BUDGETED_TEST_NAMES: readonly string[] = [
-  'keeps the shell structural and exposes exactly one main landmark per route'
+const BUDGETED_TESTS: ReadonlyArray<{ readonly name: string; readonly waits: number }> = [
+  { name: 'switches the visible surface when each route is clicked', waits: 5 },
+  { name: 'keeps the shell structural and exposes exactly one main landmark per route', waits: 1 },
+  {
+    name: 'opens Settings on its Queues section from "Queue defaults", and on Backends from the top navigation',
+    waits: 2
+  }
 ];
 
 /** Every test case collected from this file, flattened out of the suite tree. */
@@ -179,7 +185,7 @@ function testCasesInThisFile(self: RunnerTestCase): readonly RunnerTestCase[] {
  * lowering it toward the measured worst case would restore the flake this replaced.
  *
  * It sits beside the constant rather than inside a route's describe block because
- * it asserts nothing about any one route — it constrains the value both route
+ * it asserts nothing about any one route — it constrains the value all lazy-route
  * waits below share.
  */
 describe('FR-R3-068 — the lazy-route wait budget', () => {
@@ -191,24 +197,26 @@ describe('FR-R3-068 — the lazy-route wait budget', () => {
         "measured; see the constant's comment for the measurement"
     ).toBeGreaterThan(MEASURED_WORST_TRANSFORM_MS * MIN_MARGIN_OVER_WORST_CASE);
 
-    const governedTests = testCasesInThisFile(task).filter((one) =>
-      BUDGETED_TEST_NAMES.includes(one.name)
-    );
+    const byName = new Map(BUDGETED_TESTS.map((entry) => [entry.name, entry]));
+    const governedTests = testCasesInThisFile(task).filter((one) => byName.has(one.name));
     expect(
       governedTests.map((one) => one.name).sort(),
-      'both tests this budget governs must still be present under these names, or the bounds below ' +
+      'all tests this budget governs must still be present under these names, or the bounds below ' +
         'are checked against nothing'
-    ).toEqual([...BUDGETED_TEST_NAMES].sort());
+    ).toEqual(BUDGETED_TESTS.map((entry) => entry.name).sort());
 
     for (const governed of governedTests) {
+      const entry = byName.get(governed.name)!;
       // `governed.timeout` is the per-test timeout in force for that test — the
       // config's value, a `--testTimeout` override, an `it`/`describe` option, or
-      // vitest's default when none of those applies.
+      // vitest's default when none of those applies. Multi-wait tests must size
+      // their timeout so even the final wait's `LAZY_ROUTE_WAIT_MS` fires before
+      // the runner kills the test.
       expect(
-        LAZY_ROUTE_WAIT_MS,
-        `the budget must stay well under the ${governed.timeout} ms per-test timeout in force for ` +
-          `"${governed.name}", or a broken import is killed by the runner and surfaces as a bare ` +
-          'timeout rather than a wait failure'
+        LAZY_ROUTE_WAIT_MS * entry.waits,
+        `the combined wait budget (${entry.waits}x ${LAZY_ROUTE_WAIT_MS} ms) must stay well under the ` +
+          `${governed.timeout} ms per-test timeout in force for "${governed.name}", or a broken import ` +
+          'is killed by the runner and surfaces as a bare timeout rather than a wait failure'
       ).toBeLessThan(governed.timeout * BUDGET_SHARE_OF_PER_TEST_TIMEOUT);
 
       // FR-R3-068 refuses a retry, and a refusal nothing checks is a refusal that
@@ -241,7 +249,7 @@ describe('Feature 064 T013 — flat six-route top-level nav', () => {
     ]);
   });
 
-  it('switches the visible surface when each route is clicked', async () => {
+  it('switches the visible surface when each route is clicked', { timeout: 25_000 }, async () => {
     snapshotStore.apply({
       type: 'STATE_SNAPSHOT',
       payload: buildSnapshot()
@@ -269,16 +277,49 @@ describe('Feature 064 T013 — flat six-route top-level nav', () => {
 
     await fireEvent.click(pbBtn);
     expect(container.querySelector('[data-testid="dashboard-route-builder"].active')).not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(container.querySelector('[data-testid="pipeline-builder-root"]')).not.toBeNull();
+      },
+      { timeout: LAZY_ROUTE_WAIT_MS }
+    );
     await fireEvent.click(sysBtn);
     expect(container.querySelector('[data-testid="dashboard-route-system"].active')).not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(container.querySelector('[data-testid="system-tab"]')).not.toBeNull();
+      },
+      { timeout: LAZY_ROUTE_WAIT_MS }
+    );
     await fireEvent.click(setBtn);
     expect(container.querySelector('[data-testid="dashboard-route-settings"].active')).not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(container.querySelector('[data-testid="settings-surface-root"]')).not.toBeNull();
+      },
+      { timeout: LAZY_ROUTE_WAIT_MS }
+    );
     await fireEvent.click(opBtn);
     expect(container.querySelector('[data-testid="dashboard-route-operations"].active')).not.toBeNull();
     await fireEvent.click(historyBtn);
     expect(container.querySelector('[data-testid="dashboard-route-history"].active')).not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(container.querySelector('[data-testid="history-dashboard"]')).not.toBeNull();
+      },
+      { timeout: LAZY_ROUTE_WAIT_MS }
+    );
     await fireEvent.click(metBtn);
     expect(container.querySelector('[data-testid="dashboard-route-metrics"].active')).not.toBeNull();
+    // Wait for every lazy route chunk to settle before advancing or tearing down in
+    // `afterEach(() => cleanup())` so V8 coverage never races an in-flight dynamic import
+    // (FR-R7-15 W13).
+    await vi.waitFor(
+      () => {
+        expect(container.querySelector('[data-testid="metrics-section"]')).not.toBeNull();
+      },
+      { timeout: LAZY_ROUTE_WAIT_MS }
+    );
   });
 
   it('does NOT render the legacy dashboard-tabs (inner two-tier) markup', () => {
@@ -322,7 +363,10 @@ describe('queue-based navigation', () => {
 
   // The redesign moved the workspace queue settings from a dialog into Settings, Queues. The
   // Queues list's "Queue defaults" opens the page there; the top navigation opens it on Backends.
-  it('opens Settings on its Queues section from "Queue defaults", and on Backends from the top navigation', async () => {
+  it(
+    'opens Settings on its Queues section from "Queue defaults", and on Backends from the top navigation',
+    { timeout: 10_000 },
+    async () => {
     snapshotStore.apply({ type: 'STATE_SNAPSHOT', payload: buildSnapshot() } as unknown as Parameters<typeof snapshotStore.apply>[0]);
     const { container, getByTestId } = render(App);
     const currentSection = (): string | null =>

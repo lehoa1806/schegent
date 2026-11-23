@@ -1126,3 +1126,11 @@ export const workflowSnapshot = {
   ],
   "backendGrantProblems": []
 } as const satisfies WorkflowSnapshot;
+
+// FR-R7-15 (W07, T018) — derived visual fixture with `agy` absent from
+// `availableBackends`, leaving the default all-found `workflowSnapshot` untouched
+// for existing visual baselines and backend-posture projection assertions.
+export const workflowSnapshotWithMissingAgy: WorkflowSnapshot = {
+  ...workflowSnapshot,
+  availableBackends: ['claude', 'codex']
+};

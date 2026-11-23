@@ -745,7 +745,8 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       '[data-testid="workflows-save-all"]'
     ) as HTMLButtonElement | null;
     expect(saveBtn).not.toBeNull();
-    expect(saveBtn!.disabled).toBe(true);
+    expect(saveBtn!.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn!.getAttribute('aria-disabled')).toBe('true');
     await fireEvent.click(saveBtn!);
     await tick();
     expect(saveDraftHelper).not.toHaveBeenCalled();
@@ -1451,6 +1452,41 @@ describe('PipelineBuilder — BUG-012 addPhase append regression guard', () => {
     expect(getPhaseIds(container)).toEqual(['existing-1', 'new-phase']);
   });
 
+  it('opens the newly inserted Phase draft editor with an editable name input that updates immediately (W12, FR-012)', async () => {
+    const existing: PhaseDefinition = Object.freeze({
+      id: 'existing-1', name: 'Existing', instruction: 'Already here.'
+    }) as unknown as PhaseDefinition;
+    const snap = buildSnapshot([existing]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    const addBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    expect(addBtn).not.toBeNull();
+    await fireEvent.click(addBtn);
+    await tick();
+
+    const editor = container.querySelector('[data-testid="phases-editor-new-phase"]');
+    expect(editor).not.toBeNull();
+
+    const nameField = container.querySelector(
+      '[data-testid="phases-name-field-new-phase"]'
+    ) as HTMLInputElement;
+    expect(nameField).not.toBeNull();
+    expect(nameField.readOnly).toBe(false);
+    expect(nameField.disabled).toBe(false);
+    expect(nameField.value).toBe('New Phase');
+
+    await fireEvent.input(nameField, { target: { value: 'Security Audit' } });
+    await tick();
+
+    expect(nameField.value).toBe('Security Audit');
+    const heading = editor!.querySelector('h1.phase-title');
+    expect(heading).not.toBeNull();
+    expect(heading!.textContent.trim()).toBe('Security Audit');
+  });
+
   it('no order or position dropdown exists in the phase form grid', async () => {
     const phase: PhaseDefinition = Object.freeze({
       id: 'p-1', name: 'Phase', instruction: 'test'
@@ -1632,6 +1668,10 @@ describe('PipelineBuilder — Workflow canvas behaviour (Feature 184 / 264)', ()
     expect((at(container, 'workflow-field-description') as HTMLTextAreaElement).readOnly).toBe(
       false
     );
+    const saveBtn = at(container, 'workflows-save-all') as HTMLButtonElement;
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+
     await fireEvent.input(at(container, 'workflow-field-name') as HTMLInputElement, {
       target: { value: 'Edited' }
     });
@@ -1639,8 +1679,9 @@ describe('PipelineBuilder — Workflow canvas behaviour (Feature 184 / 264)', ()
     // A node's operations live in the selected card's toolbar.
     await fireEvent.click(at(container, 'workflow-node-0') as HTMLElement);
     await tick();
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
     for (const control of [
-      'workflows-save-all',
       'workflow-palette-phase-speckit-plan',
       'workflow-node-remove-0'
     ]) {

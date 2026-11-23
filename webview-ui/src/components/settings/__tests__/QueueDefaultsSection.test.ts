@@ -545,7 +545,7 @@ describe('QueueDefaultsSection — each queue’s failure behaviour (FR-014, FR-
     );
   });
 
-  it('reads a no-op as its own sentence, never as a refusal', async () => {
+  it('reads a no-op as its own sentence in a polite status region, never as a refusal alert', async () => {
     const { policy, page, getByTestId } = mount();
     await fireEvent.change(policy('q-beta'), { target: { value: 'continue' } });
 
@@ -556,9 +556,28 @@ describe('QueueDefaultsSection — each queue’s failure behaviour (FR-014, FR-
         'Already set that way.'
       )
     );
+    const message = getByTestId('queue-failure-policy-message-q-beta');
+    expect(message.getAttribute('role')).toBeNull();
+    expect(message.closest('[role="status"]')).not.toBeNull();
   });
 
-  it('renders a refusal with its reason', async () => {
+  it('keeps an unknown timeout outcome in the polite status region without role="alert"', async () => {
+    const { policy, page, getByTestId } = mount();
+    await fireEvent.change(policy('q-beta'), { target: { value: 'continue' } });
+
+    await saveAnswering(page, () => ack(0, 'rejected', 'timeout', 'refused'));
+
+    await waitFor(() =>
+      expect(getByTestId('queue-failure-policy-message-q-beta').textContent.trim()).toBe(
+        'The host has not answered yet. The change may still happen; this view will update when it does.'
+      )
+    );
+    const message = getByTestId('queue-failure-policy-message-q-beta');
+    expect(message.getAttribute('role')).toBeNull();
+    expect(message.closest('[role="status"]')).not.toBeNull();
+  });
+
+  it('renders a refusal with role="alert" outside polite role="status" and formats unknown codes as plain text', async () => {
     const { policy, page, getByTestId } = mount();
     await fireEvent.change(policy('q-beta'), { target: { value: 'continue' } });
 
@@ -569,6 +588,21 @@ describe('QueueDefaultsSection — each queue’s failure behaviour (FR-014, FR-
         'That queue no longer exists.'
       )
     );
+    const knownRefusal = getByTestId('queue-failure-policy-message-q-beta');
+    expect(knownRefusal.getAttribute('role')).toBe('alert');
+    expect(knownRefusal.closest('[role="status"]')).toBeNull();
+
+    await saveAnswering(page, () => ack(1, 'rejected', 'future-policy-gate', 'refused'));
+
+    await waitFor(() =>
+      expect(getByTestId('queue-failure-policy-message-q-beta').textContent.trim()).toBe(
+        'The host refused this action (future-policy-gate).'
+      )
+    );
+    const unknownRefusal = getByTestId('queue-failure-policy-message-q-beta');
+    expect(unknownRefusal.getAttribute('role')).toBe('alert');
+    expect(unknownRefusal.closest('[role="status"]')).toBeNull();
+    expect(unknownRefusal.textContent).not.toContain('`');
   });
 
   it('shows no message on an accepted write', async () => {
