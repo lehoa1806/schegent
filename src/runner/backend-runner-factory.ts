@@ -8,6 +8,8 @@ import {
 } from './acp-backed-runner';
 import { SpawnGatedRunner } from './spawn-gated-runner';
 import type { SpawnGate } from '../contracts/containment-qualification';
+import type { AcpSessionBindingStore } from '../services/acp-runtime/acp-durable-runtime-store';
+import type { AcpHostLocality } from '../services/acp-runtime/profiles';
 import type { AcpAuthorityGate } from '../services/containment-qualification/acp-authority-gate';
 import { SanitizedLogger } from '../lib/logger';
 import {
@@ -120,6 +122,12 @@ export interface BackendRunnerFactoryOptions {
     /** See `AcpBackedRunnerOptions.primeAuthority`. */
     readonly primeAuthority?: () => Promise<boolean>;
     readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
+    /** FR-R7-14 (14-04): durable session binding store for bridged ACP profiles. */
+    readonly sessionBindingStore?: AcpSessionBindingStore;
+    /** FR-R7-14 (14-06): persistent monotonic connection-generation allocator. */
+    readonly allocateConnectionGeneration?: () => number;
+    /** FR-R7-14 (14-11): host locality classification (`'local'` vs `'remote'`). */
+    readonly hostLocality?: AcpHostLocality;
   };
 }
 
@@ -194,7 +202,16 @@ export function createBackendRunner(
           protectedDatabasePaths: options.acpDispatch.protectedDatabasePaths,
           currentOwnershipGeneration: options.acpDispatch.currentOwnershipGeneration,
           primeAuthority: options.acpDispatch.primeAuthority,
-          onAcpObservation: options.acpDispatch.onAcpObservation
+          onAcpObservation: options.acpDispatch.onAcpObservation,
+          ...(options.acpDispatch.sessionBindingStore !== undefined
+            ? { sessionBindingStore: options.acpDispatch.sessionBindingStore }
+            : {}),
+          ...(options.acpDispatch.allocateConnectionGeneration !== undefined
+            ? { allocateConnectionGeneration: options.acpDispatch.allocateConnectionGeneration }
+            : {}),
+          ...(options.acpDispatch.hostLocality !== undefined
+            ? { hostLocality: options.acpDispatch.hostLocality }
+            : {})
         })
       : cliRunner;
   return options.spawnGate === undefined ? runner : new SpawnGatedRunner(kind, runner, options.spawnGate);

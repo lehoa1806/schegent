@@ -446,12 +446,86 @@ describe('FR-R7-10 — relocateLegacySqliteStore', () => {
     });
   }
 
-  it('recovers cleanly after simulated crash at stage after_preserve_losing_canonical', async () => {
+  it.each(['legacy', 'canonical'] as const)('refuses a newer %s schema before recovering an interrupted publication', async (changedStore) => {
+    const root = await makeTempDir('fr-r7-10-recovery-schema-');
+    const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
+    const legacyStorage = path.join(root, 'workspaceStorage', '1111aaaa', 'schegent.schegent');
+    const legacyDb = await seedDatabase(legacyStorage, SCOPE_ID);
+    const canonicalDb = path.join(globalStorage, 'sqlite', SCOPE_ID, 'schegent-state.db');
+    const changedDb = changedStore === 'legacy' ? legacyDb : canonicalDb;
+    const crashStage = changedStore === 'legacy' ? 'after_atomic_publish' : 'after_retire_legacy';
+    const request = {
+      scopeId: SCOPE_ID,
+      globalStorageUri: globalStorage,
+      legacyStorageUri: legacyStorage,
+      verifyPrimacy: async () => true
+    };
+
+    await expect(relocateLegacySqliteStore({
+      ...request,
+      onStage: (stage) => {
+        if (stage === crashStage) throw new Error('SIMULATED_CRASH');
+      }
+    })).rejects.toThrow('SIMULATED_CRASH');
+
+    const writer = new DatabaseSync(changedDb);
+    try {
+      writer.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0');
+      writer.prepare('UPDATE schema_meta SET meta_value = ? WHERE meta_key = ?').run('999', 'min_reader_version');
+      const files = [changedDb, `${changedDb}-wal`, `${changedDb}-shm`];
+      const before = await Promise.all(files.map(sha256File));
+
+      const recovered = await relocateLegacySqliteStore(request);
+
+      expect(recovered).toMatchObject({
+        outcome: 'refused_newer_schema',
+        reason: 'UNSUPPORTED_MIN_READER_VERSION',
+        offendingPath: changedDb,
+        recordedVersion: 999
+      });
+      expect(await Promise.all(files.map(sha256File))).toEqual(before);
+    } finally {
+      writer.close();
+    }
+  });
+
+  it('reselects a changed compatible legacy store instead of retiring data missing from the published copy', async () => {
+    const root = await makeTempDir('fr-r7-10-recovery-changed-');
+    const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
+    const legacyStorage = path.join(root, 'workspaceStorage', '1111aaaa', 'schegent.schegent');
+    await seedDatabase(legacyStorage, SCOPE_ID, { runIds: ['run-before-crash'] });
+    const request = {
+      scopeId: SCOPE_ID,
+      globalStorageUri: globalStorage,
+      legacyStorageUri: legacyStorage,
+      verifyPrimacy: async () => true
+    };
+    await expect(relocateLegacySqliteStore({
+      ...request,
+      onStage: (stage) => {
+        if (stage === 'after_atomic_publish') throw new Error('SIMULATED_CRASH');
+      }
+    })).rejects.toThrow('SIMULATED_CRASH');
+    await seedDatabase(legacyStorage, SCOPE_ID, {
+      runIds: ['run-after-crash', 'run-second-after-crash'],
+      updatedAtMs: 1_800_000_000_000
+    });
+
+    const recovered = await relocateLegacySqliteStore(request);
+
+    expect(recovered.outcome).toBe('conflict_resolved');
+    if (recovered.outcome !== 'conflict_resolved') throw new Error('expected conflict resolution');
+    expect(readOperationalRunIds(recovered.activeDatabasePath)).toEqual(['run-after-crash', 'run-second-after-crash']);
+    expect(recovered.preservedUnselectedPaths).toHaveLength(1);
+    expect(readOperationalRunIds(recovered.preservedUnselectedPaths[0]!)).toEqual(['run-before-crash']);
+  });
+
+  it.each(['after_stage_losing_canonical', 'after_preserve_losing_canonical'] as const)('recovers cleanly after simulated crash at stage %s', async (crashStage) => {
     const root = await makeTempDir('fr-r7-10-crash-preserve-');
     const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
     const legacyStorage = path.join(root, 'workspaceStorage', '2222bbbb', 'schegent.schegent');
 
-    await seedDatabase(globalStorage, SCOPE_ID, {
+    const canonicalDb = await seedDatabase(globalStorage, SCOPE_ID, {
       runIds: ['old-canon'],
       updatedAtMs: 1_700_000_001_000
     });
@@ -467,12 +541,16 @@ describe('FR-R7-10 — relocateLegacySqliteStore', () => {
         legacyStorageUri: legacyStorage,
         verifyPrimacy: async () => true,
         onStage: (stage) => {
-          if (stage === 'after_preserve_losing_canonical') {
-            throw new Error('SIMULATED_CRASH:after_preserve_losing_canonical');
+          if (stage === crashStage) {
+            throw new Error(`SIMULATED_CRASH:${crashStage}`);
           }
         }
       })
-    ).rejects.toThrow('SIMULATED_CRASH:after_preserve_losing_canonical');
+    ).rejects.toThrow(`SIMULATED_CRASH:${crashStage}`);
+
+    const preservedFiles = (await fsp.readdir(path.dirname(canonicalDb)))
+      .filter((file) => /^schegent-state\.unselected-/.test(file));
+    expect(preservedFiles).toHaveLength(crashStage === 'after_stage_losing_canonical' ? 0 : 1);
 
     // Restart finishes cleanly and reuses the already-preserved 0400 canonical copy.
     const recovered = await relocateLegacySqliteStore({
@@ -487,6 +565,84 @@ describe('FR-R7-10 — relocateLegacySqliteStore', () => {
     expect(readOperationalRunIds(recovered.activeDatabasePath)).toEqual(['newer-legacy']);
     expect(recovered.preservedUnselectedPaths).toHaveLength(1);
     expect(readOperationalRunIds(recovered.preservedUnselectedPaths[0]!)).toEqual(['old-canon']);
+  });
+
+  it('recovers a preserved WAL-only conflict after removing the old canonical sidecars', async () => {
+    const root = await makeTempDir('fr-r7-10-crash-canonical-wal-');
+    const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
+    const legacyStorage = path.join(root, 'workspaceStorage', '2222bbbb', 'schegent.schegent');
+    const canonicalDb = await seedDatabase(globalStorage, SCOPE_ID, {
+      emptyShell: true,
+      leaveWalUncheckpointed: true,
+      extraWalRunId: 'canonical-wal-run'
+    });
+    const legacyDb = await seedDatabase(legacyStorage, SCOPE_ID, {
+      runIds: ['newer-legacy'], updatedAtMs: 1_700_000_050_000
+    });
+    const request = {
+      scopeId: SCOPE_ID, globalStorageUri: globalStorage, legacyStorageUri: legacyStorage,
+      verifyPrimacy: async () => true
+    };
+    expect(await exists(`${canonicalDb}-wal`)).toBe(true);
+
+    await expect(relocateLegacySqliteStore({
+      ...request,
+      onStage: (stage) => {
+        if (stage === 'after_remove_canonical_sidecars') throw new Error('SIMULATED_CRASH');
+      }
+    })).rejects.toThrow('SIMULATED_CRASH');
+
+    expect(await exists(`${canonicalDb}-wal`)).toBe(false);
+    expect(await exists(legacyDb)).toBe(true);
+    const recovered = await relocateLegacySqliteStore(request);
+    expect(recovered.outcome).toBe('conflict_resolved');
+    if (recovered.outcome !== 'conflict_resolved') throw new Error('expected conflict_resolved');
+    expect(recovered.noticeRequired).toBe(true);
+    expect(readOperationalRunIds(recovered.activeDatabasePath)).toEqual(['newer-legacy']);
+    expect(recovered.preservedUnselectedPaths).toHaveLength(1);
+    expect(readOperationalRunIds(recovered.preservedUnselectedPaths[0]!)).toEqual(['canonical-wal-run']);
+    expect(await exists(legacyDb)).toBe(false);
+
+    const reopened = await relocateLegacySqliteStore(request);
+    if (reopened.outcome !== 'noop') throw new Error('expected noop');
+    expect(reopened.preservedUnselectedPaths).toEqual(recovered.preservedUnselectedPaths);
+    expect(reopened.noticeRequired).toBe(false);
+  });
+
+  it.each(['', '-wal', '-shm'])('leaves a symbolic link at canonical database leaf %s untouched', async (suffix) => {
+    if (process.platform === 'win32') return;
+    const root = await makeTempDir('fr-r7-10-canonical-link-');
+    const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
+    const legacyStorage = path.join(root, 'workspaceStorage', '1111aaaa', 'schegent.schegent');
+    const legacyDb = await seedDatabase(legacyStorage, SCOPE_ID);
+    const canonicalDir = path.join(globalStorage, 'sqlite', SCOPE_ID);
+    const canonicalDb = path.join(canonicalDir, 'schegent-state.db');
+    const targetFile = path.join(root, 'unrelated.txt');
+    await fsp.mkdir(canonicalDir, { recursive: true, mode: 0o700 });
+    await fsp.writeFile(targetFile, 'unrelated', { mode: 0o600 });
+    await fsp.symlink(targetFile, `${canonicalDb}${suffix}`);
+
+    const result = await relocateLegacySqliteStore({
+      scopeId: SCOPE_ID,
+      globalStorageUri: globalStorage,
+      legacyStorageUri: legacyStorage,
+      verifyPrimacy: async () => true
+    });
+    expect(result).toMatchObject({
+      outcome: 'fallback_legacy_preserved',
+      reason: 'symlink_or_containment_refused',
+      activeDatabasePath: legacyDb
+    });
+
+    const location = await resolveTrustedSqliteLocation({
+      sourceKind: 'host_global_storage_uri',
+      trustedRootDir: globalStorage,
+      relativeSegments: ['sqlite', SCOPE_ID]
+    });
+    expect(location).toMatchObject({ status: 'refused', reason: 'symlink_or_containment_refused' });
+    expect(await fsp.readlink(`${canonicalDb}${suffix}`)).toBe(targetFile);
+    expect(await fsp.readFile(targetFile, 'utf8')).toBe('unrelated');
+    expect(readOperationalRunIds(legacyDb)).toEqual(['run-1']);
   });
 
   it('refuses relocation when ownership fence primacy is absent or lost before atomic publish', async () => {

@@ -23,11 +23,15 @@
 import { createHash } from 'node:crypto';
 import type * as fsp from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
+import {
+  computeAgentConfigFingerprint,
+  MAX_AGENT_CONFIG_FILE_BYTES
+} from '../contracts/agent-config-fingerprint';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { mapBackends, type BackendMap } from '../contracts/backend-descriptors';
 import { openWithinRoot, type SafeOpenRefusal } from '../lib/safe-open';
 
-export const MAX_AGENT_CONFIG_FILE_BYTES = 262_144; // 256 KiB
+export { computeAgentConfigFingerprint, MAX_AGENT_CONFIG_FILE_BYTES };
 export const MAX_AGENT_CONFIG_SCAN_MS = 2_000;
 
 const MAX_HOOK_EVENT_NAMES = 64;
@@ -275,32 +279,14 @@ export async function readBoundedBytes(
   if (postStat.size > maxBytes) {
     return { outcome: 'too-large' };
   }
-  if (total !== postStat.size) {
+  if (
+    total !== postStat.size || stat.size !== postStat.size ||
+    stat.mtimeMs !== postStat.mtimeMs || stat.ctimeMs !== postStat.ctimeMs
+  ) {
     return { outcome: 'changed' };
   }
 
   return { outcome: 'ok', bytes: chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total) };
-}
-
-export function computeAgentConfigFingerprint(
-  backend: BackendRunnerKind,
-  entries: readonly ScannedAgentConfigEntry[],
-  scanError: boolean,
-  scanErrorReason?: 'timeout' | 'scan-failed'
-): string {
-  const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
-  const lines: string[] = [`backend:${backend}`];
-  for (const entry of sorted) {
-    if (entry.status === 'present') {
-      lines.push(`file:${entry.name}:present:${entry.size}:${entry.digest}`);
-    } else {
-      lines.push(`file:${entry.name}:unreadable:${entry.unreadableReason}`);
-    }
-  }
-  if (scanError) {
-    lines.push(`scan-error:${scanErrorReason ?? 'scan-failed'}`);
-  }
-  return createHash('sha256').update(lines.join('\n'), 'utf8').digest('hex');
 }
 
 export async function scanOpenedHandle(
@@ -416,13 +402,13 @@ export async function scanRepoAgentConfig(
 ): Promise<RepoAgentConfigScanResult> {
   const maxBytes =
     typeof options.maxBytes === 'number' && Number.isFinite(options.maxBytes) && options.maxBytes > 0
-      ? Math.floor(options.maxBytes)
+      ? Math.min(MAX_AGENT_CONFIG_FILE_BYTES, Math.floor(options.maxBytes))
       : MAX_AGENT_CONFIG_FILE_BYTES;
   const timeoutMs =
     typeof options.timeoutMs === 'number' &&
     Number.isFinite(options.timeoutMs) &&
     options.timeoutMs > 0
-      ? Math.floor(options.timeoutMs)
+      ? Math.min(MAX_AGENT_CONFIG_SCAN_MS, Math.floor(options.timeoutMs))
       : MAX_AGENT_CONFIG_SCAN_MS;
 
   const candidates = REPO_AGENT_CONFIG_PATHS[backend];
@@ -445,19 +431,20 @@ export async function scanRepoAgentConfig(
   let scanErrorReason: 'timeout' | 'scan-failed' | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  const deadline = performance.now() + timeoutMs;
+  const expired = (): boolean => {
+    if (isAborted()) return true;
+    if (performance.now() < deadline) return false;
+    scanError = true;
+    scanErrorReason = 'timeout';
+    abortController.abort();
+    return true;
+  };
   const work = async (): Promise<void> => {
-    const deadline = performance.now() + timeoutMs;
     for (const relPath of candidates) {
-      if (isAborted() || performance.now() >= deadline) {
-        if (!isAborted()) {
-          abortController.abort();
-          scanError = true;
-          scanErrorReason = 'timeout';
-        }
-        return;
-      }
+      if (expired()) return;
       const entry = await scanPathImpl(workspaceRoot, relPath, maxBytes, abortController.signal);
-      if (isAborted()) return;
+      if (expired()) return;
       if (entry !== null) {
         entries.push(entry);
       }
@@ -482,9 +469,10 @@ export async function scanRepoAgentConfig(
       void workPromise.catch(() => undefined);
     }
   } catch {
-    abortController.abort();
-    scanError = true;
-    scanErrorReason = 'scan-failed';
+    if (!expired()) {
+      scanError = true;
+      scanErrorReason = 'scan-failed';
+    }
   } finally {
     abortController.abort();
     if (timer !== undefined) clearTimeout(timer);

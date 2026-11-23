@@ -32,10 +32,19 @@ original wording is not satisfied and pretending otherwise is the failure this r
 disagree (FR-R3-104, FR-052). The reasoning for fourteen days lives beside the constant.
 
 `npm run release:preflight` refuses a release when the newest record is absent, unreadable,
-undated, older than that bound, taken against a different CLI version than the installed one, or
-taken before a change under `src/runner/`, `src/parser/` or `src/contracts/backend-kinds.ts`. It
+undated, older than that bound, produced in fixture mode (`--fixture`), missing positive turn
+evidence (`state !== 'ok'`) or version evidence for any advertised backend (`claude`, `codex`,
+`agy`), taken over a mismatched transport, taken against a different CLI version than the
+installed one, carrying a mismatched source/build fingerprint, or taken before a change under
+`src/runner/`, `src/parser/`, `src/contracts/backend-kinds.ts`,
+`src/contracts/backend-descriptors.ts`, `src/contracts/acp-runtime.ts`,
+`src/services/acp-runtime/`, or `esbuild.config.mjs`. It
 does **not** run on `npm run gate` or `npm run ci`: a live turn costs the operator's own
 subscription quota, and a gate that charges a turn per run is a gate people disable.
+Deterministic credential-free transport checks can be run at any time with
+`node scripts/backend-canary-run.mjs --fixture` (which exercises `dist/acp-stdio-bridge.js` for
+`claude` and `codex` and native ACP for `agy` without spending provider quota and records
+`mode: 'fixture'`, which release preflight refuses for live release qualification).
 
 ### The version-drift decision (FR-055)
 

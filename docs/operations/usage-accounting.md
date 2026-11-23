@@ -23,18 +23,50 @@ For the store these records live in, see [SQLite application store](sqlite-appli
 
 ## Production status
 
-The service, its schema and its wiring ship in this release, but production constructs no
-accounting service until the application store is opened in the extension host (the F01-B
-cutover). Until then:
-
-- the sidebar's usage read and the headless API answer `store-unavailable`;
-- the audit-stream and terminal-run hooks are installed but have no service to feed;
-- the existing metrics rollup (`metrics-rollup.jsonl`) and its readers are unchanged.
+**F06 usage accounting is wired in production.** Trusted primary activation (`src/activation/sqlite-cutover-wiring.ts`) constructs `createUsageAccountingService` and `createUsageAccountingWiring` on the canonical folder-keyed SQLite store (`<globalStorageUri>/sqlite/<scope>/schegent-state.db`), imports the legacy metrics-rollup epoch (`metrics-rollup.jsonl`) once, serves both the sidebar usage view and headless API (`src/headless/usage-accounting-api.ts`), and offers accepted observations to the opt-in telemetry host service when enabled. In an untrusted window or before the SQLite store opens, reads fail closed with `store-unavailable`.
 
 The F04 store also carries four placeholder tables (`usage_observations`, `usage_corrections`,
 `usage_accounting_applications`, `attempt_usage_revisions`). F06 does not use them; its records
 live in the `accounting_*` tables. Removing or repurposing the placeholders is a maintainer
 decision, left open.
+
+## Three spend and usage mechanisms (and when each enforces)
+
+Three separate host components read or display spend and usage. Each has a distinct unit, timing, and failure behavior:
+
+| Mechanism | Source | Timing & enforcement | Handling of unpriced / incomplete data |
+|---|---|---|---|
+| **Post-turn spend watcher** | `src/services/spend-bound-watcher.ts` | Observes `phase-end` audit entries *after* a turn ends; pauses the Run (`spend-bound-reached`, never terminal) in the backend's denomination (`USD` for `claude`, `tokens` for `codex` / `agy`). Because spend is reported only after a turn ends, a crossing overshoots by the crossing phase and at most one phase after it if the pause write lands late. | Marks the Run `not-trustworthy` / incomplete (lower bound or not measurable); notifies once per Run per unit with no fabricated amount; never treats unmeasurable usage as within budget, and still pauses if a lower bound crosses the limit. |
+| **Pre-dispatch `strict-usd` control admission** | `src/services/workflow-execution/control-usage-accounting.ts` | Evaluates connected-workflow root budgets (`strict-usd` vs `count-only`) *before* dispatching the next attempt, tracking `verifiedMicrousd`, `estimatedMicrousd`, `unpricedAttemptCount`, `reservedMicrousd`, and `uncertainReservationCount`. | Refuses pre-dispatch with `spend-unverifiable` or `spend-limit-reached`; retains reservations for `uncertain` attempts; **never coerces unpriced or token-only usage to `$0` verified USD**. |
+| **F06 usage accounting & historical reports** | `src/services/usage-accounting/usage-accounting-service.ts` | Projects authoritative historical totals per attempt/invocation/measure/unit into `reportedTotal` vs `estimatedTotal` lanes alongside `completeness` (`known`, `partial`, `unknown`, `conflicting`) and `coverage` (`{ known, denominator }`). | Records missing or baseline-less figures as `unknown` / `partial` with explicit gap reasons (`unattributed-session-baseline`, etc.), never as `$0.00`. |
+
+**CLI-reported spend is not an authenticated provider billing statement.** Every dollar or token number Schegent displays comes from CLI stdout/ACP usage payloads emitted by the local backend process. It may omit cache-pricing adjustments, enterprise/subscription discounts, failed requests outside the bridge, or provider-side billing corrections. Any claim about actual billed spend requires an authenticated provider invoice or billing API measurement outside Schegent.
+
+## Operator walkthrough: priced vs incomplete/unmeasurable runs
+
+### 1. Priced run (e.g., `claude` reporting USD cost)
+
+- **Displayed unit & completeness**: `USD` in exact decimal micro-units (`reportedTotal`), `completeness: 'known'`, `coverage: { known: N, denominator: N }` when every attempt reports a valid cost (and an estimated lane only if explicitly computed, never blended into `reportedTotal`).
+- **Enforcement**:
+  - Under `SpendBoundWatcher` (`schegent.spend.maxUsdPerRun` or Phase `spendBoundUsd`), each settled `phase-end` adds to the Run's tally. Crossing the bound writes a resumable pause (`spend-bound-reached`) at the phase boundary — the crossing turn itself has already completed and been paid for (phase-end overshoot).
+  - Under connected-workflow `strict-usd` control admission (`control-usage-accounting.ts`), verified micro-USD and reservations are checked *before* the next attempt dispatches (`spend-limit-reached` stops before starting another turn).
+  - In F06 historical reports, the Run's total appears with `completeness: 'known'` and its exact coverage ratio.
+
+### 2. Incomplete or unmeasurable run (e.g., `codex` / `agy` token-only, missing `costBaseline`, or truncated restart replay)
+
+- **Never coerced to `$0`**: missing cost is never converted to `$0.00`, and token counts are never converted into synthetic USD in the verified/reported lane.
+- **Enforcement & display**:
+  - Under `SpendBoundWatcher`: on `codex` or `agy`, USD bounds do not apply (use `schegent.spend.maxTokensPerRun`); if a configured denomination is absent from `phase-end` or an 8 MiB restart replay (`SPEND_REPLAY_MAX_BYTES`) stops before the Run's start, the watcher marks the Run `not-trustworthy`, notifies the operator once per Run per unit with no fabricated figure, never reports it as within budget, and still pauses if the measured lower bound crosses the limit.
+  - Under `strict-usd` control admission: an unpriced or token-only attempt increments `unpricedAttemptCount` (leaving `verifiedMicrousd` untouched) and refuses further `strict-usd` dispatch with `spend-unverifiable`.
+  - In F06 historical reports: an attempt missing a qualified session baseline records `unknown` with gap `unattributed-session-baseline`, yielding `completeness: 'unknown'` or `'partial'` with `coverage.known < coverage.denominator`.
+
+## Reproducibility boundaries and `promptIdentity` exclusions
+
+Re-running a workflow does **not** guarantee identical model outputs or identical spend. Schegent separates frozen run inputs from dynamic execution variables:
+
+- **Frozen at run admission**: `FrozenWorkflowClosure` (published Phase and Workflow definitions, effective per-phase runner/capability/retry policies, tighten-only limits, output contracts) and `ExecutionEnvelope` (initial inputs, supplemental inputs, declared outputs, instructions, and frozen `acpPromptBlocks` when a connection opts into `contextPolicy`). Editing the catalog after admission never mutates an in-flight Run.
+- **Dynamic variables that can still vary across runs**: prior phase messages, carried unresolved issues, workspace checkout contents, CLI-loaded skill files/system prompts/defaults, installed backend CLI version, remote model/provider version or routing updates, provider-side sampling non-determinism, and tool side effects.
+- **What `promptIdentity` covers and excludes (`src/runner/prompt-identity.ts`, `PROMPT_COMPOSITION_VERSION = 2`)**: each `phase-start` audit row records either `{ scope: 'contract', compositionVersion, digest }` (SHA-256 over the composition version, output-contract text, and rendered task block) or `{ scope: 'resume' }` (no digest when a stored resume prompt is sent). `promptIdentity` **deliberately excludes** the feature brief, iteration count, feature directory, sidecar path, previous phase messages, carried issues, request envelope, continuation note, phase ID, filesystem paths, CLI-loaded skills/system prompts, backend argv, model/provider version, and sampling parameters. Equal `promptIdentity` digests prove only that two attempts shared the same output-contract scaffold and task block, not that their full prompts or environments were identical.
 
 ## How a figure is built
 
@@ -192,8 +224,7 @@ At 100,000 retained attempts, warm filtered 200-row reads meet p95 ≤ 500 ms
 
 ## Known limits
 
-These are accepted for this release and recorded in the feature review
-(`docs/audits/305-usage-metrics-accounting-review.md` in the workspace):
+The workspace tracks these release limits and their follow-up tasks in FR-R7-16, under “305 Usage and metrics accounting.”
 
 - **The deadline is checked between statements.** A read runs synchronously, so one slow
   statement is not interrupted; the 5-second deadline and a headless caller's abort signal are

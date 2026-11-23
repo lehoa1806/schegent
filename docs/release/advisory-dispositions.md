@@ -1,9 +1,16 @@
 # Advisory dispositions
 
 `docs/release/advisory-dispositions.json` is the tracked list of recorded decisions about
-dependency advisories. It started empty. Its first entries record the 2026-11-06 review
-(`FR-R5-F21`): one `accepted` entry per finding of that day's captures of both trees, 86 in all,
-each expiring 2027-02-04. A finding with no entry is not pre-decided. Two commands read it and
+dependency advisories. It started empty, held 86 entries from the 2026-11-06 review (`FR-R5-F21`),
+and was refreshed on **2026-11-23 (`FR-R7-14` / `14-12`)**: safe non-breaking lockfile updates via
+`npm audit fix` eliminated all 14 High-severity advisories and 9 Moderate advisories across both
+trees (cutting normalized findings from 61 → 7 in `root` and 24 → 7 in `webview-ui`). The
+remaining 14 entries (7 `root`, 7 `webview-ui`, expiring `2027-02-21`) are all **builder-only**
+devDependencies (`@vitest/mocker`, `vitest`, `tinypool`, `glob`, `minimatch`) held behind
+semver-major upgrades (`vitest@5.x` / `@vscode/vsce@3.9.1`) and verified absent from both shipped
+runtime bundles (`dist/module-graph/host.json`: 0 bundled third-party packages;
+`dist/module-graph/webview.json`: `svelte` and `esm-env` only) and `schegent-sbom.cdx.json`. A
+finding with no valid non-expired entry refuses release preparation. Two commands read it and
 nothing writes it:
 
 - `npm run security:advisory-diff -- compare --dispositions docs/release/advisory-dispositions.json`
@@ -71,8 +78,11 @@ time of preparation:
   installed version out.
 - **not-recorded**: no entry relates to the finding.
 
-An uncovered finding (`not-recorded`, `expired` or `does-not-cover`) is **reported, not refused**.
-Release preparation refuses only for the seven conditions in [releasing](../../RELEASE.md).
+An uncovered finding (`not-recorded`, `expired` or `does-not-cover`) **refuses release
+preparation** (`advisory-uncovered`, the eighth refusal condition in [releasing](../../RELEASE.md)).
+Every finding is still reported with its verdict, severity, and bundled usage classification;
+`npm run security:audit` and `npm run security:advisory-diff` remain report-only outside release
+verdicts.
 
 ## What a disposition does not do
 

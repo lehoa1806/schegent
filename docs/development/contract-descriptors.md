@@ -36,11 +36,14 @@ scripts/contracts/
 
 All outputs are generated deterministically by `scripts/generate-contract-schemas.mjs`.
 
+The inbound JSON Schema models the raw message before host normalization. The host ignores extra envelope fields and rejects a payload for commands that declare none. Where legacy validators accept an empty array as an empty payload, the schema allows it alongside the object form. For trimmed fields, length bounds apply to the trimmed text. For phase-log reads, an omitted iteration number defaults to `null`. For advisory model-save fields, the schema documents the recognized shape and accepts values the host discards.
+
 ### Live Generated IPC Types
 
 `src/contracts/generated/sidebar-ipc-types.ts` is the sole declaration site for all 71 inbound `*Command` interfaces and all 3 host-to-webview push message envelopes (`StateSnapshotMessage<S>`, `CommandAckMessage`, `PhaseLogBatchPushMessage`, and `HostMessage<S>`).
 
 - All `src/contracts/sidebar-ipc/*.ts` sub-modules and `src/contracts/sidebar-ipc.ts` re-export these generated interfaces rather than hand-declaring `extends CommandBase<...>` copies.
+- The snapshot sync metadata and positioned phase-log batch types are generated from the same definitions as their JSON Schema. The snapshot envelope fields feed both the TypeScript declaration and the legacy, full, and routine schema variants.
 - Commands whose payload is a shared service request type (the six catalog lifecycle commands and `CMD_PREFLIGHT_PROCESS_YAML`) use `payloadTypeRef` in their descriptors so the generated interface references the canonical request type directly instead of re-declaring its fields.
 - Editing any IPC descriptor and running `npm run contracts:generate` propagates directly into generated host types, live `sidebar-ipc.ts` / `webview-ui/src/lib/messages.ts` exports, runtime validators, and `sidebar-ipc.schema.json`.
 
@@ -48,7 +51,7 @@ All outputs are generated deterministically by `scripts/generate-contract-schema
 
 | Command | Purpose |
 |---|---|
-| `npm run contracts:generate` | Regenerate all 25 contract artifacts from descriptors and AST sources |
+| `npm run contracts:generate` | Regenerate all 26 contract artifacts from descriptors and AST sources |
 | `npm run contracts:check` | Verify every generated file is byte-for-byte fresh; exits non-zero naming both the stale file and its source descriptor |
 
 ## Sparse-Array Rejection Policy
@@ -74,6 +77,7 @@ Backend-valued settings metadata in `src/config/settings-schema.ts` (`schegent.b
 
 1. Edit the owning descriptor:
    - Inbound IPC command payload or validation bound: `scripts/contracts/ipc-descriptors/<family>.mjs`.
+   - Host-push envelope, snapshot sync metadata, or phase-log batch: `scripts/contracts/ipc-descriptors/host-messages.mjs`.
    - Snapshot projection field: `scripts/contracts/snapshot-descriptors.mjs` (use `webviewOptional: true` when a field is required on the host producer but optional on the webview receiver for legacy-host tolerance).
 2. Run `npm run contracts:generate`.
 3. Update or add differential test cases in `tests/unit/contracts/runtime-validators.differential.test.ts` (for IPC commands) or fixture assertions in `tests/contract/sidebar-ipc-schema-validation.test.ts` (for snapshots).
@@ -86,6 +90,18 @@ Backend-valued settings metadata in `src/config/settings-schema.ts` (`schegent.b
 3. Run `npm run contracts:generate` — the generator asserts a 1:1 bijection between `COMMAND_TYPES` in `src/contracts/sidebar-ipc.ts` and the descriptor registry.
 4. Wire the new `case CMD_*:` arm in `src/contracts/runtime-validators.ts` to the generated validator.
 5. Do **not** introduce `as SidebarCommand` casts — `tests/lint/no-sidebar-command-casts.test.ts` pins the ceiling across `src/` at `0`.
+
+## Migration line counts
+
+Spec 319 SC-005 called for removing at least 2,000 hand-written lines from these four targets. Counting the stored files with `wc -l` at the pre-migration commit `2c5f3d21` and the delivery commit `8abb4851` shows a reduction of 3,959 lines.
+
+| Target | Before | After |
+|---|---:|---:|
+| `src/contracts/runtime-validators.ts` | 787 | 357 |
+| `src/contracts/validators/*.ts` | 3,775 | 1,753 |
+| `src/ui/sidebar/snapshot.ts` | 1,212 | 334 |
+| `webview-ui/src/lib/snapshot-types.ts` | 1,386 | 757 |
+| Total | 7,160 | 3,201 |
 
 ## Parity Test Retirement Record (FR-R7-05)
 

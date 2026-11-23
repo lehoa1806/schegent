@@ -224,6 +224,55 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
     }
   });
 
+  it('refuses verify and restore when the companion manifest omits an indexed workspace file', async () => {
+    const h = await setupHarness();
+    try {
+      const relativePath = 'saved-report.txt';
+      const bytes = Buffer.from('saved report');
+      await fs.writeFile(path.join(h.workspaceRoot, relativePath), bytes);
+      h.store.writerConnection.run(
+        `INSERT INTO artifacts (artifact_id, content_sha256, byte_length, media_type, kind, created_at_ms)
+         VALUES ('artifact-1', ?, ?, 'text/plain', 'report', ?)`,
+        createHash('sha256').update(bytes).digest('hex'), bytes.length, h.now
+      );
+      h.store.writerConnection.run(
+        `INSERT INTO artifact_locations (location_id, artifact_id, storage_tier, uri_or_relpath, verified_at_ms)
+         VALUES ('location-1', 'artifact-1', 'workspace_file', ?, ?)`,
+        relativePath, h.now
+      );
+
+      const deps = { api: h.api, ui: createStubUi().ui };
+      const options = { backupId: 'bkp-indexed-file' };
+      const created = await runBackupStore(deps, options);
+      if (created.status !== 'created') throw new Error(`Backup was ${created.status}`);
+      expect(await runVerifyStoreBackup(deps, options)).toMatchObject({
+        status: 'verified', verifiedExternalDependencies: 1
+      });
+
+      const ioFailureApi = createStoreBackupRestoreApi({
+        getSqliteStore: () => h.store,
+        trustedRootDir: h.storageRoot,
+        scopeId: h.scopeId,
+        hasPrimacy: async () => true,
+        hasInFlightRun: () => false,
+        reloadAfterRestore: vi.fn(),
+        inspectExternalDependency: () => { throw new Error('dependency read failed'); }
+      });
+      const rejection = { status: 'rejected', reasonCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT' };
+      expect(await runVerifyStoreBackup({ ...deps, api: ioFailureApi }, options)).toMatchObject(rejection);
+      expect(await runRestoreStoreBackup({ ...deps, api: ioFailureApi }, options)).toMatchObject(rejection);
+
+      await fs.writeFile(created.manifestPath, JSON.stringify({ ...created.manifest, externalDependencies: [] }));
+      h.store.writerConnection.run(`UPDATE artifacts SET media_type = 'application/json'`);
+      expect(await runVerifyStoreBackup(deps, options)).toMatchObject(rejection);
+      expect(await runRestoreStoreBackup(deps, options)).toMatchObject(rejection);
+      expect(h.store.writerConnection.scalar('SELECT media_type FROM artifacts')).toBe('application/json');
+      expect(h.getReloadCount()).toBe(0);
+    } finally {
+      h.store.close();
+    }
+  });
+
   it('refuses restore when a Run is in flight (RUN_IN_FLIGHT) or window lacks ownership (NOT_WORKSPACE_OWNER)', async () => {
     let inFlight = true;
     let owner = true;
@@ -381,6 +430,23 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
       const fkBytes = await fs.readFile(fkPath);
       await writeVariant('bkp-fk-bad', fkBytes, {});
 
+      const invalidSchemaCopies = [
+        ['bkp-no-schema-version', `DELETE FROM schema_meta WHERE meta_key = 'schema_version'`],
+        ['bkp-no-reader-floor', `DELETE FROM schema_meta WHERE meta_key = 'min_reader_version'`],
+        ['bkp-bad-migration-record', `UPDATE schema_migrations SET checksum_sha256 = 'invalid' WHERE version = 1`]
+      ] as const;
+      for (const [id, update] of invalidSchemaCopies) {
+        const copyPath = path.join(backupsDir, `${id}.db`);
+        await fs.writeFile(copyPath, baseBytes, { mode: 0o600 });
+        const copy = new NodeSqliteConnection({ databasePath: copyPath, journalMode: 'delete' });
+        try {
+          copy.run(update);
+        } finally {
+          copy.close();
+        }
+        await writeVariant(id, await fs.readFile(copyPath), {});
+      }
+
       const cases: ReadonlyArray<{
         readonly backupId: string;
         readonly expectedCode: string;
@@ -391,6 +457,9 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
       }> = [
         { backupId: 'bkp-flip', expectedCode: 'DATABASE_DIGEST_MISMATCH' },
         { backupId: 'bkp-schema', expectedCode: 'UNSUPPORTED_SCHEMA_VERSION' },
+        { backupId: 'bkp-no-schema-version', expectedCode: 'UNSUPPORTED_SCHEMA_VERSION' },
+        { backupId: 'bkp-no-reader-floor', expectedCode: 'UNSUPPORTED_SCHEMA_VERSION' },
+        { backupId: 'bkp-bad-migration-record', expectedCode: 'BACKUP_OPEN_FAILED' },
         { backupId: 'bkp-ext-missing', expectedCode: 'EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT' },
         {
           backupId: 'bkp-ext-bound',
@@ -799,6 +868,15 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
         backupId: 'bkp-reloc-1',
         errorCode: 'NOT_WORKSPACE_OWNER'
       });
+
+      primacyCalls = 0;
+      const backupRefused = await runBackupStore(
+        { api: dynamicApi, ui: createStubUi().ui },
+        { backupId: 'bkp-lost-ownership' }
+      );
+      expect(backupRefused).toMatchObject({ status: 'refused', reasonCode: 'NOT_WORKSPACE_OWNER' });
+      expect((await dynamicApi.listBackups()).map((entry) => entry.backupId)).toEqual(['bkp-reloc-1']);
+      expect((await fs.readFile(auditLogPath, 'utf8')).trim().split('\n')).toHaveLength(auditLinesBeforeToctou);
 
       // 4. Audit append failure logs a sanitized path-free warning without failing completed backup/restore
       // or reporting UI errors through the command boundary.

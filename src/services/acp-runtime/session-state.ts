@@ -25,6 +25,9 @@ export interface TurnState {
 
 interface SessionState {
   loading: boolean;
+  validatingPrompt: boolean;
+  validationCancelled: boolean;
+  providerSessionId: string | null;
   turn: TurnState | null;
 }
 
@@ -53,7 +56,13 @@ export class SessionTable {
   }
 
   add(sessionId: string, loading: boolean): void {
-    this.sessions.set(sessionId, { loading, turn: null });
+    this.sessions.set(sessionId, {
+      loading,
+      validatingPrompt: false,
+      validationCancelled: false,
+      providerSessionId: null,
+      turn: null
+    });
   }
 
   delete(sessionId: string): void {
@@ -67,6 +76,43 @@ export class SessionTable {
 
   isLoading(sessionId: string): boolean {
     return this.sessions.get(sessionId)?.loading === true;
+  }
+
+  isValidatingPrompt(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.validatingPrompt === true;
+  }
+
+  beginPromptValidation(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session !== undefined) {
+      session.validatingPrompt = true;
+      session.validationCancelled = false;
+    }
+  }
+
+  cancelPromptValidation(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session !== undefined && session.validatingPrompt) {
+      session.validationCancelled = true;
+    }
+  }
+
+  endPromptValidation(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (session === undefined) return false;
+    const wasCancelled = session.validationCancelled;
+    session.validatingPrompt = false;
+    session.validationCancelled = false;
+    return wasCancelled;
+  }
+
+  setProviderSessionId(sessionId: string, providerSessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session !== undefined) session.providerSessionId = providerSessionId;
+  }
+
+  providerSessionIdOf(sessionId: string): string | null {
+    return this.sessions.get(sessionId)?.providerSessionId ?? null;
   }
 
   turnOf(sessionId: string): TurnState | null {

@@ -132,6 +132,28 @@ describe('agent-config-acknowledgement modal requester (FR-R7-04, SC-001, SC-002
     expect(decision).toBe('denied');
   });
 
+  it('discloses a partial scan without treating unscanned files as removals', () => {
+    const prior: AgentConfigGrant = {
+      fingerprint: '0'.repeat(64),
+      backend: 'claude',
+      grantedAt: 1_700_000_000_000,
+      files: [
+        { name: '.claude/settings.json', size: 128, digest: DIGEST_A },
+        { name: 'CLAUDE.md', size: 200, digest: DIGEST_C }
+      ]
+    };
+    const scan = makeScan(
+      [{ name: '.claude/settings.json', status: 'present', size: 129, digest: DIGEST_A_NEW }],
+      { scanError: true, scanErrorReason: 'timeout' }
+    );
+
+    const prompt = buildAgentConfigAckPrompt(scan, prior);
+    expect(prompt.message).toContain('could not finish scanning');
+    expect(prompt.detail).toContain('modified: .claude/settings.json');
+    expect(prompt.detail).not.toContain('removed: CLAUDE.md');
+    expect(prompt.actions).toEqual([AGENT_CONFIG_APPROVE_ONCE_LABEL]);
+  });
+
   it('returns this-run on Approve This Run, denied on dismissal, and denied on dialog throw', async () => {
     const scan = makeScan([{ name: 'CLAUDE.md', status: 'present', size: 10, digest: DIGEST_C }]);
 

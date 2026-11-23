@@ -650,7 +650,7 @@ describe('FR-R7-10 — createSqliteCutoverCoordinator relocation wiring', () => 
     coord.close();
   });
 
-  it('B-P2-7: reportRelocationOutcome suppresses empty unselected-path toast and emits diagnostics on conflict_resolved and fallback', () => {
+  it('reports conflicts, fallback and diagnostic details in one operator notice per outcome', () => {
     const { logger } = createSpyLogger();
 
     // (1) conflict_resolved with empty newlyDiscoveredConflictPaths + diagnostics -> NO empty-path toast, YES diagnostics toast.
@@ -674,9 +674,9 @@ describe('FR-R7-10 — createSqliteCutoverCoordinator relocation wiring', () => 
     );
     expect(notices1).toHaveLength(1);
     expect(notices1[0]).toContain('legacy-retirement-pending');
-    expect(notices1[0]).not.toContain('unmodified at:');
+    expect(notices1[0]).not.toContain('other data is available');
 
-    // (2) conflict_resolved with BOTH newlyDiscoveredConflictPaths and diagnostics -> BOTH toasts emitted.
+    // (2) The conflict notice includes diagnostic details.
     const notices2: string[] = [];
     reportRelocationOutcome(
       {
@@ -695,11 +695,11 @@ describe('FR-R7-10 — createSqliteCutoverCoordinator relocation wiring', () => 
       logger,
       (m) => notices2.push(m)
     );
-    expect(notices2).toHaveLength(2);
+    expect(notices2).toHaveLength(1);
     expect(notices2[0]).toContain('/legacy-old/sqlite/s/schegent-state.db');
-    expect(notices2[1]).toContain('candidate-corrupt:legacy');
+    expect(notices2[0]).toContain('candidate-corrupt:legacy');
 
-    // (3) fallback_legacy_preserved with diagnostics -> BOTH fallback toast and diagnostics toast emitted.
+    // (3) The fallback notice includes diagnostic details.
     const notices3: string[] = [];
     reportRelocationOutcome(
       {
@@ -717,9 +717,9 @@ describe('FR-R7-10 — createSqliteCutoverCoordinator relocation wiring', () => 
       logger,
       (m) => notices3.push(m)
     );
-    expect(notices3).toHaveLength(2);
+    expect(notices3).toHaveLength(1);
     expect(notices3[0]).toContain('network_share_wal_unsupported');
-    expect(notices3[1]).toContain('candidate-corrupt:legacy');
+    expect(notices3[0]).toContain('candidate-corrupt:legacy');
   });
 
   it('Iter 2 P2: passive probe upgrades to canonical WAL DB over stale non-WAL legacy DB and protects both', async () => {

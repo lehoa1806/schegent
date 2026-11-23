@@ -114,6 +114,7 @@ export interface BackendExecutionWiringDeps {
   readonly memento: AcceptanceMementoPort;
   readonly isWorkspaceTrusted: () => boolean;
   readonly hasPrimacy: () => Promise<boolean>;
+  readonly onFenceLost?: (listener: () => void) => vscode.Disposable;
 }
 
 export interface BackendExecutionWiring {
@@ -444,7 +445,8 @@ const runnerRegistry = new BackendRunnerRegistry({
     store,
     logger,
     isWorkspaceTrusted: deps.isWorkspaceTrusted,
-    hasPrimacy: deps.hasPrimacy
+    hasPrimacy: deps.hasPrimacy,
+    ...(deps.onFenceLost !== undefined ? { onFenceLost: deps.onFenceLost, disposables } : {})
   }),
   probeTransport: true,
   logger,

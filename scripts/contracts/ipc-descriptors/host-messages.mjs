@@ -11,13 +11,34 @@ import {
 
 export const SIDEBAR_IPC_SCHEMA_VERSION = 3;
 
-const snapshotSyncMetaSchema = (modeSchema) =>
-  d.obj({
-    mode: modeSchema,
+const snapshotSyncModes = ['full', 'routine'];
+const snapshotSyncMeta = d.obj(
+  {
+    mode: d.enum(snapshotSyncModes),
     revision: d.int({ min: 0 }),
     baseRevision: d.field(d.int({ min: 0 }), { optional: true }),
     omittedSlices: d.field(d.arr(d.enum(SUPPRESSIBLE_SNAPSHOT_SLICES)), { optional: true })
+  },
+  {
+    doc: "Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision; routine mode reconstructs omittedSlices from baseRevision."
+  }
+);
+
+const stateSnapshotFields = {
+  type: d.lit('STATE_SNAPSHOT'),
+  payload: d.ref('WorkflowSnapshot', { tsType: 'S' }),
+  sync: d.field(d.ref('SnapshotSyncMeta'), { optional: true })
+};
+
+function snapshotWireSchema(mode) {
+  const { sync, ...fields } = stateSnapshotFields;
+  if (mode === undefined) return d.obj(fields);
+  return d.obj({
+    ...fields,
+    payload: mode === 'routine' ? d.ref('WorkflowSnapshotRoutinePayload') : fields.payload,
+    sync: d.obj({ ...snapshotSyncMeta.fields, mode: d.lit(mode) })
   });
+}
 
 export const HOST_MESSAGES = Object.freeze([
   d.hostMessage({
@@ -25,31 +46,9 @@ export const HOST_MESSAGES = Object.freeze([
     interfaceName: 'StateSnapshotMessage',
     typeParams: '<S>',
     doc: 'Host pushes an authoritative WorkflowSnapshot envelope with optional sync metadata.',
-    schema: d.obj({
-      type: d.lit('STATE_SNAPSHOT'),
-      payload: d.ref('WorkflowSnapshot', { tsType: 'S' }),
-      sync: d.field(
-        d.ref('SnapshotSyncMeta', { tsType: 'SnapshotSyncMeta', tsImport: '../snapshot-bounds' }),
-        { optional: true }
-      )
-    }),
+    schema: d.obj(stateSnapshotFields),
     jsonSchema: d.oneOf(
-      [
-        d.obj({
-          type: d.lit('STATE_SNAPSHOT'),
-          payload: d.ref('WorkflowSnapshot')
-        }),
-        d.obj({
-          type: d.lit('STATE_SNAPSHOT'),
-          payload: d.ref('WorkflowSnapshot'),
-          sync: snapshotSyncMetaSchema(d.lit('full'))
-        }),
-        d.obj({
-          type: d.lit('STATE_SNAPSHOT'),
-          payload: d.ref('WorkflowSnapshotRoutinePayload'),
-          sync: snapshotSyncMetaSchema(d.lit('routine'))
-        })
-      ],
+      [snapshotWireSchema(), ...snapshotSyncModes.map(snapshotWireSchema)],
       {
         doc: 'Host pushes an authoritative WorkflowSnapshot envelope; mode=routine permits omitting unchanged SUPPRESSIBLE_SNAPSHOT_SLICES.'
       }
@@ -82,10 +81,7 @@ export const HOST_MESSAGES = Object.freeze([
     doc: 'Host pushes a bounded, positioned batch of live phase log entries.',
     schema: d.obj({
       type: d.lit('MSG_PHASE_LOG_BATCH'),
-      payload: d.ref('PhaseLogBatchPayload', {
-        tsType: 'PhaseLogBatchPayload',
-        tsImport: '../sidebar-ipc/phase-log'
-      })
+      payload: d.ref('PhaseLogBatchPayload')
     })
   })
 ]);
@@ -109,35 +105,43 @@ const PHASE_LOG_WIRE_ENTRY_KINDS = Object.freeze([
   'coverage-gap'
 ]);
 
-export const SHARED_IPC_DEFS = Object.freeze({
-  SnapshotSyncMeta: snapshotSyncMetaSchema(d.enum(['full', 'routine'])),
+export const HOST_MESSAGE_DEFINITIONS = Object.freeze({
+  SnapshotSyncMeta: snapshotSyncMeta,
 
   PhaseLogWireEntry: d.obj({
     seq: d.int({ min: 0 }),
     kind: d.enum(PHASE_LOG_WIRE_ENTRY_KINDS),
     ts: d.field(d.str(), { nullable: true }),
-    body: d.obj({}, { closed: false }),
+    body: d.rec(d.unknown()),
     bodyTruncated: d.field(
       d.rec(d.obj({ originalLength: d.int({ min: 0 }) })),
       { nullable: true }
     )
-  }),
+  }, { doc: 'A display entry as it crosses the boundary: sanitized and budgeted.' }),
 
   LiveLogBatchEntry: d.obj({
     at: d.int({ min: 0 }),
     n: d.int({ min: 0 }),
     entry: d.ref('PhaseLogWireEntry')
+  }, {
+    doc: "One entry with its source position. The at field is the end byte offset of its record, and n is the entry's ordinal within that record."
   }),
+
+  LiveLogBatchMode: d.enum(['continue', 'resume', 'reset']),
 
   PhaseLogBatchPayload: d.obj({
     protocol: d.lit(1),
     tailSessionId: d.str({ minLen: 1 }),
     batchSeq: d.int({ min: 0 }),
     generation: d.str({ minLen: 1 }),
-    mode: d.enum(['continue', 'resume', 'reset']),
+    mode: d.ref('LiveLogBatchMode'),
     toCursor: d.field(d.str(), { nullable: true }),
     entries: d.arr(d.ref('LiveLogBatchEntry'))
-  }),
+  }, { doc: 'The MSG_PHASE_LOG_BATCH payload, at most 256 KiB serialized.' })
+});
+
+export const SHARED_IPC_DEFS = Object.freeze({
+  ...HOST_MESSAGE_DEFINITIONS,
 
   EnqueueStartIntent: d.discUnion('startMode', {
     now: d.obj({

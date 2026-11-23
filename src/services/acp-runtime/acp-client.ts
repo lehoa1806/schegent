@@ -36,6 +36,7 @@ import {
   type AgentProfile,
   type NegotiatedCapabilities
 } from '../../contracts/acp-runtime';
+import { isSafeProviderSessionId } from './agent-identifier';
 import { initializeParams, missingRequirement, negotiate, operationAllowed } from './capability-negotiation';
 import {
   buildUsageUpdate,
@@ -53,8 +54,13 @@ import { deferred } from './deferred';
 import { FrameDecoder } from './frame-decoder';
 import { JSON_RPC_INVALID_PARAMS, JSON_RPC_METHOD_NOT_FOUND, type RpcId } from './json-rpc-message';
 import { ObservationEmitter } from './observation-emitter';
-import { decidePermission, parsePermissionParams } from './permission-policy';
-import { buildPromptContent } from './prompt-content';
+import {
+  decidePermission,
+  decidePermissionMaybeAsync,
+  parsePermissionParams,
+  type PermissionAnswer
+} from './permission-policy';
+import { buildPromptContentMaybeAsync, type PromptContentResult } from './prompt-content';
 import { RpcConnection, type RpcSettlement } from './rpc-connection';
 import { mapSessionUpdate, toNormalizedEvent } from './session-update-mapper';
 import { SessionTable, type TurnState } from './session-state';
@@ -64,6 +70,22 @@ import { SYSTEM_CLOCK } from './system-clock';
 type Refusal = { readonly reason: AcpRefusalReason; readonly detail?: string };
 
 const LOAD_SESSION_REQUIREMENT = 'load-session';
+
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
+function providerSessionIdFromMeta(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const meta = value['_meta'];
+  if (!isRecord(meta)) return null;
+  const raw = meta['providerSessionId'];
+  return isSafeProviderSessionId(raw) ? raw : null;
+}
 
 class AcpClientConnection implements AcpConnection {
   private readonly profile: AgentProfile;
@@ -120,25 +142,65 @@ class AcpClientConnection implements AcpConnection {
     return this.exchange('session/new', params, (settlement) => this.adoptSession(settlement));
   }
 
-  async loadSession(sessionId: string, cwd: string, options: { readonly mayLoad: boolean }): Promise<AcpSessionResult> {
+  async loadSession(
+    sessionId: string,
+    cwd: string,
+    options: { readonly mayLoad: boolean; readonly providerSessionId?: string }
+  ): Promise<AcpSessionResult> {
     const refusal = this.loadRefusal(sessionId, cwd, options);
     if (refusal !== null) return this.refuseSession(refusal);
     this.sessions.add(sessionId, true);
-    const params = { sessionId, cwd, mcpServers: [] };
+    if (options.providerSessionId !== undefined && isSessionId(options.providerSessionId)) {
+      this.sessions.setProviderSessionId(sessionId, options.providerSessionId);
+    }
+    const params = {
+      sessionId,
+      cwd,
+      mcpServers: [],
+      ...(options.providerSessionId !== undefined
+        ? { _meta: { providerSessionId: options.providerSessionId } }
+        : {})
+    };
     return this.exchange('session/load', params, (settlement) => this.finishLoad(sessionId, settlement));
   }
 
+  providerSessionIdOf(sessionId: string): string | null {
+    return this.sessions.providerSessionIdOf(sessionId);
+  }
+
   async prompt(request: AcpPromptRequest): Promise<AcpPromptOutcome> {
-    const checked = this.checkPrompt(request);
-    if (!checked.ok) {
-      this.lastRefusal = checked.refusal.reason;
-      return withDetail({ kind: 'refused', reason: checked.refusal.reason }, checked.refusal.detail);
+    const preRefusal = this.precheckPrompt(request);
+    if (preRefusal !== null) return this.refusePrompt(preRefusal);
+    const contentOrPromise = buildPromptContentMaybeAsync(
+      request.blocks,
+      this.capabilities!,
+      this.options.verifyResourceLink
+    );
+    let content: PromptContentResult;
+    if (isPromiseLike<PromptContentResult>(contentOrPromise)) {
+      this.sessions.beginPromptValidation(request.sessionId);
+      try {
+        content = await contentOrPromise;
+      } catch {
+        content = { ok: false, reason: 'resource-inaccessible' };
+      }
+      const cancelledDuringValidation = this.sessions.endPromptValidation(request.sessionId);
+      if (cancelledDuringValidation) {
+        return this.refusePrompt({ reason: 'connection-not-ready', detail: 'cancelled' });
+      }
+      const postRefusal = this.precheckPrompt(request);
+      if (postRefusal !== null) return this.refusePrompt(postRefusal);
+    } else {
+      content = contentOrPromise;
+    }
+    if (!content.ok) {
+      return this.refusePrompt(withDetail({ reason: content.reason }, content.detail));
     }
     const { sessionId, attemptId, rootId } = request;
     const open: { turn: TurnState | null } = { turn: null };
     const begin = (id: number): TurnState => (open.turn ??= this.startTurn(sessionId, id, attemptId, rootId));
     const done = deferred<AcpPromptOutcome>();
-    const call = this.rpc.request('session/prompt', { sessionId, prompt: checked.blocks }, undefined, (settlement, id) => {
+    const call = this.rpc.request('session/prompt', { sessionId, prompt: content.blocks }, undefined, (settlement, id) => {
       done.resolve(this.finishTurn(sessionId, begin(id), settlement));
       this.sessions.endTurn(sessionId);
     });
@@ -149,6 +211,10 @@ class AcpClientConnection implements AcpConnection {
 
   cancel(sessionId: string): void {
     if (this.state !== 'ready') return;
+    if (this.sessions.isValidatingPrompt(sessionId)) {
+      this.sessions.cancelPromptValidation(sessionId);
+      return;
+    }
     const turn = this.sessions.turnOf(sessionId);
     if (turn === null || turn.cancelling) return;
     turn.cancelling = true;
@@ -213,31 +279,45 @@ class AcpClientConnection implements AcpConnection {
     return withDetail({ ok: false, reason: refusal.reason }, refusal.detail);
   }
 
-  private loadRefusal(sessionId: string, cwd: string, options: { readonly mayLoad: boolean }): Refusal | null {
+  private refusePrompt(refusal: Refusal): AcpPromptOutcome {
+    this.lastRefusal = refusal.reason;
+    return withDetail({ kind: 'refused', reason: refusal.reason }, refusal.detail);
+  }
+
+  private loadRefusal(
+    sessionId: string,
+    cwd: string,
+    options: { readonly mayLoad: boolean; readonly providerSessionId?: string }
+  ): Refusal | null {
     if (this.state !== 'ready' || this.capabilities === null) return { reason: 'connection-not-ready' };
     if (!isRecord(options) || options.mayLoad !== true) return { reason: 'fresh-session-required' };
     if (!operationAllowed('session-load', this.capabilities)) {
       return { reason: 'capability-missing', detail: LOAD_SESSION_REQUIREMENT };
     }
     if (!isSessionId(sessionId) || !isNonEmpty(cwd) || this.sessions.has(sessionId)) return { reason: 'invalid-input' };
+    if (options.providerSessionId !== undefined && !isSafeProviderSessionId(options.providerSessionId)) {
+      return { reason: 'invalid-input' };
+    }
     return null;
   }
 
-  private checkPrompt(
-    request: AcpPromptRequest
-  ): { ok: true; blocks: readonly Record<string, unknown>[] } | { ok: false; refusal: Refusal } {
-    if (this.state !== 'ready' || this.capabilities === null) return { ok: false, refusal: { reason: 'connection-not-ready' } };
-    if (!isRecord(request) || !isSessionId(request.sessionId)) return { ok: false, refusal: { reason: 'invalid-input' } };
+  private precheckPrompt(request: AcpPromptRequest): Refusal | null {
+    if (this.state !== 'ready' || this.capabilities === null || this.rpc.failure !== null) {
+      return { reason: 'connection-not-ready' };
+    }
+    if (!isRecord(request) || !isSessionId(request.sessionId)) return { reason: 'invalid-input' };
     if (!isHostIdentifier(request.attemptId) || !isHostIdentifier(request.rootId)) {
-      return { ok: false, refusal: { reason: 'invalid-input' } };
+      return { reason: 'invalid-input' };
     }
-    if (!this.sessions.has(request.sessionId)) return { ok: false, refusal: { reason: 'session-unknown' } };
-    if (this.sessions.isLoading(request.sessionId) || this.sessions.turnOf(request.sessionId) !== null) {
-      return { ok: false, refusal: { reason: 'prompt-in-flight' } };
+    if (!this.sessions.has(request.sessionId)) return { reason: 'session-unknown' };
+    if (
+      this.sessions.isLoading(request.sessionId) ||
+      this.sessions.isValidatingPrompt(request.sessionId) ||
+      this.sessions.turnOf(request.sessionId) !== null
+    ) {
+      return { reason: 'prompt-in-flight' };
     }
-    const content = buildPromptContent(request.blocks, this.capabilities, this.options.verifyResourceLink);
-    if (!content.ok) return { ok: false, refusal: withDetail({ reason: content.reason }, content.detail) };
-    return { ok: true, blocks: content.blocks };
+    return null;
   }
 
   /** One handshake-bounded session request. `apply` runs while its answer is being routed. */
@@ -287,6 +367,10 @@ class AcpClientConnection implements AcpConnection {
     if (stopReason === null) {
       this.rpc.fail('protocol-violation');
       return { kind: 'uncertain', turnId: turn.turnId, reason: 'protocol-violation' };
+    }
+    const metaProviderId = providerSessionIdFromMeta(settlement.value);
+    if (metaProviderId !== null) {
+      this.sessions.setProviderSessionId(sessionId, metaProviderId);
     }
     this.observer.emit(sessionId, this.sessions.attributionFor(sessionId), () => ({
       kind: 'turn-completed',
@@ -339,7 +423,28 @@ class AcpClientConnection implements AcpConnection {
       options: parsed.options
     };
     const cancelling = turn !== null && turn.cancelling;
-    this.rpc.respond(id, { outcome: decidePermission(permission, this.options.permissionPolicy, cancelling) });
+    const answerOrPromise = decidePermissionMaybeAsync(permission, this.options.permissionPolicy, cancelling);
+    if (!isPromiseLike<PermissionAnswer>(answerOrPromise)) {
+      this.rpc.respond(id, { outcome: answerOrPromise });
+      return;
+    }
+    void answerOrPromise.then((resolvedAnswer) => {
+      if (this.state !== 'ready' || this.rpc.failure !== null) return;
+      if (!this.sessions.has(parsed.sessionId)) {
+        this.rpc.respond(id, { outcome: decidePermission(permission, undefined, true) });
+        return;
+      }
+      const currentTurn = this.sessions.turnOf(parsed.sessionId);
+      if ((currentTurn !== null && currentTurn.cancelling) || (turn !== null && turn.cancelling)) {
+        this.rpc.respond(id, { outcome: { outcome: 'cancelled' } });
+        return;
+      }
+      if (currentTurn !== turn) {
+        this.rpc.respond(id, { outcome: decidePermission(permission, undefined, false) });
+        return;
+      }
+      this.rpc.respond(id, { outcome: resolvedAnswer });
+    });
   }
 
   private onNotification(method: string, params: unknown): void {
@@ -355,6 +460,10 @@ class AcpClientConnection implements AcpConnection {
     if (!this.sessions.has(sessionId)) {
       this.counters.staleUpdates += 1;
       return;
+    }
+    const metaProviderId = providerSessionIdFromMeta(params);
+    if (metaProviderId !== null) {
+      this.sessions.setProviderSessionId(sessionId, metaProviderId);
     }
     const mapped = mapSessionUpdate(params['update']);
     if (mapped.kind === 'ignored') {

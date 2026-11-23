@@ -153,3 +153,7 @@ own that quality.
 - No claim that localization would widen adoption. That is a strategic argument this record does
   not make.
 - No position on accessibility, which is measured separately.
+- Cross-linked with `FR-R7-14` (`14-23`) private-scope release posture
+  ([`docs/architecture/release-posture-engineering-preview.md`](../../../docs/architecture/release-posture-engineering-preview.md))
+  and the sibling expansion gates ([remote and multi-user expansion gate](../architecture/remote-multi-user-expansion-gate.md),
+  [local-first, not offline](local-first-not-offline.md)).

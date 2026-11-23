@@ -11,11 +11,16 @@
  *   `image: false`, `audio: false`).
  * - Zero `vscode` imports and zero direct `child_process` imports (spawns via `stdio-transport`).
  */
+import * as path from 'node:path';
+
 import { ACP_PROTOCOL_VERSION, ACP_RUNTIME_LIMITS } from '../../../contracts/acp-runtime';
+import { getBackendDescriptor } from '../../../contracts/backend-descriptors';
 import { isNativeReviewKind, type NativeReviewKind } from '../../../contracts/process-definitions';
 import {
   codexSecurityLaunch, isReviewCommit, isReviewExclusion, summarizeSecurityScan, type NativeReviewInvocation
 } from '../../../runner/native-review-launch';
+import { canonicalizePathWithTailSync } from '../../../lib/protected-path-match';
+import { isAgentIdentifier, isSafeProviderSessionId } from '../agent-identifier';
 import {
   JSON_RPC_INVALID_PARAMS,
   JSON_RPC_METHOD_NOT_FOUND,
@@ -82,6 +87,23 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+const EPHEMERAL_BRIDGE_SESSION_PREFIX_RE = /^acp-(?:claude|codex|agy)-session-/;
+
+function canonicalizeBridgeCwd(rawCwd: string): string | null {
+  if (rawCwd.includes('\0')) return null;
+  const resolved = path.resolve(rawCwd);
+  const canonical = canonicalizePathWithTailSync(resolved);
+  return canonical.ok ? canonical.canonical : null;
+}
+
+function isValidBridgeProviderSessionId(backend: BridgedBackendKind, value: unknown): value is string {
+  return (
+    isSafeProviderSessionId(value) &&
+    !value.startsWith(`acp-${backend}-session-`) &&
+    !EPHEMERAL_BRIDGE_SESSION_PREFIX_RE.test(value)
+  );
+}
+
 function renderPromptBlocks(blocks: unknown): string | null {
   if (!Array.isArray(blocks) || blocks.length === 0) return null;
   const parts: string[] = [];
@@ -110,6 +132,9 @@ function renderPromptBlocks(blocks: unknown): string | null {
 }
 
 function buildCliArgs(config: AcpBridgeLaunchConfig, providerSessionId: string | null): string[] {
+  if (providerSessionId !== null && !isSafeProviderSessionId(providerSessionId)) {
+    throw new Error('ACP_BRIDGE_INVALID_PROVIDER_SESSION_ID');
+  }
   if (config.backend === 'claude') {
     const args: string[] = [...config.permissionFlags];
     if (providerSessionId !== null) args.push('--resume', providerSessionId);
@@ -212,7 +237,14 @@ export function startAcpStdioBridgeServer(
   };
 
   const emitSessionUpdate = (sessionId: string, update: Record<string, unknown>): void => {
-    sendFramedLine(notificationLine('session/update', { sessionId, update }));
+    const providerSessionId = sessions.get(sessionId)?.providerSessionId ?? null;
+    sendFramedLine(
+      notificationLine('session/update', {
+        sessionId,
+        update,
+        ...(providerSessionId !== null ? { _meta: { providerSessionId } } : {})
+      })
+    );
   };
 
   const safeToolId = (raw: unknown): string => {
@@ -228,7 +260,7 @@ export function startAcpStdioBridgeServer(
     session: BridgeSession,
     record: Record<string, unknown>
   ): { completedStopReason?: 'end_turn' | 'max_tokens' | 'refusal'; errorText?: string } => {
-    if (typeof record['session_id'] === 'string' && record['session_id'].length > 0) {
+    if (isValidBridgeProviderSessionId(config.backend, record['session_id'])) {
       session.providerSessionId = record['session_id'];
     }
     const rowType = record['type'];
@@ -309,7 +341,7 @@ export function startAcpStdioBridgeServer(
     record: Record<string, unknown>
   ): { completedStopReason?: 'end_turn'; errorText?: string } => {
     const rowType = record['type'];
-    if (rowType === 'thread.started' && typeof record['thread_id'] === 'string' && record['thread_id'].length > 0) {
+    if (rowType === 'thread.started' && isValidBridgeProviderSessionId(config.backend, record['thread_id'])) {
       session.providerSessionId = record['thread_id'];
       return {};
     }
@@ -383,6 +415,11 @@ export function startAcpStdioBridgeServer(
     session: BridgeSession,
     promptText: string
   ): void => {
+    const liveCwd = canonicalizeBridgeCwd(session.cwd);
+    if (liveCwd === null || liveCwd !== session.cwd) {
+      sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, 'Session cwd retargeted or unreadable'));
+      return;
+    }
     const securityReview = config.backend === 'codex' && config.nativeReview?.kind === 'security'
       ? config.nativeReview
       : undefined;
@@ -498,11 +535,16 @@ export function startAcpStdioBridgeServer(
       }
       if (session.activeTurn === turn) session.activeTurn = null;
 
+      const resultMeta =
+        session.providerSessionId !== null
+          ? { _meta: { providerSessionId: session.providerSessionId } }
+          : {};
+
       if (turn.cancelled) {
         if (!child.isProcessTreeGone()) {
           io.writeStderr('[acp-bridge] warning: child process group survived after cancellation\n');
         }
-        sendFramedLine(resultLine(rpcId, { stopReason: 'cancelled' }));
+        sendFramedLine(resultLine(rpcId, { stopReason: 'cancelled', ...resultMeta }));
         return;
       }
       if (exit.launchFailed) {
@@ -526,7 +568,7 @@ export function startAcpStdioBridgeServer(
         );
         return;
       }
-      sendFramedLine(resultLine(rpcId, { stopReason: completedStopReason ?? 'end_turn' }));
+      sendFramedLine(resultLine(rpcId, { stopReason: completedStopReason ?? 'end_turn', ...resultMeta }));
     });
   };
 
@@ -549,7 +591,7 @@ export function startAcpStdioBridgeServer(
             }
           },
           agentInfo: {
-            name: config.backend === 'claude' ? 'Schegent Claude ACP Bridge' : 'Schegent Codex ACP Bridge',
+            name: `Schegent ${getBackendDescriptor(config.backend).displayLabel} ACP Bridge`,
             version: ACP_STDIO_BRIDGE_VERSION
           },
           authMethods: []
@@ -568,11 +610,16 @@ export function startAcpStdioBridgeServer(
         sendFramedLine(errorLine(id, JSON_RPC_INVALID_PARAMS, 'Invalid params'));
         return;
       }
+      const canonicalCwd = canonicalizeBridgeCwd(params['cwd']);
+      if (canonicalCwd === null) {
+        sendFramedLine(errorLine(id, JSON_RPC_INVALID_PARAMS, 'Invalid cwd for session/new'));
+        return;
+      }
       const acpSessionId = `acp-${config.backend}-session-${nextSessionSeq}`;
       nextSessionSeq += 1;
       sessions.set(acpSessionId, {
         acpSessionId,
-        cwd: params['cwd'],
+        cwd: canonicalCwd,
         providerSessionId: null,
         activeTurn: null
       });
@@ -581,22 +628,45 @@ export function startAcpStdioBridgeServer(
     }
 
     if (method === 'session/load') {
-      if (!isRecord(params) || !isNonEmptyString(params['sessionId']) || !isNonEmptyString(params['cwd'])) {
+      if (
+        !isRecord(params) ||
+        !isNonEmptyString(params['sessionId']) ||
+        !isAgentIdentifier(params['sessionId']) ||
+        !isNonEmptyString(params['cwd'])
+      ) {
         sendFramedLine(errorLine(id, JSON_RPC_INVALID_PARAMS, 'Invalid params'));
         return;
       }
       const sessionId = params['sessionId'];
+      const requestedCanonicalCwd = canonicalizeBridgeCwd(params['cwd']);
+      if (requestedCanonicalCwd === null) {
+        sendFramedLine(errorLine(id, JSON_RPC_INVALID_PARAMS, 'Invalid cwd for session/load'));
+        return;
+      }
       const existing = sessions.get(sessionId);
       if (existing !== undefined) {
-        existing.cwd = params['cwd'];
-      } else {
-        sessions.set(sessionId, {
-          acpSessionId: sessionId,
-          cwd: params['cwd'],
-          providerSessionId: sessionId.startsWith(`acp-${config.backend}-session-`) ? null : sessionId,
-          activeTurn: null
-        });
+        if (
+          existing.cwd !== requestedCanonicalCwd ||
+          canonicalizeBridgeCwd(existing.cwd) !== existing.cwd
+        ) {
+          sendFramedLine(errorLine(id, JSON_RPC_INVALID_PARAMS, 'Session cwd mismatch for session/load'));
+          return;
+        }
+        sendFramedLine(resultLine(id, {}));
+        return;
       }
+      const rawMeta = isRecord(params['_meta']) ? params['_meta'] : null;
+      const rawProviderSessionId = rawMeta !== null ? rawMeta['providerSessionId'] : undefined;
+      if (!isValidBridgeProviderSessionId(config.backend, rawProviderSessionId)) {
+        sendFramedLine(errorLine(id, JSON_RPC_INVALID_PARAMS, 'Provider session binding missing for session/load'));
+        return;
+      }
+      sessions.set(sessionId, {
+        acpSessionId: sessionId,
+        cwd: requestedCanonicalCwd,
+        providerSessionId: rawProviderSessionId,
+        activeTurn: null
+      });
       sendFramedLine(resultLine(id, {}));
       return;
     }

@@ -43,19 +43,7 @@ export const SUPPRESSIBLE_SNAPSHOT_SLICES = [
 
 export type SuppressibleSnapshotSlice = (typeof SUPPRESSIBLE_SNAPSHOT_SLICES)[number];
 
-/**
- * Synchronization metadata carried alongside `STATE_SNAPSHOT`.
- *
- * - `mode: 'full'` delivers every slice and resets the consumer's baseline to `revision`.
- * - `mode: 'routine'` requires the consumer to hold `baseRevision` and reconstructs
- *   any slice named in `omittedSlices` from that baseline.
- */
-export interface SnapshotSyncMeta {
-  readonly mode: 'full' | 'routine';
-  readonly revision: number;
-  readonly baseRevision?: number;
-  readonly omittedSlices?: readonly SuppressibleSnapshotSlice[];
-}
+export type { SnapshotSyncMeta } from './generated/sidebar-ipc-types';
 
 /**
  * Transport-level control frame sent from a webview consumer to its owning

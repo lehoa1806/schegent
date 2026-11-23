@@ -152,6 +152,7 @@ export function emitNamedDeclaration(decl, mode) {
  *   schemaVersion: number,
  *   commands: readonly object[],
  *   hostMessages: readonly object[],
+ *   hostMessageDefinitions: Readonly<Record<string, object>>,
  *   sourcePath: string
  * }} spec
  * @returns {string}
@@ -172,6 +173,9 @@ export function emitHostIpcTypes(spec) {
   }
   for (const msg of spec.hostMessages) {
     collectTypeImports(msg.schema, addImport);
+  }
+  for (const schema of Object.values(spec.hostMessageDefinitions)) {
+    collectTypeImports(schema, addImport);
   }
 
   const lines = [
@@ -220,6 +224,11 @@ export function emitHostIpcTypes(spec) {
     lines.push(`${doc}export interface ${cmd.interfaceName} extends GeneratedCommandBase<'${cmd.type}'> {`);
     lines.push(`  readonly payload${opt}${colon}${payloadExpr}${extra};`);
     lines.push('}');
+    lines.push('');
+  }
+
+  for (const [name, schema] of Object.entries(spec.hostMessageDefinitions)) {
+    lines.push(emitNamedDeclaration({ name, schema, doc: schema.doc }, 'host'));
     lines.push('');
   }
 

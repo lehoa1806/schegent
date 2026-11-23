@@ -4,7 +4,7 @@ import type { SnapshotSyncMeta } from '../../../src/contracts/snapshot-bounds.js
 import { getHostTransport } from './host-transport';
 import { reconcileSnapshotMessage } from './snapshot-merge';
 import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS, IDLE_QUEUE_SETTINGS } from './snapshot-types';
-import { defaultQueueRuntime, findQueueRuntime } from './queue-runtime-view';
+import { defaultQueueRuntime, findQueueRuntime, isWorkingARun } from './queue-runtime-view';
 import type {
   AuditTailEntry,
   CliMonitorState,
@@ -136,6 +136,23 @@ class SnapshotStore {
    */
   get defaultRuntime(): QueueRuntime | null {
     return defaultQueueRuntime(this._snapshot);
+  }
+
+  get defaultQueueName(): string {
+    return this.defaultRuntime?.name.trim() || 'Default';
+  }
+
+  get activeQueueRuntimes(): readonly QueueRuntime[] {
+    return this.queueRuntimes.filter(isWorkingARun);
+  }
+
+  get activeRunCount(): number {
+    return this.activeQueueRuntimes.length;
+  }
+
+  get otherActiveRunCount(): number {
+    const defaultQueueId = this.defaultRuntime?.queueId ?? null;
+    return this.activeQueueRuntimes.filter((runtime) => runtime.queueId !== defaultQueueId).length;
   }
 
   get status(): WorkflowStatus {

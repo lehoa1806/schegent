@@ -24,6 +24,27 @@ import {
   isRunRaceRefusal,
   type Memento
 } from '../../../src/state/workspace-state';
+import type { RunTransitionTable } from '../../../src/state/run-transition-decision';
+
+// Spec 315 FR-002a. Keep the test oracle independent of the implementation table.
+const SPEC_TRANSITIONS: RunTransitionTable = {
+  running: {
+    running: ['driver', 'operator', 'watchdog'], paused: ['driver', 'operator'],
+    failed: ['driver', 'recovery'], completed: ['driver', 'recovery'],
+    canceled: ['driver', 'operator', 'recovery']
+  },
+  paused: {
+    running: ['driver', 'operator', 'watchdog'], paused: ['driver', 'operator', 'watchdog'],
+    failed: ['driver', 'recovery'], completed: ['driver', 'recovery'],
+    canceled: ['driver', 'operator', 'recovery']
+  },
+  failed: {
+    running: ['operator'], paused: [], failed: ['driver', 'operator', 'recovery'],
+    completed: [], canceled: ['operator', 'recovery']
+  },
+  completed: { running: [], paused: [], failed: [], completed: ['driver', 'recovery'], canceled: [] },
+  canceled: { running: [], paused: [], failed: [], completed: [], canceled: ['driver', 'recovery'] }
+};
 
 class FakeMemento implements Memento {
   private readonly map = new Map<string, unknown>();
@@ -74,7 +95,8 @@ describe('FR-R7-01 — Run status transition table & decideRunTransition (SC-001
     let checked = 0;
     for (const from of ALL_RUN_STATUSES) {
       for (const to of ALL_RUN_STATUSES) {
-        const expectedActors = RUN_STATUS_TRANSITIONS[from][to];
+        const expectedActors = SPEC_TRANSITIONS[from][to];
+        expect(new Set(RUN_STATUS_TRANSITIONS[from][to])).toEqual(new Set(expectedActors));
         for (const actor of ALL_RUN_TRANSITION_ACTORS) {
           checked += 1;
           const decision = decideRunTransition({

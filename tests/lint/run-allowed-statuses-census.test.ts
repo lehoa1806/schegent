@@ -178,9 +178,19 @@ function isTableClearWithLiveRecordExpr(node: ts.Expression): boolean {
 }
 
 function scanAllowedStatusesInFile(filePath: string, root: string): readonly AllowedStatusesSite[] {
+  return scanAllowedStatuses(filePath, root, readFileSync(filePath, 'utf8'));
+}
+
+function namesAllowedStatuses(name: ts.PropertyName): boolean {
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text === 'allowedStatuses';
+  return ts.isComputedPropertyName(name) &&
+    ts.isStringLiteralLike(name.expression) && name.expression.text === 'allowedStatuses';
+}
+
+function scanAllowedStatuses(filePath: string, root: string, content: string): readonly AllowedStatusesSite[] {
   const source = ts.createSourceFile(
     filePath,
-    readFileSync(filePath, 'utf8'),
+    content,
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TS
@@ -189,7 +199,7 @@ function scanAllowedStatusesInFile(filePath: string, root: string): readonly All
   const visit = (node: ts.Node): void => {
     if (
       (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) &&
-      node.name.getText(source) === 'allowedStatuses'
+      namesAllowedStatuses(node.name)
     ) {
       const expr = ts.isPropertyAssignment(node) ? node.initializer : node.name;
       found.push({
@@ -213,19 +223,28 @@ function scanAllowedStatusesUnder(root: string): readonly AllowedStatusesSite[] 
   return out;
 }
 
+function classifySites(discovered: readonly AllowedStatusesSite[], census: readonly CensusRow[]) {
+  const classifiedSites = new Set(census.map((row) => row.site));
+  const remainingSites = new Set(classifiedSites);
+  const unlisted: string[] = [];
+  const duplicates: string[] = [];
+  for (const { site } of discovered) {
+    if (!classifiedSites.has(site)) unlisted.push(site);
+    else if (!remainingSites.delete(site)) duplicates.push(site);
+  }
+  return { unlisted: unlisted.sort(), stale: [...remainingSites].sort(), duplicates: duplicates.sort() };
+}
+
 describe('FR-R7-01 — Run allowedStatuses site census (SC-004)', () => {
   it('lists every allowedStatuses site in src/ with no unlisted or stale entries', () => {
     const discovered = scanAllowedStatusesUnder(SRC_ROOT);
     expect(discovered.length).toBeGreaterThan(0);
 
-    const discoveredSites = new Set(discovered.map((d) => d.site));
-    const classifiedSites = new Set(CENSUS.map((r) => r.site));
-
-    const unlisted = [...discoveredSites].filter((s) => !classifiedSites.has(s)).sort();
-    const stale = [...classifiedSites].filter((s) => !discoveredSites.has(s)).sort();
+    const { unlisted, stale, duplicates } = classifySites(discovered, CENSUS);
 
     expect(unlisted, 'Unlisted allowedStatuses site(s) found in src/').toEqual([]);
     expect(stale, 'Stale census row(s) with no matching site in src/').toEqual([]);
+    expect(duplicates, 'Multiple allowedStatuses sites covered by a single census row').toEqual([]);
   });
 
   it('verifies every table-derived row actually calls a transition-table helper and every row has a reason', () => {
@@ -299,12 +318,23 @@ describe('FR-R7-01 — Run allowedStatuses site census (SC-004)', () => {
       resolve(__dirname, 'fixtures')
     );
     expect(fixtureSites.length).toBe(1);
-    const classifiedSites = new Set(CENSUS.map((r) => r.site));
-    const unlisted = fixtureSites
-      .map((s) => s.site)
-      .filter((site) => !classifiedSites.has(site));
+    const { unlisted } = classifySites(fixtureSites, CENSUS);
     expect(unlisted).toEqual([
       'unlisted-allowed-statuses.fixture.ts#unlistedAllowedStatusesWriter'
+    ]);
+  });
+
+  it('negative control: flags a second site in a classified function and recognizes literal property names', () => {
+    const file = resolve(SRC_ROOT, 'controller', 'manual-retry-override.ts');
+    const discovered = scanAllowedStatuses(file, SRC_ROOT, `
+      function applyManualRetryOverride() {
+        store.updateRun(queueId, { 'allowedStatuses': allowedSameStatusFor('operator') }, claim);
+        store.updateRun(queueId, { ['allowedStatuses']: ['paused'] }, claim);
+      }
+    `);
+    expect(discovered).toHaveLength(2);
+    expect(classifySites(discovered, CENSUS).duplicates).toEqual([
+      'controller/manual-retry-override.ts#applyManualRetryOverride'
     ]);
   });
 });

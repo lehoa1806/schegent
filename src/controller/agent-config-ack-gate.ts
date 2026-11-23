@@ -135,7 +135,7 @@ export class AgentConfigAckGate {
       throw new AgentConfigAcknowledgementRefusedError(backend, fileCount, 'unavailable');
     }
 
-    if (choice === 'denied') {
+    if (choice !== 'this-run' && !(choice === 'persist' && scan.persistable)) {
       await this.emitAuditBestEffort(context, { backend, fileCount, decision: 'denied' });
       throw new AgentConfigAcknowledgementRefusedError(backend, fileCount, 'denied');
     }

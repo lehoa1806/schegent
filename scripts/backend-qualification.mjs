@@ -1,31 +1,24 @@
-// FR-R3-104 (FR-051..FR-059) — the backend qualification record, and the gate that reads it.
+// FR-R3-104 (FR-051..FR-059) & FR-R7-14 (14-10) — the backend qualification record, and the gate
+// that reads it.
 //
-// WHAT WAS WRONG. `FR-R3-084` produced the first live canary result this project has ever had,
-// and `FR-R3-061` built the canary that produces it. Both stopped one step short of a control:
-// the result was PROSE in `docs/release/backend-qualification-log.md`, and no gate read it. So
-// a release could be cut with a qualification record that was six months old, or taken against
-// a CLI version the installed binary no longer is, and nothing would say so. A cadence nobody
-// enforces is a cadence, not a gate — the same shape as the coverage floors `FR-R3-100` found
-// declared and unenforced, and as the `timeoutSeconds` four records claimed and nothing applied.
-//
-// WHAT THIS ADDS. The canary writes a machine-readable record beside its prose entry; the
-// release path refuses when that record is absent, stale, or older than the installed CLI
-// surface; and a change under the runner area requires a record naming the resulting commit.
-//
-// WHY THE RELEASE PATH AND NOT EVERY GATE RUN. A live turn costs the operator's own subscription
-// quota. `FR-R3-061` decided PR gates stay deterministic, and item 104 restates it: gate the
-// release, not `npm run ci`. An operator running the gate forty times a day must not be charged
-// forty live turns, and a gate people cannot afford is a gate people disable.
-//
-// NO PROXY. Nothing here infers qualification from anything other than a record the canary
-// wrote after attempting a live turn. The canary's own history is why that is stated: two
-// successive auth PROXIES — an env-var check, then a sign-in probe — each reported a working
-// backend as unusable. A gate that accepted "the binary exists" as qualification would be the
-// third.
+// WHAT FR-R7-14 (14-10) CLOSED. Version 1 recorded `states`, never checked them in
+// `decideQualification`, skipped absent backends, and watched only three source prefixes
+// (`src/runner/`, `src/parser/`, `src/contracts/backend-kinds.ts`), leaving ACP runtime, bridge,
+// descriptor, and bundler changes invisible. Version 2 requires:
+//   - positive turn evidence (`states[backend] === 'ok'` and a recorded version) for EVERY
+//     advertised backend (`claude`, `codex`, `agy`);
+//   - shipped-transport provenance (`acp-stdio-bridge` for `claude` and `codex`; `acp-native` for
+//     `agy`), active profile id, and executable/version metadata;
+//   - a deterministic source/build fingerprint covering runner, parser, descriptors, ACP runtime,
+//     bridge sources, esbuild config, and the built bridge bundle (`dist/acp-stdio-bridge.js`),
+//     hashed via `sha256Hex` from `./release-digest.mjs`;
+//   - explicit distinction between deterministic credential-free `--fixture` evidence
+//     (`mode: 'fixture'`) and deliberate live release evidence (`mode: 'live'`).
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { REPO_ROOT } from './gate-attestation.mjs';
+import { sha256Hex } from './release-digest.mjs';
 
 /**
  * Where the record lives. Untracked, like the gate attestation and for the same reason: it
@@ -35,48 +28,99 @@ import { REPO_ROOT } from './gate-attestation.mjs';
 export const QUALIFICATION_PATH = resolve(REPO_ROOT, '.backend-qualification.json');
 
 /**
- * How long a qualification stands. **Declared here, derived everywhere else** (FR-052) — the
- * operator disclosure reads this constant rather than restating it, because a bound stated in a
- * comment is the shape this round keeps finding: a number that four records claim and nothing
- * enforces.
- *
- * FOURTEEN DAYS, and the reasoning rather than a round number. What this record vouches for is
- * that three third-party CLIs still speak the protocol the adapters parse. The observed drift
- * rate is the input: between 2026-08-02 and 2026-08-26, `claude` moved 2.0.x to 2.1.246 and
- * `codex` moved through 0.149.0 — multiple releases inside a month, on vendors' own schedules,
- * with no deprecation contract owed to this project. A month-old qualification would routinely
- * be two or three CLI releases behind. A week would cost a subscription operator four live
- * turns a month for a protocol that does not usually break weekly.
- *
- * Fourteen days is one canary run per fortnight: cheap enough to keep, short enough that the
- * record is about roughly the software the operator is running.
+ * How long a qualification stands. **Declared here, derived everywhere else** (FR-052).
  */
 export const QUALIFICATION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
+/** Advertised backends every release qualification record must cover positively. */
+export const ADVERTISED_BACKENDS = Object.freeze(['claude', 'codex', 'agy']);
+
+/** Expected shipped transport for each advertised backend. */
+export const EXPECTED_BACKEND_TRANSPORTS = Object.freeze({
+  claude: 'acp-stdio-bridge',
+  codex: 'acp-stdio-bridge',
+  agy: 'acp-native'
+});
+
+/** Built-in host ACP profile id for each advertised backend. */
+export const EXPECTED_BACKEND_PROFILES = Object.freeze({
+  claude: 'claude-acp-bridge',
+  codex: 'codex-acp-bridge',
+  agy: 'agy-acp-native'
+});
+
 /**
- * The paths whose change invalidates an older qualification (FR-053).
+ * The paths whose change invalidates an older qualification (FR-053 + FR-R7-14 14-10).
  *
- * These are the files that decide what reaches a CLI's command line and how its output is
- * parsed. A change here can break the protocol contract the canary is the only check on, and it
- * will break it silently: every deterministic fixture in the eval corpus is a recording of the
- * OLD protocol, so it keeps passing.
- *
- * `src/parser/` is included and the reason is worth stating: `invocation-usage.ts` reads three
- * backends' terminal rows, and `FR-R3-098` found a marker pair that had never matched `codex`
- * at all. That was a parse-side defect invisible to every fixture, which is exactly the class
- * this gate exists for.
+ * Covers legacy/runner adapters, output parsers, backend descriptors, ACP runtime contracts,
+ * the ACP client/profiles/stdio bridge implementation, and esbuild bundling configuration.
  */
 export const QUALIFICATION_PATHS = Object.freeze([
   'src/runner/',
   'src/parser/',
-  'src/contracts/backend-kinds.ts'
+  'src/contracts/backend-kinds.ts',
+  'src/contracts/backend-descriptors.ts',
+  'src/contracts/acp-runtime.ts',
+  'src/services/acp-runtime/',
+  'esbuild.config.mjs'
 ]);
+
+/** Built bridge output hashed into the qualification source/build fingerprint when present. */
+export const QUALIFICATION_BUILD_OUTPUTS = Object.freeze(['dist/acp-stdio-bridge.js']);
 
 /** The override, and its name says what it costs. */
 export const DRIFT_OVERRIDE_ENV = 'SCHEGENT_RELEASE_UNQUALIFIED';
 
 const git = (args) =>
   execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+function collectFilesUnder(root, relTarget) {
+  const full = resolve(root, relTarget);
+  if (!existsSync(full)) return [];
+  const stat = statSync(full);
+  if (stat.isFile()) return [relTarget.split(sep).join('/')];
+  if (!stat.isDirectory()) return [];
+  const files = [];
+  for (const entry of readdirSync(full, { withFileTypes: true })) {
+    const childAbs = join(full, entry.name);
+    const childRel = relative(root, childAbs).split(sep).join('/');
+    if (entry.isDirectory()) {
+      files.push(...collectFilesUnder(root, childRel));
+    } else if (entry.isFile()) {
+      files.push(childRel);
+    }
+  }
+  return files;
+}
+
+/**
+ * Compute a deterministic fingerprint over every qualification-relevant source path and shipped
+ * bridge bundle under `repoRoot`. Returns a 64-char hex digest (produced via `./release-digest.mjs`)
+ * or `null` when no source files can be read.
+ */
+export function computeQualificationSourceFingerprint(repoRoot = REPO_ROOT) {
+  const candidates = new Set();
+  for (const prefix of QUALIFICATION_PATHS) {
+    for (const file of collectFilesUnder(repoRoot, prefix)) {
+      candidates.add(file);
+    }
+  }
+  for (const built of QUALIFICATION_BUILD_OUTPUTS) {
+    const builtFiles = collectFilesUnder(repoRoot, built);
+    if (builtFiles.length === 0) return null;
+    for (const file of builtFiles) {
+      candidates.add(file);
+    }
+  }
+  const sorted = [...candidates].sort();
+  if (sorted.length === 0) return null;
+  const chunks = [];
+  for (const rel of sorted) {
+    const content = readFileSync(resolve(repoRoot, rel));
+    chunks.push(`${rel}:${sha256Hex(content)}\n`);
+  }
+  return sha256Hex(chunks.join(''));
+}
 
 /** The record, or `null` when absent; `{ malformed: true }` when it exists and does not parse. */
 export function readQualification(path = QUALIFICATION_PATH) {
@@ -89,28 +133,13 @@ export function readQualification(path = QUALIFICATION_PATH) {
   try {
     return JSON.parse(raw);
   } catch {
-    // Distinct from absence, as with the gate attestation: a corrupted record sends someone to
-    // a different remedy than a missing one.
     return { malformed: true };
   }
 }
 
-/**
- * Which qualification-relevant paths changed between the qualified commit and HEAD.
- *
- * Returns `null` when the question cannot be answered — an unknown commit, a shallow clone, no
- * git. `null` is NOT "nothing changed": `decideQualification` treats it as a refusal, because an
- * unanswerable check is a refusal and not a pass.
- */
 const COMMIT_SHA = /^[0-9a-f]{7,64}$/;
 
 export function changedQualificationPaths(qualifiedCommit, head = 'HEAD') {
-  // FR-R3-105's rule, applied to this file's own argv. The commit comes out of a JSON record on
-  // disk, which is untrusted input by the same argument the argv boundary makes about an
-  // operator-imported pipeline document: `execFileSync` uses no shell, so this is not shell
-  // injection — it is FLAG injection. A "commit" of `--output=/tmp/x` would be read by `git` as an
-  // option, not as a revision. Bounded to what a commit id can actually be; anything else is
-  // unanswerable, which the decision treats as a refusal.
   if (typeof qualifiedCommit !== 'string' || !COMMIT_SHA.test(qualifiedCommit)) return null;
   let changed;
   try {
@@ -137,22 +166,13 @@ export function probeInstalledVersions(commands = { claude: 'claude', codex: 'co
         .trim()
         .split('\n')[0];
     } catch {
-      // Not installed, not on PATH, or refused. Recorded as unknown rather than as a mismatch:
-      // a machine without `agy` is not a machine whose `agy` qualification is stale.
       observed[backend] = null;
     }
   }
   return observed;
 }
 
-/**
- * Extract the comparable version token from a `--version` line.
- *
- * The three CLIs answer differently (`2.1.246 (Claude Code)`, `codex-cli 0.149.0`, `1.1.20`), so
- * the comparison is on the first dotted-numeric token rather than on the whole line. Comparing
- * whole lines would report drift whenever a vendor changed its banner text, and an operator who
- * learns that a drift warning usually means nothing will ignore the one that means something.
- */
+/** Extract the comparable version token from a `--version` line. */
 export function versionToken(line) {
   if (typeof line !== 'string') return null;
   const match = /(\d+\.\d+(?:\.\d+)?)/.exec(line);
@@ -160,11 +180,8 @@ export function versionToken(line) {
 }
 
 /**
- * Decide whether the release path may proceed on backend qualification. Pure over its inputs, so
- * every arm is exercisable without a live turn, without git and without cutting a release.
- *
- * The arms are separate because their remedies are: run the canary; run it again after the
- * upgrade; run it at this commit; fix the record; or take the override and record why.
+ * Decide whether the release path (or deterministic fixture verification when `requireLive: false`)
+ * may proceed on backend qualification. Pure over its inputs.
  */
 export function decideQualification({
   record,
@@ -173,7 +190,10 @@ export function decideQualification({
   changedPaths,
   now,
   overrideRequested = false,
-  maxAgeMs = QUALIFICATION_MAX_AGE_MS
+  maxAgeMs = QUALIFICATION_MAX_AGE_MS,
+  expectedFingerprint,
+  requireLive = true,
+  requiredBackends = ADVERTISED_BACKENDS
 }) {
   const override = (verdict) =>
     overrideRequested
@@ -212,6 +232,13 @@ export function decideQualification({
     });
   }
   const ageMs = Date.parse(now) - qualifiedAt;
+  if (ageMs < 0) {
+    return override({
+      ok: false,
+      reason: 'future-qualification',
+      message: `the backend qualification timestamp (${record.qualifiedAt}) is after ${now}.`
+    });
+  }
   if (ageMs > maxAgeMs) {
     const days = (ms) => Math.round(ms / 86_400_000);
     return override({
@@ -220,6 +247,82 @@ export function decideQualification({
       message:
         `the newest backend qualification is ${days(ageMs)} days old; the declared bound is ` +
         `${days(maxAgeMs)} days (QUALIFICATION_MAX_AGE_MS). Run \`npm run canary\`.`
+    });
+  }
+
+  if (record.version !== 2) {
+    return override({
+      ok: false,
+      reason: 'unsupported-qualification-version',
+      message:
+        `the backend qualification record has version ${JSON.stringify(record.version ?? null)}, ` +
+        'expected version 2 with shipped-transport provenance. Re-run `npm run canary`.'
+    });
+  }
+
+  const recordMode = record.mode;
+  if (recordMode !== 'live' && recordMode !== 'fixture') {
+    return override({
+      ok: false,
+      reason: 'invalid-qualification-mode',
+      message: `the backend qualification record has unsupported or missing mode ${JSON.stringify(record.mode ?? null)}.`
+    });
+  }
+  if (requireLive && recordMode !== 'live') {
+    return override({
+      ok: false,
+      reason: 'fixture-only-qualification',
+      message:
+        'the backend qualification record was produced in deterministic fixture mode (`--fixture`), ' +
+        'not from live provider turns. Run `npm run canary` for live release qualification.'
+    });
+  }
+
+  // FR-R7-14 (14-10): Every advertised backend must have positive turn evidence (`state === 'ok'`),
+  // a recorded version token, the expected shipped transport, and the expected built-in profile.
+  const incomplete = [];
+  const transportMismatches = [];
+  for (const backend of requiredBackends) {
+    const state = record.states?.[backend];
+    const recordedVersion = record.versions?.[backend];
+    if (state !== 'ok') {
+      incomplete.push(`${backend}: state=${String(state ?? 'missing')}`);
+      continue;
+    }
+    if (typeof recordedVersion !== 'string' || versionToken(recordedVersion) === null) {
+      incomplete.push(`${backend}: missing observed version`);
+    }
+    const recordedTransport = record.transports?.[backend];
+    const expectedTransport = EXPECTED_BACKEND_TRANSPORTS[backend];
+    if (expectedTransport !== undefined && recordedTransport !== expectedTransport) {
+      transportMismatches.push(
+        `${backend}: recorded transport ${String(recordedTransport ?? 'missing')}, expected ${expectedTransport}`
+      );
+    }
+    const recordedProfile = record.profiles?.[backend];
+    const expectedProfile = EXPECTED_BACKEND_PROFILES[backend];
+    if (expectedProfile !== undefined && recordedProfile !== expectedProfile) {
+      transportMismatches.push(
+        `${backend}: recorded profile ${String(recordedProfile ?? 'missing')}, expected ${expectedProfile}`
+      );
+    }
+  }
+  if (incomplete.length > 0) {
+    return override({
+      ok: false,
+      reason: 'incomplete-qualification',
+      message:
+        `backend qualification is incomplete or degraded — ${incomplete.join('; ')}. ` +
+        'Every advertised backend must complete a positive turn before release.'
+    });
+  }
+  if (transportMismatches.length > 0) {
+    return override({
+      ok: false,
+      reason: 'transport-mismatch',
+      message:
+        `backend qualification did not exercise the shipped transport — ${transportMismatches.join('; ')}. ` +
+        'Re-run `npm run canary` through the shipped ACP bridge/native transport.'
     });
   }
 
@@ -247,6 +350,28 @@ export function decideQualification({
     });
   }
 
+  if (expectedFingerprint !== undefined) {
+    if (typeof expectedFingerprint !== 'string' || expectedFingerprint.length === 0) {
+      return override({
+        ok: false,
+        reason: 'unanswerable-fingerprint',
+        message: 'cannot compute the current backend qualification source/build fingerprint.'
+      });
+    }
+    if (
+      typeof record.sourceFingerprint !== 'string' ||
+      record.sourceFingerprint !== expectedFingerprint
+    ) {
+      return override({
+        ok: false,
+        reason: 'fingerprint-mismatch',
+        message:
+          'qualification-relevant runner, parser, descriptor, ACP runtime, or bridge sources/build ' +
+          'changed since the qualification record was written. Re-run `npm run canary`.'
+      });
+    }
+  }
+
   if (changedPaths === null) {
     return override({
       ok: false,
@@ -269,9 +394,6 @@ export function decideQualification({
     });
   }
   if (record.commit !== head) {
-    // NOT a refusal. The record names a commit whose qualification-relevant files are identical
-    // to HEAD's, which is the property that matters; requiring the same SHA would demand a live
-    // turn for every documentation commit.
     return {
       ok: true,
       reason: 'qualified-at-equivalent-tree',
@@ -294,41 +416,65 @@ function describeVersions(versions) {
 }
 
 /**
- * FR-R3-104 — the canary's results, projected into the record the gate reads.
- *
- * EXTRACTED FROM THE SCRIPT so it can be tested without spending three live turns. The
- * qualification log recorded this as an unqualified hole on the day it was written: every arm of
- * the DECISION is exercised against synthetic inputs, and the projection that produces the record
- * the decision reads was covered by nothing. A wrong field name here would leave the gate deciding
- * about `undefined` while every decision test stayed green — the two-correct-halves shape this
- * round keeps finding.
- *
- * A backend that only managed a version probe records `null` for its version and its real state,
- * so a partially-degraded run cannot leave a record that reads as three qualified backends.
+ * FR-R3-104 & FR-R7-14 (14-10) — project canary results into the v2 machine-readable record.
  */
-export function recordFromCanaryResults(results, { commit, platform, now }) {
+export function recordFromCanaryResults(
+  results,
+  { commit, platform, now, mode = 'live', sourceFingerprint = null }
+) {
   return buildQualificationRecord({
     versions: Object.fromEntries(
       results.map((result) => [result.backend, result.observedVersion ?? null])
     ),
     states: Object.fromEntries(results.map((result) => [result.backend, result.state])),
+    transports: Object.fromEntries(
+      results.map((result) => [
+        result.backend,
+        result.transport ?? EXPECTED_BACKEND_TRANSPORTS[result.backend] ?? 'unknown'
+      ])
+    ),
+    profiles: Object.fromEntries(
+      results.map((result) => [
+        result.backend,
+        result.profileId ?? EXPECTED_BACKEND_PROFILES[result.backend] ?? 'unknown'
+      ])
+    ),
+    executables: Object.fromEntries(
+      results.map((result) => [result.backend, result.executable ?? result.backend])
+    ),
     commit,
     platform,
-    now
+    now,
+    mode,
+    sourceFingerprint
   });
 }
 
-/** The record the canary writes. Shape stated once, so the writer and the gate cannot disagree. */
-export function buildQualificationRecord({ versions, commit, platform, now, states }) {
+/** The v2 record the canary writes. Shape stated once, so the writer and the gate cannot disagree. */
+export function buildQualificationRecord({
+  versions,
+  commit,
+  platform,
+  now,
+  states,
+  mode = 'live',
+  sourceFingerprint = null,
+  transports = { ...EXPECTED_BACKEND_TRANSPORTS },
+  profiles = { ...EXPECTED_BACKEND_PROFILES },
+  executables
+}) {
   return {
-    version: 1,
+    version: 2,
+    mode,
     qualifiedAt: now,
     commit,
     platform,
+    sourceFingerprint,
     versions,
-    // The per-backend verdict, so a record written when one backend was degraded cannot read as
-    // three green backends. The gate does not consult it today; an operator reading the file does.
-    states
+    states,
+    transports,
+    profiles,
+    ...(executables !== undefined ? { executables } : {})
   };
 }
 

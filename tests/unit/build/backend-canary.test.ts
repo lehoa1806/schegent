@@ -438,8 +438,12 @@ describe('FR-R3-084 §3.4 — a recorded envelope names no probe directory', () 
         runner.slice(at)
       );
       expect(scrubbed, 'a recording written without its directory').not.toBeNull();
-      // ...must be the one the turn ran in: the `cwd` of the spawn that produced `result`.
-      const spawn = runner.slice(runner.lastIndexOf('spawnSync(', at), at);
+      // ...must be the one the turn ran in: the `cwd` of the spawn (or ACP turn) that produced `result`.
+      const callStart = Math.max(
+        runner.lastIndexOf('spawnSync(', at),
+        runner.lastIndexOf('runAcpJsonRpcTurn(', at)
+      );
+      const spawn = runner.slice(callStart, at);
       const ran = /\bcwd(?::\s*(\w+))?\s*,/.exec(spawn);
       expect(ran, 'a turn spawned with no working directory').not.toBeNull();
       expect(scrubbed?.[1], 'a recording scrubbed of a directory its turn did not run in').toBe(

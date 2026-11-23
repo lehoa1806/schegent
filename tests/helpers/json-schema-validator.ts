@@ -4,7 +4,7 @@
 // `$defs`, `$ref`, `type`, `const`, `enum`, `properties`, `required`,
 // `additionalProperties`, `propertyNames`, `items`, `minItems`, `maxItems`,
 // `uniqueItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`,
-// `exclusiveMinimum`, `anyOf`, `oneOf`.
+// `exclusiveMinimum`, `allOf`, `anyOf`, `oneOf`, `not`.
 
 export interface JsonSchemaNode {
   readonly $defs?: Readonly<Record<string, JsonSchemaNode>>;
@@ -29,6 +29,7 @@ export interface JsonSchemaNode {
   readonly allOf?: readonly JsonSchemaNode[];
   readonly anyOf?: readonly JsonSchemaNode[];
   readonly oneOf?: readonly JsonSchemaNode[];
+  readonly not?: JsonSchemaNode;
 }
 
 export interface SchemaValidationFailure {
@@ -211,6 +212,14 @@ function validateNode(
   if (schema.allOf !== undefined) {
     for (const sub of schema.allOf) {
       validateNode(root, sub, value, pointer, errors, depth + 1);
+    }
+  }
+
+  if (schema.not !== undefined) {
+    const local: SchemaValidationFailure[] = [];
+    validateNode(root, schema.not, value, pointer, local, depth + 1);
+    if (local.length === 0) {
+      errors.push({ path: pointer, message: 'value matches a prohibited schema' });
     }
   }
 

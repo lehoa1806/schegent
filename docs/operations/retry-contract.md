@@ -218,3 +218,68 @@ A delayed retry and a credit pause are two machineries with two timers (feature 
 <!-- Source: src/watchdog/credit-window.ts -->
 <!-- Source: src/parser/credit-status.ts -->
 <!-- Source: src/services/retry-coordinator.ts -->
+
+## Ambiguous process liveness and restart recovery (`FR-R7-14` / `14-22`)
+
+When the extension host restarts while a Run or connected Workflow attempt was in flight, recovery
+must decide whether an orphaned backend process is still mutating the workspace and whether an
+interrupted attempt's external effects may already have started. Two layers handle this decision:
+**process-liveness resume** (`src/services/process-liveness.ts`, `src/services/resume-decision.ts`,
+`src/contracts/spawn-identity.ts`) for persisted Runs, and **connected-workflow recovery**
+(`src/services/workflow-execution/workflow-recovery-service.ts`) for multi-phase connected runs.
+
+### Outcome matrix and duplicate-effect exposure
+
+| Surface & verdict / state | Automatic outcome | Audit / pause record | Duplicate-effect exposure | Operator action |
+|---|---|---|---|---|
+| Process liveness: `alive` (recorded `pid` exists and `ps -o lstart=` matches `startedAtMs` within 2 s) | **Declines resume** (does not kill or reattach) | `run-resume-declined-orphan-alive` (`liveness: 'alive'`) + notice | **None from host** — zero duplicate spawn while the prior tree runs | Inspect the running process, wait for it to finish or terminate its process group, then reload or resume |
+| Process liveness: `orphaned-group` (leader `pid` gone, `kill(-pgid, 0)` finds live process-group member) | **Declines resume** | `run-resume-declined-orphan-alive` (`liveness: 'orphaned-group'`) + distinct group notice | **None from host** — avoids racing a lingering helper process in the checkout | Inspect and terminate remaining members of `pgid`, then resume or reload |
+| Process liveness: `dead` (leader & group gone, or recycled `pid` whose OS start time differs past tolerance) | **Resumes** (`RESUME_ON`) | `run-resumed` (`liveness: 'dead'`) | **Prior partial effects may already exist** in the checkout or external provider, even though no prior process is still running | Check `git status` / `git log` if the interrupted phase had side effects |
+| Process liveness: `unrecorded` (no `spawnIdentity` persisted or child already reaped) | **Resumes** (`RESUME_ON`) | `run-resumed` (`liveness: 'unrecorded'`) | Same as `dead` if no child was live; elevated if persisted before identity recording | Inspect checkout before retrying mutating phases |
+| Process liveness: `unanswerable` (`ps` unavailable, `EPERM`, or Windows job-object permanent limit) | **Resumes** (`RESUME_ON`) | `run-resumed` (`liveness: 'unanswerable'`, never folded into `dead`) | **Elevated duplicate-effect risk**: the host could not confirm the prior tree exited, so a resumed attempt may overlap an unseen process or repeat provider/Git side effects | Treat `liveness: 'unanswerable'` in `.schegent/audit.log` as an audit warning; verify no lingering CLI process is active before continuing mutating work |
+| Connected workflow in-flight attempt without durable completion evidence | **Pauses fail-closed** (zero automatic re-dispatch) | `uncertain-effect-paused`, `manualPauseCause: 'recovery-uncertain-effect'`, attempt `paused` | **Blocked until operator decides** — prevents blind duplicate execution of an attempt whose external side effects are unconfirmed | Inspect working tree, Git history, and any running process; then explicitly choose **Resume**, **Retry phase**, or **Cancel** |
+| Connected workflow in-flight attempt with durable completion evidence | **Settles forward** (`settled-from-evidence`) | Advances to `waiting-for-handoff` or next state without pausing | **None** — completed attempt is not re-dispatched | Continue normally from the next handoff or phase |
+
+### How to identify an outstanding process before recovering
+
+1. Inspect `.schegent/audit.log` (`Schegent: Show Audit Log`) for the latest `phase-start`,
+   `run-resume-declined-orphan-alive`, or `run-resumed` entries to see the recorded `liveness`
+   verdict and affected `runId` / `queueId`.
+2. On POSIX (macOS/Linux), inspect candidate CLI or bridge processes and their process groups before
+   terminating anything:
+   ```bash
+   ps -eo pid,pgid,ppid,lstart,command | grep -E "claude|codex|agy|acp-stdio-bridge"
+   ```
+   To inspect a specific process group `<pgid>` and end lingering descendants after confirming they
+   belong to the stopped Run:
+   ```bash
+   ps -o pid,pgid,ppid,lstart,command -g <pgid>
+   kill -TERM -- -<pgid>
+   ```
+3. Inspect the working tree (`git status`, `git diff`, `git log -n 3`) to verify whether the
+   interrupted attempt already modified files or created commits, then decide whether to **Resume**,
+   **Restart**, **Mark completed**, or **Cancel**.
+
+### Fenced local writes vs already-started external effects
+
+Keep the two boundaries separate when diagnosing recovery:
+
+- **Fenced local state writes**: workspace ownership (`WorkspaceLockManager` / `OwnershipRegistry`),
+  SQLite `BEGIN IMMEDIATE` serialization, and connected-workflow revision compare-and-set
+  (`compareAndSetConnectedRun`) prevent a stale window or losing writer from corrupting local Run,
+  Queue, or workflow state.
+- **Already-started external effects**: local revision and ownership fencing **cannot** recall or
+  roll back an external effect that a child process already executed before the host crashed — such
+  as working-tree file writes, `git commit` / `git push`, network/API calls to a model vendor, or
+  shell commands run by an uncontained backend.
+
+Rehearsed end-to-end on a disposable Git checkout in
+[`tests/integration/ambiguous-liveness-recovery-rehearsal.test.ts`](../../tests/integration/ambiguous-liveness-recovery-rehearsal.test.ts).
+For the machine-checked `RESUME_ON` and `LivenessVerdict` lists, see
+[Backend operations — Resume after a restart](backends.md#resume-after-a-restart).
+
+<!-- Source: src/contracts/spawn-identity.ts -->
+<!-- Source: src/services/process-liveness.ts -->
+<!-- Source: src/services/resume-decision.ts -->
+<!-- Source: src/services/workflow-execution/workflow-recovery-service.ts -->
+<!-- Source: tests/integration/ambiguous-liveness-recovery-rehearsal.test.ts -->

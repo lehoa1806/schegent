@@ -22,6 +22,7 @@ import {
   type ManagedCliChild,
   type StdioLaunch
 } from '../../../src/services/acp-runtime';
+import { classifyHostLocality } from '../../../src/services/acp-runtime/profiles';
 import type { NativeReviewInvocation } from '../../../src/runner/native-review-launch';
 
 const tempDirs: string[] = [];
@@ -122,6 +123,34 @@ describe('FR-R6-F13 (F13-B) — built-in ACP profiles and platform qualification
       }
     });
     expect(result).toEqual({ ok: false, refusal: 'profile-unqualified' });
+    expect(launched).toBe(false);
+  });
+
+  it('FR-R7-14 (14-11): classifies host locality and refuses remote darwin/arm64 profiles prior to launch', async () => {
+    expect(classifyHostLocality(undefined)).toBe('local');
+    expect(classifyHostLocality('')).toBe('local');
+    expect(classifyHostLocality('   ')).toBe('local');
+    expect(classifyHostLocality('ssh-remote')).toBe('remote');
+    expect(classifyHostLocality('dev-container')).toBe('remote');
+
+    expect(acpQualificationForPlatform({ os: 'darwin', arch: 'arm64', locality: 'local' })).toBe('qualified');
+    expect(acpQualificationForPlatform({ os: 'darwin', arch: 'arm64', locality: 'remote' })).toBe('unqualified');
+
+    const remoteProfile = getBuiltinAcpProfile('claude', {
+      platform: { os: 'darwin', arch: 'arm64', locality: 'remote' }
+    });
+    expect(remoteProfile.qualification).toBe('unqualified');
+
+    let launched = false;
+    const refused = await openAcpConnection({
+      profile: remoteProfile,
+      generation: 1,
+      launch: () => {
+        launched = true;
+        throw new Error('must not launch remote darwin/arm64 profile');
+      }
+    });
+    expect(refused).toEqual({ ok: false, refusal: 'profile-unqualified' });
     expect(launched).toBe(false);
   });
 
@@ -263,7 +292,89 @@ describe('FR-R6-F13 (F13-B) — maintained Claude and Codex ACP stdio bridges', 
 
     expect(observations.some((o) => o.kind === 'display' && o.event.kind === 'tool-call')).toBe(true);
     expect(observations.some((o) => o.kind === 'usage')).toBe(true);
+    expect(opened.connection.providerSessionIdOf(sessionRes.sessionId)).toBe('claude-prov-sess-99');
     await opened.connection.close();
+  });
+
+  it('FR-R7-14 (14-04): rejects replacement-bridge session/load without valid non-ephemeral _meta.providerSessionId and binds valid _meta.providerSessionId', async () => {
+    const capturedArgs: (readonly string[])[] = [];
+    const makeSpawn = () => (launch: StdioLaunch): ManagedCliChild => {
+      capturedArgs.push(launch.args);
+      const stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
+      let resolveExit: (val: { code: number | null; signal: null; launchFailed: boolean }) => void = () => undefined;
+      const exited = new Promise<{ code: number | null; signal: null; launchFailed: boolean }>((res) => {
+        resolveExit = res;
+      });
+      return {
+        pid: 55555,
+        exited,
+        writeStdin: () => true,
+        endStdin() {
+          queueMicrotask(() => {
+            const lines =
+              [
+                JSON.stringify({ type: 'result', session_id: 'claude-real-prov-7', stop_reason: 'end_turn' })
+              ].join('\n') + '\n';
+            const bytes = new TextEncoder().encode(lines);
+            for (const fn of stdoutListeners) fn(bytes);
+            resolveExit({ code: 0, signal: null, launchFailed: false });
+          });
+        },
+        onStdout: (fn) => stdoutListeners.push(fn),
+        onStderr: () => undefined,
+        isProcessTreeGone: () => true,
+        terminate: async () => resolveExit({ code: null, signal: null, launchFailed: false })
+      };
+    };
+
+    const transport = createInMemoryBridgeTransport('claude', makeSpawn());
+    const opened = await openAcpConnection({
+      profile: getBuiltinAcpProfile('claude', { platform: { os: 'darwin', arch: 'arm64' } }),
+      generation: 2,
+      launch: () => transport
+    });
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    try {
+      // Missing _meta.providerSessionId rejects with -32602.
+      expect(await opened.connection.loadSession('acp-claude-session-1', '/workspace', { mayLoad: true })).toEqual({
+        ok: false,
+        reason: 'rejected',
+        code: -32602
+      });
+      // Ephemeral _meta.providerSessionId rejects with -32602.
+      expect(
+        await opened.connection.loadSession('acp-sess-claude-abc', '/workspace', {
+          mayLoad: true,
+          providerSessionId: 'acp-claude-session-1'
+        })
+      ).toEqual({
+        ok: false,
+        reason: 'rejected',
+        code: -32602
+      });
+      expect(capturedArgs).toHaveLength(0);
+
+      // Valid non-ephemeral _meta.providerSessionId succeeds and drives --resume <id>.
+      expect(
+        await opened.connection.loadSession('acp-sess-claude-abc', '/workspace', {
+          mayLoad: true,
+          providerSessionId: 'claude-real-prov-7'
+        })
+      ).toEqual({ ok: true, sessionId: 'acp-sess-claude-abc' });
+      const res = await opened.connection.prompt({
+        sessionId: 'acp-sess-claude-abc',
+        attemptId: 'att-resumed',
+        rootId: 'run-resumed',
+        blocks: [{ type: 'text', text: 'Continue work' }]
+      });
+      expect(res.kind).toBe('completed');
+      expect(capturedArgs).toHaveLength(1);
+      expect(capturedArgs[0]).toContain('--resume');
+      expect(capturedArgs[0]).toContain('claude-real-prov-7');
+    } finally {
+      await opened.connection.close();
+    }
   });
 
   it('streams Codex JSONL events and handles protocol cancellation cleanly', async () => {

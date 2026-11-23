@@ -740,9 +740,11 @@ declared capabilities and a replayed `toolCallId`. The runner also asks the gate
 to authorize each `file://` resource link before it goes into a prompt: the path
 must be inside the execution root and must not be a SQLite database or its WAL
 files, `.schegent/` or a credential file, unless a declared upstream input or
-output names it. The gate's decision type also covers filesystem and terminal
-kinds and a protected-database list, but no production caller supplies that list
-or a terminal request. Each decision is a bounded receipt without tool arguments
+output names it. The gate's decision type covers permission, filesystem, terminal, and resource-link
+checks; `src/activation/acp-execution-wiring.ts` supplies `protectedDatabasePaths`
+from the active SQLite cutover coordinator (`getDatabaseProtectedPaths()`) so the
+store and its WAL/SHM sidecars are rejected explicitly alongside root containment,
+while filesystem and terminal agent methods remain unadvertised (`-32601`). Each decision is a bounded receipt without tool arguments
 or paths, kept in memory and, when a SQLite store is attached, inserted into
 `acp_authorization_receipts`. The permission policy the gate supplies answers
 with an `allow_once` option only when the gate allows the request; otherwise the
@@ -807,11 +809,12 @@ maps rather than partially mutating independently serialized fragments. Schema
 upgrades are forward-only. State written by a newer unsupported version is
 refused rather than guessed backward.
 
-**SQLite operational store (FR-R6-F04).** Structured operational state moves into
+**SQLite operational store (FR-R6-F04, FR-R7-10).** Structured operational state moves into
 an embedded `node:sqlite` database, `schegent-state.db`, at
-`<storage>/sqlite/<scope>/` in host storage, outside the workspace. `<storage>` is
-the window's `storageUri` (or `globalStorageUri` without one) and `<scope>` is a
-hash of the workspace root. `src/services/sqlite-store/` owns the driver, the
+`<globalStorageUri>/sqlite/<scope>/schegent-state.db` in host global storage, outside
+the workspace (with legacy per-window `storageUri` retained only as a one-time
+relocation source or unwritable-target fallback), where `<scope>` is the 16-hex SHA-256
+prefix of the workspace root. `src/services/sqlite-store/` owns the driver, the
 trusted location resolver, schema bootstrap and migrations, the writer
 coordinator, the atomic transaction units, and backup and restore.
 `src/activation/sqlite-cutover-wiring.ts` wires it at activation; the store is
@@ -1034,7 +1037,8 @@ their constant rows.
 | Store | Constant | Current | Migrators |
 |---|---|---|---|
 | Workspace state | `STATE_SCHEMA_VERSION` | `15` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14, 14→15 (credit-pause default) |
-| SQLite operational store | `SQLITE_SCHEMA_CURRENT_VERSION` | `8` | Forward-only, additive migrations 1 to 8 applied by `schema-bootstrap.ts`; a database written by a newer schema is refused (`UNSUPPORTED_FUTURE_SCHEMA_VERSION`). |
+| SQLite operational store | `SQLITE_SCHEMA_CURRENT_VERSION` | `9` | Forward-only migrations 1 to 9 applied by `schema-bootstrap.ts`; Migration 9 (`009_fr_r7_02_operational_per_entity_rows`) is non-additive, a database written by a newer schema is refused (`UNSUPPORTED_FUTURE_SCHEMA_VERSION`), and rollback uses a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
+| SQLite operational store reader floor | `SQLITE_MIN_READER_VERSION` | `9` | Older builds below the reader floor fail closed at open with `UNSUPPORTED_MIN_READER_VERSION` without modifying the database; downgrade requires restoring a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
 | Audit event envelope | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; readers preserve unknown historical event types. |
 
 Workspace migration history includes the legacy Run lift, queue-registry lift,

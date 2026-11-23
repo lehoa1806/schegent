@@ -12,7 +12,11 @@ import type {
   GuardedRestoreResult,
   StoreBackupRestoreApi
 } from '../headless/backup-restore-api';
-import type { ListedBackupEntry, VerifyBackupOutcome } from '../services/sqlite-store';
+import type {
+  BackupBoundsOverrides,
+  ListedBackupEntry,
+  VerifyBackupOutcome
+} from '../services/sqlite-store';
 
 export interface BackupPickerItem {
   readonly label: string;
@@ -76,7 +80,7 @@ function toPickerItems(entries: readonly ListedBackupEntry[]): BackupPickerItem[
 
 export async function runBackupStore(
   deps: BackupRestoreCommandDeps,
-  options?: { readonly backupId?: string | undefined }
+  options?: BackupBoundsOverrides & { readonly backupId?: string | undefined }
 ): Promise<BackupCommandOutcome> {
   const confirmed = await deps.ui.confirmModal(
     'Back up the Schegent SQLite store?',
@@ -102,11 +106,9 @@ export async function runBackupStore(
 
 export async function runVerifyStoreBackup(
   deps: BackupRestoreCommandDeps,
-  options?: {
+  options?: BackupBoundsOverrides & {
     readonly backupId?: string | undefined;
     readonly maxSupportedSchemaVersion?: number | undefined;
-    readonly maxExternalDependencies?: number | undefined;
-    readonly maxExternalDependencyBytes?: number | undefined;
     readonly simulateQuickCheckFailure?: boolean | undefined;
   }
 ): Promise<VerifyCommandOutcome> {
@@ -143,12 +145,11 @@ export async function runVerifyStoreBackup(
 
 export async function runRestoreStoreBackup(
   deps: BackupRestoreCommandDeps,
-  options?: {
+  options?: BackupBoundsOverrides & {
     readonly backupId?: string | undefined;
     readonly maxSupportedSchemaVersion?: number | undefined;
-    readonly maxExternalDependencies?: number | undefined;
-    readonly maxExternalDependencyBytes?: number | undefined;
     readonly simulateQuickCheckFailure?: boolean | undefined;
+    readonly beforeCommitFence?: (() => boolean | Promise<boolean>) | undefined;
   }
 ): Promise<RestoreCommandOutcome> {
   const entries = await deps.api.listBackups();

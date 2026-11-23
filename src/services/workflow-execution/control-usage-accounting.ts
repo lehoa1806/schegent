@@ -20,7 +20,7 @@
  * Zero `vscode` imports.
  */
 
-import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import { isBackendRunnerKind, SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import {
   type ControlBackendTokenUsage,
   type ControlClockPort,
@@ -58,7 +58,6 @@ const ALLOWED_USAGE_RECORD_KEYS = new Set<string>([
   'sharedObservation'
 ]);
 
-const VALID_BACKENDS = new Set<string>(['claude', 'codex', 'agy']);
 const VALID_DENOMINATIONS = new Set<string>(['usd', 'tokens']);
 const VALID_QUALITIES = new Set<string>(['verified', 'estimated', 'unavailable']);
 
@@ -122,11 +121,11 @@ export function validateUsageRecord(raw: unknown): UsageRecordValidationResult {
     };
   }
 
-  if (typeof raw.backend !== 'string' || !VALID_BACKENDS.has(raw.backend)) {
+  if (!isBackendRunnerKind(raw.backend)) {
     return {
       ok: false,
       code: 'invalid-usage-record',
-      message: `UsageRecord.backend must be one of claude, codex, or agy.`
+      message: `UsageRecord.backend must be one of ${SUPPORTED_BACKENDS.slice(0, -1).join(', ')}, or ${SUPPORTED_BACKENDS.at(-1)}.`
     };
   }
 
@@ -202,7 +201,7 @@ export function validateUsageRecord(raw: unknown): UsageRecordValidationResult {
     value: Object.freeze({
       ...(hasAttemptId ? { attemptId: raw.attemptId as string } : {}),
       ...(hasCheckId ? { checkId: raw.checkId as string } : {}),
-      backend: raw.backend as BackendRunnerKind,
+      backend: raw.backend,
       ...(typeof raw.modelId === 'string' ? { modelId: raw.modelId } : {}),
       denomination: raw.denomination as 'usd' | 'tokens',
       quality: raw.quality as 'verified' | 'estimated' | 'unavailable',

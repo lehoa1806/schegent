@@ -27,24 +27,26 @@ import * as path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { SQLITE_SCHEMA_CURRENT_VERSION } from '../../contracts/sqlite-store/schema-types';
-import { narrowMode } from '../../lib/narrow-mode';
 import { parseStrictSchemaMetaVersion } from '../../lib/operational-value-helpers';
-import { resolveContainedLink } from '../../lib/path-containment';
 import { ensureAnchorWithinRoot, judgeLeafRedirect, openWithinRoot, platformLacksNoFollow, walkDirectoriesWithinRoot } from '../../lib/safe-open';
 import {
   verifySqliteCandidateWithinRoot,
-  withZeroMutationReadOnlySqlite,
-  type VerifiedSqliteCandidate
+  withZeroMutationReadOnlySqlite
 } from '../../lib/sqlite-readonly-inspect';
 import {
   classifyFilesystemTypeName,
   detectFilesystemType,
   type FilesystemTypeVerdict
 } from './filesystem-type-detector';
+import {
+  CANONICAL_DB_FILENAME, STAGING_DB_FILENAME, computeFileSha256WithinRoot, fingerprintFromVerified,
+  fingerprintsMatch, matchesPreviousCanonical, publishStagedRelocation, readJsonStatusWithinRoot,
+  readRegularFileWithinRoot, renameContainedEntry, syncRelocationDirectory, unlinkContainedEntry,
+  writeAtomicJsonWithinAnchor, writeFully
+} from './store-relocation-files';
 
-const CANONICAL_DB_FILENAME = 'schegent-state.db';
-const STAGING_DB_FILENAME = '.schegent-state.relocate.staging.db';
 const UNSELECTED_TMP_FILENAME = '.schegent-state.unselected.tmp.db';
+const UNSELECTED_READONLY_TMP_FILENAME = '.schegent-state.unselected.readonly.tmp.db';
 const JOURNAL_FILENAME = '.relocation-in-progress.json';
 const RECEIPT_FILENAME = 'relocation-receipt.json';
 const RECEIPT_TMP_FILENAME = '.relocation-receipt.json.tmp';
@@ -73,8 +75,8 @@ const METADATA_TIMESTAMP_SOURCES: ReadonlyArray<readonly [string, string]> = [
 ];
 
 export type RelocationStage =
-  | 'after_stage_copy' | 'after_stage_verify' | 'after_preserve_losing_canonical'
-  | 'after_write_journal' | 'after_atomic_publish' | 'after_retire_legacy' | 'after_write_receipt';
+  | 'after_stage_copy' | 'after_stage_verify' | 'after_stage_losing_canonical' | 'after_preserve_losing_canonical'
+  | 'after_write_journal' | 'after_remove_canonical_sidecars' | 'after_atomic_publish' | 'after_retire_legacy' | 'after_write_receipt';
 
 export interface CandidateFileFingerprint {
   readonly sizeBytes: number;
@@ -105,6 +107,7 @@ export interface RelocationJournal {
   readonly winnerDatabasePath: string;
   readonly winnerStorageRoot: string;
   readonly winnerFingerprint: CandidateFileFingerprint;
+  readonly previousCanonicalFingerprint?: CandidateFileFingerprint | null | undefined;
   readonly preservedConflicts: readonly PreservedConflictEntry[];
   readonly startedAtMs: number;
   readonly retirementPending?: boolean | undefined;
@@ -308,14 +311,6 @@ function parseTimestampMs(raw: unknown): number | null {
   return null;
 }
 
-const fingerprintFromVerified = (v: VerifiedSqliteCandidate): CandidateFileFingerprint => ({
-  sizeBytes: v.dbSizeBytes, mtimeMs: v.dbMtimeMs, walSizeBytes: v.walSizeBytes, walMtimeMs: v.walMtimeMs
-});
-
-const fingerprintsMatch = (a: CandidateFileFingerprint, b: CandidateFileFingerprint): boolean =>
-  a.sizeBytes === b.sizeBytes && Math.trunc(a.mtimeMs) === Math.trunc(b.mtimeMs) &&
-  a.walSizeBytes === b.walSizeBytes && Math.trunc(a.walMtimeMs) === Math.trunc(b.walMtimeMs);
-
 const isValidCandidateFileFingerprint = (v: unknown): v is CandidateFileFingerprint =>
   isPlainObject(v) && isNonNegSafeInt(v.sizeBytes) && isNonNegFinite(v.mtimeMs) &&
   isNonNegSafeInt(v.walSizeBytes) && isNonNegFinite(v.walMtimeMs);
@@ -344,95 +339,14 @@ export function isValidRelocationJournal(candidate: unknown, expectedScopeId: st
     typeof candidate.stagedSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.stagedSha256) ||
     !isAbsCleanPath(candidate.winnerDatabasePath) || !isAbsCleanPath(candidate.winnerStorageRoot) ||
     !isValidCandidateFileFingerprint(candidate.winnerFingerprint) || !isNonNegFinite(candidate.startedAtMs) ||
+    (candidate.previousCanonicalFingerprint !== undefined && candidate.previousCanonicalFingerprint !== null &&
+      !isValidCandidateFileFingerprint(candidate.previousCanonicalFingerprint)) ||
     (candidate.retirementPending !== undefined && typeof candidate.retirementPending !== 'boolean') ||
     !Array.isArray(candidate.preservedConflicts) || !candidate.preservedConflicts.every((entry) => isValidPreservedConflictEntry(entry))
   ) return false;
   const winnerRoot = path.resolve(candidate.winnerStorageRoot);
   return (canonicalRoot === undefined || winnerRoot !== path.resolve(canonicalRoot)) &&
     path.resolve(candidate.winnerDatabasePath) === path.join(winnerRoot, 'sqlite', expectedScopeId, CANONICAL_DB_FILENAME);
-}
-
-async function writeFully(handle: fsp.FileHandle, bytes: Buffer): Promise<void> {
-  for (let offset = 0; offset < bytes.length; ) {
-    offset += (await handle.write(bytes, offset, bytes.length - offset)).bytesWritten;
-  }
-}
-
-async function readRegularFileWithinRoot(root: string, segments: readonly string[]): Promise<Buffer | null> {
-  const opened = await openWithinRoot(root, segments, { flags: 'r' });
-  if (opened.outcome !== 'opened') return null;
-  try {
-    return await opened.handle.readFile();
-  } catch {
-    return null;
-  } finally {
-    await opened.handle.close().catch(() => undefined);
-  }
-}
-
-async function readJsonStatusWithinRoot(root: string, segments: readonly string[]): Promise<{ readonly kind: 'absent' } | { readonly kind: 'malformed' } | { readonly kind: 'parsed'; readonly value: unknown }> {
-  const opened = await openWithinRoot(root, segments, { flags: 'r' });
-  if (opened.outcome !== 'opened') {
-    return opened.reason === 'io-failed' && (opened.errno === 'ENOENT' || opened.errno === 'ENOTDIR') ? { kind: 'absent' } : { kind: 'malformed' };
-  }
-  try {
-    return { kind: 'parsed', value: JSON.parse((await opened.handle.readFile()).toString('utf8')) as unknown };
-  } catch {
-    return { kind: 'malformed' };
-  } finally {
-    await opened.handle.close().catch(() => undefined);
-  }
-}
-
-async function computeFileSha256WithinRoot(root: string, segments: readonly string[]): Promise<string | null> {
-  const bytes = await readRegularFileWithinRoot(root, segments);
-  return bytes === null ? null : createHash('sha256').update(bytes).digest('hex');
-}
-
-async function unlinkContainedEntry(
-  root: string,
-  targetPath: string,
-  unlinkFn?: (resolvedPath: string) => Promise<void>
-): Promise<boolean> {
-  const verdict = await resolveContainedLink(targetPath, [root]);
-  if (verdict.outcome === 'absent') return true;
-  if (verdict.outcome !== 'contained') return false;
-  try {
-    if (unlinkFn !== undefined) await unlinkFn(verdict.resolved);
-    else await fsp.unlink(verdict.resolved);
-    return true;
-  } catch (error) {
-    return isMissing(error);
-  }
-}
-
-async function renameContainedEntry(anchorDir: string, fromName: string, toName: string): Promise<boolean> {
-  const realAnchor = await fsp.realpath(anchorDir).catch(() => null);
-  if (realAnchor === null) return false;
-  const fromVerdict = await resolveContainedLink(path.join(anchorDir, fromName), [anchorDir]);
-  const toVerdict = await resolveContainedLink(path.join(anchorDir, toName), [anchorDir]);
-  if (fromVerdict.outcome !== 'contained') return false;
-  if (toVerdict.outcome !== 'contained' && toVerdict.outcome !== 'absent') return false;
-  const resolvedTo = toVerdict.outcome === 'contained' ? toVerdict.resolved : path.join(realAnchor, toName);
-  if (path.dirname(fromVerdict.resolved) !== realAnchor || path.dirname(resolvedTo) !== realAnchor) return false;
-  await fsp.rename(fromVerdict.resolved, resolvedTo);
-  return true;
-}
-
-async function writeAtomicJsonWithinAnchor(anchorDir: string, tempName: string, finalName: string, payload: unknown): Promise<void> {
-  await unlinkContainedEntry(anchorDir, path.join(anchorDir, tempName));
-  const opened = await openWithinRoot(anchorDir, [tempName], { flags: 'wx', fileMode: FILE_MODE });
-  if (opened.outcome !== 'opened') throw new Error(`RELOCATION_WRITE_REFUSED:${opened.reason}:${opened.errno}`);
-  try {
-    await writeFully(opened.handle, Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8'));
-    await opened.handle.sync();
-  } finally {
-    await opened.handle.close().catch(() => undefined);
-  }
-  if (!(await renameContainedEntry(anchorDir, tempName, finalName))) {
-    await unlinkContainedEntry(anchorDir, path.join(anchorDir, tempName));
-    throw new Error('RELOCATION_ATOMIC_RENAME_REFUSED');
-  }
 }
 
 async function discoverLegacyStorageRoots(
@@ -690,12 +604,16 @@ async function vacuumIntoTarget(
   destinationFileName: string
 ): Promise<string> {
   const destPath = path.join(destinationAnchorDir, destinationFileName);
-  await unlinkContainedEntry(destinationAnchorDir, destPath);
-  await unlinkContainedEntry(destinationAnchorDir, `${destPath}-wal`);
-  await unlinkContainedEntry(destinationAnchorDir, `${destPath}-shm`);
+  for (const file of [destPath, `${destPath}-wal`, `${destPath}-shm`]) {
+    if (!(await unlinkContainedEntry(destinationAnchorDir, file))) {
+      throw new Error('RELOCATION_STAGE_REFUSED');
+    }
+  }
 
-  const leafCheck = await judgeLeafRedirect(destPath, ['ENOENT'], platformLacksNoFollow());
-  if (leafCheck.outcome === 'refused') throw new Error(`RELOCATION_STAGE_REFUSED:${leafCheck.reason}`);
+  // SQLite accepts an empty VACUUM destination. Reserve it privately before SQLite writes any bytes.
+  const destination = await openWithinRoot(destinationAnchorDir, [destinationFileName], { flags: 'wx', fileMode: FILE_MODE });
+  if (destination.outcome !== 'opened') throw new Error(`RELOCATION_STAGE_REFUSED:${destination.reason}`);
+  await destination.handle.close();
 
   const vacRes = await withZeroMutationReadOnlySqlite(
     sourceStorageRoot,
@@ -705,6 +623,7 @@ async function vacuumIntoTarget(
     { queryOnly: false }
   );
   if (vacRes.outcome !== 'ok') {
+    await unlinkContainedEntry(destinationAnchorDir, destPath);
     throw new Error(
       vacRes.outcome === 'sqlite-error'
         ? (vacRes.error instanceof Error ? vacRes.error.message : 'RELOCATION_VACUUM_FAILED')
@@ -712,15 +631,6 @@ async function vacuumIntoTarget(
     );
   }
 
-  const narrow = await narrowMode(destPath, FILE_MODE);
-  if (narrow.outcome === 'refused-symlink') {
-    await unlinkContainedEntry(destinationAnchorDir, destPath);
-    throw new Error('RELOCATION_STAGE_REFUSED:symlink-leaf');
-  }
-  if (process.platform !== 'win32' && narrow.outcome === 'unsupported') {
-    await unlinkContainedEntry(destinationAnchorDir, destPath);
-    throw new Error(`RELOCATION_STAGE_MODE_REFUSED:${narrow.code}`);
-  }
   return destPath;
 }
 
@@ -728,31 +638,37 @@ async function preserveLosingCanonicalReadOnly(
   canonicalRoot: string,
   scopeId: string,
   canonicalAnchorDir: string,
-  nowMs: number
+  nowMs: number,
+  onStage: RelocateLegacySqliteStoreRequest['onStage']
 ): Promise<PreservedConflictEntry> {
   await vacuumIntoTarget(canonicalRoot, scopeId, CANONICAL_DB_FILENAME, canonicalAnchorDir, UNSELECTED_TMP_FILENAME);
   const bytes = await readRegularFileWithinRoot(canonicalAnchorDir, [UNSELECTED_TMP_FILENAME]);
   await unlinkContainedEntry(canonicalAnchorDir, path.join(canonicalAnchorDir, UNSELECTED_TMP_FILENAME));
   if (bytes === null) throw new Error('RELOCATION_PRESERVE_CANONICAL_FAILED');
 
-  const shortHash = createHash('sha256').update(bytes).digest('hex').slice(0, 12);
-  const preservedName = `schegent-state.unselected-${shortHash}.db`;
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const preservedName = `schegent-state.unselected-${digest.slice(0, 12)}.db`;
   const preservedPath = path.join(canonicalAnchorDir, preservedName);
-  const opened = await openWithinRoot(canonicalAnchorDir, [preservedName], { flags: 'wx', fileMode: READONLY_PRESERVED_MODE });
-  if (opened.outcome === 'opened') {
+  const existingDigest = await computeFileSha256WithinRoot(canonicalAnchorDir, [preservedName]);
+  if (existingDigest === null) {
+    const readonlyTempPath = path.join(canonicalAnchorDir, UNSELECTED_READONLY_TMP_FILENAME);
+    await unlinkContainedEntry(canonicalAnchorDir, readonlyTempPath);
+    const opened = await openWithinRoot(canonicalAnchorDir, [UNSELECTED_READONLY_TMP_FILENAME], {
+      flags: 'wx', fileMode: READONLY_PRESERVED_MODE
+    });
+    if (opened.outcome !== 'opened') throw new Error(`RELOCATION_PRESERVE_CANONICAL_REFUSED:${opened.reason}:${opened.errno}`);
     try {
       await writeFully(opened.handle, bytes);
       await opened.handle.sync();
     } finally {
       await opened.handle.close().catch(() => undefined);
     }
-  } else if (opened.errno !== 'EEXIST') {
-    throw new Error(`RELOCATION_PRESERVE_CANONICAL_REFUSED:${opened.reason}:${opened.errno}`);
-  } else {
-    const existingDigest = await computeFileSha256WithinRoot(canonicalAnchorDir, [preservedName]);
-    if (existingDigest === null || existingDigest.slice(0, 12) !== shortHash) {
-      throw new Error('RELOCATION_PRESERVE_CANONICAL_DIGEST_MISMATCH');
+    await onStage?.('after_stage_losing_canonical');
+    if (!(await renameContainedEntry(canonicalAnchorDir, UNSELECTED_READONLY_TMP_FILENAME, preservedName))) {
+      throw new Error('RELOCATION_PRESERVE_CANONICAL_PUBLISH_REFUSED');
     }
+  } else if (existingDigest !== digest) {
+    throw new Error('RELOCATION_PRESERVE_CANONICAL_DIGEST_MISMATCH');
   }
   const verified = await verifySqliteCandidateWithinRoot(canonicalAnchorDir, [], preservedName);
   return {
@@ -802,6 +718,10 @@ async function finishPostPublishStep(params: {
 }): Promise<StoreRelocationOutcome> {
   const { canonicalAnchorDir, canonicalDbPath, journal, existingReceipt, nowMs, onStage, unlinkLegacyFile, logger, diag, activeFilesystemVerdict } = params;
   const activeStorageRoot = path.dirname(path.dirname(canonicalAnchorDir));
+  // Barrier the publication and its containing directories before discarding the source.
+  await syncRelocationDirectory(canonicalAnchorDir);
+  await syncRelocationDirectory(path.dirname(canonicalAnchorDir));
+  await syncRelocationDirectory(activeStorageRoot);
   const retirement = await retireLegacyWinnerFiles(journal.winnerStorageRoot, journal.scopeId, unlinkLegacyFile);
   await onStage?.('after_retire_legacy');
 
@@ -888,6 +808,14 @@ export async function relocateLegacySqliteStore(
 
   const canonicalWalRefused = requestedJournalMode === 'wal' && canonicalFsVerdict.classification === 'network';
   const canonicalDirExists = (await walkDirectoriesWithinRoot(canonicalRoot, scopeRelSegments)).outcome === 'ready';
+  const legacyRoots = await discoverLegacyStorageRoots(
+    canonicalRoot, request.legacyStorageUri, request.additionalLegacyStorageRoots, request.maxWorkspaceStorageEntries, diag
+  );
+  const toSchemaRefusalOutcome = (r: NewerSchemaRefusal): StoreRelocationOutcome => ({
+    outcome: 'refused_newer_schema', reason: r.reason, offendingPath: r.offendingPath,
+    recordedVersion: r.recordedVersion, maxSupportedVersion: r.maxSupportedVersion,
+    diagnostic: r.diagnostic, noticeRequired: true, ...diag.fields()
+  });
 
   let existingReceipt: RelocationReceipt | null = null;
   if (canonicalDirExists) {
@@ -901,26 +829,45 @@ export async function relocateLegacySqliteStore(
     : ({ kind: 'absent' } as const);
   let skipCanonicalJournal = canonicalWalRefused;
   if (!skipCanonicalJournal && journalRes.kind !== 'absent' && requestedJournalMode === 'wal' && canonicalFsVerdict.classification === 'unknown') {
-    const probeRoots = await discoverLegacyStorageRoots(canonicalRoot, request.legacyStorageUri, request.additionalLegacyStorageRoots, request.maxWorkspaceStorageEntries, createDiagnosticsBag());
-    for (const r of probeRoots) {
+    for (const r of legacyRoots) {
       if ((await verifySqliteCandidateWithinRoot(r, scopeRelSegments, CANONICAL_DB_FILENAME)).outcome === 'ok' && (await probeLegacyFs(r)).classification === 'local') { skipCanonicalJournal = true; break; }
     }
   }
   const validJournal = !skipCanonicalJournal && journalRes.kind === 'parsed' && isValidRelocationJournal(journalRes.value, request.scopeId, canonicalRoot) ? journalRes.value : null;
 
-  if (validJournal !== null) {
+  if (validJournal !== null && legacyRoots.includes(path.resolve(validJournal.winnerStorageRoot))) {
+    const canonicalCheck = await probeAndInspectCandidateWithinRoot(
+      canonicalRoot, scopeRelSegments, CANONICAL_DB_FILENAME, true, maxSupportedSchemaVersion, null
+    );
+    if (canonicalCheck.kind === 'refused_newer_schema') return toSchemaRefusalOutcome(canonicalCheck);
+    const winnerCheck = await probeAndInspectCandidateWithinRoot(
+      validJournal.winnerStorageRoot, scopeRelSegments, CANONICAL_DB_FILENAME, false, maxSupportedSchemaVersion, null
+    );
+    if (winnerCheck.kind === 'refused_newer_schema') return toSchemaRefusalOutcome(winnerCheck);
+    const winnerUnchanged = winnerCheck.kind === 'ok' &&
+      fingerprintsMatch(winnerCheck.candidate.fingerprint, validJournal.winnerFingerprint);
+    const publishedSha = canonicalCheck.kind === 'ok'
+      ? await computeFileSha256WithinRoot(canonicalRoot, [...scopeRelSegments, CANONICAL_DB_FILENAME])
+      : null;
+    const legacyRetired = winnerCheck.kind === 'absent';
+    const published = canonicalCheck.kind === 'ok' && canonicalCheck.candidate.populated && (
+      publishedSha === validJournal.stagedSha256 || validJournal.retirementPending === true || legacyRetired
+    );
+    const mayResumePublication = !published && winnerUnchanged && await matchesPreviousCanonical(
+      canonicalRoot, scopeRelSegments, validJournal.previousCanonicalFingerprint
+    );
+    const canResumePublication = mayResumePublication &&
+      await computeFileSha256WithinRoot(canonicalRoot, [...scopeRelSegments, STAGING_DB_FILENAME]) === validJournal.stagedSha256;
+    if ((published || canResumePublication) && !(await request.verifyPrimacy())) {
+      throw new RelocationPrimacyLostError('Lost ownership fence while recovering interrupted relocation');
+    }
     const canonicalAnchor = await ensureAnchorWithinRoot(canonicalRoot, scopeRelSegments, DIR_MODE);
     if (canonicalAnchor.outcome === 'ready') {
       const resolvedCanonicalDbPath = path.join(canonicalAnchor.anchor, CANONICAL_DB_FILENAME);
-      const publishedSha = await computeFileSha256WithinRoot(canonicalRoot, [...scopeRelSegments, CANONICAL_DB_FILENAME]);
-      const winnerCheck = await verifySqliteCandidateWithinRoot(validJournal.winnerStorageRoot, scopeRelSegments, CANONICAL_DB_FILENAME);
-      const pendingRetryMatch =
-        validJournal.retirementPending === true &&
-        winnerCheck.outcome === 'ok' &&
-        fingerprintsMatch(fingerprintFromVerified(winnerCheck.verified), validJournal.winnerFingerprint);
-
-      if (publishedSha !== null && (publishedSha === validJournal.stagedSha256 || winnerCheck.outcome === 'absent' || pendingRetryMatch)) {
-        if (!(await request.verifyPrimacy())) throw new RelocationPrimacyLostError('Lost ownership fence while recovering interrupted relocation');
+      if (canResumePublication) {
+        await publishStagedRelocation(canonicalRoot, canonicalAnchor.anchor, request.onStage);
+      }
+      if ((published && (winnerUnchanged || legacyRetired)) || canResumePublication) {
         return await finishPostPublishStep({
           canonicalAnchorDir: canonicalAnchor.anchor, canonicalDbPath: resolvedCanonicalDbPath, journal: validJournal,
           existingReceipt, nowMs, onStage: request.onStage, unlinkLegacyFile: request.unlinkLegacyFile,
@@ -935,17 +882,8 @@ export async function relocateLegacySqliteStore(
     await unlinkContainedEntry(canonicalRoot, path.join(canonicalScopeDir, JOURNAL_FILENAME));
   }
 
-  const legacyRoots = await discoverLegacyStorageRoots(
-    canonicalRoot, request.legacyStorageUri, request.additionalLegacyStorageRoots, request.maxWorkspaceStorageEntries, diag
-  );
   const inspectedPopulated: InspectedStoreCandidate[] = [];
   const inspectedHealthyLegacy: InspectedStoreCandidate[] = [];
-
-  const toSchemaRefusalOutcome = (r: NewerSchemaRefusal): StoreRelocationOutcome => ({
-    outcome: 'refused_newer_schema', reason: r.reason, offendingPath: r.offendingPath,
-    recordedVersion: r.recordedVersion, maxSupportedVersion: r.maxSupportedVersion,
-    diagnostic: r.diagnostic, noticeRequired: true, ...diag.fields()
-  });
 
   const canonicalProbe = await probeAndInspectCandidateWithinRoot(
     canonicalRoot, ['sqlite', request.scopeId], CANONICAL_DB_FILENAME, true, maxSupportedSchemaVersion, existingReceipt
@@ -1070,6 +1008,13 @@ export async function relocateLegacySqliteStore(
 
   // Case 1b / 2b: A legacy database won and must be relocated to canonicalDbPath.
   const winnerLegacyFs = await probeLegacyFs(winner.storageRoot);
+  if (canonicalProbe.kind === 'containment_refused') {
+    return await buildFallbackOutcome(
+      winner, losers, 'symlink_or_containment_refused',
+      `Cannot prepare canonical SQLite store (${canonicalProbe.reason}); keeping legacy store active in place.`,
+      winnerLegacyFs
+    );
+  }
   if (requestedJournalMode === 'wal' && canonicalFsVerdict.classification === 'network') {
     return await buildFallbackOutcome(
       winner, losers, 'network_share_wal_unsupported',
@@ -1101,6 +1046,16 @@ export async function relocateLegacySqliteStore(
 
   const canonicalAnchorDir = anchorResult.anchor;
   const resolvedCanonicalDbPath = path.join(canonicalAnchorDir, CANONICAL_DB_FILENAME);
+  for (const file of [resolvedCanonicalDbPath, `${resolvedCanonicalDbPath}-wal`, `${resolvedCanonicalDbPath}-shm`]) {
+    const leaf = await judgeLeafRedirect(file, ['ENOENT'], platformLacksNoFollow());
+    if (leaf.outcome === 'refused') {
+      return await buildFallbackOutcome(
+        winner, losers, 'symlink_or_containment_refused',
+        `Cannot prepare canonical SQLite store (${leaf.reason}); keeping legacy store active in place.`,
+        winnerLegacyFs
+      );
+    }
+  }
   let stagingPath: string;
   try {
     stagingPath = await vacuumIntoTarget(winner.storageRoot, request.scopeId, CANONICAL_DB_FILENAME, canonicalAnchorDir, STAGING_DB_FILENAME);
@@ -1141,7 +1096,7 @@ export async function relocateLegacySqliteStore(
   const preservedConflicts: PreservedConflictEntry[] = [];
   for (const loser of losers) {
     if (loser.isCanonical) {
-      preservedConflicts.push(await preserveLosingCanonicalReadOnly(canonicalRoot, request.scopeId, canonicalAnchorDir, ts));
+      preservedConflicts.push(await preserveLosingCanonicalReadOnly(canonicalRoot, request.scopeId, canonicalAnchorDir, ts, request.onStage));
       await request.onStage?.('after_preserve_losing_canonical');
     } else {
       preservedConflicts.push({ databasePath: loser.databasePath, origin: 'legacy_in_place', fingerprint: loser.fingerprint, recordedAtMs: ts });
@@ -1151,7 +1106,10 @@ export async function relocateLegacySqliteStore(
   const journal: RelocationJournal = {
     version: 1, scopeId: request.scopeId, stagedSha256,
     winnerDatabasePath: winner.databasePath, winnerStorageRoot: winner.storageRoot,
-    winnerFingerprint: winner.fingerprint, preservedConflicts, startedAtMs: ts
+    winnerFingerprint: winner.fingerprint,
+    previousCanonicalFingerprint: canonicalProbe.kind === 'ok' ? canonicalProbe.candidate.fingerprint :
+      canonicalProbe.kind === 'absent' ? null : undefined,
+    preservedConflicts, startedAtMs: ts
   };
   await writeAtomicJsonWithinAnchor(canonicalAnchorDir, `${JOURNAL_FILENAME}.tmp`, JOURNAL_FILENAME, journal);
   await request.onStage?.('after_write_journal');
@@ -1162,14 +1120,7 @@ export async function relocateLegacySqliteStore(
     throw new RelocationPrimacyLostError('Lost ownership fence before publishing relocated SQLite store');
   }
 
-  await unlinkContainedEntry(canonicalRoot, `${resolvedCanonicalDbPath}-wal`);
-  await unlinkContainedEntry(canonicalRoot, `${resolvedCanonicalDbPath}-shm`);
-  if (!(await renameContainedEntry(canonicalAnchorDir, STAGING_DB_FILENAME, CANONICAL_DB_FILENAME))) {
-    await unlinkContainedEntry(canonicalRoot, stagingPath);
-    await unlinkContainedEntry(canonicalRoot, path.join(canonicalAnchorDir, JOURNAL_FILENAME));
-    throw new Error('RELOCATION_ATOMIC_PUBLISH_REFUSED');
-  }
-  await request.onStage?.('after_atomic_publish');
+  await publishStagedRelocation(canonicalRoot, canonicalAnchorDir, request.onStage);
 
   return await finishPostPublishStep({
     canonicalAnchorDir, canonicalDbPath: resolvedCanonicalDbPath, journal, existingReceipt, nowMs,

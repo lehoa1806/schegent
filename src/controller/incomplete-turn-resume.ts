@@ -1,4 +1,5 @@
 import type { IncompleteTurnCause } from '../parser/stdout-parser';
+import { isEphemeralBridgeSessionId } from '../services/acp-runtime/acp-durable-runtime-store';
 import type { PhaseRunInputs, PhaseRunner, PhaseRunOutput } from './phase-runner';
 
 /**
@@ -59,8 +60,23 @@ export async function dispatchResumingIncompleteTurns(
     resumes += 1;
     // An operator's custom prompt is one-shot, and `sessionReuse: false` skips
     // the pre-phase compaction a reused session would get.
-    const { resumePrompt: _dropped, resumeSessionCostUsd, ...resumed } = inputs;
-    const resumeSessionId = output.cliSessionId ?? inputs.resumeSessionId;
+    // FR-R7-14 (14-04): never forward ephemeral bridge-local session IDs (`acp-<backend>-session-N`)
+    // across turns; only durable persisted handles or non-bridge session IDs may be resumed.
+    const {
+      resumePrompt: _dropped,
+      resumeSessionCostUsd,
+      resumeSessionId: _droppedSessionId,
+      ...resumed
+    } = inputs;
+    const outputSessionId =
+      output.cliSessionId !== undefined && !isEphemeralBridgeSessionId(output.cliSessionId)
+        ? output.cliSessionId
+        : undefined;
+    const inputSessionId =
+      inputs.resumeSessionId !== undefined && !isEphemeralBridgeSessionId(inputs.resumeSessionId)
+        ? inputs.resumeSessionId
+        : undefined;
+    const resumeSessionId = outputSessionId ?? inputSessionId;
     output = await runner.run({
       ...resumed,
       isContinue: true,

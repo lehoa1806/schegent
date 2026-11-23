@@ -9,10 +9,8 @@ import type { CatalogKind } from '../catalog-store';
 import type { CommandAckOutcome } from '../command-outcome';
 import type { QueueFailurePolicy } from '../queue-failure-policy';
 import type { RunRequest } from '../run-request';
-import type { PhaseLogBatchPayload } from '../sidebar-ipc/phase-log';
 import type { PreflightProcessYamlRequest } from '../sidebar-ipc/process-yaml';
 import type { ControlCommandEnvelope, WorkflowControlAction } from '../sidebar-ipc/workflow-run';
-import type { SnapshotSyncMeta } from '../snapshot-bounds';
 import type { EnqueueStartIntent, StartQueueIntent } from '../start-intent-types';
 
 export const GENERATED_SIDEBAR_IPC_SCHEMA_VERSION = 3 as const;
@@ -654,6 +652,49 @@ export interface DecidePhaseHandoffCommand extends GeneratedCommandBase<'CMD_DEC
         readonly baseRevision: number;
         readonly replacementSources: readonly unknown[];
       };
+}
+
+/**
+ * Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision; routine mode reconstructs omittedSlices from baseRevision.
+ */
+export interface SnapshotSyncMeta {
+  readonly mode: 'full' | 'routine';
+  readonly revision: number;
+  readonly baseRevision?: number;
+  readonly omittedSlices?: readonly ('history' | 'phaseCatalog' | 'pipelineCatalog' | 'workflowCatalog' | 'availablePhases' | 'availablePipelines' | 'auditTail' | 'debugLogTail')[];
+}
+
+/** A display entry as it crosses the boundary: sanitized and budgeted. */
+export interface PhaseLogWireEntry {
+  readonly seq: number;
+  readonly kind: 'assistant-text' | 'tool-use' | 'tool-result' | 'system' | 'result' | 'truncated-head' | 'tail-ended' | 'coverage-gap';
+  readonly ts: string | null;
+  readonly body: Readonly<Record<string, unknown>>;
+  readonly bodyTruncated: Readonly<Record<string, {
+    readonly originalLength: number;
+  }>> | null;
+}
+
+/**
+ * One entry with its source position. The at field is the end byte offset of its record, and n is the entry's ordinal within that record.
+ */
+export interface LiveLogBatchEntry {
+  readonly at: number;
+  readonly n: number;
+  readonly entry: PhaseLogWireEntry;
+}
+
+export type LiveLogBatchMode = 'continue' | 'resume' | 'reset';
+
+/** The MSG_PHASE_LOG_BATCH payload, at most 256 KiB serialized. */
+export interface PhaseLogBatchPayload {
+  readonly protocol: 1;
+  readonly tailSessionId: string;
+  readonly batchSeq: number;
+  readonly generation: string;
+  readonly mode: LiveLogBatchMode;
+  readonly toCursor: string | null;
+  readonly entries: readonly LiveLogBatchEntry[];
 }
 
 /** Host pushes an authoritative WorkflowSnapshot envelope with optional sync metadata. */

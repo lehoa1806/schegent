@@ -6,6 +6,7 @@
  * Zero `vscode` or `node:fs` imports (docs/hard-rules.md rules 13, 69).
  */
 import { ACP_PROTOCOL_VERSION } from '../../contracts/acp-runtime';
+import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
 import type {
   AcceptedRevision,
   HandoffExplanation,
@@ -33,7 +34,7 @@ import type {
   WorkflowInvocationFrame
 } from '../../state/connected-workflow-run';
 import type { ArtifactLifecycleService } from '../artifact-lifecycle';
-import { createAcceptanceService, type AcceptanceService } from './acceptance';
+import { createAcceptanceService, storedManifest, type AcceptanceService } from './acceptance';
 import {
   allocateAttemptStagingPaths,
   captureAttemptPublications,
@@ -139,7 +140,7 @@ export function normalizeNodePathForHandoff(raw: string): string {
 }
 
 function defaultTargetProfile(backendId: string): TargetProfileResolution {
-  const normalized = normalizeHandoffIdentifier(backendId || 'claude', 'claude');
+  const normalized = normalizeHandoffIdentifier(backendId || DEFAULT_BACKEND, DEFAULT_BACKEND);
   return {
     profile: {
       profileId: `${normalized}-acp`,
@@ -200,6 +201,7 @@ export interface PhaseHandoffCoordinator {
     readonly delivered: boolean;
   }): { readonly ok: true } | Refusal;
   releaseTerminalRunPins(runId: string): void;
+  reloadFromStore(): void;
   inspectHandoff(
     handoffId: string,
     revision?: number
@@ -229,7 +231,6 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
   private readonly resolveProfile: (backendId: string) => TargetProfileResolution;
   private readonly sequenceByRunId = new Map<string, number>();
   private readonly candidatesByRunId = new Map<string, RecordedAttemptCandidate[]>();
-  private readonly latestHandoffByTargetKey = new Map<string, string>();
 
   public constructor(private readonly deps: PhaseHandoffCoordinatorDeps) {
     this.store = deps.store;
@@ -632,20 +633,6 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
         const accepted = this.acceptance.accept(prep);
         if (!accepted.ok) return accepted;
 
-        if (this.deps.lifecycle) {
-          for (const src of prep.manifest.sources) {
-            for (const art of src.artifacts) {
-              this.deps.lifecycle.addReference({
-                artifactId: art.artifactId,
-                ownerType: 'handoff',
-                ownerId: prep.manifest.handoffId,
-                purpose: 'phase-context',
-                protective: true
-              });
-            }
-          }
-        }
-
         const stored = this.store.load(prep.manifest.handoffId);
         if (stored !== null) {
           this.emitRecordObservations(stored, accepted.revision.revision, ['accepted']);
@@ -660,7 +647,21 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
         return { kind: 'refused', failure: txOutcome.failure, detail: txOutcome.detail };
       }
 
-      this.latestHandoffByTargetKey.set(admissionOwner, prep.manifest.handoffId);
+      // Pin referenced artifacts after the handoff transaction commits so `lifecycle.addReference`
+      // can open its own `BEGIN IMMEDIATE` transaction on the shared writer connection.
+      if (this.deps.lifecycle) {
+        for (const src of prep.manifest.sources) {
+          for (const art of src.artifacts) {
+            this.deps.lifecycle.addReference({
+              artifactId: art.artifactId,
+              ownerType: 'handoff',
+              ownerId: prep.manifest.handoffId,
+              purpose: 'phase-context',
+              protective: true
+            });
+          }
+        }
+      }
 
       return {
         kind: 'accepted',
@@ -679,15 +680,27 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     invocationId: string,
     targetNodeId: string
   ): string | null {
-    const cached = this.latestHandoffByTargetKey.get(
-      this.targetKey(runId, invocationId, targetNodeId)
-    );
-    if (cached !== undefined) return cached;
+    const normalizedOcc = normalizeHandoffIdentifier(invocationId, 'occ-1');
+    const normalizedInv = normalizeHandoffIdentifier(invocationId, 'inv-1');
+    let fallbackMatch: string | null = null;
     for (const id of this.store.listHandoffIdsForRun(runId)) {
       const meta = this.store.getRunMetadata(id);
-      if (meta?.targetPhaseId === targetNodeId) return id;
+      if (meta?.targetPhaseId !== targetNodeId) continue;
+      if (fallbackMatch === null) {
+        fallbackMatch = id;
+      }
+      const record = this.store.load(id);
+      const latestRev = record?.revisions.at(-1);
+      const manifest = latestRev !== undefined ? storedManifest(latestRev) : null;
+      if (
+        manifest !== null &&
+        (manifest.identity.targetOccurrenceId === normalizedOcc ||
+          manifest.identity.sourceInvocationId === normalizedInv)
+      ) {
+        return id;
+      }
     }
-    return null;
+    return fallbackMatch;
   }
 
   public async planAndAuthorizeAttemptDelivery(
@@ -716,7 +729,7 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
   }): { readonly ok: true } | Refusal {
     const normalizedAttemptId = normalizeHandoffIdentifier(params.targetAttemptId, 'attempt-1');
     const outcome = params.delivered ? ('delivered' as const) : ('uncertain' as const);
-    return this.store.runInImmediateTransaction(() => {
+    const txOutcome = this.store.runInImmediateTransaction(() => {
       const settled = this.acceptance.settleDispatch(
         params.handoffId,
         params.revision,
@@ -728,17 +741,18 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
       if (record !== null) {
         this.emitRecordObservations(record, params.revision, [outcome], normalizedAttemptId);
       }
-      if (params.delivered && this.deps.lifecycle) {
-        releasePhaseContextOwnerReferences(
-          this.deps.lifecycle,
-          this.store,
-          params.handoffId,
-          'attempt',
-          params.targetAttemptId
-        );
-      }
       return { ok: true as const };
     });
+    if (txOutcome.ok && params.delivered && this.deps.lifecycle) {
+      releasePhaseContextOwnerReferences(
+        this.deps.lifecycle,
+        this.store,
+        params.handoffId,
+        'attempt',
+        params.targetAttemptId
+      );
+    }
+    return txOutcome;
   }
 
   public releaseTerminalRunPins(runId: string): void {
@@ -759,6 +773,12 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     }
     this.candidatesByRunId.delete(runId);
     this.sequenceByRunId.delete(runId);
+  }
+
+  public reloadFromStore(): void {
+    this.candidatesByRunId.clear();
+    this.sequenceByRunId.clear();
+    this.store.clearPendingMetadata?.();
   }
 
   public inspectHandoff(

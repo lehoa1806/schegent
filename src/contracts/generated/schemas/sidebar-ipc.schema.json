@@ -4275,6 +4275,7 @@
       ]
     },
     "LiveLogBatchEntry": {
+      "description": "One entry with its source position. The at field is the end byte offset of its record, and n is the entry's ordinal within that record.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -4294,6 +4295,14 @@
         "at",
         "n",
         "entry"
+      ]
+    },
+    "LiveLogBatchMode": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "resume",
+        "reset"
       ]
     },
     "ManualPauseCause": {
@@ -4816,6 +4825,7 @@
       ]
     },
     "PhaseLogBatchPayload": {
+      "description": "The MSG_PHASE_LOG_BATCH payload, at most 256 KiB serialized.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -4835,12 +4845,7 @@
           "minLength": 1
         },
         "mode": {
-          "type": "string",
-          "enum": [
-            "continue",
-            "resume",
-            "reset"
-          ]
+          "$ref": "#/$defs/LiveLogBatchMode"
         },
         "toCursor": {
           "anyOf": [
@@ -4870,6 +4875,7 @@
       ]
     },
     "PhaseLogWireEntry": {
+      "description": "A display entry as it crosses the boundary: sanitized and budgeted.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -4902,8 +4908,7 @@
         },
         "body": {
           "type": "object",
-          "additionalProperties": true,
-          "properties": {}
+          "additionalProperties": true
         },
         "bodyTruncated": {
           "anyOf": [
@@ -5980,6 +5985,7 @@
       ]
     },
     "SnapshotSyncMeta": {
+      "description": "Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision; routine mode reconstructs omittedSlices from baseRevision.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -9226,7 +9232,7 @@
     "Command_CMD_START": {
       "description": "Enqueue a new feature request onto a queue with optional pipeline, position, and start-intent overrides.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9248,8 +9254,7 @@
             "description": {
               "description": "Operator-authored task description (trimmed, 1..4096 chars).",
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096
+              "pattern": "^\\s*(?:\\S|\\S[\\s\\S]{0,4094}\\S)\\s*(?![\\s\\S])"
             },
             "pipelineId": {
               "description": "Optional catalog pipeline override.",
@@ -9279,7 +9284,7 @@
     "Command_CMD_CANCEL": {
       "description": "Cancel a target task/run resolved explicitly by FeatureRequest.id.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9313,7 +9318,7 @@
     "Command_CMD_REMOVE_QUEUE_ITEM": {
       "description": "Remove an item from a queue after explicit operator confirmation.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9351,7 +9356,7 @@
     "Command_CMD_RETRY_QUEUE_ITEM": {
       "description": "Retry a failed or canceled queue item by id.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9385,7 +9390,7 @@
     "Command_CMD_MOVE_QUEUE_ITEM_UP": {
       "description": "Move a pending queue item one position earlier.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9419,7 +9424,7 @@
     "Command_CMD_MOVE_QUEUE_ITEM_DOWN": {
       "description": "Move a pending queue item one position later.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9453,7 +9458,7 @@
     "Command_CMD_PAUSE_QUEUE": {
       "description": "Pause a queue with an optional operator-supplied reason.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -9468,26 +9473,34 @@
           "maxLength": 64
         },
         "payload": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "queueId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "queueId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              }
             },
-            "reason": {
-              "type": "string",
-              "maxLength": 500
+            {
+              "type": "array",
+              "maxItems": 0
             }
-          }
+          ]
         }
       }
     },
     "Command_CMD_RESUME_QUEUE": {
       "description": "Resume a paused queue (canonized to live validator allowlist: queueId only).",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -9502,22 +9515,30 @@
           "maxLength": 64
         },
         "payload": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "queueId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "queueId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              }
+            },
+            {
+              "type": "array",
+              "maxItems": 0
             }
-          }
+          ]
         }
       }
     },
     "Command_CMD_START_QUEUE": {
       "description": "Offer a queue a drain pass or apply an explicit start/schedule intent.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -9550,7 +9571,7 @@
     "Command_CMD_CLEAR_COMPLETED": {
       "description": "Clear completed items from the explicitly addressed queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9584,7 +9605,7 @@
     "Command_CMD_CLEAR_QUEUE": {
       "description": "Queue-scoped Clean All addressing one explicit queueId.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9618,7 +9639,7 @@
     "Command_CMD_MODIFY_TASK": {
       "description": "Edit the description of a queued task.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9644,8 +9665,7 @@
             },
             "description": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 4096
+              "pattern": "^\\s*(?:\\S|\\S[\\s\\S]{0,4094}\\S)\\s*(?![\\s\\S])"
             }
           },
           "required": [
@@ -9658,7 +9678,7 @@
     "Command_CMD_REORDER_TASK": {
       "description": "Reorder a pending task within its queue to a new zero-based position.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9697,7 +9717,7 @@
     "Command_CMD_RESTART_CANCELED_TASK": {
       "description": "Transition a canceled task back to pending by taskId.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9731,7 +9751,7 @@
     "Command_CMD_REMOVE_TASK_PHASE": {
       "description": "Remove a phase from a task after explicit operator confirmation.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9775,7 +9795,7 @@
     "Command_CMD_CREATE_QUEUE": {
       "description": "Create a new named queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9796,8 +9816,7 @@
           "properties": {
             "name": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 64
+              "pattern": "^\\s*(?:\\S|\\S[\\s\\S]{0,62}\\S)\\s*(?![\\s\\S])"
             }
           },
           "required": [
@@ -9809,7 +9828,7 @@
     "Command_CMD_RENAME_QUEUE": {
       "description": "Rename an existing queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9835,8 +9854,7 @@
             },
             "name": {
               "type": "string",
-              "minLength": 1,
-              "maxLength": 64
+              "pattern": "^\\s*(?:\\S|\\S[\\s\\S]{0,62}\\S)\\s*(?![\\s\\S])"
             }
           },
           "required": [
@@ -9849,7 +9867,7 @@
     "Command_CMD_DELETE_QUEUE": {
       "description": "Two-phase queue deletion (preview without confirmed, execute with confirmed: true).",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9886,7 +9904,7 @@
     "Command_CMD_SAVE_QUEUE_SETTINGS": {
       "description": "Persist workspace queue concurrency cap and default queue id.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9926,7 +9944,7 @@
     "Command_CMD_SET_QUEUE_FAILURE_POLICY": {
       "description": "Set a queue-level halt-on-failure override or null to inherit workspace default.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -9975,7 +9993,7 @@
     "Command_CMD_ATTEST_TASK_COMPLETED": {
       "description": "Operator attests that a failed task completed externally.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10013,7 +10031,7 @@
     "Command_CMD_MOVE_TASK": {
       "description": "Move a task across queues with an optional insertion position.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10057,7 +10075,7 @@
     "Command_CMD_RETRY_PHASE_NOW": {
       "description": "Trigger an immediate retry for a delayed-retry phase on the addressed queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10091,7 +10109,7 @@
     "Command_CMD_PAUSE_PHASE": {
       "description": "Pause the active phase on the addressed queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10125,7 +10143,7 @@
     "Command_CMD_RESUME_PHASE": {
       "description": "Resume a paused phase on the addressed queue with an optional operator prompt.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10163,7 +10181,7 @@
     "Command_CMD_RESTART_PHASE": {
       "description": "Restart a specific phase on the addressed queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10203,7 +10221,7 @@
     "Command_CMD_SKIP_PHASE": {
       "description": "Skip a phase on a specific run and queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10249,7 +10267,7 @@
     "Command_CMD_DISABLE_PHASE": {
       "description": "Disable a phase on the addressed queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10289,7 +10307,7 @@
     "Command_CMD_ENABLE_PHASE": {
       "description": "Re-enable a disabled phase on the addressed queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10329,7 +10347,7 @@
     "Command_CMD_SET_PHASE_BREAKPOINT": {
       "description": "Set a future-phase breakpoint on a specific run and queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10375,7 +10393,7 @@
     "Command_CMD_CLEAR_PHASE_BREAKPOINT": {
       "description": "Clear a future-phase breakpoint on a specific run and queue.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10421,7 +10439,7 @@
     "Command_CMD_OPEN_AUDIT_LOG": {
       "description": "Open the workspace audit log in VS Code.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -10434,13 +10452,16 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "payload": {
+          "not": {}
         }
       }
     },
     "Command_CMD_OPEN_DASHBOARD": {
       "description": "Open the full Schegent dashboard webview panel.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -10453,13 +10474,16 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "payload": {
+          "not": {}
         }
       }
     },
     "Command_CMD_OPEN_VERBOSE_SETTING": {
       "description": "Open VS Code Settings scoped to schegent.logging.verbose.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -10472,13 +10496,16 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "payload": {
+          "not": {}
         }
       }
     },
     "Command_CMD_OPEN_TRUST_SETTINGS": {
       "description": "Open VS Code Settings scoped to the read-only schegent.trust.* keys.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -10491,13 +10518,16 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "payload": {
+          "not": {}
         }
       }
     },
     "Command_CMD_DISMISS_MIGRATION_NOTICE": {
       "description": "Dismiss the one-time post-migration notice.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId"
@@ -10510,13 +10540,16 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "payload": {
+          "not": {}
         }
       }
     },
     "Command_CMD_SET_CONFIRM_SUPPRESSION": {
       "description": "Persist per-action confirmation suppression state in workspace memento.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10552,7 +10585,7 @@
     "Command_CMD_SAVE_MODELS": {
       "description": "Persist the Model Catalog with optional import revision and mutation tag.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10582,22 +10615,34 @@
               }
             },
             "expectedRevision": {
-              "type": "string"
+              "description": "The host drops values that do not match the first schema.",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {}
+              ]
             },
             "mutation": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "manual-edit",
-                    "import-package"
+              "description": "The host drops values that do not match the first schema.",
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "manual-edit",
+                        "import-package"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
                   ]
-                }
-              },
-              "required": [
-                "kind"
+                },
+                {}
               ]
             }
           },
@@ -10610,7 +10655,7 @@
     "Command_CMD_SAVE_GENERAL_SETTINGS": {
       "description": "Save a batch of unprefixed scalar schegent.* settings validated against KEY_SPECS downstream.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10643,7 +10688,7 @@
     "Command_CMD_PING_BACKEND": {
       "description": "Probe connectivity and availability for a single supported backend.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10680,7 +10725,7 @@
     "Command_CMD_SET_UNCONTAINED_BACKEND_GRANT": {
       "description": "Grant or revoke uncontained execution posture for a single supported backend.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10721,7 +10766,7 @@
     "Command_CMD_RERUN_FROM_HISTORY": {
       "description": "Rerun a historical run by runId with optional force flag for legacy preview entries.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10758,7 +10803,7 @@
     "Command_CMD_OPEN_HISTORY_ITEM_DETAILS": {
       "description": "Open detail view for a recorded history item by id.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10792,7 +10837,7 @@
     "Command_CMD_RESOLVE_AUDIT_POINTER": {
       "description": "Resolve a completed run auditLogPointer to its audit records.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10826,7 +10871,7 @@
     "Command_CMD_RESOLVE_HISTORY_DESCRIPTION": {
       "description": "Resolve a completed run stored description for replay.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10860,7 +10905,7 @@
     "Command_CMD_READ_FAILURE_RECORD": {
       "description": "Read the newest failure record for a (queueId, taskId) row.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10902,7 +10947,7 @@
     "Command_CMD_OPEN_DECISION_RECORD": {
       "description": "Open the decisions.md record for a blocked row.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10937,7 +10982,7 @@
     "Command_CMD_SAVE_DEFINITION_DRAFT": {
       "description": "Save an authored draft body for one catalog definition.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -10992,7 +11037,7 @@
     "Command_CMD_PUBLISH_DEFINITION": {
       "description": "Publish the current draft of one catalog definition.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11041,7 +11086,7 @@
     "Command_CMD_DEACTIVATE_DEFINITION": {
       "description": "Deactivate one published catalog definition.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11090,7 +11135,7 @@
     "Command_CMD_RESTORE_DEFINITION_VERSION": {
       "description": "Copy a historical published version back into a draft.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11145,7 +11190,7 @@
     "Command_CMD_DISCARD_DEFINITION_DRAFT": {
       "description": "Discard an unpublished draft for one catalog definition.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11194,7 +11239,7 @@
     "Command_CMD_PUBLISH_PACKAGE": {
       "description": "Commit a multi-layer imported catalog package.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11272,7 +11317,7 @@
     "Command_CMD_READ_DEFINITION_VERSION": {
       "description": "Read a historical definition version body by (kind, id, versionId).",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11320,7 +11365,7 @@
     "Command_CMD_EXPORT_PROCESS_YAML": {
       "description": "Export a Phase, Workflow, or Model Catalog to a host-dialog YAML file (never carries a path).",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11400,7 +11445,7 @@
     "Command_CMD_PREFLIGHT_PROCESS_YAML": {
       "description": "Open host dialog to preflight an imported process YAML document (empty payload only).",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11425,7 +11470,7 @@
     "Command_CMD_READ_PHASE_LOG": {
       "description": "Read persisted phase log entries for a safe-path-segment tuple.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11481,15 +11526,15 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "default": null
                 }
               },
               "required": [
                 "queueId",
                 "taskId",
                 "pipelineId",
-                "phaseId",
-                "iterationN"
+                "phaseId"
               ]
             }
           },
@@ -11502,7 +11547,7 @@
     "Command_CMD_START_PHASE_LOG_TAIL": {
       "description": "Start a live phase log tail session for a concrete iteration.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11583,7 +11628,7 @@
     "Command_CMD_STOP_PHASE_LOG_TAIL": {
       "description": "Stop an active live phase log tail session.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11617,7 +11662,7 @@
     "Command_CMD_ACK_PHASE_LOG_TAIL": {
       "description": "Acknowledge a live phase log batch with credit, resync, or duplicate flags.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11643,7 +11688,8 @@
             },
             "batchSeq": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 9007199254740991
             },
             "resync": {
               "type": "boolean"
@@ -11662,7 +11708,7 @@
     "Command_CMD_READ_METRICS": {
       "description": "Scan workspace audit/rollup metrics with optional archive inclusion and bounded runIds filter.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11678,29 +11724,37 @@
           "maxLength": 64
         },
         "payload": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "includeArchives": {
-              "type": "boolean"
-            },
-            "runIds": {
-              "type": "array",
-              "maxItems": 64,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 256
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "includeArchives": {
+                  "type": "boolean"
+                },
+                "runIds": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                }
               }
+            },
+            {
+              "type": "array",
+              "maxItems": 0
             }
-          }
+          ]
         }
       }
     },
     "Command_CMD_READ_STORAGE_DETAILS": {
       "description": "Read storage pressure summary and one paginated artifact inventory page.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11732,7 +11786,7 @@
     "Command_CMD_READ_USAGE_ACCOUNTING": {
       "description": "Read one usage accounting page; query validation is delegated to the shared host validator.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11762,7 +11816,7 @@
     "Command_CMD_READ_REPORT": {
       "description": "Run, page, drill down, cancel, list, or reproduce historical reports.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -11926,7 +11980,7 @@
     "Command_CMD_MUTATE_REPORT": {
       "description": "Export (via host dialog), save, or delete a saved report record.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -12019,7 +12073,7 @@
     "Command_CMD_LAUNCH_PIPELINE": {
       "description": "Compose, validate, freeze, and enqueue a Pipeline RunRequest.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -12056,7 +12110,7 @@
     "Command_CMD_LAUNCH_WORKFLOW": {
       "description": "Launch a connected Workflow run from a declared startNodeId.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -12105,7 +12159,7 @@
     "Command_CMD_CONTINUE_WORKFLOW": {
       "description": "Continue or apply a control operation to a connected Workflow run.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -12178,7 +12232,7 @@
     "Command_CMD_READ_EXECUTION_VISIBILITY": {
       "description": "Read attempt visibility details or runtime lane/telemetry posture.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -12245,7 +12299,7 @@
     "Command_CMD_OPEN_CHANGE_REVIEW": {
       "description": "Open, refresh, classify, page, close, or cancel an immutable candidate change review.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -12388,7 +12442,7 @@
     "Command_CMD_DECIDE_PHASE_HANDOFF": {
       "description": "Approve or edit a manual phase-to-phase context handoff revision.",
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "type",
         "correlationId",
@@ -12420,7 +12474,8 @@
                 },
                 "expectedRevision": {
                   "type": "integer",
-                  "minimum": 1
+                  "minimum": 1,
+                  "maximum": 9007199254740991
                 },
                 "decisionId": {
                   "type": "string",
@@ -12451,7 +12506,8 @@
                 },
                 "baseRevision": {
                   "type": "integer",
-                  "minimum": 1
+                  "minimum": 1,
+                  "maximum": 9007199254740991
                 },
                 "replacementSources": {
                   "type": "array",

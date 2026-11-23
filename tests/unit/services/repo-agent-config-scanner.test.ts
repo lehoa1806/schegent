@@ -1,6 +1,7 @@
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_AGENT_CONFIG_FILE_BYTES,
@@ -120,7 +121,7 @@ describe('scanRepoAgentConfig (FR-R7-04, SC-001, SC-003, SC-004)', () => {
     const big = Buffer.alloc(MAX_AGENT_CONFIG_FILE_BYTES + 1024, 0x41);
     await fsp.writeFile(path.join(root, 'CLAUDE.md'), big);
 
-    const result = await scanRepoAgentConfig(root, 'claude');
+    const result = await scanRepoAgentConfig(root, 'claude', { maxBytes: big.length });
     expect(result.persistable).toBe(false);
     expect(result.entries).toEqual([
       {
@@ -247,6 +248,27 @@ describe('scanRepoAgentConfig (FR-R7-04, SC-001, SC-003, SC-004)', () => {
     expect(result.persistable).toBe(false);
     expect(result.entries).toEqual([]);
     expect(calls).toHaveLength(1);
+  });
+
+  it.each(['resolve', 'reject'])('classifies a late final scan %s as a timeout', async (settle) => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    try {
+      const result = await scanRepoAgentConfig('unused', 'codex', {
+        timeoutMs: 25,
+        scanPath: async (_root, name) => {
+          if (name === 'AGENTS.override.md') {
+            now = 26;
+            if (settle === 'reject') throw new Error('read failed after deadline');
+          }
+          return { name, status: 'present', size: 1, digest: 'a'.repeat(64) };
+        }
+      });
+      expect(result).toMatchObject({ scanError: true, scanErrorReason: 'timeout', persistable: false });
+      expect(result.entries.map((entry) => entry.name)).toEqual(['.codex/config.toml', 'AGENTS.md']);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('FR-R7-11: reads exact-cap files without ever requesting bytes past maxBytes (zero 1-byte overshoot)', async () => {
