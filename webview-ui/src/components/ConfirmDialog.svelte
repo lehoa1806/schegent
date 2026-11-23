@@ -18,6 +18,7 @@
 
   import { onMount, tick } from 'svelte';
   import { SUPPRESSION_CHECKBOX_LABEL, type Severity } from '../lib/action-copy';
+  import BreakAtJoins from './BreakAtJoins.svelte';
 
   interface ConfirmationRequest {
     readonly actionKey: string;
@@ -70,8 +71,25 @@
       cancelButtonEl?.focus();
     });
     return () => {
-      // Restore focus to the element that opened us.
-      focusReturnTarget(request.originatingElement)?.focus?.();
+      // Restore focus to the element that opened us. Defer past Svelte's
+      // synchronous effect teardown so focusing a control with `use:hoverTextAnchor`
+      // (which mounts a portal on focus) does not throw `effect_in_teardown`, and
+      // guard against detached targets, already-moved focus, or a replacement modal.
+      const target = focusReturnTarget(request.originatingElement);
+      queueMicrotask(() => {
+        if (!target?.isConnected) return;
+        const active = document.activeElement;
+        if (
+          active !== null &&
+          active.isConnected &&
+          active !== document.body &&
+          active !== document.documentElement
+        ) {
+          return;
+        }
+        if (document.querySelector('[aria-modal="true"]') !== null) return;
+        target.focus();
+      });
     };
   });
 
@@ -127,7 +145,7 @@
     data-severity={request.severity}
   >
     <h2 id={titleId} data-testid="confirm-dialog-title">{request.title}</h2>
-    <p id={bodyId} data-testid="confirm-dialog-body">{request.body}</p>
+    <p id={bodyId} data-testid="confirm-dialog-body"><BreakAtJoins text={request.body} /></p>
     <div class="confirm-actions">
       <button
         type="button"
@@ -172,7 +190,10 @@
   .confirm-dialog {
     position: relative;
     z-index: var(--schegent-z-modal);
+    box-sizing: border-box;
     width: min(480px, 100%);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
     border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
     background: var(--schegent-bg);
@@ -209,6 +230,7 @@
 
   .confirm-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 16px;

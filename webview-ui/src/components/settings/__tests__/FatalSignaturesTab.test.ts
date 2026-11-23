@@ -197,4 +197,36 @@ describe('FatalSignaturesTab, its control descriptions (Feature 018)', () => {
     expect(body).toContain('Warning:');
     expect(body, 'built-in entries are untouched').toContain('Built-in entries');
   });
+
+  it('associates aria-describedby and supports keyboard focus and Escape on Add text and Remove controls (W10)', async () => {
+    const { getByTestId } = mount();
+
+    const addButton = getByTestId('fatal-add');
+    expect(addButton.textContent.trim()).toBe('Add text');
+    expect(addButton.getAttribute('data-hover-text-anchored')).toBe('true');
+
+    await fireEvent.focus(addButton);
+    expect(addButton.getAttribute('aria-describedby')).toBe('hover-text-fatal-add');
+    expect(document.getElementById('hover-text-fatal-add')?.textContent).toContain(
+      FATAL_SIGNATURES_DESCRIPTIONS['operator-add'].body
+    );
+
+    await fireEvent.keyDown(addButton, { key: 'Escape' });
+    expect(document.getElementById('hover-text-fatal-add')).toBeNull();
+    expect(addButton.hasAttribute('aria-describedby')).toBe(false);
+
+    const removeButton = getByTestId('fatal-operator-remove-0');
+    expect(removeButton.getAttribute('data-hover-text-anchored')).toBe('true');
+
+    await fireEvent.focus(removeButton);
+    expect(removeButton.getAttribute('aria-describedby')).toBe(
+      'hover-text-fatal-operator-remove-0'
+    );
+    expect(document.getElementById('hover-text-fatal-operator-remove-0')?.textContent).toContain(
+      'Warning:'
+    );
+
+    await fireEvent.keyDown(removeButton, { key: 'Escape' });
+    expect(document.getElementById('hover-text-fatal-operator-remove-0')).toBeNull();
+  });
 });

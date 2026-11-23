@@ -250,7 +250,7 @@ describe('lifecycleRefusalText — one sentence per reason the host emits', () =
   // text now: a code-shaped reason is named inside a fixed sentence, anything else is not shown.
   it('falls through visibly for a code it does not know, without echoing free text', () => {
     expect(lifecycleRefusalText('some-new-host-refusal')).toBe(
-      'The host refused this action (`some-new-host-refusal`).'
+      'The host refused this action (some-new-host-refusal).'
     );
   });
 

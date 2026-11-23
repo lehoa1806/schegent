@@ -104,13 +104,53 @@ const SOURCE_DIRS: Record<Tree, { root: string; dirs: readonly string[] }> = {
   webview: { root: WEBVIEW_ROOT, dirs: ['src', 'tests'] }
 };
 
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'out', 'coverage', '.vscode-test']);
+const SKIP_DIRS = new Set([
+  'node_modules',
+  'dist',
+  'out',
+  'coverage',
+  '.vscode-test'
+]);
 
-function walk(dir: string, onFile: (absolute: string) => void): void {
+/**
+ * Exact tree-relative ignored directories derived directly from each tree's
+ * global `{ ignores }` blocks in `scripts/lint-config.mjs`. Deriving from the
+ * live flat config keeps ESLint and the FR-018 suppression-directive scan in
+ * exact sync, keeps nested subdirectories (`src/scratch/`, `tests/unit/.artifacts/`)
+ * checked, and avoids naming transient generated artifact directories as static
+ * path literals.
+ */
+const ignoredRelativeDirs = new Map<Tree, ReadonlySet<string>>();
+
+function extractGlobalIgnoredDirs(entries: readonly unknown[]): ReadonlySet<string> {
+  const dirs = new Set<string>();
+  for (const entry of entries) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const record = entry as { ignores?: unknown; files?: unknown };
+    if (record.files !== undefined || !Array.isArray(record.ignores)) continue;
+    for (const pattern of record.ignores as readonly unknown[]) {
+      if (typeof pattern === 'string' && pattern.endsWith('/**')) {
+        dirs.add(pattern.slice(0, -3).replace(/^\.\//, ''));
+      }
+    }
+  }
+  return dirs;
+}
+
+function walk(
+  dir: string,
+  onFile: (absolute: string) => void,
+  skip?: { readonly root: string; readonly relativeDirs: ReadonlySet<string> }
+): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const absolute = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) walk(absolute, onFile);
+      if (SKIP_DIRS.has(entry.name)) continue;
+      if (skip !== undefined) {
+        const rel = relative(skip.root, absolute).replace(/\\/g, '/');
+        if (skip.relativeDirs.has(rel)) continue;
+      }
+      walk(absolute, onFile, skip);
       continue;
     }
     onFile(absolute);
@@ -162,12 +202,16 @@ beforeAll(async () => {
     createWebviewConfig: () => Promise<unknown[]>;
   };
 
-  const resolved: Record<Tree, { cwd: string; overrideConfig: unknown }> = {
+  const resolved: Record<Tree, { cwd: string; overrideConfig: readonly unknown[] }> = {
     host: { cwd: REPO_ROOT, overrideConfig: config.hostConfig },
     webview: { cwd: WEBVIEW_ROOT, overrideConfig: await config.createWebviewConfig() }
   };
 
   for (const tree of TREES) {
+    const ignored = extractGlobalIgnoredDirs(resolved[tree].overrideConfig);
+    expect(ignored.size, `${tree} lint config declares no global directory ignores`).toBeGreaterThan(0);
+    ignoredRelativeDirs.set(tree, ignored);
+
     const eslint = new ESLint({
       cwd: resolved[tree].cwd,
       overrideConfigFile: true,
@@ -232,7 +276,8 @@ function scanDirectives(): string[] {
 
   for (const tree of TREES) {
     const { root, dirs } = SOURCE_DIRS[tree];
-    for (const dir of dirs) walk(resolve(root, dir), record);
+    const skip = { root, relativeDirs: ignoredRelativeDirs.get(tree) ?? new Set<string>() };
+    for (const dir of dirs) walk(resolve(root, dir), record, skip);
     // Root-level files of each tree, which the linter also covers.
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (entry.isFile()) record(join(root, entry.name));

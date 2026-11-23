@@ -3,7 +3,8 @@
   // dropdowns (Queue → Task → Phase) have been removed in favour of
   // direct panel/phase-step selection. This component now shows only a
   // compact breadcrumb trail reflecting the current selection and the
-  // "Jump to current phase" affordance.
+  // "Live" button (which jumps to the currently executing Phase, or arms
+  // Live Mode when nothing is in flight).
   //
   // Props come from PhaseLogFeed.svelte; this component owns no state.
 
