@@ -193,7 +193,26 @@ describe('FR-R6-F10 integration store: requests', () => {
 
     const laneOnly = store.listRequests(WS, { limit: 10, laneId: hexId(1000), states: ['queued'] });
     expect(laneOnly.ok && laneOnly.value.items.map((r) => r.requestId)).toEqual([hexId(1), hexId(2), hexId(4)]);
+    expect(store.listRequests(WS, { limit: 10, states: [] })).toEqual({ ok: true, value: { items: [], nextCursor: null } });
     expect(refusalOf(store.listRequests(WS, { limit: 2, cursor: '***' }))).toBe('invalid-input');
+  });
+
+  it('records superseded prior blocked reasons in the journal on refreeze without duplicating review-stale (16-21)', () => {
+    const store = openStore();
+    store.insertRequest(request(1, { state: 'blocked', reason: 'verification-failed' }));
+    store.insertRequest(request(2, { state: 'blocked', reason: 'review-stale' }));
+
+    expect(store.blockOpenRequestsForLane(hexId(1000), change(40))).toBe(2);
+    expect(store.listPriorBlockedReasons(hexId(1))).toEqual(['verification-failed']);
+    expect(store.listPriorBlockedReasons(hexId(2))).toEqual([]);
+    const journal = store.listJournal(hexId(1));
+    expect(journal).toHaveLength(1);
+    expect(journal.at(0)).toMatchObject({
+      kind: 'reconcile',
+      outcome: 'blocked',
+      reason: 'verification-failed',
+      observedTip: null
+    });
   });
 });
 

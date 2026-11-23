@@ -99,11 +99,16 @@ describe('FR-R6-F09 T021 -- round trip', () => {
 
 describe('FR-R6-F09 T021 -- a malformed entry is absent and logged by kind only', () => {
   const longComponent = { ...CLAUDE_FP, components: { ...CLAUDE_FP.components, os: 'x'.repeat(81) } };
+  const rawVersionComponent = {
+    ...CLAUDE_FP,
+    components: { ...CLAUDE_FP.components, version: 'SECRET raw stdout 1.2.3' }
+  };
   it.each([
     ['an extra key', entry(CLAUDE_FP, { note: 'SECRET-NOTE' })],
     ['an unknown origin', entry(CLAUDE_FP, { origin: 'SECRET-ORIGIN' })],
     ['a short digest', entry({ ...CLAUDE_FP, digest: 'abc' })],
     ['a component over 80 characters', entry(longComponent)],
+    ['a non-version version component (16-15)', entry(rawVersionComponent)],
     ['a fingerprint for another backend', entry(CODEX_FP)],
     ['a non-object entry', 'SECRET-STRING']
   ])('%s', (_label, bad) => {

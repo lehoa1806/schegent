@@ -30,12 +30,12 @@
  */
 import type { AuditEntry } from '../../audit/audit-entry';
 import type {
-  AccountingRefusalCode,
   AccountingResult,
   GapKind,
   RootOutcome
 } from '../../contracts/usage-accounting/accounting-types';
 import { historyErrorCode } from '../history/error-code';
+import { isStoreCountedRefusal } from './observation-store';
 import { PhaseEndCorrelator, type PhaseEndSnapshot } from './phase-end-ingestion';
 import type { AccountingLogger, UsageAccountingService } from './usage-accounting-service';
 
@@ -43,20 +43,6 @@ import type { AccountingLogger, UsageAccountingService } from './usage-accountin
 export const DEFAULT_ADMISSION_QUEUE_BOUND = 256;
 
 const LOG_MESSAGE = 'usage-accounting: wiring failure';
-
-/**
- * Refusals whose gap the store already committed. Any other refusal of a row the wiring admitted
- * is counted here as `ingest-failed`, so no admitted row is lost without a gap (FR-015).
- */
-const STORE_COUNTED_REFUSALS: ReadonlySet<AccountingRefusalCode> = new Set<AccountingRefusalCode>([
-  'invalid-counter',
-  'observation-too-large',
-  'telemetry-echo',
-  'expired-source',
-  'unattributed-limit',
-  'projection-backlog-full',
-  'store-full'
-]);
 
 export interface WiringDisposable {
   dispose(): void;
@@ -157,7 +143,7 @@ export function createUsageAccountingWiring(input: UsageAccountingWiringInput): 
     try {
       if (item.kind === 'phase-end') {
         const result = accounting.ingestPhaseEnd(item.snapshot);
-        if (!result.ok && !STORE_COUNTED_REFUSALS.has(result.refusal.code)) {
+        if (!result.ok && !isStoreCountedRefusal(result.refusal)) {
           countGap('ingest-failed');
         } else if (result.ok && result.value.disposition === 'accepted') {
           try {
@@ -172,7 +158,7 @@ export function createUsageAccountingWiring(input: UsageAccountingWiringInput): 
           outcome: item.outcome,
           terminalUtc: item.terminalUtc
         });
-        if (!result.ok && !STORE_COUNTED_REFUSALS.has(result.refusal.code)) countGap('ingest-failed');
+        if (!result.ok && !isStoreCountedRefusal(result.refusal)) countGap('ingest-failed');
       }
     } catch (error) {
       countGap('ingest-failed');

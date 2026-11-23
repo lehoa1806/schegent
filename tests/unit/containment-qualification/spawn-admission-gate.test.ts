@@ -23,6 +23,7 @@ import { computeFingerprint } from '../../../src/services/containment-qualificat
 import { BackendIdentityCache } from '../../../src/services/containment-qualification/identity-cache';
 import {
   PER_RUN_FINGERPRINT_CAPACITY,
+  SpawnAdmissionCancelledError,
   createSpawnAdmissionGate,
   type SpawnAdmissionGateDeps
 } from '../../../src/services/containment-qualification/spawn-admission-gate';
@@ -308,5 +309,83 @@ describe('FR-R6-F09 T026 -- failures and the identity cache', () => {
     const cache = new BackendIdentityCache();
     await refusalOf(createSpawnAdmissionGate(depsOf(fakes({ trusted: false }), cache)).admit('codex', REQUEST));
     expect(cache.read('codex')).toBeNull();
+  });
+});
+
+describe('SR-B8 -- cancellationSignal stops pending admission before probing or mutating bindings', () => {
+  it('rejects immediately with SpawnAdmissionCancelledError when pre-aborted and runs zero deps', async () => {
+    const cache = new BackendIdentityCache();
+    const state = fakes({ version: '2.1.302', granted: ['claude'] });
+    let primacyCalls = 0;
+    const gate = createSpawnAdmissionGate({
+      ...depsOf(state, cache),
+      hasPrimacy: () => {
+        primacyCalls += 1;
+        return true;
+      }
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      gate.admit('claude', { ...REQUEST, cancellationSignal: controller.signal })
+    ).rejects.toBeInstanceOf(SpawnAdmissionCancelledError);
+
+    expect(primacyCalls).toBe(0);
+    expect([state.resolveCalls, state.versionCalls]).toEqual([0, 0]);
+    expect(state.binds).toHaveLength(0);
+    expect(cache.read('claude')).toBeNull();
+  });
+
+  it('aborts while hasPrimacy() is pending with zero executable/version probes and zero binding writes', async () => {
+    const cache = new BackendIdentityCache();
+    const state = fakes({ version: '2.1.302', granted: ['claude'] });
+    let releasePrimacy!: (held: boolean) => void;
+    const gate = createSpawnAdmissionGate({
+      ...depsOf(state, cache),
+      hasPrimacy: () =>
+        new Promise<boolean>((resolve) => {
+          releasePrimacy = resolve;
+        })
+    });
+    const controller = new AbortController();
+
+    const pending = gate.admit('claude', { ...REQUEST, cancellationSignal: controller.signal });
+    controller.abort();
+    releasePrimacy(true);
+
+    await expect(pending).rejects.toBeInstanceOf(SpawnAdmissionCancelledError);
+    expect([state.resolveCalls, state.versionCalls]).toEqual([0, 0]);
+    expect(state.binds).toHaveLength(0);
+    expect(cache.read('claude')).toBeNull();
+  });
+
+  it('aborts while observeVersion() is pending with zero legacy-first-use binding writes and forwards signal', async () => {
+    const cache = new BackendIdentityCache();
+    const state = fakes({ version: '2.1.302', granted: ['claude'] });
+    let observedSignal: AbortSignal | undefined;
+    let releaseVersion!: (value: string | null) => void;
+    const gate = createSpawnAdmissionGate({
+      ...depsOf(state, cache),
+      observeVersion: (_kind, _cliPath, signal) => {
+        state.versionCalls += 1;
+        observedSignal = signal;
+        return new Promise<string | null>((resolve) => {
+          releaseVersion = resolve;
+        });
+      }
+    });
+    const controller = new AbortController();
+
+    const pending = gate.admit('claude', { ...REQUEST, cancellationSignal: controller.signal });
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    releaseVersion('2.1.302');
+
+    await expect(pending).rejects.toBeInstanceOf(SpawnAdmissionCancelledError);
+    expect(observedSignal).toBe(controller.signal);
+    expect(state.binds).toHaveLength(0);
+    expect(cache.read('claude')).toBeNull();
   });
 });

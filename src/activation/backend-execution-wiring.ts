@@ -438,6 +438,8 @@ const runnerRegistry = new BackendRunnerRegistry({
   // FR-R4-F06 (FR-004) -- the same resolved policy the runners spawn under, so the
   // registry's `--version` probe obeys it too. It was the one spawn that took none.
   environmentPolicy: processEnvironmentPolicy,
+  // FR-R7-16 (16-14) -- live workspace trust check before any `--version` probe runs.
+  isTrusted: deps.isWorkspaceTrusted,
   monitorHook,
   spawnGate: containment.spawnGate,
   acpDispatch: buildHostAcpDispatchOptions({
@@ -469,7 +471,8 @@ const backendDiagnostics = createBackendDiagnosticsWiring({
   environmentPolicy: processEnvironmentPolicy,
   audit: auditWriter,
   logger,
-  onDidChange: () => capabilityProjector?.kick()
+  onDidChange: () => capabilityProjector?.kick(),
+  isTrusted: deps.isWorkspaceTrusted
 });
 const backendCapabilities = backendDiagnostics.capabilities;
 const backendPing = backendDiagnostics.ping;

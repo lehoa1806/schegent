@@ -78,6 +78,7 @@ import {
   type RawInvocationOutput
 } from './invocation-result';
 import { buildSpawnEnv } from './spawn-env';
+import { resolveExecutableCommand } from '../lib/spawn-command';
 import { buildLaneGitEnv } from '../services/execution-lanes/git-runner';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 
@@ -242,6 +243,24 @@ export class AcpBackedRunner implements BackendRunner {
     outputSink?: InvocationOutputSink
   ): Promise<RawInvocationOutput> {
     if (request.review === undefined && request.legacyDrain === true && this.options.allowLegacyDrain !== false) {
+      if (this.closed) {
+        throw new SpawnRefusedAfterCloseError(getBackendDescriptor(this.options.kind).runnerLabel);
+      }
+      if (request.cancellationSignal?.aborted === true) {
+        const stdoutBuffer = new ZippedStreamBuffer();
+        const stderrBuffer = new ZippedStreamBuffer();
+        stdoutBuffer.finalize();
+        stderrBuffer.finalize();
+        return {
+          stdoutBuffer,
+          stderrBuffer,
+          exitCode: null,
+          killed: true,
+          timedOut: false,
+          durationMs: 0,
+          command: request.cliPath
+        };
+      }
       return this.inner.invoke(request, outputSink);
     }
     const label = getBackendDescriptor(this.options.kind).runnerLabel;
@@ -625,9 +644,23 @@ export class AcpBackedRunner implements BackendRunner {
 
         const env = buildSpawnEnv(request);
         const spawnEnv = request.review === undefined ? env : { ...buildLaneGitEnv(env), GIT_OPTIONAL_LOCKS: '0' };
+        let effectiveCliPath = request.cliPath;
+        let executableUnresolved = false;
+        if (this.options.launchTransport === undefined) {
+          const resolvedExec = resolveExecutableCommand(request.cliPath, spawnEnv);
+          if (!resolvedExec.ok) {
+            executableUnresolved = true;
+          } else {
+            effectiveCliPath = resolvedExec.resolvedPath;
+          }
+        }
+        if (executableUnresolved) {
+          warnings.push('acp-open-refused:executable-unresolved');
+          exitCode = 1;
+        } else {
         const launchSpec = resolveAcpProfileLaunch({
           kind: this.options.kind,
-          resolvedCliPath: request.cliPath,
+          resolvedCliPath: effectiveCliPath,
           cwd: request.cwd,
           env: spawnEnv,
           ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
@@ -760,6 +793,28 @@ export class AcpBackedRunner implements BackendRunner {
               warnings.push('acp-upstream-artifact-inaccessible');
               exitCode = 1;
             } else {
+              // FR-R7-16 (16-17): re-verify workspace trust, primacy, and ownership generation
+              // immediately before registering scope or dispatching the prompt.
+              const prePromptGenOk =
+                turnOwnershipGeneration === undefined ||
+                this.options.currentOwnershipGeneration?.() === turnOwnershipGeneration;
+              const prePromptAuthorityOk =
+                !this.isClosed() &&
+                !killed &&
+                request.cancellationSignal?.aborted !== true &&
+                prePromptGenOk &&
+                (this.options.primeAuthority === undefined || (await this.options.primeAuthority())) &&
+                (turnOwnershipGeneration === undefined ||
+                  this.options.currentOwnershipGeneration?.() === turnOwnershipGeneration);
+              if (this.isClosed()) {
+                throw new SpawnRefusedAfterCloseError(label);
+              } else if (killed || request.cancellationSignal?.aborted === true) {
+                killed = true;
+                exitCode = 130;
+              } else if (!prePromptAuthorityOk) {
+                warnings.push('acp-ownership-unverified');
+                exitCode = 1;
+              } else {
               gate?.registerScope({
                 attemptId,
                 profileId: profile.profileId,
@@ -876,8 +931,10 @@ export class AcpBackedRunner implements BackendRunner {
                 warnings.push(`acp-prompt-not-dispatched:${outcome.reason}`);
                 exitCode = 1;
               }
+              }
             }
           }
+        }
         }
         }
       }

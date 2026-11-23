@@ -73,6 +73,12 @@ export class FakeFs implements LifecycleFs {
     return this;
   }
 
+  public other(absolutePath: string, sizeBytes = 0): this {
+    this.nodes.set(absolutePath, { kind: 'other', sizeBytes });
+    this.addParents(absolutePath);
+    return this;
+  }
+
   public dir(absolutePath: string): this {
     this.dirs.add(absolutePath);
     this.addParents(absolutePath);
@@ -143,7 +149,7 @@ export function fsError(code: string): Error {
 
 export interface BuildOptions {
   readonly scanRoots?: readonly StorageScanRoot[];
-  readonly pinnedRunIds?: ReadonlySet<string>;
+  readonly pinnedRunIds?: ReadonlySet<string> | (() => ReadonlySet<string>);
   readonly storageTargetBytes?: number;
   readonly nowMs?: number;
   readonly conn?: NodeSqliteConnection;
@@ -166,7 +172,9 @@ export function lifecycleFixture(): LifecycleFixture {
   const owners = new Map<string, OwnerResolution>();
   let next = 0;
   const build = (options: BuildOptions = {}): ArtifactLifecycleService => {
-    const pinned = options.pinnedRunIds ?? new Set<string>();
+    const pinnedOption = options.pinnedRunIds;
+    const readPinned =
+      typeof pinnedOption === 'function' ? pinnedOption : () => new Set(pinnedOption ?? []);
     const now = options.nowMs ?? NOW;
     return createArtifactLifecycleService({
       conn: options.conn ?? conn,
@@ -182,7 +190,7 @@ export function lifecycleFixture(): LifecycleFixture {
       resolveOwner: (ownerType, ownerId) => owners.get(`${ownerType}:${ownerId}`) ?? 'live',
       newId: () => `id-${(next += 1)}`,
       workspaceRoot: WORKSPACE_ROOT,
-      pinnedRunIds: () => pinned,
+      pinnedRunIds: readPinned,
       ...(options.storageTargetBytes === undefined ? {} : { storageTargetBytes: options.storageTargetBytes }),
       ...(options.runFrameStatuses === undefined ? {} : { runFrameStatuses: options.runFrameStatuses })
     });

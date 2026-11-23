@@ -20,13 +20,22 @@
 //     restart;
 //   - a version 3 store on disk upgrades to version 4 and keeps its rows.
 
-import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { initialAcpProjectionState, projectAcpEvents } from '../../src/services/phase-log/acp-live-projection';
-import { createLiveLogIndex, type LiveLogIndex } from '../../src/services/phase-log/live-log-index';
+import {
+  createLiveLogIndex,
+  LIVE_LOG_ARTIFACT_REF_MAX_LENGTH,
+  LIVE_LOG_REPLAY_MAX_ROWS,
+  type LiveLogIndex
+} from '../../src/services/phase-log/live-log-index';
+import {
+  parseContainedArtifactRef,
+  readContainedLiveLogReplay
+} from '../../src/services/phase-log/live-log-replay-reader';
 import { F07_LIVE_LOG_TABLE_NAMES } from '../../src/services/phase-log/live-log-index-schema';
 import { F08_HANDOFF_TABLE_NAMES } from '../../src/services/recovery-handoff/handoff-schema';
 import { F10_LANES_TABLE_NAMES } from '../../src/services/execution-lanes/lane-schema';
@@ -274,5 +283,309 @@ describe('FR-R6-F07 T041 — the segment index across restarts (F07-AC-08)', () 
       ...FR_R7_02_OPERATIONAL_ENTITY_TABLE_NAMES
     ];
     expect(tablesAfter).toEqual(expected.sort((a, b) => a.localeCompare(b)));
+  });
+});
+
+describe('FR-R7-16 (16-09) — contained live-log segment replay reader end-to-end', () => {
+  it('replays out-of-order finalized segments oldest-first, skips unverified segments, and reads contained nested refs', async () => {
+    const conn = openStore();
+    const index = createLiveLogIndex(conn);
+    index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+
+    const nestedRef = 'phase-logs/run-7/iter-1/implement-1.jsonl';
+    mkdirSync(join(workspaceRoot, 'phase-logs', 'run-7', 'iter-1'), { recursive: true });
+    const part0 = `${JSON.stringify({ type: 'assistant', seg: 0 })}\n`;
+    const part1 = `${JSON.stringify({ type: 'assistant', seg: 1 })}\n`;
+    const part2 = `${JSON.stringify({ type: 'assistant', seg: 2 })}\n`;
+    const part3 = `${JSON.stringify({ type: 'assistant', seg: 3 })}\n`;
+    const full = part0 + part1 + part2 + part3;
+    writeFileSync(join(workspaceRoot, nestedRef), full);
+
+    const off0 = 0;
+    const off1 = Buffer.byteLength(part0, 'utf8');
+    const off2 = off1 + Buffer.byteLength(part1, 'utf8');
+    const off3 = off2 + Buffer.byteLength(part2, 'utf8');
+    const off4 = off3 + Buffer.byteLength(part3, 'utf8');
+
+    // Insert segments out of order; finalize 2, 0, 1 and leave 3 unverified.
+    for (const [seq, startOffset, endOffset] of [
+      [2, off2, off3],
+      [0, off0, off1],
+      [3, off3, off4],
+      [1, off1, off2]
+    ] as const) {
+      expect(
+        index.appendSegment({
+          streamKey: STREAM,
+          generation: 'gen-1',
+          segmentSeq: seq,
+          artifactRef: nestedRef,
+          startOffset,
+          endOffset,
+          recordCount: 1
+        })
+      ).toEqual({ outcome: 'appended' });
+    }
+    for (const seq of [2, 0, 1]) {
+      expect(
+        index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: seq, verifiedSize: off4 })
+      ).toEqual({ outcome: 'finalized' });
+    }
+
+    const after = restart(conn);
+    const result = await readContainedLiveLogReplay({
+      index: after.index,
+      streamKey: STREAM,
+      trustedRoot: workspaceRoot
+    });
+
+    expect(result.streamKey).toBe(STREAM);
+    expect(result.generation).toBe('gen-1');
+    expect(result.captureMode).toBe('captured');
+    expect(result.truncated).toBe(false);
+    expect(result.unavailable).toEqual([]);
+    expect(result.segments).toEqual([
+      { segmentSeq: 0, startOffset: off0, endOffset: off1, durable: true, outcome: 'read', text: part0, bytesRead: off1 - off0 },
+      { segmentSeq: 1, startOffset: off1, endOffset: off2, durable: true, outcome: 'read', text: part1, bytesRead: off2 - off1 },
+      { segmentSeq: 2, startOffset: off2, endOffset: off3, durable: true, outcome: 'read', text: part2, bytesRead: off3 - off2 }
+    ]);
+  });
+
+  it('enforces exact 1024/1025 truncation boundary and captured->disabled single range through the replay reader', async () => {
+    const conn = openStore();
+    const index = createLiveLogIndex(conn);
+    index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+
+    const line = 'x\n';
+    const lineBytes = Buffer.byteLength(line, 'utf8');
+    const totalCount = LIVE_LOG_REPLAY_MAX_ROWS + 1;
+    writeFileSync(logPath(), line.repeat(totalCount));
+
+    for (let seq = 0; seq < LIVE_LOG_REPLAY_MAX_ROWS; seq += 1) {
+      index.appendSegment({
+        streamKey: STREAM,
+        generation: 'gen-1',
+        segmentSeq: seq,
+        artifactRef: LOG_NAME,
+        startOffset: seq * lineBytes,
+        endOffset: (seq + 1) * lineBytes,
+        recordCount: 1
+      });
+      index.finalizeSegment({
+        streamKey: STREAM,
+        generation: 'gen-1',
+        segmentSeq: seq,
+        verifiedSize: totalCount * lineBytes
+      });
+    }
+
+    const atCap = await readContainedLiveLogReplay({ index, streamKey: STREAM, trustedRoot: workspaceRoot });
+    expect(atCap.truncated).toBe(false);
+    expect(atCap.segments).toHaveLength(LIVE_LOG_REPLAY_MAX_ROWS);
+    expect(atCap.segments.every((s) => s.outcome === 'read')).toBe(true);
+
+    const lastSeq = LIVE_LOG_REPLAY_MAX_ROWS;
+    index.appendSegment({
+      streamKey: STREAM,
+      generation: 'gen-1',
+      segmentSeq: lastSeq,
+      artifactRef: LOG_NAME,
+      startOffset: lastSeq * lineBytes,
+      endOffset: (lastSeq + 1) * lineBytes,
+      recordCount: 1
+    });
+    index.finalizeSegment({
+      streamKey: STREAM,
+      generation: 'gen-1',
+      segmentSeq: lastSeq,
+      verifiedSize: totalCount * lineBytes
+    });
+
+    const overCap = await readContainedLiveLogReplay({ index, streamKey: STREAM, trustedRoot: workspaceRoot });
+    expect(overCap.truncated).toBe(true);
+    expect(overCap.segments).toHaveLength(LIVE_LOG_REPLAY_MAX_ROWS);
+    expect(overCap.segments.at(0)?.segmentSeq).toBe(0);
+    expect(overCap.segments.at(-1)?.segmentSeq).toBe(LIVE_LOG_REPLAY_MAX_ROWS - 1);
+
+    // Transition captured gen-1 -> disabled gen-2: single capture-disabled range and zero segments read.
+    index.openStream({ streamKey: STREAM, generation: 'gen-2', captureMode: 'disabled', nowMs: NOW + 10 });
+    const disabled = await readContainedLiveLogReplay({
+      index: restart(conn).index,
+      streamKey: STREAM,
+      trustedRoot: workspaceRoot
+    });
+    expect(disabled).toEqual({
+      streamKey: STREAM,
+      generation: 'gen-2',
+      captureMode: 'disabled',
+      segments: [],
+      unavailable: [{ generation: 'gen-2', reason: 'capture-disabled', fromOffset: 0, toOffset: null, count: 1 }],
+      truncated: false
+    });
+  });
+
+  it('refuses escaping, absolute, Windows-drive, backslash, NUL/control, symlink-component, and symlink-leaf artifact_ref rows without reading outside trustedRoot', async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), 'f07-outside-secret-'));
+    try {
+      const outsideSecret = 'OUTSIDE-CANARY-SECRET-NEVER-READ\n';
+      const outsideFile = join(outsideDir, 'secret.jsonl');
+      writeFileSync(outsideFile, outsideSecret);
+      const outsideSize = Buffer.byteLength(outsideSecret, 'utf8');
+
+      // Also place a sibling file reachable via `../<outsideDirName>/secret.jsonl` if traversal were allowed.
+      const outsideName = outsideDir.split('/').at(-1) ?? 'missing';
+      mkdirSync(join(workspaceRoot, 'logs'), { recursive: true });
+      symlinkSync(outsideDir, join(workspaceRoot, 'symlink-dir'));
+      symlinkSync(outsideFile, join(workspaceRoot, 'logs', 'symlink-leaf.jsonl'));
+
+      const validRef = 'logs/valid.jsonl';
+      const validContent = 'CONTAINED-OK\n';
+      writeFileSync(join(workspaceRoot, validRef), validContent);
+
+      // 1,024-char lexical acceptance & 1,025-char refusal verified alongside disk containment.
+      const ref1024 = Array.from({ length: 15 }, () => 'd'.repeat(63)).join('/') + '/' + 'f'.repeat(64);
+      expect(ref1024.length).toBe(LIVE_LOG_ARTIFACT_REF_MAX_LENGTH);
+      expect(parseContainedArtifactRef(ref1024)).not.toBeNull();
+      expect(parseContainedArtifactRef(`${ref1024}z`)).toBeNull();
+
+      const conn = openStore();
+      const index = createLiveLogIndex(conn);
+      index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+
+      const maliciousRefs: readonly string[] = [
+        `../${outsideName}/secret.jsonl`,
+        `logs/../../${outsideName}/secret.jsonl`,
+        outsideFile,
+        'C:foo',
+        'C:/Windows/win.ini',
+        'logs\\valid.jsonl',
+        'logs/valid\0.jsonl',
+        'logs/valid\n.jsonl',
+        'logs/valid\x7f.jsonl',
+        'symlink-dir/secret.jsonl',
+        'logs/symlink-leaf.jsonl'
+      ];
+
+      // Seed malicious rows directly as finalized (`durable = 1`) rows in SQLite,
+      // plus one valid contained row at the end to verify replay continues cleanly.
+      for (let i = 0; i < maliciousRefs.length; i += 1) {
+        const ref = maliciousRefs.at(i) ?? '';
+        conn.run(
+          `INSERT INTO live_log_segments
+             (segment_id, stream_key, generation, segment_seq, artifact_ref, start_offset, end_offset, record_count, durable)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+          `malicious-seg-${String(i).padStart(50, '0')}`,
+          STREAM,
+          'gen-1',
+          i,
+          ref,
+          0,
+          outsideSize,
+          1
+        );
+      }
+
+      const validSeq = maliciousRefs.length;
+      const validSize = Buffer.byteLength(validContent, 'utf8');
+      index.appendSegment({
+        streamKey: STREAM,
+        generation: 'gen-1',
+        segmentSeq: validSeq,
+        artifactRef: validRef,
+        startOffset: 0,
+        endOffset: validSize,
+        recordCount: 1
+      });
+      index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: validSeq, verifiedSize: validSize });
+
+      const result = await readContainedLiveLogReplay({
+        index: restart(conn).index,
+        streamKey: STREAM,
+        trustedRoot: workspaceRoot
+      });
+
+      expect(result.segments).toHaveLength(maliciousRefs.length + 1);
+      for (let i = 0; i < maliciousRefs.length; i += 1) {
+        const readSeg = result.segments.at(i);
+        expect(readSeg, `ref ${maliciousRefs.at(i)}`).toEqual({
+          segmentSeq: i,
+          startOffset: 0,
+          endOffset: outsideSize,
+          durable: true,
+          outcome: 'permission-refused',
+          bytesRead: 0
+        });
+      }
+      expect(result.segments.at(validSeq)).toEqual({
+        segmentSeq: validSeq,
+        startOffset: 0,
+        endOffset: validSize,
+        durable: true,
+        outcome: 'read',
+        text: validContent,
+        bytesRead: validSize
+      });
+      expect(JSON.stringify(result)).not.toContain(outsideSecret);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports artifact-expired, extent-invalid, and budget-exceeded outcomes cleanly', async () => {
+    const conn = openStore();
+    const index = createLiveLogIndex(conn);
+    index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+
+    const missingRef = 'missing.jsonl';
+    const shrunkRef = 'shrunk.jsonl';
+    const okRef = 'ok.jsonl';
+    writeFileSync(join(workspaceRoot, missingRef), '0123456789');
+    writeFileSync(join(workspaceRoot, shrunkRef), '0123456789');
+    writeFileSync(join(workspaceRoot, okRef), 'abcdefghijklmnop');
+
+    index.appendSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 0, artifactRef: missingRef, startOffset: 0, endOffset: 10, recordCount: 1 });
+    index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 0, verifiedSize: 10 });
+
+    index.appendSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 1, artifactRef: shrunkRef, startOffset: 0, endOffset: 10, recordCount: 1 });
+    index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 1, verifiedSize: 10 });
+
+    index.appendSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 2, artifactRef: okRef, startOffset: 0, endOffset: 8, recordCount: 1 });
+    index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 2, verifiedSize: 16 });
+
+    index.appendSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 3, artifactRef: okRef, startOffset: 8, endOffset: 16, recordCount: 1 });
+    index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 3, verifiedSize: 16 });
+
+    // Simulate file expiry and truncation after finalization.
+    unlinkSync(join(workspaceRoot, missingRef));
+    writeFileSync(join(workspaceRoot, shrunkRef), 'short');
+
+    const result = await readContainedLiveLogReplay({
+      index,
+      streamKey: STREAM,
+      trustedRoot: workspaceRoot,
+      maxPassBytes: 12
+    });
+
+    expect(result.segments).toEqual([
+      { segmentSeq: 0, startOffset: 0, endOffset: 10, durable: true, outcome: 'artifact-expired', bytesRead: 0 },
+      { segmentSeq: 1, startOffset: 0, endOffset: 10, durable: true, outcome: 'extent-invalid', bytesRead: 0 },
+      { segmentSeq: 2, startOffset: 0, endOffset: 8, durable: true, outcome: 'read', text: 'abcdefgh', bytesRead: 8 },
+      { segmentSeq: 3, startOffset: 8, endOffset: 16, durable: true, outcome: 'budget-exceeded', bytesRead: 0 }
+    ]);
+    expect(result.unavailable.map((u) => u.reason)).toEqual(['artifact-expired', 'range-skipped']);
+
+    const unknown = await readContainedLiveLogReplay({
+      index,
+      streamKey: 'never-opened',
+      trustedRoot: workspaceRoot
+    });
+    expect(unknown).toEqual({
+      streamKey: 'never-opened',
+      generation: null,
+      captureMode: null,
+      segments: [],
+      unavailable: [],
+      truncated: false
+    });
   });
 });

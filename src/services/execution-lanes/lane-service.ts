@@ -47,14 +47,15 @@ import {
   type LifecycleContext,
   type ReleaseDisposition
 } from './lane-lifecycle';
-import { parseFrozenProfile } from './lane-input-rules';
+import { parseFrozenProfile, snapshotVerificationProfile } from './lane-input-rules';
 import { provisionLane, type ProvisionRequest } from './lane-provisioner';
 import { reconcileLanes } from './lane-reconciler';
+import { resolveRetentionPolicy, type LaneRetentionPolicy } from './lane-retention';
 import { LaneStore } from './lane-store';
 import { candidateViewOf, LANES_DIRECTORY, LaneStoreCorruptError, laneViewOf, type CandidateRecord, type LaneRecord } from './lane-store-rows';
 import { probeProvisioning } from './provisioning-probe';
 import { cancelRequest } from './request-cancel';
-import { approveRequest, type ApproveRequestInput } from './review-receipts';
+import { approveRequest, type ApprovalAuthorizer, type ApproveRequestInput } from './review-receipts';
 import { createSpawnCheck, runVerification, type SpawnCheck, type VerificationOutcome } from './verification-runner';
 
 export { LANES_DIRECTORY };
@@ -84,6 +85,13 @@ export interface LaneServiceDeps {
   readonly provisioningDeadlineMs?: number;
   /** The verification process port; default `createSpawnCheck()` (research R9). */
   readonly spawnCheck?: SpawnCheck;
+  /** Optional bounded retention policy overrides applied on `cleanupLanes` and `reconcile` (16-19). */
+  readonly retentionPolicy?: Partial<LaneRetentionPolicy>;
+  /**
+   * Host human-approval authority gate (`16-22`, SR-B9). `approveRequest` fails closed
+   * (`review-stale`, writing zero receipt) unless an explicit authorizer is provided and returns `true`.
+   */
+  readonly authorizeApproval?: ApprovalAuthorizer;
 }
 
 function boundedInteger(value: number | undefined, fallback: number, min: number, max: number, name: string): number {
@@ -129,6 +137,7 @@ export class LaneService {
     if (!path.isAbsolute(deps.workspaceRoot) || !path.isAbsolute(deps.storageDir)) {
       throw new RangeError('workspaceRoot and storageDir must be absolute paths');
     }
+    if (deps.retentionPolicy !== undefined) resolveRetentionPolicy(deps.retentionPolicy);
     const liveLaneCap = boundedInteger(deps.liveLaneCap, LANE_CAP_DEFAULT, LANE_CAP_MIN, LANE_CAP_MAX, 'liveLaneCap');
     const provisioningDeadlineMs = boundedInteger(
       deps.provisioningDeadlineMs,
@@ -164,6 +173,16 @@ export class LaneService {
 
   /** Contract §5: a lane in `active`, or the first refusal. */
   public async provisionLane(request: ProvisionRequest): Promise<LaneResult<LaneView>> {
+    let snapshot: ProvisionRequest;
+    try {
+      snapshot = Object.freeze({
+        rootExecutionId: request.rootExecutionId,
+        sourceRevision: request.sourceRevision,
+        dependencyRecipe: request.dependencyRecipe
+      });
+    } catch {
+      return laneRefused('invalid-input');
+    }
     const result = await provisionLane(
       {
         store: this.lanes,
@@ -178,7 +197,7 @@ export class LaneService {
         random: this.deps.random,
         probe: (probeRequest, remainingMs) => probeProvisioning(this.deps, probeRequest, remainingMs)
       },
-      request
+      snapshot
     );
     return result.ok ? laneOk(this.viewOf(result.value)) : result;
   }
@@ -233,8 +252,22 @@ export class LaneService {
 
   /** Contract §5: a `queued` request for the lane's current candidate. */
   public async requestIntegration(input: RequestIntegrationInput): Promise<LaneResult<IntegrationRequestView>> {
-    const lane = this.lanes.getLane(this.deps.workspaceId, input.laneId);
+    let laneId: unknown;
+    let targetBranch: unknown;
+    let rawProfile: unknown;
+    try {
+      laneId = input.laneId;
+      targetBranch = input.targetBranch;
+      rawProfile = input.profile;
+    } catch {
+      return laneRefused('invalid-input');
+    }
+    if (typeof laneId !== 'string' || typeof targetBranch !== 'string') return laneRefused('invalid-input');
+    const lane = this.lanes.getLane(this.deps.workspaceId, laneId);
     if (lane === null) return laneRefused('lane-not-found');
+    const profile = snapshotVerificationProfile(rawProfile);
+    if (profile === null) return laneRefused('invalid-input');
+    const snapshot: RequestIntegrationInput = Object.freeze({ laneId, targetBranch, profile });
     const result = await this.exclusively(lane.laneId, () =>
       createIntegrationRequest(
         {
@@ -248,7 +281,7 @@ export class LaneService {
           random: this.deps.random
         },
         lane,
-        input
+        snapshot
       )
     );
     return result.ok ? laneOk(this.requestView(result.value)) : result;
@@ -272,7 +305,8 @@ export class LaneService {
       const started = this.moveRequest(request.requestId, ['queued'], 'verifying', null, true);
       if (!started.ok) return started;
       const outcome = await this.verificationOutcome(started.value, lane, profile);
-      return this.moveRequest(request.requestId, ['verifying'], outcome.state, outcome.reason);
+      if (!outcome.ok) return laneRefused<RequestRecord>(outcome.refusal.reason);
+      return this.moveRequest(request.requestId, ['verifying'], outcome.value.state, outcome.value.reason);
     });
     return result.ok ? laneOk(this.requestView(result.value)) : result;
   }
@@ -338,7 +372,8 @@ export class LaneService {
         workspaceId: this.deps.workspaceId,
         generation: this.generation,
         clock: this.deps.clock,
-        random: this.deps.random
+        random: this.deps.random,
+        ...(this.deps.authorizeApproval === undefined ? {} : { authorizeApproval: this.deps.authorizeApproval })
       },
       input
     );
@@ -387,13 +422,15 @@ export class LaneService {
    * failing one. Refuses only `ownership-superseded`; throws `LaneGitError` on a Git failure.
    */
   public async cleanupLanes(input: { readonly laneIds?: readonly string[] }): Promise<LaneResult<CleanupReport>> {
+    const laneIds = input.laneIds === undefined ? undefined : [...input.laneIds];
     return cleanupLanes(
       {
         ...this.landingContext(),
         locateLaneRoot: (rootRef) => this.locateLaneRoot(rootRef),
-        exclusively: (laneId, work) => this.exclusively(laneId, work)
+        exclusively: (laneId, work) => this.exclusively(laneId, work),
+        ...(this.deps.retentionPolicy === undefined ? {} : { retentionPolicy: this.deps.retentionPolicy })
       },
-      input.laneIds
+      laneIds
     );
   }
 
@@ -404,8 +441,9 @@ export class LaneService {
   public async reconcile(): Promise<LaneResult<ReconcileReport>> {
     return reconcileLanes({
       ...this.landingContext(),
-      resolveLaneRoot: (rootRef) => this.resolveLaneRoot(rootRef),
-      inFlight: (laneId) => this.lanesInFlight.has(laneId)
+      locateLaneRoot: (rootRef) => this.locateLaneRoot(rootRef),
+      inFlight: (laneId) => this.lanesInFlight.has(laneId),
+      ...(this.deps.retentionPolicy === undefined ? {} : { retentionPolicy: this.deps.retentionPolicy })
     });
   }
 
@@ -427,13 +465,16 @@ export class LaneService {
     request: RequestRecord,
     lane: LaneRecord,
     profile: NonNullable<ReturnType<typeof parseFrozenProfile>>
-  ): Promise<VerificationOutcome> {
+  ): Promise<LaneResult<VerificationOutcome>> {
     const root = await this.resolveLaneRoot(lane.rootRef);
-    if (root === null) return { state: 'blocked', reason: 'verification-workspace-changed' };
+    if (root === null) return laneOk({ state: 'blocked', reason: 'verification-workspace-changed' });
     try {
       return await runVerification(
         {
+          lanes: this.lanes,
           integrations: this.integrations,
+          workspaceId: this.deps.workspaceId,
+          generation: this.generation,
           git: this.deps.git,
           spawnCheck: this.spawnCheck,
           clock: this.deps.clock,
@@ -468,7 +509,11 @@ export class LaneService {
   }
 
   protected requestView(request: RequestRecord): IntegrationRequestView {
-    return requestViewOf(request, this.integrations.getReceipt(request.requestId));
+    return requestViewOf(
+      request,
+      this.integrations.getReceipt(request.requestId),
+      this.integrations.listPriorBlockedReasons(request.requestId)
+    );
   }
 
   /** Runs `work` holding the lane's in-host operation slot, or refuses `lane-busy`. */

@@ -65,14 +65,10 @@ function moveWhenSettled(
 /**
  * Marks every accepted decision not yet consumed as consumed by `intentId`. Called whenever an
  * intent is recorded or its outcome changes, so a decision authorizes at most the next attempt
- * and never one after an outcome recorded after it (FR-009).
+ * and never one after an outcome recorded after it (FR-009, `16-13`).
  */
 export function lapseOutstandingDecisions(store: SqliteHandoffStore, handoffId: string, intentId: string): void {
-  for (const decision of store.listDecisions(handoffId)) {
-    if (decision.outcome === 'accepted' && decision.consumedByIntentId === null) {
-      store.markDecisionConsumed(decision.decisionId, intentId);
-    }
-  }
+  store.lapseOutstandingDecisions(handoffId, intentId);
 }
 
 /** The state a failed delivery returns to: `uncertain` while an earlier delivery may have arrived. */

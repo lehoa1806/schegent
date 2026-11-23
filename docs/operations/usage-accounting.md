@@ -25,10 +25,18 @@ For the store these records live in, see [SQLite application store](sqlite-appli
 
 **F06 usage accounting is wired in production.** Trusted primary activation (`src/activation/sqlite-cutover-wiring.ts`) constructs `createUsageAccountingService` and `createUsageAccountingWiring` on the canonical folder-keyed SQLite store (`<globalStorageUri>/sqlite/<scope>/schegent-state.db`), imports the legacy metrics-rollup epoch (`metrics-rollup.jsonl`) once, serves both the sidebar usage view and headless API (`src/headless/usage-accounting-api.ts`), and offers accepted observations to the opt-in telemetry host service when enabled. In an untrusted window or before the SQLite store opens, reads fail closed with `store-unavailable`.
 
-The F04 store also carries four placeholder tables (`usage_observations`, `usage_corrections`,
-`usage_accounting_applications`, `attempt_usage_revisions`). F06 does not use them; its records
-live in the `accounting_*` tables. Removing or repurposing the placeholders is a maintainer
-decision, left open.
+The F04 store also retains seven deprecated, empty-in-production placeholder tables under SQLite
+schema version `9` (`SQLITE_SCHEMA_CURRENT_VERSION = 9`, `SQLITE_MIN_READER_VERSION = 9`): four
+usage placeholders (`usage_observations`, `usage_corrections`, `usage_accounting_applications`,
+`attempt_usage_revisions`) superseded by F06 `accounting_*`, and three log placeholders
+(`log_streams`, `log_segments`, `log_gaps`) superseded by F07 `live_log_*`. Production never writes
+to those seven tables; their deprecated F04 adapters (`UsageStoreAdapter`, `LogIndexStoreAdapter`,
+`executeUsageCorrection`) have zero production callers. Retaining them in schema v9 preserves
+Migration 1 checksum immutability and schema-8/9 backup/restore compatibility; store relocation
+(`src/services/sqlite-store/store-relocation.ts`) inspects `accounting_observations` and
+`live_log_streams`, `state-census.ts` aligns `log-segment-bytes` to `live_log_segments`, and
+retiring the seven placeholders is gated on a future breaking `min_reader_version` migration with
+retired-table restore handling (see [SQLite application store](sqlite-application-store.md)).
 
 ## Three spend and usage mechanisms (and when each enforces)
 
@@ -145,7 +153,10 @@ reported as the latest value and are never billable tokens.
   and counted in `unattributedCount`, but it is in no row total. Past the bound, new ones are
   refused and counted as an `unattributed-limit` gap.
 - **Historical**: a replayed observation with no producer identity (an ACP replay, say). It cannot
-  be deduplicated, so it is stored for evidence and never counted.
+  be deduplicated, so it is stored for evidence and never counted. It shares the 10,000
+  `maxUnattributed` retention cap with unattributed observations; past that combined bound, new
+  ones are refused as `unattributed-limit` so unkeyed replays cannot exhaust
+  `maxRetainedObservations`.
 
 ## Corrections and revisions
 
@@ -207,45 +218,71 @@ Anything the service could not count is counted as a gap instead of being droppe
 A projection that fails is left pending and applied by the rebuild when the service next starts, so
 a crash between storing an observation and projecting it loses nothing.
 
+## Producer trust separation, unit bounds, and clock skew (`FR-R7-16` / `16-05`)
+
+Four producers feed usage accounting with distinct trust boundaries between host-stamped metadata
+and agent-settable values:
+
+| Producer | Entry point | Host-controlled fields | Agent-settable / external fields |
+|---|---|---|---|
+| **Phase-end audit watcher** | `src/services/usage-accounting/phase-end-ingestion.ts` via `UsageAccountingWiring` | `eventUtc` (audit timestamp), `observedUtc`, `rootId`, `attemptId`, `invocationOrdinal`, correlated `backend`/`model`/`phaseId`, `costBaseline`, fixed units (`count`, `USD`) | Parsed CLI token/cost numbers (validated through `readPhaseEndUsage`) |
+| **ACP `usage_update`** | `src/services/acp-runtime/observation-emitter.ts` → `client-guards.ts` → `acp-usage-mapping.ts` | `eventUtc` (stamped from host receive clock in `ObservationEmitter`, never agent clock), `hostReceiveSeq`, `profileId`, `acpSessionId`, `connectionGeneration`, `turnId`, `replayed`, `hasQualifiedSessionBaseline: false` | `used`, `size`, optional `cost` (`amount`, `currency`), optional `credits` (`amount`, `unit`), optional `producerEventId` |
+| **Direct `ingestObservation`** | `src/services/usage-accounting/usage-accounting-service.ts` | Host-internal service boundary only (not exposed directly to agents or webviews) | Validated by `observation-normalizer.ts` and `observation-store.ts` |
+| **Legacy rollup import** | `src/services/usage-accounting/legacy-epoch.ts` | Isolated in `accounting_legacy_epoch` / `accounting_legacy_runs`, hardcoded `USD` micro-units | Historical `metrics-rollup.jsonl` lines (sanitized, capped at $1,000,000/run) |
+
+To prevent unit-cardinality DoS and retention evasion:
+
+- **Unbaselined ACP unit folding**: when `hasQualifiedSessionBaseline` is `false`, `acp-usage-mapping.ts` folds unknown `cost` updates to `USD` and unknown `credits` updates to `credits` so an unbaselined agent cannot mint arbitrary distinct currencies or credit units.
+- **Per-`(attempt_id, measure)` ingest cap (`16`)**: introducing a 17th distinct unit for one `(attempt_id, measure)` is refused as `invalid-observation` (`detail: 'unit'`) and counted as an `ingest-failed` gap.
+- **Per-`(row, measure)` query cap (`32`)**: `accounting-query.ts` serializes at most 32 distinct units per `(row, measure)` in deterministic `unit ASC` order and reports total omitted units on `AccountingRow.omittedUnitCount` (omitted when `0`), keeping even `limit: 1` cross-attempt mixed-unit groups readable well inside the 1 MiB response bound.
+- **Future clock-skew refusal (`24 h`) and retention bound**: observations with `eventUtc` more than 24 hours (`86,400,000 ms`) ahead of ingest time are refused as `invalid-observation` (`detail: 'eventUtc'`) with a counted `ingest-failed` gap. Mild future skew `(5 min, 24 h]` is stored with `clock_anomaly = 1`, and retention evaluates expiry against `MIN(julianday(event_utc), julianday(ingested_utc))` so skewed rows cannot evade expiry past `horizonDays` from ingest.
+
+## Paging cursors and UI response validation (`FR-R7-16` / `16-06`)
+
+- **Query-bound v2 cursor**: accounting query cursors use `2~<revision>~<queryDigest32Hex>~<key0>~...` (at most 512 characters), where `queryDigest32Hex` is the first 32 lowercase hex characters of SHA-256 over the canonical query shape `{ groupBy, from, to, filters (sorted keys), measures (sorted unique or null), rootIds (sorted unique or null), includeLegacy }`. `limit` and `asOfRevision` are excluded from the digest so multi-revision consumers such as `src/services/reporting/report-usage.ts` can omit `asOfRevision` on page 1 and pass `asOfRevision: page1.revision` on later pages while `cursor.revision === request.asOfRevision` is still enforced.
+- **Ephemeral cursor compatibility decision**: accounting cursors are never persisted to SQLite, disk, or webview state. Legacy v1 cursors (`1~...`) and mismatched query digests are refused consistently as `invalid-query` (`detail: 'cursor'`).
+- **Deep UI response validation**: `isValidReadUsageAccountingResponse` (`src/contracts/validators/usage-accounting.ts`) validates `policyVersion`, `calculationVersion`, bounded `nextCursor`, every `row` (`key` dimensions/values, counts, `measures`, optional positive `omittedUnitCount`, zero unexpected keys), every `gap` (`kind` in `GAP_KINDS`, safe count), and optional `legacy` (`LegacyEpochSummary`) before the webview consumes a response.
+
+## Retention, post-horizon compaction, and conflict history (`FR-R7-16` / `16-07`)
+
+- **Post-horizon selected-observation compaction**: past `horizonDays` (90 days, evaluated as `MIN(julianday(event_utc), julianday(ingested_utc)) < julianday(cutoff)`), `pruneExpired` compacts expired selected observations (excluding any row with a pending projection intent or the highest `ingest_seq`) by detaching `accounting_contributions.selected_observation_id = NULL` before deleting the aged observation rows. Compacted open contributions stay frozen in `projection.ts:recomputeInvocation`, preserving selected quantities, completeness, and visible gaps while reclaiming observation capacity so long-running stores do not wedge at `store-full`. When capacity (`1,000,000` observations) is saturated by *within-horizon* observations, ingest still refuses explicitly with `store-full` and counts an `ingest-failed` gap.
+- **Immutable disagreement history**: once an open contribution is marked `conflicting`, pruning an expired non-selected conflicting observation does not silently downgrade `completeness` back to `known` upon later reevaluation; only an explicit correction (`applyCorrection`) or a strictly higher-ranked known provenance (`provider-reported` over `derived`, etc.) can supersede it.
+
 ## Limits
 
 | Bound | Value |
 |---|---|
-| Retained observations | 1,000,000 (expired detail is pruned within 1% of the bound) |
-| Retention horizon | 90 days |
+| Retained observations | 1,000,000 (expired detail and post-horizon selected observations compact within 1% of the bound) |
+| Retention horizon | 90 days (bounded by `MIN(event_utc, ingested_utc)`) |
+| Distinct units per `(attempt_id, measure)` at ingest | 16 (excess refused as `invalid-observation` with `ingest-failed` gap) |
+| Distinct units per `(row, measure)` in query responses | 32 (`unit ASC`; overflow surfaced via `AccountingRow.omittedUnitCount`) |
+| Maximum future clock skew (`eventUtc - nowUtc`) | 24 hours (`86,400,000 ms`; `(5 min, 24 h]` flagged `clock_anomaly = 1`) |
 | Rows per page | 200 |
 | Response size | 1 MiB |
 | Query deadline | 5 seconds |
 | Roots per query (`rootIds`, added by `FR-R6-F11`) | 1 to 64 unique ids, each matching the identifier pattern; absent means every root. It narrows the rows only: the unattributed count, gaps and legacy summary stay store-wide |
 | Grouping dimensions | at most 3 of `backend`, `model`, `workflowRevision`, `phaseId`, `attemptOutcome`, `utcDay` |
 
-At 100,000 retained attempts, warm filtered 200-row reads meet p95 ≤ 500 ms
-(`tests/perf/usage-accounting-query.test.ts`).
+### Measured query latency and host blocking (`tests/perf/usage-accounting-query.test.ts`)
+
+- **100,000-attempt regression budget (`NFR-003`, `SC-006`)**: at 100,000 retained attempts (400,000 open contributions), warm filtered 200-row reads meet `p95 <= 500 ms` and `<= 1 MiB` per response.
+- **1,000,000-observation retention-bound measurement (`FR-R7-16` / `16-07`)**: measured on `darwin-arm64` (Apple M4 Max), Node `v24.22.2` on 2026-11-23 against `1,000,000` retained observations (`250,000` attempts, `1,000,000` open contributions, `500` phases, `2` backends, `4` models), filtered `200`-row pages (`5` warm-up, `30` measured):
+  - **Cold first page**: `455.16 ms`
+  - **Warm read latency**: `p50 115.65 ms`, `p95 458.26 ms`, `p99 459.73 ms`, `max 459.73 ms`
+  - **Synchronous host event-loop blocking** (`setTimeout(0)` timer lag across synchronous `service.query()` calls): `p50 115.74 ms`, `p95 458.65 ms`, `p99 459.92 ms`, `max 459.92 ms`
+  - **Aborted preflight** (between-statement `AbortSignal` check): `0.079 ms`
+  - **Largest response**: `125,384 bytes` (`<= 1 MiB`)
 
 ## Known limits
 
-The workspace tracks these release limits and their follow-up tasks in FR-R7-16, under “305 Usage and metrics accounting.”
-
-- **The deadline is checked between statements.** A read runs synchronously, so one slow
-  statement is not interrupted; the 5-second deadline and a headless caller's abort signal are
-  checked before each next step. The sidebar passes no signal: no cancel message can be handled
-  while a read is in progress. Reads at the 1,000,000-observation bound are not measured.
+- **The deadline and abort signal are checked between statements.** Queries run synchronously on the extension host thread via `node:sqlite` (`DatabaseSync`), so an already-executing SQL statement is not interrupted mid-statement and blocks the host event loop for its duration (measured up to `459.92 ms` at the `1,000,000`-observation bound on `darwin-arm64` Apple M4 Max / Node `v24.22.2`; slower hardware will block proportionally longer). The 5-second deadline and a headless caller's `AbortSignal` are checked before each SQL step; the sidebar passes no abort signal because no cancel message can be dispatched while a synchronous read is in progress.
 - **A response's `cutoffIngestSeq` is a high-water mark.** It is the highest ingest sequence any
   projection reflected, not a promise that every earlier observation is reflected. One whose
   projection failed shows as a `projection-failed` gap until the next start applies it.
-- **A paging cursor carries only its revision and keys.** A cursor replayed with a different
-  number of grouping dimensions, or keys that do not fit them, is refused; one replayed with
-  different filters, range or measures returns pages of the new query from the cursor's keys.
-  Keep the request unchanged while paging.
-- **Retention keeps every selected observation.** An observation that backs an open
-  contribution is never pruned, so a store at the 1,000,000 bound with only selected rows
-  refuses new observations as `store-full`. Retention can prune a non-selected conflicting
-  observation past the horizon; a later observation of the same figure then re-evaluates without
-  it.
-- **Event times are trusted forward.** An observation dated in the future is stored (flagged
-  as a clock anomaly) and is not pruned until its date passes the horizon. Distinct units are
-  not capped per row, so a producer emitting very many units can push a row over the response
-  limit. Both matter once ACP producers (FR-R6-F13) feed the service.
+- **Within-horizon observation saturation still refuses `store-full`.** Post-horizon selected
+  observations compact cleanly past 90 days, but if 1,000,000 observations accumulate *within* the
+  90-day horizon, retention cannot reclaim them and new ingests are refused `store-full` with a
+  counted `ingest-failed` gap until older observations cross the horizon.
 - **A resumed legacy run.** Usage of a legacy run that resumes after the import is counted as
   new usage; its root outcome is refused `legacy-epoch-overlap` and counted as an
   `ingest-failed` gap.

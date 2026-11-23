@@ -245,15 +245,18 @@ export function buildHostAcpDispatchOptions(
     primaryWorkspaceRoot: deps.workspaceRoot,
     protectedDatabasePaths: () => getSqliteCutoverCoordinator(deps.store)?.getDatabaseProtectedPaths() ?? [],
     readConfiguredProfile: () => readUncachedAcpProfileSelector(),
-    // Trigger an initial verify only before any verdict has landed so already-primed sessions do
-    // not fire floating checks during scope registration.
+    // Trigger an initial verify only when trusted and before any verdict has landed so untrusted
+    // windows never read lock state and already-primed sessions do not fire floating checks.
     currentOwnershipGeneration: () => {
-      if (lastVerifiedPrimacy === null && pendingPrimacyChecks === 0) {
+      if (deps.isWorkspaceTrusted() && lastVerifiedPrimacy === null && pendingPrimacyChecks === 0) {
         refreshPrimacyState();
       }
       return ownershipGeneration;
     },
-    primeAuthority: async () => (await verifyPrimacy()) && canWriteDurableAcpState(),
+    primeAuthority: async () => {
+      if (!deps.isWorkspaceTrusted()) return false;
+      return (await verifyPrimacy()) && canWriteDurableAcpState();
+    },
     onAcpObservation: (event) => {
       if (!canWriteDurableAcpState()) return;
       getSqliteCutoverCoordinator(deps.store)?.recordAcpObservation(event);

@@ -33,6 +33,8 @@ export {
   executeDeletion,
   getDeletionOperation,
   reconcileDeletionOperation,
+  repairDeletionAccounting,
+  type DeletionAccountingRepairResult,
   type DeletionRequest
 } from './deletion-operations';
 export {

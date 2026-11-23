@@ -576,7 +576,16 @@ export class AtomicTransactionUnitsService {
     );
   }
 
-  /** 5. `Usage/correction`: Append-only usage observation or repricing correction with revision advancement. */
+  /**
+   * 5. `Usage/correction`: Append-only usage observation or repricing correction with revision advancement.
+   *
+   * @deprecated FR-R7-16 (16-08) — F04 placeholder commit unit targeting the empty-in-production
+   * F04 `usage_observations`, `usage_corrections`, `usage_accounting_applications`, and
+   * `attempt_usage_revisions` tables (retained under SQLite schema v9). Never called in
+   * production; authoritative F06 usage accounting writes go through `createUsageAccountingService`
+   * (`accounting_*`). Eligible for removal only under a future breaking `min_reader_version`
+   * migration with retired-table restore handling.
+   */
   public executeUsageCorrection(
     request: UsageCorrectionCommitRequest
   ): TransactionUnitOutcome<{ readonly attemptId: string; readonly totalTokens: number; readonly totalCostMicrodollars: number; readonly revision: number }> {

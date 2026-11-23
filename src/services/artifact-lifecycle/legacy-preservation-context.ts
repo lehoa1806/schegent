@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { RetentionPreviewSummary, ScanCoverage } from '../../contracts/artifact-lifecycle/lifecycle-types';
 import type { LegacyCatalogConsumerPort } from '../../contracts/artifact-lifecycle/legacy-preservation-types';
-import type { NodeSqliteConnection } from '../sqlite-store';
+import type { LegacySourceRef, LegacySourceStanding, NodeSqliteConnection } from '../sqlite-store';
 import type { LegacyCatalogRoot } from './legacy-classification';
 import type { LegacyPreservationFs } from './legacy-preservation-fs';
 import { PreservationRows } from './legacy-preservation-store';
@@ -34,6 +34,8 @@ export interface LegacyPreservationDependencies {
   readonly catalogRoot: LegacyCatalogRoot;
   readonly files: LegacyPreservationFs;
   readonly consumers: LegacyCatalogConsumerPort;
+  /** Optional F04 catalog standing probe; defaults to querying `conn` directly (`16-02`). */
+  readonly catalogStanding?: (ref: LegacySourceRef) => LegacySourceStanding;
   readonly quarantineSegments?: readonly string[];
 }
 

@@ -350,3 +350,208 @@ describe('FR-R6-F10 cancel rules (data-model, integration lifecycle)', () => {
     expect(h.integrations.getRequest(HARNESS_WS, other.requestId)?.state).toBe('queued');
   }, CASE_TIMEOUT_MS);
 });
+
+describe('FR-R7-16 (16-21 & 16-23): snapshotted inputs, states: [], 128-char profileId, and prior blocked history', () => {
+  it('accepts a 128-character profileId and refuses 129 characters (16-23)', async () => {
+    const h = createLaneHarness({ label: 'api-profile-128' });
+    const lane = await h.provision();
+    fs.writeFileSync(path.join(await h.laneRoot(lane.laneId), 'src', 'a.txt'), 'profile-128\n');
+    expect((await h.service.freezeCandidate({ laneId: lane.laneId })).ok).toBe(true);
+
+    const maxId = 'p'.repeat(128);
+    const overId = 'p'.repeat(129);
+    const validRes = await api.requestIntegration(h.service, {
+      laneId: lane.laneId,
+      targetBranch: MAIN,
+      profile: { ...PROFILE, profileId: maxId }
+    });
+    expect(validRes.ok && validRes.value.profile.profileId).toBe(maxId);
+
+    const invalidRes = await api.requestIntegration(h.service, {
+      laneId: lane.laneId,
+      targetBranch: MAIN,
+      profile: { ...PROFILE, profileId: overId }
+    });
+    expect(invalidRes).toEqual(INVALID);
+  }, CASE_TIMEOUT_MS);
+
+  it('returns an empty page for explicit states: [] while omitting states returns all records (16-21)', async () => {
+    const h = createLaneHarness({ label: 'api-empty-states' });
+    const { laneId, requestId } = await queuedRequest(h, 'empty-states-check\n');
+
+    const emptyLanes = api.listLanes(h.service, { states: [] });
+    expect(emptyLanes).toEqual({ ok: true, value: { items: [], nextCursor: null } });
+    const allLanes = api.listLanes(h.service, {});
+    expect(allLanes.ok && allLanes.value.items.map((item) => item.laneId)).toEqual([laneId]);
+
+    const emptyRequests = api.listRequests(h.service, { states: [] });
+    expect(emptyRequests).toEqual({ ok: true, value: { items: [], nextCursor: null } });
+    const allRequests = api.listRequests(h.service, {});
+    expect(allRequests.ok && allRequests.value.items.map((item) => item.requestId)).toEqual([requestId]);
+  }, CASE_TIMEOUT_MS);
+
+  it('validates plain prototypes once and deep-snapshots getter and mutated inputs before awaits (16-21)', async () => {
+    // 1. Non-plain prototype on nested profile or check is refused.
+    class CustomProfile {
+      public profileId = 'unit';
+      public revision = 1;
+      public checks = PROFILE.checks;
+    }
+    expect(
+      await api.requestIntegration(untouchable(), {
+        laneId: LANE,
+        targetBranch: MAIN,
+        profile: new CustomProfile()
+      })
+    ).toEqual(INVALID);
+
+    // 2. Getter properties that flip to hostile values on 2nd access are read ONCE and frozen!
+    const h = createLaneHarness({ label: 'api-snapshot-getter' });
+    const lane = await h.provision();
+    fs.writeFileSync(path.join(await h.laneRoot(lane.laneId), 'src', 'a.txt'), 'getter-check\n');
+    expect((await h.service.freezeCandidate({ laneId: lane.laneId })).ok).toBe(true);
+
+    let branchReads = 0;
+    let argvReads = 0;
+    const mutableArgv = [process.execPath, '-e', 'process.exitCode = 0'];
+    const flippingArgv: unknown[] = [];
+    Object.defineProperty(flippingArgv, '0', {
+      enumerable: true,
+      get() {
+        argvReads += 1;
+        return argvReads === 1 ? process.execPath : '/evil/binary';
+      }
+    });
+    flippingArgv.push('-e', 'process.exitCode = 0');
+    flippingArgv.length = 3;
+
+    const flippingCheck: Record<string, unknown> = { name: 'ok', timeoutMs: 15_000 };
+    Object.defineProperty(flippingCheck, 'argv', {
+      enumerable: true,
+      get() {
+        return flippingArgv;
+      }
+    });
+
+    const getterInput: Record<string, unknown> = {
+      laneId: lane.laneId,
+      profile: {
+        profileId: 'snap-getter',
+        revision: 1,
+        checks: [flippingCheck]
+      }
+    };
+    Object.defineProperty(getterInput, 'targetBranch', {
+      enumerable: true,
+      get() {
+        branchReads += 1;
+        return branchReads === 1 ? MAIN : '../evil';
+      }
+    });
+
+    const created = await api.requestIntegration(h.service, getterInput);
+    expect(created.ok).toBe(true);
+    expect(branchReads).toBe(1);
+    expect(argvReads).toBe(1);
+    if (created.ok) {
+      const stored = h.integrations.getRequest(HARNESS_WS, created.value.requestId);
+      expect(stored?.targetRef).toBe('refs/heads/main');
+      expect(stored?.profileJson).not.toContain('/evil/binary');
+      expect(stored?.profileJson).toContain(process.execPath);
+    }
+
+    // 3. Post-call synchronous mutation of nested argv while requestIntegration awaits Git does not alter stored profile!
+    let mutatedDuringAwait = false;
+    const hMut = createLaneHarness({
+      label: 'api-snapshot-mutate',
+      wrapGit: (real) => ({
+        run: (args, opts) => {
+          if (!mutatedDuringAwait && args.at(0) === 'rev-parse') {
+            mutatedDuringAwait = true;
+            mutableArgv[0] = '/mutated/after/entry';
+          }
+          return real.run(args, opts);
+        }
+      })
+    });
+    const mutLane = await hMut.provision();
+    fs.writeFileSync(path.join(await hMut.laneRoot(mutLane.laneId), 'src', 'a.txt'), 'mut-check\n');
+    expect((await hMut.service.freezeCandidate({ laneId: mutLane.laneId })).ok).toBe(true);
+    mutatedDuringAwait = false;
+    mutableArgv[0] = process.execPath;
+
+    const mutReq = await api.requestIntegration(hMut.service, {
+      laneId: mutLane.laneId,
+      targetBranch: MAIN,
+      profile: {
+        profileId: 'snap-mut',
+        revision: 1,
+        checks: [{ name: 'ok', argv: mutableArgv, timeoutMs: 15_000 }]
+      }
+    });
+    expect(mutatedDuringAwait).toBe(true);
+    expect(mutReq.ok).toBe(true);
+    if (mutReq.ok) {
+      const stored = hMut.integrations.getRequest(HARNESS_WS, mutReq.value.requestId);
+      expect(stored?.profileJson).not.toContain('/mutated/after/entry');
+      expect(stored?.profileJson).toContain(process.execPath);
+    }
+  }, CASE_TIMEOUT_MS);
+
+  it('preserves prior blocked reason history when refreeze supersedes a blocked request with review-stale (16-21)', async () => {
+    const h = createLaneHarness({ label: 'api-prior-blocked' });
+    const lane = await h.provision();
+    const root = await h.laneRoot(lane.laneId);
+    fs.writeFileSync(path.join(root, 'src', 'a.txt'), 'first-candidate\n');
+    expect((await h.service.freezeCandidate({ laneId: lane.laneId })).ok).toBe(true);
+
+    const failingProfile: VerificationProfile = {
+      profileId: 'unit',
+      revision: 1,
+      checks: [{ name: 'fail', argv: [process.execPath, '-e', 'process.exit(2)'], timeoutMs: 15_000 }]
+    };
+    const queued = await api.requestIntegration(h.service, {
+      laneId: lane.laneId,
+      targetBranch: MAIN,
+      profile: failingProfile
+    });
+    if (!queued.ok) throw new Error('request failed');
+    const verified = await api.verifyRequest(h.service, { requestId: queued.value.requestId });
+    expect(verified.ok && verified.value.state).toBe('blocked');
+    expect(verified.ok && verified.value.reason).toBe('verification-failed');
+    expect(verified.ok && verified.value.priorBlockedReasons).toEqual([]);
+
+    // Refreeze supersedes blocked/verification-failed -> blocked/review-stale while preserving history!
+    fs.writeFileSync(path.join(root, 'src', 'a.txt'), 'second-candidate\n');
+    expect((await api.freezeCandidate(h.service, { laneId: lane.laneId })).ok).toBe(true);
+
+    const afterRefreeze = api.getRequest(h.service, { requestId: queued.value.requestId });
+    expect(afterRefreeze.ok).toBe(true);
+    if (afterRefreeze.ok) {
+      expect(afterRefreeze.value.state).toBe('blocked');
+      expect(afterRefreeze.value.reason).toBe('review-stale');
+      expect(afterRefreeze.value.priorBlockedReasons).toEqual(['verification-failed']);
+    }
+
+    // Spec review-stale refusal is preserved on approve/land!
+    expect(
+      api.approveRequest(h.service, {
+        requestId: queued.value.requestId,
+        candidateCommit: queued.value.candidateCommit,
+        targetCommit: queued.value.expectedTargetCommit,
+        profileRevision: queued.value.profile.revision,
+        profileDigest: queued.value.profile.digest
+      })
+    ).toEqual({ ok: false, refusal: { reason: 'review-stale' } });
+    expect(await api.landRequest(h.service, { requestId: queued.value.requestId })).toEqual({
+      ok: false,
+      refusal: { reason: 'review-stale' }
+    });
+
+    // A second refreeze does NOT duplicate `verification-failed` or add `review-stale` into priorBlockedReasons.
+    fs.writeFileSync(path.join(root, 'src', 'a.txt'), 'third-candidate\n');
+    expect((await api.freezeCandidate(h.service, { laneId: lane.laneId })).ok).toBe(true);
+    const afterSecond = api.getRequest(h.service, { requestId: queued.value.requestId });
+    expect(afterSecond.ok && afterSecond.value.priorBlockedReasons).toEqual(['verification-failed']);
+  }, CASE_TIMEOUT_MS);
+});

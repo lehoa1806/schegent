@@ -75,7 +75,18 @@ export function releaseLane(ctx: LifecycleContext, laneId: string, disposition: 
   return move(ctx, laneId, RELEASE[disposition]);
 }
 
-/** Changes no state; a `removed` lane may be pinned too, which only its records show. */
+/**
+ * Changes no state; a `removed` lane may be pinned too, which only its records show.
+ * Refuses `lane-busy` while this host has already crossed the pre-removal fence (`pending` cleanup
+ * operation in flight) so a lane cannot report pinned while `git worktree remove` is removing it.
+ * Pinning while cleanup is still inspecting disk (`checkDisk`) succeeds and causes cleanup's
+ * fenced pre-removal recheck to abort removal and keep the lane `lane-pinned` (16-19).
+ */
 export function setLanePinned(ctx: LifecycleContext, laneId: string, pinned: boolean): LaneResult<LaneRecord> {
-  return ctx.lanes.fenced(ctx.workspaceId, ctx.generation, () => ctx.lanes.setPinned(ctx.workspaceId, laneId, pinned, ctx.now()));
+  return ctx.lanes.fenced(ctx.workspaceId, ctx.generation, () => {
+    if (pinned && ctx.inFlight(laneId) && ctx.lanes.hasPendingOperation(laneId, 'cleanup')) {
+      return laneRefused<LaneRecord>('lane-busy');
+    }
+    return ctx.lanes.setPinned(ctx.workspaceId, laneId, pinned, ctx.now());
+  });
 }

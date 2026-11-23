@@ -13,6 +13,7 @@
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 
+import { randomBytes } from 'node:crypto';
 import {
   laneOk,
   laneRefused,
@@ -163,9 +164,42 @@ export class IntegrationStore {
     });
   }
 
-  /** A new candidate makes every open request of the lane stale; returns how many it blocked. */
-  public blockOpenRequestsForLane(laneId: string, change: { readonly now: string; readonly generation: number }): number {
+  /**
+   * A new candidate makes every open request of the lane stale; returns how many it blocked.
+   * When overwriting a request already in `blocked` with a prior non-`review-stale` reason, records
+   * the superseded reason in `lane_integration_journal` (`kind = 'reconcile'`, `outcome = 'blocked'`,
+   * `observed_tip = NULL`) so inspectable history preserves why it had previously blocked.
+   */
+  public blockOpenRequestsForLane(
+    laneId: string,
+    change: { readonly now: string; readonly generation: number; readonly random?: (size: number) => Buffer }
+  ): number {
     return inImmediateTransaction(this.conn, () => {
+      const priorBlocked = this.conn
+        .all<RequestRow>(
+          `SELECT ${REQUEST_COLUMNS} FROM lane_integration_requests
+           WHERE lane_id = ? AND state = 'blocked' AND reason IS NOT NULL AND reason <> ?
+           ORDER BY created_at, request_id`,
+          laneId,
+          REVIEW_STALE_REASON
+        )
+        .map(requestFromRow);
+      const draw = change.random ?? randomBytes;
+      for (const req of priorBlocked) {
+        this.appendJournal({
+          entryId: draw(16).toString('hex'),
+          requestId: req.requestId,
+          kind: 'reconcile',
+          method: null,
+          candidateCommit: req.candidateCommit,
+          expectedCommit: req.expectedTargetCommit,
+          observedTip: null,
+          outcome: 'blocked',
+          reason: req.reason,
+          generation: change.generation,
+          now: change.now
+        });
+      }
       return this.conn.run(
         `UPDATE lane_integration_requests SET state = 'blocked', reason = ?, owner_generation = ?, updated_at = ?
          WHERE lane_id = ? AND state IN (${placeholders(STALE_ON_NEW_CANDIDATE.length)})`,
@@ -176,6 +210,23 @@ export class IntegrationStore {
         ...STALE_ON_NEW_CANDIDATE
       ).changes;
     });
+  }
+
+  /**
+   * Non-`review-stale` blocked reasons superseded by a later refreeze, oldest first.
+   * Distinguished from landing reconciliation entries by `observed_tip IS NULL`.
+   */
+  public listPriorBlockedReasons(requestId: string): readonly string[] {
+    return this.conn
+      .all<{ reason: string }>(
+        `SELECT reason FROM lane_integration_journal
+         WHERE request_id = ? AND kind = 'reconcile' AND outcome = 'blocked'
+           AND observed_tip IS NULL AND reason IS NOT NULL AND reason <> ?
+         ORDER BY entry_seq ASC`,
+        requestId,
+        REVIEW_STALE_REASON
+      )
+      .map((row) => row.reason);
   }
 
   public countLaneRequests(laneId: string, states: readonly IntegrationState[]): number {
@@ -219,7 +270,8 @@ export class IntegrationStore {
       where.push('lane_id = ?');
       params.push(query.laneId);
     }
-    if (query.states !== undefined && query.states.length > 0) {
+    if (query.states !== undefined) {
+      if (query.states.length === 0) return laneOk({ items: [], nextCursor: null });
       where.push(`state IN (${placeholders(query.states.length)})`);
       params.push(...query.states);
     }

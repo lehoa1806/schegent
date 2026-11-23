@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  isValidReadUsageAccountingResponse,
   validateAccountingQueryRequest,
   validateReadGapsRequest
 } from '../../../src/contracts/validators/usage-accounting';
@@ -65,6 +66,10 @@ describe('accounting query validator (T027)', () => {
     expect(refusedField({ groupBy: [], limit: 0 })).toBe('limit');
     expect(refusedField({ groupBy: [], limit: 1.5 })).toBe('limit');
     expect(refusedField({ groupBy: [], cursor: 'c'.repeat(513) })).toBe('cursor');
+    expect(refusedField({ groupBy: [], cursor: 'cur\n1' })).toBe('cursor');
+    expect(refusedField({ groupBy: [], cursor: 'cur\u00001' })).toBe('cursor');
+    expect(refusedField({ groupBy: [], cursor: 'cur\u007f1' })).toBe('cursor');
+    expect(refusedField({ groupBy: [], cursor: 'cur\u00851' })).toBe('cursor');
     expect(refusedField({ groupBy: [], asOfRevision: 0 })).toBe('asOfRevision');
     expect(refusedField({ groupBy: [], measures: ['dollars'] })).toBe('measures');
     expect(refusedField({ groupBy: [], includeLegacy: 'yes' })).toBe('includeLegacy');
@@ -78,6 +83,10 @@ describe('gap read validator (T027)', () => {
     expect(validateReadGapsRequest(undefined)).toEqual({ ok: true, value: { limit: 50 } });
     expect(validateReadGapsRequest({ limit: 200, cursor: 'x' })).toEqual({ ok: true, value: { limit: 200, cursor: 'x' } });
     expect(validateReadGapsRequest({ limit: 201 })).toEqual({ ok: false, refusal: { code: 'invalid-query', detail: 'limit' } });
+    expect(validateReadGapsRequest({ cursor: 'bad\ncursor' })).toEqual({
+      ok: false,
+      refusal: { code: 'invalid-query', detail: 'cursor' }
+    });
     expect(validateReadGapsRequest({ other: 1 })).toEqual({ ok: false, refusal: { code: 'invalid-query', detail: 'request' } });
   });
 });
@@ -98,5 +107,206 @@ describe('accounting query rootIds (FR-R6-F11 T008)', () => {
     expect(refusedField({ groupBy: [], rootIds: ['has space'] })).toBe('rootIds');
     expect(refusedField({ groupBy: [], rootIds: [7] })).toBe('rootIds');
     expect(refusedField({ groupBy: [], rootIds: 'r-1' })).toBe('rootIds');
+  });
+});
+
+describe('isValidReadUsageAccountingResponse (FR-R7-16 16-06)', () => {
+  function validResponse() {
+    return {
+      ok: true,
+      value: {
+        revision: 4,
+        cutoffIngestSeq: 9,
+        policyVersion: 1,
+        calculationVersion: 1,
+        rows: [
+          {
+            key: { backend: 'claude', model: null },
+            attempts: 3,
+            roots: 2,
+            measures: [
+              {
+                measure: 'input_tokens',
+                unit: 'count',
+                total: '420',
+                completeness: 'known',
+                coverage: { known: 3, denominator: 3 }
+              },
+              {
+                measure: 'cost',
+                unit: 'USD',
+                total: '1.250000',
+                reportedTotal: '1.250000',
+                estimatedTotal: '0.000000',
+                completeness: 'partial',
+                coverage: { known: 2, denominator: 3 }
+              },
+              {
+                measure: 'credits',
+                unit: 'acme.credits',
+                total: '3.500000',
+                completeness: 'conflicting',
+                coverage: { known: 1, denominator: 3 }
+              }
+            ],
+            omittedUnitCount: 5
+          }
+        ],
+        legacy: {
+          runCount: 2,
+          costMicros: '500000',
+          boundaryRunId: 'run-legacy-2',
+          boundaryTerminalUtc: '2026-11-09T20:00:00.000Z',
+          reconciliation: 'matched',
+          detail: 'unavailable'
+        },
+        unattributedCount: 1,
+        gaps: [{ kind: 'ingest-failed', count: 2 }],
+        nextCursor: `2~4~${'a'.repeat(32)}~claude~`
+      }
+    };
+  }
+
+  it('accepts valid responses and refusals', () => {
+    expect(isValidReadUsageAccountingResponse(validResponse())).toBe(true);
+    expect(isValidReadUsageAccountingResponse({ ok: false, refusal: { code: 'invalid-query', detail: 'cursor' } })).toBe(true);
+    expect(
+      isValidReadUsageAccountingResponse({ ok: false, refusal: { code: 'invalid-query', detail: 'filters.backend' } })
+    ).toBe(true);
+    expect(
+      isValidReadUsageAccountingResponse({
+        ok: false,
+        refusal: { code: 'store-unavailable', detail: 'legacy-rollup-unreadable' }
+      })
+    ).toBe(true);
+    expect(
+      isValidReadUsageAccountingResponse({ ok: false, refusal: { code: 'invalid-counter', detail: 'input_tokens' } })
+    ).toBe(true);
+    expect(
+      isValidReadUsageAccountingResponse({ ok: false, refusal: { code: 'invalid-query', detail: 'a'.repeat(64) } })
+    ).toBe(true);
+    expect(isValidReadUsageAccountingResponse({ ok: false, refusal: { code: 'store-unavailable' } })).toBe(true);
+
+    // Exact upper bounds for rows (200), gaps (20), and measures (256) remain valid.
+    const base = validResponse();
+    const minimalRow = { key: {}, attempts: 1, roots: 1, measures: [] };
+    const minimalMeasure = {
+      measure: 'input_tokens',
+      unit: 'count',
+      total: '1',
+      completeness: 'known',
+      coverage: { known: 1, denominator: 1 }
+    };
+    expect(
+      isValidReadUsageAccountingResponse({
+        ok: true,
+        value: {
+          ...base.value,
+          rows: Array.from({ length: 200 }, () => minimalRow),
+          gaps: Array.from({ length: 20 }, () => ({ kind: 'ingest-failed', count: 1 }))
+        }
+      })
+    ).toBe(true);
+    expect(
+      isValidReadUsageAccountingResponse({
+        ok: true,
+        value: {
+          ...base.value,
+          rows: [{ ...minimalRow, measures: Array.from({ length: 256 }, () => minimalMeasure) }]
+        }
+      })
+    ).toBe(true);
+  });
+
+  it('rejects malformed versions, cursors, rows, measures, gaps, legacy summaries, and unexpected keys', () => {
+    const base = validResponse();
+    const minimalRow = { key: {}, attempts: 1, roots: 1, measures: [] };
+    const minimalMeasure = {
+      measure: 'input_tokens',
+      unit: 'count',
+      total: '1',
+      completeness: 'known',
+      coverage: { known: 1, denominator: 1 }
+    };
+    const cases: readonly unknown[] = [
+      { ...base, extra: 1 },
+      { ok: true, value: { ...base.value, policyVersion: 2 } },
+      { ok: true, value: { ...base.value, calculationVersion: undefined } },
+      { ok: true, value: { ...base.value, nextCursor: '' } },
+      { ok: true, value: { ...base.value, nextCursor: 'a'.repeat(513) } },
+      { ok: true, value: { ...base.value, nextCursor: `2~4~${'a'.repeat(32)}~claude\n` } },
+      { ok: true, value: { ...base.value, nextCursor: `2~4~${'a'.repeat(32)}~claude\u0000` } },
+      { ok: true, value: { ...base.value, nextCursor: `2~4~${'a'.repeat(32)}~claude\u007f` } },
+      { ok: true, value: { ...base.value, nextCursor: `2~4~${'a'.repeat(32)}~claude\u009f` } },
+      { ok: true, value: { ...base.value, rows: Array.from({ length: 201 }, () => minimalRow) } },
+      { ok: true, value: { ...base.value, gaps: Array.from({ length: 21 }, () => ({ kind: 'ingest-failed', count: 1 })) } },
+      {
+        ok: true,
+        value: {
+          ...base.value,
+          rows: [{ ...minimalRow, measures: Array.from({ length: 257 }, () => minimalMeasure) }]
+        }
+      },
+      { ok: false, refusal: { code: 'invalid-query', detail: '' } },
+      { ok: false, refusal: { code: 'invalid-query', detail: 'd'.repeat(65) } },
+      { ok: false, refusal: { code: 'invalid-query', detail: 'cursor\n' } },
+      { ok: false, refusal: { code: 'invalid-query', detail: 'cursor\u0000' } },
+      { ok: false, refusal: { code: 'invalid-query', detail: 'bad detail' } },
+      { ok: false, refusal: { code: 'invalid-query', detail: '../etc/passwd' } },
+      { ok: false, refusal: { code: 'invalid-query', detail: '<script>' } },
+      { ok: true, value: { ...base.value, rows: [{ ...base.value.rows[0], roots: 4 }] } },
+      { ok: true, value: { ...base.value, rows: [{ ...base.value.rows[0], omittedUnitCount: 0 }] } },
+      { ok: true, value: { ...base.value, rows: [{ ...base.value.rows[0], omittedUnitCount: 1.5 }] } },
+      { ok: true, value: { ...base.value, rows: [{ ...base.value.rows[0], key: { utcDay: '2026-02-30' } }] } },
+      {
+        ok: true,
+        value: {
+          ...base.value,
+          rows: [
+            {
+              ...base.value.rows[0],
+              measures: [
+                {
+                  measure: 'cost',
+                  unit: 'usd',
+                  total: '1.000000',
+                  completeness: 'known',
+                  coverage: { known: 1, denominator: 1 }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        ok: true,
+        value: {
+          ...base.value,
+          rows: [
+            {
+              ...base.value.rows[0],
+              measures: [
+                {
+                  measure: 'input_tokens',
+                  unit: 'count',
+                  total: '10',
+                  reportedTotal: '0.000000',
+                  completeness: 'known',
+                  coverage: { known: 1, denominator: 1 }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      { ok: true, value: { ...base.value, gaps: [{ kind: 'bogus', count: 1 }] } },
+      { ok: true, value: { ...base.value, gaps: [{ kind: 'ingest-failed', count: -1 }] } },
+      { ok: true, value: { ...base.value, legacy: { ...base.value.legacy, reconciliation: 'other' } } },
+      { ok: true, value: { ...base.value, legacy: { ...base.value.legacy, boundaryTerminalUtc: 'not-a-date' } } },
+      { ok: true, value: { ...base.value, legacy: { ...base.value.legacy, boundaryRunId: 'bad\u0000id' } } }
+    ];
+    for (const candidate of cases) {
+      expect(isValidReadUsageAccountingResponse(candidate)).toBe(false);
+    }
   });
 });

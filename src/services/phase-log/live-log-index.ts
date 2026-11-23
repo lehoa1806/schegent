@@ -13,8 +13,10 @@
  *   - Reading changes no row and never changes a capture setting.
  *   - Refusals are values, never throws, so a caller can count them.
  *
- * The F04 store is not opened in production before the F01-B cutover, so no production code
- * constructs this yet (spec Assumptions); it is qualified against an in-memory store.
+ * Production wiring opens this index on the SQLite writer connection in
+ * `src/activation/sqlite-cutover-wiring.ts`. Contained segment-replay consumption
+ * (`restartReplay()` → lexical + handle-based containment) lives in
+ * `live-log-replay-reader.ts`.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */

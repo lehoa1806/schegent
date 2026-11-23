@@ -127,26 +127,53 @@ The gate checks the request in a fixed order:
 
 A preview goes stale when the selection it was taken for has changed.
 
-Each target is resolved inside its declared root, both lexically and canonically. Its protection and
-writer are re-checked, and the intent is persisted before any unlink. Per-target outcomes:
+Each target passes a pinned effect-boundary sequence before any bytes are unlinked:
+
+1. fresh protection and shared-locator standing re-check;
+2. lexical declared-root containment (zero filesystem probes for paths outside declared roots);
+3. canonical parent containment via `resolveContainedLink`;
+4. non-following regular-file leaf verification via `lstat` (refusing symlinks, directories, and
+   special files);
+5. workspace sweep-lease / primacy fence check;
+6. durable `executing` intent write;
+7. path-based `unlink` of the canonical resolved path.
+
+**Residual path-based removal limit.** Node's `node:fs/promises` exposes pathname-based `unlink`
+rather than descriptor-relative `openat`/`unlinkat`, so an irreducible TOCTOU window remains between
+the final `resolveContainedLink`/`lstat` check and the `unlink` syscall on local POSIX filesystems.
+The pinned sequence above is risk reduction, not a guarantee, and this residual is a permanent
+stated limit under [Native binding decision](../architecture/native-binding-decision.md) — reevaluate
+descriptor-relative removal if stable `node:fs` adds `openat`/`unlinkat`-class primitives or if the
+threat model changes.
+
+Per-target outcomes:
 
 | Outcome | Meaning |
 |---|---|
 | `deleted` | Removed. |
 | `already-absent` | The bytes were already gone; this counts as success. |
 | `retained` | The unlink failed (for example `EACCES`); the bytes are still there. |
-| `refused` | Protected, outside its root, swapped for a link, or the operation lost its fence. |
+| `refused` | Protected, outside its root, swapped for a link or non-regular file, or the operation lost its fence. |
 | `unknown` | Interrupted mid-effect; reconciliation settles it. |
 
 How the outcomes roll up into the operation:
 
+- Target outcome persistence (`deletion_targets`) and `artifact_lifecycle.availability = 'deleted'`
+  settle together inside a single immediate transaction; pass state and sweep-lease release also
+  settle atomically.
 - If any target was retained or refused, the operation ends `partial`.
 - If persisting the intent fails (for example on a full disk), nothing is unlinked.
 - An operation interrupted by a restart resumes under the same operation id, and the targets it left
-  `executing` are reconciled.
+  `executing` are reconciled without executing a second unlink on already-absent bytes.
+- Both `reconcileDeletionOperation` and `reconcileAfterRestart` also run a bounded (at most 200
+  records per pass), repeatable, zero-filesystem accounting repair (`repairDeletionAccounting`) that
+  heals any pre-existing split row whose target settled `deleted` or `already-absent` while
+  `artifact_lifecycle.availability` still read `present` or `missing`, preserving deletion outcomes
+  so backup verification classifies those artifacts as `tombstoned-deleted`.
 - At activation, before any sweep, the host calls `reconcileAfterRestart` with its authority. It
-  resumes every unfinished deletion and settles every unfinished legacy quarantine. A deletion whose
-  lease another holder still owns is left to that holder and reported as deferred.
+  resumes every unfinished deletion, repairs any split deletion accounting, and settles every
+  unfinished legacy quarantine. A deletion whose lease another holder still owns is left to that
+  holder and reported as deferred.
 - Only one sweep holds the workspace lease at a time. A second sweep is refused
   `sweep-in-progress`.
 - Cancellation is observed before the next target, within one second.
@@ -165,8 +192,13 @@ Nothing is classified as disposable, and no published pointer is ever synthesize
 
 - **Default: preserved in place.** No file moves unless the operator asks.
 - **Quarantine on request.** A quarantine move is previewed and gated like a deletion. The bytes are
-  copied under `.schegent/quarantine/catalog/`, the copy's digest is verified, and only then is the
-  source removed. An existing destination is never overwritten.
+  copied under `.schegent/quarantine/catalog/`, the copy's digest is verified, and immediately
+  before unlinking the source, quarantine rechecks per-source standing against live/frozen
+  consumers, the legacy `manifest.json`, and authoritative F04 SQLite catalog standing
+  (`definition_versions.status = 'published'`, `catalog_heads`, `frozen_closures`, and
+  `frozen_closure_members`). Any added reference or standing lookup failure fails closed: the
+  staging copy is cleaned up and the source stays intact at its original location. An existing
+  destination is never overwritten.
 - **Interruption.** A move interrupted after the copy leaves both files and the operation
   unfinished. Reconciliation inspects both sides, moves nothing, and records the target `ambiguous`.
   Until then, a new quarantine or a purge of that residue is refused `ownership-unresolved`.
@@ -224,6 +256,11 @@ is denied.
   reveal whether the artifact exists.
 - A materialized copy is written only under the workspace root, is never overwritten, and expires:
   after 1 hour by default, and after 1 day at most.
+- Primary locator selection (`locatorOf`) always ranks the canonical original (`<id>#0`) and any
+  other non-copy original strictly ahead of materialized copies (`#copy:` or
+  `materialized-copy`-pinned), with earliest `verified_at_ms` tie-breaking, so qualification,
+  reconciliation, reads, copies, and deletion continue targeting the original across backup/restore,
+  relocation, and location-ID renumbering.
 
 ## Sweeper census
 

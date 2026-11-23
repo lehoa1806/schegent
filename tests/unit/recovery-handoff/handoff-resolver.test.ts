@@ -288,4 +288,198 @@ describe('FR-R6-F08 T012 — resolveRevision', () => {
     const result = await resolveRevision(throwing, HANDOFF_ID, 1);
     expect(result.references.at(0)?.resolution).toBe('unreadable');
   });
+
+  it('probes existence of no-digest present artifacts via probe.observe so deleted bytes resolve missing (16-12)', async () => {
+    const h = harness();
+    const reg = h.lifecycle.registerArtifact(
+      checkpointArtifact('art-growing', { immutability: 'growing', digest: undefined, generation: 0, extentBytes: 0 })
+    );
+    if (!reg.ok) throw new Error(reg.refusal.code);
+    seedRevision(h, [{ artifactId: 'art-growing', required: true }]);
+
+    let exists = true;
+    const observingDeps: ResolverDeps = {
+      ...deps(h),
+      probe: {
+        ...deps(h).probe,
+        observe: () => Promise.resolve({ exists, sizeBytes: exists ? 42 : 0, producerIdentity: null, generation: null })
+      }
+    };
+
+    const first = await resolveRevision(observingDeps, HANDOFF_ID, 1);
+    expect(first.status).toBe('usable');
+    expect(first.references.at(0)?.resolution).toBe('available');
+
+    // Bytes disappear without metadata update; cached last_resolution said 'available', availability still 'present'.
+    exists = false;
+    const second = await resolveRevision(observingDeps, HANDOFF_ID, 1);
+    expect(second.status).toBe('blocked');
+    expect(second.references.at(0)?.resolution).toBe('missing');
+  });
+
+  it('re-probes digested present artifacts and manifest.envelope bytes even after prior available resolution (16-12)', async () => {
+    const h = harness();
+    register(h, 'art-1');
+    register(h, 'env-1');
+    h.store.insertHandoff({
+      handoffId: HANDOFF_ID,
+      workspaceId: 'ws-1',
+      rootExecutionId: 'root-1',
+      invocationId: 'inv-1',
+      sourceAttemptId: 'att-1',
+      legacyProvenance: null,
+      nowMs: NOW
+    });
+    h.store.insertRevision({
+      handoffId: HANDOFF_ID,
+      revisionNo: 1,
+      cutoffKey: 'c'.repeat(64),
+      executionRevision: 'exec-1',
+      usageRevision: 0,
+      factCutoffMs: NOW,
+      manifestVersion: 1,
+      manifestJson: JSON.stringify({ version: 1, envelope: { artifactId: 'env-1', digest: RECORDED } }),
+      manifestDigest: 'd'.repeat(64),
+      certainty: 'uncertain',
+      coverage: 'partial'
+    });
+    h.store.insertReference({
+      handoffId: HANDOFF_ID,
+      revisionNo: 1,
+      artifactId: 'art-1',
+      role: 'validated',
+      required: true,
+      expectedDigest: RECORDED
+    });
+
+    let envExists = true;
+    const observingDeps: ResolverDeps = {
+      ...deps(h),
+      probe: {
+        digestSha256: deps(h).probe.digestSha256,
+        observe: (locator) => {
+          const id = artifactIdOf(locator);
+          const exists = id === 'env-1' ? envExists : true;
+          return Promise.resolve({ exists, sizeBytes: exists ? 10 : 0, producerIdentity: null, generation: null });
+        }
+      }
+    };
+
+    const initial = await resolveRevision(observingDeps, HANDOFF_ID, 1);
+    expect(initial.status).toBe('usable');
+    expect(initial.envelopeResolution).toBe('available');
+
+    // Envelope bytes mutate on disk while F05 availability still says 'present'.
+    h.digests.set('env-1', OTHER);
+    const mutatedEnv = await resolveRevision(observingDeps, HANDOFF_ID, 1);
+    expect(mutatedEnv.status).toBe('blocked');
+    expect(mutatedEnv.envelopeResolution).toBe('changed');
+
+    // Envelope bytes deleted on disk.
+    envExists = false;
+    const deletedEnv = await resolveRevision(observingDeps, HANDOFF_ID, 1);
+    expect(deletedEnv.status).toBe('blocked');
+    expect(deletedEnv.envelopeResolution).toBe('missing');
+  });
+
+  it('blocks with unreadable when envelopeLocation is supplied without an envelope port (CR-B6)', async () => {
+    const h = harness();
+    register(h, 'art-1');
+    h.store.insertHandoff({
+      handoffId: HANDOFF_ID,
+      workspaceId: 'ws-1',
+      rootExecutionId: 'root-1',
+      invocationId: 'inv-1',
+      sourceAttemptId: 'att-1',
+      legacyProvenance: null,
+      nowMs: NOW
+    });
+    h.store.insertRevision({
+      handoffId: HANDOFF_ID,
+      revisionNo: 1,
+      cutoffKey: 'c'.repeat(64),
+      executionRevision: 'exec-1',
+      usageRevision: 0,
+      factCutoffMs: NOW,
+      manifestVersion: 1,
+      manifestJson: JSON.stringify({ version: 1, envelope: { artifactId: 'hand-1', digest: RECORDED } }),
+      manifestDigest: 'd'.repeat(64),
+      certainty: 'uncertain',
+      coverage: 'partial'
+    });
+    h.store.insertReference({
+      handoffId: HANDOFF_ID,
+      revisionNo: 1,
+      artifactId: 'art-1',
+      role: 'validated',
+      required: true,
+      expectedDigest: RECORDED
+    });
+
+    const result = await resolveRevision(deps(h), HANDOFF_ID, 1, {
+      envelopeLocation: { runId: 'root-1', handoverId: 'hand-1' }
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.envelopeResolution).toBe('unreadable');
+  });
+
+  it('blocks with missing when manifest.envelope is absent on disk without envelopeLocation or under requireEnvelope (CR-B6/SR-B1)', async () => {
+    const h = harness();
+    register(h, 'art-1');
+    h.store.insertHandoff({
+      handoffId: HANDOFF_ID,
+      workspaceId: 'ws-1',
+      rootExecutionId: 'root-1',
+      invocationId: 'inv-1',
+      sourceAttemptId: 'att-1',
+      legacyProvenance: null,
+      nowMs: NOW
+    });
+    h.store.insertRevision({
+      handoffId: HANDOFF_ID,
+      revisionNo: 1,
+      cutoffKey: 'c'.repeat(64),
+      executionRevision: 'exec-1',
+      usageRevision: 0,
+      factCutoffMs: NOW,
+      manifestVersion: 1,
+      manifestJson: JSON.stringify({ version: 1, envelope: { artifactId: 'hand-deleted', digest: RECORDED } }),
+      manifestDigest: 'd'.repeat(64),
+      certainty: 'uncertain',
+      coverage: 'partial'
+    });
+    h.store.insertReference({
+      handoffId: HANDOFF_ID,
+      revisionNo: 1,
+      artifactId: 'art-1',
+      role: 'validated',
+      required: true,
+      expectedDigest: RECORDED
+    });
+
+    // 1. Envelope port wired, file deleted on disk (readRecoveryEnvelope -> null), no envelopeLocation.
+    const withPort: ResolverDeps = {
+      ...deps(h),
+      envelopes: { readRecoveryEnvelope: () => Promise.resolve(null) }
+    };
+    const deletedOnDisk = await resolveRevision(withPort, HANDOFF_ID, 1);
+    expect(deletedOnDisk.status).toBe('blocked');
+    expect(deletedOnDisk.envelopeResolution).toBe('missing');
+
+    // 2. Envelope port absent, F05 returns not-found, requireEnvelope: true (verifyForUse path).
+    const requiredMissing = await resolveRevision(deps(h), HANDOFF_ID, 1, { requireEnvelope: true });
+    expect(requiredMissing.status).toBe('blocked');
+    expect(requiredMissing.envelopeResolution).toBe('missing');
+
+    // 3. Envelope port wired, handoff lookup returns undefined -> fails closed as missing.
+    const storeWithoutHandoff = Object.create(h.store) as SqliteHandoffStore;
+    storeWithoutHandoff.getHandoff = () => undefined;
+    const missingHandoff = await resolveRevision(
+      { ...withPort, store: storeWithoutHandoff },
+      HANDOFF_ID,
+      1
+    );
+    expect(missingHandoff.status).toBe('blocked');
+    expect(missingHandoff.envelopeResolution).toBe('missing');
+  });
 });

@@ -185,6 +185,12 @@ export interface AccountingBounds {
   readonly maxObservationBytes: number;
   readonly maxObservationFields: number;
   readonly maxDimensionBytes: number;
+  /** Max distinct units accepted per `(attempt_id, measure)` at ingest (FR-R7-16 / 16-05). */
+  readonly maxUnitsPerAttemptMeasure: number;
+  /** Max distinct units serialized per `(row, measure)` in query responses (FR-R7-16 / 16-05). */
+  readonly maxUnitsPerRowMeasure: number;
+  /** Hard ceiling on future `eventUtc` skew past ingest time; excess is refused (FR-R7-16 / 16-05). */
+  readonly maxFutureClockSkewMs: number;
 }
 
 export const DEFAULT_ACCOUNTING_BOUNDS: AccountingBounds = Object.freeze({
@@ -200,7 +206,10 @@ export const DEFAULT_ACCOUNTING_BOUNDS: AccountingBounds = Object.freeze({
   horizonDays: 90,
   maxObservationBytes: 16_384,
   maxObservationFields: 32,
-  maxDimensionBytes: 256
+  maxDimensionBytes: 256,
+  maxUnitsPerAttemptMeasure: 16,
+  maxUnitsPerRowMeasure: 32,
+  maxFutureClockSkewMs: 86_400_000
 });
 
 export const ACCOUNTING_POLICY_VERSION = 1 as const;

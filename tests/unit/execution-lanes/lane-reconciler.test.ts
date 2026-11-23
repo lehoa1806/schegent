@@ -445,4 +445,173 @@ describe('FR-R6-F10 US5: other interruptions', () => {
     expect(f.h.integrations.getRequest(HARNESS_WS, f.requestId)?.state).toBe('landing');
     expect(f.h.integrations.listJournal(f.requestId).map((entry) => entry.kind)).toEqual(['landing-intent']);
   });
+
+  it('distinguishes containment-refused from root-missing and deduplicates consecutive reconcile keep rows (16-19)', async () => {
+    const h = createLaneHarness({ label: 'reconcile-containment' });
+    const escaped = await h.provision();
+    const deleted = await h.provision();
+    const escapedRoot = await h.laneRoot(escaped.laneId);
+    const deletedRoot = await h.laneRoot(deleted.laneId);
+    const outside = path.join(h.fixture.sibling('outside'), 'escaped-target');
+    fs.renameSync(escapedRoot, outside);
+    fs.symlinkSync(outside, escapedRoot);
+    fs.rmSync(deletedRoot, { recursive: true, force: true });
+
+    const first = await reconcileAsNewHost(h);
+    expect(first.lanes).toEqual([
+      { laneId: escaped.laneId, from: 'active', to: 'active', observation: 'containment-refused' },
+      { laneId: deleted.laneId, from: 'active', to: 'active', observation: 'root-missing' }
+    ]);
+
+    // Repeating reconcile 3 more times keeps reporting the observations without appending duplicate rows.
+    const host = h.reopen();
+    for (let i = 0; i < 3; i += 1) {
+      const again = await host.reconcile();
+      expect(again.ok).toBe(true);
+    }
+    const escapedReconciles = h.lanes.listOperations(escaped.laneId).filter((op) => op.kind === 'reconcile');
+    const deletedReconciles = h.lanes.listOperations(deleted.laneId).filter((op) => op.kind === 'reconcile');
+    expect(escapedReconciles.map((op) => `${op.status}:${op.reason}`)).toEqual(['kept:containment-refused']);
+    expect(deletedReconciles.map((op) => `${op.status}:${op.reason}`)).toEqual(['kept:root-missing']);
+  });
+
+  it('classifies a landing request whose candidate commit is missing/GCd as uncertain instead of wedging, while keeping git-error retryable (16-23)', async () => {
+    const f = await interrupted(RELEASE, 'before');
+    const other = f.h.fixture.git(['commit-tree', `${f.expected}^{tree}`, '-m', 'diverged-other']).trim();
+    f.h.fixture.git(['update-ref', `refs/heads/${RELEASE}`, other]);
+
+    // 1. Transient timeout (git-error) leaves request in `landing` so a subsequent reconcile can still classify it.
+    const timeoutReconcile = await f.h
+      .reopen({
+        wrapGit: (real) => ({
+          run: (args, opts) =>
+            args.at(0) === 'merge-base'
+              ? Promise.resolve({ ok: false, exitCode: null, code: 'timeout' })
+              : real.run(args, opts)
+        })
+      })
+      .reconcile();
+    expect(timeoutReconcile.ok && timeoutReconcile.value.requests).toEqual([]);
+    expect(f.h.integrations.getRequest(HARNESS_WS, f.requestId)?.state).toBe('landing');
+
+    // 2. Missing/GC'd commit (`merge-base` exit 128 + `rev-parse` exit 1) settles as `uncertain` instead of wedging!
+    const missingCommitReconcile = await f.h
+      .reopen({
+        wrapGit: (real) => ({
+          run: (args, opts) => {
+            if (args.at(0) === 'merge-base') {
+              return Promise.resolve({ ok: false, exitCode: 128, code: 'exit' });
+            }
+            if (args.at(0) === 'rev-parse' && (args.at(3) ?? '').startsWith(f.candidate)) {
+              return Promise.resolve({ ok: false, exitCode: 1, code: 'exit' });
+            }
+            return real.run(args, opts);
+          }
+        })
+      })
+      .reconcile();
+    expect(missingCommitReconcile.ok && missingCommitReconcile.value.requests).toEqual([
+      {
+        requestId: f.requestId,
+        from: 'landing',
+        to: 'uncertain',
+        reason: null,
+        commits: { expected: f.expected, candidate: f.candidate, observed: other }
+      }
+    ]);
+    expect(f.h.integrations.getRequest(HARNESS_WS, f.requestId)?.state).toBe('uncertain');
+  });
+
+  it('preserves baseRef and closes interrupted cleanup operations cleanly when a lane is pinned or holds an open request (CR-B7/SR-B10)', async () => {
+    const h = createLaneHarness({ label: 'reconcile-cleanup-guards', overrides: { liveLaneCap: 4 } });
+
+    // Case 1: Pinned cleanup-eligible lane with pending cleanup op and already-removed worktree.
+    const pinnedLane = await h.provision();
+    const pinnedRoot = await h.laneRoot(pinnedLane.laneId);
+    expect(h.service.completeLane({ laneId: pinnedLane.laneId }).ok).toBe(true);
+    expect(h.service.releaseLane({ laneId: pinnedLane.laneId, disposition: 'eligible' }).ok).toBe(true);
+    h.fixture.git(['worktree', 'remove', pinnedRoot]);
+    const pinnedOpId = '1'.repeat(32);
+    h.lanes.beginOperation({
+      operationId: pinnedOpId,
+      laneId: pinnedLane.laneId,
+      workspaceId: HARNESS_WS,
+      kind: 'cleanup',
+      generation: h.service.generation,
+      now: new Date(Date.UTC(2026, 10, 10, 12, 0, 0)).toISOString()
+    });
+    expect(h.service.setLanePinned({ laneId: pinnedLane.laneId, pinned: true }).ok).toBe(true);
+
+    // Case 2: Cleanup-eligible lane with an open integration request, pending cleanup op, and removed worktree.
+    const openReqLane = await h.provision();
+    const openReqRoot = await h.laneRoot(openReqLane.laneId);
+    fs.writeFileSync(path.join(openReqRoot, 'src', 'a.txt'), 'open-req-edit\n');
+    expect((await h.service.freezeCandidate({ laneId: openReqLane.laneId })).ok).toBe(true);
+    expect(
+      (await h.service.requestIntegration({ laneId: openReqLane.laneId, targetBranch: 'main', profile: PROFILE })).ok
+    ).toBe(true);
+    expect(h.service.completeLane({ laneId: openReqLane.laneId }).ok).toBe(true);
+    expect(h.service.releaseLane({ laneId: openReqLane.laneId, disposition: 'eligible' }).ok).toBe(true);
+    h.fixture.git(['worktree', 'remove', openReqRoot]);
+    const openReqOpId = '2'.repeat(32);
+    h.lanes.beginOperation({
+      operationId: openReqOpId,
+      laneId: openReqLane.laneId,
+      workspaceId: HARNESS_WS,
+      kind: 'cleanup',
+      generation: h.service.generation,
+      now: new Date(Date.UTC(2026, 10, 10, 12, 0, 1)).toISOString()
+    });
+
+    // Case 3: Concurrent pin right before `update-ref -d` during reconcile preserves baseRef & closes op cleanly.
+    const racingLane = await h.provision();
+    const racingRoot = await h.laneRoot(racingLane.laneId);
+    expect(h.service.completeLane({ laneId: racingLane.laneId }).ok).toBe(true);
+    expect(h.service.releaseLane({ laneId: racingLane.laneId, disposition: 'eligible' }).ok).toBe(true);
+    h.fixture.git(['worktree', 'remove', racingRoot]);
+    const racingOpId = '3'.repeat(32);
+    h.lanes.beginOperation({
+      operationId: racingOpId,
+      laneId: racingLane.laneId,
+      workspaceId: HARNESS_WS,
+      kind: 'cleanup',
+      generation: h.service.generation,
+      now: new Date(Date.UTC(2026, 10, 10, 12, 0, 2)).toISOString()
+    });
+
+    let pinRacingOnce = true;
+    const host2 = h.reopen({
+      wrapGit: (real) => ({
+        run: async (args, opts) => {
+          const res = await real.run(args, opts);
+          if (
+            pinRacingOnce &&
+            args.at(0) === 'rev-parse' &&
+            args.some((arg) => arg.startsWith(`refs/schegent/lanes/${racingLane.laneId}/base`))
+          ) {
+            pinRacingOnce = false;
+            h.lanes.setPinned(HARNESS_WS, racingLane.laneId, true, new Date(Date.UTC(2026, 10, 10, 12, 0, 3)).toISOString());
+          }
+          return res;
+        }
+      })
+    });
+
+    const rec = await host2.reconcile();
+    expect(pinRacingOnce).toBe(false);
+    expect(rec.ok).toBe(true);
+
+    // None of the three lanes transitioned to `removed`, all three kept their `baseRef`, and ZERO pending ops remain!
+    expect(h.lanes.getLane(HARNESS_WS, pinnedLane.laneId)?.state).toBe('cleanup-eligible');
+    expect(h.lanes.getLane(HARNESS_WS, openReqLane.laneId)?.state).toBe('cleanup-eligible');
+    expect(h.lanes.getLane(HARNESS_WS, racingLane.laneId)?.state).toBe('cleanup-eligible');
+    expect(h.fixture.git(['for-each-ref', '--format=%(refname)', pinnedLane.baseRef]).trim()).toBe(pinnedLane.baseRef);
+    expect(h.fixture.git(['for-each-ref', '--format=%(refname)', openReqLane.baseRef]).trim()).toBe(openReqLane.baseRef);
+    expect(h.fixture.git(['for-each-ref', '--format=%(refname)', racingLane.baseRef]).trim()).toBe(racingLane.baseRef);
+    expect(h.lanes.listPendingOperations(HARNESS_WS)).toEqual([]);
+
+    expect(h.lanes.getOperation(pinnedOpId)).toMatchObject({ status: 'kept', reason: 'lane-pinned' });
+    expect(h.lanes.getOperation(openReqOpId)).toMatchObject({ status: 'kept', reason: 'integration-request-open' });
+    expect(h.lanes.getOperation(racingOpId)).toMatchObject({ status: 'kept', reason: 'lane-pinned' });
+  });
 });

@@ -23,7 +23,13 @@ import {
   F07_LIVE_LOG_MIGRATION_VERSION,
   F07_LIVE_LOG_TABLE_NAMES
 } from '../../../../src/services/phase-log/live-log-index-schema';
-import { createLiveLogIndex, type LiveLogIndex } from '../../../../src/services/phase-log/live-log-index';
+import {
+  createLiveLogIndex,
+  LIVE_LOG_ARTIFACT_REF_MAX_LENGTH,
+  LIVE_LOG_REPLAY_MAX_ROWS,
+  type LiveLogIndex
+} from '../../../../src/services/phase-log/live-log-index';
+import { parseContainedArtifactRef } from '../../../../src/services/phase-log/live-log-replay-reader';
 import {
   BUILTIN_SCHEMA_MIGRATIONS,
   NodeSqliteConnection,
@@ -310,5 +316,200 @@ describe('FR-R6-F07 T039 — the index never promises bytes it has not verified 
     withIndex((index) => {
       expect(index.restartReplay({ streamKey: 'never-opened' })).toBeNull();
     });
+  });
+
+  it('returns out-of-order inserted segments in oldest-first segmentSeq order', () => {
+    withIndex((index) => {
+      index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+      for (const seq of [5, 1, 3, 0, 2, 4]) {
+        expect(index.appendSegment(segment(seq, seq * 10, (seq + 1) * 10))).toEqual({ outcome: 'appended' });
+      }
+      for (const seq of [4, 0, 2]) {
+        expect(
+          index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: seq, verifiedSize: 100 })
+        ).toEqual({ outcome: 'finalized' });
+      }
+      const replay = index.restartReplay({ streamKey: STREAM });
+      expect(replay?.readable.map((s) => s.segmentSeq)).toEqual([0, 2, 4]);
+      expect(replay?.unverified.map((s) => s.segmentSeq)).toEqual([1, 3, 5]);
+      expect(replay?.truncated).toBe(false);
+    });
+  });
+
+  it('enforces exact 1024 and 1025 truncation boundaries for segments, keeping the oldest 1024', () => {
+    withIndex((index) => {
+      index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+      for (let seq = 0; seq < LIVE_LOG_REPLAY_MAX_ROWS; seq += 1) {
+        expect(index.appendSegment(segment(seq, seq * 10, (seq + 1) * 10))).toEqual({ outcome: 'appended' });
+        expect(
+          index.finalizeSegment({
+            streamKey: STREAM,
+            generation: 'gen-1',
+            segmentSeq: seq,
+            verifiedSize: (seq + 1) * 10
+          })
+        ).toEqual({ outcome: 'finalized' });
+      }
+
+      const atCap = index.restartReplay({ streamKey: STREAM });
+      expect(atCap?.readable).toHaveLength(LIVE_LOG_REPLAY_MAX_ROWS);
+      expect(atCap?.truncated).toBe(false);
+      expect(atCap?.readable.at(0)?.segmentSeq).toBe(0);
+      expect(atCap?.readable.at(-1)?.segmentSeq).toBe(LIVE_LOG_REPLAY_MAX_ROWS - 1);
+
+      const extraSeq = LIVE_LOG_REPLAY_MAX_ROWS;
+      expect(index.appendSegment(segment(extraSeq, extraSeq * 10, (extraSeq + 1) * 10))).toEqual({
+        outcome: 'appended'
+      });
+      expect(
+        index.finalizeSegment({
+          streamKey: STREAM,
+          generation: 'gen-1',
+          segmentSeq: extraSeq,
+          verifiedSize: (extraSeq + 1) * 10
+        })
+      ).toEqual({ outcome: 'finalized' });
+
+      const overCap = index.restartReplay({ streamKey: STREAM });
+      expect(overCap?.readable).toHaveLength(LIVE_LOG_REPLAY_MAX_ROWS);
+      expect(overCap?.truncated).toBe(true);
+      expect(overCap?.readable.at(0)?.segmentSeq).toBe(0);
+      expect(overCap?.readable.at(-1)?.segmentSeq).toBe(LIVE_LOG_REPLAY_MAX_ROWS - 1);
+    });
+  });
+
+  it('enforces exact 1024 and 1025 truncation boundaries for coverage rows, keeping the oldest 1024', () => {
+    withIndex((index) => {
+      index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+      for (let i = 0; i < LIVE_LOG_REPLAY_MAX_ROWS; i += 1) {
+        expect(
+          index.recordCoverage({
+            streamKey: STREAM,
+            generation: 'gen-1',
+            reason: 'range-skipped',
+            fromOffset: i * 10,
+            toOffset: (i + 1) * 10,
+            count: 1,
+            nowMs: NOW + i
+          })
+        ).toEqual({ outcome: 'recorded' });
+      }
+
+      const atCap = index.restartReplay({ streamKey: STREAM });
+      expect(atCap?.unavailable).toHaveLength(LIVE_LOG_REPLAY_MAX_ROWS);
+      expect(atCap?.truncated).toBe(false);
+      expect(atCap?.unavailable.at(0)?.fromOffset).toBe(0);
+      expect(atCap?.unavailable.at(-1)?.fromOffset).toBe((LIVE_LOG_REPLAY_MAX_ROWS - 1) * 10);
+
+      expect(
+        index.recordCoverage({
+          streamKey: STREAM,
+          generation: 'gen-1',
+          reason: 'range-skipped',
+          fromOffset: LIVE_LOG_REPLAY_MAX_ROWS * 10,
+          toOffset: (LIVE_LOG_REPLAY_MAX_ROWS + 1) * 10,
+          count: 1,
+          nowMs: NOW + LIVE_LOG_REPLAY_MAX_ROWS
+        })
+      ).toEqual({ outcome: 'recorded' });
+
+      const overCap = index.restartReplay({ streamKey: STREAM });
+      expect(overCap?.unavailable).toHaveLength(LIVE_LOG_REPLAY_MAX_ROWS);
+      expect(overCap?.truncated).toBe(true);
+      expect(overCap?.unavailable.at(0)?.fromOffset).toBe(0);
+      expect(overCap?.unavailable.at(-1)?.fromOffset).toBe((LIVE_LOG_REPLAY_MAX_ROWS - 1) * 10);
+    });
+  });
+
+  it('transitions captured gen-1 to disabled gen-2 and returns a single capture-disabled range', () => {
+    withIndex((index) => {
+      index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+      index.appendSegment(segment(0, 0, 100, 'gen-1'));
+      index.finalizeSegment({ streamKey: STREAM, generation: 'gen-1', segmentSeq: 0, verifiedSize: 100 });
+      index.recordCoverage({
+        streamKey: STREAM,
+        generation: 'gen-1',
+        reason: 'oversized-record',
+        fromOffset: 100,
+        toOffset: 200,
+        count: 1,
+        nowMs: NOW + 1
+      });
+
+      expect(
+        index.openStream({ streamKey: STREAM, generation: 'gen-2', captureMode: 'disabled', nowMs: NOW + 2 })
+      ).toEqual({ outcome: 'replaced' });
+
+      const replay = index.restartReplay({ streamKey: STREAM });
+      expect(replay).toEqual({
+        generation: 'gen-2',
+        captureMode: 'disabled',
+        readable: [],
+        unverified: [],
+        unavailable: [{ generation: 'gen-2', reason: 'capture-disabled', fromOffset: 0, toOffset: null, count: 1 }],
+        truncated: false
+      });
+    });
+  });
+
+  it('accepts a 1024-char artifactRef and refuses a 1025-char artifactRef', () => {
+    const dir = 'a'.repeat(63);
+    const segments1024 = Array.from({ length: 15 }, () => dir).join('/') + '/' + 'b'.repeat(64);
+    expect(segments1024.length).toBe(LIVE_LOG_ARTIFACT_REF_MAX_LENGTH);
+    const segments1025 = `${segments1024}x`;
+    expect(segments1025.length).toBe(LIVE_LOG_ARTIFACT_REF_MAX_LENGTH + 1);
+
+    expect(parseContainedArtifactRef(segments1024)).toHaveLength(16);
+    expect(parseContainedArtifactRef(segments1025)).toBeNull();
+
+    withIndex((index) => {
+      index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
+      expect(index.appendSegment({ ...segment(0, 0, 10), artifactRef: segments1024 })).toEqual({
+        outcome: 'appended'
+      });
+      expect(index.appendSegment({ ...segment(1, 10, 20), artifactRef: segments1025 })).toEqual({
+        outcome: 'refused',
+        reason: 'invalid'
+      });
+    });
+  });
+});
+
+describe('FR-R7-16 (16-09) — parseContainedArtifactRef lexical containment grammar', () => {
+  it('accepts valid relative POSIX artifact refs including double-dot-prefixed directory names', () => {
+    expect(parseContainedArtifactRef('implement-1.jsonl')).toEqual(['implement-1.jsonl']);
+    expect(parseContainedArtifactRef('phase-logs/run-1/implement-1.jsonl')).toEqual([
+      'phase-logs',
+      'run-1',
+      'implement-1.jsonl'
+    ]);
+    expect(parseContainedArtifactRef('logs/..scratch/segment.jsonl')).toEqual(['logs', '..scratch', 'segment.jsonl']);
+  });
+
+  it.each([
+    ['empty string', ''],
+    ['over 1024 chars', 'a'.repeat(LIVE_LOG_ARTIFACT_REF_MAX_LENGTH + 1)],
+    ['parent traversal', '../secret.jsonl'],
+    ['nested parent traversal', 'logs/../secret.jsonl'],
+    ['bare double dot', '..'],
+    ['bare single dot', '.'],
+    ['leading dot segment', './logs/a.jsonl'],
+    ['interior dot segment', 'logs/./a.jsonl'],
+    ['empty double slash segment', 'logs//a.jsonl'],
+    ['trailing slash', 'logs/a/'],
+    ['POSIX absolute', '/etc/passwd'],
+    ['UNC forward slash', '//server/share/a.jsonl'],
+    ['Windows drive relative', 'C:foo'],
+    ['Windows drive absolute', 'C:/foo/bar.jsonl'],
+    ['Windows drive in segment', 'logs/D:bar.jsonl'],
+    ['backslash separator', 'logs\\a.jsonl'],
+    ['UNC backslash', '\\\\server\\share\\a.jsonl'],
+    ['embedded NUL', 'logs/a\0b.jsonl'],
+    ['embedded newline', 'logs/a\nb.jsonl'],
+    ['embedded CR', 'logs/a\rb.jsonl'],
+    ['embedded unit separator', 'logs/a\x1fb.jsonl'],
+    ['embedded DEL', 'logs/a\x7fb.jsonl']
+  ])('refuses %s lexically', (_label, ref) => {
+    expect(parseContainedArtifactRef(ref)).toBeNull();
   });
 });

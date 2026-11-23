@@ -3,8 +3,13 @@
  * bounds, disclosure and record views of execution lanes and reviewed integration.
  *
  * A lane is a host-provisioned Git working tree under the host storage directory. It is a
- * working-tree boundary, not a permission boundary (`LANE_DISCLOSURE`). Nothing dispatches a Run
- * into a lane yet: this module only describes the engine's records and results.
+ * working-tree boundary, not a permission boundary (`LANE_DISCLOSURE`). Opt-in Run dispatch into
+ * lanes is gated by `schegent.lanes.enabled` (default `false`) through `RunLaneCoordinator`,
+ * while approval and landing remain host-only operator actions; receipt fields are freshness
+ * bindings visible on `IntegrationRequestView`, not an authentication secret.
+ *
+ * List filter semantics: omitting `states` (`undefined`) returns all states; passing an explicit
+ * empty array (`states: []`) returns an empty page (`{ items: [], nextCursor: null }`).
  *
  * Field rules quoted from data-model.md "Shared column rules":
  * - random identifiers (`laneId`, `requestId`, ...): 32 lowercase hex;
@@ -93,7 +98,11 @@ export const LANE_OBSERVATIONS = Object.freeze([
   'lane-live',
   'request-open',
   'not-contained',
-  'registry-mismatch'
+  'registry-mismatch',
+  'containment-refused',
+  'worktree-locked',
+  'status-buffer-exceeded',
+  'status-timeout'
 ] as const);
 export type LaneObservation = (typeof LANE_OBSERVATIONS)[number];
 
@@ -146,12 +155,13 @@ export const VERIFICATION_LIMITS = Object.freeze({
   maxProfileJsonBytes: 8_192
 });
 
-/** FR-007: carried on every lane read. A unit test fixes the text. */
+/** FR-007 (reconciled with GC-11): carried on every lane read. A unit test fixes the text. */
 export const LANE_DISCLOSURE =
   'A lane is a separate Git working tree. It is a working-tree boundary, not a permission boundary: ' +
   "the repository's hooks, configuration, credentials and object store are shared with it, and a " +
-  "process in a lane can reach anything the operator's checkout can. Lane operations may run the " +
-  "repository's hooks, and a fast-forward landing in a checked-out branch may run `post-merge`.";
+  "process in a lane can reach anything the operator's checkout can. Host Git operations disable " +
+  'repository hooks and fsmonitor (`core.hooksPath=/dev/null`, `core.fsmonitor=false`), while ' +
+  'configured clean/smudge filters and any Git command run by a process in the lane still execute as the operator.';
 
 export interface LaneRefusalCommits {
   readonly expected: string;
@@ -234,6 +244,11 @@ export interface IntegrationRequestView {
   readonly profile: { readonly profileId: string; readonly revision: number; readonly digest: string };
   readonly state: IntegrationState;
   readonly reason: string | null;
+  /**
+   * Non-`review-stale` blocked reasons superseded by a later candidate refreeze, ordered oldest
+   * to newest from `lane_integration_journal`; empty when none.
+   */
+  readonly priorBlockedReasons: readonly string[];
   readonly verificationAttempt: number;
   readonly receipt: ReceiptView | null;
   readonly createdAt: string;

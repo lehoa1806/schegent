@@ -14,6 +14,7 @@
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 
+import { loadManifest } from '../../catalog/catalog-manifest';
 import { versionSegments } from '../../catalog/catalog-paths';
 import type {
   LifecycleResult,
@@ -24,8 +25,10 @@ import type {
 import type {
   LegacyCatalogClassification,
   LegacyCatalogResidue,
+  LegacyCatalogVersionRef,
   LegacyQuarantineRequest
 } from '../../contracts/artifact-lifecycle/legacy-preservation-types';
+import { queryLegacySourceStanding } from '../sqlite-store/catalog-config-store';
 import { classifyLegacyCatalogResidue, digestOfBytes, recordSegments } from './legacy-classification';
 import { auditPreservation, keyOfSegments, segmentsOfKey, type LegacyContext } from './legacy-preservation-context';
 import { IN_FLIGHT_PRESERVATION_STATES, type PreservationTargetRow } from './legacy-preservation-store';
@@ -84,26 +87,89 @@ async function afterBlockedWrite(ctx: LegacyContext, destination: readonly strin
   return existing.outcome === 'absent' ? 'refused' : 'ambiguous';
 }
 
+/**
+ * Removal-boundary ownership recheck (`16-02`, `FR-002`): immediately before
+ * unlinking a legacy source file, rechecks live/frozen consumers, the legacy
+ * `manifest.json`, and authoritative F04 SQLite catalog standing. Fails closed
+ * (returns `true`) on any lookup failure or unreadable manifest.
+ */
+async function isSourceProtectedAtRemovalBoundary(
+  ctx: LegacyContext,
+  residue: LegacyCatalogResidue
+): Promise<boolean> {
+  const ref: LegacyCatalogVersionRef = {
+    kind: residue.kind,
+    id: residue.id,
+    versionId: residue.versionId
+  };
+  try {
+    if (ctx.deps.consumers.consumersOf(ref).length > 0) return true;
+    const loaded = await loadManifest(ctx.deps.catalogRoot.catalog);
+    if (loaded.outcome === 'faulted') return true;
+    if (loaded.outcome === 'read') {
+      const entry = loaded.manifest.entries.find(
+        (candidate) => candidate.kind === ref.kind && candidate.id === ref.id
+      );
+      if (
+        entry !== undefined &&
+        (entry.activeVersionId === ref.versionId ||
+          entry.draftVersionId === ref.versionId ||
+          entry.versions.some((version) => version.versionId === ref.versionId))
+      ) {
+        return true;
+      }
+    }
+    const standing =
+      ctx.deps.catalogStanding !== undefined
+        ? ctx.deps.catalogStanding(ref)
+        : queryLegacySourceStanding(ctx.deps.conn, ref);
+    return standing.referenced;
+  } catch {
+    return true;
+  }
+}
+
+interface QuarantineStep {
+  readonly outcome: PreservationTargetOutcome;
+  readonly outcomeCommitted: boolean;
+}
+
+const unsettledStep = (outcome: PreservationTargetOutcome): QuarantineStep => ({
+  outcome,
+  outcomeCommitted: false
+});
+
 async function quarantineOne(
   ctx: LegacyContext,
   operationId: string,
   ordinal: number,
   residue: LegacyCatalogResidue
-): Promise<PreservationTargetOutcome> {
+): Promise<QuarantineStep> {
   const source = recordSegments(ctx.deps.catalogRoot, residue);
   const destination = [...ctx.quarantineSegments, operationId, ...versionSegments(residue.kind, residue.id, residue.versionId)];
   ctx.rows.setState(operationId, 'copying');
   const read = await ctx.deps.files.readBytes(source);
-  if (read.outcome !== 'read' || digestOfBytes(read.bytes) !== residue.digest) return 'refused';
+  if (read.outcome !== 'read' || digestOfBytes(read.bytes) !== residue.digest) return unsettledStep('refused');
   const written = await ctx.deps.files.writeExclusive(destination, read.bytes);
-  if (written === 'refused') return 'refused';
-  if (written !== 'written') return afterBlockedWrite(ctx, destination);
+  if (written === 'refused') return unsettledStep('refused');
+  if (written !== 'written') return unsettledStep(await afterBlockedWrite(ctx, destination));
   ctx.rows.setState(operationId, 'verifying');
   const copy = await ctx.deps.files.readBytes(destination);
-  if (copy.outcome !== 'read' || digestOfBytes(copy.bytes) !== residue.digest) return 'ambiguous';
+  if (copy.outcome !== 'read' || digestOfBytes(copy.bytes) !== residue.digest) return unsettledStep('ambiguous');
+  if (await isSourceProtectedAtRemovalBoundary(ctx, residue)) {
+    const cleaned = await ctx.deps.files.unlinkContained(destination).catch(() => 'failed' as const);
+    if (cleaned === 'removed' || cleaned === 'absent') {
+      inImmediateTransaction(ctx.deps.conn, () => {
+        ctx.rows.markDestinationPurged(operationId, ordinal);
+        ctx.rows.setOutcome(operationId, ordinal, 'refused', null);
+      });
+      return { outcome: 'refused', outcomeCommitted: true };
+    }
+    return unsettledStep('ambiguous');
+  }
   ctx.rows.setOutcome(operationId, ordinal, 'preserved-in-place', residue.digest);
   const removed = await ctx.deps.files.unlinkContained(source);
-  return removed === 'removed' || removed === 'absent' ? 'quarantined' : 'ambiguous';
+  return unsettledStep(removed === 'removed' || removed === 'absent' ? 'quarantined' : 'ambiguous');
 }
 
 function finalState(outcomes: readonly PreservationTargetOutcome[]): PreservationOperationState {
@@ -140,9 +206,11 @@ export async function quarantineLegacyResidue(
   });
   const outcomes: PreservationTargetOutcome[] = [];
   for (const [ordinal, residue] of selected.value.entries()) {
-    const outcome = await quarantineOne(ctx, operationId, ordinal, residue);
-    ctx.rows.setOutcome(operationId, ordinal, outcome, outcome === 'refused' ? null : residue.digest);
-    outcomes.push(outcome);
+    const step = await quarantineOne(ctx, operationId, ordinal, residue);
+    if (!step.outcomeCommitted) {
+      ctx.rows.setOutcome(operationId, ordinal, step.outcome, step.outcome === 'refused' ? null : residue.digest);
+    }
+    outcomes.push(step.outcome);
   }
   ctx.rows.setState(operationId, finalState(outcomes));
   const count = (outcome: PreservationTargetOutcome): number => outcomes.filter((entry) => entry === outcome).length;

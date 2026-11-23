@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
+import { DEFAULT_ACCOUNTING_BOUNDS } from '../../../src/contracts/usage-accounting/accounting-types';
 import { NodeSqliteConnection, SchemaBootstrapService } from '../../../src/services/sqlite-store';
 import {
   type UsageAccountingService,
@@ -191,6 +192,72 @@ describe('usage accounting wiring (T025)', () => {
     auditWriter.emit(CLAUDE_PHASE_END);
     await nextTick();
     expect(recordGaps).not.toHaveBeenCalled();
+  });
+
+  it('does not double-count ingest-failed when the store refuses >24h future clock skew (CR-305-1)', async () => {
+    const service = realService();
+    const { auditWriter } = wiringWith(service);
+    auditWriter.emit(cliInvocationRow({}));
+    auditWriter.emit({ ...CLAUDE_PHASE_END, timestamp: '2026-11-11T12:00:00.001Z' });
+    await nextTick();
+    expect(observationCount()).toBe(0);
+    expect(gapCount(service, 'ingest-failed')).toBe(1);
+    expect(
+      conn.all<{ scope_key: string; count: number }>(
+        "SELECT scope_key, count FROM accounting_gaps WHERE gap_kind = 'ingest-failed'"
+      )
+    ).toEqual([{ scope_key: CLAUDE_ATTEMPT, count: 1 }]);
+  });
+
+  it('does not double-count ingest-failed when the store refuses per-attempt unit cap overflow (CR-305-1)', async () => {
+    const service = realService();
+    const currencyOf = (index: number): string =>
+      `C${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`;
+    for (let index = 0; index < DEFAULT_ACCOUNTING_BOUNDS.maxUnitsPerAttemptMeasure; index += 1) {
+      const seeded = service.ingestObservation({
+        producerNamespace: 'schegent.phase-end/1',
+        source: 'phase-end',
+        sourceKind: 'phase-end',
+        sourceIdentity: `run-f06-1:seed:${CLAUDE_ATTEMPT}:${String(index)}`,
+        rootId: 'run-f06-1',
+        attemptId: CLAUDE_ATTEMPT,
+        invocationOrdinal: index,
+        counterScope: 'invocation-delta',
+        adapterVersion: 'phase-end/1',
+        dimensions: { backend: 'claude', phaseId: 'implement' },
+        eventUtc: '2026-11-10T10:00:00.000Z',
+        observedUtc: NOW,
+        measures: [{ measure: 'cost', quantity: '0.01', unit: currencyOf(index), provenance: 'provider-reported' }]
+      });
+      expect(seeded.ok).toBe(true);
+    }
+
+    const { auditWriter } = wiringWith(service);
+    auditWriter.emit(cliInvocationRow({}));
+    auditWriter.emit(CLAUDE_PHASE_END);
+    await nextTick();
+    expect(observationCount()).toBe(DEFAULT_ACCOUNTING_BOUNDS.maxUnitsPerAttemptMeasure);
+    expect(gapCount(service, 'ingest-failed')).toBe(1);
+    expect(
+      conn.all<{ scope_key: string; count: number }>(
+        "SELECT scope_key, count FROM accounting_gaps WHERE gap_kind = 'ingest-failed'"
+      )
+    ).toEqual([{ scope_key: CLAUDE_ATTEMPT, count: 1 }]);
+  });
+
+  it('still records ingest-failed once for an uncounted invalid-observation such as a non-UTC timestamp (CR-305-1)', async () => {
+    const service = realService();
+    const { auditWriter } = wiringWith(service);
+    auditWriter.emit(cliInvocationRow({}));
+    auditWriter.emit({ ...CLAUDE_PHASE_END, timestamp: '2026-11-10T10:05:00+02:00' });
+    await nextTick();
+    expect(observationCount()).toBe(0);
+    expect(gapCount(service, 'ingest-failed')).toBe(1);
+    expect(
+      conn.all<{ scope_key: string; count: number }>(
+        "SELECT scope_key, count FROM accounting_gaps WHERE gap_kind = 'ingest-failed'"
+      )
+    ).toEqual([{ scope_key: 'global', count: 1 }]);
   });
 
   it('keeps a gap count in memory when the store cannot take it, and flushes it later', async () => {
