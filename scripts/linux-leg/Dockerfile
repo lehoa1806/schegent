@@ -6,6 +6,11 @@
 # the same toolchain into itself.
 #
 # The Node version matches `.nvmrc`; `scripts/linux-leg.sh` refuses to build when they differ.
+# Reproducibility caveat (FR-R7-14 / 14-13): this base image uses a versioned floating tag
+# (`node:24.19.0-bookworm-slim`, not a pinned manifest digest) and installs OS packages from live
+# Debian apt repositories at container build time. A fresh `docker build` therefore tracks upstream
+# Debian/base-image security rebuilds rather than reproducing bit-identical OS layers; local runs
+# remain an observed Linux arm64 unit-tier check, not a hermetic reproducible build.
 FROM node:24.19.0-bookworm-slim
 
 # git: the host suite drives real repositories (lanes, checkpoints, diff bases).

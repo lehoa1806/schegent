@@ -58,21 +58,22 @@ function embeddedResource(block: Record<string, unknown>): WireBlock | null {
   return { type: 'resource', resource: mimeType === undefined ? resource : { ...resource, mimeType } };
 }
 
-function accessible(uri: string, verify: ((uri: string) => boolean) | undefined): boolean {
-  if (verify === undefined) return false;
-  try {
-    return verify(uri) === true;
-  } catch {
-    return false;
-  }
+export type ResourceLinkVerifier = (uri: string) => boolean | Promise<boolean>;
+
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
 }
 
-/** Validates and maps one prompt's blocks. */
-export function buildPromptContent(
+type PromptContentFailure = Extract<PromptContentResult, { readonly ok: false }>;
+
+function prepareWireBlocks(
   blocks: unknown,
-  capabilities: NegotiatedCapabilities,
-  verifyResourceLink?: (uri: string) => boolean
-): PromptContentResult {
+  capabilities: NegotiatedCapabilities
+): { readonly ok: true; readonly wire: WireBlock[] } | PromptContentFailure {
   if (!Array.isArray(blocks) || blocks.length === 0) return { ok: false, reason: 'invalid-input' };
   const wire: WireBlock[] = [];
   for (const block of blocks as readonly unknown[]) {
@@ -84,12 +85,99 @@ export function buildPromptContent(
   if (embeds && !operationAllowed('prompt-embedded-resource', capabilities)) {
     return { ok: false, reason: 'capability-missing', detail: EMBEDDED_CONTEXT_REQUIREMENT };
   }
-  for (const block of wire) {
+  return { ok: true, wire };
+}
+
+function finalizeWireBlocks(wire: WireBlock[]): PromptContentResult {
+  const encodedBytes = new TextEncoder().encode(JSON.stringify(wire)).byteLength;
+  if (encodedBytes > ACP_RUNTIME_LIMITS.maxMessageBytes) return { ok: false, reason: 'prompt-oversized' };
+  return { ok: true, blocks: wire };
+}
+
+function accessible(uri: string, verify: ((uri: string) => boolean) | undefined): boolean {
+  if (verify === undefined) return false;
+  try {
+    return verify(uri) === true;
+  } catch {
+    return false;
+  }
+}
+
+async function verifyRemainingResourceLinks(
+  wire: WireBlock[],
+  startIndex: number,
+  firstPending: PromiseLike<boolean>,
+  verify: ResourceLinkVerifier
+): Promise<PromptContentResult> {
+  try {
+    if ((await firstPending) !== true) {
+      return { ok: false, reason: 'resource-inaccessible' };
+    }
+  } catch {
+    return { ok: false, reason: 'resource-inaccessible' };
+  }
+  for (const block of wire.slice(startIndex + 1)) {
+    if (block['type'] !== 'resource_link') continue;
+    let allowed: boolean;
+    try {
+      allowed = (await verify(String(block['uri']))) === true;
+    } catch {
+      allowed = false;
+    }
+    if (!allowed) return { ok: false, reason: 'resource-inaccessible' };
+  }
+  return finalizeWireBlocks(wire);
+}
+
+/** Validates and maps one prompt's blocks synchronously. */
+export function buildPromptContent(
+  blocks: unknown,
+  capabilities: NegotiatedCapabilities,
+  verifyResourceLink?: (uri: string) => boolean
+): PromptContentResult {
+  const prepared = prepareWireBlocks(blocks, capabilities);
+  if (!prepared.ok) return prepared;
+  for (const block of prepared.wire) {
     if (block['type'] === 'resource_link' && !accessible(String(block['uri']), verifyResourceLink)) {
       return { ok: false, reason: 'resource-inaccessible' };
     }
   }
-  const encodedBytes = new TextEncoder().encode(JSON.stringify(wire)).byteLength;
-  if (encodedBytes > ACP_RUNTIME_LIMITS.maxMessageBytes) return { ok: false, reason: 'prompt-oversized' };
-  return { ok: true, blocks: wire };
+  return finalizeWireBlocks(prepared.wire);
+}
+
+/**
+ * Validates and maps one prompt's blocks, keeping a synchronous fast path when no resource-link
+ * verifier returns a Promise and awaiting asynchronously otherwise.
+ */
+export function buildPromptContentMaybeAsync(
+  blocks: unknown,
+  capabilities: NegotiatedCapabilities,
+  verifyResourceLink?: ResourceLinkVerifier
+): PromptContentResult | Promise<PromptContentResult> {
+  const prepared = prepareWireBlocks(blocks, capabilities);
+  if (!prepared.ok) return prepared;
+  for (const [i, block] of prepared.wire.entries()) {
+    if (block['type'] !== 'resource_link') continue;
+    if (verifyResourceLink === undefined) return { ok: false, reason: 'resource-inaccessible' };
+    let outcome: boolean | Promise<boolean>;
+    try {
+      outcome = verifyResourceLink(String(block['uri']));
+    } catch {
+      return { ok: false, reason: 'resource-inaccessible' };
+    }
+    if (isPromiseLike<boolean>(outcome)) {
+      return verifyRemainingResourceLinks(prepared.wire, i, outcome, verifyResourceLink);
+    }
+    if (outcome !== true) return { ok: false, reason: 'resource-inaccessible' };
+  }
+  return finalizeWireBlocks(prepared.wire);
+}
+
+/** Always-async wrapper for validating and mapping one prompt's blocks. */
+export async function buildPromptContentAsync(
+  blocks: unknown,
+  capabilities: NegotiatedCapabilities,
+  verifyResourceLink?: ResourceLinkVerifier
+): Promise<PromptContentResult> {
+  return buildPromptContentMaybeAsync(blocks, capabilities, verifyResourceLink);
 }

@@ -1,9 +1,22 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { render, fireEvent, cleanup } from '@testing-library/svelte';
+
+const postCommandMock = vi.fn();
+
+vi.mock('../../lib/vscode-api', () => ({
+  postCommand: (...args: unknown[]) => postCommandMock(...args)
+}));
+
 import StatusBar from '../StatusBar.svelte';
+import { CMD_OPEN_DASHBOARD } from '../../lib/messages';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
 import type { WorkflowSnapshot, WorkflowStatus } from '../../lib/snapshot-types';
-import { foldLegacyRun, type LegacyRunFields } from '../../lib/__tests__/queue-runtime-fixture';
+import {
+  buildInFlightRun,
+  buildQueueRuntime,
+  foldLegacyRun,
+  type LegacyRunFields
+} from '../../lib/__tests__/queue-runtime-fixture';
 
 afterEach(() => cleanup());
 
@@ -68,6 +81,7 @@ const STATUSES: ReadonlyArray<WorkflowStatus> = [
 
 describe('StatusBar', () => {
   beforeEach(() => {
+    postCommandMock.mockReset();
     applySnap(buildSnapshot());
   });
 
@@ -168,5 +182,171 @@ describe('StatusBar', () => {
     const badge = container.querySelector('[data-testid="sidebar-secondary-badge"]');
     expect(badge).not.toBeNull();
     expect(badge!.textContent?.toLowerCase()).toContain('secondary');
+  });
+
+  it('labels the default-queue scope explicitly for default and custom queue names', () => {
+    applySnap(buildSnapshot());
+    const first = render(StatusBar);
+    expect(first.getByTestId('sidebar-status-queue-scope').textContent.trim()).toBe('Default queue');
+    cleanup();
+
+    applySnap(
+      buildSnapshot({
+        queues: [buildQueueRuntime({ queueId: 'default', name: 'Release Line', inFlightRun: null })]
+      })
+    );
+    const second = render(StatusBar);
+    expect(second.getByTestId('sidebar-status-queue-scope').textContent.trim()).toBe(
+      'Default queue · Release Line'
+    );
+  });
+
+  it('surfaces active named-queue runs when the default queue is idle', () => {
+    applySnap(
+      buildSnapshot({
+        queues: [
+          buildQueueRuntime({ queueId: 'default', name: 'Default', inFlightRun: null }),
+          buildQueueRuntime({
+            queueId: 'nightly',
+            name: 'Nightly',
+            position: 1,
+            lifecycle: 'running',
+            inFlightRun: buildInFlightRun({
+              runId: 'run-nightly',
+              status: 'running',
+              feature: { id: 'feat-n', label: 'Nightly audit', startedAt: '2026-05-10T00:00:00.000Z' }
+            })
+          })
+        ]
+      })
+    );
+    expect(snapshotStore.activeRunCount).toBe(1);
+    expect(snapshotStore.otherActiveRunCount).toBe(1);
+    const { getByTestId } = render(StatusBar);
+    expect(getByTestId('sidebar-status-row').textContent).toContain('idle');
+    expect(getByTestId('sidebar-status-row').textContent).toContain('no active feature');
+    expect(getByTestId('sidebar-active-run-count').textContent.trim()).toBe(
+      '1 active run (1 in other queues)'
+    );
+  });
+
+  it('shows workspace-wide active count when default queue is active and named queue is idle or terminal', () => {
+    applySnap(
+      buildSnapshot({
+        queues: [
+          buildQueueRuntime({
+            queueId: 'default',
+            name: 'Default',
+            lifecycle: 'running',
+            inFlightRun: buildInFlightRun({
+              runId: 'run-def',
+              status: 'running',
+              feature: { id: 'feat-d', label: 'Default feature', startedAt: '2026-05-10T00:00:00.000Z' }
+            })
+          }),
+          buildQueueRuntime({ queueId: 'q-idle', name: 'Idle Named', position: 1, inFlightRun: null }),
+          buildQueueRuntime({
+            queueId: 'q-done',
+            name: 'Completed Named',
+            position: 2,
+            inFlightRun: buildInFlightRun({ runId: 'run-done', status: 'completed' })
+          })
+        ]
+      })
+    );
+    expect(snapshotStore.activeRunCount).toBe(1);
+    expect(snapshotStore.otherActiveRunCount).toBe(0);
+    const { getByTestId } = render(StatusBar);
+    expect(getByTestId('sidebar-active-run-count').textContent.trim()).toBe(
+      '1 active run in workspace'
+    );
+  });
+
+  it('counts active runs across both default and named queues (including paused runs)', () => {
+    applySnap(
+      buildSnapshot({
+        queues: [
+          buildQueueRuntime({
+            queueId: 'default',
+            name: 'Default',
+            lifecycle: 'running',
+            inFlightRun: buildInFlightRun({
+              runId: 'run-def',
+              status: 'running',
+              feature: { id: 'feat-d', label: 'Default feature', startedAt: '2026-05-10T00:00:00.000Z' }
+            })
+          }),
+          buildQueueRuntime({
+            queueId: 'q-paused',
+            name: 'Paused Named',
+            position: 1,
+            inFlightRun: buildInFlightRun({ runId: 'run-p', status: 'paused' })
+          }),
+          buildQueueRuntime({
+            queueId: 'q-running',
+            name: 'Running Named',
+            position: 2,
+            lifecycle: 'running',
+            inFlightRun: buildInFlightRun({ runId: 'run-r', status: 'running' })
+          })
+        ]
+      })
+    );
+    expect(snapshotStore.activeRunCount).toBe(3);
+    expect(snapshotStore.otherActiveRunCount).toBe(2);
+    const { getByTestId } = render(StatusBar);
+    expect(getByTestId('sidebar-active-run-count').textContent.trim()).toBe(
+      '3 active runs (2 in other queues)'
+    );
+  });
+
+  it('shows 0 active runs in workspace when all queues are idle', () => {
+    applySnap(
+      buildSnapshot({
+        queues: [
+          buildQueueRuntime({ queueId: 'default', name: 'Default', inFlightRun: null }),
+          buildQueueRuntime({ queueId: 'q-named', name: 'Named', position: 1, inFlightRun: null })
+        ]
+      })
+    );
+    expect(snapshotStore.activeRunCount).toBe(0);
+    expect(snapshotStore.otherActiveRunCount).toBe(0);
+    const { getByTestId } = render(StatusBar);
+    expect(getByTestId('sidebar-active-run-count').textContent.trim()).toBe(
+      '0 active runs in workspace'
+    );
+  });
+
+  it('exposes accessible queue-aware Dashboard navigation posting CMD_OPEN_DASHBOARD', async () => {
+    const { container, getByTestId } = render(StatusBar);
+    expect(container.querySelector('[data-testid="queue-open-dashboard-button"]')).toBeNull();
+    const button = getByTestId('sidebar-status-open-dashboard');
+    expect(button.tagName).toBe('BUTTON');
+    expect(button.getAttribute('type')).toBe('button');
+    expect(button.textContent.trim()).toBe('View queues');
+    expect(button.getAttribute('aria-label')).toBe('View queues in Dashboard');
+
+    await fireEvent.click(button);
+    expect(postCommandMock).toHaveBeenCalledTimes(1);
+    expect(postCommandMock).toHaveBeenCalledWith(CMD_OPEN_DASHBOARD);
+  });
+
+  it.each([
+    [-1, '0s'],
+    [Number.NaN, '0s'],
+    [Number.POSITIVE_INFINITY, '0s'],
+    [0, '0s'],
+    [59_999, '59s'],
+    [3_600_000, '1h 0m'],
+    [7_260_000, '2h 1m']
+  ])('formats elapsed duration %s identically via formatDuration -> %s', (elapsedMs, expected) => {
+    applySnap(
+      buildSnapshot({
+        workflowElapsedMs: elapsedMs,
+        activeFeature: { id: 'feat-1', label: 'specs/001-x', startedAt: '2026-05-10T00:00:00.000Z' }
+      })
+    );
+    const { getByTestId } = render(StatusBar);
+    expect(getByTestId('sidebar-elapsed-pill').textContent.trim()).toBe(expected);
   });
 });

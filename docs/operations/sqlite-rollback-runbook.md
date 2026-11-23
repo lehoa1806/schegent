@@ -14,8 +14,9 @@ For store internals, pragmas, and storage location rules, see [`sqlite-applicati
 
 A backup image (`<backupId>.db`) contains the **same authoritative operational data as the live SQLite store**, including Run states, Task payloads, queue metadata, usage records, catalog definitions, and recovery handoff metadata.
 
-- Backups are written inside the extension's trusted host storage directory at `<storageRoot>/sqlite/<scopeId>/backups/` (where `<storageRoot>` is VS Code's `storageUri`, or `globalStorageUri` when unavailable, and `<scopeId>` is the 16-hex SHA-256 prefix of the workspace root).
+- Backups are written inside the extension's trusted host storage directory at `<globalStorageUri>/sqlite/<scopeId>/backups/` (where `<globalStorageUri>` is VS Code's canonical extension global storage, with legacy per-window `storageUri` used only as a fallback when the canonical target is unwritable or WAL-refused, and `<scopeId>` is the 16-hex SHA-256 prefix of the workspace root). Both the live SQLite store and its backups reside outside the workspace and survive workspace directory deletion; see [`evidence-retention-disclosure.md`](evidence-retention-disclosure.md).
 - On POSIX systems, Schegent enforces owner-only permissions: `0700` on the backup directory and `0600` on both `<backupId>.db` and its companion `<backupId>.db.manifest.json`.
+- **Lifecycle-deleted tombstones vs live external dependencies (`FR-R7-14` / `14-01` & `14-02`)**: backup creation and verification enforce the same ceilings (`10,000` external dependencies, `512 MiB` external dependency bytes, `16 MiB` manifest, `512 MiB` database image). Artifacts whose bytes were intentionally removed through the F05 artifact lifecycle (`deleted`, `expired`, or fallback `evicted`) preserve their SQLite tombstones across backup, verification, and restore without requiring deleted bytes on disk, while any genuinely missing or corrupt *live* external dependency still causes pre-write refusal (`EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT`).
 - If you copy a backup to another local directory for safekeeping, preserve `0600` permissions and never commit backup files into a Git repository or place them on an untrusted shared filesystem.
 - Structured audit log rows (`store-backup` and `store-restore` in `.schegent/audit.log`) are metadata-only by default and never record raw workspace or backup filesystem paths.
 
@@ -50,7 +51,7 @@ Use this procedure when the installed extension build can still open the databas
 2. Ensure you are in the trusted owner window holding the workspace ownership lock (secondary or untrusted windows refuse closed before touching the store).
 3. Run **Schegent: Verify Store Backup** (`schegent.verifyStoreBackup`) on the target backup to confirm it passes integrity and digest checks.
 4. Run **Schegent: Restore Store Backup** (`schegent.restoreStoreBackup`), pick the verified backup, read the confirmation modal stating what authoritative state will be replaced and lost, and confirm **Restore Store**.
-5. Confirm the completion notification reports the restored table/row/Run counts and cache reload. If validation fails (for example `DATABASE_DIGEST_MISMATCH`, `QUICK_CHECK_FAILED`, `FOREIGN_KEY_CHECK_FAILED`, `UNSUPPORTED_SCHEMA_VERSION`, `EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT`, `EXTERNAL_DEPENDENCY_BOUND_EXCEEDED`, or `BACKUP_OPEN_FAILED`), the live store remains unchanged.
+5. Confirm the completion notification reports the restored table/row/Run counts and cache reload. If validation or pre-commit ownership fencing fails (for example `DATABASE_DIGEST_MISMATCH`, `QUICK_CHECK_FAILED`, `FOREIGN_KEY_CHECK_FAILED`, `UNSUPPORTED_SCHEMA_VERSION`, `EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT`, `EXTERNAL_DEPENDENCY_BOUND_EXCEEDED`, `BACKUP_MANIFEST_BOUND_EXCEEDED`, `RESTORE_OWNERSHIP_LOST`, `RESTORE_BUSY`, or `BACKUP_OPEN_FAILED`), the live store remains unchanged. If the SQLite commit succeeded on disk but post-commit host cache/UI refresh failed (`committed_refresh_failed`), reload the window so the host reads the already-committed database cleanly.
 
 ---
 
@@ -62,7 +63,7 @@ Use this procedure after a failed migration or an undesirable upgrade where sche
    An older schema-`(N-1)` build opening a schema-`N` database fails closed at open with `UNSUPPORTED_MIN_READER_VERSION` (`database min_reader_version=N exceeds this build's maxSupportedVersion=N-1`) and leaves the database file untouched.
 2. **Stop all Runs and close all VS Code windows for this workspace**:
    Close every VS Code window that has this workspace open (and stop any headless reader/writer process using the same `--state-dir`) so no SQLite writer or read-pool handle remains open on `schegent-state.db`.
-3. **Locate the store directory and pre-upgrade backup**:
+3. **Locate the store directory and pre-upgrade backup** (`<storageRoot>` is canonical `<globalStorageUri>`, or legacy `storageUri` only if the store remained on fallback):
    - Live database: `<storageRoot>/sqlite/<scopeId>/schegent-state.db`
    - Verified pre-upgrade backup: `<storageRoot>/sqlite/<scopeId>/backups/<backupId>.db`
    - Companion manifest: `<storageRoot>/sqlite/<scopeId>/backups/<backupId>.db.manifest.json`

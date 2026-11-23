@@ -22,7 +22,7 @@ Schegent is a local-first VS Code extension that queues development Tasks, execu
   operator, or if the harness stops deriving its version from the manifest.
 - English only, by decision: command titles, settings, dialogs and webview text are not localized. The decision, what it measured and what would reopen it are in [English-only is a product decision](docs/concepts/english-only-not-localizable.md).
 - Vitest for host and webview tests, Playwright for visual tests, and the VS Code Electron harness for integration tests.
-- Structured state (Runs, the Queue, catalog definitions, the usage ledger, handoffs, lanes and reports) lives, after a one-time cutover in a trusted primary window, in an embedded SQLite store: Node's built-in `node:sqlite`, no ORM. The database is in the extension's host storage, outside the workspace (`<storage>/sqlite/<scope>/schegent-state.db` with `-wal` and `-shm` sidecars); see [SQLite application store](docs/operations/sqlite-application-store.md). The audit log, transcripts and other evidence files stay in workspace-local `.schegent/` files, and VS Code `workspaceState` holds the pre-cutover copies and UI preferences. There is no Schegent HTTP server or Schegent-owned CLI executable.
+- Structured state (Runs, the Queue, catalog definitions, the usage ledger, handoffs, lanes and reports) lives, after a one-time cutover in a trusted primary window, in an embedded SQLite store: Node's built-in `node:sqlite`, no ORM. The canonical database is folder-keyed in extension global storage, outside the workspace (`<globalStorageUri>/sqlite/<scope>/schegent-state.db` with `-wal` and `-shm` sidecars, schema 9 / `min_reader_version = 9`; legacy per-window `storageUri` is retained only as a one-time relocation source or unwritable-target fallback); see [SQLite application store](docs/operations/sqlite-application-store.md) and [the rollback runbook](docs/operations/sqlite-rollback-runbook.md). The audit log, transcripts and other evidence files stay in workspace-local `.schegent/` files, and VS Code `workspaceState` holds the pre-cutover copies and UI preferences. There is no Schegent HTTP server or Schegent-owned CLI executable.
 
 <!-- Source: package.json -->
 <!-- Source: webview-ui/package.json -->
@@ -54,17 +54,16 @@ The [documentation path selector](docs/README.md) routes maintainers, release en
 
 ## Support matrix
 
-One platform has been observed. The others ship but are **unqualified**: nobody has run them for this
-project. That is a statement about evidence, not about quality. The declared support surface is
+Distinguish three separate claims: **source buildability** (whether TypeScript and the Svelte webview compile from source), the **Linux arm64 unit leg** (`npm run verify:linux`, which runs headless host/contract tests inside a Linux container without VS Code or live provider CLIs), and **qualified editor/backend tuples** (an observed local VS Code extension host running real ACP backend transport). Only local **macOS arm64** has observed editor-host and backend qualification evidence; Linux desktop editors, Windows editors, and Remote hosts ship **unqualified** (and remote hosts refuse ACP launch before spawn). That is a statement about evidence, not about quality. The declared support surface is
 [the platform observation record](docs/operations/platform-observation-record.md#the-declared-support-surface),
 and this table defers to it.
 
 | Platform | Status | The observation that is still owed |
 |---|---|---|
-| macOS, arm64 | **observed**: `npm run gate` exited 0 under Node v24.19.0 at `5a8af6b0` on 2026-11-01 | Node 22 on macOS, in the [qualification matrix](docs/release/qualification-matrix.md); the VoiceOver row in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md) |
-| Linux | **unqualified** | The Linux rows in the [qualification matrix](docs/release/qualification-matrix.md); the Orca row in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md) |
+| Local macOS, arm64 | **observed (editor/backend tuple)**: `npm run gate` exited 0 under Node v24.19.0 at `5a8af6b0` on 2026-11-01 (and refreshed on FR-R7-14 candidates for `claude`, `codex`, and `agy`) | Node 22 on macOS, in the [qualification matrix](docs/release/qualification-matrix.md); the VoiceOver row in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md) |
+| Linux (desktop editor & backends) | **unqualified** (source builds and container Linux arm64 unit leg `npm run verify:linux` observed separately; neither qualifies a Linux VS Code editor or backend CLI) | Live Linux VS Code extension-host & ACP backend rows in the [qualification matrix](docs/release/qualification-matrix.md); the Orca row in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md) |
 | Windows | **unqualified** | The Windows rows in the [qualification matrix](docs/release/qualification-matrix.md); the NVDA and Narrator rows in the [assistive-technology matrix](docs/release/accessibility-at-matrix.md). The Windows safety paths in the source still apply. |
-| Remote hosts (Remote SSH, Dev Container) | **unqualified** | [Remote development is unqualified](docs/operations/backends.md#remote-development-is-unqualified), and the remote extension-host row in [Backend containment qualification](docs/architecture/backend-containment-qualification.md) |
+| Remote hosts (Remote SSH, Dev Container, WSL) | **unqualified (refused before ACP spawn)** | [Remote development is unqualified](docs/operations/backends.md#remote-development-is-unqualified), and the remote extension-host row in [Backend containment qualification](docs/architecture/backend-containment-qualification.md) |
 
 <!-- Source: docs/operations/platform-observation-record.md -->
 <!-- Source: docs/release/qualification-matrix.md -->

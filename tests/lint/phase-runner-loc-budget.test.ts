@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { countFileCodeLines } from './code-lines';
+import { countCodeLines, countFileCodeLines } from './code-lines';
 
 // Feature 057 Track 4 — regression guard. Pins the LoC budgets agreed
 // in spec 057 (FR-005, FR-006, SC-001, SC-003) so a future contributor
@@ -794,4 +795,29 @@ describe('feature 057 LoC budgets (code lines, FR-R7-08)', () => {
       expect(count).toBeLessThanOrEqual(max);
     });
   }
+
+  it('keeps the live PhaseRunner ceiling verdict after inserting comments (SC-003)', () => {
+    const budget = BUDGETS.find(({ path }) => path === 'src/controller/phase-runner.ts');
+    if (!budget) throw new Error('Missing PhaseRunner budget');
+    const path = resolve(REPO_ROOT, budget.path);
+    const original = readFileSync(path, 'utf8');
+    const baselineCount = countCodeLines(original, path);
+    expect(baselineCount).toBeGreaterThan(500);
+    expect(baselineCount).toBeLessThanOrEqual(budget.max);
+
+    const comments = [
+      '// PhaseRunner keeps the inputs and outputs of a single invocation together.',
+      '// The caller supplies the frozen phase definition.',
+      '// Outcome mapping happens after the child exits.',
+      '/* This comment spans',
+      ' * more than one line. */',
+      '/** Coordinates one phase invocation. */'
+    ].join('\n');
+    const declaration = 'export class PhaseRunner';
+    expect(original).toContain(declaration);
+    const withComments = original.replace(declaration, `${comments}\n${declaration}`);
+    const count = countCodeLines(withComments, path);
+    expect(count).toBe(baselineCount);
+    expect(count).toBeLessThanOrEqual(budget.max);
+  });
 });

@@ -7,7 +7,12 @@
 //   - Total reader: never throws on any malformed input; drops invalid entries
 //     and fails closed (a dropped grant costs one modal, never false consent).
 //   - Pure module: zero `vscode` imports, independently unit-testable.
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
+import {
+  computeAgentConfigFingerprint,
+  MAX_AGENT_CONFIG_FILE_BYTES
+} from '../contracts/agent-config-fingerprint';
+import { getBackendDescriptor } from '../contracts/backend-descriptors';
+import { isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
 
 export interface AgentConfigGrantFileSummary {
   readonly name: string;
@@ -33,7 +38,6 @@ export interface AgentConfigGrantsRead {
 const MAX_ECHOED_CHARS = 64;
 const MAX_REPORTED_PROBLEMS = 10;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
-const BACKEND_SET: ReadonlySet<string> = new Set(SUPPORTED_BACKENDS);
 
 const EMPTY: AgentConfigGrantMap = Object.freeze({});
 
@@ -46,22 +50,15 @@ function describe(value: unknown): string {
   return `a ${typeof value}`;
 }
 
-function isValidRelativeName(name: string): boolean {
-  if (name.length === 0 || name.length > 256) return false;
-  if (name.startsWith('/') || name.includes('\\')) return false;
-  const parts = name.split('/');
-  return parts.every((seg) => seg.length > 0 && seg !== '.' && seg !== '..');
-}
-
 function isValidFileSummary(raw: unknown): raw is AgentConfigGrantFileSummary {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return false;
   const rec = raw as Record<string, unknown>;
   return (
     typeof rec.name === 'string' &&
-    isValidRelativeName(rec.name) &&
     typeof rec.size === 'number' &&
     Number.isSafeInteger(rec.size) &&
     rec.size >= 0 &&
+    rec.size <= MAX_AGENT_CONFIG_FILE_BYTES &&
     typeof rec.digest === 'string' &&
     SHA256_HEX_RE.test(rec.digest)
   );
@@ -78,19 +75,28 @@ function reject(key: string, value: unknown): string | null {
   if (typeof entry.fingerprint !== 'string' || entry.fingerprint !== key) {
     return 'its `fingerprint` field does not equal the key it is stored under';
   }
-  if (typeof entry.backend !== 'string' || !BACKEND_SET.has(entry.backend)) {
+  if (!isBackendRunnerKind(entry.backend)) {
     return '`backend` is absent or not a supported backend id';
   }
   if (typeof entry.grantedAt !== 'number' || !Number.isFinite(entry.grantedAt)) {
     return '`grantedAt` is absent or is not a finite number';
   }
-  if (
-    !Array.isArray(entry.files) ||
-    entry.files.length === 0 ||
-    !entry.files.every(isValidFileSummary)
-  ) {
+  const paths = getBackendDescriptor(entry.backend).repoAgentConfigPaths;
+  if (!Array.isArray(entry.files) || entry.files.length === 0 || entry.files.length > paths.length) {
     return '`files` is absent, empty, or contains an invalid file summary';
   }
+  const files: unknown[] = [...entry.files];
+  if (!files.every(isValidFileSummary)) return '`files` contains an invalid file summary';
+  const names = new Set(files.map((file) => file.name));
+  if (names.size !== files.length || [...names].some((name) => !paths.includes(name))) {
+    return '`files` contains an unexpected or duplicate file name';
+  }
+  const fingerprint = computeAgentConfigFingerprint(
+    entry.backend,
+    files.map((file) => ({ ...file, status: 'present' })),
+    false
+  );
+  if (fingerprint !== key) return 'its fingerprint does not match the stored file summaries';
   return null;
 }
 

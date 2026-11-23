@@ -1,7 +1,8 @@
 # The backend outcome corpus
 
-**This corpus measures parser coverage. It is not behavioral qualification, and it must not be
-cited as such.**
+**This corpus proves deterministic parser and artifact-structure conformance only. It is
+not behavioral qualification, makes zero claims about model output quality or task correctness,
+and makes zero claims about billed provider spend; it must not be cited as any of those.**
 
 FR-R3-061 added this file because the distinction was being lost. The corpus is a versioned,
 deterministic set of **39 cases** (`fixtures/backend-outcomes.json`), and the suite around it reports
@@ -14,8 +15,10 @@ what, and which were deliberately left uncounted is recorded in
 not evidence of that, and cannot be.
 
 Artifact **structure** is evaluated separately, offline, in [`artifacts/`](artifacts/README.md): twelve
-synthetic Spec Kit documents against versioned criteria. That suite measures structure, not quality or
-execution safety, and feeds nothing in the host.
+synthetic Spec Kit documents against versioned criteria. That suite measures document-structure
+conformance only — not model output quality, execution safety, or billed cost — and feeds nothing in
+the host. Any claim about actual billed spend requires an authenticated provider billing measurement
+outside this corpus (see [Usage and Metrics Accounting](../../docs/operations/usage-accounting.md)).
 
 ## What it does cover
 

@@ -295,7 +295,10 @@ export interface AcpPermissionRequest {
 }
 
 /** The host's answer to a permission request; `undecided` falls back to rejection (FR-009). */
-export type AcpPermissionPolicy = (request: AcpPermissionRequest) => { readonly optionId: string } | 'undecided';
+export type AcpPermissionDecision = { readonly optionId: string } | 'undecided';
+export type AcpPermissionPolicy = (
+  request: AcpPermissionRequest
+) => AcpPermissionDecision | Promise<AcpPermissionDecision>;
 
 /** One block of host prompt input. Images and audio are not offered in this delivery. */
 export type AcpPromptBlock =
@@ -313,7 +316,7 @@ export interface AcpOpenOptions {
   /** Called only after qualification passes. */
   readonly launch: (profile: AgentProfile) => AcpTransport;
   readonly permissionPolicy?: AcpPermissionPolicy;
-  readonly verifyResourceLink?: (uri: string) => boolean;
+  readonly verifyResourceLink?: (uri: string) => boolean | Promise<boolean>;
   readonly onObservation?: (observation: AcpObservation) => void;
   readonly clock?: AcpClock;
 }
@@ -340,8 +343,14 @@ export interface AcpPromptRequest {
 export interface AcpConnection {
   newSession(cwd: string): Promise<AcpSessionResult>;
   /** Updates while the load is outstanding are history. */
-  loadSession(sessionId: string, cwd: string, options: { readonly mayLoad: boolean }): Promise<AcpSessionResult>;
+  loadSession(
+    sessionId: string,
+    cwd: string,
+    options: { readonly mayLoad: boolean; readonly providerSessionId?: string }
+  ): Promise<AcpSessionResult>;
   prompt(request: AcpPromptRequest): Promise<AcpPromptOutcome>;
+  /** Observed provider conversation identifier (`session_id` / `thread_id`) for a session, if reported. */
+  providerSessionIdOf(sessionId: string): string | null;
   /** Fence, cancel answers for later permission requests, `session/cancel`, then the bound. */
   cancel(sessionId: string): void;
   close(): Promise<void>;

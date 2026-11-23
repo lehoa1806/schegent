@@ -356,11 +356,23 @@ npm run canary           # spends three live turns; writes .backend-qualificatio
 ```
 
 It refuses when the record is absent, unreadable, undated, older than the declared freshness bound,
-taken against a different CLI version than the one installed, or taken before a change under
-`src/runner/`, `src/parser/` or `src/contracts/backend-kinds.ts`. The bound and the reasoning for its
+produced in deterministic `--fixture` mode instead of live provider turns, incomplete or degraded
+for any advertised backend (`claude`, `codex`, `agy`), taken over the wrong transport, taken
+against a different CLI version than the one installed, mismatched on its source/build fingerprint,
+or taken before a change under `src/runner/`, `src/parser/`, `src/contracts/backend-kinds.ts`,
+`src/contracts/backend-descriptors.ts`, `src/contracts/acp-runtime.ts`,
+`src/services/acp-runtime/`, or `esbuild.config.mjs`. The bound and the reasoning for its
 value live beside the constant; the operator-facing statement of it is in
 [the qualification log](docs/release/backend-qualification-log.md), derived from that constant rather
 than restated.
+
+**Distinction between `npm run gate` and `npm run verify:release` (`FR-R7-14` / `14-13`).**
+`npm run gate:record` attests the **23** local checks inside `npm run gate` (listed below) on the
+releasing machine. `npm run verify:release` additionally runs the local Linux arm64 unit-tier
+container leg (`npm run verify:linux` using `scripts/linux-leg/Dockerfile`, whose `node:24.19.0-bookworm-slim`
+base tag and live Debian `apt-get` installs are documented as non-hermetic). Because `verify:linux`
+is outside `npm run gate`, a passing `.gate-attestation.json` attests `npm run gate` alone unless
+`npm run verify:release` is also executed and recorded separately.
 
 **Why it is here and not in `npm run gate`.** A live turn costs the operator's own subscription
 quota. Gating every gate run would charge a turn per run, and a gate people cannot afford is a gate
@@ -494,12 +506,15 @@ Every outcome ends with `Nothing was tagged, published or uploaded.`
 
 **Advisory evidence.** The driver reads feature 249's captures and runs no audit itself. It refuses a
 capture that is incomplete or unavailable (the audit gave no report), one made for a lockfile other
-than the one HEAD holds, one observed after the preparation time, and one **more than seven days
-old** (exactly seven days is accepted), and it refuses a disposition list it cannot use. Each finding
-is then listed by its advisory id and URL with its severity, whether the package is in the shipped
-code, and its disposition verdict. A finding with no covering disposition is reported, not refused.
+than the one HEAD holds, one observed after the preparation time, one **more than seven days
+old** (exactly seven days is accepted), a disposition list it cannot use, and — since `FR-R7-14`
+(`14-12`) — **any uncovered or expired finding** (`advisory-uncovered`: `not-recorded`, `expired`,
+or `does-not-cover`). Each finding
+is listed by its advisory id and URL with its severity, whether the package is in the shipped
+code (`shipped`, `build-only`, or `unknown`), and its disposition verdict.
 The list is [`docs/release/advisory-dispositions.json`](docs/release/advisory-dispositions.md),
-changed only in a reviewed commit.
+changed only in a reviewed commit. `npm run security:audit` and `npm run security:advisory-diff`
+remain report-only outside release verdicts.
 <!-- Source: scripts/release-candidate.mjs -->
 <!-- Source: scripts/prepare-release.mjs -->
 <!-- Source: scripts/release-advisory.mjs -->

@@ -28,6 +28,11 @@ import { createRequire } from 'node:module';
 import { isAbsolute, resolve } from 'node:path';
 import { TREE_NAMES } from './advisory-model.mjs';
 import { escapeForTerminal } from './advisory-report.mjs';
+import {
+  DRIFT_OVERRIDE_ENV,
+  changedQualificationPaths,
+  computeQualificationSourceFingerprint
+} from './backend-qualification.mjs';
 import { GATE_COMMAND_SPEC, REPO_ROOT, readTreeState } from './gate-attestation.mjs';
 import { invokedAsScript } from './invoked-as-script.mjs';
 import { NOTHING_PUBLISHED, releaseCandidate, resolveInsideRoot } from './release-candidate.mjs';
@@ -140,6 +145,9 @@ export function makeRealDeps(advisoryCaptures) {
       ),
     rename: (from, to) => renameSync(resolveInsideRoot(root, from), resolveInsideRoot(root, to)),
     writeExclusive: (path, text, mode) => writeExclusiveFile(resolveInsideRoot(root, path), text, mode),
+    changedQualificationPaths,
+    computeQualificationFingerprint: () => computeQualificationSourceFingerprint(root),
+    unqualifiedOverride: process.env[DRIFT_OVERRIDE_ENV] === '1',
     now: () => Date.now(),
     log: (line) => console.log(line),
     error: (line) => console.error(line)

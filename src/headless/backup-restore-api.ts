@@ -22,9 +22,11 @@ import {
 } from '../contracts/sqlite-store/schema-types';
 import {
   listBackupsInRoot,
-  verifyBackupStandalone,
+  verifyBackupStandaloneAsync,
+  type BackupBoundsOverrides,
   type ExternalDependencyInspector,
   type ListedBackupEntry,
+  type RestoreOutcomeKind,
   type RestoreValidationOutcome,
   type SqliteApplicationStore,
   type VerifyBackupOutcome
@@ -58,6 +60,7 @@ export type GuardedRestoreResult =
   | RestoreValidationOutcome
   | {
       readonly status: 'committed_refresh_failed';
+      readonly outcome: Extract<RestoreOutcomeKind, 'committed_refresh_failed'>;
       readonly errorCode: 'POST_COMMIT_REFRESH_FAILED';
       readonly restoredTableCount: number;
       readonly restoredRunCount: number;
@@ -66,34 +69,35 @@ export type GuardedRestoreResult =
     }
   | {
       readonly status: 'refused';
+      readonly outcome: Extract<RestoreOutcomeKind, 'refused_pre_commit'>;
       readonly reasonCode: StoreBackupGuardRefusalCode;
       readonly message: string;
     }
   | {
       readonly status: 'failed';
+      readonly outcome: Extract<RestoreOutcomeKind, 'refused_pre_commit'>;
       readonly errorCode: string;
       readonly message: string;
     };
 
 export interface StoreBackupRestoreApi {
-  createBackup(options?: { readonly backupId?: string | undefined }): Promise<CreateStoreBackupResult>;
+  createBackup(
+    options?: BackupBoundsOverrides & { readonly backupId?: string | undefined }
+  ): Promise<CreateStoreBackupResult>;
   listBackups(): Promise<readonly ListedBackupEntry[]>;
   verifyBackup(
     backupId: string,
-    options?: {
+    options?: BackupBoundsOverrides & {
       readonly maxSupportedSchemaVersion?: number | undefined;
-      readonly maxExternalDependencies?: number | undefined;
-      readonly maxExternalDependencyBytes?: number | undefined;
       readonly simulateQuickCheckFailure?: boolean | undefined;
     }
   ): Promise<VerifyBackupOutcome>;
   restoreBackup(
     backupId: string,
-    options?: {
+    options?: BackupBoundsOverrides & {
       readonly maxSupportedSchemaVersion?: number | undefined;
-      readonly maxExternalDependencies?: number | undefined;
-      readonly maxExternalDependencyBytes?: number | undefined;
       readonly simulateQuickCheckFailure?: boolean | undefined;
+      readonly beforeCommitFence?: (() => boolean | Promise<boolean>) | undefined;
     }
   ): Promise<GuardedRestoreResult>;
 }
@@ -120,11 +124,18 @@ const KNOWN_BACKUP_ERROR_PREFIXES = [
   'BACKUP_MODE_NARROWING_FAILED',
   'BACKUP_SCHEMA_VERSION_INVALID',
   'BACKUP_DIGEST_FAILED',
-  'BACKUP_MANIFEST_WRITE_REFUSED'
+  'BACKUP_MANIFEST_WRITE_REFUSED',
+  'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED',
+  'BACKUP_MANIFEST_BOUND_EXCEEDED',
+  'RESTORE_IMAGE_BOUND_EXCEEDED',
+  'RESTORE_OWNERSHIP_LOST',
+  'RESTORE_BUSY'
 ] as const;
 
 const SAFE_OPAQUE_BACKUP_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 const EXTERNAL_DEP_READ_CHUNK_BYTES = 64 * 1024;
+/** Module-level single-flight restore lock keyed by resolved `(trustedRootDir, scopeId)`. */
+const activeRestoreKeys = new Set<string>();
 
 function sanitizeAuditBackupId(backupId: string): string {
   if (SAFE_OPAQUE_BACKUP_ID_RE.test(backupId) && !backupId.includes('..')) {
@@ -268,6 +279,7 @@ export function createWorkspaceExternalDependencyInspector(
 export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): StoreBackupRestoreApi {
   const nowMs = deps.nowMs ?? (() => Date.now());
   const relativeBackupDirSegments = Object.freeze(['sqlite', deps.scopeId, 'backups'] as const);
+  let restoreInFlight = false;
 
   const resolveTrustedRootDir = (): string =>
     typeof deps.trustedRootDir === 'function' ? deps.trustedRootDir() : deps.trustedRootDir;
@@ -281,12 +293,28 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
     });
   };
 
+  const hasWorkspaceOwnership = async (): Promise<boolean> => {
+    try {
+      return await deps.hasPrimacy();
+    } catch {
+      return false;
+    }
+  };
+
   const appendAudit = async (
     eventType: 'store-backup' | 'store-restore',
     payload: StoreBackupRestoreAuditPayload
   ): Promise<void> => {
     if (!deps.auditWriter) return;
     const cleanBackupId = sanitizeAuditBackupId(payload.backupId);
+    if (!(await hasWorkspaceOwnership())) {
+      deps.logger?.warn('store operation audit skipped: workspace ownership lost', {
+        operation: payload.operation,
+        outcome: payload.outcome,
+        backupId: cleanBackupId
+      });
+      return;
+    }
     const cleanPayload: Record<string, unknown> = {
       operation: payload.operation,
       outcome: payload.outcome,
@@ -340,13 +368,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
   return {
     async createBackup(options): Promise<CreateStoreBackupResult> {
       const backupId = options?.backupId ?? generateBackupId(nowMs());
-      let isOwner = false;
-      try {
-        isOwner = await deps.hasPrimacy();
-      } catch {
-        isOwner = false;
-      }
-      if (!isOwner) {
+      if (!(await hasWorkspaceOwnership())) {
         logNotWorkspaceOwner('backup', backupId);
         return {
           status: 'refused',
@@ -358,6 +380,14 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
       let failureFallback: 'STORE_OPEN_FAILED' | 'BACKUP_FAILED' = 'STORE_OPEN_FAILED';
       try {
         const store = await resolvePrimaryStore();
+        if (!(await hasWorkspaceOwnership())) {
+          logNotWorkspaceOwner('backup', backupId);
+          return {
+            status: 'refused',
+            reasonCode: 'NOT_WORKSPACE_OWNER',
+            message: 'Workspace ownership fence was lost before backup; backup refused.'
+          };
+        }
         if (store === null) {
           await appendAudit('store-backup', {
             operation: 'backup',
@@ -381,7 +411,12 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
           trustedRootDir,
           relativeBackupDirSegments,
           auditLogDependencies,
-          writeManifestFile: true
+          writeManifestFile: true,
+          maxExternalDependencies: options?.maxExternalDependencies,
+          maxExternalDependencyBytes: options?.maxExternalDependencyBytes,
+          maxManifestBytes: options?.maxManifestBytes,
+          maxDatabaseBytes: options?.maxDatabaseBytes,
+          bounds: options?.bounds
         });
         await appendAudit('store-backup', {
           operation: 'backup',
@@ -429,199 +464,242 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
       if (entry.manifestStatus !== 'valid' || !entry.manifest) {
         return {
           status: 'rejected',
-          reasonCode: 'BACKUP_OPEN_FAILED',
+          reasonCode: entry.manifestErrorCode ?? 'BACKUP_OPEN_FAILED',
           message: `Backup '${entry.backupId}' has a ${entry.manifestStatus} companion manifest.`
         };
       }
-      return verifyBackupStandalone({
+      return await verifyBackupStandaloneAsync({
         backupDatabasePath: entry.backupDatabasePath,
         manifest: entry.manifest,
         trustedRootDir,
         maxSupportedSchemaVersion: options?.maxSupportedSchemaVersion,
         maxExternalDependencies: options?.maxExternalDependencies,
         maxExternalDependencyBytes: options?.maxExternalDependencyBytes,
+        maxManifestBytes: options?.maxManifestBytes,
+        maxDatabaseBytes: options?.maxDatabaseBytes,
+        bounds: options?.bounds,
         inspectExternalDependency: deps.inspectExternalDependency,
         simulateQuickCheckFailure: options?.simulateQuickCheckFailure
       });
     },
 
     async restoreBackup(backupId, options): Promise<GuardedRestoreResult> {
-      let isOwner = false;
-      try {
-        isOwner = await deps.hasPrimacy();
-      } catch {
-        isOwner = false;
-      }
-      if (!isOwner) {
+      if (!(await hasWorkspaceOwnership())) {
         logNotWorkspaceOwner('restore', backupId);
         return {
           status: 'refused',
+          outcome: 'refused_pre_commit',
           reasonCode: 'NOT_WORKSPACE_OWNER',
           message: 'Another window holds the workspace ownership fence; restore refused.'
         };
       }
+      const restoreKey = `${path.resolve(resolveTrustedRootDir())}\0${deps.scopeId}`;
+      if (restoreInFlight || activeRestoreKeys.has(restoreKey)) {
+        return {
+          status: 'rejected',
+          outcome: 'refused_pre_commit',
+          reasonCode: 'RESTORE_BUSY',
+          message: 'Another store restore is already in progress for this workspace.'
+        };
+      }
 
+      restoreInFlight = true;
+      activeRestoreKeys.add(restoreKey);
       let auditBackupId = backupId;
       let failureFallback: 'STORE_OPEN_FAILED' | 'RESTORE_FAILED' = 'RESTORE_FAILED';
       let committedOutcome: Extract<RestoreValidationOutcome, { readonly status: 'restored' }>;
       let committedDatabaseBytes: number;
 
       try {
-        if (deps.hasInFlightRun()) {
-          await appendAudit('store-restore', {
-            operation: 'restore',
-            outcome: 'refused',
-            backupId,
-            errorCode: 'RUN_IN_FLIGHT'
-          });
-          return {
-            status: 'refused',
-            reasonCode: 'RUN_IN_FLIGHT',
-            message:
-              'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
-          };
-        }
-
-        failureFallback = 'STORE_OPEN_FAILED';
-        const store = await resolvePrimaryStore();
-        failureFallback = 'RESTORE_FAILED';
-        if (store === null) {
-          await appendAudit('store-restore', {
-            operation: 'restore',
-            outcome: 'refused',
-            backupId,
-            errorCode: 'STORE_UNAVAILABLE'
-          });
-          return {
-            status: 'refused',
-            reasonCode: 'STORE_UNAVAILABLE',
-            message: 'SQLite application store is not open for this workspace.'
-          };
-        }
-
-        const trustedRootDir = resolveTrustedRootDir();
-        const entries = await listBackupsInRoot(trustedRootDir, relativeBackupDirSegments);
-        const entry = entries.find((e) => e.backupId === backupId);
-        if (!entry || entry.manifestStatus !== 'valid' || !entry.manifest) {
-          const reasonCode: BackupRestoreRejectionCode = 'BACKUP_OPEN_FAILED';
-          await appendAudit('store-restore', {
-            operation: 'restore',
-            outcome: 'rejected',
-            backupId,
-            errorCode: reasonCode
-          });
-          return {
-            status: 'rejected',
-            reasonCode,
-            message: !entry
-              ? `Backup '${sanitizeAuditBackupId(backupId)}' was not found in the workspace backup directory.`
-              : `Backup '${entry.backupId}' has a ${entry.manifestStatus} companion manifest.`
-          };
-        }
-        auditBackupId = entry.backupId;
-
-        // Re-check ownership fence and in-flight Runs immediately before opening the write transaction.
-        let stillOwner = false;
         try {
-          stillOwner = await deps.hasPrimacy();
+          if (deps.hasInFlightRun()) {
+            await appendAudit('store-restore', {
+              operation: 'restore',
+              outcome: 'refused',
+              backupId,
+              errorCode: 'RUN_IN_FLIGHT'
+            });
+            return {
+              status: 'refused',
+              outcome: 'refused_pre_commit',
+              reasonCode: 'RUN_IN_FLIGHT',
+              message:
+                'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
+            };
+          }
+
+          failureFallback = 'STORE_OPEN_FAILED';
+          const store = await resolvePrimaryStore();
+          failureFallback = 'RESTORE_FAILED';
+          if (!(await hasWorkspaceOwnership())) {
+            logNotWorkspaceOwner('restore', backupId);
+            return {
+              status: 'refused',
+              outcome: 'refused_pre_commit',
+              reasonCode: 'NOT_WORKSPACE_OWNER',
+              message: 'Workspace ownership fence was lost before restore; restore refused.'
+            };
+          }
+          if (store === null) {
+            await appendAudit('store-restore', {
+              operation: 'restore',
+              outcome: 'refused',
+              backupId,
+              errorCode: 'STORE_UNAVAILABLE'
+            });
+            return {
+              status: 'refused',
+              outcome: 'refused_pre_commit',
+              reasonCode: 'STORE_UNAVAILABLE',
+              message: 'SQLite application store is not open for this workspace.'
+            };
+          }
+
+          const trustedRootDir = resolveTrustedRootDir();
+          const entries = await listBackupsInRoot(trustedRootDir, relativeBackupDirSegments);
+          const entry = entries.find((e) => e.backupId === backupId);
+          if (!entry || entry.manifestStatus !== 'valid' || !entry.manifest) {
+            const reasonCode: BackupRestoreRejectionCode =
+              entry?.manifestErrorCode ?? 'BACKUP_OPEN_FAILED';
+            await appendAudit('store-restore', {
+              operation: 'restore',
+              outcome: 'rejected',
+              backupId,
+              errorCode: reasonCode
+            });
+            return {
+              status: 'rejected',
+              outcome: 'refused_pre_commit',
+              reasonCode,
+              message: !entry
+                ? `Backup '${sanitizeAuditBackupId(backupId)}' was not found in the workspace backup directory.`
+                : `Backup '${entry.backupId}' has a ${entry.manifestStatus} companion manifest.`
+            };
+          }
+          auditBackupId = entry.backupId;
+
+          // Re-check ownership fence and in-flight Runs before starting validation/restore.
+          if (!(await hasWorkspaceOwnership())) {
+            logNotWorkspaceOwner('restore', entry.backupId);
+            return {
+              status: 'refused',
+              outcome: 'refused_pre_commit',
+              reasonCode: 'NOT_WORKSPACE_OWNER',
+              message: 'Workspace ownership fence was lost before restore; restore refused.'
+            };
+          }
+          if (deps.hasInFlightRun()) {
+            await appendAudit('store-restore', {
+              operation: 'restore',
+              outcome: 'refused',
+              backupId: entry.backupId,
+              errorCode: 'RUN_IN_FLIGHT'
+            });
+            return {
+              status: 'refused',
+              outcome: 'refused_pre_commit',
+              reasonCode: 'RUN_IN_FLIGHT',
+              message:
+                'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
+            };
+          }
+
+          const outcome = await store.backupRestore.validateAndRestoreBackupAsync({
+            backupDatabasePath: entry.backupDatabasePath,
+            manifest: entry.manifest,
+            trustedRootDir,
+            maxSupportedSchemaVersion: options?.maxSupportedSchemaVersion,
+            maxExternalDependencies: options?.maxExternalDependencies,
+            maxExternalDependencyBytes: options?.maxExternalDependencyBytes,
+            maxManifestBytes: options?.maxManifestBytes,
+            maxDatabaseBytes: options?.maxDatabaseBytes,
+            bounds: options?.bounds,
+            inspectExternalDependency: deps.inspectExternalDependency,
+            simulateQuickCheckFailure: options?.simulateQuickCheckFailure,
+            fences: {
+              hasPrimacy: hasWorkspaceOwnership,
+              hasInFlightRun: deps.hasInFlightRun,
+              beforeCommitFence: options?.beforeCommitFence
+            }
+          });
+
+          if (outcome.status === 'rejected') {
+            if (outcome.reasonCode === 'RESTORE_OWNERSHIP_LOST') {
+              // Lost primacy before commit: never append to the shared workspace audit log.
+              deps.logger?.warn('store operation refused: workspace ownership lost before restore commit', {
+                operation: 'restore',
+                outcome: 'rejected',
+                backupId: sanitizeAuditBackupId(entry.backupId),
+                errorCode: 'RESTORE_OWNERSHIP_LOST'
+              });
+              return outcome;
+            }
+            await appendAudit('store-restore', {
+              operation: 'restore',
+              outcome: 'rejected',
+              backupId: entry.backupId,
+              errorCode: outcome.reasonCode
+            });
+            return outcome;
+          }
+
+          committedOutcome = outcome;
+          committedDatabaseBytes = entry.databaseBytes;
+        } catch (err) {
+          const errorCode = extractClosedErrorCode(err, failureFallback);
+          await appendAudit('store-restore', {
+            operation: 'restore',
+            outcome: 'failed',
+            backupId: auditBackupId,
+            errorCode
+          });
+          return {
+            status: 'failed',
+            outcome: 'refused_pre_commit',
+            errorCode,
+            message: `Store restore failed (${errorCode}).`
+          };
+        }
+
+        // Post-commit cache/catalog refresh: SQLite restore is already committed on disk.
+        try {
+          await deps.reloadAfterRestore();
         } catch {
-          stillOwner = false;
-        }
-        if (!stillOwner) {
-          logNotWorkspaceOwner('restore', entry.backupId);
-          return {
-            status: 'refused',
-            reasonCode: 'NOT_WORKSPACE_OWNER',
-            message: 'Workspace ownership fence was lost before restore; restore refused.'
-          };
-        }
-        if (deps.hasInFlightRun()) {
+          const errorCode = 'POST_COMMIT_REFRESH_FAILED' as const;
           await appendAudit('store-restore', {
             operation: 'restore',
-            outcome: 'refused',
-            backupId: entry.backupId,
-            errorCode: 'RUN_IN_FLIGHT'
+            outcome: 'failed',
+            backupId: auditBackupId,
+            errorCode,
+            schemaVersion: committedOutcome.schemaVersion,
+            databaseBytes: committedDatabaseBytes,
+            restoredTableCount: committedOutcome.restoredTableCount
           });
           return {
-            status: 'refused',
-            reasonCode: 'RUN_IN_FLIGHT',
+            status: 'committed_refresh_failed',
+            outcome: 'committed_refresh_failed',
+            errorCode,
+            restoredTableCount: committedOutcome.restoredTableCount,
+            restoredRunCount: committedOutcome.restoredRunCount,
+            schemaVersion: committedOutcome.schemaVersion,
             message:
-              'Cannot restore store while a Run is in flight. Wait for or cancel active Runs before restoring.'
+              'Restore committed on disk, but post-commit cache/catalog refresh failed (POST_COMMIT_REFRESH_FAILED). Reload the window to synchronize in-memory state.'
           };
         }
 
-        const outcome = store.backupRestore.validateAndRestoreBackup({
-          backupDatabasePath: entry.backupDatabasePath,
-          manifest: entry.manifest,
-          trustedRootDir,
-          maxSupportedSchemaVersion: options?.maxSupportedSchemaVersion,
-          maxExternalDependencies: options?.maxExternalDependencies,
-          maxExternalDependencyBytes: options?.maxExternalDependencyBytes,
-          inspectExternalDependency: deps.inspectExternalDependency,
-          simulateQuickCheckFailure: options?.simulateQuickCheckFailure
-        });
-
-        if (outcome.status === 'rejected') {
-          await appendAudit('store-restore', {
-            operation: 'restore',
-            outcome: 'rejected',
-            backupId: entry.backupId,
-            errorCode: outcome.reasonCode
-          });
-          return outcome;
-        }
-
-        committedOutcome = outcome;
-        committedDatabaseBytes = entry.databaseBytes;
-      } catch (err) {
-        const errorCode = extractClosedErrorCode(err, failureFallback);
         await appendAudit('store-restore', {
           operation: 'restore',
-          outcome: 'failed',
+          outcome: 'succeeded',
           backupId: auditBackupId,
-          errorCode
-        });
-        return {
-          status: 'failed',
-          errorCode,
-          message: `Store restore failed (${errorCode}).`
-        };
-      }
-
-      // Post-commit cache/catalog refresh: SQLite restore is already committed on disk.
-      try {
-        await deps.reloadAfterRestore();
-      } catch {
-        const errorCode = 'POST_COMMIT_REFRESH_FAILED' as const;
-        await appendAudit('store-restore', {
-          operation: 'restore',
-          outcome: 'failed',
-          backupId: auditBackupId,
-          errorCode,
           schemaVersion: committedOutcome.schemaVersion,
           databaseBytes: committedDatabaseBytes,
           restoredTableCount: committedOutcome.restoredTableCount
         });
-        return {
-          status: 'committed_refresh_failed',
-          errorCode,
-          restoredTableCount: committedOutcome.restoredTableCount,
-          restoredRunCount: committedOutcome.restoredRunCount,
-          schemaVersion: committedOutcome.schemaVersion,
-          message:
-            'Restore committed on disk, but post-commit cache/catalog refresh failed (POST_COMMIT_REFRESH_FAILED). Reload the window to synchronize in-memory state.'
-        };
+        return committedOutcome;
+      } finally {
+        activeRestoreKeys.delete(restoreKey);
+        restoreInFlight = false;
       }
-
-      await appendAudit('store-restore', {
-        operation: 'restore',
-        outcome: 'succeeded',
-        backupId: auditBackupId,
-        schemaVersion: committedOutcome.schemaVersion,
-        databaseBytes: committedDatabaseBytes,
-        restoredTableCount: committedOutcome.restoredTableCount
-      });
-      return committedOutcome;
     }
   };
 }

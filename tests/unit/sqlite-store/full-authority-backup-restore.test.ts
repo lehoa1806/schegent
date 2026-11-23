@@ -8,11 +8,17 @@
  */
 
 import { createHash } from 'node:crypto';
+import { lstatSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  MAX_BACKUP_EXTERNAL_DEPENDENCIES,
+  MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES
+} from '../../../src/contracts/sqlite-store/schema-types';
 import { createWorkspaceExternalDependencyInspector } from '../../../src/headless/backup-restore-api';
+import { AUTHORITATIVE_RESTORE_TABLES } from '../../../src/services/sqlite-store/authoritative-restore-tables';
 import {
   listBackupsInRoot,
   NodeSqliteConnection,
@@ -41,6 +47,40 @@ describe('Full-authority SQLite backup & restore (FR-R7-03 SC-001, SC-002, SC-00
   afterEach(async () => {
     for (const dir of tempDirs.splice(0)) {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reserves a private empty destination before SQLite writes and refuses existing backups', async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-backup-reserve-'));
+    tempDirs.push(rootDir);
+    const store = new SqliteApplicationStore({ databasePath: path.join(rootDir, 'live.db') });
+    try {
+      const conn = store.writerConnection;
+      const run = conn.run.bind(conn);
+      const request = {
+        backupId: 'private',
+        scopeId: 'scope',
+        trustedRootDir: rootDir,
+        relativeBackupDirSegments: ['sqlite', 'scope', 'backups']
+      };
+      const destination = path.join(rootDir, ...request.relativeBackupDirSegments, 'private.db');
+      const vacuum = vi.spyOn(conn, 'run').mockImplementation((sql, ...params) => {
+        if (sql === 'VACUUM INTO ?') {
+          expect(params).toEqual([destination]);
+          const stat = lstatSync(destination);
+          expect(stat.isFile()).toBe(true);
+          expect(stat.size).toBe(0);
+          if (process.platform !== 'win32') expect(stat.mode & 0o777).toBe(0o600);
+        }
+        return run(sql, ...params);
+      });
+      await store.backupRestore.createOnlineBackup(request);
+      const bytes = await fs.readFile(destination);
+      await expect(store.backupRestore.createOnlineBackup(request)).rejects.toThrow('BACKUP_PATH_REFUSED');
+      expect(await fs.readFile(destination)).toEqual(bytes);
+      expect(vacuum.mock.calls.filter(([sql]) => sql === 'VACUUM INTO ?')).toHaveLength(1);
+    } finally {
+      store.close();
     }
   });
 
@@ -323,8 +363,18 @@ describe('Full-authority SQLite backup & restore (FR-R7-03 SC-001, SC-002, SC-00
       });
       expect(verified.status).toBe('verified');
 
-      // 2. Populate targetStore with conflicting rows (including an issued recovery_handoff_revisions row!)
+      // 2. Populate targetStore with conflicting rows and a parent Run that
+      // shares the backed-up Run's ID. Restoring a child before deleting that
+      // live parent would silently cascade-delete the restored child.
       const tgtConn = targetStore.writerConnection;
+      tgtConn.run(
+        `INSERT INTO runs (
+          run_id, workspace_id, workflow_id, status, revision, created_at_ms, updated_at_ms
+        ) VALUES ('run-rel-1', ?, 'wf-live', 'succeeded', 5, ?, ?)`,
+        scopeId,
+        now,
+        now
+      );
       const tgtBacking = new SqliteOperationalBacking(
         targetStore,
         scopeId,
@@ -398,31 +448,7 @@ describe('Full-authority SQLite backup & restore (FR-R7-03 SC-001, SC-002, SC-00
 
       tgtBacking.reloadCacheFromSqlite();
 
-      // 4. Compare EVERY populated table entity-for-entity between sourceStore and targetStore
-      const tablesToCompare = [
-        'runs',
-        'steps',
-        'attempts',
-        'operational_queue_meta',
-        'operational_tasks',
-        'operational_runs',
-        'operational_kv_documents',
-        'artifacts',
-        'artifact_lifecycle',
-        'accounting_observations',
-        'accounting_observation_measures',
-        'recovery_handoffs',
-        'recovery_handoff_revisions',
-        'execution_lanes',
-        'report_saved',
-        'definitions',
-        'definition_versions',
-        'catalog_heads',
-        'state_change_outbox',
-        'cutover_sentinel'
-      ] as const;
-
-      for (const table of tablesToCompare) {
+      for (const table of AUTHORITATIVE_RESTORE_TABLES) {
         const srcRows = srcConn.all(`SELECT * FROM "${table}"`);
         const tgtRows = tgtConn.all(`SELECT * FROM "${table}"`);
         expect(tgtRows, `table ${table} must match entity-for-entity after restore`).toEqual(srcRows);
@@ -440,6 +466,93 @@ describe('Full-authority SQLite backup & restore (FR-R7-03 SC-001, SC-002, SC-00
     } finally {
       sourceStore.close();
       targetStore.close();
+    }
+  });
+
+  it('removes post-backup sequence state when restoring a backup with an unused outbox', async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-backup-sequence-'));
+    tempDirs.push(rootDir);
+    const store = new SqliteApplicationStore({ databasePath: path.join(rootDir, 'live.db') });
+    try {
+      const conn = store.writerConnection;
+      const backup = await store.backupRestore.createOnlineBackup({
+        backupId: 'empty-outbox',
+        scopeId: 'scope',
+        trustedRootDir: rootDir,
+        relativeBackupDirSegments: ['sqlite', 'scope', 'backups']
+      });
+      expect(await fs.readdir(path.dirname(backup.manifestPath))).toHaveLength(2);
+      const appendToOutbox = () => conn.run(
+        `INSERT INTO state_change_outbox (
+          commit_unit, scope_kind, scope_id, revision, payload_json, created_at_ms
+        ) VALUES ('Admission', 'workspace', 'scope', 1, '{}', 1)`
+      );
+      appendToOutbox();
+      expect(conn.get(`SELECT seq FROM sqlite_sequence WHERE name = 'state_change_outbox'`)).toEqual({ seq: 1 });
+      expect(store.backupRestore.validateAndRestoreBackup({
+        backupDatabasePath: backup.backupDatabasePath,
+        manifest: backup.manifest,
+        trustedRootDir: rootDir
+      }).status).toBe('restored');
+      expect(conn.get(`SELECT seq FROM sqlite_sequence WHERE name = 'state_change_outbox'`)).toBeUndefined();
+      appendToOutbox();
+      expect(conn.get(`SELECT outbox_seq FROM state_change_outbox`)).toEqual({ outbox_seq: 1 });
+
+      // An unrenderable timestamp would throw while the operator picker formats the backup.
+      await fs.writeFile(
+        backup.manifestPath,
+        JSON.stringify({ ...backup.manifest, createdAtMs: Number.MAX_SAFE_INTEGER })
+      );
+      expect(await listBackupsInRoot(rootDir, ['sqlite', 'scope', 'backups'])).toMatchObject([
+        { backupId: 'empty-outbox', createdAtMs: null, manifestStatus: 'invalid' }
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    ['DROP TABLE operational_kv_documents', 'operational_kv_documents'],
+    ['ALTER TABLE runs DROP COLUMN model_id', 'runs.model_id']
+  ])('rejects a structurally incomplete backup after %s without deleting live data', async (sql, missing) => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-backup-incomplete-'));
+    tempDirs.push(rootDir);
+    const store = new SqliteApplicationStore({ databasePath: path.join(rootDir, 'live.db') });
+    try {
+      const conn = store.writerConnection;
+      conn.run(`INSERT INTO operational_kv_documents VALUES ('ns', 'keep', 1, 1, '{}', 2, 0, 1)`);
+      const backup = await store.backupRestore.createOnlineBackup({
+        backupId: 'incomplete',
+        scopeId: 'scope',
+        trustedRootDir: rootDir,
+        relativeBackupDirSegments: ['sqlite', 'scope', 'backups']
+      });
+      const backupConn = new NodeSqliteConnection({ databasePath: backup.backupDatabasePath, journalMode: 'delete' });
+      try {
+        backupConn.exec(sql);
+      } finally {
+        backupConn.close();
+      }
+      const bytes = await fs.readFile(backup.backupDatabasePath);
+      const request = {
+        backupDatabasePath: backup.backupDatabasePath,
+        manifest: {
+          ...backup.manifest,
+          databaseSha256: createHash('sha256').update(bytes).digest('hex'),
+          databaseBytes: bytes.byteLength
+        },
+        trustedRootDir: rootDir
+      };
+      const rejection = {
+        status: 'rejected',
+        reasonCode: 'BACKUP_OPEN_FAILED',
+        message: expect.stringContaining(missing)
+      };
+      expect(store.backupRestore.verifyBackup(request)).toMatchObject(rejection);
+      expect(store.backupRestore.validateAndRestoreBackup(request)).toMatchObject(rejection);
+      expect(conn.get(`SELECT doc_key FROM operational_kv_documents`)).toEqual({ doc_key: 'keep' });
+    } finally {
+      store.close();
     }
   });
 
@@ -589,6 +702,39 @@ describe('Full-authority SQLite backup & restore (FR-R7-03 SC-001, SC-002, SC-00
       if (overBoundCount.status === 'rejected') {
         expect(overBoundCount.reasonCode).toBe('EXTERNAL_DEPENDENCY_BOUND_EXCEEDED');
       }
+      assertLiveUnchanged();
+
+      // The API can request tighter bounds, but it cannot raise the published caps.
+      const dependency = {
+        dependencyKind: 'artifact_blob' as const,
+        referenceId: 'bounded',
+        relativePath: 'blobs/bounded',
+        byteLength: 1,
+        sha256Digest: '1'.repeat(64)
+      };
+      const inspectExternalDependency = vi.fn();
+      const limits = {
+        backupDatabasePath: backup.backupDatabasePath,
+        trustedRootDir: rootDir,
+        maxExternalDependencies: MAX_BACKUP_EXTERNAL_DEPENDENCIES + 1,
+        maxExternalDependencyBytes: MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES + 1,
+        inspectExternalDependency
+      };
+      for (const externalDependencies of [
+        Array.from({ length: MAX_BACKUP_EXTERNAL_DEPENDENCIES + 1 }, () => dependency),
+        [{ ...dependency, byteLength: MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES + 1 }]
+      ]) {
+        const request = { ...limits, manifest: { ...backup.manifest, externalDependencies } };
+        expect(store.backupRestore.verifyBackup(request)).toMatchObject({
+          status: 'rejected',
+          reasonCode: 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED'
+        });
+        expect(store.backupRestore.validateAndRestoreBackup(request)).toMatchObject({
+          status: 'rejected',
+          reasonCode: 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED'
+        });
+      }
+      expect(inspectExternalDependency).not.toHaveBeenCalled();
       assertLiveUnchanged();
 
       // 5. BACKUP_OPEN_FAILED (regular -wal sidecar planted beside valid backup file)

@@ -62,6 +62,7 @@ import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity.js';
 // `src/contracts/backend-kinds` or dragging dashboard-only descriptor metadata
 // into the synchronous sidebar bundle.
 import {
+  BACKEND_CLI_DEFAULTS,
   DEFAULT_BACKEND,
   type BackendRunnerKind
 } from './generated/backend-kinds.js';
@@ -622,9 +623,7 @@ export const IDLE_QUEUE_SETTINGS: QueueSettingsProjection = Object.freeze({
 });
 
 export const IDLE_GENERAL_SETTINGS: GeneralSettings = Object.freeze({
-  cliPath: 'claude',
-  codexPath: 'codex',
-  agyPath: 'agy',
+  ...BACKEND_CLI_DEFAULTS,
   loggingVerbose: false,
   loopMaxIterations: 10,
   // FR-R3-051 (M-06) — 5400, matching the manifest, the host fallback and the

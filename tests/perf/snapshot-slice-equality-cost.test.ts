@@ -11,8 +11,9 @@
 //   - large-history-with-catalogs: large-history + populated catalogs (10 phases, 5 pipelines, 3 workflows)
 //     to empirically measure whether structured catalog slices reach the JSON.stringify fallback.
 //
-// Also measures 1-consumer and 2-consumer (sidebar + dashboard) total routine flush
-// host cost (`project()` + N * `preparePost()` + N * routine wire `JSON.stringify`),
+// Also measures fallback, total comparison, and total routine flush host cost
+// (`project()` + N * `preparePost()` + N * routine wire `JSON.stringify`)
+// for 1 and 2 consumers (sidebar + dashboard),
 // asserts 100% behavioral parity between the stage classifier and `areSnapshotSlicesEqual`
 // on every sample, and asserts fixture/sample counts without brittle wall-clock assertions.
 
@@ -738,6 +739,8 @@ describe('FR-R7-09: per-slice equality stages and fallback cost across workloads
 
     const totalFallbackPerFlushMs: number[] = [];
     const totalComparePerFlushMs: number[] = [];
+    const twoConsumerFallbackPerFlushMs: number[] = [];
+    const twoConsumerComparePerFlushMs: number[] = [];
     const oneConsumerFlushMs: number[] = [];
     const twoConsumerFlushMs: number[] = [];
 
@@ -778,13 +781,24 @@ describe('FR-R7-09: per-slice equality stages and fallback cost across workloads
 
       const prevRecord = prevSnapshot as unknown as Record<string, unknown>;
       const nextRecord = nextSnapshot as unknown as Record<string, unknown>;
+      // Both transports received the same previous snapshot in this workload.
+      // Trace each pass separately so the dual-consumer p95 uses paired samples.
+      const traceComparison = (slice: SuppressibleSnapshotSlice) =>
+        classifySliceEqualityStage(slice, prevRecord[slice], nextRecord[slice]);
+      const sidebarResults = SUPPRESSIBLE_SNAPSHOT_SLICES.map(traceComparison);
+      const dashboardResults = SUPPRESSIBLE_SNAPSHOT_SLICES.map(traceComparison);
       let flushFallbackMs = 0;
       let flushCompareMs = 0;
+      let dashboardFallbackMs = 0;
+      let dashboardCompareMs = 0;
 
-      for (const slice of SUPPRESSIBLE_SNAPSHOT_SLICES) {
-        const result = classifySliceEqualityStage(slice, prevRecord[slice], nextRecord[slice]);
+      for (const [index, slice] of SUPPRESSIBLE_SNAPSHOT_SLICES.entries()) {
+        const result = sidebarResults[index]!;
+        const dashboardResult = dashboardResults[index]!;
         const prodResult = areSnapshotSlicesEqual(slice, prevRecord[slice], nextRecord[slice]);
         expect(result.equal, `${spec.name}/${slice} sample ${sample}: parity`).toBe(prodResult);
+        expect(dashboardResult.stage).toBe(result.stage);
+        expect(dashboardResult.equal).toBe(prodResult);
 
         if (sample >= WARM_UP_SAMPLES) {
           perSliceCounts[slice][result.stage] += 1;
@@ -793,12 +807,16 @@ describe('FR-R7-09: per-slice equality stages and fallback cost across workloads
           perSliceTotalMs[slice].push(result.totalMs);
           flushFallbackMs += result.fallbackMs;
           flushCompareMs += result.totalMs;
+          dashboardFallbackMs += dashboardResult.fallbackMs;
+          dashboardCompareMs += dashboardResult.totalMs;
         }
       }
 
       if (sample >= WARM_UP_SAMPLES) {
         totalFallbackPerFlushMs.push(flushFallbackMs);
         totalComparePerFlushMs.push(flushCompareMs);
+        twoConsumerFallbackPerFlushMs.push(flushFallbackMs + dashboardFallbackMs);
+        twoConsumerComparePerFlushMs.push(flushCompareMs + dashboardCompareMs);
         const c1Elapsed = c1End - c1Start;
         const c2Elapsed = c2End - c2Start;
         oneConsumerFlushMs.push(projectElapsed + c1Elapsed);
@@ -833,11 +851,14 @@ describe('FR-R7-09: per-slice equality stages and fallback cost across workloads
 
     const fallbackDist = distributionOf(totalFallbackPerFlushMs);
     const compareDist = distributionOf(totalComparePerFlushMs);
+    const twoConsumerFallbackDist = distributionOf(twoConsumerFallbackPerFlushMs);
+    const twoConsumerCompareDist = distributionOf(twoConsumerComparePerFlushMs);
     const oneConsumerDist = distributionOf(oneConsumerFlushMs);
     const twoConsumerDist = distributionOf(twoConsumerFlushMs);
     const thresholdMet =
       spec.name !== 'idle' &&
       (fallbackDist.p95 >= ADOPTION_THRESHOLD_MS ||
+        twoConsumerFallbackDist.p95 >= ADOPTION_THRESHOLD_MS ||
         oneConsumerDist.p95 >= ADOPTION_THRESHOLD_MS ||
         twoConsumerDist.p95 >= ADOPTION_THRESHOLD_MS);
 
@@ -858,6 +879,8 @@ describe('FR-R7-09: per-slice equality stages and fallback cost across workloads
       slices: slicesSummary,
       totalFallbackPerFlushMs: fallbackDist,
       totalComparePerFlushMs: compareDist,
+      twoConsumerFallbackPerFlushMs: twoConsumerFallbackDist,
+      twoConsumerComparePerFlushMs: twoConsumerCompareDist,
       oneConsumerFlushMs: oneConsumerDist,
       twoConsumerFlushMs: twoConsumerDist,
       thresholdMs: ADOPTION_THRESHOLD_MS,
@@ -888,6 +911,8 @@ describe('FR-R7-09: per-slice equality stages and fallback cost across workloads
 
     expect(line.totalFallbackPerFlushMs.samples).toBe(SAMPLES);
     expect(line.totalComparePerFlushMs.samples).toBe(SAMPLES);
+    expect(line.twoConsumerFallbackPerFlushMs.samples).toBe(SAMPLES);
+    expect(line.twoConsumerComparePerFlushMs.samples).toBe(SAMPLES);
     expect(line.oneConsumerFlushMs.samples).toBe(SAMPLES);
     expect(line.twoConsumerFlushMs.samples).toBe(SAMPLES);
     return line;

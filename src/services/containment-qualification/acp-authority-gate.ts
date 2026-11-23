@@ -20,6 +20,7 @@
 import * as path from 'node:path';
 
 import type {
+  AcpPermissionDecision,
   AcpPermissionPolicy,
   AcpPermissionRequest
 } from '../../contracts/acp-runtime';
@@ -65,6 +66,7 @@ export interface AcpAttemptAuthorityScope {
 export interface AcpAuthorityLiveProbe {
   isWorkspaceTrusted(): boolean;
   holdsPrimacy(): boolean;
+  verifyPrimacy?(): Promise<boolean>;
   currentOwnershipGeneration(): number;
   isTurnCancelling?(acpSessionId: string): boolean;
   nowMs?(): number;
@@ -179,7 +181,7 @@ function effectAllowedByCapabilities(
 }
 
 export class AcpAuthorityGate {
-  private readonly scopesBySession = new Map<string, AcpAttemptAuthorityScope>();
+  private readonly scopesBySession = new Map<string, Map<number, AcpAttemptAuthorityScope>>();
   private readonly seenEffectKeys = new Set<string>();
   private readonly receipts: AcpAuthorizationReceipt[] = [];
   private nextReceiptSeq = 1;
@@ -190,27 +192,67 @@ export class AcpAuthorityGate {
   ) {}
 
   registerScope(scope: AcpAttemptAuthorityScope): void {
-    this.scopesBySession.set(scope.acpSessionId, scope);
+    let byGeneration = this.scopesBySession.get(scope.acpSessionId);
+    if (byGeneration === undefined) {
+      byGeneration = new Map<number, AcpAttemptAuthorityScope>();
+      this.scopesBySession.set(scope.acpSessionId, byGeneration);
+    }
+    byGeneration.set(scope.connectionGeneration, scope);
   }
 
-  revokeSession(acpSessionId: string): void {
-    this.scopesBySession.delete(acpSessionId);
+  revokeSession(acpSessionId: string, connectionGeneration?: number): void {
+    if (connectionGeneration === undefined) {
+      this.scopesBySession.delete(acpSessionId);
+      return;
+    }
+    const byGeneration = this.scopesBySession.get(acpSessionId);
+    if (byGeneration === undefined) return;
+    byGeneration.delete(connectionGeneration);
+    if (byGeneration.size === 0) {
+      this.scopesBySession.delete(acpSessionId);
+    }
   }
 
   listReceipts(): readonly AcpAuthorizationReceipt[] {
     return [...this.receipts];
   }
 
-  authorize(request: AcpCallbackAuthorizationRequest): AcpAuthorizationDecision {
-    const nowMs = this.liveProbe.nowMs ? this.liveProbe.nowMs() : Date.now();
-    const currentGen = this.liveProbe.currentOwnershipGeneration();
-    const scope = this.scopesBySession.get(request.acpSessionId);
+  private resolveScope(
+    acpSessionId: string,
+    connectionGeneration: number
+  ):
+    | { readonly kind: 'matched'; readonly scope: AcpAttemptAuthorityScope }
+    | { readonly kind: 'stale-generation'; readonly sibling: AcpAttemptAuthorityScope }
+    | { readonly kind: 'missing' } {
+    const byGeneration = this.scopesBySession.get(acpSessionId);
+    if (byGeneration === undefined || byGeneration.size === 0) {
+      return { kind: 'missing' };
+    }
+    const exact = byGeneration.get(connectionGeneration);
+    if (exact !== undefined) {
+      return { kind: 'matched', scope: exact };
+    }
+    let latestSibling: AcpAttemptAuthorityScope | undefined;
+    for (const candidate of byGeneration.values()) {
+      latestSibling = candidate;
+    }
+    return latestSibling !== undefined
+      ? { kind: 'stale-generation', sibling: latestSibling }
+      : { kind: 'missing' };
+  }
 
-    const record = (
-      attemptId: string,
-      decision: 'allowed' | 'denied' | 'cancelled',
-      reason: AcpAuthorizationReason
-    ): AcpAuthorizationDecision => {
+  private makeRecorder(
+    request: AcpCallbackAuthorizationRequest,
+    profileId: string,
+    nowMs: number,
+    currentGen: number,
+    canPersistReceipt: boolean
+  ): (
+    attemptId: string,
+    decision: 'allowed' | 'denied' | 'cancelled',
+    reason: AcpAuthorizationReason
+  ) => AcpAuthorizationDecision {
+    return (attemptId, decision, reason) => {
       const receipt: AcpAuthorizationReceipt = Object.freeze({
         receiptId: `acp-auth-${nowMs}-${this.nextReceiptSeq++}`,
         attemptId,
@@ -226,7 +268,9 @@ export class AcpAuthorityGate {
         this.receipts.shift();
       }
       this.receipts.push(receipt);
-      this.persistReceiptIfConfigured(receipt, scope?.profileId ?? 'unattributed');
+      if (canPersistReceipt) {
+        this.persistReceiptIfConfigured(receipt, profileId);
+      }
       return {
         allowed: decision === 'allowed',
         decision,
@@ -234,25 +278,158 @@ export class AcpAuthorityGate {
         receipt
       };
     };
+  }
 
-    if (scope === undefined) {
+  authorize(request: AcpCallbackAuthorizationRequest): AcpAuthorizationDecision {
+    return this.authorizeInternal(request, true);
+  }
+
+  private authorizeInternal(
+    request: AcpCallbackAuthorizationRequest,
+    allowPersistReceipt: boolean
+  ): AcpAuthorizationDecision {
+    const nowMs = this.liveProbe.nowMs ? this.liveProbe.nowMs() : Date.now();
+    const currentGen = this.liveProbe.currentOwnershipGeneration();
+    const trusted = this.liveProbe.isWorkspaceTrusted();
+    const holdsPrimacy = this.liveProbe.holdsPrimacy();
+    const resolved = this.resolveScope(request.acpSessionId, request.connectionGeneration);
+    const scope = resolved.kind === 'matched' ? resolved.scope : undefined;
+    const sibling = resolved.kind === 'stale-generation' ? resolved.sibling : undefined;
+    const record = this.makeRecorder(
+      request,
+      scope?.profileId ?? sibling?.profileId ?? 'unattributed',
+      nowMs,
+      currentGen,
+      allowPersistReceipt && trusted && holdsPrimacy
+    );
+
+    if (resolved.kind === 'missing') {
       return record('unattributed', 'denied', 'session-attempt-mismatch');
     }
-    if (request.attemptId !== undefined && request.attemptId !== scope.attemptId) {
-      return record(scope.attemptId, 'denied', 'session-attempt-mismatch');
+    if (resolved.kind === 'stale-generation') {
+      return record(resolved.sibling.attemptId, 'denied', 'stale-connection-generation');
     }
-    if (request.connectionGeneration !== scope.connectionGeneration) {
-      return record(scope.attemptId, 'denied', 'stale-connection-generation');
+    const matched = resolved.scope;
+    if (request.attemptId !== undefined && request.attemptId !== matched.attemptId) {
+      return record(matched.attemptId, 'denied', 'session-attempt-mismatch');
     }
     if (this.liveProbe.isTurnCancelling?.(request.acpSessionId) === true) {
-      return record(scope.attemptId, 'cancelled', 'turn-cancelling');
+      return record(matched.attemptId, 'cancelled', 'turn-cancelling');
     }
-    if (!this.liveProbe.isWorkspaceTrusted()) {
-      return record(scope.attemptId, 'denied', 'workspace-untrusted');
+    if (!trusted) {
+      return record(matched.attemptId, 'denied', 'workspace-untrusted');
     }
-    if (!this.liveProbe.holdsPrimacy() || currentGen !== scope.ownershipGeneration) {
-      return record(scope.attemptId, 'denied', 'ownership-lost');
+    if (!holdsPrimacy || currentGen !== matched.ownershipGeneration) {
+      return record(matched.attemptId, 'denied', 'ownership-lost');
     }
+    return this.evaluatePostPrimacyChecks(matched, request, record);
+  }
+
+  /**
+   * FR-R7-14 (14-07) — awaits an authoritative live primacy probe (`verifyPrimacy()`) before
+   * authorizing sensitive callbacks, then re-validates scope registration, attempt binding,
+   * cancellation, workspace trust, primacy, ownership generation, capabilities, path containment,
+   * and duplicate effect replay against the post-await state.
+   */
+  async authorizeAsync(request: AcpCallbackAuthorizationRequest): Promise<AcpAuthorizationDecision> {
+    if (this.liveProbe.verifyPrimacy === undefined) {
+      return this.authorize(request);
+    }
+
+    const preNowMs = this.liveProbe.nowMs ? this.liveProbe.nowMs() : Date.now();
+    const preGen = this.liveProbe.currentOwnershipGeneration();
+    const preTrusted = this.liveProbe.isWorkspaceTrusted();
+    const preResolved = this.resolveScope(request.acpSessionId, request.connectionGeneration);
+    const preProfile =
+      preResolved.kind === 'matched'
+        ? (preResolved.scope.profileId ?? 'unattributed')
+        : preResolved.kind === 'stale-generation'
+          ? (preResolved.sibling.profileId ?? 'unattributed')
+          : 'unattributed';
+    // Never persist SQLite receipts on pre-await fast-fail branches before `verifyPrimacy()` settles.
+    const preRecord = this.makeRecorder(request, preProfile, preNowMs, preGen, false);
+
+    if (preResolved.kind === 'missing') {
+      return preRecord('unattributed', 'denied', 'session-attempt-mismatch');
+    }
+    if (preResolved.kind === 'stale-generation') {
+      return preRecord(preResolved.sibling.attemptId, 'denied', 'stale-connection-generation');
+    }
+    const preScope = preResolved.scope;
+    if (request.attemptId !== undefined && request.attemptId !== preScope.attemptId) {
+      return preRecord(preScope.attemptId, 'denied', 'session-attempt-mismatch');
+    }
+    if (this.liveProbe.isTurnCancelling?.(request.acpSessionId) === true) {
+      return preRecord(preScope.attemptId, 'cancelled', 'turn-cancelling');
+    }
+    if (!preTrusted) {
+      return preRecord(preScope.attemptId, 'denied', 'workspace-untrusted');
+    }
+    if (preGen !== preScope.ownershipGeneration) {
+      return preRecord(preScope.attemptId, 'denied', 'ownership-lost');
+    }
+
+    let primacyHeld: boolean;
+    try {
+      primacyHeld = (await this.liveProbe.verifyPrimacy()) === true;
+    } catch {
+      primacyHeld = false;
+    }
+
+    const postNowMs = this.liveProbe.nowMs ? this.liveProbe.nowMs() : Date.now();
+    const postGen = this.liveProbe.currentOwnershipGeneration();
+    const postTrusted = this.liveProbe.isWorkspaceTrusted();
+    const postResolved = this.resolveScope(request.acpSessionId, request.connectionGeneration);
+    const postProfile =
+      postResolved.kind === 'matched'
+        ? (postResolved.scope.profileId ?? 'unattributed')
+        : postResolved.kind === 'stale-generation'
+          ? (postResolved.sibling.profileId ?? 'unattributed')
+          : 'unattributed';
+    const postCanPersist =
+      postTrusted &&
+      primacyHeld &&
+      postGen === preGen &&
+      (postResolved.kind !== 'matched' || postGen === postResolved.scope.ownershipGeneration);
+    const postRecord = this.makeRecorder(
+      request,
+      postProfile,
+      postNowMs,
+      postGen,
+      postCanPersist
+    );
+
+    if (postResolved.kind === 'missing') {
+      return postRecord('unattributed', 'denied', 'session-attempt-mismatch');
+    }
+    if (postResolved.kind === 'stale-generation') {
+      return postRecord(postResolved.sibling.attemptId, 'denied', 'stale-connection-generation');
+    }
+    const postScope = postResolved.scope;
+    if (request.attemptId !== undefined && request.attemptId !== postScope.attemptId) {
+      return postRecord(postScope.attemptId, 'denied', 'session-attempt-mismatch');
+    }
+    if (this.liveProbe.isTurnCancelling?.(request.acpSessionId) === true) {
+      return postRecord(postScope.attemptId, 'cancelled', 'turn-cancelling');
+    }
+    if (!postTrusted) {
+      return postRecord(postScope.attemptId, 'denied', 'workspace-untrusted');
+    }
+    if (!primacyHeld || postGen !== postScope.ownershipGeneration) {
+      return postRecord(postScope.attemptId, 'denied', 'ownership-lost');
+    }
+    return this.evaluatePostPrimacyChecks(postScope, request, postRecord);
+  }
+
+  private evaluatePostPrimacyChecks(
+    scope: AcpAttemptAuthorityScope,
+    request: AcpCallbackAuthorizationRequest,
+    record: (
+      attemptId: string,
+      decision: 'allowed' | 'denied' | 'cancelled',
+      reason: AcpAuthorizationReason
+    ) => AcpAuthorizationDecision
+  ): AcpAuthorizationDecision {
     if (!effectAllowedByCapabilities(scope.capabilities, request.requestKind, request.mutating)) {
       return record(scope.attemptId, 'denied', 'effect-not-declared');
     }
@@ -397,41 +574,63 @@ export class AcpAuthorityGate {
     connectionGeneration: number,
     options: { readonly allowAuthorizedOnce?: boolean } = {}
   ): AcpPermissionPolicy {
+    const pickOption = (
+      request: AcpPermissionRequest,
+      allowed: boolean
+    ): AcpPermissionDecision => {
+      if (!allowed || options.allowAuthorizedOnce === false) {
+        return 'undecided';
+      }
+      const allowOnce = request.options.find((opt) => opt.kind === 'allow_once');
+      return allowOnce !== undefined ? { optionId: allowOnce.optionId } : 'undecided';
+    };
+
     return (request: AcpPermissionRequest) => {
-      const scope = this.scopesBySession.get(request.sessionId);
-      if (scope === undefined || request.attemptId !== scope.attemptId) {
-        this.authorize({
-          requestKind: 'permission',
-          acpSessionId: request.sessionId,
-          connectionGeneration,
-          attemptId: request.attemptId,
-          mutating: true
-        });
+      const resolved = this.resolveScope(request.sessionId, connectionGeneration);
+      if (resolved.kind !== 'matched' || request.attemptId !== resolved.scope.attemptId) {
+        this.authorizeInternal(
+          {
+            requestKind: 'permission',
+            acpSessionId: request.sessionId,
+            connectionGeneration,
+            attemptId: request.attemptId,
+            mutating: true
+          },
+          this.liveProbe.verifyPrimacy === undefined
+        );
         return 'undecided';
       }
 
-      const decision = this.authorize({
+      const authRequest: AcpCallbackAuthorizationRequest = {
         requestKind: 'permission',
         acpSessionId: request.sessionId,
         connectionGeneration,
         attemptId: request.attemptId,
         ...(request.toolCallId !== null ? { effectRequestKey: request.toolCallId } : {}),
         mutating: true
-      });
-      if (!decision.allowed || options.allowAuthorizedOnce === false) {
-        return 'undecided';
+      };
+
+      if (this.liveProbe.verifyPrimacy !== undefined) {
+        return this.authorizeAsync(authRequest).then(
+          (decision) => pickOption(request, decision.allowed),
+          () => 'undecided'
+        );
       }
 
-      const allowOnce = request.options.find((opt) => opt.kind === 'allow_once');
-      if (allowOnce !== undefined) {
-        return { optionId: allowOnce.optionId };
-      }
-      return 'undecided';
+      const decision = this.authorize(authRequest);
+      return pickOption(request, decision.allowed);
     };
   }
 
   private persistReceiptIfConfigured(receipt: AcpAuthorizationReceipt, profileId: string): void {
     if (this.sqliteConnection === undefined) return;
+    // Never write to the shared SQLite store from a window that has lost ownership or workspace trust.
+    if (
+      receipt.reasonCode === 'ownership-lost' ||
+      receipt.reasonCode === 'workspace-untrusted'
+    ) {
+      return;
+    }
     const dbRequestKind = receipt.requestKind === 'filesystem' ? 'fs' : receipt.requestKind;
     const dbDecision = receipt.decision === 'allowed' ? 'approved' : receipt.decision;
     try {

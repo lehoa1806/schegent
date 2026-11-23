@@ -1,7 +1,7 @@
 {
-  "indexJsBytes": 60077,
-  "capturedAt": "004-operator-ui",
+  "indexJsBytes": 69285,
+  "capturedAt": "328-repository-review-followup",
   "deltaBudgetBytes": 3072,
   "absoluteCapBytes": 204800,
-  "note": "Locked at the end of feature 004-operator-ui. Post-Vite-split, indexJsBytes represents the sidebar entry (dist/webview/index.js) plus its synchronously imported shared chunks. Async dashboard route chunks share the output directory but are excluded from sidebar startup. Update only when a feature intentionally lifts the regression floor; document the new size in the PR description."
+  "note": "Re-locked at feature 328-repository-review-followup (FR-R7-14 14-16: default-queue scope label, workspace active-run count, and View queues Dashboard navigation in sidebar StatusBar.svelte; previous 60077 baseline was captured at 004-operator-ui). Post-Vite-split, indexJsBytes represents the sidebar entry (dist/webview/index.js) plus its synchronously imported shared chunks. Async dashboard route chunks share the output directory but are excluded from sidebar startup. Update only when a feature intentionally lifts the regression floor; document the new size in the PR description."
 }

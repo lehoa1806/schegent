@@ -5,6 +5,7 @@
   // iteration (`iterations[0]`) of the selected queue's in-flight task/phase.
 
   import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
+  import { DEFAULT_BACKEND } from '../../lib/generated/backend-kinds';
   import {
     createPhaseLogStore,
     isTransientTailFailure,
@@ -147,7 +148,7 @@
         e.category === 'phase-transition' &&
         e.summary.startsWith('phase-start')
       ) {
-        if (e.runner && e.runner !== (snapshot.defaultRunnerKind ?? 'claude')) {
+        if (e.runner && e.runner !== (snapshot.defaultRunnerKind ?? DEFAULT_BACKEND)) {
           return e.runner;
         }
       }

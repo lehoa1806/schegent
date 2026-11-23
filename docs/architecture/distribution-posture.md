@@ -26,9 +26,12 @@ not exist, and would make three of this item's tasks urgent that are not.
 An SBOM ships despite the posture, and the reasoning cuts against it deliberately.
 
 `repo/package.json` declares **no `dependencies` key at all** — not an empty one,
-absent. So the SBOM is cheap to produce, short, and says something unusually strong:
-the extension has zero runtime dependencies, and now says so verifiably rather than
-by assertion. It costs nothing to produce and nothing to carry.
+absent — so the host extension ships with zero npm runtime dependencies (only Node.js
+built-ins and the VS Code host API). The webview UI (`repo/webview-ui/`) bundles its
+UI framework runtime (`svelte` and `esm-env`) into `dist/webview/`, and both trees are
+reflected accurately in the generated CycloneDX 1.5 SBOM (`schegent-sbom.cdx.json`)
+derived from the build module graphs rather than claimed by assertion. It costs
+nothing to produce and nothing to carry.
 
 The general principle: **evidence that is free to produce should be produced before
 it is needed, not when.** If the posture changes, the evidence gap should not have to

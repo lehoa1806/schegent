@@ -391,6 +391,42 @@ describe('activate() — BUG-001 activation invariant', () => {
     // Each sink receives the same line in turn, so a leaked sink shows as a repeat.
     expect(loggerLines.filter((line, i) => line === loggerLines[i - 1])).toEqual([]);
   });
+
+  it.each(['folder removal', 'host deactivation'])('settles in-flight Stage 2 wiring during %s', async (event) => {
+    mocks.state.workspaceFolders = [{ uri: { fsPath: workspaceRoot } }];
+    const { context, store } = buildContext();
+    let reachElection: () => void = () => undefined;
+    let startElection: () => void = () => undefined;
+    const electionReached = new Promise<void>((resolve) => { reachElection = resolve; });
+    const electionCanStart = new Promise<void>((resolve) => { startElection = resolve; });
+    const acquire = WorkspaceLockManager.prototype.tryAcquire;
+    const release = vi.spyOn(WorkspaceLockManager.prototype, 'release');
+    const pause = vi.spyOn(WorkspaceLockManager.prototype, 'tryAcquire').mockImplementationOnce(async function (
+      this: WorkspaceLockManager
+    ) {
+      reachElection();
+      await electionCanStart;
+      return acquire.call(this);
+    });
+    const activating = activate(context as Parameters<typeof activate>[0]);
+    try {
+      await electionReached;
+      if (event === 'folder removal') mocks.state.workspaceFolders = undefined;
+      const stopping = event === 'host deactivation'
+        ? deactivate()
+        : Promise.all(Array.from(mocks.state.listeners).map(async (listener) => listener({ added: [], removed: [] })));
+      startElection();
+      await Promise.all([activating, stopping]);
+
+      expect(store.get('schegent.lock')).toBeNull();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      startElection();
+      pause.mockRestore();
+      release.mockRestore();
+      await activating;
+    }
+  });
 });
 
 describe('activate() — Stage 2 workspace lock reclaim (BUG-005)', () => {

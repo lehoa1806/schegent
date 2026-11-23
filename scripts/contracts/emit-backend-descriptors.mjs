@@ -603,18 +603,23 @@ function formatObjectKey(key) {
 
 /**
  * Emits a self-contained leaf webview projection (`webview-ui/src/lib/generated/backend-kinds.ts`)
- * carrying zero host-code imports and only backend identity symbols so lightweight
+ * carrying zero host-code imports and only the defaults and identity used on startup so lightweight
  * sidebar startup bundles do not pull in dashboard-only descriptor metadata.
  */
 export function emitWebviewBackendKinds({
   supportedBackends,
-  defaultBackend
+  defaultBackend,
+  descriptors
 }) {
   const unionExpr = supportedBackends.map((k) => JSON.stringify(k)).join(' | ');
+  const cliDefaults = supportedBackends.map((kind) => {
+    const { cliPathFieldKey, defaultCliBinary } = descriptors[kind];
+    return `  ${formatObjectKey(cliPathFieldKey)}: ${JSON.stringify(defaultCliBinary)}`;
+  });
   return [
     '// GENERATED FILE — do not edit.',
     '//',
-    '// Emitted from src/contracts/backend-kinds.ts by scripts/generate-contract-schemas.mjs (FR-R7-06 / FR-R7-11).',
+    '// Emitted from src/contracts/backend-kinds.ts and backend-descriptors.ts by scripts/generate-contract-schemas.mjs.',
     '// Edit the host contract source and run: npm run contracts:generate',
     '//',
     '// Self-contained leaf webview projection: carries zero imports from host `src/`.',
@@ -624,6 +629,10 @@ export function emitWebviewBackendKinds({
     `export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = /*#__PURE__*/ Object.freeze(${JSON.stringify(supportedBackends)});`,
     '',
     `export const DEFAULT_BACKEND: BackendRunnerKind = ${JSON.stringify(defaultBackend)};`,
+    '',
+    'export const BACKEND_CLI_DEFAULTS = /*#__PURE__*/ Object.freeze({',
+    cliDefaults.join(',\n'),
+    '});',
     '',
     'export function isBackendRunnerKind(value: unknown): value is BackendRunnerKind {',
     "  return typeof value === 'string' &&",

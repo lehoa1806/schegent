@@ -3,8 +3,8 @@
 **Declared**: 2026-11-11 (`specs/314-phase-context-handoff/spec.md`)
 
 This guide is for an operator or maintainer who needs to know what a context handoff between
-two workflow phases carries, what it never carries, which limits it stays under, why one was
-refused, and what is not built yet.
+two workflow phases carries, what it never carries, which limits it stays under, how disabled and
+opted-in transitions behave in production, why a handoff can be refused, and what limits remain.
 
 Implemented in:
 
@@ -12,19 +12,37 @@ Implemented in:
   failure list and the shapes of the policy, the contribution, the manifest, the delivery
   representation and the review records;
 - [`src/services/phase-context/index.ts`](../../src/services/phase-context/index.ts): the
-  services, re-exported from one index.
+  services (`PhaseHandoffCoordinator`, `SqliteHandoffStore`, `attempt-result-publisher.ts`,
+  `handoff-materializer.ts`, `handoff-delivery-coordinator.ts`, `review-loop-coordinator.ts`),
+  re-exported from one index;
+- [`src/activation/sqlite-cutover-wiring.ts`](../../src/activation/sqlite-cutover-wiring.ts),
+  [`src/services/workflow-execution/phase-handoff-execution-bridge.ts`](../../src/services/workflow-execution/phase-handoff-execution-bridge.ts),
+  and [`src/runner/acp-backed-runner.ts`](../../src/runner/acp-backed-runner.ts): production
+  construction, workflow execution bridging, and ACP `session/prompt` delivery.
 
 ## Production status
 
-This revision ships delivery package F15-A: the editor-independent rules, with unit tests, an
-acceptance file and a latency test. **Nothing in extension activation constructs them.** No
-workflow run prepares, stores or sends a handoff yet, and there is no setting that turns one on.
+**F15-B is wired in production.** Extension activation (`src/activation/sqlite-cutover-wiring.ts`)
+constructs `createPhaseHandoffCoordinator` backed by the folder-scoped SQLite store
+(`SqliteHandoffStore`, `phase_handoff_records`, `review_loop_ledgers`, `review_findings`,
+`handoff_artifact_pins`) and F05 `ArtifactLifecycleService`, and passes it into workflow
+execution (`connected-run-coordinator.ts`, `phase-handoff-execution-bridge.ts`,
+`workflow-control-service.ts`, and `workflow-recovery-service.ts`).
 
-The durable record, the artifact pins, the wiring into workflow execution, the prompt send, the
-result files and the inspection surface are package F15-B. See [Deferred](#deferred-to-f15-b).
+Phase-context handoff remains **strictly opt-in per workflow connection**: a connection with no
+`contextPolicy` prepares no handoff record, holds no F05 handoff pins, materializes no copies, and
+transmits only the ordinary single text prompt from `PromptBuilder`.
 
-Everything below describes the rules as they are built and tested, which is what F15-B will
-run.
+### Disabled vs opted-in transition trace
+
+| Stage | Disabled (`connection.contextPolicy === undefined`) | Opted-in (`connection.contextPolicy !== undefined`) |
+|---|---|---|
+| 1. Settled source attempt | `settleAndPrepareTransitionHandoff` records any staged attempt candidate locally and immediately returns `{ ok: true, waitingApproval: false }`. | Source attempt staged outputs (`.schegent/results/<rootAlias>/<attemptAlias>/contribution.json`, optional `review-report.json` / `fix-claims.json`, or opt-in `.schegent/phase-message.env` only when `legacySidecarOptIn === true`) are validated via `openWithinRoot`, copied immutably under `.schegent/immutable-results/<attemptAlias>/`, and registered/pinned in F05 `ArtifactLifecycleService`. |
+| 2. Preparation & durable persistence | **Zero** `phase_handoff_records` SQLite rows, **zero** F05 handoff pins, and **zero** `.schegent/handoff-materialized/` files are created. | `prepareTransitionHandoff` runs deterministic selection up to the commit cutoff, persists the serialized manifest and rendered context in SQLite `phase_handoff_records` (`SqliteHandoffStore`), and establishes F05 owner-reference pins (`handoff_artifact_pins`). |
+| 3. Operator confirmation / approval | None required (no handoff is prepared). | Under `approvalMode: 'manual'`, the revision enters `waiting-approval` and pauses the workflow until the operator inspects, optionally edits, and explicitly approves that revision (`workflow-control-service.ts` / `phase-context-api.ts`). Under `approvalMode: 'automatic'`, the revision starts `ready`. |
+| 4. Delivery planning & materialization | `buildAttemptHandoffDelivery` returns `undefined`; no `FrozenPhaseHandoffDelivery` or `acpPromptBlocks` is attached. | `executePlanAttemptDelivery` plans routes per artifact (`embedded` up to 8 KiB text, `resource-link` for immutable URIs, or `materialized-copy` streaming verified bytes via `openWithinRoot` into `.schegent/handoff-materialized/<attemptAlias>/<file>` within 64 files / 16 MiB per file / 64 MiB total / 30 s deadline and pinned in F05) and freezes `acpPromptBlocks`. |
+| 5. Provider prompt delivery & egress | `AcpBackedRunner` builds the ordinary single `{ type: 'text', text: request.prompt }` block from `PromptBuilder` and sends it to the configured backend (`claude`, `codex`, or `agy`). | `capability-decision-recorder.ts` forwards `handoff.acpPromptBlocks` onto the backend request. `AcpBackedRunner` sends `request.acpPromptBlocks` (replacing the plain text prompt) over ACP `session/prompt` to `claude`, `codex`, or `agy`, transmitting the rendered context and embedded/linked/materialized artifacts to the external model vendor. |
+| 6. Terminal cleanup & surviving copies | No handoff pins or SQLite handoff rows exist. | On terminal exit (success, failure, or cancellation), handoff owner-reference pins are released after the durable terminal revision commits (and reconciled idempotently by recovery on restart). Local SQLite rows, F05/F15-B files, backups, vendor CLI histories (`<home>/.claude/`, `<home>/.codex/`, `<home>/.gemini/antigravity/`), and vendor-side copies are inventoried in [evidence-retention-disclosure.md](evidence-retention-disclosure.md). |
 
 ## What a handoff is
 
@@ -105,13 +123,14 @@ Sizes are UTF-8 bytes. None is a token count.
 
 A target profile with no qualified context size is refused; there is no default bound for it.
 
-The materialization limits (64 files, 16 MiB per file, 64 MiB in total, a 30-second deadline)
-are declared for F15-B. Nothing in this revision reads or copies a file.
+The materialization limits (64 files, 16 MiB per file, 64 MiB in total, 1 MiB streaming buffer,
+30-second deadline) are enforced in production by `src/services/phase-context/handoff-materializer.ts`
+when a delivery plan uses the `materialized-copy` route into `.schegent/handoff-materialized/<attemptAlias>/`.
 
 ## Acceptance, revisions and dispatch
 
-Acceptance stores a prepared handoff through a store port. The only store in this revision is
-in memory.
+Acceptance stores a prepared handoff through a durable store port (`SqliteHandoffStore` backed by
+SQLite `phase_handoff_records` in production; `memory-store.ts` in pure unit tests).
 
 - Acceptance, approval and a dispatch intent are idempotent by identity: asking again returns
   what is stored and writes nothing. No exactly-once delivery is claimed.
@@ -137,8 +156,14 @@ in memory.
 
 ## Delivery plan
 
-The plan says what would be sent; it sends nothing and copies nothing. Context travels as
-prompt blocks only, never through a command line or an environment variable.
+Before target attempt dispatch, `handoff-delivery-coordinator.ts` computes the delivery plan,
+materializes cross-root copies when selected, and freezes `acpPromptBlocks` onto the attempt's
+`FrozenPhaseHandoffDelivery`. `AcpBackedRunner` transmits those blocks over ACP `session/prompt`
+(replacing the plain `PromptBuilder` text block) so context travels as structured prompt blocks
+only, never through a command line or an environment variable. Any content placed in embedded
+blocks or read through linked/materialized files is transmitted to the external model vendor
+(`claude`, `codex`, or `agy`); see [evidence-retention-disclosure.md](evidence-retention-disclosure.md)
+for the complete retention and egress inventory.
 
 Each artifact takes the first route that applies:
 
@@ -198,17 +223,23 @@ context of 31,097 bytes) took 2.70 ms and 8.17 ms at the 95th percentile in two 
 samples, against a bound of 250 ms. The measurement is in memory only; it includes no store
 write. The test is `tests/perf/phase-context-preparation.test.ts`.
 
-## Deferred to F15-B
+## Remaining limits and open gaps
 
-- The durable handoff record, and the transaction that joins acceptance to source settlement.
-- Establishing and holding artifact pins, and retention.
-- The wiring into workflow execution, and the host that applies preparation admission.
-- Sending the prompt blocks, and session reuse itself.
-- Copying files for the `materialized-copy` route.
-- Result publication and the ForEach result index.
-- The authored review-loop profile and its execution.
-- Persisting the delivery representation.
-- The sink for lifecycle observations.
-- The surface that shows a handoff and takes an approval decision.
-- Legacy sidecar inputs.
-- Reconciling a dispatch left `uncertain`.
+While F15-B durable persistence, F05 pinning, streaming cross-root materialization, result
+publication, review-loop coordination, operator inspection/approval, and ACP `session/prompt`
+delivery are wired in production, the following limits remain:
+
+- **Reconciling an `uncertain` dispatch**: when a dispatch intent is interrupted before settlement
+  and left in `uncertain`, Schegent refuses to issue a second automated dispatch intent for that
+  attempt (`uncertain-delivery` / `dispatch-uncertain`) and retains handoff pins while recovery is
+  possible; there is no automated provider-side reconciliation protocol to confirm whether the
+  external backend received the first send.
+- **Model-vendor egress and retention outside Schegent**: once `acpPromptBlocks` are sent to
+  `claude`, `codex`, or `agy`, any rendered handoff text, embedded artifact bytes, or files read via
+  resource links / materialized copies leave the local machine and are subject to the model vendor's
+  retention policies and the backend CLI's local session store under `<home>/`.
+- **Legacy sidecar import**: `.schegent/phase-message.env` is ignored by default and is only read
+  when `legacySidecarOptIn === true` (capped at 16 KiB).
+- **Live provider observation**: integration tests (`tests/integration/phase-context/f15b-handoff-integration.test.ts`)
+  exercise real SQLite persistence, restart recovery, and synthetic source/target fixtures; live
+  paid provider turns remain gated separately by release qualification.

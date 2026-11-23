@@ -23,7 +23,7 @@ import { runReset, type ResetHost, type ResetStageSupport } from './commands/res
 import { completeInterruptedResetOnActivation, createResetStageSupport } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
-import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
+import { PlaceholderProjector, type PlaceholderReason } from './ui/sidebar/placeholder-projector';
 import { GuardedRunService } from './services/guarded-run-service';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
 import { wireBackendExecution } from './activation/backend-execution-wiring';
@@ -106,7 +106,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   let stage2: Stage2Wiring | null = null;
   let activeOutput: SchegentOutputChannel | null = null;
-  let activePlaceholder: PlaceholderProjector = placeholder;
+  let activePlaceholder = placeholder;
+  const showPlaceholder = (reason: PlaceholderReason): void => {
+    activePlaceholder.dispose();
+    activePlaceholder = new PlaceholderProjector({ reason });
+    sidebarProvider.setProjector(activePlaceholder);
+  };
+  let hostStopping = false;
+  // A folder removal or reset clears Stage 2 before its disposal ends.
+  const stage2Disposals = new Set<Promise<void>>();
 
   // Feature 058 — pre-warm the canonical-folder picker so its
   // `onDidChangeWorkspaceFolders` cache-invalidator is registered BEFORE
@@ -115,48 +123,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // and the extension's listener observes a fresh canonical folder when
   // it calls `getCanonicalWorkspaceRoot()` via `ensureStage2()`.
   void getCanonicalWorkspaceRoot();
+  const currentStage2Root = (): string | undefined =>
+    hostStopping ? undefined : getCanonicalWorkspaceRoot()?.uri.fsPath;
 
   const ensureStage2 = singleFlight(async (): Promise<void> => {
-    if (stage2) return;
-    const folder = getCanonicalWorkspaceRoot();
-    if (!folder) return;
-    const wiring = await wireStage2({
-      context,
-      logger,
-      ownerId,
-      workspaceRoot: folder.uri.fsPath,
-      store,
-      onInitFailure: () => {
-        const replacement = new PlaceholderProjector({ reason: 'init-failed' });
-        activePlaceholder.dispose();
-        activePlaceholder = replacement;
-        sidebarProvider.setProjector(replacement);
-      },
-      runtimeLogSink,
-      runtimeLogAccessor,
-      evidenceHealth,
-      webviewLogSink
-    });
-    if (!wiring) return;
-    stage2 = wiring.stage2;
-    sidebarProvider.setProjector(wiring.projector);
-    sidebarProvider.setDispatch(wiring.dispatch);
-    activeOutput = wiring.output;
+    if (stage2Disposals.size > 0) await Promise.allSettled(stage2Disposals);
+    while (!stage2) {
+      const workspaceRoot = currentStage2Root();
+      if (!workspaceRoot) return;
+      const wiring = await wireStage2({
+        context,
+        logger,
+        ownerId,
+        workspaceRoot,
+        store,
+        onInitFailure: () => showPlaceholder('init-failed'),
+        runtimeLogSink,
+        runtimeLogAccessor,
+        evidenceHealth,
+        webviewLogSink
+      });
+      const workspaceStillCurrent = currentStage2Root() === workspaceRoot;
+      if (!wiring && workspaceStillCurrent) return;
+      if (!wiring) continue;
+      stage2 = wiring.stage2;
+      if (!workspaceStillCurrent) {
+        await tearDownStage2();
+        continue;
+      }
+      sidebarProvider.setProjector(wiring.projector);
+      sidebarProvider.setDispatch(wiring.dispatch);
+      activeOutput = wiring.output;
+      return;
+    }
   });
-
-  // Feature 218 review (F6) — every Stage 2 disposal in flight. A folder removal or
-  // a reset clears `stage2` before its disposal ends; the host teardown waits on these.
-  const stage2Disposals = new Set<Promise<void>>();
 
   const tearDownStage2 = async (): Promise<void> => {
     if (!stage2) return;
     const previous = stage2;
     stage2 = null;
     sidebarProvider.setDispatch(null);
-    const replacement = new PlaceholderProjector({ reason: 'no-workspace' });
-    activePlaceholder.dispose();
-    activePlaceholder = replacement;
-    sidebarProvider.setProjector(replacement);
+    showPlaceholder('no-workspace');
     activeOutput = null;
     const disposal = previous.dispose();
     stage2Disposals.add(disposal);
@@ -206,9 +213,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(async () => {
       const hasFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
-      if (hasFolder && !stage2) {
+      if (hasFolder || !stage2) {
         await ensureStage2();
-      } else if (!hasFolder && stage2) {
+      } else {
         await tearDownStage2();
       }
     })
@@ -224,8 +231,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // subscription calls this activation's `teardownOnce`, never the module's.
   let hostTeardownRun: Promise<void> | null = null;
   const runHostTeardown = async (): Promise<void> => {
+    hostStopping = true;
     const output = activeOutput; // read first: `tearDownStage2` clears it
     try {
+      await Promise.allSettled([ensureStage2()]);
       await tearDownStage2();
     } finally {
       // F6 — settled, never rethrown: a failure belongs to the path that began it.
@@ -386,7 +395,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     processEnvironmentPolicy,
     memento: getOperationalMementoForStore(store) ?? context.workspaceState,
     isWorkspaceTrusted,
-    hasPrimacy: () => lock.hasPrimacy()
+    hasPrimacy: () => lock.hasPrimacy(),
+    onFenceLost: (listener) => lock.onFenceLost(listener)
   });
   const {
     monitor,

@@ -173,6 +173,8 @@ interface Options {
   gateRecord?: Record<string, unknown> | null;
   /** Raw text for the gate record file, for one that does not parse. */
   gateText?: string;
+  computeQualificationFingerprint?: () => string | null;
+  unqualifiedOverride?: boolean;
 }
 
 function world(options: Options = {}) {
@@ -289,7 +291,13 @@ function world(options: Options = {}) {
       seen.compared = bytes;
       if (options.agreementThrows) throw new Error(options.agreementThrows);
       return { sbom: archiveSbom(files, options.archiveSbom), sbomSha256: 'f'.repeat(64) };
-    }
+    },
+    ...(options.computeQualificationFingerprint !== undefined
+      ? { computeQualificationFingerprint: options.computeQualificationFingerprint }
+      : {}),
+    ...(options.unqualifiedOverride !== undefined
+      ? { unqualifiedOverride: options.unqualifiedOverride }
+      : {})
   };
 
   return { deps, files, events, logs, errors, written, removed, seen };
@@ -488,11 +496,29 @@ describe('an accepted candidate (RP3, RP5)', () => {
     expect(printed).not.toContain(`${ESC}[`);
   });
 
-  it('lists each finding by canonical id with its URL, severity, usage and verdict, ranking none', async () => {
+  it('lists each covered finding by canonical id with its URL, severity, usage and verdict, ranking none', async () => {
+    const coveringDispositions = asBuffer({
+      dispositionListVersion: 1,
+      dispositions: [
+        {
+          advisory: 'GHSA-aaaa-bbbb-cccc',
+          ecosystem: 'npm',
+          package: 'svelte',
+          tree: 'webview-ui',
+          range: '<6.0.0',
+          status: 'accepted',
+          owner: 'maintainer',
+          decidedOn: '2026-11-01',
+          expiresOn: '2027-02-01',
+          rationale: 'Reviewed disposition for test candidate.'
+        }
+      ]
+    });
     const { logs, written } = await run({
       captures: {
         'webview-ui': asBuffer(capture('webview-ui', { findings: [advisoryFinding()] }))
-      }
+      },
+      dispositions: coveringDispositions
     });
     const line = logs.find((entry) => entry.includes('GHSA-aaaa-bbbb-cccc'));
     expect(line).toBeDefined();
@@ -501,7 +527,7 @@ describe('an accepted candidate (RP3, RP5)', () => {
       'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
       'moderate',
       'usage=shipped',
-      'disposition=not-recorded'
+      'disposition=covers'
     ]) {
       expect(line).toContain(part);
     }
@@ -515,9 +541,71 @@ describe('an accepted candidate (RP3, RP5)', () => {
         package: 'svelte',
         severity: 'moderate',
         usage: 'shipped',
-        disposition: 'not-recorded'
+        disposition: 'covers'
       }
     ]);
+  });
+
+  it('refuses preparation with advisory-uncovered when any finding lacks a valid disposition (FR-R7-14 14-12)', async () => {
+    const outcome = await run({
+      captures: {
+        'webview-ui': asBuffer(capture('webview-ui', { findings: [advisoryFinding()] }))
+      }
+    });
+    expectRefused(outcome, 'advisory-uncovered');
+    expect(outcome.errors.join('\n')).toContain('GHSA-aaaa-bbbb-cccc');
+  });
+
+  it('embeds validated live v2 backend qualification summary into the release record and refuses invalid records (FR-R7-14 14-13)', async () => {
+    const qual = {
+      version: 2,
+      mode: 'live',
+      qualifiedAt: new Date(NOW - 3_600_000).toISOString(),
+      commit: HEAD,
+      sourceFingerprint: 'f'.repeat(64),
+      versions: { claude: '2.1.302', codex: '0.159.2', agy: '1.4.2' },
+      states: { claude: 'ok', codex: 'ok', agy: 'ok' },
+      transports: { claude: 'acp-stdio-bridge', codex: 'acp-stdio-bridge', agy: 'acp-native' },
+      profiles: {
+        claude: 'claude-acp-bridge',
+        codex: 'codex-acp-bridge',
+        agy: 'agy-acp-native'
+      }
+    };
+    const { written } = await run({
+      seedFiles: [['.backend-qualification.json', asBuffer(qual)]]
+    });
+    const record = JSON.parse(written.at(0)?.text ?? '{}');
+    expect(record.backendQualification).toEqual(qual);
+
+    const fixtureRejected = await run({
+      seedFiles: [['.backend-qualification.json', asBuffer({ ...qual, mode: 'fixture' })]]
+    });
+    expectRefused(fixtureRejected, 'backend-qualification-invalid');
+
+    const malformedRejected = await run({
+      seedFiles: [['.backend-qualification.json', Buffer.from('{not json', 'utf8')]]
+    });
+    expectRefused(malformedRejected, 'backend-qualification-invalid');
+
+    const staleCommitRejected = await run({
+      seedFiles: [['.backend-qualification.json', asBuffer({ ...qual, commit: '0'.repeat(40) })]]
+    });
+    expectRefused(staleCommitRejected, 'backend-qualification-invalid');
+
+    const fingerprintMismatchRejected = await run({
+      seedFiles: [['.backend-qualification.json', asBuffer(qual)]],
+      computeQualificationFingerprint: () => 'e'.repeat(64)
+    });
+    expectRefused(fingerprintMismatchRejected, 'backend-qualification-invalid');
+
+    const overridden = await run({
+      seedFiles: [['.backend-qualification.json', asBuffer({ ...qual, mode: 'fixture' })]],
+      unqualifiedOverride: true
+    });
+    expect(overridden.result.exitCode).toBe(0);
+    const overriddenRecord = JSON.parse(overridden.written.at(0)?.text ?? '{}');
+    expect(overriddenRecord.backendQualification).toBeUndefined();
   });
 
   it('records the advisory evidence it relied on, with the budget and the lockfile digests', async () => {
@@ -557,6 +645,23 @@ describe('an accepted candidate (RP3, RP5)', () => {
   });
 
   it('escapes anything a capture carries before printing it', async () => {
+    const coveringDispositions = asBuffer({
+      dispositionListVersion: 1,
+      dispositions: [
+        {
+          advisory: 'GHSA-aaaa-bbbb-cccc',
+          ecosystem: 'npm',
+          package: 'svelte',
+          tree: 'webview-ui',
+          range: '<6.0.0',
+          status: 'accepted',
+          owner: 'maintainer',
+          decidedOn: '2026-11-01',
+          expiresOn: '2027-02-01',
+          rationale: 'Reviewed disposition for escape test.'
+        }
+      ]
+    });
     const { logs } = await run({
       captures: {
         'webview-ui': asBuffer(
@@ -564,7 +669,8 @@ describe('an accepted candidate (RP3, RP5)', () => {
             findings: [advisoryFinding({ url: `https://example.test/${ESC}[31mred`, package: 'svelte' })]
           })
         )
-      }
+      },
+      dispositions: coveringDispositions
     });
     expect(logs.join('\n')).not.toContain(ESC);
     expect(logs.join('\n')).toContain('\\x1b');

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "description": "Performance budgets enforced by perf and integration smoke tests. The inline assertion in each test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
   "feature": "049-perf-budgets",
-  "updated": "2026-11-01",
+  "updated": "2026-11-23",
   "budgets": [
     {
       "test": "tests/perf/rate-limit-extractor.test.ts",
@@ -146,10 +146,35 @@
     },
     {
       "test": "tests/perf/historical-report-query.test.ts",
-      "name": "Historical report pages at 25,000 roots and 100,000 attempts",
-      "budgetMs": 500,
-      "constant": "PAGE_P95_BUDGET_MS",
-      "rationale": "FR-R6-F11 NFR-002 / NFR-004 / NFR-005 / F11-AC-08: execution-summary over 100,000 captured attempts (25,000 rows, 200-row pages). Asserted: later-page p95 of 200 measured reads (20 warm-up, the F03 floor) at most 500 ms, cancellation acknowledged within 1 s, a 1 ms deadline ending limited deadline-exceeded, and attempt-detail over the whole range ending limited working-data (its 100,000 rows pass the shared 32 MiB budget). Recorded, not asserted (SHOULDs): first-page p95 and slice p95. At implement, darwin-arm64, Node 24.19.0. Two in-memory takes at load 7.3 to 7.9: later-page p95 0.164 and 0.181 ms; first-page p95 563.54 and 551.56 ms over 20 measured runs (target 500 ms, missed): capture about 240 ms in one unsliced read (R1), population digest and estimate about 200 ms sliced, aggregation about 80 ms; sliced-gap p95 13.04 and 15.34 ms (target 10 ms, missed); cancellation acknowledged in 8.41 and 10.68 ms. Then the file-backed store quickstart section 3 names, one take at load 5.9: later-page p95 0.166 ms; first-page p95 554.33 ms (missed); capture p50 246.9 ms; sliced-gap p95 12.6 ms (missed), with two gaps above 100 ms (286.25 and 261.48 ms), the capture and one not attributed; cancellation acknowledged in 8.49 ms. Execution-summary working data 22,120,000 bytes in every take."
+      "name": "Historical report first-page open at 25,000 roots and 100,000 attempts",
+      "budgetMs": 1000,
+      "firstPageP95BudgetMs": 1000,
+      "constant": "FIRST_PAGE_P95_BUDGET_MS",
+      "metadata": {
+        "hardware": "darwin-arm64 (Apple M4 Max, 16 cores, 64 GiB RAM, Node v24.22.2)",
+        "warmupIterations": 3,
+        "measuredIterations": 20,
+        "runCount": 25000,
+        "attemptCount": 100000,
+        "pageRows": 200
+      },
+      "rationale": "FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / NFR-004 / NFR-005: splits first-page opening latency from later-page cursor reads so fast cursor pages cannot mask opening cost. Execution-summary over 25,000 runs and 100,000 attempts (200-row pages, 22,120,000 bytes working data). Measured on darwin-arm64 (Apple M4 Max, Node v24.22.2): 2026-11-23 takes measured p50 492.07-522.40 ms, p95 504.88-537.76 ms, max 539.36-566.13 ms (capture p50 291.67-305.14 ms); earlier Node 24.19.0 runs at load 5.9 to 7.9 measured p95 551.56 to 563.54 ms. Enforced firstPageP95BudgetMs = 1,000 ms (~1.8x-2x measured p95) guards against opening-latency regressions without flaking under host load, while keeping the ~500 ms opening cost explicit and distinct from later-page cursor latency."
+    },
+    {
+      "test": "tests/perf/historical-report-query.test.ts",
+      "name": "Historical report later-page cursor read at 25,000 roots and 100,000 attempts",
+      "budgetMs": 50,
+      "laterPageP95BudgetMs": 50,
+      "constant": "LATER_PAGE_P95_BUDGET_MS",
+      "metadata": {
+        "hardware": "darwin-arm64 (Apple M4 Max, 16 cores, 64 GiB RAM, Node v24.22.2)",
+        "warmupIterations": 20,
+        "measuredIterations": 200,
+        "runCount": 25000,
+        "attemptCount": 100000,
+        "pageRows": 200
+      },
+      "rationale": "FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / F11-AC-08: cursor-based later-page read over 25,000 aggregated rows (200-row pages, 20 warm-up and 200 measured reads). Measured on darwin-arm64 (Apple M4 Max, Node v24.22.2): 2026-11-23 takes measured p50 0.0965-0.0970 ms, p95 0.1061-0.1118 ms, p99 0.1175-0.1229 ms, max 0.1294-0.1334 ms (earlier Node 24.19.0 takes at load 5.9 to 7.9 measured p95 0.164 to 0.181 ms). Enforced laterPageP95BudgetMs = 50 ms keeps generous headroom over sub-millisecond cursor reads while tightly separating cursor pagination from first-page opening cost; also asserts cancellation within 1 s, 1 ms deadline ending limited deadline-exceeded, and attempt-detail ending limited working-data."
     },
     {
       "test": "tests/perf/change-review-first-page.test.ts",

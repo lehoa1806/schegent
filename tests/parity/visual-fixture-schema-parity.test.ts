@@ -35,15 +35,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import * as fs from 'fs';
-import * as path from 'path';
 import { SCHEMA_VERSION } from '../../src/ui/sidebar/snapshot';
 import { workflowSnapshot } from '../visual/fixtures/workflow-snapshot';
-
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-// FR-R5-F12 (feature 271) moved the gate out of `snapshot-store.svelte.ts` into the pure
-// merge the store calls, `reconcileSnapshotMessage`.
-const STORE_GATE_PATH = path.join(REPO_ROOT, 'webview-ui', 'src', 'lib', 'snapshot-merge.ts');
 
 /** The v3 root singulars feature 092 folded under `queues[]`. */
 const V3_ROOT_RUN_FIELDS = [
@@ -66,30 +59,21 @@ function readFixture(): Record<string, unknown> {
   return { ...workflowSnapshot };
 }
 
-/**
- * The gate is a literal in the store rather than a reference to
- * `SCHEMA_VERSION`, so it is read from the source text. A regex that stops
- * matching fails this test rather than silently passing — the anchor going
- * stale is itself a finding.
- */
-function readStoreGateVersion(): number {
-  const source = fs.readFileSync(STORE_GATE_PATH, 'utf8');
-  const match = /merged\.schemaVersion\s*!==\s*(\d+)/.exec(source);
-  expect(
-    match,
-    'snapshot-merge.ts no longer gates on `merged.schemaVersion !== <n>`; update this anchor'
-  ).not.toBeNull();
-  return Number((match as RegExpExecArray)[1]);
-}
-
 describe('visual fixture agrees with the snapshot schema the webview accepts', () => {
   it('host and webview SCHEMA_VERSION constants agree', async () => {
     const webview = await import('../../webview-ui/src/lib/snapshot-types.js');
     expect(webview.SCHEMA_VERSION).toBe(SCHEMA_VERSION);
   });
 
-  it("the store's accept gate is the current SCHEMA_VERSION", () => {
-    expect(readStoreGateVersion()).toBe(SCHEMA_VERSION);
+  it("the store's accept gate is the current SCHEMA_VERSION", async () => {
+    const { reconcileSnapshotMessage } = await import('../../webview-ui/src/lib/snapshot-merge.js');
+    expect(reconcileSnapshotMessage(null, null, workflowSnapshot).outcome).toBe('applied');
+    for (const schemaVersion of [SCHEMA_VERSION - 1, SCHEMA_VERSION + 1]) {
+      const differentVersion = { ...workflowSnapshot, schemaVersion } as unknown as typeof workflowSnapshot;
+      expect(reconcileSnapshotMessage(null, null, differentVersion)).toEqual({
+        outcome: 'unknown-schema', schemaVersion
+      });
+    }
   });
 
   it('the visual fixture carries the accepted schemaVersion', () => {

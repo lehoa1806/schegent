@@ -53,23 +53,20 @@ describe('SQLite migration rollback runbook rehearsal (FR-R7-03 SC-004)', () => 
     const schema8Migrations = BUILTIN_SCHEMA_MIGRATIONS.filter((m) => m.version <= 8);
 
     const preUpgradeQueueDoc = {
-      version: 10,
-      queues: {
-        default: {
-          id: 'default',
-          name: 'Default',
-          paused: false,
-          queueLifecycle: 'idle',
-          inFlightId: null,
-          requests: [
-            {
-              id: 'task-pre-upgrade-1',
-              featureDescription: 'Pre-upgrade task preserved across rollback',
-              status: 'pending',
-              enqueuedAt: '2026-11-19T08:00:00.000Z'
-            }
-          ]
-        }
+      default: {
+        id: 'default',
+        name: 'Default',
+        paused: false,
+        queueLifecycle: 'idle',
+        inFlightId: null,
+        requests: [
+          {
+            id: 'task-pre-upgrade-1',
+            featureDescription: 'Pre-upgrade task preserved across rollback',
+            status: 'pending',
+            enqueuedAt: '2026-11-19T08:00:00.000Z'
+          }
+        ]
       }
     };
     const preUpgradeRunDoc = {
@@ -153,6 +150,8 @@ describe('SQLite migration rollback runbook rehearsal (FR-R7-03 SC-004)', () => 
         `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
       );
       expect(Number(s9MinReader?.meta_value)).toBe(9);
+      expect(s9Conn.scalar('SELECT COUNT(*) FROM operational_tasks')).toBe(1);
+      expect(s9Conn.scalar('SELECT COUNT(*) FROM operational_runs')).toBe(1);
 
       s9Conn.run(
         `INSERT INTO runs (

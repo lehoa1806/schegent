@@ -219,4 +219,21 @@ describe('dispatchResumingIncompleteTurns FR-R3-198 (T1877)', () => {
       expect(CONTINUATION_NOTES[cause]).toMatch(/end this turn with your contract block/);
     }
   });
+
+  it('FR-R7-14 (14-04): propagates persisted ACP session handles and strips ephemeral bridge session IDs', async () => {
+    const persistedHandle = 'acp-sess-claude-11111111-2222-4333-8444-555555555555';
+    const persistedRunner = scriptedRunner(incomplete('no-contract-block', persistedHandle), clean());
+    const { resumeSessionId: _omitted, ...freshInputs } = INPUTS;
+    await dispatchResumingIncompleteTurns(persistedRunner, freshInputs, () => {});
+    expect(inputsOfCall(persistedRunner, 1)?.resumeSessionId).toBe(persistedHandle);
+
+    const ephemeralRunner = scriptedRunner(incomplete('no-contract-block', 'acp-claude-session-1'), clean());
+    await dispatchResumingIncompleteTurns(
+      ephemeralRunner,
+      { ...INPUTS, resumeSessionId: 'acp-claude-session-1' },
+      () => {}
+    );
+    expect(inputsOfCall(ephemeralRunner, 1)).not.toHaveProperty('resumeSessionId');
+    expect(inputsOfCall(ephemeralRunner, 1)?.isContinue).toBe(true);
+  });
 });

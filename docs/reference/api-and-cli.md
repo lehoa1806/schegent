@@ -332,9 +332,17 @@ These are child-process adapters used by Schegent; they are not Schegent command
 
 For Claude, `--resume <id>` is used when continuation or session reuse is requested and a string session ID exists; otherwise only `isContinue: true` falls back to `-c`. Agy similarly uses `--conversation <id>` only when continuation/reuse and an ID are both present, with no flag fallback. Codex ignores the continuation/session fields. The effective permission posture recorded by the Phase runner is `unrestricted` for Claude and Agy and `workspace-write` for Codex. A Phase declaring `sideEffects: git` is refused on Codex because its sandbox keeps `.git` read-only.
 
+Over the maintained ACP stdio bridge (`claude-acp-bridge` and `codex-acp-bridge`), host-persisted session handles stay distinct from bridge-local ephemeral session IDs and underlying provider conversation IDs:
+
+- **Ephemeral bridge session ID** (never persisted across bridge exits): `acp-claude-session-1` / `acp-codex-session-1`, assigned per bridge process by `session/new`.
+- **Persisted host session handle** (stored in schema-9 `operational_kv_documents` bound to `(backend, normalizedWorkspaceRoot)`): `acp-sess-claude-<uuid>` / `acp-sess-codex-<uuid>`, mapped to the observed provider conversation ID (Claude `session_id` passed to `--resume <id>`, or Codex `thread_id` passed to `exec resume --json ... <id>`). On cross-process continuation or session reuse, the host resolves the handle, verifies backend and workspace-root parity, and supplies `_meta.providerSessionId` to `session/load`; missing, corrupt, ephemeral, or mismatched bindings are refused before spawning any bridge or CLI child (`acp-session-resume-unrecoverable:*`).
+
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: src/runner/codex-cli.ts -->
 <!-- Source: src/runner/agy-cli.ts -->
+<!-- Source: src/runner/acp-backed-runner.ts -->
+<!-- Source: src/services/acp-runtime/bridges/acp-stdio-bridge.ts -->
+<!-- Source: src/services/acp-runtime/acp-durable-runtime-store.ts -->
 <!-- Source: src/controller/phase-runner.ts -->
 <!-- Source: src/config/phase-runner-policy.ts -->
 

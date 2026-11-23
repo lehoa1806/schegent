@@ -38,7 +38,10 @@ envelope was absent, and no gate record was made.
 ## What the one observed cell is, and is not
 
 The macOS / Node 24 cell quotes a version-3 gate record made on this machine: `npm run gate`,
-Node v24.19.0 on darwin/arm64, exit 0, recorded 2026-11-01 at commit `5a8af6b0`. The record states
+Node v24.19.0 on local `darwin/arm64`, exit 0, recorded 2026-11-01 at commit `5a8af6b0`. That
+observation covers a **local** macOS arm64 desktop host only: remote extension hosts (where
+`vscode.env.remoteName` is set, including remote `darwin/arm64`) are explicitly unqualified and
+refused before ACP process spawn. The record states
 four more facts beside those five, and they are copied here because the record is one ignored,
 overwritable file (`.gate-attestation.json`) and the next `npm run gate:record` replaces it:
 

@@ -6,9 +6,11 @@ import {
   writeAgentConfigGrant,
   type AgentConfigGrant
 } from '../../../src/state/agent-config-grants';
+import { KEYS, WorkspaceStateStore } from '../../../src/state/workspace-state';
 
-const FP_1 = '1'.repeat(64);
-const FP_2 = '2'.repeat(64);
+// Fingerprints produced by the shipped scanner format for the fixture entries below.
+const FP_1 = 'f8b4038227f42c44023009b29ecedb8dbf24c2194f09d1f395a3a1afcb278644';
+const FP_2 = 'ae39b0e9fbaca25fab2e95e80eb431328e462a57d8ed7378bb5847fd8edf70bd';
 const DIGEST_1 = 'a'.repeat(64);
 const DIGEST_2 = 'b'.repeat(64);
 
@@ -55,6 +57,48 @@ describe('agent-config-grants total reader & writers (FR-R7-04, FR-003)', () => 
     expect(Object.keys(result.grants)).toEqual([FP_1]);
     expect(result.grants[FP_1]).toEqual(valid);
     expect(result.problems.length).toBe(6);
+  });
+
+  it('requires a dense set of tracked names and matching file metadata', () => {
+    const grant = makeGrant();
+    const file = grant.files[0];
+    for (const files of [
+      new Array<unknown>(1),
+      [file, file],
+      [{ ...file, name: 'untracked.md' }],
+      [{ ...file, digest: DIGEST_2 }]
+    ]) {
+      const result = readAgentConfigGrants({ [FP_1]: { ...grant, files } });
+      expect(result.grants).toEqual({});
+      expect(result.problems).toHaveLength(1);
+    }
+  });
+
+  it('serializes grant writes and both revocation operations through the workspace store', async () => {
+    const existing = makeGrant();
+    const next = makeGrant({
+      fingerprint: FP_2,
+      files: [{ name: 'CLAUDE.md', size: 50, digest: DIGEST_2 }]
+    });
+    const data = new Map<string, unknown>([[KEYS.agentConfigGrants, { [FP_1]: existing }]]);
+    const store = new WorkspaceStateStore({
+      get: <T>(key: string): T | undefined => data.get(key) as T | undefined,
+      update: async (key, value) => {
+        await Promise.resolve();
+        data.set(key, value);
+      }
+    });
+
+    const forget = store.forgetAgentConfigGrant(FP_1);
+    await Promise.all([forget, store.recordAgentConfigGrant(next)]);
+    expect(await forget).toBe(true);
+    expect(store.getAgentConfigGrants()).toEqual({ [FP_2]: next });
+
+    const record = store.recordAgentConfigGrant(existing);
+    const forgetAll = store.forgetAllAgentConfigGrants();
+    await record;
+    expect(await forgetAll).toBe(2);
+    expect(store.getAgentConfigGrants()).toEqual({});
   });
 
   it('writes, forgets one (distinguishing absent/prototype keys), and finds latest per backend', () => {

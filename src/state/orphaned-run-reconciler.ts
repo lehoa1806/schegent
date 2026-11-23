@@ -71,6 +71,7 @@ import {
   type WorkflowRunStatus
 } from './workflow-run';
 import type { RunStateMap } from './run-state-migrator';
+import { decideRunTransition } from './run-transition-decision';
 
 /**
  * The statuses an orphan can be found in — every status that is not terminal.
@@ -166,7 +167,12 @@ export function reconcileOrphanedRuns(
       next[queueId] = run;
       continue;
     }
-    next[queueId] = endedRun(run, now);
+    const ended = endedRun(run, now);
+    if (!decideRunTransition({ current: run, targetStatus: ended.status, actor: 'recovery' }).allowed) {
+      next[queueId] = run;
+      continue;
+    }
+    next[queueId] = ended;
     events.push({
       type: 'run-canceled-task-row-removed',
       occurredAt: now,

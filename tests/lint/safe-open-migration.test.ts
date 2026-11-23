@@ -322,7 +322,10 @@ const READS_THROUGH_MIGRATED_PORT: readonly string[] = [
  * this list is still held to `open` and `rename` and nothing else, so it cannot shelter a `mkdir` or a
  * `writeFile`.
  */
-const DIRECTORY_SYNC_OPEN: readonly string[] = ['host-services/catalog-fs-adapter.ts'];
+const DIRECTORY_SYNC_OPEN: readonly string[] = [
+  'host-services/catalog-fs-adapter.ts',
+  'services/sqlite-store/store-relocation-files.ts'
+];
 
 const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   'audit/audit-log-writer.ts',
@@ -349,10 +352,10 @@ const ATOMIC_PUBLISH_RENAME_RESIDUAL: readonly string[] = [
   // publish is a `link`, which never replaces a file.
   'services/reporting/export-publisher.ts',
   // FR-R7-10 — one-time crash-safe SQLite store relocation into globalStorageUri. Staged copies,
-  // crash-recovery journals, and receipts are written inside the resolved anchor via `openWithinRoot`
-  // (`0600` / `0400`) or `VACUUM INTO` + `narrowMode` (`0600`), and containment of both names as
-  // direct entries of the anchor is proven via `resolveContainedLink` immediately before `fsp.rename`.
-  'services/sqlite-store/store-relocation.ts',
+  // crash-recovery journals, and receipts are created inside the resolved anchor via `openWithinRoot`
+  // (`0600` / `0400`). Both entries are contained direct children of the anchor and checked for
+  // redirects before `fsp.rename`.
+  'services/sqlite-store/store-relocation-files.ts',
   'state/ownership-fs.ts'
 ];
 

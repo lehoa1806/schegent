@@ -260,4 +260,270 @@ describe('FR-R6-F09 T017 — ACP authority gate and containment channel (F09-AC-
       residuals: ['group-survived']
     });
   });
+
+  it('FR-R7-14 (14-05): isolates overlapping same-backend connections sharing acp-claude-session-1 and preserves sibling grants on connection-scoped revoke', () => {
+    const rootA = path.join(os.tmpdir(), 'schegent-1405-lane-a');
+    const rootB = path.join(os.tmpdir(), 'schegent-1405-lane-b');
+    const gate = new AcpAuthorityGate({
+      isWorkspaceTrusted: () => true,
+      holdsPrimacy: () => true,
+      currentOwnershipGeneration: () => 1
+    });
+
+    gate.registerScope({
+      attemptId: 'att-conn-1',
+      profileId: 'claude-acp-bridge',
+      acpSessionId: 'acp-claude-session-1',
+      connectionGeneration: 1,
+      ownershipGeneration: 1,
+      executionRoot: rootA,
+      primaryWorkspaceRoot: rootA
+    });
+    gate.registerScope({
+      attemptId: 'att-conn-2',
+      profileId: 'claude-acp-bridge',
+      acpSessionId: 'acp-claude-session-1',
+      connectionGeneration: 2,
+      ownershipGeneration: 1,
+      executionRoot: rootB,
+      primaryWorkspaceRoot: rootB
+    });
+
+    // Both connections hold independent grants simultaneously.
+    expect(
+      gate.authorize({
+        requestKind: 'filesystem',
+        acpSessionId: 'acp-claude-session-1',
+        connectionGeneration: 1,
+        attemptId: 'att-conn-1',
+        mutating: false,
+        targetPath: path.join(rootA, 'a.ts')
+      }).allowed
+    ).toBe(true);
+    expect(
+      gate.authorize({
+        requestKind: 'filesystem',
+        acpSessionId: 'acp-claude-session-1',
+        connectionGeneration: 2,
+        attemptId: 'att-conn-2',
+        mutating: false,
+        targetPath: path.join(rootB, 'b.ts')
+      }).allowed
+    ).toBe(true);
+
+    // Cross-root access stays isolated per connection generation.
+    expect(
+      gate.authorize({
+        requestKind: 'filesystem',
+        acpSessionId: 'acp-claude-session-1',
+        connectionGeneration: 1,
+        attemptId: 'att-conn-1',
+        mutating: false,
+        targetPath: path.join(rootB, 'b.ts')
+      }).reason
+    ).toBe('outside-execution-root');
+
+    // Closing connection 1 revokes ONLY generation 1; connection 2 remains authorized.
+    gate.revokeSession('acp-claude-session-1', 1);
+    expect(
+      gate.authorize({
+        requestKind: 'filesystem',
+        acpSessionId: 'acp-claude-session-1',
+        connectionGeneration: 2,
+        attemptId: 'att-conn-2',
+        mutating: false,
+        targetPath: path.join(rootB, 'b.ts')
+      }).allowed
+    ).toBe(true);
+
+    // Stale callback from closed connection 1 is refused as stale-connection-generation.
+    const staleFromConn1 = gate.authorize({
+      requestKind: 'filesystem',
+      acpSessionId: 'acp-claude-session-1',
+      connectionGeneration: 1,
+      attemptId: 'att-conn-1',
+      mutating: false,
+      targetPath: path.join(rootA, 'a.ts')
+    });
+    expect(staleFromConn1.allowed).toBe(false);
+    expect(staleFromConn1.reason).toBe('stale-connection-generation');
+    expect(staleFromConn1.receipt.attemptId).toBe('att-conn-2');
+
+    // Single-argument revokeSession keeps backward-compatible full removal.
+    gate.revokeSession('acp-claude-session-1');
+    expect(
+      gate.authorize({
+        requestKind: 'filesystem',
+        acpSessionId: 'acp-claude-session-1',
+        connectionGeneration: 2,
+        attemptId: 'att-conn-2',
+        mutating: false,
+        targetPath: path.join(rootB, 'b.ts')
+      }).reason
+    ).toBe('session-attempt-mismatch');
+  });
+
+  it('FR-R7-14 (14-07): authorizeAsync and createPermissionPolicy await verifyPrimacy and re-validate post-await ownership, errors, and scope revocation', async () => {
+    const root = path.join(os.tmpdir(), 'schegent-1407-gate');
+    let trusted = true;
+    let ownershipGen = 1;
+    let resolvePrimacy: ((value: boolean) => void) | null = null;
+    let rejectPrimacy: ((err: Error) => void) | null = null;
+
+    const gate = new AcpAuthorityGate({
+      isWorkspaceTrusted: () => trusted,
+      holdsPrimacy: () => true,
+      verifyPrimacy: () =>
+        new Promise<boolean>((resolve, reject) => {
+          resolvePrimacy = resolve;
+          rejectPrimacy = reject;
+        }),
+      currentOwnershipGeneration: () => ownershipGen
+    });
+
+    gate.registerScope({
+      attemptId: 'att-async-1',
+      profileId: 'claude-acp-bridge',
+      acpSessionId: 'sess-async',
+      connectionGeneration: 1,
+      ownershipGeneration: 1,
+      executionRoot: root,
+      primaryWorkspaceRoot: root
+    });
+
+    const policy = gate.createPermissionPolicy(1);
+
+    // 1. Confirmed current trusted owner -> allows once after verifyPrimacy resolves true.
+    const pendingAllow = policy({
+      sessionId: 'sess-async',
+      attemptId: 'att-async-1',
+      toolCallId: 'tc-allow-1',
+      toolTitle: 'Edit file',
+      options: [
+        { optionId: 'opt-allow', kind: 'allow_once' },
+        { optionId: 'opt-reject', kind: 'reject_once' }
+      ]
+    });
+    expect(pendingAllow).toBeInstanceOf(Promise);
+    resolvePrimacy!(true);
+    await expect(pendingAllow).resolves.toEqual({ optionId: 'opt-allow' });
+
+    // 2. Ownership loss during deferred verifyPrimacy -> denies with ownership-lost.
+    const pendingLoss = gate.authorizeAsync({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-async',
+      connectionGeneration: 1,
+      attemptId: 'att-async-1',
+      mutating: false,
+      targetPath: path.join(root, 'a.ts')
+    });
+    ownershipGen = 2;
+    resolvePrimacy!(false);
+    const lossDecision = await pendingLoss;
+    expect(lossDecision.allowed).toBe(false);
+    expect(lossDecision.reason).toBe('ownership-lost');
+
+    // 3. verifyPrimacy rejection/error -> fails closed with ownership-lost.
+    ownershipGen = 1;
+    const pendingErr = policy({
+      sessionId: 'sess-async',
+      attemptId: 'att-async-1',
+      toolCallId: 'tc-err-1',
+      toolTitle: 'Edit file',
+      options: [{ optionId: 'opt-allow', kind: 'allow_once' }]
+    });
+    rejectPrimacy!(new Error('lock unreadable'));
+    await expect(pendingErr).resolves.toBe('undecided');
+    expect(gate.listReceipts().at(-1)?.reasonCode).toBe('ownership-lost');
+
+    // 4. Scope revoked during deferred verifyPrimacy -> post-await re-validation refuses.
+    const pendingRevoked = gate.authorizeAsync({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-async',
+      connectionGeneration: 1,
+      attemptId: 'att-async-1',
+      mutating: false,
+      targetPath: path.join(root, 'b.ts')
+    });
+    gate.revokeSession('sess-async', 1);
+    resolvePrimacy!(true);
+    const revokedDecision = await pendingRevoked;
+    expect(revokedDecision.allowed).toBe(false);
+    expect(revokedDecision.reason).toBe('session-attempt-mismatch');
+    trusted = false;
+  });
+
+  it('skips SQLite receipt persistence on early denial paths whenever primacy or trust is absent', async () => {
+    const root = path.join(os.tmpdir(), 'schegent-1407-no-sql-write');
+    let trusted = true;
+    let holds = false;
+    let resolvePrimacy: ((value: boolean) => void) | null = null;
+    const sqlWrites: unknown[] = [];
+
+    const gate = new AcpAuthorityGate(
+      {
+        isWorkspaceTrusted: () => trusted,
+        holdsPrimacy: () => holds,
+        verifyPrimacy: () =>
+          new Promise<boolean>((resolve) => {
+            resolvePrimacy = resolve;
+          }),
+        currentOwnershipGeneration: () => 1
+      },
+      {
+        run: (...args: unknown[]) => {
+          sqlWrites.push(args);
+        }
+      }
+    );
+
+    // Sync early denial (`missing` -> session-attempt-mismatch) while holdsPrimacy() === false
+    const syncDenied = gate.authorize({
+      requestKind: 'filesystem',
+      acpSessionId: 'missing-sess',
+      connectionGeneration: 1,
+      mutating: false,
+      targetPath: path.join(root, 'x.ts')
+    });
+    expect(syncDenied.reason).toBe('session-attempt-mismatch');
+    expect(sqlWrites).toHaveLength(0);
+
+    // Async post-await revocation when verifyPrimacy() also resolves false
+    holds = true;
+    gate.registerScope({
+      attemptId: 'att-r1',
+      profileId: 'claude-acp-bridge',
+      acpSessionId: 'sess-r1',
+      connectionGeneration: 1,
+      ownershipGeneration: 1,
+      executionRoot: root,
+      primaryWorkspaceRoot: root
+    });
+    const pending = gate.authorizeAsync({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-r1',
+      connectionGeneration: 1,
+      attemptId: 'att-r1',
+      mutating: false,
+      targetPath: path.join(root, 'y.ts')
+    });
+    gate.revokeSession('sess-r1', 1);
+    resolvePrimacy!(false);
+    const asyncDenied = await pending;
+    expect(asyncDenied.reason).toBe('session-attempt-mismatch');
+    expect(sqlWrites).toHaveLength(0);
+
+    // Untrusted early denial also writes zero SQLite receipts
+    trusted = false;
+    holds = true;
+    const untrustedDenied = gate.authorize({
+      requestKind: 'filesystem',
+      acpSessionId: 'missing-sess',
+      connectionGeneration: 1,
+      mutating: false,
+      targetPath: path.join(root, 'z.ts')
+    });
+    expect(untrustedDenied.reason).toBe('session-attempt-mismatch');
+    expect(sqlWrites).toHaveLength(0);
+  });
 });
