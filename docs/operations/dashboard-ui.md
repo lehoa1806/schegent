@@ -81,9 +81,12 @@ If the Dashboard remains on its loading state, the host has not delivered the fi
 
 The Activity Feed's live tail keeps at most 500 rows: the newest 499 entries and one marker that counts the entries it has dropped, the same shape a capped read has. The byte cap is per field, not per row: six fields of an entry (its text, a tool call's input and arguments, a tool result, and the summary of a system entry or of a result) are each held to the live tail's per-field cap of 64 KiB, an argument object over the cap being replaced by a marker, so one tool call's row can carry two capped fields. A tool's name and the subtype of a system entry are not capped and are as long as the log line they came from, and no total byte bound is declared for the tail. While following, the newest entry stays in view. While paused (scrolled away from the bottom), the pane writes no scroll position, and the "new entries" count includes every entry that has arrived since, including entries the cap has since dropped. Whether the browser holds a paused reader's place when the cap removes rows above it has not been observed in a browser run; it is listed as pending in [the measurement](webview-snapshot-cost-measurement.md).
 
+The Activity Feed's toolbar pairs the selection trail with a **Live** button (`data-testid="phase-log-jump-current"`). **Live** is the visible control caption; its action jumps the Activity Feed back to the currently executing Phase and re-enables Live Mode (tooltip: `"Jump to the currently executing Phase"`). When no Phase is in flight, the button displays visually dimmed via `aria-disabled="true"` but remains click-receptive so activating it arms Live Mode for the next executing Phase (tooltip: `"No in-flight Phase (click to enable Live Mode)"`).
+
 <!-- Source: src/contracts/phase-log-bounds.ts -->
 <!-- Source: webview-ui/src/lib/phase-log-window.ts -->
 <!-- Source: webview-ui/src/components/PhaseLogFeed/PhaseLogReadingPane.svelte -->
+<!-- Source: webview-ui/src/components/PhaseLogFeed/PhaseLogSelectors.svelte -->
 <!-- Source: src/activation/phase-log-tail-wiring.ts -->
 
 ## Keyboard

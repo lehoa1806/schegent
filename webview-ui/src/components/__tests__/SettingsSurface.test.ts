@@ -16,7 +16,9 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import SettingsSurface from '../SettingsSurface.svelte';
-import type { WorkflowSnapshot } from '../../lib/snapshot-types';
+import { SettingsPage, type SettingsPart } from '../settings/settings-page.svelte';
+import { disposeIntentLedger } from '../../lib/intent-ledger';
+import type { QueueSummary, WorkflowSnapshot } from '../../lib/snapshot-types';
 import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
 import { FATAL_SIGNATURES } from '../../lib/fatal-signature-registry';
 import { buildQueueRuntime, foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
@@ -34,6 +36,7 @@ vi.mock('../../lib/snapshot-store.svelte', () => ({
 }));
 
 afterEach(() => {
+  disposeIntentLedger();
   cleanup();
   vi.mocked(postCommand).mockClear();
 });
@@ -885,4 +888,423 @@ describe('Settings redesign — a refused save comes into sight', () => {
     });
     expect(isShown(getByTestId('queue-failure-policy-message-default'))).toBe(true);
   });
+});
+
+async function captureUnhandledRejections(action: () => Promise<void>): Promise<unknown[]> {
+  const unhandled: unknown[] = [];
+  const onNodeRejection = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  const onWindowRejection = (event: PromiseRejectionEvent): void => {
+    event.preventDefault();
+    unhandled.push(event.reason);
+  };
+  process.on('unhandledRejection', onNodeRejection);
+  window.addEventListener('unhandledrejection', onWindowRejection);
+  try {
+    await action();
+    await Promise.resolve();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  } finally {
+    process.off('unhandledRejection', onNodeRejection);
+    window.removeEventListener('unhandledrejection', onWindowRejection);
+  }
+  return unhandled;
+}
+
+describe('SettingsSurface — rejected save boundary recovery (W01)', () => {
+  let unanswered: AckListener[] = [];
+  let restoreRegister: (() => void) | null = null;
+
+  beforeEach(() => {
+    unanswered = [];
+    vi.mocked(snapshotStore.onceAck).mockImplementation((_correlationId, listener) => {
+      unanswered.push(listener);
+      return () => undefined;
+    });
+  });
+
+  afterEach(() => {
+    restoreRegister?.();
+    restoreRegister = null;
+    vi.mocked(snapshotStore.onceAck).mockReset();
+  });
+
+  function interceptSignaturesSave(shouldReject: () => boolean, reason: () => unknown): void {
+    const realRegister = SettingsPage.prototype.register;
+    const spy = vi
+      .spyOn(SettingsPage.prototype, 'register')
+      .mockImplementation(function (this: SettingsPage, part: SettingsPart) {
+        return realRegister.call(this, {
+          ...part,
+          save: () => {
+            if ((part.changes().signatures ?? 0) > 0 && shouldReject()) {
+              return Promise.reject(reason());
+            }
+            return part.save();
+          }
+        });
+      });
+    restoreRegister = () => {
+      spy.mockRestore();
+    };
+  }
+
+  it.each([
+    ['unfiltered', null],
+    ['while search filters away both edited rows', 'schegent.codex.path']
+  ] as const)(
+    'handles a rejecting group %s without unhandled rejections, preserves sibling refusal and unsaved edits, and recovers on retry',
+    async (_label, searchQuery) => {
+      let rejectSignatures = true;
+      interceptSignaturesSave(
+        () => rejectSignatures,
+        () => new Error('future-gate')
+      );
+
+      const { getByTestId, queryByTestId } = render(SettingsSurface, {
+        props: { snapshot: buildSnapshot() }
+      });
+
+      await fill(getByTestId, 'general-settings-input-loopMaxIterations', '23');
+      await fireEvent.click(getByTestId('fatal-add'));
+      await fill(getByTestId, 'fatal-operator-input-0', 'quota exceeded for project');
+
+      if (searchQuery !== null) {
+        await fill(getByTestId, 'settings-search', searchQuery);
+        expect(isShown(getByTestId('general-settings-field-loopMaxIterations'))).toBe(false);
+      }
+
+      const saveButton = getByTestId('settings-save');
+      saveButton.focus();
+
+      const unhandled = await captureUnhandledRejections(async () => {
+        await fireEvent.click(saveButton);
+        await vi.waitFor(() => expect(unanswered).toHaveLength(1));
+        for (const answer of unanswered.splice(0)) {
+          answer({ status: 'rejected', reason: 'out-of-range' });
+        }
+        await vi.waitFor(() => {
+          expect(getByTestId('settings-save-error')).toBeTruthy();
+          expect(getByTestId('general-settings-status-loopMaxIterations').textContent).toContain(
+            'Rejected'
+          );
+        });
+      });
+
+      expect(unhandled).toEqual([]);
+      const saveError = getByTestId('settings-save-error');
+      expect(saveError.getAttribute('role')).toBe('alert');
+      expect(saveError.textContent.trim()).toBe('The host refused this action (future-gate).');
+      expect(saveError.textContent).not.toContain('`');
+      expect(isShown(saveError)).toBe(true);
+
+      expect(getByTestId('general-settings-status-loopMaxIterations').textContent.trim()).toBe(
+        'Rejected: The host refused this action (out-of-range).'
+      );
+      expect(isShown(getByTestId('general-settings-status-loopMaxIterations'))).toBe(true);
+      expect((getByTestId('general-settings-input-loopMaxIterations') as HTMLInputElement).value).toBe(
+        '23'
+      );
+      expect((getByTestId('fatal-operator-input-0') as HTMLInputElement).value).toBe(
+        'quota exceeded for project'
+      );
+      expect(getByTestId('settings-unsaved').textContent.trim()).toBe('2 unsaved changes');
+      expect(isDisabled(saveButton)).toBe(false);
+      expect(document.activeElement).toBe(saveButton);
+
+      rejectSignatures = false;
+      const retryUnhandled = await captureUnhandledRejections(async () => {
+        await fireEvent.click(saveButton);
+        await vi.waitFor(() => expect(unanswered).toHaveLength(2));
+        for (const answer of unanswered.splice(0)) answer({ status: 'accepted' });
+        await vi.waitFor(() => {
+          expect(queryByTestId('settings-save-error')).toBeNull();
+          expect(getByTestId('general-settings-status-loopMaxIterations').textContent.trim()).toBe(
+            'Saved'
+          );
+          expect(getByTestId('fatal-status').textContent.trim()).toBe('Saved.');
+        });
+      });
+
+      expect(retryUnhandled).toEqual([]);
+    }
+  );
+
+  it('keeps the sanitized header alert reachable even when search yields zero matching rows, and succeeds on retry', async () => {
+    let rejectSignatures = true;
+    interceptSignaturesSave(
+      () => rejectSignatures,
+      () => new Error('EACCES: open /synthetic/home/user-252/secret.json')
+    );
+
+    const { container, getByTestId, queryByTestId } = render(SettingsSurface, {
+      props: { snapshot: buildSnapshot() }
+    });
+
+    await fireEvent.click(getByTestId('fatal-add'));
+    await fill(getByTestId, 'fatal-operator-input-0', 'quota exceeded for project');
+    await fill(getByTestId, 'settings-search', 'no-such-setting');
+    expect(shownSections(container)).toEqual([]);
+    expect(getByTestId('settings-search-empty')).toBeTruthy();
+
+    const saveButton = getByTestId('settings-save');
+    saveButton.focus();
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(saveButton);
+      await vi.waitFor(() => expect(getByTestId('settings-save-error')).toBeTruthy());
+    });
+
+    expect(unhandled).toEqual([]);
+    const saveError = getByTestId('settings-save-error');
+    expect(saveError.getAttribute('role')).toBe('alert');
+    expect(saveError.textContent.trim()).toBe('The host refused this action.');
+    expect(saveError.textContent).not.toContain('user-252');
+    expect(saveError.textContent).not.toContain('`');
+    expect(isShown(saveError)).toBe(true);
+    expect((getByTestId('fatal-operator-input-0') as HTMLInputElement).value).toBe(
+      'quota exceeded for project'
+    );
+    expect(document.activeElement).toBe(saveButton);
+
+    rejectSignatures = false;
+    const retryUnhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(saveButton);
+      await vi.waitFor(() => expect(unanswered).toHaveLength(1));
+      for (const answer of unanswered.splice(0)) answer({ status: 'accepted' });
+      await vi.waitFor(() => {
+        expect(queryByTestId('settings-save-error')).toBeNull();
+        expect(getByTestId('fatal-status').textContent.trim()).toBe('Saved.');
+      });
+    });
+
+    expect(retryUnhandled).toEqual([]);
+  });
+});
+
+describe('SettingsSurface — plain-text boundary refusal codes on live UI (W04)', () => {
+  let unanswered: AckListener[] = [];
+
+  beforeEach(() => {
+    unanswered = [];
+    vi.mocked(snapshotStore.onceAck).mockImplementation((_correlationId, listener) => {
+      unanswered.push(listener);
+      return () => undefined;
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(snapshotStore.onceAck).mockReset();
+  });
+
+  it.each([
+    [
+      'code-shaped unknown reason without backticks',
+      'future-gate',
+      'Save rejected. The host refused this action (future-gate).'
+    ],
+    [
+      'known mapped refusal code',
+      'untrusted-workspace',
+      'Save rejected. The workspace is not trusted, so this action is unavailable.'
+    ],
+    [
+      'empty refusal reason',
+      '',
+      'Save rejected. The host refused this action.'
+    ],
+    [
+      'free-form unknown refusal text',
+      'write failed at /synthetic/home/user-252/secret.txt',
+      'Save rejected. The host refused this action.'
+    ]
+  ] as const)('renders %s on a live Settings refusal alert', async (_label, reason, expected) => {
+    const { getByTestId, queryByTestId } = render(SettingsSurface, {
+      props: { snapshot: buildSnapshot(), section: 'signatures' }
+    });
+    await fireEvent.click(getByTestId('fatal-add'));
+    await fill(getByTestId, 'fatal-operator-input-0', 'quota exceeded for project');
+
+    await fireEvent.click(getByTestId('settings-save'));
+    await vi.waitFor(() => expect(unanswered).toHaveLength(1));
+    for (const answer of unanswered.splice(0)) answer({ status: 'rejected', reason });
+
+    await vi.waitFor(() => {
+      expect(getByTestId('fatal-status').textContent.trim()).toBe(expected);
+    });
+    const alert = getByTestId('fatal-status');
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(alert.textContent).not.toContain('`');
+    expect(alert.textContent).not.toContain('user-252');
+    expect(queryByTestId('settings-save-error')).toBeNull();
+  });
+});
+
+describe('SettingsSurface — failure-policy refusal announcements and focus recovery (W05)', () => {
+  let unanswered: AckListener[] = [];
+
+  beforeEach(() => {
+    unanswered = [];
+    vi.mocked(snapshotStore.onceAck).mockImplementation((_correlationId, listener) => {
+      unanswered.push(listener);
+      return () => undefined;
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(snapshotStore.onceAck).mockReset();
+  });
+
+  function snapshotWithTwoQueues(): WorkflowSnapshot {
+    const base = buildSnapshot();
+    const summaries: readonly QueueSummary[] = Object.freeze([
+      Object.freeze({
+        id: 'default',
+        name: 'Default',
+        position: 0,
+        state: 'active',
+        pauseSource: null,
+        schedule: null,
+        taskCount: 0,
+        failurePolicy: 'halt-on-failure',
+        failurePolicyOverride: null
+      }),
+      Object.freeze({
+        id: 'q-gamma',
+        name: 'Review Lane',
+        position: 1,
+        state: 'active',
+        pauseSource: null,
+        schedule: null,
+        taskCount: 0,
+        failurePolicy: 'halt-on-failure',
+        failurePolicyOverride: null
+      })
+    ]);
+    return {
+      ...base,
+      queues: Object.freeze([
+        buildQueueRuntime({ queueId: 'default', name: 'Default', position: 0 }),
+        buildQueueRuntime({ queueId: 'q-gamma', name: 'Review Lane', position: 1 })
+      ]),
+      queue: Object.freeze({ ...base.queue, queues: summaries })
+    };
+  }
+
+  function settled(): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  }
+
+  it('announces a visible failure-policy refusal via one alert live region and keeps keyboard focus for recovery', async () => {
+    const { container, getByTestId, queryByTestId } = render(SettingsSurface, {
+      props: { snapshot: snapshotWithTwoQueues(), section: 'queues' }
+    });
+    const select = getByTestId('queue-failure-policy-select-q-gamma') as HTMLSelectElement;
+    await fireEvent.change(select, { target: { value: 'continue' } });
+
+    const saveButton = getByTestId('settings-save');
+    saveButton.focus();
+    await fireEvent.click(saveButton);
+    await vi.waitFor(() => expect(unanswered).toHaveLength(1));
+    for (const answer of unanswered.splice(0)) {
+      answer({
+        status: 'rejected',
+        reason: 'unknown-queue-id',
+        outcome: 'refused'
+      });
+    }
+
+    await vi.waitFor(() => {
+      expect(getByTestId('queue-failure-policy-message-q-gamma').textContent.trim()).toBe(
+        'That queue no longer exists.'
+      );
+    });
+    await settled();
+
+    const message = getByTestId('queue-failure-policy-message-q-gamma');
+    expect(isShown(message)).toBe(true);
+    expect(message.getAttribute('role')).toBe('alert');
+    expect(message.closest('[role="status"]')).toBeNull();
+    expect(queryByTestId('settings-save-error')).toBeNull();
+
+    const alerts = Array.from(container.querySelectorAll('[role="alert"]'));
+    expect(alerts).toEqual([message]);
+    const statusWithReason = Array.from(container.querySelectorAll('[role="status"]')).filter(
+      (node) => node.textContent.includes('That queue no longer exists.')
+    );
+    expect(statusWithReason).toEqual([]);
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(saveButton);
+    expect(isDisabled(saveButton)).toBe(false);
+
+    // Operator can recover immediately: Revert clears the draft and the refusal alert.
+    await fireEvent.click(getByTestId('settings-revert'));
+    expect(select.value).toBe('follow-default');
+    expect(queryByTestId('queue-failure-policy-message-q-gamma')).toBeNull();
+  });
+
+  it.each([
+    ['another setting', 'schegent.codex.path'],
+    ['zero matches', 'no-such-setting']
+  ] as const)(
+    'reveals a failure-policy row filtered away by search (%s) with one alert and preserved focus',
+    async (_label, query) => {
+      const { container, getByTestId, queryByTestId } = render(SettingsSurface, {
+        props: { snapshot: snapshotWithTwoQueues() }
+      });
+      const select = getByTestId('queue-failure-policy-select-q-gamma') as HTMLSelectElement;
+      await fireEvent.change(select, { target: { value: 'continue' } });
+      await fill(getByTestId, 'settings-search', query);
+      expect(isShown(getByTestId('queue-failure-policy-row-q-gamma'))).toBe(false);
+
+      const saveButton = getByTestId('settings-save');
+      saveButton.focus();
+      await fireEvent.click(saveButton);
+      await vi.waitFor(() => expect(unanswered).toHaveLength(1));
+      for (const answer of unanswered.splice(0)) {
+        answer({
+          status: 'rejected',
+          reason: 'unknown-queue-id',
+          outcome: 'refused'
+        });
+      }
+
+      await vi.waitFor(() => {
+        expect(isShown(getByTestId('queue-failure-policy-message-q-gamma'))).toBe(true);
+      });
+      await settled();
+
+      expect((getByTestId('settings-search') as HTMLInputElement).value).toBe('');
+      expect(shownSections(container)).toEqual(['settings-section-queues']);
+      expect(isShown(getByTestId('queue-failure-policy-row-q-gamma'))).toBe(true);
+
+      const message = getByTestId('queue-failure-policy-message-q-gamma');
+      expect(message.getAttribute('role')).toBe('alert');
+      expect(message.closest('[role="status"]')).toBeNull();
+      expect(message.textContent.trim()).toBe('That queue no longer exists.');
+      expect(queryByTestId('settings-save-error')).toBeNull();
+
+      const alerts = Array.from(container.querySelectorAll('[role="alert"]'));
+      expect(alerts).toEqual([message]);
+      const statusWithReason = Array.from(container.querySelectorAll('[role="status"]')).filter(
+        (node) => node.textContent.includes('That queue no longer exists.')
+      );
+      expect(statusWithReason).toEqual([]);
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(saveButton);
+      expect(isDisabled(saveButton)).toBe(false);
+
+      // Operator can immediately edit the policy select to clear the refusal and prepare a retry.
+      await fireEvent.change(select, { target: { value: 'halt-on-failure' } });
+      expect(queryByTestId('queue-failure-policy-message-q-gamma')).toBeNull();
+      expect(select.value).toBe('halt-on-failure');
+    }
+  );
 });

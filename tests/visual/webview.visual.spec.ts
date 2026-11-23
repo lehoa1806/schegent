@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import metricsJson from './fixtures/metrics-response.json';
 import phaseLogJson from './fixtures/phase-log-response.json';
-import { workflowSnapshot } from './fixtures/workflow-snapshot';
+import { workflowSnapshot, workflowSnapshotWithMissingAgy } from './fixtures/workflow-snapshot';
 import { themeCss, type ThemeName } from './theme-palette';
 import type { WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 // The webview's route union, imported across the CJS/ESM line that was thought
@@ -295,10 +295,17 @@ async function installDeterministicHost(page: Page): Promise<void> {
     content: `(() => {
       const fixtures = ${fixtures};
       let persistedState;
+      const postedCommands = [];
+      Object.defineProperty(window, '__visualPostedCommands', {
+        configurable: true,
+        enumerable: false,
+        value: postedCommands
+      });
       const emit = (data) => window.dispatchEvent(new MessageEvent('message', { data }));
       const api = {
         postMessage(message) {
           if (!message || typeof message !== 'object') return;
+          postedCommands.push(message);
           if (typeof message.correlationId !== 'string') return;
           let result;
           if (message.type === 'CMD_READ_METRICS') result = fixtures.metrics;
@@ -2637,3 +2644,253 @@ test('Builder UX unification: single Import modal, overflow Export, and Models d
 
   assertNoPageErrors(page, 'Builder UX unification');
 });
+
+/** Parse CSS `rgb(r, g, b)` or `rgba(r, g, b, a)` into 0–255 RGB channels. */
+function parseRgbChannels(cssColor: string): readonly [number, number, number] {
+  const match = /^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/i.exec(
+    cssColor.trim()
+  );
+  if (!match) throw new Error(`Expected rgb()/rgba() color, received: ${cssColor}`);
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/** WCAG 2.1 relative luminance for an sRGB triple (0–255). */
+function relativeLuminance(rgb: readonly [number, number, number]): number {
+  const linear = rgb.map((channel) => {
+    const srgb = channel / 255;
+    return srgb <= 0.03928 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+/** WCAG 2.1 contrast ratio between two CSS `rgb(...)` strings. */
+function wcagContrastRatio(fgCss: string, bgCss: string): number {
+  const l1 = relativeLuminance(parseRgbChannels(fgCss));
+  const l2 = relativeLuminance(parseRgbChannels(bgCss));
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * FR-R7-15 W03: On a 320px panel, ConfirmDialog breaks dotted setting keys at `.` joins rather
+ * than arbitrary mid-word positions, falls back cleanly on long unbroken tokens without horizontal
+ * scroll on the dialog's own scroller, and keeps accessible body text verbatim.
+ */
+test('confirmation dialog on a 320px panel wraps dotted keys at joins and unbroken tokens cleanly (W03)', async ({
+  page
+}) => {
+  await openSurface(page, 'settings', 'light');
+  await page.setViewportSize({ width: REFLOW_PANEL_WIDTH_PX, height: 960 });
+
+  // Pass 1: real default snapshot whose Claude refusal quotes long dotted setting keys.
+  const claudeActions = page.getByTestId('backend-actions-claude');
+  await claudeActions.scrollIntoViewIfNeeded();
+  await page.evaluate(AFTER_TWO_FRAMES);
+  await claudeActions.click();
+  await page.getByTestId('backend-grant-claude').click();
+
+  const dialog = page.getByTestId('confirm-dialog');
+  const body = page.getByTestId('confirm-dialog-body');
+  await expect(dialog).toBeVisible();
+  const realRefusal = workflowSnapshot.backendPostures[0].refusal;
+  const expectedRealBody =
+    `${realRefusal}\n\nGranting this applies to **Claude** only, and you can revoke it ` +
+    'from the actions menu on its card at any time.';
+  expect(await body.textContent(), 'accessible text matches confirmation body verbatim').toBe(
+    expectedRealBody
+  );
+  const bodyId = await body.getAttribute('id');
+  expect(await dialog.getAttribute('aria-describedby')).toBe(bodyId);
+
+  const realBreaks = await sentenceBreaks(body);
+  expect(realBreaks.inWord, 'dotted keys in confirmation dialog break only at joins').toEqual([]);
+  expect(realBreaks.atJoins, 'dotted keys use <wbr> join breaks at 320px').toBeGreaterThan(0);
+
+  const realBox = await dialog.evaluate((el) => ({
+    clientWidth: el.clientWidth,
+    overflow: el.scrollWidth - el.clientWidth
+  }));
+  expect(
+    realBox.clientWidth,
+    'dialog box fits within the 320px narrow panel on dotted keys'
+  ).toBeLessThanOrEqual(REFLOW_PANEL_WIDTH_PX);
+  expect(
+    realBox.overflow,
+    'dialog scroller has zero horizontal overflow on dotted keys'
+  ).toBeLessThanOrEqual(1);
+  await page.getByTestId('confirm-dialog-cancel').click();
+  await expect(dialog).toHaveCount(0);
+
+  // Pass 2: combined dotted key + 64-char unbroken token to verify fallback wrapping on dialog scroller.
+  const dottedKey = 'schegent.queue.maxConcurrentRuns.overrideDefaultValue';
+  const unbrokenToken = `token${'0123456789abcdef'.repeat(4)}`;
+  const combinedRefusal = `Check ${dottedKey} and ${unbrokenToken} before continuing.`;
+  const combinedSnapshot = inlineJson({
+    ...workflowSnapshot,
+    backendPostures: workflowSnapshot.backendPostures.map((posture) =>
+      posture.kind === 'claude' ? { ...posture, refusal: combinedRefusal } : posture
+    )
+  });
+  await page.evaluate(
+    `window.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload: ${combinedSnapshot} } }))`
+  );
+  await claudeActions.scrollIntoViewIfNeeded();
+  await page.evaluate(AFTER_TWO_FRAMES);
+  await claudeActions.click();
+  await page.getByTestId('backend-grant-claude').click();
+  await expect(dialog).toBeVisible();
+
+  const expectedCombinedBody =
+    `${combinedRefusal}\n\nGranting this applies to **Claude** only, and you can revoke it ` +
+    'from the actions menu on its card at any time.';
+  expect(await body.textContent(), 'combined body text stays verbatim with zero injected chars').toBe(
+    expectedCombinedBody
+  );
+  const combinedBreaks = await sentenceBreaks(body);
+  expect(combinedBreaks.atJoins, 'dotted key still uses <wbr> join breaks').toBeGreaterThan(0);
+  expect(
+    combinedBreaks.inWord.length,
+    '64-char unbroken token exercises overflow-wrap fallback at 320px'
+  ).toBeGreaterThan(0);
+  // Every forced mid-word break must belong to the unbroken token, never any segment of the dotted key.
+  for (const snippet of combinedBreaks.inWord) {
+    expect(snippet, 'dotted key never breaks mid-word').not.toMatch(
+      /schegent|queue|maxConcurrent|Runs|override|Default|Value/i
+    );
+    expect(snippet, 'forced mid-word break belongs to the unbroken token').toMatch(
+      /token|[0-9a-f]{4,}/i
+    );
+  }
+  const combinedBox = await dialog.evaluate((el) => ({
+    clientWidth: el.clientWidth,
+    overflow: el.scrollWidth - el.clientWidth
+  }));
+  expect(
+    combinedBox.clientWidth,
+    'dialog box fits within the 320px narrow panel even with a 64-char unbroken token'
+  ).toBeLessThanOrEqual(REFLOW_PANEL_WIDTH_PX);
+  expect(
+    combinedBox.overflow,
+    'dialog scroller has zero horizontal overflow even with a 64-char unbroken token'
+  ).toBeLessThanOrEqual(1);
+  await page.getByTestId('confirm-dialog-cancel').click();
+
+  assertNoPageErrors(page, 'confirm dialog narrow-panel wrapping');
+});
+
+/**
+ * FR-R7-15 W06: Light, dark, and high-contrast visual fixtures expose distinguishable rest and
+ * hover primary-button backgrounds while maintaining WCAG AA (>= 4.5:1) text contrast in both.
+ */
+for (const theme of ['light', 'dark', 'high-contrast'] as const) {
+  test(`primary button hover differs from rest with WCAG AA contrast in ${theme} (W06)`, async ({
+    page
+  }) => {
+    await openSurface(page, 'sidebar', theme);
+    const primary = page.getByTestId('sidebar-open-dashboard-button');
+    await expect(primary).toBeVisible();
+    await expect(primary).toBeEnabled();
+
+    const readColors = () =>
+      primary.evaluate((el) => {
+        const view = el.ownerDocument.defaultView;
+        if (!view) throw new Error('element has no defaultView');
+        const style = view.getComputedStyle(el);
+        return { bg: style.backgroundColor, fg: style.color };
+      });
+
+    const rest = await readColors();
+    await primary.hover();
+    const hover = await readColors();
+
+    expect(hover.bg, `hover background differs from rest in ${theme}`).not.toBe(rest.bg);
+    expect(
+      wcagContrastRatio(rest.fg, rest.bg),
+      `rest primary button meets WCAG AA contrast in ${theme}`
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(
+      wcagContrastRatio(hover.fg, hover.bg),
+      `hover primary button meets WCAG AA contrast in ${theme}`
+    ).toBeGreaterThanOrEqual(4.5);
+    assertNoPageErrors(page, `primary button hover (${theme})`);
+  });
+}
+
+/**
+ * FR-R7-15 W07: A derived missing-backend fixture photographs the Settings card's "Not found"
+ * presentation without altering the default all-found fixture, and a successful discovery snapshot
+ * updates the card in place without reloading.
+ */
+for (const theme of ['light', 'dark'] as const) {
+  test(`undiscovered backend card photographs Not found in ${theme} and updates live on discovery (W07)`, async ({
+    page
+  }) => {
+    // Preserve the existing all-found default snapshot untouched.
+    expect(workflowSnapshot.availableBackends).toEqual(['claude', 'codex', 'agy']);
+    expect(workflowSnapshotWithMissingAgy.availableBackends).toEqual(['claude', 'codex']);
+
+    await openSurface(page, 'settings', theme);
+    const missingSnapshotJson = inlineJson(workflowSnapshotWithMissingAgy);
+    await page.evaluate(
+      `window.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload: ${missingSnapshotJson} } }))`
+    );
+
+    const agyCard = page.getByTestId('backend-health-agy');
+    await expect(agyCard).toBeVisible();
+    await expect(page.getByTestId('backend-discovery-agy')).toHaveText('Not found');
+    await expect(page.getByTestId('backend-not-installed-agy')).toHaveText('Not installed');
+    await expect(page.getByTestId('backend-path-agy')).toHaveText('Set a path to use this backend');
+    await expect(page.getByTestId('backend-set-path-agy')).toHaveText('Set path…');
+    assertNoPageErrors(page, `missing backend (${theme})`);
+
+    await agyCard.scrollIntoViewIfNeeded();
+    await page.evaluate(AFTER_TWO_FRAMES);
+    await expect(agyCard).toHaveScreenshot(`settings-backend-not-found-${theme}.png`, {
+      mask: [...volatileMasks(page)],
+      maskColor: theme === 'light' ? '#e5e7eb' : '#334155'
+    });
+
+    // Stamp the live document to prove discovery updates in place without reloading.
+    await page.evaluate(`window.__w07NoReloadToken = 'alive-without-reload'`);
+
+    // Details shows the discovery notice before recovery.
+    await page.getByTestId('backend-details-toggle-agy').click();
+    await expect(page.getByTestId('backend-not-found-agy')).toBeVisible();
+
+    // Trigger discovery via the overflow menu's "Test" item.
+    await page.getByTestId('backend-actions-agy').click();
+    await page.getByTestId('ping-backend-agy').click();
+
+    const pingPosted = (await page.evaluate(
+      `window.__visualPostedCommands.some((m) => m && m.type === 'CMD_PING_BACKEND' && m.payload && m.payload.runner === 'agy')`
+    )) as boolean;
+    expect(pingPosted, 'Test item dispatches CMD_PING_BACKEND for agy').toBe(true);
+
+    // Deliver host rescan snapshot showing agy discovered + ping healthy (no page reload).
+    const recoveredSnapshotJson = inlineJson({
+      ...workflowSnapshot,
+      backendPingState: {
+        status: 'success',
+        runner: 'agy',
+        startedAt: 1732000000000,
+        completedAt: 1732000000042,
+        latencyMs: 42,
+        timeoutSeconds: 5
+      }
+    });
+    await page.evaluate(
+      `window.dispatchEvent(new MessageEvent('message', { data: { type: 'STATE_SNAPSHOT', payload: ${recoveredSnapshotJson} } }))`
+    );
+
+    await expect(page.getByTestId('backend-discovery-agy')).toHaveText('Found');
+    await expect(page.getByTestId('backend-not-installed-agy')).toHaveCount(0);
+    await expect(page.getByTestId('backend-path-agy')).toHaveText('agy');
+    await expect(page.getByTestId('backend-set-path-agy')).toHaveCount(0);
+    await expect(page.getByTestId('ping-backend-agy')).toBeVisible();
+    await expect(page.getByTestId('ping-backend-agy')).toHaveText('Test');
+    await expect(page.getByTestId('backend-not-found-agy')).toHaveCount(0);
+    expect(await page.evaluate(`window.__w07NoReloadToken`)).toBe('alive-without-reload');
+    assertNoPageErrors(page, `missing backend live discovery (${theme})`);
+  });
+}

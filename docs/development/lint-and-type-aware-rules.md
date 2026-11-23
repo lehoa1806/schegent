@@ -34,6 +34,27 @@ The webview pass uses `svelte-eslint-parser`, delegates component scripts to the
 <!-- Source: scripts/lint.mjs -->
 <!-- Source: tests/lint/svelte-type-information-reaches-runes.test.ts -->
 
+## Input set (untracked source, scratch and generated files)
+
+`npm run lint` selects host targets by walking `src/`, `tests/`, `scripts/`, and root-level files (such as root `.mjs` and `.ts` tooling scripts) directly on disk rather than filtering through `git ls-files`. That is deliberate: a newly authored untracked source file in `src/`, `tests/`, or `scripts/` is linted before it is staged or committed, so defects cannot wait until after `git add` to surface.
+
+Because `tests/` is walked in full, a stray untracked copy left inside `tests/` (for example, a scratch copy of a visual spec placed in `tests/visual/`) is linted as live test source. It can add new lint errors or raise baselined warning counts and per-file breakdowns even though it is untracked.
+
+Keep disposable scratch copies in one of the documented scratch locations instead:
+
+- `repo/scratch/`
+- `repo/.tmp/`
+- the workspace root `scratch/`
+
+These locations are gitignored, excluded from ESLint by root-anchored entries in `CARRIED_IGNORES` (`scripts/lint-config.mjs`), and sit outside the `src/`, `tests/`, and `scripts/` trees walked by suppression-directive scanning (`tests/lint/eslint-baseline.test.ts`).
+
+Generated and artifact directories excluded from host linting are `dist/`, `out/`, `coverage/`, `.vscode-test/`, `.release/`, `tests/visual/.artifacts/`, and `tests/soak/.artifacts/` (alongside `node_modules/`, `.specify/`, `specs/`, `docs/`, and `.claude/`). `tests/lint/eslint-baseline.test.ts` derives its tree-relative directory exclusions directly from the global `{ ignores }` blocks in `scripts/lint-config.mjs`, so nested source directories named `scratch`, `.tmp`, `.release`, or `.artifacts` inside `src/`, `tests/`, or `scripts/` remain checked by both ESLint and the suppression-directive ratchet.
+
+<!-- Source: scripts/lint.mjs -->
+<!-- Source: scripts/lint-config.mjs -->
+<!-- Source: tests/lint/eslint-baseline.test.ts -->
+<!-- Source: tests/unit/scripts/lint-input-set.test.ts -->
+
 ## Type-aware policy
 
 These rules have one severity across each tree:

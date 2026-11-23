@@ -181,6 +181,7 @@ describe('Feature 020 T054 — Jump-to-current-phase button (US3)', () => {
       }
     });
     const button = getByTestId('phase-log-jump-current') as HTMLButtonElement;
+    expect(button.textContent.trim()).toBe('Live');
     expect(button.disabled).toBe(false);
     expect(button.title).toBe('Jump to the currently executing Phase');
   });

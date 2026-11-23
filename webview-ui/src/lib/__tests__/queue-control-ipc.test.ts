@@ -435,7 +435,7 @@ describe('refusalText — the shared boundary fallback (T11)', () => {
 
   it('names a code-shaped reason it does not know inside a fixed sentence', () => {
     expect(refusalText('some-new-host-refusal')).toBe(
-      'The host refused this action (`some-new-host-refusal`).'
+      'The host refused this action (some-new-host-refusal).'
     );
   });
 });

@@ -43,7 +43,7 @@ const BOUNDARY_TEXT: ReadonlyMap<string, string> = new Map([
   ],
   // The ledger's `unknown`, as the adopting helpers report it. Not a refusal: the host may
   // still run the command, so a surface without its own sentence says the outcome is not yet
-  // known rather than "The host refused this action (`timeout`)".
+  // known rather than "The host refused this action (timeout)".
   ['timeout', OUTCOME_NOT_YET_KNOWN_TEXT]
 ]);
 
@@ -60,10 +60,11 @@ const CODE_SHAPE = /^[a-z0-9][a-z0-9-]{0,63}$/;
  * unknown is named inside a fixed sentence; anything else renders the bare sentence with no
  * part of the reason in it. Total: it never throws and never returns the reason as free text.
  */
-export function boundaryRefusalText(reason: string): string {
+export function boundaryRefusalText(reason: unknown): string {
+  if (typeof reason !== 'string') return 'The host refused this action.';
   const known = BOUNDARY_TEXT.get(reason);
   if (known !== undefined) return known;
-  if (CODE_SHAPE.test(reason)) return `The host refused this action (\`${reason}\`).`;
+  if (CODE_SHAPE.test(reason)) return `The host refused this action (${reason}).`;
   return 'The host refused this action.';
 }
 

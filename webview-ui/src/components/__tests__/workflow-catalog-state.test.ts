@@ -605,7 +605,7 @@ describe('formatWorkflowSaveRejection', () => {
   // the dispatch-failure code are not shown raw.
   it('names an unrecognized code-shaped reason inside the boundary sentence', () => {
     expect(formatWorkflowSaveRejection('trust-denied', undefined)).toBe(
-      'The host refused this action (`trust-denied`).'
+      'The host refused this action (trust-denied).'
     );
   });
 

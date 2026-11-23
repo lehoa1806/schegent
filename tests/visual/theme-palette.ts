@@ -21,6 +21,7 @@ interface ThemePalette {
   readonly active: string;
   readonly focus: string;
   readonly blue: string;
+  readonly buttonHover: string;
   readonly green: string;
   readonly yellow: string;
   readonly red: string;
@@ -38,6 +39,7 @@ const PALETTES: Readonly<Record<ThemeName, ThemePalette>> = {
     active: '#dbeafe',
     focus: '#0969da',
     blue: '#0969da',
+    buttonHover: '#0550ae',
     green: '#1a7f37',
     yellow: '#9a6700',
     red: '#cf222e',
@@ -53,6 +55,7 @@ const PALETTES: Readonly<Record<ThemeName, ThemePalette>> = {
     active: '#1f3a5f',
     focus: '#58a6ff',
     blue: '#58a6ff',
+    buttonHover: '#79c0ff',
     green: '#3fb950',
     yellow: '#d29922',
     red: '#f85149',
@@ -68,6 +71,7 @@ const PALETTES: Readonly<Record<ThemeName, ThemePalette>> = {
     active: '#000000',
     focus: '#ffff00',
     blue: '#00ffff',
+    buttonHover: '#ffff00',
     green: '#00ff00',
     yellow: '#ffff00',
     red: '#ff5555',
@@ -119,7 +123,7 @@ export function themeCss(theme: ThemeName): string {
       --vscode-input-border: ${palette.border};
       --vscode-button-background: ${palette.blue};
       --vscode-button-foreground: ${theme === 'light' ? '#ffffff' : '#000000'};
-      --vscode-button-hoverBackground: ${palette.focus};
+      --vscode-button-hoverBackground: ${palette.buttonHover};
       --vscode-button-secondaryBackground: ${palette.input};
       --vscode-button-secondaryForeground: ${palette.foreground};
       --vscode-button-secondaryHoverBackground: ${palette.hover};

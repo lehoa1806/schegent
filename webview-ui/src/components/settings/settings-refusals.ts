@@ -9,8 +9,8 @@
 // moves away: a later answer to the same Save cannot take the page from it. Otherwise the first
 // refusal drawn since the last time, in page order, is revealed. Either way the page then
 // scrolls only as far as it must to bring that refusal into view. Focus stays where it is, so
-// the user is not taken from what they are doing; each refusal is drawn in a live region, an
-// alert or a failure-policy row's status line.
+// the user is not taken from what they are doing; each refusal is drawn in its own alert live
+// region.
 import { tick } from 'svelte';
 
 interface Refusal {
