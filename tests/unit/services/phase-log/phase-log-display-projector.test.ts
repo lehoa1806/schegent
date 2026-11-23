@@ -7,13 +7,14 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { SanitizedLogger } from '../../../../src/lib/logger';
+import { REDACTION_SENTINEL, SanitizedLogger } from '../../../../src/lib/logger';
 import {
   MAX_AGY_STEP_TEXT_LENGTH,
   MAX_OPEN_AGY_STEPS,
   projectStreamJsonlLine
 } from '../../../../src/services/phase-log/phase-log-display-projector';
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
+import { sanitizeDisplayEntryBody } from '../../../../src/services/phase-log/phase-log-sanitizer';
 import {
   PhaseLogTailSession,
   type LiveLogBatchItem
@@ -215,6 +216,58 @@ describe('Feature 029 — projectStreamJsonlLine populates toolArguments', () =>
     const e = projectStreamJsonlLine(line);
     expect(e?.body.toolArguments).toBeUndefined();
     expect(e?.body.toolInput).toBe('');
+  });
+
+  it('preserves own __proto__ keys without mutating prototype so nested secrets are redacted (SR-306-1)', () => {
+    const apiKey = ['sk', '-ant-', 'api03-CANARYCANARYCANARYCANARY0123456789'].join('');
+    const line: unknown = JSON.parse(
+      `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Custom","input":{"__proto__":{"apiKey":"${apiKey}","__truncated":true,"__elided":true},"nested":{"__proto__":{"secret":"${apiKey}"}},"safe":"ok"}}]}}`
+    );
+
+    const projected = projectStreamJsonlLine(line);
+    if (projected === null) throw new Error('expected projected tool-use entry');
+    expect(projected.kind).toBe('tool-use');
+
+    const args = projected.body.toolArguments;
+    if (args === undefined || typeof args !== 'object' || args === null || Array.isArray(args)) {
+      throw new Error('expected plain object toolArguments');
+    }
+    expect(Object.getPrototypeOf(args)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(args, '__proto__')).toBe(true);
+    const protoDescriptor = Object.getOwnPropertyDescriptor(args, '__proto__');
+    expect(protoDescriptor?.enumerable).toBe(true);
+    expect(protoDescriptor?.writable).toBe(true);
+    expect(protoDescriptor?.configurable).toBe(true);
+    expect((args as Record<string, unknown>)['__truncated']).toBeUndefined();
+    expect((args as Record<string, unknown>)['__elided']).toBeUndefined();
+
+    const logger = new SanitizedLogger();
+    const sanitized = sanitizeDisplayEntryBody(projected, (s) => logger.sanitize(s));
+    const sanitizedArgs = sanitized.body.toolArguments;
+    if (
+      sanitizedArgs === undefined ||
+      typeof sanitizedArgs !== 'object' ||
+      sanitizedArgs === null ||
+      Array.isArray(sanitizedArgs)
+    ) {
+      throw new Error('expected sanitized plain object toolArguments');
+    }
+    expect(Object.getPrototypeOf(sanitizedArgs)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(sanitizedArgs, '__proto__')).toBe(true);
+    expect((sanitizedArgs as Record<string, unknown>)['__truncated']).toBeUndefined();
+    expect((sanitizedArgs as Record<string, unknown>)['__elided']).toBeUndefined();
+
+    const sanitizedProtoValue = Object.getOwnPropertyDescriptor(sanitizedArgs, '__proto__')?.value;
+    if (
+      typeof sanitizedProtoValue !== 'object' ||
+      sanitizedProtoValue === null ||
+      Array.isArray(sanitizedProtoValue)
+    ) {
+      throw new Error('expected sanitized __proto__ object value');
+    }
+    expect((sanitizedProtoValue as Record<string, unknown>)['apiKey']).toBe(REDACTION_SENTINEL);
+    expect(JSON.stringify(sanitized)).not.toContain(apiKey);
+    expect(JSON.stringify(Object.getPrototypeOf(sanitizedArgs))).not.toContain(apiKey);
   });
 });
 

@@ -20,6 +20,8 @@ Implemented in:
 - [`src/services/phase-log/live-log-counters.ts`](../../src/services/phase-log/live-log-counters.ts)
 - [`src/services/phase-log/acp-live-projection.ts`](../../src/services/phase-log/acp-live-projection.ts)
 - [`src/services/phase-log/live-log-index.ts`](../../src/services/phase-log/live-log-index.ts)
+- [`src/services/phase-log/live-log-replay-reader.ts`](../../src/services/phase-log/live-log-replay-reader.ts)
+- [`src/ui/sidebar/commands/phase-log-tail-error.ts`](../../src/ui/sidebar/commands/phase-log-tail-error.ts)
 
 ## Production status
 
@@ -27,18 +29,15 @@ What ships and runs in this release:
 
 - the bounded, acknowledged delivery from the log file to the dashboard and sidebar views;
 - resumable cursors, so a reloaded view continues where it stopped;
-- the six delivery counters, on the stop response and the `phase-log-tail-stopped` audit row.
+- the six delivery counters, on the stop response and the `phase-log-tail-stopped` audit row;
+- bounded operation-and-code failure logging across the start, ack, and stop tail handlers (`phase-log-tail-error.ts`), so neither raw filesystem paths nor thrown exception messages reach the logger;
+- **the segment index** (SQLite migration 4, `004_f07_live_log_index`), constructed in production by [`src/activation/sqlite-cutover-wiring.ts`](../../src/activation/sqlite-cutover-wiring.ts). Production calls `openStream(...)` when recording ACP observations, and `readLiveLogVisibility()` reads summary counts from `live_log_*`. Full segment append/finalize/replay persistence is exercised by the contained replay consumer (`src/services/phase-log/live-log-replay-reader.ts`) and integration tests, while live view tailing still reads `stream.jsonl` directly.
 
-What ships but production does not construct yet:
+What ships as a qualified library boundary not yet wired as the live view producer:
 
-- **The segment index** (SQLite migration 4, `004_f07_live_log_index`). Its tables are created in
-  every store that is opened. Production opens no store in the extension host until the F01-B
-  cutover, so no stream, segment or coverage row is written yet.
-- **The ACP projection.** It turns ACP events into the same entries and gaps, but no ACP backend
-  feeds it yet.
+- **The ACP live projection (`projectAcpEvents`).** Production ACP modules (`src/contracts/acp-runtime.ts`, `src/services/acp-runtime/session-update-mapper.ts`, `src/services/acp-runtime/observation-emitter.ts`, `src/runner/acp-stream-encoder.ts`, and `src/runner/acp-open-work-tracker.ts`) import only the `AcpNormalizedEvent` / `AcpEventKind` / `AcpEventOrigin` **types** from `acp-live-projection.ts`; production display streaming currently writes `stream.jsonl` through `AcpStreamEncoder` rather than calling `projectAcpEvents(...)` directly. `projectAcpEvents` enforces control/surrogate metadata rejection, a 128-character `toolName` cap, pre-allocation UTF-8 text truncation, and cycle-safe depth/node/byte-bounded `toolArgs` sizing before sanitization and 255 KiB entry budgeting.
 
-As a result, two of the ten coverage reasons never appear in a production view yet:
-`capture-disabled` (reported by the index) and `transport-gap` (reported by the ACP projection).
+Because production live views still tail `stream.jsonl` directly (without `appendSegment` or `projectAcpEvents` wired into the view loop), `capture-disabled` and `transport-gap` do not yet appear in a live UI view during normal runs.
 
 ## Bounds
 
@@ -130,22 +129,18 @@ So a file rewritten in place, or recreated with the same identity, and grown pas
 position between two reads is not detected as replaced. The view then shows `parse-omission`
 rows or entries from the new content. It never reads another file.
 
-## The segment index (not yet constructed in production)
+## The segment index and contained replay reader
 
-Migration 4 adds three tables: `live_log_streams`, `live_log_segments` and `live_log_coverage`.
-They hold byte ranges and references into the log file, and no log content. For the store itself,
-see [SQLite application store](sqlite-application-store.md).
+Migration 4 adds three authoritative F07 tables: `live_log_streams`, `live_log_segments`, and `live_log_coverage`. They hold byte ranges and relative `artifact_ref` pointers (up to 1,024 characters), and no log content. For the store itself, see [SQLite application store](sqlite-application-store.md).
 
-When the store is constructed, the index works as follows:
+- `sqlite-cutover-wiring.ts` constructs `createLiveLogIndex(...)` on activation and opens streams on ACP observations.
+- A segment becomes readable only after its end offset is verified against the file's real size, so a restart in the middle of a write never offers bytes the file does not hold.
+- A segment that was written but never verified is listed apart as unverified and is not read.
+- `restartReplay()` returns segments and coverage ranges oldest-first up to 1,024 rows per list, setting `truncated: true` when more rows exist.
+- A replaced file starts a new generation, and the old generation is reported once as a `source-replaced` range.
+- With capture disabled, a restart reports a single `capture-disabled` range and no segments, writing nothing to SQLite even if earlier captured generations existed.
+- The contained replay consumer ([`src/services/phase-log/live-log-replay-reader.ts`](../../src/services/phase-log/live-log-replay-reader.ts)) validates every stored `artifact_ref` lexically (1–1,024 characters, no NUL/control characters, no backslashes, no POSIX/Windows absolute, drive-relative, or UNC prefixes, and no empty, `.`, or `..` segments) before opening via `openWithinRoot(trustedRoot, segments, { flags: 'r' })` (non-symlink intermediate walk + `O_NOFOLLOW` regular-file check), verifying `stat.size >= endOffset`, and reading bounded byte ranges within the 8 MiB pass budget. Escaping, symlink, or malformed references are refused as `permission-refused` without touching paths outside the trusted root.
 
-- A segment becomes readable only after its end offset is verified against the file's real size,
-  so a restart in the middle of a write never offers bytes the file does not hold.
-- A segment that was written but never verified is listed apart as unverified, and is not read.
-- A replaced file starts a new generation, and the old generation is reported once as a
-  `source-replaced` range.
-- With capture disabled, a restart reports one `capture-disabled` range and no segments.
-  Reading the index writes nothing.
+### F04 placeholder log tables (schema-v9 ownership decision)
 
-The F04 placeholder tables `log_streams`, `log_segments` and `log_gaps` are not used by this
-index. The index does not prune segment rows of old generations. That retention is left to the
-artifact lifecycle (F05).
+The three Migration 1 F04 placeholder tables (`log_streams`, `log_segments`, and `log_gaps`) and their deprecated adapter (`LogIndexStoreAdapter`) have zero production callers and are not written by this index. Under `FR-R7-16` (`16-08`), they are explicitly **retained as deprecated empty placeholders in SQLite schema version 9 (`SQLITE_MIN_READER_VERSION = 9`)** to preserve Migration 1 checksum immutability and schema-8/9 backup/restore compatibility; F07 `live_log_*` is the authoritative owner (and `store-relocation.ts` detects `live_log_streams` as active operational data). Retirement (`DROP TABLE`) is deferred to a future schema-breaking migration that bumps `SQLITE_MIN_READER_VERSION` and teaches restore verification to ignore verified-empty retired tables. The index does not prune segment rows of old generations; that retention belongs to the artifact lifecycle (F05).

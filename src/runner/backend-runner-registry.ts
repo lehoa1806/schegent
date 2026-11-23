@@ -63,7 +63,8 @@ export class BackendRunnerRegistry {
   // read at each lookup. It used to take none, so a `--version` child inherited the host's
   // complete environment under every mode. An absent policy is the shipped allowlist default.
   private readonly versionProbe: CliVersionProbe = createCliVersionProbe({
-    environmentPolicy: () => this.factoryOptions.environmentPolicy ?? SHIPPED_DEFAULT_POLICY
+    environmentPolicy: () => this.factoryOptions.environmentPolicy ?? SHIPPED_DEFAULT_POLICY,
+    isTrusted: () => this.factoryOptions.isTrusted?.() ?? true
   });
   /** Set by `closeAndTearDown()`; every runner handed out after it is closed. */
   private closed = false;
@@ -142,6 +143,7 @@ export class BackendRunnerRegistry {
    * record, and a phase must never fail to run because a `--version` call did not answer.
    */
   public async observedCliVersion(cliPath: string): Promise<string | null> {
+    if (this.factoryOptions.isTrusted?.() === false) return null;
     return this.versionProbe.observe(cliPath);
   }
 

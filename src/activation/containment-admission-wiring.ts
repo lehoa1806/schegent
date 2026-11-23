@@ -53,10 +53,8 @@ export interface ContainmentAdmissionWiring {
   readonly recordAcceptance: (kind: BackendRunnerKind, fingerprint: FingerprintRecord) => Promise<void>;
 }
 
-function spawnPathOf(policy: ProcessEnvironmentPolicy): string | undefined {
-  const env = buildSpawnEnv(policyRequestFields(policy));
-  const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH');
-  return key === undefined ? undefined : env[key];
+function spawnEnvOf(policy: ProcessEnvironmentPolicy): NodeJS.ProcessEnv {
+  return buildSpawnEnv(policyRequestFields(policy));
 }
 
 export function wireContainmentAdmission(deps: ContainmentAdmissionWiringDeps): ContainmentAdmissionWiring {
@@ -66,7 +64,7 @@ export function wireContainmentAdmission(deps: ContainmentAdmissionWiringDeps): 
     isTrusted: deps.isTrusted,
     hasPrimacy: deps.hasPrimacy,
     resolveExecutable: (cliPath) =>
-      resolveExecutable(cliPath, spawnPathOf(deps.environmentPolicy), process.platform),
+      resolveExecutable(cliPath, spawnEnvOf(deps.environmentPolicy), process.platform),
     observeVersion: (_kind, cliPath) => deps.observeVersion(cliPath),
     granted: deps.granted,
     bindings,

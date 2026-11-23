@@ -119,6 +119,7 @@ async function prepareRootPath(ctx: ProvisionContext, laneId: string): Promise<s
 
 /** Steps 2 to 5; `null` on success, else the refusal reason. */
 async function materialize(ctx: ProvisionContext, lane: LaneRecord, remaining: Deadline): Promise<LaneRefusalReason | null> {
+  if (!ctx.store.assertGeneration(ctx.workspaceId, ctx.generation).ok) return 'ownership-superseded';
   const root = await prepareRootPath(ctx, lane.laneId);
   if (root === null) return 'provisioning-git-failed';
 
@@ -129,11 +130,13 @@ async function materialize(ctx: ProvisionContext, lane: LaneRecord, remaining: D
     () => inWorkspace(['update-ref', lane.baseRef, lane.sourceCommit, ''])
   ];
   for (const step of steps) {
+    if (!ctx.store.assertGeneration(ctx.workspaceId, ctx.generation).ok) return 'ownership-superseded';
     if (remaining() <= 0) return 'provisioning-deadline-exceeded';
     const result = await step();
     if (!result.ok) return failureReason(result, remaining);
   }
 
+  if (!ctx.store.assertGeneration(ctx.workspaceId, ctx.generation).ok) return 'ownership-superseded';
   if (remaining() <= 0) return 'provisioning-deadline-exceeded';
   const head = await ctx.git.run(['rev-parse', 'HEAD'], { cwd: root, timeoutMs: Math.max(remaining(), 1) });
   if (!head.ok) return failureReason(head, remaining);
@@ -146,6 +149,7 @@ function settle(
   operationId: string,
   failure: LaneRefusalReason | null
 ): LaneResult<LaneRecord> {
+  if (failure === 'ownership-superseded') return laneRefused('ownership-superseded');
   const now = new Date(ctx.clock()).toISOString();
   const change = { reason: failure, now, generation: ctx.generation };
   const settled = ctx.store.fenced(ctx.workspaceId, ctx.generation, () => {
@@ -160,6 +164,7 @@ function settle(
     ctx.store.endOperation(operationId, failure === null ? 'succeeded' : 'failed', failure, now);
     return moved;
   });
+  if (!settled.ok && settled.refusal.reason === 'ownership-superseded') return settled;
   if (failure !== null) return laneRefused(failure);
   return settled;
 }

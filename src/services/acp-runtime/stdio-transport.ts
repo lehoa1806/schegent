@@ -245,12 +245,100 @@ class ManagedCliChildImpl implements ManagedCliChild {
   }
 }
 
+class LaunchFailedStdioTransport implements AcpStdioTransport {
+  readonly pid = undefined;
+  private readonly closeListeners: (() => void)[] = [];
+  private closeDelivered = false;
+  private readonly closePromise: Promise<void> = Promise.resolve();
+
+  constructor() {
+    queueMicrotask(() => {
+      if (this.closeDelivered) return;
+      this.closeDelivered = true;
+      for (const listener of this.closeListeners) listener();
+    });
+  }
+
+  isProcessTreeGone(): boolean {
+    return true;
+  }
+
+  write(_line: string): void {
+    throw new AgentStdinRefusedError();
+  }
+
+  onStdout(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  onStderr(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  onClose(listener: () => void): void {
+    if (this.closeDelivered) {
+      listener();
+      return;
+    }
+    this.closeListeners.push(listener);
+  }
+
+  close(): Promise<void> {
+    if (!this.closeDelivered) {
+      this.closeDelivered = true;
+      for (const listener of this.closeListeners) listener();
+    }
+    return this.closePromise;
+  }
+}
+
+class LaunchFailedManagedCliChild implements ManagedCliChild {
+  readonly pid = undefined;
+  readonly exited: Promise<ManagedCliExit> = Promise.resolve({
+    code: null,
+    signal: null,
+    launchFailed: true
+  });
+
+  writeStdin(_text: string): boolean {
+    return false;
+  }
+
+  endStdin(): void {
+    // Launch never started a process.
+  }
+
+  onStdout(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  onStderr(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  isProcessTreeGone(): boolean {
+    return true;
+  }
+
+  terminate(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 /** Launch the agent and wrap its stdio as an `AcpStdioTransport`. A launch failure is a close. */
 export function spawnStdioTransport(input: StdioLaunch): AcpStdioTransport {
-  return new StdioTransport(spawnDetachedProcess(input));
+  try {
+    return new StdioTransport(spawnDetachedProcess(input));
+  } catch {
+    return new LaunchFailedStdioTransport();
+  }
 }
 
 /** Launch a managed CLI child for a maintained ACP bridge, reusing the host process-tree ladder. */
 export function spawnManagedCliChild(input: StdioLaunch): ManagedCliChild {
-  return new ManagedCliChildImpl(spawnDetachedProcess(input));
+  try {
+    return new ManagedCliChildImpl(spawnDetachedProcess(input));
+  } catch {
+    return new LaunchFailedManagedCliChild();
+  }
 }

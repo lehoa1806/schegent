@@ -8,12 +8,23 @@
 // a future `--version` banner leak a home directory into the evidence record.
 import { describe, expect, it, vi } from 'vitest';
 import {
-  CLI_VERSION_MAX_LEN,
   CLI_VERSION_TTL_MS,
   createCliVersionProbe,
   normalizeCliVersion,
   observedVersionOf
 } from '../../../src/runner/cli-version-probe';
+import { projectAuditPayload } from '../../../src/audit/audit-payload';
+import type { AuditEntry } from '../../../src/audit/audit-entry';
+import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
+import { AgentConfigAckGate } from '../../../src/controller/agent-config-ack-gate';
+import { PhaseRunner } from '../../../src/controller/phase-runner';
+import { SanitizedLogger } from '../../../src/lib/logger';
+import type { BackendRunnerRegistry } from '../../../src/runner/backend-runner-registry';
+import { PromptBuilder } from '../../../src/runner/prompt-builder';
+import { ZippedStreamBuffer } from '../../../src/runner/zipped-stream-buffer';
+import { AgentConfigAcknowledgementRefusedError } from '../../../src/services/agent-config-ack-refusal';
+import { UncontainedBackendRefusedError } from '../../../src/services/backend-containment-policy';
+import { computeAgentConfigFingerprint } from '../../../src/services/repo-agent-config-scanner';
 
 describe('normalizing a --version answer', () => {
   it('reduces each backend\'s real answer to its version token', () => {
@@ -23,10 +34,11 @@ describe('normalizing a --version answer', () => {
     expect(normalizeCliVersion('1.1.20')).toBe('1.1.20');
   });
 
-  it('keeps an unparsed first line rather than discarding it, bounded', () => {
-    // An unparsed answer is still more than no answer; an unbounded one is a payload inflator.
-    expect(normalizeCliVersion('some-cli (nightly)')).toBe('some-cli (nightly)');
-    expect(normalizeCliVersion('x'.repeat(200))?.length).toBe(CLI_VERSION_MAX_LEN);
+  it('rejects unparseable or out-of-grammar lines as null (16-15: zero raw stdout fallback)', () => {
+    expect(normalizeCliVersion('some-cli (nightly)')).toBeNull();
+    expect(normalizeCliVersion('x'.repeat(200))).toBeNull();
+    expect(normalizeCliVersion('SECRET_TOKEN /Users/alice/.local/bin/claude')).toBeNull();
+    expect(normalizeCliVersion('1234567.0.0')).toBeNull();
   });
 
   it('answers null for nothing at all', () => {
@@ -122,5 +134,205 @@ describe('what the payload records', () => {
     const observed = await versions.observe('/Users/someone/.local/bin/claude');
     expect(observed).toBe('2.1.246');
     expect(observed).not.toContain('/');
+  });
+
+  it('observedVersionOf skips probing when aborted and rejects non-version values (16-14, 16-15)', async () => {
+    const observedCliVersion = vi.fn().mockResolvedValue('raw-secret-line');
+    const aborted = new AbortController();
+    aborted.abort();
+    expect(await observedVersionOf({ observedCliVersion }, '/bin/cli', aborted.signal)).toBeNull();
+    expect(observedCliVersion).not.toHaveBeenCalled();
+
+    expect(await observedVersionOf({ observedCliVersion }, '/bin/cli')).toBeNull();
+    expect(observedCliVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it('projectAuditPayload drops non-matching cliVersion/qualifiedCliVersion on phase-start (16-15)', () => {
+    const projected = projectAuditPayload('phase-start', {
+      phaseId: 'implement',
+      runner: 'claude',
+      cliVersion: 'SECRET /Users/alice/raw-stdout',
+      qualifiedCliVersion: 'not-a-version'
+    });
+    expect(projected.cliVersion).toBeUndefined();
+    expect(projected.qualifiedCliVersion).toBeUndefined();
+    expect(projected.phaseId).toBe('implement');
+
+    const valid = projectAuditPayload('phase-start', {
+      phaseId: 'implement',
+      runner: 'claude',
+      cliVersion: '2.1.246',
+      qualifiedCliVersion: '2.1.240'
+    });
+    expect(valid.cliVersion).toBe('2.1.246');
+    expect(valid.qualifiedCliVersion).toBe('2.1.240');
+  });
+});
+
+describe('SR-B8 -- PhaseRunner skips --version probe when pre-spawn containment or agent-config ack refuses', () => {
+  const baseInputs = {
+    runId: 'run-srb8',
+    phase: 'implement' as const,
+    iteration: 1,
+    iterationCap: 3,
+    featureDescription: 'test',
+    featureDir: '/tmp/feat',
+    carriedIssues: [],
+    cliPath: '/usr/local/bin/claude',
+    cwd: '/tmp/ws',
+    timeoutMs: 5_000,
+    rawTranscriptMode: 'off' as const
+  };
+
+  function makeRecordingAudit(): {
+    writer: AuditLogWriter;
+    entries: Array<Omit<AuditEntry, 'id' | 'timestamp'>>;
+  } {
+    let seq = 0;
+    const entries: Array<Omit<AuditEntry, 'id' | 'timestamp'>> = [];
+    const writer = {
+      append: vi.fn(async (entry: Omit<AuditEntry, 'id' | 'timestamp'>) => {
+        entries.push(entry);
+        return { id: `audit-${++seq}`, timestamp: '2026-11-23T00:00:00.000Z', ...entry };
+      })
+    } as unknown as AuditLogWriter;
+    return { writer, entries };
+  }
+
+  function makeSilentLogger(): SanitizedLogger {
+    const logger = new SanitizedLogger();
+    logger.info = vi.fn();
+    logger.warn = vi.fn();
+    logger.debug = vi.fn();
+    return logger;
+  }
+
+  it('performs zero observedCliVersion calls when resolveRunner refuses an uncontained backend', async () => {
+    const { writer, entries } = makeRecordingAudit();
+    const observedCliVersion = vi.fn(async () => '2.1.246');
+    const refusal = new UncontainedBackendRefusedError('claude', 'uncontained refused');
+    const registry = {
+      getGlobalDefault: () => 'claude' as const,
+      getOrCreate: vi.fn(() => {
+        throw refusal;
+      }),
+      observedCliVersion
+    } as unknown as BackendRunnerRegistry;
+
+    const runner = new PhaseRunner(registry, new PromptBuilder(), writer, makeSilentLogger());
+    await expect(runner.run(baseInputs)).rejects.toBe(refusal);
+
+    expect(observedCliVersion).not.toHaveBeenCalled();
+    expect(entries.filter((e) => e.eventType === 'phase-start')).toHaveLength(1);
+    const phaseEnd = entries.find((e) => e.eventType === 'phase-end');
+    expect(phaseEnd?.payload).toMatchObject({ terminationReason: 'pre_spawn_refusal' });
+  });
+
+  it('performs zero observedCliVersion calls when agentConfigAckGate denies execution', async () => {
+    const { writer, entries } = makeRecordingAudit();
+    const observedCliVersion = vi.fn(async () => '2.1.246');
+    const invoke = vi.fn();
+    const registry = {
+      getGlobalDefault: () => 'claude' as const,
+      getOrCreate: vi.fn(() => ({
+        hasActiveProcess: false,
+        invoke,
+        cancelActive: () => false,
+        close: () => undefined,
+        settleTeardowns: async () => []
+      })),
+      observedCliVersion
+    } as unknown as BackendRunnerRegistry;
+
+    const scanEntries = [
+      {
+        name: '.claude/settings.json',
+        status: 'present' as const,
+        size: 32,
+        digest: 'a'.repeat(64),
+        hookEvents: ['PreToolUse']
+      }
+    ];
+    const ackGate = new AgentConfigAckGate({
+      scan: async () => ({
+        backend: 'claude' as const,
+        entries: scanEntries,
+        fingerprint: computeAgentConfigFingerprint('claude', scanEntries, false),
+        persistable: true,
+        scanError: false
+      }),
+      hasGrant: () => false,
+      latestGrantForBackend: () => null,
+      persistGrant: vi.fn(async () => undefined),
+      request: async () => 'denied',
+      appendAudit: async (entry) => writer.append(entry),
+      logger: { warn: vi.fn() }
+    });
+
+    const runner = new PhaseRunner(
+      registry,
+      new PromptBuilder(),
+      writer,
+      makeSilentLogger(),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      undefined,
+      ackGate
+    );
+
+    await expect(runner.run(baseInputs)).rejects.toBeInstanceOf(
+      AgentConfigAcknowledgementRefusedError
+    );
+
+    expect(observedCliVersion).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(entries.filter((e) => e.eventType === 'phase-start')).toHaveLength(1);
+    const phaseEnd = entries.find((e) => e.eventType === 'phase-end');
+    expect(phaseEnd?.payload).toMatchObject({ terminationReason: 'pre_spawn_refusal' });
+  });
+
+  it('control: still probes observedCliVersion and records cliVersion on phase-start when preflight succeeds', async () => {
+    const { writer, entries } = makeRecordingAudit();
+    const observedCliVersion = vi.fn(async () => '2.1.246');
+    const stdoutBuffer = new ZippedStreamBuffer();
+    stdoutBuffer.append(
+      'PHASE_STATUS: CLEAN\n```json\n{"files_created":[],"files_modified":[],"files_deleted":[],"commands_executed":[]}\n```\n'
+    );
+    stdoutBuffer.finalize();
+    const stderrBuffer = new ZippedStreamBuffer();
+    stderrBuffer.finalize();
+    const registry = {
+      getGlobalDefault: () => 'claude' as const,
+      getOrCreate: vi.fn(() => ({
+        hasActiveProcess: false,
+        invoke: vi.fn(async () => ({
+          stdoutBuffer,
+          stderrBuffer,
+          exitCode: 0,
+          killed: false,
+          timedOut: false,
+          durationMs: 5,
+          command: baseInputs.cliPath
+        })),
+        cancelActive: () => false,
+        close: () => undefined,
+        settleTeardowns: async () => []
+      })),
+      observedCliVersion
+    } as unknown as BackendRunnerRegistry;
+
+    const runner = new PhaseRunner(registry, new PromptBuilder(), writer, makeSilentLogger());
+    await runner.run(baseInputs);
+
+    expect(observedCliVersion).toHaveBeenCalledTimes(1);
+    const phaseStart = entries.find((e) => e.eventType === 'phase-start');
+    expect(phaseStart?.payload).toMatchObject({ cliVersion: '2.1.246' });
   });
 });

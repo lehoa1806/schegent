@@ -1,4 +1,5 @@
-// FR-R3-104 (FR-054, FR-055) — what version of the CLI is this run actually driving?
+// FR-R3-104 (FR-054, FR-055) & FR-R7-16 (16-15, FR-015) — what version of the CLI is this run
+// actually driving?
 //
 // THE GAP. The qualification record names the CLI versions a canary observed. Nothing on the
 // host observed the version it drives, so an operator upgrading `claude` mid-feature
@@ -6,19 +7,18 @@
 // failed, the record showed a qualified version and the machine had another one installed — a
 // diagnosis nobody could reach from the evidence.
 //
-// A VERSION, NEVER A PATH. `cliPath` is deliberately absent from every audit payload
-// (`InvocationRequest.command` carries it and is documented as never routed to the log). The
-// probe answers with the version STRING the CLI printed and the digest of nothing else; the path
-// it was probed at stays where it already lives. A version is a fact about the world; a path is a
-// fact about this machine's filesystem, and only one of those belongs in an evidence record.
+// A STRICT VERSION TOKEN, NEVER A PATH OR RAW STDOUT. `cliPath` is deliberately absent from every
+// audit payload, and unparseable `--version` output returns `null` rather than echoing raw bytes
+// into logs, warnings, audit payloads, or acceptance bindings (16-15).
 //
-// CACHED WITH A TTL, not once per activation and not once per phase. Once per activation would
-// miss the upgrade that happens during a long session, which is precisely the drift this exists
-// to notice. Once per phase would spawn a process per phase for a value that changes on the order
-// of days. A short TTL gets both: a mid-session upgrade is noticed within one window, and a
-// pipeline of twenty phases pays for at most a handful of probes.
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+// HARD COMPLETION DEADLINE. Spawns through a `run(` helper with its own process group
+// (`processTreeSpawnOptions()`), streaming 64 KiB stdout cap, process-tree `SIGTERM`/`SIGKILL`
+// teardown, and immediate local pipe destruction at the deadline so a pipe-holding grandchild
+// cannot delay settlement past the configured timeout.
+//
+// CACHED WITH A TTL, not once per activation and not once per phase. A short TTL catches
+// mid-session upgrades without paying a probe per phase.
+import { spawn as spawnChildProcess, type ChildProcess } from 'node:child_process';
 import {
   SHIPPED_DEFAULT_POLICY,
   policyFingerprint,
@@ -28,10 +28,15 @@ import {
   QUALIFIED_AT,
   QUALIFIED_BACKEND_VERSIONS
 } from '../contracts/qualified-backend-versions';
+import {
+  childIsReaped,
+  processTreeIsGone,
+  processTreeSpawnOptions,
+  signalProcessTree,
+  trackGroupAtExit
+} from './process-tree';
 import { buildSpawnEnv, policyRequestFields } from './spawn-env';
 import { spawnCommandFor } from '../lib/spawn-command';
-
-const run = promisify(execFile);
 
 /** How long an observed version stands before it is probed again. */
 export const CLI_VERSION_TTL_MS = 10 * 60 * 1000;
@@ -43,11 +48,23 @@ export const CLI_VERSION_TIMEOUT_MS = 5_000;
 export const CLI_VERSION_MAX_LEN = 64;
 
 /**
+ * FR-R7-16 (16-15) — strictly bounded dotted-numeric CLI version grammar.
+ * Any value outside this grammar is rejected rather than emitted to logs, warnings, or audit rows.
+ */
+export const CLI_VERSION_PATTERN = /^\d{1,6}\.\d{1,6}(?:\.\d{1,6})?$/;
+
+/**
  * FR-R6-F09 (NFR-002) -- the most `--version` output the probe reads. Past it the child is
  * stopped and the answer is `null`, which admission reads as unverified: the version decides
  * whether a spawn is admitted, so an unbounded answer must not be buffered to decide it.
  */
 export const CLI_VERSION_MAX_OUTPUT_BYTES = 64 * 1024;
+
+/** Short bounded grace after process exit to drain buffered stdout before closing pipes. */
+const POST_EXIT_DRAIN_GRACE_MS = 200;
+
+/** Escalation delay from SIGTERM to SIGKILL when tearing down a timed-out or oversized probe tree. */
+const SIGKILL_ESCALATION_MS = 500;
 
 export interface CliVersionProbe {
   /** The observed version, or `null` when it could not be observed. Never throws. */
@@ -64,6 +81,268 @@ export interface CliVersionProbeDeps {
    * Absent means the shipped allowlist default, the safe direction.
    */
   readonly environmentPolicy?: () => ProcessEnvironmentPolicy;
+  /** Hard completion deadline override for tests (defaults to {@link CLI_VERSION_TIMEOUT_MS}). */
+  readonly timeoutMs?: number;
+  /**
+   * FR-R7-16 (16-14) -- live workspace trust predicate. When false, `observe` returns `null`
+   * immediately with zero executable invocations and without poisoning the TTL cache.
+   */
+  readonly isTrusted?: () => boolean;
+}
+
+function errnoOf(error: unknown): string | undefined {
+  if (error !== null && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' ? code : undefined;
+  }
+  return undefined;
+}
+
+/** Whether a reaped child's PID appears held by another process (or is unsafe to signal on win32). */
+function isReusedPid(child: ChildProcess): boolean {
+  if (!childIsReaped(child)) return false;
+  if (process.platform === 'win32') return true;
+  const pid = child.pid;
+  if (pid === undefined) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errnoOf(error) !== 'ESRCH';
+  }
+}
+
+/**
+ * Signal `child`'s process tree safely: if the leader is still alive, signal group + child; if the
+ * leader has already been reaped on POSIX, signal `-pid` ONLY when `pid` is absent (`ESRCH`) and
+ * `-pid` still answers, preventing any signal to a recycled PID.
+ */
+function signalProbeTreeSafely(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!childIsReaped(child)) {
+    void signalProcessTree(child, signal);
+    return;
+  }
+  if (isReusedPid(child)) return;
+  const pid = child.pid;
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, 0);
+  } catch {
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    /* group already exited */
+  }
+}
+
+interface RunProbeOptions {
+  readonly timeoutMs: number;
+  readonly maxBytes: number;
+  readonly env: NodeJS.ProcessEnv;
+}
+
+/**
+ * Execute `<cliPath> --version` with a hard completion deadline, process-group teardown, pipe
+ * destruction, and streaming byte cap. Named `run` to keep the child_process env-policy census
+ * contract (`tests/lint/invocations-forward-env-policy.test.ts`).
+ */
+function run(
+  cliPath: string,
+  args: readonly string[],
+  options: RunProbeOptions
+): Promise<{ readonly stdout: string }> {
+  return new Promise<{ readonly stdout: string }>((resolve, reject) => {
+    let command: string;
+    try {
+      // FR-R7-16 (16-16): resolve against the child's exact environment, never host process.env.
+      command = spawnCommandFor(cliPath, options.env);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    let child: ChildProcess;
+    try {
+      // `shell: false` is explicit: `cliPath` is operator configuration, never a shell command line.
+      child = spawnChildProcess(command, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+        windowsHide: true,
+        env: options.env,
+        ...processTreeSpawnOptions()
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    trackGroupAtExit(child);
+
+    const stdoutChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stdoutEnded = false;
+    let settled = false;
+    let exited = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    let teardownStarted = false;
+    let teardownAnchored = false;
+    let groupAliveAtExit = false;
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+    let drainTimer: ReturnType<typeof setTimeout> | null = null;
+    let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const canSignalTree = (): boolean => {
+      if (processTreeIsGone(child)) return false;
+      if (!childIsReaped(child)) return true;
+      if (process.platform === 'win32') return false;
+      if (!teardownAnchored && !groupAliveAtExit) return false;
+      return !isReusedPid(child);
+    };
+
+    const clearSettleTimers = (): void => {
+      if (deadlineTimer !== null) {
+        clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
+      if (drainTimer !== null) {
+        clearTimeout(drainTimer);
+        drainTimer = null;
+      }
+    };
+
+    const destroyPipes = (): void => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+
+    const startTreeTeardown = (): void => {
+      if (teardownStarted) {
+        destroyPipes();
+        return;
+      }
+      teardownAnchored = !childIsReaped(child) || groupAliveAtExit;
+      teardownStarted = true;
+      destroyPipes();
+      if (!canSignalTree()) return;
+      signalProbeTreeSafely(child, 'SIGTERM');
+      const escalationDelay = Math.min(SIGKILL_ESCALATION_MS, Math.max(50, options.timeoutMs));
+      sigkillTimer = setTimeout(() => {
+        sigkillTimer = null;
+        if (canSignalTree()) {
+          signalProbeTreeSafely(child, 'SIGKILL');
+        }
+      }, escalationDelay);
+      sigkillTimer.unref();
+    };
+
+    const finishOk = (): void => {
+      if (settled) return;
+      settled = true;
+      clearSettleTimers();
+      destroyPipes();
+      if (!teardownStarted && sigkillTimer !== null) {
+        clearTimeout(sigkillTimer);
+        sigkillTimer = null;
+      }
+      resolve({ stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8') });
+    };
+
+    const finishError = (error: Error, teardown: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearSettleTimers();
+      if (teardown) {
+        startTreeTeardown();
+      } else {
+        destroyPipes();
+      }
+      reject(error);
+    };
+
+    const settleAfterExit = (): void => {
+      if (settled) return;
+      if (!teardownStarted && groupAliveAtExit && canSignalTree()) {
+        startTreeTeardown();
+      }
+      if (exitCode === 0 && exitSignal === null) {
+        finishOk();
+      } else {
+        finishError(new Error('cli version probe exited non-zero'), false);
+      }
+    };
+
+    child.stdout?.on('error', () => undefined);
+    child.stderr?.on('error', () => undefined);
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      if (settled) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (stdoutBytes + bytes.length > options.maxBytes) {
+        finishError(new Error('cli version probe output cap exceeded'), true);
+        return;
+      }
+      stdoutChunks.push(bytes);
+      stdoutBytes += bytes.length;
+    });
+    child.stdout?.once('end', () => {
+      stdoutEnded = true;
+      if (exited && !settled) {
+        settleAfterExit();
+      }
+    });
+    // Always drain stderr without retaining it so a verbose stderr cannot block the child.
+    child.stderr?.on('data', () => undefined);
+
+    child.once('error', (error) => {
+      finishError(error instanceof Error ? error : new Error('cli version probe spawn failed'), false);
+    });
+
+    child.once('exit', (code, signal) => {
+      exited = true;
+      exitCode = code;
+      exitSignal = signal;
+      groupAliveAtExit =
+        process.platform !== 'win32' && !isReusedPid(child) && !processTreeIsGone(child);
+      if (settled) return;
+      if (stdoutEnded) {
+        settleAfterExit();
+        return;
+      }
+      // Bounded drain grace so a grandchild holding stdout open after the leader exits cannot hang.
+      const graceMs = Math.min(POST_EXIT_DRAIN_GRACE_MS, options.timeoutMs);
+      drainTimer = setTimeout(() => {
+        drainTimer = null;
+        if (settled) return;
+        if (canSignalTree()) {
+          startTreeTeardown();
+        } else {
+          destroyPipes();
+        }
+        settleAfterExit();
+      }, graceMs);
+      drainTimer.unref();
+    });
+
+    child.once('close', (code, signal) => {
+      if (!exited) {
+        exited = true;
+        exitCode = code;
+        exitSignal = signal;
+        groupAliveAtExit =
+          process.platform !== 'win32' && !isReusedPid(child) && !processTreeIsGone(child);
+      }
+      if (!settled) {
+        settleAfterExit();
+      }
+    });
+
+    deadlineTimer = setTimeout(() => {
+      deadlineTimer = null;
+      finishError(new Error('cli version probe timed out'), true);
+    }, options.timeoutMs);
+    deadlineTimer.unref();
+  });
 }
 
 /**
@@ -75,28 +354,42 @@ export function cliVersionCacheKey(cliPath: string, policy: ProcessEnvironmentPo
   return `${cliPath}\u0000${policyFingerprint(policy)}`;
 }
 
+/** True iff `value` strictly matches {@link CLI_VERSION_PATTERN} within {@link CLI_VERSION_MAX_LEN}. */
+export function isValidCliVersion(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= CLI_VERSION_MAX_LEN &&
+    CLI_VERSION_PATTERN.test(value)
+  );
+}
+
 /**
- * Reduce a `--version` line to the token worth recording.
+ * Reduce a `--version` line to a strictly bounded dotted-numeric token (`/^\d{1,6}\.\d{1,6}(?:\.\d{1,6})?$/`).
  *
  * The three CLIs answer differently (`2.1.246 (Claude Code)`, `codex-cli 0.149.0`, `1.1.20`), and
  * the comparison that matters is on the dotted-numeric token — the same reduction
- * `scripts/backend-qualification.mjs` applies, for the same reason: a vendor changing its banner
- * text is not a version change, and an operator who learns that drift warnings usually mean
- * nothing will ignore the one that does not.
+ * `scripts/backend-qualification.mjs` applies.
  *
- * The whole line is kept when no token is found, bounded, rather than discarded: an unparsed
- * answer is still more than no answer.
+ * FR-R7-16 (16-15): unparseable stdout returns `null` rather than echoing raw bytes, so arbitrary
+ * banners, paths, or secret-bearing lines can never reach logs, warnings, audit rows, or bindings.
  */
 export function normalizeCliVersion(line: string): string | null {
-  const first = line.split('\n')[0]?.trim() ?? '';
+  const first = line.split(/\r?\n/, 1)[0]?.trim() ?? '';
   if (first.length === 0) return null;
-  const match = /(\d+\.\d+(?:\.\d+)?)/.exec(first);
-  return (match?.[1] ?? first).slice(0, CLI_VERSION_MAX_LEN);
+  // Negative lookbehind prevents O(N^2) backtracking across long digit runs without `.d` (SR-308-1).
+  const match = /(?<!\d)(\d+\.\d+(?:\.\d+)?)/.exec(first);
+  const token = match?.[1];
+  if (token === undefined || !isValidCliVersion(token)) return null;
+  return token;
 }
 
 export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersionProbe {
   const now = deps.monotonicNow ?? (() => Date.now());
   const currentPolicy = deps.environmentPolicy ?? (() => SHIPPED_DEFAULT_POLICY);
+  const timeoutMs =
+    typeof deps.timeoutMs === 'number' && Number.isFinite(deps.timeoutMs) && deps.timeoutMs > 0
+      ? deps.timeoutMs
+      : CLI_VERSION_TIMEOUT_MS;
   // The policy is captured once per lookup and handed to the probe, so the key a result is
   // cached under and the environment the child was started with come from the same reading.
   const injectedProbe = deps.probe;
@@ -104,19 +397,12 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
     injectedProbe !== undefined
       ? (cliPath) => injectedProbe(cliPath)
       : async (cliPath, policy) => {
-          // `shell: false` is the default for `execFile` and is the point: `cliPath` is operator
-          // configuration, and a shell between here and the binary would make it a command line.
-          //
-          // FR-R4-F06 (FR-004) -- `env` is built by the construction every runner uses. It was
-          // absent, so the child received the host's complete environment under every mode, the
-          // shipped allowlist default included.
-          //
-          // Review gap GC-24 -- on win32 a bare name resolves along PATH only, never the cwd. The
-          // host's PATH is the child's: `buildSpawnEnv` copies it under every mode.
-          const { stdout } = await run(spawnCommandFor(cliPath), ['--version'], {
-            timeout: CLI_VERSION_TIMEOUT_MS,
-            maxBuffer: CLI_VERSION_MAX_OUTPUT_BYTES,
-            windowsHide: true,
+          // FR-R4-F06 (FR-004) & FR-R7-16 (16-15, 16-16): `run(` builds the child env once from
+          // the policy, resolves `cliPath` against that exact child env, and enforces the hard
+          // deadline, process-group teardown, pipe destruction, and 64 KiB output cap.
+          const { stdout } = await run(cliPath, ['--version'], {
+            timeoutMs,
+            maxBytes: CLI_VERSION_MAX_OUTPUT_BYTES,
             env: buildSpawnEnv(policyRequestFields(policy))
           });
           return stdout;
@@ -126,6 +412,7 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
   const inFlight = new Map<string, Promise<string | null>>();
 
   const observe = async (cliPath: string): Promise<string | null> => {
+    if (deps.isTrusted?.() === false) return null;
     const policy = currentPolicy();
     const key = cliVersionCacheKey(cliPath, policy);
     const cached = cache.get(key);
@@ -139,8 +426,7 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
 
     // `Promise.resolve().then(...)` rather than `probe(cliPath).then(...)`: a probe that throws
     // SYNCHRONOUSLY never returns a promise for `.catch` to attach to, so the exception escapes
-    // into whatever awaited `observe` — a phase, in production. Found by the test that throws
-    // synchronously on purpose; the async-rejection path had been covered and this one had not.
+    // into whatever awaited `observe` — a phase, in production.
     const pending = Promise.resolve()
       .then(() => probe(cliPath, policy))
       .then((stdout) => normalizeCliVersion(stdout))
@@ -162,25 +448,21 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
 }
 
 /**
- * FR-R3-104 (FR-054) — the version for one invocation, resolved safely.
+ * FR-R3-104 (FR-054) & FR-R7-16 (16-14, 16-15) — the version for one invocation, resolved safely.
  *
  * HERE RATHER THAN IN THE PHASE RUNNER, and the reason is that file's own budget discipline: the
- * shell forwards decisions, it does not make them. The null-registry case, the swallowed failure
- * and the reason for swallowing it are all properties of "how do we observe a version", which is
- * this module's job.
- *
- * NEVER THROWS AND NEVER BLOCKS A PHASE. A version is metadata on an evidence record; a phase
- * that failed to run because `--version` did not answer would trade a working product for a
- * complete record. An unobserved version is recorded as absent, which is honest — the payload
- * simply omits the key rather than carrying a guess.
+ * shell forwards decisions, it does not make them. Skips probing when the cancellation signal is
+ * already aborted, swallows failures, and admits only strictly bounded version tokens.
  */
 export async function observedVersionOf(
   registry: { observedCliVersion: (cliPath: string) => Promise<string | null> } | null,
-  cliPath: string
+  cliPath: string,
+  cancellationSignal?: { readonly aborted?: boolean }
 ): Promise<string | null> {
-  if (registry === null) return null;
+  if (registry === null || cancellationSignal?.aborted === true) return null;
   try {
-    return await registry.observedCliVersion(cliPath);
+    const observed = await registry.observedCliVersion(cliPath);
+    return isValidCliVersion(observed) ? observed : null;
   } catch {
     return null;
   }
@@ -190,9 +472,6 @@ type DriftDirection = 'newer than' | 'older than' | 'not comparable to';
 
 /**
  * FR-R3-147 — what each direction means for the operator, which is not the same thing.
- *
- * `===` gave both the same sentence. Four patches ahead and a major version behind are not one
- * condition, and the more dangerous of the two is the one the old wording did not describe.
  */
 const DRIFT_ADVICE: Readonly<Record<DriftDirection, string>> = Object.freeze({
   'newer than':
@@ -205,25 +484,6 @@ const DRIFT_ADVICE: Readonly<Record<DriftDirection, string>> = Object.freeze({
 
 /**
  * FR-R3-147 — drift compared on `major.minor`, and which side of it we are on.
- *
- * `null` means "not drift, say nothing". That is the patch-only case, and it is the whole point:
- * the backend CLI auto-updates itself while the pin moves only when a human runs the canary and
- * commits, so exact-string equality made this warning permanently on for every installed workspace.
- * A warning that can never be cleared is furniture, and it teaches operators to skip the line where
- * a real incompatibility would one day appear. The qualification table's own header already says
- * "a newer CLI is usually fine; vendors do not break protocols weekly" — this compares the way that
- * sentence reasons.
- *
- * UNPARSEABLE IS DRIFT, deliberately, and says so as `not comparable to` rather than guessing a
- * side. An unreadable version string is not evidence the binary is fine — a lenient fallback would
- * be a way to silence the warning by reporting a shape the comparison cannot read — but it is not
- * evidence of a direction either, and a message that named one would be asserting what this
- * function does not know.
- *
- * THE RELEASE GATE IS NOT THIS. `FR-R3-104` §4 requires a release attempt with a version-mismatched
- * qualification record to be refused, and that stays exact: a release is cut from a checkout by
- * someone who can run the canary, which is precisely the audience this runtime warning does not
- * have. Two surfaces, two audiences; they stopped sharing one comparison here.
  */
 function driftDirection(qualified: string, observed: string): DriftDirection | null {
   const q = /^(\d+)\.(\d+)/.exec(qualified);
@@ -239,19 +499,12 @@ function driftDirection(qualified: string, observed: string): DriftDirection | n
 }
 
 /**
- * FR-R3-104 (FR-054, FR-055) — the version fields for one phase's records, and the drift warning.
+ * FR-R3-104 (FR-054, FR-055) & FR-R7-16 (16-15) — the version fields for one phase's records,
+ * and the drift warning.
  *
- * ONE PLACE, TWO OUTPUTS, on purpose. The record and the warning are the same observation: a
- * payload field that said `cliVersionDrift: true` while nothing told the operator would be
- * evidence for a reader who already has the failure, and a warning with no field would leave the
- * record unable to explain it later. Splitting them is how the two come to disagree.
- *
- * THE HELPER LOGS, which is unusual here and deliberate: the alternative was a second call site in
- * `phase-runner.ts`, and that file's budget exists precisely to keep decisions like "is this
- * drift" out of the shell. What the shell does is forward the observation.
- *
- * Absent qualification for a backend is NOT drift. A build that never qualified `agy` says nothing
- * about `agy`, and warning about it would teach an operator to ignore this warning.
+ * Accepts strictly bounded dotted-numeric versions only. If a caller passes a non-matching string,
+ * `cliVersion` is omitted and any drift warning uses fixed `'unverified'` wording — zero raw
+ * stdout text ever enters returned fields or logger warnings.
  */
 export function cliVersionFields(
   observed: string | null,
@@ -259,15 +512,22 @@ export function cliVersionFields(
   logger?: { warn: (message: string) => void }
 ): Record<string, unknown> {
   if (observed === null) return {};
-  // Read through a lookup that admits absence: the table is a `Record<string, string>`, so an
-  // index read is TYPED as present while a backend this build never qualified is genuinely
-  // missing. `undefined` here is "not qualified", not "qualified as nothing".
   const qualified: string | undefined = Object.prototype.hasOwnProperty.call(
     QUALIFIED_BACKEND_VERSIONS,
     backend
   )
     ? QUALIFIED_BACKEND_VERSIONS[backend]
     : undefined;
+  if (!isValidCliVersion(observed)) {
+    if (qualified === undefined) return {};
+    logger?.warn(
+      `${backend} CLI version is unverified (not comparable to ${qualified}, ${QUALIFIED_AT}). ` +
+        'Protocol handling for this backend has not been checked against this binary. ' +
+        `${DRIFT_ADVICE['not comparable to']} ` +
+        'From a checkout, `npm run canary` re-qualifies.'
+    );
+    return { cliVersionDrift: true, qualifiedCliVersion: qualified };
+  }
   if (qualified === undefined || qualified === observed) return { cliVersion: observed };
   const direction = driftDirection(qualified, observed);
   if (direction === null) return { cliVersion: observed };

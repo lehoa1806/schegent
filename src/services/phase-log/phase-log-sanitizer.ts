@@ -90,14 +90,21 @@ export function sanitizeToolArguments(
     // here, because `sanitize` sees the leaf and never its key. The predicate is the logger's own, so
     // this adds no pattern and no word list; `toolInput` carries the same text as a JSON string,
     // which the string patterns already mask, so both copies agree in one message.
+    let nextValue: ToolArgumentValue;
     if (typeof v === 'string' && v.length > 0 && isSecretKeyName(k)) {
-      out[k] = REDACTION_SENTINEL;
+      nextValue = REDACTION_SENTINEL;
       if (v !== REDACTION_SENTINEL) mutated = true;
-      continue;
+    } else {
+      const r = sanitizeToolArguments(v as ToolArgumentValue, sanitize);
+      nextValue = r.value;
+      if (r.mutated) mutated = true;
     }
-    const r = sanitizeToolArguments(v as ToolArgumentValue, sanitize);
-    out[k] = r.value;
-    if (r.mutated) mutated = true;
+    Object.defineProperty(out, k, {
+      value: nextValue,
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
   }
   return { value: mutated ? out : value, mutated };
 }

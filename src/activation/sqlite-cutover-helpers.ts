@@ -11,16 +11,24 @@ import type { SanitizedLogger } from '../lib/logger';
 import { resolveContainedLink } from '../lib/path-containment';
 import { isTargetProtectedPathSync } from '../lib/protected-path-match';
 import { openWithinRoot } from '../lib/safe-open';
-import type {
-  ArtifactByteProbe,
-  ArtifactByteReader,
-  ArtifactLifecycleService,
-  ArtifactLocator,
-  LifecycleFs,
-  OwnerResolver,
-  StorageScanRoot
+import { HANDOFF_ACCEPTED_STORE_KINDS } from '../contracts/recovery-handoff/handoff-types';
+import {
+  ArtifactRecordStore,
+  type ArtifactByteProbe,
+  type ArtifactByteReader,
+  type ArtifactLifecycleService,
+  type ArtifactLocator,
+  type LifecycleFs,
+  type OwnerResolver,
+  type StorageScanRoot
 } from '../services/artifact-lifecycle';
+import {
+  assessRecoveryEnvelopeProtection,
+  handoffOwnerResolution
+} from '../services/recovery-handoff';
+import { assessRunSegmentProtection } from '../services/recovery-handoff/handoff-envelope-protection';
 import type {
+  NodeSqliteConnection,
   SqliteApplicationStore,
   StoreRelocationOutcome,
   SwitchableCatalogFsAdapter
@@ -156,8 +164,50 @@ export function buildScanRoots(workspaceRoot: string): readonly StorageScanRoot[
   ];
 }
 
-export function buildOwnerResolver(store: WorkspaceStateStore): OwnerResolver {
+export function isRecoveryEnvelopeProtectedForServices(
+  services: { readonly sqliteStore: SqliteApplicationStore } | null,
+  runSegment: string,
+  handoverSegment: string
+): boolean {
+  if (services === null) return true;
+  try {
+    return services.sqliteStore.readPool.withReadConnection(
+      services.sqliteStore.writerConnection,
+      (conn) => assessRecoveryEnvelopeProtection(conn, runSegment, handoverSegment).protected
+    );
+  } catch {
+    return true;
+  }
+}
+
+export function isRecoveryRunProtectedForServices(
+  services: { readonly sqliteStore: SqliteApplicationStore } | null,
+  runSegment: string
+): boolean {
+  if (services === null) return true;
+  try {
+    return services.sqliteStore.readPool.withReadConnection(
+      services.sqliteStore.writerConnection,
+      (conn) => assessRunSegmentProtection(conn, runSegment).protected
+    );
+  } catch {
+    return true;
+  }
+}
+
+export function buildOwnerResolver(
+  store: WorkspaceStateStore,
+  conn?: NodeSqliteConnection
+): OwnerResolver {
   return (ownerKind, ownerId) => {
+    if (ownerKind === 'handoff') {
+      if (conn === undefined || conn.isClosed()) return 'unresolved';
+      try {
+        return handoffOwnerResolution(conn, ownerId);
+      } catch {
+        return 'unresolved';
+      }
+    }
     if (ownerKind === 'run') {
       const live = Object.values(store.getRunMap()).find((r) => r.id === ownerId);
       if (live) {
@@ -229,8 +279,10 @@ export function buildSecretPort(
 }
 
 export function buildDurableHandoffSeam(
-  artifactLifecycle: ArtifactLifecycleService
+  artifactLifecycle: ArtifactLifecycleService,
+  conn?: NodeSqliteConnection
 ): DurableArtifactHandoverSeam {
+  const records = conn === undefined ? null : new ArtifactRecordStore(conn, () => Date.now());
   return Object.freeze({
     status: 'qualified' as const,
     requestHandover(req: Parameters<DurableArtifactHandoverSeam['requestHandover']>[0]) {
@@ -243,6 +295,45 @@ export function buildDurableHandoffSeam(
               category: 'missing-collaborator',
               reasonCode: `durable-handoff-artifact-unavailable:${check.refusal.code}`,
               message: check.refusal.message,
+              rootExecutionId: req.rootExecutionId,
+              invocationId: req.invocationId,
+              attemptsConsumed: 0
+            })
+          };
+        }
+        if (!HANDOFF_ACCEPTED_STORE_KINDS.has(check.value.storeKind)) {
+          return {
+            accepted: false,
+            refusal: createWorkflowRefusalOutcome({
+              category: 'missing-collaborator',
+              reasonCode: `durable-handoff-artifact-unsupported:${check.value.storeKind}`,
+              message: `Artifact store kind "${check.value.storeKind}" is not eligible for durable handoff.`,
+              rootExecutionId: req.rootExecutionId,
+              invocationId: req.invocationId,
+              attemptsConsumed: 0
+            })
+          };
+        }
+        if (check.value.availability !== 'present') {
+          return {
+            accepted: false,
+            refusal: createWorkflowRefusalOutcome({
+              category: 'missing-collaborator',
+              reasonCode: `durable-handoff-artifact-unavailable:${check.value.availability}`,
+              message: `Artifact availability is "${check.value.availability}", not "present".`,
+              rootExecutionId: req.rootExecutionId,
+              invocationId: req.invocationId,
+              attemptsConsumed: 0
+            })
+          };
+        }
+        if (records !== null && records.locatorOf(artifactId) === null) {
+          return {
+            accepted: false,
+            refusal: createWorkflowRefusalOutcome({
+              category: 'missing-collaborator',
+              reasonCode: 'durable-handoff-artifact-unavailable:missing-locator',
+              message: 'Artifact has no durable locator registered.',
               rootExecutionId: req.rootExecutionId,
               invocationId: req.invocationId,
               attemptsConsumed: 0

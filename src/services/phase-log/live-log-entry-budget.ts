@@ -64,8 +64,17 @@ function largestField(body: MutableBody): { field: ShrinkableField; bytes: numbe
   return best;
 }
 
-function isSentinel(value: ToolArgumentValue): boolean {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && '__truncated' in value;
+export function isSentinel(value: ToolArgumentValue): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const rec = value as Record<string, unknown>;
+  return (
+    Object.prototype.hasOwnProperty.call(rec, '__truncated') &&
+    rec['__truncated'] === true &&
+    Object.prototype.hasOwnProperty.call(rec, 'originalBytes') &&
+    typeof rec['originalBytes'] === 'number' &&
+    Number.isFinite(rec['originalBytes']) &&
+    Object.keys(rec).length === 2
+  );
 }
 
 function recordCut(map: TruncationMap, field: ShrinkableField, originalLength: number): void {

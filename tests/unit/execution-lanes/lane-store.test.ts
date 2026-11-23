@@ -270,6 +270,11 @@ describe('FR-R6-F10 lane store: keyset pages', () => {
     store.insertLane(laneRecord(3, { state: 'paused' }));
     const page = store.listLanes(WS, { limit: 10, states: ['active', 'paused'] });
     expect(page.ok && page.value.items.map((lane) => lane.laneId)).toEqual([hexId(1), hexId(3)]);
+
+    // Explicit `states: []` returns an empty page; omitted `states` returns all (16-21).
+    expect(store.listLanes(WS, { limit: 10, states: [] })).toEqual({ ok: true, value: { items: [], nextCursor: null } });
+    const all = store.listLanes(WS, { limit: 10 });
+    expect(all.ok && all.value.items.map((lane) => lane.laneId)).toEqual([hexId(1), hexId(2), hexId(3)]);
   });
 
   it('encodes a cursor as base64url and refuses a malformed one', () => {
@@ -374,5 +379,49 @@ describe('FR-R6-F10 lane store: candidates', () => {
       ownerGeneration: 1,
       createdAt: ts(11)
     });
+  });
+});
+
+describe('FR-R7-16 (CR-B1): terminal lane retention pruning', () => {
+  it('prunes only unpinned removed lanes and never prunes preparation-failed lanes before cleanup', () => {
+    const { store } = openStore();
+    const removedOld = laneRecord(1, { state: 'removed', updatedAt: ts(1) });
+    const removedNew = laneRecord(2, { state: 'removed', updatedAt: ts(50) });
+    const prepFailedOld = laneRecord(3, {
+      state: 'preparation-failed',
+      stateReason: 'provisioning-git-failed',
+      updatedAt: ts(1)
+    });
+    const prepFailedSecond = laneRecord(4, {
+      state: 'preparation-failed',
+      stateReason: 'provisioning-deadline-exceeded',
+      updatedAt: ts(2)
+    });
+    store.insertLane(removedOld);
+    store.insertLane(removedNew);
+    store.insertLane(prepFailedOld);
+    store.insertLane(prepFailedSecond);
+
+    // Even with maxTerminalLanes = 0 and a cutoff well after all timestamps, preparation-failed
+    // rows MUST NOT be pruned (their worktree / baseRef may still exist on disk/Git).
+    const first = store.pruneEligibleTerminalLanes(WS, ts(100), 0);
+    expect(first.lanesPruned).toBe(2);
+    expect(store.getLane(WS, removedOld.laneId)).toBeNull();
+    expect(store.getLane(WS, removedNew.laneId)).toBeNull();
+    expect(store.getLane(WS, prepFailedOld.laneId)?.state).toBe('preparation-failed');
+    expect(store.getLane(WS, prepFailedSecond.laneId)?.state).toBe('preparation-failed');
+
+    // Once cleaned up to `removed`, the former preparation-failed lane becomes eligible for pruning.
+    expect(
+      store.transitionLane(WS, prepFailedOld.laneId, ['preparation-failed'], 'removed', {
+        reason: null,
+        now: ts(10),
+        generation: 1
+      }).ok
+    ).toBe(true);
+    const second = store.pruneEligibleTerminalLanes(WS, ts(100), 0);
+    expect(second.lanesPruned).toBe(1);
+    expect(store.getLane(WS, prepFailedOld.laneId)).toBeNull();
+    expect(store.getLane(WS, prepFailedSecond.laneId)?.state).toBe('preparation-failed');
   });
 });

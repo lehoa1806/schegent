@@ -1,8 +1,11 @@
 /**
  * FR-R6-F04 (F04-B, FR-012, FR-013, FR-014) — Domain store adapters for:
- * - `F06`: `UsageStoreAdapter` (`usage_observations`, `usage_corrections`,
- *   `usage_accounting_applications`, `attempt_usage_revisions`)
- * - `F07`: `LogIndexStoreAdapter` (`log_streams`, `log_segments`, `log_gaps`)
+ * - `F06` (deprecated F04 placeholder): `UsageStoreAdapter` (`usage_observations`,
+ *   `usage_corrections`, `usage_accounting_applications`, `attempt_usage_revisions`) —
+ *   retained empty in production under SQLite schema v9; superseded by F06 `accounting_*`.
+ * - `F07` (deprecated F04 placeholder): `LogIndexStoreAdapter` (`log_streams`, `log_segments`,
+ *   `log_gaps`) — retained empty in production under SQLite schema v9; superseded by F07
+ *   `live_log_*`.
  * - `F08`: `RecoveryStoreAdapter` (`recovery_manifests`, `recovery_sources`)
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
@@ -20,6 +23,13 @@ import type {
 } from '../../../contracts/sqlite-store/domain-adapter-types';
 import type { NodeSqliteConnection } from '../sqlite-driver';
 
+/**
+ * @deprecated FR-R7-16 (16-08) — F04 placeholder reader over `usage_observations`,
+ * `usage_corrections`, and `attempt_usage_revisions`. Never called in production: the four F04
+ * usage tables are retained empty under SQLite schema v9 and superseded by F06 `accounting_*`
+ * (`createUsageAccountingService`). Eligible for removal only under a future breaking
+ * `min_reader_version` migration with retired-table restore handling.
+ */
 export class UsageStoreAdapter {
   private readonly conn: NodeSqliteConnection;
 
@@ -114,6 +124,13 @@ export class UsageStoreAdapter {
   }
 }
 
+/**
+ * @deprecated FR-R7-16 (16-08) — F04 placeholder adapter over `log_streams`, `log_segments`, and
+ * `log_gaps`. Never called in production: the three F04 log tables are retained empty under SQLite
+ * schema v9 and superseded by F07 `live_log_streams`, `live_log_segments`, and `live_log_coverage`
+ * (`LiveLogIndex`). Eligible for removal only under a future breaking `min_reader_version`
+ * migration with retired-table restore handling.
+ */
 export class LogIndexStoreAdapter {
   private readonly conn: NodeSqliteConnection;
   private readonly nowMs: () => number;

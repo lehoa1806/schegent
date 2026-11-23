@@ -1,14 +1,17 @@
-// FR-R6-F09 T014 -- executable resolution before spawn (research R8, FR-008).
+// FR-R6-F09 T014 & FR-R7-16 (16-16, FR-016) -- executable resolution before spawn.
 //
-// WHAT THIS PINS: a path with a separator is checked as given; a bare name is searched along
-// PATH, and on win32 the PATHEXT extensions are tried; a hit must be a regular file with execute
-// permission (existence only on win32); a missing file is `not-found`; a non-executable regular
-// file and a directory are `not-executable`. The result is a closed word, never a path.
+// WHAT THIS PINS:
+//   - Delegates to `resolveExecutableCommand` so qualification and launch share one contract;
+//   - Explicit strictly-absolute paths are checked directly (regular + X_OK on POSIX, regular file
+//     on Win32); explicit relative, drive-relative, and rooted-without-drive paths are refused;
+//   - Bare names search strictly-absolute PATH entries only (skipping empty/relative entries);
+//   - On Win32, bare names match only spawnable `.com` / `.exe` regular files (never `.cmd`/`.bat`).
 
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { delimiter, join, relative } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { ExecutableAccessProbe } from '../../../src/lib/spawn-command';
 import { resolveExecutable } from '../../../src/runner/executable-identity';
 
 let root = '';
@@ -30,15 +33,24 @@ beforeAll(() => {
   writeFileSync(join(binA, 'noexec'), 'data', 'utf8');
   chmodSync(join(binA, 'noexec'), 0o644);
   mkdirSync(join(binA, 'folder'));
-  writeFileSync(join(binA, 'winny.CMD'), '@echo off\n', 'utf8');
 });
 
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('FR-R6-F09 T014 -- a path with a separator is checked as given', () => {
-  it('resolves an executable regular file', async () => {
+function makeWin32Probe(files: Record<string, 'file' | 'dir'>): ExecutableAccessProbe {
+  const table = new Map(Object.entries(files).map(([k, v]) => [k.toLowerCase(), v]));
+  return (candidate) => {
+    const kind = table.get(candidate.toLowerCase());
+    if (kind === 'file') return 'resolved';
+    if (kind === 'dir') return 'not-executable';
+    return 'not-found';
+  };
+}
+
+describe('FR-R6-F09 T014 & 16-16 -- explicit paths', () => {
+  it('resolves an executable regular file at an absolute POSIX path', async () => {
     await expect(resolveExecutable(join(binA, 'tool'), '', 'darwin')).resolves.toBe('resolved');
   });
 
@@ -54,12 +66,14 @@ describe('FR-R6-F09 T014 -- a path with a separator is checked as given', () => 
     await expect(resolveExecutable(join(binA, 'folder'), '', 'darwin')).resolves.toBe('not-executable');
   });
 
-  it('never searches PATH for a path with a separator', async () => {
+  it('refuses explicit relative paths even when a matching executable exists relative to cwd', async () => {
+    const relToTool = relative(process.cwd(), join(binA, 'tool'));
     await expect(resolveExecutable('./tool', binA, 'darwin')).resolves.toBe('not-found');
+    await expect(resolveExecutable(relToTool, binA, 'darwin')).resolves.toBe('not-found');
   });
 });
 
-describe('FR-R6-F09 T014 -- a bare name is searched along PATH', () => {
+describe('FR-R6-F09 T014 & 16-16 -- bare names search strictly absolute PATH entries only', () => {
   it('finds a bare name on PATH', async () => {
     await expect(resolveExecutable('tool', [binB, binA].join(delimiter), 'darwin')).resolves.toBe('resolved');
   });
@@ -70,6 +84,12 @@ describe('FR-R6-F09 T014 -- a bare name is searched along PATH', () => {
 
   it('gives not-executable when every hit lacks the execute bit', async () => {
     await expect(resolveExecutable('noexec', binA, 'darwin')).resolves.toBe('not-executable');
+  });
+
+  it('ignores empty and relative PATH entries', async () => {
+    const relBinA = relative(process.cwd(), binA);
+    await expect(resolveExecutable('tool', `:${relBinA}:.:`, 'darwin')).resolves.toBe('not-found');
+    await expect(resolveExecutable('tool', `:${relBinA}:.:${binA}`, 'darwin')).resolves.toBe('resolved');
   });
 
   it('gives not-found when no PATH entry holds the name, or PATH is empty or absent', async () => {
@@ -83,16 +103,46 @@ describe('FR-R6-F09 T014 -- a bare name is searched along PATH', () => {
   });
 });
 
-describe('FR-R6-F09 T014 -- win32 tries PATHEXT and checks existence only', () => {
-  it('finds a bare name through a PATHEXT extension', async () => {
-    await expect(resolveExecutable('winny', binA, 'win32', '.EXE;.CMD')).resolves.toBe('resolved');
+describe('16-16 -- win32 matches spawnable .com/.exe files on strictly absolute PATH entries', () => {
+  const probe = makeWin32Probe({
+    'C:\\binA\\shim.cmd': 'file',
+    'C:\\binA\\shim.bat': 'file',
+    'C:\\binA\\winny.exe': 'file',
+    'C:\\binA\\comtool.com': 'file',
+    'C:\\binA\\noexec': 'file',
+    'C:\\binA\\folder': 'dir'
   });
 
-  it('accepts an existing file without the execute bit', async () => {
-    await expect(resolveExecutable(join(binA, 'noexec'), '', 'win32')).resolves.toBe('resolved');
+  it('resolves bare .exe and .com hits and refuses .cmd/.bat shims', async () => {
+    await expect(resolveExecutable('winny', { Path: 'C:\\binA' }, 'win32', probe)).resolves.toBe('resolved');
+    await expect(resolveExecutable('comtool', { PATH: 'C:\\binA' }, 'win32', probe)).resolves.toBe('resolved');
+    await expect(resolveExecutable('shim', { Path: 'C:\\binA' }, 'win32', probe)).resolves.toBe('not-found');
   });
 
-  it('gives not-found when no extension matches', async () => {
-    await expect(resolveExecutable('winny', binA, 'win32', '.EXE;.BAT')).resolves.toBe('not-found');
+  it('accepts an existing regular file at a strict absolute win32 path without POSIX X_OK', async () => {
+    await expect(resolveExecutable('C:\\binA\\noexec', '', 'win32', probe)).resolves.toBe('resolved');
+    await expect(resolveExecutable('C:\\binA\\folder', '', 'win32', probe)).resolves.toBe('not-executable');
+  });
+
+  it('refuses relative, drive-relative, and rooted-without-drive win32 paths and PATH entries', async () => {
+    await expect(resolveExecutable('.\\winny.exe', { Path: 'C:\\binA' }, 'win32', probe)).resolves.toBe('not-found');
+    await expect(resolveExecutable('C:winny.exe', { Path: 'C:\\binA' }, 'win32', probe)).resolves.toBe('not-found');
+    await expect(resolveExecutable('\\binA\\winny.exe', { Path: 'C:\\binA' }, 'win32', probe)).resolves.toBe('not-found');
+    await expect(resolveExecutable('winny', { Path: '.;C:binA;\\binA' }, 'win32', probe)).resolves.toBe('not-found');
+  });
+
+  it('CR-B5: refuses explicit absolute .cmd and .bat paths on win32 as not-executable without probing disk', async () => {
+    const spyProbe = vi.fn(probe);
+    for (const candidate of [
+      'C:\\binA\\shim.cmd',
+      'C:\\binA\\shim.bat',
+      'C:\\binA\\SHIM.CMD',
+      '\\\\server\\share\\bin\\shim.bat'
+    ]) {
+      await expect(resolveExecutable(candidate, '', 'win32', spyProbe), candidate).resolves.toBe(
+        'not-executable'
+      );
+    }
+    expect(spyProbe).not.toHaveBeenCalled();
   });
 });

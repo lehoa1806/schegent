@@ -19,6 +19,10 @@ import {
   resolveTrustedSqliteLocation,
   type RelocationStage
 } from '../../../src/services/sqlite-store';
+import { STRUCTURED_STATE_CENSUS } from '../../../src/contracts/sqlite-store/state-census';
+import { SQLITE_MIN_READER_VERSION, SQLITE_SCHEMA_CURRENT_VERSION } from '../../../src/contracts/sqlite-store/schema-types';
+import { createUsageAccountingService } from '../../../src/services/usage-accounting/usage-accounting-service';
+import { createLiveLogIndex } from '../../../src/services/phase-log/live-log-index';
 import {
   openZeroMutationReadOnlySqliteSync,
   withZeroMutationReadOnlySqlite
@@ -1676,5 +1680,253 @@ describe('FR-R7-11 (Tasks 16–19) — filesystem verdicts, exact winner rule, z
     });
     expect(ok.status).toBe('resolved');
     expect(probed).toEqual([path.join(root, 'sqlite', SCOPE_ID)]);
+  });
+
+  it('FR-R7-16 (16-08): detects accounting_observations and live_log_streams as populated during relocation and uses their timestamps for winner selection', async () => {
+    const root = await makeTempDir('fr-r7-16-16-08-relocate-');
+    const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
+    const legacyAccounting = path.join(root, 'workspaceStorage', '1111aaaa', 'schegent.schegent');
+    const legacyLiveLog = path.join(root, 'workspaceStorage', '2222bbbb', 'schegent.schegent');
+
+    // Legacy store A: populated ONLY with F06 accounting_* rows (zero runs/operational_runs/cutover_sentinel).
+    const accountingDir = path.join(legacyAccounting, 'sqlite', SCOPE_ID);
+    await fsp.mkdir(accountingDir, { recursive: true, mode: 0o700 });
+    const accTsUtc = '2026-11-20T12:00:00.000Z';
+    const accStore = new SqliteApplicationStore({
+      databasePath: path.join(accountingDir, 'schegent-state.db'),
+      journalMode: 'wal',
+      nowMs: () => 1_700_000_000_000
+    });
+    try {
+      const accounting = createUsageAccountingService({
+        conn: accStore.writerConnection,
+        nowUtc: () => accTsUtc,
+        monotonicMs: () => 1,
+        workspaceId: 'ws-relocate'
+      });
+      const res = accounting.ingestObservation({
+        producerNamespace: 'schegent.phase-end/1',
+        source: 'phase-end',
+        sourceKind: 'phase-end',
+        sourceIdentity: 'run-acc:p1:0',
+        rootId: 'run-acc',
+        attemptId: 'att-acc-1',
+        invocationOrdinal: 0,
+        counterScope: 'invocation-delta',
+        adapterVersion: 'claude/1',
+        dimensions: { backend: 'claude', phaseId: 'plan' },
+        eventUtc: '2026-11-20T11:59:00.000Z',
+        observedUtc: '2026-11-20T11:59:01.000Z',
+        measures: [{ measure: 'input_tokens', quantity: 321, unit: 'count', provenance: 'provider-reported' }]
+      });
+      expect(res.ok).toBe(true);
+    } finally {
+      accStore.close();
+    }
+
+    // Legacy store B: populated ONLY with F07 live_log_* rows at a newer updated_at_ms timestamp.
+    const liveLogDir = path.join(legacyLiveLog, 'sqlite', SCOPE_ID);
+    await fsp.mkdir(liveLogDir, { recursive: true, mode: 0o700 });
+    const newerLiveLogMs = Date.parse('2026-11-21T12:00:00.000Z');
+    const logStore = new SqliteApplicationStore({
+      databasePath: path.join(liveLogDir, 'schegent-state.db'),
+      journalMode: 'wal',
+      nowMs: () => 1_700_000_000_000
+    });
+    try {
+      const index = createLiveLogIndex(logStore.writerConnection);
+      expect(
+        index.openStream({
+          streamKey: 'run-log:phase-1:att-1',
+          generation: 'gen-1',
+          captureMode: 'captured',
+          nowMs: newerLiveLogMs
+        })
+      ).toEqual({ outcome: 'opened' });
+      expect(
+        index.appendSegment({
+          streamKey: 'run-log:phase-1:att-1',
+          generation: 'gen-1',
+          segmentSeq: 0,
+          artifactRef: 'logs/run-log/seg-0.jsonl',
+          startOffset: 0,
+          endOffset: 128,
+          recordCount: 2
+        })
+      ).toEqual({ outcome: 'appended' });
+    } finally {
+      logStore.close();
+    }
+
+    // Both stores are detected as populated; newer live_log_streams.updated_at_ms wins conflict resolution.
+    const conflictOutcome = await relocateLegacySqliteStore({
+      scopeId: SCOPE_ID,
+      globalStorageUri: globalStorage,
+      legacyStorageUri: legacyAccounting,
+      additionalLegacyStorageRoots: [legacyLiveLog],
+      verifyPrimacy: async () => true
+    });
+    expect(conflictOutcome.outcome).toBe('conflict_resolved');
+    if (conflictOutcome.outcome === 'conflict_resolved') {
+      expect(conflictOutcome.winnerSourcePath).toBe(path.join(liveLogDir, 'schegent-state.db'));
+      expect(conflictOutcome.preservedUnselectedPaths).toContain(path.join(accountingDir, 'schegent-state.db'));
+    }
+
+    // A single legacy store populated ONLY with accounting_observations relocates cleanly (not skipped as empty shell).
+    const globalStorage2 = path.join(root, 'globalStorage2', 'schegent.schegent');
+    await fsp.mkdir(globalStorage2, { recursive: true, mode: 0o700 });
+    const soloOutcome = await relocateLegacySqliteStore({
+      scopeId: SCOPE_ID,
+      globalStorageUri: globalStorage2,
+      legacyStorageUri: legacyAccounting,
+      verifyPrimacy: async () => true
+    });
+    expect(soloOutcome.outcome).toBe('relocated');
+    if (soloOutcome.outcome === 'relocated') {
+      const db = new DatabaseSync(soloOutcome.activeDatabasePath, { readOnly: true });
+      try {
+        const obsCount = Number((db.prepare('SELECT count(*) AS cnt FROM accounting_observations').get() as { cnt: number }).cnt);
+        expect(obsCount).toBe(1);
+      } finally {
+        db.close();
+      }
+    }
+  });
+
+  it('FR-R7-16 (16-08): qualifies old-store backup, restore, and relocation with active accounting_* & live_log_* tables and empty schema-v9 F04 placeholders', async () => {
+    const root = await makeTempDir('fr-r7-16-16-08-backup-restore-');
+    const legacyStorage = path.join(root, 'workspaceStorage', '3333cccc', 'schegent.schegent');
+    const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
+    const legacyScopeDir = path.join(legacyStorage, 'sqlite', SCOPE_ID);
+    await fsp.mkdir(legacyScopeDir, { recursive: true, mode: 0o700 });
+
+    const nowMs = Date.parse('2026-11-22T12:00:00.000Z');
+    const nowUtc = '2026-11-22T12:00:00.000Z';
+    const sourceDbPath = path.join(legacyScopeDir, 'schegent-state.db');
+
+    // Verify schema version stays at 9 and state census aligns log-segment-bytes to live_log_segments.
+    expect(SQLITE_SCHEMA_CURRENT_VERSION).toBe(9);
+    expect(SQLITE_MIN_READER_VERSION).toBe(9);
+    const logBytesEntry = STRUCTURED_STATE_CENSUS.find((entry) => entry.surfaceId === 'log-segment-bytes');
+    expect(logBytesEntry?.targetTables).toEqual(['live_log_segments']);
+
+    const sourceStore = new SqliteApplicationStore({
+      databasePath: sourceDbPath,
+      journalMode: 'wal',
+      nowMs: () => nowMs
+    });
+    let backupResult: Awaited<ReturnType<SqliteApplicationStore['backupRestore']['createOnlineBackup']>>;
+    try {
+      const accounting = createUsageAccountingService({
+        conn: sourceStore.writerConnection,
+        nowUtc: () => nowUtc,
+        monotonicMs: () => 1,
+        workspaceId: 'ws-16-08'
+      });
+      expect(
+        accounting.ingestObservation({
+          producerNamespace: 'schegent.phase-end/1',
+          source: 'phase-end',
+          sourceKind: 'phase-end',
+          sourceIdentity: 'run-old:p1:0',
+          rootId: 'run-old',
+          attemptId: 'att-old-1',
+          invocationOrdinal: 0,
+          counterScope: 'invocation-delta',
+          adapterVersion: 'claude/1',
+          dimensions: { backend: 'claude', phaseId: 'verify' },
+          eventUtc: '2026-11-22T11:55:00.000Z',
+          observedUtc: '2026-11-22T11:55:01.000Z',
+          measures: [
+            { measure: 'input_tokens', quantity: 777, unit: 'count', provenance: 'provider-reported' },
+            { measure: 'cost', quantity: '0.42', unit: 'USD', provenance: 'provider-reported' }
+          ]
+        }).ok
+      ).toBe(true);
+
+      const logIndex = createLiveLogIndex(sourceStore.writerConnection);
+      expect(
+        logIndex.openStream({
+          streamKey: 'run-old:verify:att-old-1',
+          generation: 'gen-old',
+          captureMode: 'captured',
+          nowMs
+        })
+      ).toEqual({ outcome: 'opened' });
+      expect(
+        logIndex.appendSegment({
+          streamKey: 'run-old:verify:att-old-1',
+          generation: 'gen-old',
+          segmentSeq: 0,
+          artifactRef: 'logs/run-old/seg-0.jsonl',
+          startOffset: 0,
+          endOffset: 64,
+          recordCount: 1
+        })
+      ).toEqual({ outcome: 'appended' });
+
+      backupResult = await sourceStore.backupRestore.createOnlineBackup({
+        backupId: 'old-store-16-08',
+        scopeId: SCOPE_ID,
+        trustedRootDir: root,
+        relativeBackupDirSegments: ['backups']
+      });
+      expect(
+        sourceStore.backupRestore.verifyBackup({
+          backupDatabasePath: backupResult.backupDatabasePath,
+          manifest: backupResult.manifest,
+          trustedRootDir: root
+        }).status
+      ).toBe('verified');
+    } finally {
+      sourceStore.close();
+    }
+
+    // Relocate legacy store -> canonical store, then restore the backup onto a fresh target store.
+    const relocated = await relocateLegacySqliteStore({
+      scopeId: SCOPE_ID,
+      globalStorageUri: globalStorage,
+      legacyStorageUri: legacyStorage,
+      verifyPrimacy: async () => true
+    });
+    expect(relocated.outcome).toBe('relocated');
+
+    const restoredDbPath = path.join(root, 'restored-target.db');
+    const targetStore = new SqliteApplicationStore({
+      databasePath: restoredDbPath,
+      journalMode: 'wal',
+      nowMs: () => nowMs
+    });
+    try {
+      const restored = targetStore.backupRestore.validateAndRestoreBackup({
+        backupDatabasePath: backupResult.backupDatabasePath,
+        manifest: backupResult.manifest,
+        trustedRootDir: root
+      });
+      expect(restored.status).toBe('restored');
+
+      const conn = targetStore.writerConnection;
+      expect(Number(conn.scalar('SELECT count(*) FROM accounting_observations'))).toBe(1);
+      expect(Number(conn.scalar('SELECT count(*) FROM accounting_contributions WHERE to_revision IS NULL'))).toBe(2);
+      expect(Number(conn.scalar('SELECT count(*) FROM live_log_streams'))).toBe(1);
+      expect(Number(conn.scalar('SELECT count(*) FROM live_log_segments'))).toBe(1);
+
+      const placeholderTables = [
+        'usage_observations',
+        'usage_corrections',
+        'usage_accounting_applications',
+        'attempt_usage_revisions',
+        'log_streams',
+        'log_segments',
+        'log_gaps'
+      ];
+      for (const table of placeholderTables) {
+        const exists = conn.get<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table);
+        expect(exists?.name, `schema v9 retains placeholder table ${table}`).toBe(table);
+        expect(Number(conn.scalar(`SELECT count(*) FROM "${table}"`)), `placeholder ${table} must remain empty`).toBe(0);
+      }
+    } finally {
+      targetStore.close();
+    }
   });
 });

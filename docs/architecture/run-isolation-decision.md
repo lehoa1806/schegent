@@ -1,7 +1,7 @@
 # Per-Run execution isolation — the shape, and the gate on building it
 
-Status: **Accepted (shape). Implementation gated — see §9.**
-Date: 2026-08-27 · Item: `FR-R3-124` · Spec: `specs/160-run-isolation-boundary`
+Status: **Accepted (shape). Opt-in implementation shipped behind `schegent.lanes.enabled` (default `false`) — see §9.**
+Date: 2026-08-27 (reconciled 2026-11-23) · Item: `FR-R3-124` · Spec: `specs/160-run-isolation-boundary` · Delivery: `FR-R6-F10` (`specs/309-isolated-workspace-lanes`)
 Supersedes nothing. Narrows nothing already ratified.
 
 Decision: when Schegent gains per-Run execution isolation, the shape is a **per-Run Git worktree**
@@ -9,10 +9,12 @@ provisioned and destroyed by the extension host, opt-in, with an explicit attrib
 step. Per-Run clone, copy-based isolation, and contained-backend-only were considered and rejected;
 §3 gives the reason for each.
 
-This record does **not** ship that mechanism. It decides the shape, lifts the project rule that
-forbade it, states the seams and open questions the implementation inherits, and puts a dated gate
-and review trigger on starting it. §9 is the operative section for anyone asking "is this built?" —
-the answer is no.
+When written on 2026-08-27, this record did **not** ship that mechanism: it decided the shape,
+lifted the project rule that forbade it, stated the seams and open questions the implementation
+inherited, and put a dated gate on starting it. All four entry conditions in §9 were subsequently
+satisfied and opt-in lane dispatch shipped behind `schegent.lanes.enabled` (default `false`) on
+2026-11-12; shared-tree execution remains the shipped default, and §9 states what is shipped versus
+what remains deferred.
 
 <!-- Source: docs/architecture/local-queue-parallelism-ratification.md -->
 <!-- Source: src/services/run-checkpoint-service.ts -->
@@ -170,12 +172,13 @@ whatever Q3 decides about the untracked tree is what makes that figure acceptabl
   worktree is a working-tree boundary and not a permission boundary**, and any statement that
   implies otherwise is the same overclaim this item exists to prevent. Backend authority is
   `FR-R3-125`'s subject.
-- **Hooks.** Hooks live in `.git/hooks` and are shared, so a hook fires in a worktree as it does in
-  the primary tree, with `$GIT_DIR` pointing at the worktree's administrative directory and
-  `core.hooksPath` unchanged. A hook written on the assumption that the working tree is the primary
-  one — one that reads a path relative to the repository root, or writes to a fixed location — will
-  behave differently. The mechanism does not disable hooks and does not audit them; it must state
-  this to the operator, because a repository's hooks are the operator's, not Schegent's.
+- **Hooks and filters.** Hooks live in `.git/hooks` and are shared with processes running inside a
+  worktree, so any Git command executed by an agent or verification check in a lane still fires
+  hooks as the operator with `$GIT_DIR` pointing at the worktree's administrative directory.
+  Since GC-11 (2026-11-12), host-invoked Git calls neutralize repository hooks and fsmonitor via
+  `-c core.hooksPath=/dev/null` and `-c core.fsmonitor=false` (`src/lib/host-git-config.ts`),
+  while configured clean/smudge filters continue to execute as the operator so committed content
+  matches repository filter semantics. See [Execution lanes](../operations/execution-lanes.md).
 - **Submodules and LFS.** Both are out of the first implementation's scope and must be *refused*
   rather than half-supported: a worktree of a repository with submodules does not initialise them,
   and LFS smudge behaviour in a secondary worktree is version-dependent. Refuse the opt-in, name the
@@ -212,6 +215,21 @@ largest and least obvious part of the work: `audit/audit-log-writer.ts`,
 **The fence and window primacy are anchored to the primary tree.** `.schegent/ownership` under the
 workspace root is where the lease lives, and `FR-R3-103` closed the orphan path on that assumption.
 
+### 8a.1 Cutover reconciliation (2026-11-23, post-`FR-R6-F10` / `FR-R7-16`)
+
+The 2026-08-27 seam table above reflects the pre-lane baseline. Current production wiring reconciles
+each seam as follows while keeping shared-tree mode as the default (`schegent.lanes.enabled = false`):
+
+| Production seam | Current wiring | Behavior |
+|---|---|---|
+| `src/activation/sqlite-cutover-wiring.ts` | Opens `LaneService` on primary activation, calls `laneService.reconcile()`, creates `RunLaneCoordinator`, and opens read-only `ChangeReviewService` over `IntegrationStore`. | Startup recovery and lane-root caching run on primary cutover; periodic cleanup remains host/headless-triggered. |
+| `src/activation/run-safety-wiring.ts` | Wires `provisionRunLane`, `resolveRunCwd`, `onRunLanePaused`, and `onRunLaneResumed` into `WorkflowController` and `RunCheckpointService`, and resolves lane roots at connected-run settlement. | Runs bound to a lane execute, verify outputs, and diff checkpoints in the lane root; non-lane Runs keep `workspaceRoot`. |
+| `src/services/execution-lanes/run-lane-binding.ts` | Provisions or reuses one lane per `rootExecutionId`, refuses admission (`IsolatedLaneProvisionRefusedError`) without shared-tree fallback, syncs pause/resume/terminal transitions, and freezes a candidate on completion. | Never opens integration requests, approves receipts, or lands branches on behalf of a Run (`16-22`). |
+| `src/services/run-checkpoint-service.ts` | Resolves `effectiveRoot` via `resolveRunExecutionRoot` before Git diff/status/HEAD reads. | Captures sole-run diffs inside the lane root while storing patches and recovery envelopes under host storage. |
+| `src/services/workflow-execution/` & `src/runner/acp-backed-runner.ts` | Resolves per-Run lane root for cross-root handoff materialization and ACP session `cwd`. | ACP wire protocol carries no lane-id field; session scoping uses the resolved lane path. |
+| Primary-workspace anchors (`.schegent/`, SQLite, audit, metrics, ownership leases) | Unchanged — anchored to the primary workspace and host storage directory. | Evidence and ownership fencing survive lane removal (`Q2`). |
+| `src/services/nested-repo-sync/nested-repo-sync.ts` | Separate local transactional sync coordinator for Master Workspace + Execution Repository. | Single-lane provisioning still refuses nested repos (`nested-repository-unsupported`); two-repo sync uses compensating rollback outside single-lane provisioning. |
+
 ### 8b. The eight open questions, with the position each currently has
 
 These are **positions**, not decisions: they are what a reader should assume unless the
@@ -243,13 +261,22 @@ shipped default), Runs execute in the shared checkout and a cap above one still 
 tree. When `schegent.lanes.enabled` is `true`, admission gates on `LaneService.provisionLane` and
 refuses with a named `LaneRefusalReason` rather than falling back to the shared checkout.
 
-**Why gated rather than built.** The audit scopes recommendation P0-2 at a **months** horizon. The
-item's own sequencing note says both P0 items *"begin with a decision record … that scopes everything
-after it"*, and its own T1467 is worded *"Until T1465 ships"* — the ordering was anticipated when the
-item was filed. §8a is why: the work is a per-Run cwd resolution, a state-schema migration, a
-decision about twelve evidence anchors, a merge-back conflict policy, an orphan-reaping path, and a
-fence consequence. A half-wired boundary behind a default-off switch is worse than a written gate,
-because the switch is reachable and its name promises isolation.
+**Historical gate rationale (2026-08-27) and remaining deferrals (2026-11-23).** The 2026-08-27
+audit scoped P0-2 at a months horizon and gated implementation on the four entry conditions below
+so a half-wired switch would not promise isolation before the boundary existed. All four entry
+conditions are now satisfied in code for opt-in use (`schegent.lanes.enabled = true`). What remains
+deferred or off by default:
+
+- **Default posture:** `schegent.lanes.enabled` defaults to `false`; raising the queue concurrency
+  cap without opting in still shares one working tree.
+- **Interactive UI:** `ChangeReviewService` exposes read-only review snapshots, while lane approval,
+  landing, and cleanup actions remain on the host/headless port (`src/headless/execution-lanes-api.ts`)
+  rather than mutating sidebar/dashboard IPC commands.
+- **ACP wire protocol:** ACP carries no lane-id field; `AcpBackedRunner` binds session `cwd` to the
+  resolved lane root.
+- **Retention & platform qualification:** `lane-retention.ts` bounds `lane_operations` and unreferenced
+  terminal lane rows while preserving reachable `candidate` refs and recovery evidence; live Windows
+  host execution remains unrun (see [Platform observation record](../operations/platform-observation-record.md)).
 
 **Entry conditions.** All four before implementation starts:
 

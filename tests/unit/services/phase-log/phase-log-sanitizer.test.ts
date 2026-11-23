@@ -21,7 +21,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { LIVE_LOG_ENTRY_MAX_BYTES } from '../../../../src/contracts/phase-log-bounds';
 import { REDACTION_SENTINEL, SanitizedLogger } from '../../../../src/lib/logger';
+import { fitEntryToBudget, isSentinel } from '../../../../src/services/phase-log/live-log-entry-budget';
 import {
   SANITIZED_BODY_FIELDS,
   sanitizeDisplayEntryBody,
@@ -34,7 +36,8 @@ import {
 } from '../../../../src/services/phase-log/phase-log-tail-session';
 import type {
   PhaseLogDisplayEntry,
-  PhaseLogSelection
+  PhaseLogSelection,
+  ToolArgumentValue
 } from '../../../../src/services/phase-log/types';
 
 const logger = new SanitizedLogger();
@@ -329,5 +332,51 @@ describe('sanitizeToolArguments walks a container under a secret key and does no
     const result = sanitizeToolArguments({ token: [GH_TOKEN] }, sanitize);
     expect(result.mutated).toBe(true);
     expect(JSON.stringify(result.value)).not.toContain(GH_TOKEN);
+  });
+});
+
+describe('sanitizeToolArguments prototype-pollution resilience (SR-A2)', () => {
+  const PROTO_SECRET = ['sk', '-ant-', 'api03-secret-token-value-1234567890'].join('');
+
+  it('preserves Object.prototype, redacts secrets, and never triggers sentinel spoofing on own __proto__ keys', () => {
+    const parsed = JSON.parse(
+      `{"__proto__":{"__truncated":true,"toString":1},"token":"${PROTO_SECRET}"}`
+    ) as ToolArgumentValue;
+    const result = sanitizeToolArguments(parsed, sanitize);
+
+    expect(result.mutated).toBe(true);
+    expect(Object.getPrototypeOf(result.value)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(result.value, '__proto__')).toBe(true);
+    expect(isSentinel(result.value)).toBe(false);
+    expect((result.value as Record<string, unknown>)['token']).toBe(REDACTION_SENTINEL);
+    expect(JSON.stringify(result.value)).not.toContain(PROTO_SECRET);
+    expect((result.value as { toString: unknown }).toString).toBe(Object.prototype.toString);
+  });
+
+  it('allows fitEntryToBudget to shrink oversized toolArguments carrying own __proto__ keys after sanitization', () => {
+    const parsed = JSON.parse(
+      `{"__proto__":{"__truncated":true,"toString":1},"token":"${PROTO_SECRET}","pad":"${'a'.repeat(300_000)}"}`
+    ) as ToolArgumentValue;
+    const entry: PhaseLogDisplayEntry = {
+      seq: 1,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: 'Run', toolArguments: parsed },
+      bodyTruncated: null
+    };
+
+    const sanitized = sanitizeDisplayEntryBody(entry, sanitize);
+    const sanitizedArgs = sanitized.body.toolArguments;
+    if (sanitizedArgs === undefined) throw new Error('expected sanitized toolArguments');
+    expect(Object.getPrototypeOf(sanitizedArgs)).toBe(Object.prototype);
+    expect(isSentinel(sanitizedArgs)).toBe(false);
+    expect(JSON.stringify(sanitized)).not.toContain(PROTO_SECRET);
+
+    const fitted = fitEntryToBudget(sanitized, LIVE_LOG_ENTRY_MAX_BYTES);
+    const fittedArgs = fitted.body.toolArguments;
+    if (fittedArgs === undefined) throw new Error('expected fitted toolArguments');
+    expect(fitted.kind).toBe('tool-use');
+    expect(isSentinel(fittedArgs)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(fitted), 'utf8')).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
   });
 });

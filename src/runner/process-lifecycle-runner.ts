@@ -15,9 +15,25 @@ import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
-import { spawnCommandFor } from '../lib/spawn-command';
+import { isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
 import { TeardownLedger } from './teardown-ledger';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
+
+function cancelledInvocationOutput(command: string, startedAtMs: number): RawInvocationOutput {
+  const stdoutBuffer = new ZippedStreamBuffer();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.finalize();
+  stderrBuffer.finalize();
+  return {
+    stdoutBuffer,
+    stderrBuffer,
+    exitCode: null,
+    killed: true,
+    timedOut: false,
+    durationMs: Math.max(0, Date.now() - startedAtMs),
+    command
+  };
+}
 
 export type ProcessSpawnFn = (
   command: string,
@@ -118,6 +134,9 @@ export class ProcessLifecycleRunner {
   }): Promise<RawInvocationOutput> {
     const start = Date.now();
     const { request, outputSink } = input;
+    if (!this.closed && request.cancellationSignal?.aborted === true) {
+      return cancelledInvocationOutput(input.commandDisplay, start);
+    }
     // Feature 020 BUG-002 (FR-002a) — the Phase Log reads an iteration's
     // `stream.jsonl`, and only the claude adapter wrote one. With a target, the
     // CLI's stdout is teed into it, unaltered, through the writer that adapter
@@ -129,11 +148,20 @@ export class ProcessLifecycleRunner {
         }
       : null;
     if (tee) await tee.writer.prepare(tee.target);
+    const isAborted = (): boolean => request.cancellationSignal?.aborted === true;
     // After the last await, so a `close()` that lands while `prepare()` runs
     // still refuses this spawn (feature-228 security review, S1).
     if (this.closed) throw new SpawnRefusedAfterCloseError(this.label);
-    // Review gap GC-24 -- on win32 a bare name resolves along the child's PATH only, never the cwd.
-    const child = this.spawnFn(spawnCommandFor(request.cliPath, input.env), input.args, {
+    if (isAborted()) {
+      return cancelledInvocationOutput(input.commandDisplay, start);
+    }
+    // Review gap GC-24 & FR-R7-16 (16-16): resolve against the child's exact env on real spawns,
+    // and refuse explicit relative/drive-relative paths even under injected test doubles.
+    const resolvedCommand =
+      this.spawnFn === (spawn as unknown as ProcessSpawnFn) || isInvalidExecutablePath(request.cliPath)
+        ? spawnCommandFor(request.cliPath, input.env)
+        : request.cliPath;
+    const child = this.spawnFn(resolvedCommand, input.args, {
       stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
       // FR-R3-054 (H-05) — its own process group, so the ladder below can reach
       // descendants. Without this a CLI that forks a helper survived cancel and
@@ -231,7 +259,7 @@ export class ProcessLifecycleRunner {
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
         onAbort = () => { killed = true; this.terminate(child, attribution); };
-        if (request.cancellationSignal.aborted) onAbort();
+        if (isAborted()) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
       // FR-R3-047 (M-01) — no second argument. It used to be

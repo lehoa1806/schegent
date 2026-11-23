@@ -153,12 +153,39 @@ describe('Feature 029 T019 — ToolCallCard', () => {
 
   it('does not throw when toolArguments contains the elision sentinel', () => {
     const args = { tree: { __elided: true } };
-    expect(() =>
-      render(ToolCallCard, {
-        props: {
-          entry: toolUse({ toolName: 'Custom', toolArguments: args })
-        }
-      })
-    ).not.toThrow();
+    const { container } = render(ToolCallCard, {
+      props: {
+        entry: toolUse({ toolName: 'Custom', toolArguments: args })
+      }
+    });
+    expect(container.querySelector('.pill-elided')).not.toBeNull();
+  });
+
+  it('does not treat prototype-inherited __elided or __truncated properties as sentinels (SR-306-1)', () => {
+    const inheritedElided = Object.assign(
+      Object.create({ __elided: true }) as Record<string, unknown>,
+      { visible: 'kept-elided' }
+    );
+    const inheritedTruncated = Object.assign(
+      Object.create({ __truncated: true }) as Record<string, unknown>,
+      { visible: 'kept-truncated' }
+    );
+
+    const { container } = render(ToolCallCard, {
+      props: {
+        entry: toolUse({
+          toolName: 'Custom',
+          toolArguments: {
+            first: inheritedElided as NonNullable<PhaseLogDisplayEntry['body']['toolArguments']>,
+            second: inheritedTruncated as NonNullable<PhaseLogDisplayEntry['body']['toolArguments']>
+          }
+        })
+      }
+    });
+
+    expect(container.querySelector('.pill-elided')).toBeNull();
+    expect(container.querySelector('.pill-truncated')).toBeNull();
+    expect(container.textContent).toContain('kept-elided');
+    expect(container.textContent).toContain('kept-truncated');
   });
 });

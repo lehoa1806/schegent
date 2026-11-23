@@ -592,9 +592,21 @@ export class PhaseRunner {
     if (inputs.phaseDef?.effort) startPayload.effort = inputs.phaseDef.effort;
     const authoredStartpayloadTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
     if (authoredStartpayloadTimeoutMs !== undefined) startPayload.timeoutMs = authoredStartpayloadTimeoutMs;
+    // FR-R7-11 & FR-R7-16 (SR-B8) — resolve installation containment and repository
+    // agent-config acknowledgement BEFORE probing `--version` so a refused backend never
+    // invokes an executable, while still pairing `phase-start` with `pre_spawn_refusal`
+    // (Hard Rule 68 / Feature 212), strictly before `auto-compact-override-applied`,
+    // `compactSession`, native review, raw transcript, or phase subprocess execution.
+    let backendRunner: BackendRunner | undefined;
+    let preflightError: unknown;
+    try {
+      backendRunner = this.resolveRunner(inputs);
+      await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
+    } catch (err) { preflightError = err; }
     // FR-R3-104 (FR-054) — which CLI this phase drives. A VERSION, never a path; the leaf owns
     // the probe, its TTL cache and its failure handling.
-    this.observedCliVersion = await observedVersionOf(this.runnerRegistry, inputs.cliPath);
+    this.observedCliVersion = preflightError === undefined && backendRunner !== undefined
+      ? await observedVersionOf(this.runnerRegistry, inputs.cliPath, inputs.cancellationSignal) : null;
     Object.assign(startPayload, cliVersionFields(this.observedCliVersion, effectiveRunnerKind, phaseLogger(this.logger, inputs)));
     // Feature 212 (FR-002) — the attempt identifier is this row's own
     // `AuditEntry.id`, which the writer already mints and this line already
@@ -602,24 +614,12 @@ export class PhaseRunner {
     // second thing that can disagree. Failure semantics are unchanged — the
     // recorder appends through `appendRequiredAudit`, exactly as before, and a
     // phase whose attempt cannot be recorded still does not proceed.
-    attemptRef.attempt = await this.attemptRecorder.begin(
-      { runId: inputs.runId, phase: inputs.phase, iteration: inputs.iteration },
-      startPayload
-    );
+    attemptRef.attempt = await this.attemptRecorder.begin({ runId: inputs.runId, phase: inputs.phase, iteration: inputs.iteration }, startPayload);
 
     phaseLogger(this.logger, inputs).info(`phase-start ${inputs.phase} iter=${inputs.iteration}`);
-    // FR-R7-11 — resolve installation containment and repository agent-config
-    // acknowledgement immediately after `phase-start`, strictly before
-    // `auto-compact-override-applied`, `compactSession`, native review, raw
-    // transcript, or phase subprocess execution. Both refusal classes mark
-    // `preSpawnRefusal` so `run()` pairs `phase-start` with `pre_spawn_refusal`.
-    let backendRunner: BackendRunner;
-    try {
-      backendRunner = this.resolveRunner(inputs);
-      await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
-    } catch (err) {
-      if (isUncontainedBackendRefusal(err) || isAgentConfigAcknowledgementRefusal(err)) attemptRef.preSpawnRefusal = true;
-      throw err;
+    if (preflightError !== undefined || backendRunner === undefined) {
+      if (isUncontainedBackendRefusal(preflightError) || isAgentConfigAcknowledgementRefusal(preflightError)) attemptRef.preSpawnRefusal = true;
+      throw preflightError;
     }
     // Feature 010 FR-024: read schegent.logging.verbose at run() entry
     // (never cached on the runner) so a mid-run toggle applies on the

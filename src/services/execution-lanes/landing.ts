@@ -22,18 +22,17 @@ import {
   type ReceiptOutcome
 } from '../../contracts/execution-lanes';
 import { resolveContainedTarget } from '../../lib/path-containment';
-import { listWorktrees, trackedDirtyCount } from './git-observe';
+import { listWorktreesDetailed, trackedDirtyCountDetailed } from './git-observe';
 import { LaneGitError, type LaneGitRunner } from './git-runner';
 import type { IntegrationStore } from './integration-store';
 import type { RequestRecord } from './integration-store-rows';
-import { isAncestor, resolveRef } from './integration-requests';
+import { isAncestorDetailed, resolveRef } from './integration-requests';
 import type { LaneStore } from './lane-store';
 import { LANES_DIRECTORY } from './lane-store-rows';
 import { isStaleByRefreeze, receiptMatches } from './review-receipts';
 
 const LANDING_GIT_TIMEOUT_MS = 60_000;
 const ID_BYTES = 16;
-const UNKNOWN_FAILURE = { code: 'exit', exitCode: null } as const;
 
 export interface LandingObservation {
   readonly expected: string;
@@ -108,9 +107,9 @@ async function isLaneRoot(ctx: LandingContext, worktree: string): Promise<boolea
  * `--force`; if it happened anyway, any lane among them makes the target a lane.
  */
 async function locateTarget(ctx: LandingContext, targetRef: string): Promise<TargetPlace> {
-  const entries = await listWorktrees({ git: ctx.git, cwd: ctx.workspaceRoot, timeoutMs: LANDING_GIT_TIMEOUT_MS });
-  if (entries === null) throw new LaneGitError('worktree', UNKNOWN_FAILURE);
-  const holders = entries.filter((entry) => entry.branch === targetRef && !entry.bare && !entry.prunable);
+  const entries = await listWorktreesDetailed({ git: ctx.git, cwd: ctx.workspaceRoot, timeoutMs: LANDING_GIT_TIMEOUT_MS });
+  if (!entries.ok) throw new LaneGitError('worktree', entries.failure);
+  const holders = entries.value.filter((entry) => entry.branch === targetRef && !entry.bare && !entry.prunable);
   for (const holder of holders) {
     if (await isLaneRoot(ctx, holder.path)) return { kind: 'lane' };
   }
@@ -118,10 +117,19 @@ async function locateTarget(ctx: LandingContext, targetRef: string): Promise<Tar
   return first === undefined ? { kind: 'nowhere' } : { kind: 'checked-out', worktree: first.path };
 }
 
-async function dirtyCount(ctx: LandingContext, worktree: string): Promise<number> {
-  const count = await trackedDirtyCount({ git: ctx.git, cwd: worktree, timeoutMs: LANDING_GIT_TIMEOUT_MS });
-  if (count === null) throw new LaneGitError('status', UNKNOWN_FAILURE);
-  return count;
+/**
+ * Whether a checked-out target has tracked changes. A `buffer` overflow on `git status
+ * --porcelain=v1 --untracked-files=no` (>1 MiB of tracked diffs) is definitively dirty and returns
+ * `true` rather than throwing, so `landing` requests never remain permanently wedged on oversized
+ * status output. Other Git failures (`timeout`, `exit`, `spawn`) propagate as `LaneGitError`.
+ */
+async function targetIsTrackedDirty(ctx: LandingContext, worktree: string): Promise<boolean> {
+  const count = await trackedDirtyCountDetailed({ git: ctx.git, cwd: worktree, timeoutMs: LANDING_GIT_TIMEOUT_MS });
+  if (!count.ok) {
+    if (count.failure.code === 'buffer') return true;
+    throw new LaneGitError('status', count.failure);
+  }
+  return count.value > 0;
 }
 
 /** The first reason the target cannot take the landing now, or `null`. */
@@ -129,10 +137,14 @@ async function recheckTarget(ctx: LandingContext, request: RequestRecord, place:
   const tip = await resolveRef(ctx, request.targetRef);
   if (place.kind === 'lane') return { reason: 'target-is-lane', observed: tip };
   if (tip !== request.expectedTargetCommit) {
-    const advanced = tip !== null && (await isAncestor(ctx.git, ctx.workspaceRoot, request.expectedTargetCommit, tip));
-    return { reason: advanced ? 'target-advanced' : 'target-diverged', observed: tip };
+    if (tip === null) return { reason: 'target-diverged', observed: null };
+    const ancestry = await isAncestorDetailed(ctx.git, ctx.workspaceRoot, request.expectedTargetCommit, tip);
+    if (ancestry.outcome === 'git-error') {
+      throw new LaneGitError('merge-base', ancestry.failure ?? { code: 'exit', exitCode: null });
+    }
+    return { reason: ancestry.outcome === 'ancestor' ? 'target-advanced' : 'target-diverged', observed: tip };
   }
-  if (place.kind === 'checked-out' && (await dirtyCount(ctx, place.worktree)) > 0) {
+  if (place.kind === 'checked-out' && (await targetIsTrackedDirty(ctx, place.worktree))) {
     return { reason: 'target-worktree-dirty', observed: tip };
   }
   return null;
@@ -159,8 +171,18 @@ async function applyLanding(ctx: LandingContext, request: RequestRecord, place: 
 
 async function observeTarget(ctx: LandingContext, request: RequestRecord, place: TargetPlace): Promise<LandingObservation> {
   const observedTip = await resolveRef(ctx, request.targetRef);
-  const reachable = observedTip !== null && (await isAncestor(ctx.git, ctx.workspaceRoot, request.candidateCommit, observedTip));
-  const checkedOutFilesMatch = place.kind === 'checked-out' ? (await dirtyCount(ctx, place.worktree)) === 0 : null;
+  let reachable = false;
+  if (observedTip !== null) {
+    const ancestry = await isAncestorDetailed(ctx.git, ctx.workspaceRoot, request.candidateCommit, observedTip);
+    if (ancestry.outcome === 'git-error') {
+      throw new LaneGitError('merge-base', ancestry.failure ?? { code: 'exit', exitCode: null });
+    }
+    // `missing-ref` (e.g. a GC'd candidate commit) settles as unreachable -> `uncertain` instead
+    // of throwing and wedging reconciliation forever.
+    reachable = ancestry.outcome === 'ancestor';
+  }
+  const checkedOutFilesMatch =
+    place.kind === 'checked-out' ? !(await targetIsTrackedDirty(ctx, place.worktree)) : null;
   return {
     expected: request.expectedTargetCommit,
     candidate: request.candidateCommit,
@@ -277,6 +299,10 @@ export async function landRequest(ctx: LandingContext, request: RequestRecord): 
     const blocked = settleLanding(ctx, request, by, refusal.observed, 'blocked', refusal.reason);
     return blocked.ok ? laneRefused(refusal.reason, commitsOf(request, refusal.observed)) : blocked;
   }
+
+  // Immediate pre-effect generation fence (16-20): abort stale host work before mutating Git.
+  const preEffectFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!preEffectFence.ok) return laneRefused(preEffectFence.refusal.reason);
 
   await applyLanding(ctx, request, current);
   const observation = await observeTarget(ctx, request, current);

@@ -18,28 +18,34 @@ Implemented in:
 - [`src/services/recovery-handoff/recovery-handoff-service.ts`](../../src/services/recovery-handoff/recovery-handoff-service.ts), the single entry point
 - [`src/services/recovery-handoff/handoff-schema.ts`](../../src/services/recovery-handoff/handoff-schema.ts), SQLite migration 5 (`005_f08_recovery_handoff`)
 - [`src/services/recovery-handoff/handoff-pins.ts`](../../src/services/recovery-handoff/handoff-pins.ts)
+- [`src/services/recovery-handoff/handoff-envelope-protection.ts`](../../src/services/recovery-handoff/handoff-envelope-protection.ts), restart-durable SQLite envelope protection assessment (`16-11`)
 - [`src/services/recovery-handoff/handoff-resolver.ts`](../../src/services/recovery-handoff/handoff-resolver.ts)
 - [`src/services/recovery-handoff/delivery-policy.ts`](../../src/services/recovery-handoff/delivery-policy.ts)
 - [`src/services/recovery-handoff/session-plan.ts`](../../src/services/recovery-handoff/session-plan.ts)
 - [`src/services/recovery-handoff/handoff-explanation.ts`](../../src/services/recovery-handoff/handoff-explanation.ts)
 - [`src/services/recovery-handoff/legacy-handoff-mapping.ts`](../../src/services/recovery-handoff/legacy-handoff-mapping.ts)
-- [`src/services/run-checkpoint-service.ts`](../../src/services/run-checkpoint-service.ts), the prune fail-safe
+- [`src/services/run-checkpoint-service.ts`](../../src/services/run-checkpoint-service.ts), checkpoint retention and envelope prune fail-safe
+- [`src/activation/sqlite-cutover-wiring.ts`](../../src/activation/sqlite-cutover-wiring.ts), [`src/activation/sqlite-cutover-helpers.ts`](../../src/activation/sqlite-cutover-helpers.ts), and [`src/activation/run-safety-wiring.ts`](../../src/activation/run-safety-wiring.ts), production cutover composition
 
 ## Production status
 
-What ships and runs in this release:
+What ships and runs in production cutover:
 
-- **The prune fail-safe.** A checkpoint prune keeps every `.recovery.json` envelope (see
-  [Prune fail-safe](#prune-fail-safe)).
+- **The handoff service and its five tables.** `createSqliteCutoverCoordinator` in
+  `src/activation/sqlite-cutover-wiring.ts` constructs `RecoveryHandoffService` (wired with
+  `ArtifactLifecycleService`, the contained byte probe, `RunCheckpointService`, and
+  `acpRuntimeStore.sessionBindings`), calls `reopen()` on primary activation and restore reload,
+  and delegates F05 `'handoff'` owner resolution through `handoffOwnerResolution`.
+- **Authoritative checkpoint envelope protection (`16-11`).** `src/activation/run-safety-wiring.ts`
+  wires `RunCheckpointService` to `SqliteCutoverCoordinator.isRecoveryEnvelopeProtected(runSegment, handoverSegment)`
+  backed by `assessRecoveryEnvelopeProtection` over SQLite (see [Prune fail-safe](#prune-fail-safe)).
 
-What ships but production does not construct yet:
+What remains outside this module's direct UI scope:
 
-- **The handoff service and its five tables.** Migration 5 creates the tables in every store
-  that is opened. Production opens no application store in the extension host until the F01-B
-  cutover, so no handoff, pin, intent or decision is written yet. The service is qualified
-  against a file-backed store that is closed and reopened at every seam, as F05 to F07 were.
-- **Delivery.** It goes through a port the ACP runtime (F13) will implement. Tests use a fake.
-- **The explanation.** It is a host product with no webview surface in this release.
+- **Delivery port callers.** ACP delivery orchestration consumes `RecoveryHandoffService` via the
+  host cutover seam (`DurableArtifactHandoverSeam` verifies registered availability, accepted store
+  kind, and durable locator presence).
+- **Explanation UI / export surfaces.** `explain(handoffId)` is a host-side bounded product.
 
 ## States
 
@@ -94,9 +100,23 @@ reference owned by `('handoff', handoffId)`. Pins are per handoff, not per revis
 
 ## Resolution reasons
 
-`resolve(handoffId, revisionNo?)` checks each reference of a revision against the F05 record,
-and against the bytes when a digest is expected. Each result is stored on the reference row, so
-an explanation reports it without probing again. The artifact locator never leaves the host.
+`resolve(handoffId, revisionNo?)` and `verifyForUse(handoffId, options?)` freshly verify each
+reference of a revision against F05 metadata **and** on-disk bytes/digests at use (`16-12`), never
+trusting cached `last_resolution = 'available'` or stale F05 `availability = 'present'` metadata:
+
+- Digested `present` references are always existence-checked (when `probe.observe` is provided)
+  and hashed via `probe.digestSha256` against `expectedDigest` (or the F05 record digest).
+- No-digest `present` references (for example growing artifacts) are existence-checked via
+  `probe.observe` when provided so deleted bytes resolve `missing` instead of `available`.
+- When `manifest.envelope` is non-null, its bytes/digest are verified at use when registered in
+  F05, present under the checkpoint envelope port at `(rootExecutionId, envelope.artifactId)`, or
+  addressed via `verifyForUse(..., { envelopeLocation })`; any non-`available` `envelopeResolution`
+  blocks the revision.
+- `recordIntent` verifies `input.envelopeDigest` equals `manifest.envelope.digest` whenever the
+  revision manifest names an envelope (refusing mismatches with `conflict`).
+
+Each reference result is written to `last_resolution`, so `explain` reports the latest verified
+state without probing again. The artifact locator never leaves the host.
 
 | Resolution | Meaning |
 |---|---|
@@ -178,7 +198,19 @@ actions.
 - **Size.** The serialized explanation is at most 65,536 bytes. Above that the lists are
   trimmed from their ends, the heaviest list first, and `truncatedCounts` records how many items
   each list lost. Trimming is never an error.
-- **Order.** Deliveries and decisions are listed newest first, so trimming drops the oldest.
+- **Bounded decision read work (`16-13`).** `explain` does not load arbitrarily many historical
+  decision/refusal rows into memory. `SqliteHandoffStore.listRecentDecisions` runs a SQL
+  `COUNT(*)` plus `ORDER BY recorded_at_ms DESC, decision_id DESC LIMIT 900`
+  (`EXPLANATION_DECISION_PAGE_LIMIT = 900`, strictly above the ~869 minimum-size decisions that can
+  fit in 65,536 bytes) and seeds the pre-omitted count into `truncatedCounts.decisions` so
+  `explanation.decisions.length + explanation.truncatedCounts.decisions === totalDecisions` holds
+  exactly while bounding SQLite reads and JS memory to `O(1)` regardless of refusal history.
+  Likewise, `recordIntent` performs a bounded `O(1)` `LIMIT 1` lookup for the newest matching
+  unconsumed accepted decision (`SqliteHandoffStore.findUnconsumedAcceptedDecision` in
+  `src/services/recovery-handoff/handoff-store.ts`) and settlement lapses outstanding decisions via
+  a single SQL `UPDATE` (`lapseOutstandingDecisions`).
+- **Order.** Deliveries and decisions are listed newest first (tie-broken by descending id,
+  matching SQLite), so trimming drops the oldest.
 - **No paths.** Workspace attribution is reported as counts by category, never as paths. A
   string that still looks like an absolute path throws `HandoffExplanationContentError`, which
   names the field and never the value.
@@ -199,40 +231,97 @@ owners resolve `unresolved`, so F05 keeps what they name.
 
 ## Legacy records
 
-`importLegacy(record)` maps a record captured before the cutover:
+`importLegacy(record)` maps a record captured before the cutover safely and retryably (`16-12`):
 
-- Its ids are kept. The Run id becomes the root execution id.
-- Outcome and certainty are unchanged.
-- A `paused` record is paused after it is prepared.
-- The backend and runtime attribution, and any provider session id, go into the provenance
-  only. A provider session id is never treated as an ACP session id: continuation plans a fresh
-  session unless the caller supplies an explicit ACP session mapping.
-- Legacy references are optional. One that cannot be pinned is reported in `pinRefusals`.
+- **Retry-safe initial pause.** Initial `paused = 1` for a `paused` legacy record is committed
+  atomically on initial `INSERT` ONLY (`ON CONFLICT DO NOTHING`). Retrying the legacy drain for
+  the same record preserves any intervening operator resume (`setHandoffPaused(handoffId, false)`)
+  and never re-pauses or re-switches pins back to `paused-recovery`.
+- **Ids, outcome, certainty, and optional pins.** The Run id becomes `rootExecutionId`, outcome
+  and certainty pass through unchanged, and legacy references are optional (unpinnable references
+  appear in `pinRefusals` without blocking import).
+- **Mapping and refusal matrix (refused records write zero rows and stay recoverable):**
 
-An envelope of an unknown version is stored as an `unsupported` handoff with no revision. It
-stays `live` to the owner resolver and resolves `unsupported-version`. Importing it again
-returns the same row. Importing it under the lineage of a handoff that is not `unsupported` is
-`conflict`. An invalid record writes nothing and names the field.
+| Input condition | Mapping / import outcome | Rows written | Recoverability |
+|---|---|---|---|
+| Unsupported envelope version (`version !== 1` or non-integer) | Stored as `state: 'unsupported'`, no revision, `ownerResolution: 'live'`, `resolve`: `'unsupported-version'` (`'conflict'` over an existing non-`unsupported` handoff) | 1 `recovery_handoffs` row (idempotent) | Preserved untouched for a newer build |
+| Valid non-colliding `effects.evidenceRefs` within 32 total refs | Mapped to `{ artifactId, role: 'evidence', required: false }` alongside `validated` (`upstreamArtifactRefs`) and `partial` (`partialArtifactRefs`) | Standard handoff + revision + references | Normal durable handoff |
+| Total mapped references > 32 (`MAX_LEGACY_MAPPED_REFERENCES`) | Refused `{ ok: false, code: 'over-limit', field: 'references' }` | 0 | Source record untouched and recoverable |
+| Unmappable `evidenceRefs` or out-of-grammar artifact IDs (outside `LIFECYCLE_OPAQUE_ID_PATTERN`) | Refused `{ ok: false, code: 'invalid-ref', field: 'references.<index>.artifactId' }` | 0 | Source record untouched and recoverable |
+| Duplicate artifact IDs across/within `upstreamArtifactRefs`, `partialArtifactRefs`, `evidenceRefs` | Refused `{ ok: false, code: 'invalid', field: 'references.<index>.artifactId' }` | 0 | Source record untouched and recoverable |
+| Inconsistent `workspace.coverage === 'complete'` with `workspace.omittedCount > 0` | Refused `{ ok: false, code: 'invalid', field: 'coverage' }` | 0 | Source record untouched and recoverable |
+| Post-mapping manifest exceeds 16,384 UTF-8 bytes (`MAX_HANDOFF_MANIFEST_BYTES`) | Refused `{ ok: false, code: 'over-limit', field: 'manifest' }` | 0 | Source record untouched and recoverable |
+| `legacyProvenance` exceeds 2,048 UTF-8 bytes | Refused `{ ok: false, code: 'over-limit', field: 'legacyProvenance' }` | 0 | Source record untouched and recoverable |
+| Invalid record fields or malformed `version: 1` envelope | Refused `{ ok: false, code: 'invalid', field: '<field>' }` | 0 | Source record untouched and recoverable |
+
+- **Stored provenance and explicit ACP session mapping (`16-12`).** Backend/runtime attribution and
+  any `providerSessionId` are recorded in `legacy_provenance` only. On `recordIntent`, prior
+  session source is derived from stored `handoff.legacyProvenance`, never trusting caller-supplied
+  `priorSession.source = 'acp'`:
+  - Ephemeral bridge session IDs (`/^acp-(?:claude|codex|agy)-session-\d+$/`) are always refused
+    for `load-session` and forced to `fresh-session` (`legacy-session`).
+  - Malformed `legacy_provenance` JSON or `priorSession.sessionId === providerSession.value`
+    always forces `fresh-session` (`legacy-session`).
+  - Any legacy-originated handoff (`legacyProvenance !== null`) fails closed unconditionally to
+    `fresh-session` (`legacy-session`) whenever stored `providerSessionId` is `null` or
+    `acpSessionBindings` is unwired. Allowing `load-session` requires a non-null stored
+    `providerSessionId`, a valid non-ephemeral explicit `priorSession.acpMapping`
+    (`{ kind: 'acp-session', sessionId }`) matching `priorSession.sessionId` and distinct from
+    `providerSessionId`, and a wired `AcpSessionBindingStore` (`acpSessionBindings`) holding a
+    matching non-ephemeral persisted binding for the stored `providerSessionId` and canonical
+    backend.
 
 ## Prune fail-safe
 
-`RunCheckpointService` takes an optional predicate,
-`isRecoveryEnvelopeProtected(runId, handoverId)`. When a checkpoint prune evicts a handover, its
-`.recovery.json` envelope is removed only if a predicate is wired and returns `false`. With no
-predicate, which is production today, every envelope is kept. A predicate that throws counts as
-protecting the envelope: the envelope is kept, a warning without the error text is logged, and
-the checkpoint still completes. The other files of the evicted handover (`.patch`, `.json`,
-`.declined.json`) are pruned as before. Each envelope is at most 16 KiB.
+Both checkpoint pruning surfaces wire lazily to SQLite recovery protection in production
+(`src/activation/run-safety-wiring.ts`), failing closed with `?? true` whenever the SQLite cutover
+coordinator or store is unavailable:
 
-The predicate receives the stored path segments: the Run's directory name and the handover's
-file prefix. UUID Run ids and opaque handover ids pass through unchanged.
+- **Per-envelope prune (`RunCheckpointService`).** Takes an optional predicate,
+  `isRecoveryEnvelopeProtected(runSegment, handoverSegment)`. In production
+  (`src/activation/run-safety-wiring.ts`), this delegates to
+  `sqliteCutover?.isRecoveryEnvelopeProtected(runSegment, handoverSegment) ?? true`, which runs
+  `assessRecoveryEnvelopeProtection(conn, runSegment, handoverSegment)` in
+  `src/services/recovery-handoff/handoff-envelope-protection.ts` (`16-11`).
+- **Run-directory retention sweep (`RunCheckpointRetentionService`).** In production
+  (`src/activation/run-safety-wiring.ts`), `isPinnedRun(runSegment)` combines in-memory active/paused
+  run pins with `sqliteCutover?.isRecoveryRunProtected(runSegment) ?? true`, which delegates to
+  `assessRunSegmentProtection(conn, runSegment)` in
+  `src/services/recovery-handoff/handoff-envelope-protection.ts`. A `checkpoints/<runSegment>/`
+  directory is kept whenever any open recovery handoff or active F05 protective pin maps to
+  `runSegment`, or when the SQLite store is unavailable, closed, from a newer build, ambiguous, or
+  throws.
+- **Restart-durable SQLite lookup.** `assessRecoveryEnvelopeProtection` queries SQLite directly
+  across open handoffs (`recovery_handoffs` with `state NOT IN ('consumed', 'superseded')`),
+  `recovery_handoff_revisions` (`manifest_json` envelope/references and future/unreadable manifests),
+  `recovery_handoff_references`, and active F05 protective pins (`artifact_references` +
+  `artifact_locations`), matching normalized `safeRunSegment(...)` against `(runSegment, handoverSegment)`.
+  `assessRunSegmentProtection` applies the same restart-durable SQLite lookup at the `runSegment`
+  granularity.
+- **Four outcomes (fail-safe `protected: true` everywhere except affirmative `unowned`):**
+  - `protected` (`true`): exact match to an open handoff or active F05 protective pin.
+  - `ambiguous` (`true`): lossy `safeRunSegment` collision with an open/unresolved row, or an open
+    `unsupported`, future-version, revision-less, or unreadable manifest under `runSegment`.
+  - `lookup-error` (`true`): SQLite store is unavailable (`null`), closed, migrated by a newer
+    build, or throws during query.
+  - `unowned` (`false`): healthy store affirmatively confirms zero matching open/ambiguous handoffs
+    and zero active protective pins.
+- **Throwing predicate & post-checkpoint prune isolation.** If no predicate is supplied, every
+  envelope is kept. If a predicate throws, the envelope is kept, a fixed path-free warning
+  (`checkpoint prune kept recovery envelope: protection check failed`) is logged, and the prune
+  continues. `prune()` executes best-effort outside `checkpoint()`'s artifact-write `try/catch`
+  (logging a fixed path-free warning on prune I/O failure) so an already-finished checkpoint
+  always succeeds.
+- **Partitioned eviction and absent-file hygiene.** `prune()` tracks the directory's `fileSet` so
+  absent files are never unlinked and the protection predicate is only called when
+  `<prefix>.recovery.json` exists. Checkpoint prefixes (`.patch`, `.json`, `.declined.json`, cap
+  `20`) are partitioned from `.recovery.json` envelope prefixes so retained envelopes (for example
+  `hand-*`) never displace newly written `17...-<phase>` checkpoints, while unowned envelopes past
+  the per-run cap are reaped across repeated prune passes. Each envelope is at most 16 KiB.
 
 ## Deferrals
 
 | Deferred | Owner |
 |---|---|
-| Composing the service into the production execution path (FR-003), and wiring the prune predicate | F01-B |
-| The ACP runtime, its session loading and delivery port | F13 |
-| The legacy drain run and removal of the legacy store (FR-019) | F13, F01-B |
-| Showing the explanation in the product | F12 (execution visibility) |
-| Exporting the explanation | F11 (report exports) |
+| Webview display of handoff explanations | F12 (execution visibility) |
+| Report export of handoff explanations | F11 (report exports) |

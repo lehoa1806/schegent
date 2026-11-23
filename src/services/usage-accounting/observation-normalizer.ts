@@ -377,6 +377,7 @@ export function normalizeObservation(input: AccountingObservationInput, ctx: Nor
   const nowMs = Date.parse(ctx.nowUtc);
   const eventMs = Date.parse(input.eventUtc);
   if (eventMs < nowMs - ctx.bounds.horizonDays * MS_PER_DAY) return refuse('expired-source', undefined, 'expired-source');
+  if (eventMs > nowMs + ctx.bounds.maxFutureClockSkewMs) return refuse('invalid-observation', 'eventUtc', 'ingest-failed');
 
   const { dimensions, excluded } = normalizeDimensions(input.dimensions);
   const observationRevision = input.observationRevision ?? 1;

@@ -66,6 +66,11 @@ export interface AccountingRow {
   readonly attempts: number;
   readonly roots: number;
   readonly measures: readonly AccountingMeasureTotal[];
+  /**
+   * Present and strictly positive only when one or more `(row, measure)` buckets exceeded
+   * `maxUnitsPerRowMeasure` and excess units were omitted in deterministic `unit ASC` order.
+   */
+  readonly omittedUnitCount?: number;
 }
 
 export interface LegacyEpochSummary {

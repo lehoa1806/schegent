@@ -31,10 +31,17 @@
 // workspace layout is built to win.
 //
 // TOCTOU is inherent to check-then-act on a filesystem and this module does
-// not close it. Between the `realpath` here and the `rm` at the call site, a
-// component can be replaced. This is risk reduction — the window shrinks from
-// "the whole lifetime of the process" to "the gap between two adjacent
-// syscalls" — and the docs say so in those words.
+// not close it. Between the `realpath` here and the `rm` or `unlink` at the
+// call site, a component can be replaced. Node's `node:fs/promises` exposes
+// pathname-based `unlink` rather than descriptor-relative `openat`/`unlinkat`,
+// so callers that remove files (including artifact lifecycle deletion) pair
+// `resolveContainedLink` with a non-following regular-file `lstat`, ownership
+// fencing, and durable intent before calling `unlink` on the canonical
+// resolved path. This is risk reduction — the window shrinks from "the whole
+// lifetime of the process" to "the gap between adjacent syscalls" — and is a
+// permanent stated limit under `docs/architecture/native-binding-decision.md`
+// (reevaluate descriptor-relative removal if stable `node:fs` gains it or the
+// threat model changes).
 
 import * as nodeFs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -206,6 +213,13 @@ export async function resolveContainedTarget(
  * and the host would be unable to clean up its own directory because someone
  * put a link in it. What must be contained is the directory the entry lives
  * in, and that is resolved in full.
+ *
+ * Callers that remove regular files only (such as artifact deletion) follow
+ * this check with a non-following `lstat` verifying `kind === 'file'` before
+ * calling pathname-based `unlink(verdict.resolved)`. Because `node:fs/promises`
+ * lacks descriptor-relative `openat`/`unlinkat`, a residual TOCTOU window
+ * remains between `lstat` and `unlink` — a permanent stated limit under
+ * `docs/architecture/native-binding-decision.md`.
  */
 export async function resolveContainedLink(
   target: string,

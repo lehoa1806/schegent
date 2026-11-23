@@ -1,18 +1,27 @@
 // FR-R6-F10 (contract execution-lanes.md §7, spec US6) — the headless execution-lanes port.
 //
-// One function per service operation. Each validates its input, then delegates to the injected
-// `LaneService` and returns its `LaneResult` unchanged. A malformed input is refused
-// `invalid-input` before the service, the store or Git sees it. A thrown error, such as a
-// `LaneGitError`, passes through to the caller.
+// One function per service operation. Each validates plain prototypes once and deep-snapshots its
+// input (freezing objects and arrays, including nested verification profiles and `argv`) before
+// delegating to the injected `LaneService` and returning its `LaneResult` unchanged. A malformed
+// input is refused `invalid-input` before the service, the store or Git sees it. A thrown error,
+// such as a `LaneGitError`, passes through to the caller.
+//
+// List filter semantics (`16-21`): omitting `states` returns all states; passing an explicit empty
+// array `states: []` returns `{ items: [], nextCursor: null }`.
+//
+// Authority boundary (`16-22`): `approveRequest` and `landRequest` are host-only operator actions;
+// receipt fields are freshness bindings readable on `IntegrationRequestView`, not a secret. Do not
+// expose them to an agent or untrusted IPC caller without host-side human-approval verification
+// (`LaneServiceDeps.authorizeApproval`).
 //
 // Validation (§7 and data-model "Shared column rules"):
 //   - the input is a plain object whose keys are the operation's key set: no unknown key, every
 //     required key present. Operations whose keys are all optional also take no input at all;
 //   - random identifiers are 32 lowercase hex; commits are 40 or 64 lowercase hex; a profile
-//     digest is 64; `rootExecutionId` is a caller identifier;
+//     digest is 64; `rootExecutionId` and `profileId` are caller identifiers (1..128 chars);
 //   - `targetBranch` passes the `git check-ref-format --branch` rules, applied without Git;
 //   - `limit` is an integer 1..200; `cursor` is base64url of at most 256 characters;
-//   - `profile` follows `VERIFICATION_LIMITS`;
+//   - `profile` follows `VERIFICATION_LIMITS` and is validated and deep-snapshotted in one pass;
 //   - `sourceRevision` is 1..256 printable characters with no space and no leading `-`, and
 //     `dependencyRecipe` a short name; the service decides whether either resolves or is supported.
 //
@@ -33,7 +42,11 @@ import {
   type ReconcileReport,
   type VerificationCheckView
 } from '../contracts/execution-lanes';
-import { isValidProfile, isValidTargetBranch } from '../services/execution-lanes/lane-input-rules';
+import {
+  isPlainObject,
+  isValidTargetBranch,
+  snapshotVerificationProfile
+} from '../services/execution-lanes/lane-input-rules';
 import type { LaneService } from '../services/execution-lanes/lane-service';
 
 /** The service surface this module needs; a narrower type keeps fakes honest in tests. */
@@ -60,11 +73,22 @@ export type ExecutionLanesApiService = Pick<
   | 'cleanupLanes'
 >;
 
-type Rule = (value: unknown) => boolean;
+type SnapshotOutcome = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
+type Rule = (value: unknown) => SnapshotOutcome;
 
 interface InputShape {
   readonly required: Readonly<Record<string, Rule>>;
   readonly optional: Readonly<Record<string, Rule>>;
+}
+
+const REJECT: SnapshotOutcome = Object.freeze({ ok: false });
+
+function accept(value: unknown): SnapshotOutcome {
+  return { ok: true, value };
+}
+
+function scalarRule(predicate: (value: unknown) => boolean): Rule {
+  return (value) => (predicate(value) ? accept(value) : REJECT);
 }
 
 const RANDOM_ID_PATTERN = /^[0-9a-f]{32}$/;
@@ -86,10 +110,11 @@ const INTEGRATION_STATE_VALUES: readonly unknown[] = INTEGRATION_STATES;
 const INVALID_INPUT = Object.freeze(laneRefused<never>('invalid-input'));
 
 function matches(pattern: RegExp): Rule {
-  return (value) => typeof value === 'string' && pattern.test(value);
+  return scalarRule((value) => typeof value === 'string' && pattern.test(value));
 }
 
-const isRandomId = matches(RANDOM_ID_PATTERN);
+const isRandomIdString = (value: unknown): value is string => typeof value === 'string' && RANDOM_ID_PATTERN.test(value);
+const isRandomId = scalarRule(isRandomIdString);
 const isCommit = matches(COMMIT_PATTERN);
 
 function isPrintableWithoutSpace(text: string): boolean {
@@ -100,29 +125,74 @@ function isPrintableWithoutSpace(text: string): boolean {
   return true;
 }
 
-const isSourceRevision: Rule = (value) =>
-  typeof value === 'string' &&
-  value.length > 0 &&
-  value.length <= SOURCE_REVISION_MAX_CHARS &&
-  !value.startsWith(OPTION_PREFIX) &&
-  isPrintableWithoutSpace(value);
+const isSourceRevision: Rule = scalarRule(
+  (value) =>
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= SOURCE_REVISION_MAX_CHARS &&
+    !value.startsWith(OPTION_PREFIX) &&
+    isPrintableWithoutSpace(value)
+);
 
-const isLimit: Rule = (value) => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= LANE_PAGE_LIMIT_MAX;
+const isLimit: Rule = scalarRule(
+  (value) => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= LANE_PAGE_LIMIT_MAX
+);
 
-const isCursor: Rule = (value) =>
-  typeof value === 'string' && value.length <= CURSOR_MAX_CHARS && BASE64URL_PATTERN.test(value);
+const isCursor: Rule = scalarRule(
+  (value) => typeof value === 'string' && value.length <= CURSOR_MAX_CHARS && BASE64URL_PATTERN.test(value)
+);
 
-const isTargetBranch: Rule = (value) => typeof value === 'string' && isValidTargetBranch(value);
+const isTargetBranch: Rule = scalarRule((value) => typeof value === 'string' && isValidTargetBranch(value));
 
-const isPositiveInteger: Rule = (value) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
+const isPositiveInteger: Rule = scalarRule(
+  (value) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+);
 
-/** An array of at most one entry per allowed value, each one of them. */
-function isListOf(allowed: readonly unknown[]): Rule {
-  return (value) => Array.isArray(value) && value.length <= allowed.length && value.every((item) => allowed.includes(item));
+const snapshotProfile: Rule = (value) => {
+  const snapped = snapshotVerificationProfile(value);
+  return snapped === null ? REJECT : accept(snapped);
+};
+
+/** Validates and snapshots an array of at most one entry per allowed value, reading each index once. */
+function snapshotListOf(allowed: readonly unknown[]): Rule {
+  return (value) => {
+    if (!Array.isArray(value)) return REJECT;
+    const len = value.length;
+    if (len > allowed.length) return REJECT;
+    const copy: unknown[] = [];
+    for (let i = 0; i < len; i += 1) {
+      if (!Object.hasOwn(value, i)) return REJECT;
+      let item: unknown;
+      try {
+        item = value[i];
+      } catch {
+        return REJECT;
+      }
+      if (!allowed.includes(item)) return REJECT;
+      copy.push(item);
+    }
+    return accept(Object.freeze(copy));
+  };
 }
 
-const isLaneIdList: Rule = (value) =>
-  Array.isArray(value) && value.length >= 1 && value.length <= LANE_PAGE_LIMIT_MAX && value.every(isRandomId);
+const snapshotLaneIdList: Rule = (value) => {
+  if (!Array.isArray(value)) return REJECT;
+  const len = value.length;
+  if (len < 1 || len > LANE_PAGE_LIMIT_MAX) return REJECT;
+  const copy: string[] = [];
+  for (let i = 0; i < len; i += 1) {
+    if (!Object.hasOwn(value, i)) return REJECT;
+    let item: unknown;
+    try {
+      item = value[i];
+    } catch {
+      return REJECT;
+    }
+    if (!isRandomIdString(item)) return REJECT;
+    copy.push(item);
+  }
+  return accept(Object.freeze(copy));
+};
 
 const LANE_ID = { laneId: isRandomId };
 const REQUEST_ID = { requestId: isRandomId };
@@ -135,9 +205,9 @@ export const EXECUTION_LANES_OPERATIONS: Readonly<Record<keyof ExecutionLanesApi
     optional: NONE
   },
   getLane: { required: LANE_ID, optional: NONE },
-  listLanes: { required: NONE, optional: { limit: isLimit, cursor: isCursor, states: isListOf(LANE_STATE_VALUES) } },
+  listLanes: { required: NONE, optional: { limit: isLimit, cursor: isCursor, states: snapshotListOf(LANE_STATE_VALUES) } },
   freezeCandidate: { required: LANE_ID, optional: NONE },
-  requestIntegration: { required: { ...LANE_ID, targetBranch: isTargetBranch, profile: isValidProfile }, optional: NONE },
+  requestIntegration: { required: { ...LANE_ID, targetBranch: isTargetBranch, profile: snapshotProfile }, optional: NONE },
   verifyRequest: { required: REQUEST_ID, optional: NONE },
   getVerification: { required: REQUEST_ID, optional: NONE },
   approveRequest: {
@@ -155,25 +225,25 @@ export const EXECUTION_LANES_OPERATIONS: Readonly<Record<keyof ExecutionLanesApi
   getRequest: { required: REQUEST_ID, optional: NONE },
   listRequests: {
     required: NONE,
-    optional: { limit: isLimit, cursor: isCursor, laneId: isRandomId, states: isListOf(INTEGRATION_STATE_VALUES) }
+    optional: { limit: isLimit, cursor: isCursor, laneId: isRandomId, states: snapshotListOf(INTEGRATION_STATE_VALUES) }
   },
   pauseLane: { required: LANE_ID, optional: NONE },
   resumeLane: { required: LANE_ID, optional: NONE },
   completeLane: { required: LANE_ID, optional: NONE },
-  releaseLane: { required: { ...LANE_ID, disposition: (value: unknown) => RELEASE_DISPOSITIONS.includes(value) }, optional: NONE },
-  setLanePinned: { required: { ...LANE_ID, pinned: (value: unknown) => typeof value === 'boolean' }, optional: NONE },
+  releaseLane: {
+    required: { ...LANE_ID, disposition: scalarRule((value) => RELEASE_DISPOSITIONS.includes(value)) },
+    optional: NONE
+  },
+  setLanePinned: {
+    required: { ...LANE_ID, pinned: scalarRule((value) => typeof value === 'boolean') },
+    optional: NONE
+  },
   reconcile: { required: NONE, optional: NONE },
-  cleanupLanes: { required: NONE, optional: { laneIds: isLaneIdList } }
+  cleanupLanes: { required: NONE, optional: { laneIds: snapshotLaneIdList } }
 });
 
 type Operation = keyof ExecutionLanesApiService;
 type InputOf<K extends Operation> = Parameters<ExecutionLanesApiService[K]>[0];
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
 
 function ruleFor(shape: InputShape, key: string): Rule | undefined {
   if (Object.hasOwn(shape.required, key)) return shape.required[key];
@@ -181,17 +251,30 @@ function ruleFor(shape: InputShape, key: string): Rule | undefined {
   return undefined;
 }
 
-/** The input when it fits the operation's shape, else `null`. */
+/**
+ * Validates and deep-snapshots `input` in one single pass (reading each own property at most once
+ * and freezing the snapshot) when it fits the operation's shape, else `null`.
+ */
 function accepted<K extends Operation>(operation: K, input: unknown): InputOf<K> | null {
   const shape = EXECUTION_LANES_OPERATIONS[operation];
-  if (input === undefined) return Object.keys(shape.required).length === 0 ? ({} as InputOf<K>) : null;
+  if (input === undefined) return Object.keys(shape.required).length === 0 ? (Object.freeze({}) as InputOf<K>) : null;
   if (!isPlainObject(input)) return null;
+  const snapshot: Record<string, unknown> = {};
   for (const key of Object.keys(input)) {
     const rule = ruleFor(shape, key);
-    if (rule === undefined || !rule(input[key])) return null;
+    if (rule === undefined) return null;
+    let raw: unknown;
+    try {
+      raw = input[key];
+    } catch {
+      return null;
+    }
+    const outcome = rule(raw);
+    if (!outcome.ok) return null;
+    snapshot[key] = outcome.value;
   }
-  const complete = Object.keys(shape.required).every((key) => Object.hasOwn(input, key));
-  return complete ? (input as InputOf<K>) : null;
+  const complete = Object.keys(shape.required).every((key) => Object.hasOwn(snapshot, key));
+  return complete ? (Object.freeze(snapshot) as InputOf<K>) : null;
 }
 
 export async function provisionLane(service: ExecutionLanesApiService, input?: unknown): Promise<LaneResult<LaneView>> {

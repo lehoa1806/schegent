@@ -415,7 +415,7 @@ describe('cleanupLanes (research R12)', () => {
     expect(valueOf(await first)).toEqual({ removed: [lane.laneId], kept: [] });
   });
 
-  it('keeps a preparation-failed lane whose worktree never registered: registry-mismatch', async () => {
+  it('settles an unregistered absent preparation-failed lane cleanly to removed (16-19)', async () => {
     const failWorktreeAdd: GitWrapper = (real) => ({
       run: (args, opts) =>
         args.at(0) === 'worktree' && args.at(1) === 'add'
@@ -429,7 +429,13 @@ describe('cleanupLanes (research R12)', () => {
     if (failed === undefined) throw new Error('no preparation-failed lane');
     valueOf(h.service.releaseLane({ laneId: failed.laneId, disposition: 'eligible' }));
 
-    expect(await cleanup(h)).toEqual({ removed: [], kept: [{ laneId: failed.laneId, observation: 'registry-mismatch' }] });
+    // Reconcile does not log `root-missing` for an unregistered absent preparation-failed lane.
+    const reconciled = valueOf(await h.service.reconcile());
+    expect(reconciled.lanes).toEqual([]);
+
+    expect(await cleanup(h)).toEqual({ removed: [failed.laneId], kept: [] });
+    expect(valueOf(h.service.getLane({ laneId: failed.laneId })).state).toBe('removed');
+    expect(operationsOf(h, failed.laneId, 'cleanup')).toEqual(['succeeded:']);
   });
 
   it('never touches a worktree no lane names', async () => {
@@ -528,5 +534,327 @@ describe('cleanupLanes (research R12)', () => {
       ['worktree', 'remove', root],
       ['update-ref', '-d', lane.baseRef, lane.sourceCommit]
     ]);
+  });
+});
+
+describe('FR-R7-16 (16-19): deduplicated keeps, retention, locked worktrees, crash convergence, and concurrent pin', () => {
+  it('deduplicates consecutive identical kept cleanup operations and records again when observation changes', async () => {
+    const h = createLaneHarness({ label: 'clean-dedup' });
+    const { lane, root } = await eligibleLane(h);
+    fs.writeFileSync(path.join(root, 'dirty.txt'), 'uncommitted\n');
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(await cleanup(h)).toEqual({ removed: [], kept: [{ laneId: lane.laneId, observation: 'lane-dirty' }] });
+    }
+    expect(operationsOf(h, lane.laneId, 'cleanup')).toEqual(['kept:lane-dirty']);
+
+    // Switching reason to lane-pinned records a new row, then deduplicates repeated lane-pinned keeps.
+    valueOf(h.service.setLanePinned({ laneId: lane.laneId, pinned: true }));
+    expect(await cleanup(h)).toEqual({ removed: [], kept: [{ laneId: lane.laneId, observation: 'lane-pinned' }] });
+    expect(await cleanup(h)).toEqual({ removed: [], kept: [{ laneId: lane.laneId, observation: 'lane-pinned' }] });
+    expect(operationsOf(h, lane.laneId, 'cleanup')).toEqual(['kept:lane-dirty', 'kept:lane-pinned']);
+  });
+
+  it('keeps a locked worktree with worktree-locked without throwing or aborting sibling lane cleanup', async () => {
+    const h = createLaneHarness({ label: 'clean-locked' });
+    const locked = await eligibleLane(h);
+    const sibling = await eligibleLane(h);
+    h.fixture.git(['worktree', 'lock', '--reason', 'operator hold', locked.root]);
+
+    const report = await cleanup(h);
+
+    expect(report).toEqual({
+      removed: [sibling.lane.laneId],
+      kept: [{ laneId: locked.lane.laneId, observation: 'worktree-locked' }]
+    });
+    expect(fs.existsSync(locked.root)).toBe(true);
+    expect(isRegistered(h, locked.lane.laneId)).toBe(true);
+    expect(fs.existsSync(sibling.root)).toBe(false);
+    expect(operationsOf(h, locked.lane.laneId, 'cleanup')).toEqual(['kept:worktree-locked']);
+  });
+
+  it('aborts removal when a lane is concurrently pinned while cleanup awaits git status, and refuses pin mid-remove', async () => {
+    const statusGate = gate((args) => args.includes('status'));
+    const h = createLaneHarness({ label: 'clean-concurrent-pin', wrapGit: statusGate.wrap });
+    const { lane, root } = await eligibleLane(h);
+    statusGate.armed.on = true;
+
+    const cleaning = h.service.cleanupLanes({});
+    await statusGate.reached;
+
+    // Operator pins while cleanup is inspecting status: pin succeeds, removal must abort before worktree remove!
+    const pinned = valueOf(h.service.setLanePinned({ laneId: lane.laneId, pinned: true }));
+    expect(pinned.pinned).toBe(true);
+
+    statusGate.release();
+    expect(valueOf(await cleaning)).toEqual({
+      removed: [],
+      kept: [{ laneId: lane.laneId, observation: 'lane-pinned' }]
+    });
+    expect(fs.existsSync(root)).toBe(true);
+    expect(isRegistered(h, lane.laneId)).toBe(true);
+    expect(valueOf(h.service.getLane({ laneId: lane.laneId })).state).toBe('cleanup-eligible');
+
+    // Once unpinned and past the fenced pre-removal transaction (inside `worktree remove`), pinning refuses lane-busy.
+    valueOf(h.service.setLanePinned({ laneId: lane.laneId, pinned: false }));
+    const removeGate = gate((args) => args.at(0) === 'worktree' && args.at(1) === 'remove');
+    const host2 = h.reopen({ wrapGit: removeGate.wrap });
+    removeGate.armed.on = true;
+    const removing = host2.cleanupLanes({});
+    await removeGate.reached;
+    expect(host2.setLanePinned({ laneId: lane.laneId, pinned: true })).toEqual({
+      ok: false,
+      refusal: { reason: 'lane-busy' }
+    });
+    removeGate.release();
+    expect(valueOf(await removing)).toEqual({ removed: [lane.laneId], kept: [] });
+  });
+
+  it('converges cleanly on a crash immediately after git worktree remove via repeated cleanupLanes or reconcile', async () => {
+    const crashAfterRemove = { armed: false };
+    const h = createLaneHarness({
+      label: 'clean-crash-mid',
+      wrapGit: (real) => ({
+        run: async (args, opts) => {
+          const res = await real.run(args, opts);
+          if (crashAfterRemove.armed && args.at(0) === 'worktree' && args.at(1) === 'remove') {
+            crashAfterRemove.armed = false;
+            throw new Error('simulated crash mid-cleanup');
+          }
+          return res;
+        }
+      })
+    });
+    const first = await eligibleLane(h);
+    const second = await eligibleLane(h);
+
+    // Path A: crash mid-cleanup on `first`, then repeated `cleanupLanes` converges cleanly to `removed`.
+    crashAfterRemove.armed = true;
+    await expect(h.service.cleanupLanes({ laneIds: [first.lane.laneId] })).rejects.toThrow('simulated crash mid-cleanup');
+    expect(fs.existsSync(first.root)).toBe(false);
+    expect(h.lanes.hasPendingOperation(first.lane.laneId, 'cleanup')).toBe(true);
+    expect(refsOf(h, first.lane.laneId)).toEqual([first.lane.baseRef]);
+
+    const convergedClean = valueOf(await h.reopen().cleanupLanes({ laneIds: [first.lane.laneId] }));
+    expect(convergedClean).toEqual({ removed: [first.lane.laneId], kept: [] });
+    expect(valueOf(h.service.getLane({ laneId: first.lane.laneId })).state).toBe('removed');
+    expect(refsOf(h, first.lane.laneId)).toEqual([]);
+    expect(h.lanes.hasPendingOperation(first.lane.laneId, 'cleanup')).toBe(false);
+
+    // Path B: crash mid-cleanup on `second`, then `reconcile` converges cleanly to `removed` and deletes baseRef.
+    const hostForSecond = h.reopen({
+      wrapGit: (real) => ({
+        run: async (args, opts) => {
+          const res = await real.run(args, opts);
+          if (crashAfterRemove.armed && args.at(0) === 'worktree' && args.at(1) === 'remove') {
+            crashAfterRemove.armed = false;
+            throw new Error('simulated crash mid-cleanup 2');
+          }
+          return res;
+        }
+      })
+    });
+    crashAfterRemove.armed = true;
+    await expect(hostForSecond.cleanupLanes({ laneIds: [second.lane.laneId] })).rejects.toThrow('simulated crash mid-cleanup 2');
+    const rec = valueOf(await h.reopen().reconcile());
+    expect(rec.lanes).toEqual([{ laneId: second.lane.laneId, from: 'cleanup-eligible', to: 'removed', observation: null }]);
+    expect(valueOf(h.service.getLane({ laneId: second.lane.laneId })).state).toBe('removed');
+    expect(refsOf(h, second.lane.laneId)).toEqual([]);
+  });
+
+  it('keeps status-timeout lanes without aborting sibling cleanup', async () => {
+    let targetRoot = '';
+    const h = createLaneHarness({
+      label: 'clean-status-timeout',
+      wrapGit: (real) => ({
+        run: (args, opts) => {
+          if (targetRoot !== '' && opts.cwd === targetRoot && args.includes('status')) {
+            return Promise.resolve({ ok: false, exitCode: null, code: 'timeout' });
+          }
+          return real.run(args, opts);
+        }
+      })
+    });
+    const slow = await eligibleLane(h);
+    const fast = await eligibleLane(h);
+    targetRoot = slow.root;
+
+    const report = await cleanup(h);
+    expect(report).toEqual({
+      removed: [fast.lane.laneId],
+      kept: [{ laneId: slow.lane.laneId, observation: 'status-timeout' }]
+    });
+    expect(fs.existsSync(slow.root)).toBe(true);
+  });
+
+  it('enforces bounded retention while preserving active, pinned, candidate-bearing, and receipted lanes', async () => {
+    let nowMs = Date.UTC(2026, 10, 10, 12, 0, 0);
+    const h = createLaneHarness({
+      label: 'clean-retention',
+      overrides: {
+        liveLaneCap: 10,
+        clock: () => nowMs,
+        retentionPolicy: {
+          maxOperationsPerLane: 3,
+          terminalLaneRetentionMs: 1_000,
+          maxTerminalLanesPerWorkspace: 1
+        }
+      }
+    });
+
+    // 1. Two empty removed lanes (no candidates, no receipts, unpinned) -> oldest pruned past cap/horizon.
+    const emptyOld = await eligibleLane(h);
+    await cleanup(h, [emptyOld.lane.laneId]);
+    nowMs += 5_000;
+    const emptyNew = await eligibleLane(h);
+    await cleanup(h, [emptyNew.lane.laneId]);
+
+    // 2. A removed lane with a frozen candidate -> MUST be preserved even when aged!
+    const withCandidate = await h.provision();
+    fs.writeFileSync(path.join(await h.laneRoot(withCandidate.laneId), 'src', 'a.txt'), 'candidate-work\n');
+    valueOf(await h.service.freezeCandidate({ laneId: withCandidate.laneId }));
+    valueOf(h.service.completeLane({ laneId: withCandidate.laneId }));
+    valueOf(h.service.releaseLane({ laneId: withCandidate.laneId, disposition: 'eligible' }));
+    await cleanup(h, [withCandidate.laneId]);
+
+    // 3. A pinned removed lane -> MUST be preserved even when aged!
+    const pinnedRemoved = await eligibleLane(h);
+    await cleanup(h, [pinnedRemoved.lane.laneId]);
+    valueOf(h.service.setLanePinned({ laneId: pinnedRemoved.lane.laneId, pinned: true }));
+
+    // 4. An aged, unpinned preparation-failed lane -> MUST NOT be pruned until cleaned up to removed (CR-B1)!
+    const prepFailedLane = await h.provision();
+    const prepFailedMoved = h.lanes.transitionLane(HARNESS_WS, prepFailedLane.laneId, ['active'], 'preparation-failed', {
+      reason: 'provisioning-git-failed',
+      now: new Date(nowMs).toISOString(),
+      generation: h.service.generation
+    });
+    expect(prepFailedMoved.ok).toBe(true);
+
+    // 5. An active lane with alternating keep operations > maxOperationsPerLane (3) -> ops capped at 3, lane preserved!
+    const activeLane = await h.provision();
+    for (let i = 0; i < 6; i += 1) {
+      valueOf(h.service.setLanePinned({ laneId: activeLane.laneId, pinned: i % 2 === 0 }));
+      await cleanup(h, [activeLane.laneId]);
+    }
+    expect(h.lanes.listOperations(activeLane.laneId).length).toBeLessThanOrEqual(3);
+
+    // Advance past terminalLaneRetentionMs (1_000 ms) and trigger retention via cleanupLanes.
+    nowMs += 10_000;
+    await cleanup(h);
+
+    expect(h.lanes.getLane(HARNESS_WS, emptyOld.lane.laneId)).toBeNull();
+    expect(h.lanes.getLane(HARNESS_WS, emptyNew.lane.laneId)).toBeNull();
+    expect(h.lanes.getLane(HARNESS_WS, withCandidate.laneId)?.state).toBe('removed');
+    expect(h.lanes.currentCandidate(withCandidate.laneId)).not.toBeNull();
+    expect(h.lanes.getLane(HARNESS_WS, pinnedRemoved.lane.laneId)?.pinned).toBe(true);
+    expect(h.lanes.getLane(HARNESS_WS, prepFailedLane.laneId)?.state).toBe('preparation-failed');
+    expect(h.lanes.getLane(HARNESS_WS, activeLane.laneId)?.state).toBe('active');
+
+    // Only after releasing and cleaning up preparation-failed -> removed (and aging) is it pruned.
+    valueOf(h.service.releaseLane({ laneId: prepFailedLane.laneId, disposition: 'eligible' }));
+    expect(await cleanup(h, [prepFailedLane.laneId])).toEqual({ removed: [prepFailedLane.laneId], kept: [] });
+    expect(h.lanes.getLane(HARNESS_WS, prepFailedLane.laneId)?.state).toBe('removed');
+    nowMs += 10_000;
+    await cleanup(h);
+    expect(h.lanes.getLane(HARNESS_WS, prepFailedLane.laneId)).toBeNull();
+  });
+
+  it('settleAbsentLane re-checks pin before deleting baseRef so concurrent pin preserves baseRef (CR-B7/SR-B10)', async () => {
+    let pinTargetLaneId = '';
+    let pinOnce = true;
+    let pinAction: (() => void) | null = null;
+    const h = createLaneHarness({
+      label: 'clean-absent-pin-base',
+      wrapGit: (real) => ({
+        run: async (args, opts) => {
+          const res = await real.run(args, opts);
+          // Inject concurrent pin right after `resolveCommit(baseRef)` and BEFORE `update-ref -d`.
+          if (
+            pinOnce &&
+            pinTargetLaneId !== '' &&
+            args.at(0) === 'rev-parse' &&
+            args.some((arg) => arg.startsWith(`refs/schegent/lanes/${pinTargetLaneId}/base`))
+          ) {
+            pinOnce = false;
+            pinAction?.();
+          }
+          return res;
+        }
+      })
+    });
+    const lane = await h.provision();
+    const root = await h.laneRoot(lane.laneId);
+    valueOf(h.service.completeLane({ laneId: lane.laneId }));
+    valueOf(h.service.releaseLane({ laneId: lane.laneId, disposition: 'eligible' }));
+    // Simulate a crash immediately after `git worktree remove`: worktree gone/unregistered, pending cleanup op, baseRef intact.
+    h.fixture.git(['worktree', 'remove', root]);
+    h.lanes.beginOperation({
+      operationId: 'a'.repeat(32),
+      laneId: lane.laneId,
+      workspaceId: HARNESS_WS,
+      kind: 'cleanup',
+      generation: h.service.generation,
+      now: new Date(Date.UTC(2026, 10, 10, 12, 0, 0)).toISOString()
+    });
+
+    pinTargetLaneId = lane.laneId;
+    pinAction = () => {
+      h.lanes.setPinned(HARNESS_WS, lane.laneId, true, new Date(Date.UTC(2026, 10, 10, 12, 0, 1)).toISOString());
+    };
+
+    const report = await cleanup(h, [lane.laneId]);
+    expect(pinOnce).toBe(false);
+    expect(report).toEqual({
+      removed: [],
+      kept: [{ laneId: lane.laneId, observation: 'lane-pinned' }]
+    });
+    expect(refsOf(h, lane.laneId)).toEqual([lane.baseRef]);
+    expect(h.lanes.getLane(HARNESS_WS, lane.laneId)?.state).toBe('cleanup-eligible');
+    expect(h.lanes.hasPendingOperation(lane.laneId, 'cleanup')).toBe(false);
+    expect(h.lanes.getOperation('a'.repeat(32))?.status).toBe('kept');
+    expect(h.lanes.getOperation('a'.repeat(32))?.reason).toBe('lane-pinned');
+  });
+
+  it('keeps a lane pinned during removeLane transition as lane-pinned without aborting sibling cleanup (CR-B7/SR-B10)', async () => {
+    let targetLaneId = '';
+    let pinDuringRefDelete: (() => void) | null = null;
+    const h = createLaneHarness({
+      label: 'clean-remove-pin-sibling',
+      wrapGit: (real) => ({
+        run: async (args, opts) => {
+          const res = await real.run(args, opts);
+          // Pin directly in the store during `update-ref -d` so `transitionLane(..., requireUnpinned: true)` sees `lane-pinned`.
+          if (
+            pinDuringRefDelete !== null &&
+            args.at(0) === 'update-ref' &&
+            args.at(1) === '-d' &&
+            args.at(2) === `refs/schegent/lanes/${targetLaneId}/base`
+          ) {
+            const fn = pinDuringRefDelete;
+            pinDuringRefDelete = null;
+            fn();
+          }
+          return res;
+        }
+      })
+    });
+    const first = await eligibleLane(h);
+    const sibling = await eligibleLane(h);
+    targetLaneId = first.lane.laneId;
+    pinDuringRefDelete = () => {
+      h.lanes.setPinned(HARNESS_WS, first.lane.laneId, true, new Date(Date.UTC(2026, 10, 10, 12, 0, 2)).toISOString());
+    };
+
+    const report = await cleanup(h, [first.lane.laneId, sibling.lane.laneId]);
+
+    expect(report).toEqual({
+      removed: [sibling.lane.laneId],
+      kept: [{ laneId: first.lane.laneId, observation: 'lane-pinned' }]
+    });
+    expect(h.lanes.getLane(HARNESS_WS, first.lane.laneId)?.state).toBe('cleanup-eligible');
+    expect(h.lanes.hasPendingOperation(first.lane.laneId, 'cleanup')).toBe(false);
+    expect(operationsOf(h, first.lane.laneId, 'cleanup')).toEqual(['kept:lane-pinned']);
+    expect(h.lanes.getLane(HARNESS_WS, sibling.lane.laneId)?.state).toBe('removed');
   });
 });

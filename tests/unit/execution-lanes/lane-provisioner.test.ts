@@ -77,7 +77,10 @@ function harness(overrides: Partial<LaneServiceDeps> = {}, wrapGit: GitWrapper =
     clock: () => NOW_MS,
     random: (size) => {
       counter += 1;
-      return Buffer.alloc(size, counter);
+      const buf = Buffer.alloc(size);
+      if (size >= 4) buf.writeUInt32BE(counter, size - 4);
+      else buf.writeUIntBE(counter & ((1 << (size * 8)) - 1), 0, size);
+      return buf;
     },
     ...overrides
   });

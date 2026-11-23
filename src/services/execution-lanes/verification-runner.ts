@@ -16,13 +16,21 @@
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import type { VerificationCheck, VerificationProfile } from '../../contracts/execution-lanes';
+import { laneOk, laneRefused, type LaneResult, type VerificationCheck, type VerificationProfile } from '../../contracts/execution-lanes';
 import { SHIPPED_DEFAULT_POLICY, type ProcessEnvironmentPolicy } from '../../contracts/process-environment-policy';
 import { spawnCommandFor } from '../../lib/spawn-command';
+import {
+  childIsReaped,
+  processTreeIsGone,
+  processTreeSpawnOptions,
+  signalProcessTree,
+  trackGroupAtExit
+} from '../../runner/process-tree';
 import { buildSpawnEnv } from '../../runner/spawn-env';
-import { allDirtyCount, trackedDirtyCount } from './git-observe';
+import { allDirtyCountDetailed, trackedDirtyCountDetailed } from './git-observe';
 import { buildLaneGitEnv, LaneGitError, type LaneGitRunner } from './git-runner';
 import type { IntegrationStore, RequestRecord, VerificationResultRecord } from './integration-store';
+import type { LaneStore } from './lane-store';
 
 /** What one check did. `exitCode` is `null` when it was killed or never started. */
 export interface CheckRun {
@@ -54,14 +62,20 @@ export interface SpawnCheckDeps {
    */
   readonly environmentPolicy?: () => ProcessEnvironmentPolicy;
   readonly now?: () => number;
+  /** Post-exit stdio drain grace in ms; default `OUTPUT_DRAIN_GRACE_MS` (2,000 ms). */
+  readonly outputDrainGraceMs?: number;
+  /** Grace between SIGTERM and SIGKILL in ms; default `KILL_GRACE_MS` (250 ms). */
+  readonly killGraceMs?: number;
 }
 
-const KILL_SIGNAL: NodeJS.Signals = 'SIGKILL';
 /**
  * After the check exits, how long its output may keep draining. A descendant that left the
- * process group can hold the pipes open forever; past this, they are closed (review S1).
+ * process group can hold the pipes open forever; past this, pipes are destroyed and any remaining
+ * process-tree descendants are torn down before settling (review S1, CR-B3/SR-B5).
  */
 const OUTPUT_DRAIN_GRACE_MS = 2_000;
+/** Grace between SIGTERM and SIGKILL when tearing down a timed-out or lingering check tree. */
+const KILL_GRACE_MS = 250;
 const LANE_CHECK_GIT_TIMEOUT_MS = 60_000;
 const ID_BYTES = 16;
 
@@ -82,22 +96,32 @@ function checkEnv(policy: ProcessEnvironmentPolicy, base: NodeJS.ProcessEnv): No
   return buildLaneGitEnv(selected);
 }
 
-/** Kills the check's whole process group, so a grandchild cannot outlive the timeout. */
-function killGroup(child: ChildProcess): void {
-  if (child.pid === undefined) return;
+/** Whether a reaped child's PID appears held by another process (or is unsafe to signal on win32). */
+function isReusedPid(child: ChildProcess): boolean {
+  if (!childIsReaped(child)) return false;
+  if (process.platform === 'win32') return true;
+  const pid = child.pid;
+  if (pid === undefined) return true;
   try {
-    process.kill(-child.pid, KILL_SIGNAL);
-  } catch {
-    child.kill(KILL_SIGNAL);
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+    return code !== 'ESRCH';
   }
 }
 
-/** The default port: `child_process.spawn`, no shell, its own process group, output digested. */
+/** The default port: `child_process.spawn`, no shell, bounded process-tree teardown, output digested. */
 export function createSpawnCheck(deps: SpawnCheckDeps = {}): SpawnCheck {
   const spawnFn: SpawnLike = deps.spawn ?? nodeSpawn;
   const base = deps.baseEnv ?? process.env;
   const environmentPolicy = deps.environmentPolicy ?? (() => SHIPPED_DEFAULT_POLICY);
   const now = deps.now ?? Date.now;
+  const outputDrainGraceMs = deps.outputDrainGraceMs ?? OUTPUT_DRAIN_GRACE_MS;
+  const killGraceMs = deps.killGraceMs ?? KILL_GRACE_MS;
   return (argv, options) =>
     new Promise<CheckRun>((resolve) => {
       const started = now();
@@ -105,12 +129,14 @@ export function createSpawnCheck(deps: SpawnCheckDeps = {}): SpawnCheck {
       let outputBytes = 0;
       let timedOut = false;
       let settled = false;
-      const finish = (exitCode: number | null, signal: string | null): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ exitCode, signal, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
-      };
+      let teardownTriggered = false;
+      let teardownAnchored = false;
+      let groupAliveAtExit = false;
+      let exitedCode: number | null = null;
+      let exitedSignal: string | null = null;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+
       const env = checkEnv(environmentPolicy(), base);
       // Review gap GC-24 -- on win32 a bare check program (`npm`, `node`) resolves along the
       // check's PATH only, never from the lane root, where the lane's own work could plant one.
@@ -123,39 +149,133 @@ export function createSpawnCheck(deps: SpawnCheckDeps = {}): SpawnCheck {
         resolve({ exitCode: null, signal: null, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
         return;
       }
-      const child = spawnFn(command, argv.slice(1), {
-        cwd: options.cwd,
-        env,
-        shell: false,
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true
-      });
+
+      let child: ChildProcess;
+      try {
+        child = spawnFn(command, argv.slice(1), {
+          cwd: options.cwd,
+          env,
+          shell: false,
+          ...processTreeSpawnOptions(),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true
+        });
+      } catch {
+        settled = true;
+        resolve({ exitCode: null, signal: null, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
+        return;
+      }
+      trackGroupAtExit(child);
+
+      const canSignalTree = (): boolean => {
+        if (processTreeIsGone(child)) return false;
+        if (!childIsReaped(child)) return true;
+        if (process.platform === 'win32') return false;
+        if (!teardownAnchored && !groupAliveAtExit) return false;
+        return !isReusedPid(child);
+      };
+
+      const finish = (exitCode: number | null, signal: string | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (drainTimer !== undefined) clearTimeout(drainTimer);
+        if (killTimer !== undefined && (!teardownTriggered || processTreeIsGone(child))) {
+          clearTimeout(killTimer);
+          killTimer = undefined;
+        }
+        resolve({ exitCode, signal, timedOut, durationMs: now() - started, outputBytes, outputSha256: hash.digest('hex') });
+      };
+
+      const teardown = (resolveExitCode: () => number | null, resolveSignal: () => string | null): void => {
+        if (!teardownTriggered) {
+          teardownAnchored = !childIsReaped(child) || groupAliveAtExit;
+          teardownTriggered = true;
+        }
+        if (canSignalTree()) {
+          void signalProcessTree(child, 'SIGTERM');
+        }
+        if (killTimer !== undefined) return;
+        killTimer = setTimeout(() => {
+          killTimer = undefined;
+          const settleAfterKill = (): void => {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish(resolveExitCode(), resolveSignal());
+          };
+          if (canSignalTree()) {
+            void signalProcessTree(child, 'SIGKILL').then(settleAfterKill, settleAfterKill);
+            return;
+          }
+          settleAfterKill();
+        }, killGraceMs);
+        killTimer.unref();
+      };
+
       const timer = setTimeout(() => {
+        if (settled || teardownTriggered) return;
         timedOut = true;
-        killGroup(child);
+        teardown(
+          () => exitedCode,
+          () => exitedSignal ?? 'SIGKILL'
+        );
       }, options.timeoutMs);
+
       const consume = (chunk: Buffer): void => {
+        if (settled) return;
         outputBytes += chunk.length;
         hash.update(chunk);
       };
+      child.stdout?.on('error', () => undefined);
+      child.stderr?.on('error', () => undefined);
       child.stdout?.on('data', consume);
       child.stderr?.on('data', consume);
       child.once('error', () => finish(null, null));
-      child.once('close', (code, signal) => finish(code, signal));
+      child.once('close', (code, signal) => {
+        if (teardownTriggered && !processTreeIsGone(child)) return;
+        if (!settled && !teardownTriggered && groupAliveAtExit && canSignalTree()) {
+          if (drainTimer !== undefined) {
+            clearTimeout(drainTimer);
+            drainTimer = undefined;
+          }
+          teardown(
+            () => code,
+            () => signal
+          );
+          return;
+        }
+        finish(code, signal);
+      });
       child.once('exit', (code, signal) => {
-        const drained = setTimeout(() => {
+        exitedCode = code;
+        exitedSignal = signal;
+        groupAliveAtExit = process.platform !== 'win32' && !isReusedPid(child) && !processTreeIsGone(child);
+        if (settled || timedOut) return;
+        drainTimer = setTimeout(() => {
+          if (settled) return;
+          if (canSignalTree()) {
+            teardown(
+              () => code,
+              () => signal
+            );
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            return;
+          }
           child.stdout?.destroy();
           child.stderr?.destroy();
           finish(code, signal);
-        }, OUTPUT_DRAIN_GRACE_MS);
-        drained.unref();
+        }, outputDrainGraceMs);
+        drainTimer.unref();
       });
     });
 }
 
 export interface VerificationContext {
+  readonly lanes: LaneStore;
   readonly integrations: IntegrationStore;
+  readonly workspaceId: string;
+  readonly generation: number;
   readonly git: LaneGitRunner;
   readonly spawnCheck: SpawnCheck;
   readonly clock: () => number;
@@ -184,10 +304,10 @@ async function laneHoldsCandidate(
   });
   if (!head.ok) throw new LaneGitError('rev-parse', head);
   if (head.stdout.trim() !== candidateCommit) return false;
-  const count = moment === 'before' ? allDirtyCount : trackedDirtyCount;
+  const count = moment === 'before' ? allDirtyCountDetailed : trackedDirtyCountDetailed;
   const dirty = await count({ git: ctx.git, cwd: root, timeoutMs: LANE_CHECK_GIT_TIMEOUT_MS });
-  if (dirty === null) throw new LaneGitError('status', { code: 'exit', exitCode: null });
-  return dirty === 0;
+  if (!dirty.ok) throw new LaneGitError('status', dirty.failure);
+  return dirty.value === 0;
 }
 
 function resultOf(
@@ -216,24 +336,35 @@ function resultOf(
 
 /**
  * Runs `profile` for a request already in `verifying`, recording each check under the request's
- * current attempt. Throws `LaneGitError` when Git cannot say what the lane holds.
+ * current attempt inside the generation fence. Re-checks generation immediately before each check
+ * spawn. Throws `LaneGitError` when Git cannot say what the lane holds.
  */
 export async function runVerification(
   ctx: VerificationContext,
   request: RequestRecord,
   profile: VerificationProfile,
   root: string
-): Promise<VerificationOutcome> {
+): Promise<LaneResult<VerificationOutcome>> {
+  const beforeFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!beforeFence.ok) return laneRefused(beforeFence.refusal.reason);
   if (!(await laneHoldsCandidate(ctx, root, request.candidateCommit, 'before'))) {
-    return { state: 'blocked', reason: 'verification-workspace-changed' };
+    return laneOk({ state: 'blocked', reason: 'verification-workspace-changed' });
   }
   for (const [index, check] of profile.checks.entries()) {
+    const preCheckFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+    if (!preCheckFence.ok) return laneRefused(preCheckFence.refusal.reason);
     const run = await ctx.spawnCheck(check.argv, { cwd: root, timeoutMs: check.timeoutMs });
-    ctx.integrations.insertVerificationResult(resultOf(ctx, request, index, check, run));
-    if (!checkPassed(run)) return { state: 'blocked', reason: 'verification-failed' };
+    const recorded = ctx.lanes.fenced(ctx.workspaceId, ctx.generation, () => {
+      ctx.integrations.insertVerificationResult(resultOf(ctx, request, index, check, run));
+      return laneOk(undefined);
+    });
+    if (!recorded.ok) return laneRefused(recorded.refusal.reason);
+    if (!checkPassed(run)) return laneOk({ state: 'blocked', reason: 'verification-failed' });
   }
+  const afterFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!afterFence.ok) return laneRefused(afterFence.refusal.reason);
   if (!(await laneHoldsCandidate(ctx, root, request.candidateCommit, 'after'))) {
-    return { state: 'blocked', reason: 'verification-workspace-changed' };
+    return laneOk({ state: 'blocked', reason: 'verification-workspace-changed' });
   }
-  return { state: 'awaiting-review', reason: null };
+  return laneOk({ state: 'awaiting-review', reason: null });
 }

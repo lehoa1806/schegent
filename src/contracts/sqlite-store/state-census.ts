@@ -122,11 +122,12 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
     legacyLocation: '.schegent/logs/segments/*.log',
     scope: 'workspace',
     classification: 'external-immutable-blob',
-    targetTables: ['log_segments'],
+    targetTables: ['live_log_segments'],
     owningFeature: 'F07',
     executionAffecting: false,
     migrationStage: 'external-retained',
-    rationale: 'High-volume streaming stdout/stderr bytes stay in bounded segment files tracked by BackupDependencyManifest.'
+    rationale:
+      'High-volume streaming stdout/stderr bytes stay in bounded segment files indexed by F07 live_log_segments and tracked by BackupDependencyManifest (F04 log_segments is retained as an empty schema-v9 placeholder).'
   },
   {
     surfaceId: 'recovery-handoffs',

@@ -23,6 +23,7 @@ import {
   type ManifestRefusalCode
 } from '../../contracts/recovery-handoff/handoff-types';
 import { serializeHandoffManifest, type HandoffManifest } from '../../contracts/recovery-handoff/handoff-manifest';
+import type { AcpSessionBindingStore } from '../acp-runtime/acp-durable-runtime-store';
 import { isNonNegativeInteger, isOpaqueId } from '../artifact-lifecycle/lifecycle-results';
 import type { NodeSqliteConnection } from '../sqlite-store';
 import { cutoffKeyFor, handoffIdFor } from './handoff-identity';
@@ -34,6 +35,8 @@ const ISSUABLE_STATES: ReadonlySet<HandoffState> = new Set<HandoffState>(['prepa
 
 export interface HandoffWriteDeps extends HandoffPinDeps {
   readonly conn: NodeSqliteConnection;
+  /** Optional durable ACP session binding store for cross-checking legacy-to-ACP mappings. */
+  readonly acpSessionBindings?: AcpSessionBindingStore;
 }
 
 export type PrepareResult =
@@ -136,12 +139,19 @@ function locate(
   lineage: HandoffLineage,
   cutoff: HandoffCutoff,
   serialized: { readonly manifest: HandoffManifest; readonly json: string; readonly digest: string },
-  legacyProvenance: string | null
+  legacyProvenance: string | null,
+  initialPaused: boolean
 ): Located | HandoffRefusal<'handoff-closed' | 'unsupported-version'> {
   const { store } = deps;
   const handoffId = handoffIdFor(lineage);
   return store.transaction(() => {
-    store.insertHandoff({ handoffId, ...lineage, legacyProvenance, nowMs: deps.nowMs() });
+    store.insertHandoff({
+      handoffId,
+      ...lineage,
+      legacyProvenance,
+      ...(initialPaused ? { initialPaused: true } : {}),
+      nowMs: deps.nowMs()
+    });
     const handoff = store.getHandoff(handoffId);
     if (handoff === undefined) throw new Error('handoff row missing after insert');
     if (CLOSED_HANDOFF_STATES.has(handoff.state)) return { ok: false, code: 'handoff-closed' } as const;
@@ -158,14 +168,15 @@ export function prepareRevision(
   lineage: HandoffLineage,
   cutoff: HandoffCutoff,
   rawManifest: unknown,
-  legacyProvenance?: string
+  legacyProvenance?: string,
+  initialPaused?: boolean
 ): PrepareResult {
   const invalid = invalidInput(lineage, cutoff, legacyProvenance);
   if (invalid !== null) return invalid;
   const serialized = serializeHandoffManifest(rawManifest);
   if (!serialized.ok) return serialized;
   if (isNewerBuildStore(deps.conn)) return { ok: false, code: 'unsupported-version' };
-  const located = locate(deps, lineage, cutoff, serialized, legacyProvenance ?? null);
+  const located = locate(deps, lineage, cutoff, serialized, legacyProvenance ?? null, initialPaused === true);
   if ('ok' in located) return located;
   const { handoffId } = located.handoff;
   const pins = pinRevision(deps, handoffId, located.revisionNo);

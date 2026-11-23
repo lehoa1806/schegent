@@ -157,7 +157,7 @@ export function supersedeHandoff(deps: HandoffWriteDeps, handoffId: string): Sup
   return { ok: true, state: 'superseded' };
 }
 
-/** Contract `explain`: reads the handoff's rows and writes none. */
+/** Contract `explain`: reads a bounded page of the handoff's rows and writes none (`16-13`). */
 export function explainHandoff(deps: Pick<HandoffWriteDeps, 'conn' | 'store'>, handoffId: string): ExplainResult {
   if (isNewerBuildStore(deps.conn)) return { ok: false, code: 'unsupported-version' };
   const { store } = deps;
@@ -165,12 +165,14 @@ export function explainHandoff(deps: Pick<HandoffWriteDeps, 'conn' | 'store'>, h
   if (handoff === undefined) return { ok: false, code: 'not-found' };
   const revisionNo = decidableRevision(store, handoff);
   const revision = store.getRevision(handoffId, revisionNo) ?? null;
+  const decisionPage = store.listRecentDecisions(handoffId);
   const explanation = buildExplanation({
     handoff,
     revision,
     references: revision === null ? [] : store.listReferences(handoffId, revision.revisionNo),
     deliveries: store.listDeliveries(handoffId),
-    decisions: store.listDecisions(handoffId)
+    decisions: decisionPage.rows,
+    omittedDecisionCount: decisionPage.omittedCount
   });
   return { ok: true, explanation };
 }
