@@ -32,7 +32,7 @@ providers.”
 
 ## Egress and the raw transcript's lifetime
 
-Claude Code sends repository content and prompts to the model vendor whatever Schegent's local capture settings are: the transport mode, the raw transcript mode and the privacy profile decide what Schegent keeps on your machine, never what the CLI sends. Schegent making no network call of its own does not keep that content on the machine, because it leaves through the CLI's own requests. The one exception to "no network call of its own" is the optional OTLP telemetry exporter described below. On the local side, a failed, canceled or paused Run keeps its raw transcript under `errors-only` until the session retention age passes or you delete the Run's evidence, and a resumed Run that then completes cleanly has it removed.
+The configured backend CLIs (`claude`, `codex`, and `agy`) send repository content, prompts, and any opted-in phase-context handoff blocks or artifacts to their model vendors whatever Schegent's local capture settings are: the transport mode, the raw transcript mode, and the privacy profile decide what Schegent keeps on your machine, never what the CLI sends. Schegent making no network call of its own does not keep that content on the machine, because it leaves through the CLI's own requests. The one exception to "no network call of its own" is the optional OTLP telemetry exporter described below. On the local side, a failed, canceled, or paused Run keeps its raw transcript under `errors-only` until the session retention age passes or you delete the Run's evidence, and a resumed Run that then completes cleanly has it removed. See [What Schegent keeps on this machine](../operations/evidence-retention-disclosure.md) for the unified 8-copy retention and egress inventory.
 
 <!-- Source: src/contracts/privacy-profiles.ts -->
 <!-- Source: src/audit/raw-transcript-writer.ts -->
@@ -48,11 +48,13 @@ Three parts of the host touch this boundary.
   responses, file content or paths. With it off, Schegent opens no connection of its own. See
   [the export guide](../operations/telemetry-export.md).
 - **The ACP bridge** carries a Run to the backend over a local stdio pipe. It adds no host network
-  client. The bridge forwards to the same vendor the CLI would have contacted, so the egress above is
-  unchanged. See [the ACP runtime guide](../operations/acp-runtime.md).
+  client. The bridge forwards to the same vendor the CLI would have contacted (`claude`, `codex`, or
+  `agy`), including any opted-in phase-context handoff prompt blocks ([phase-context handoff](../operations/phase-context-handoff.md)), so the egress above applies across all three backends. See
+  [the ACP runtime guide](../operations/acp-runtime.md).
 - **The SQLite store** holds structured state on your machine at
-  `<storage>/sqlite/<scope>/schegent-state.db`, owner-only and unencrypted, and sends nothing
-  anywhere. See [the store guide](../operations/sqlite-application-store.md).
+  `<globalStorageUri>/sqlite/<scope>/schegent-state.db` (with operator backups under
+  `<globalStorageUri>/sqlite/<scope>/backups/`), owner-only and unencrypted, outside the workspace,
+  and sends nothing anywhere. See [the store guide](../operations/sqlite-application-store.md).
 
 <!-- Source: src/services/telemetry-export/otlp-http-transport.ts -->
 <!-- Source: src/services/telemetry-host/telemetry-host-service.ts -->
@@ -144,8 +146,13 @@ a decorative UI badge alone is insufficient.
 Reopen this decision when Schegent ships a backend whose supported execution
 contract is demonstrably local, or when the product introduces a first-class
 offline mode with admission, UI, retry, and scheduled-start behavior designed
-around loss of connectivity. Until then, “local-first” describes ownership of
-state and orchestration, not the network behavior of the configured AI CLI.
+around loss of connectivity — backed by a named use case, owner, qualified local
+model, provisioning plan, resource bounds, no-egress verification, and
+output-quality evaluation under the current private-scope release posture
+([`docs/architecture/release-posture-engineering-preview.md`](../../../docs/architecture/release-posture-engineering-preview.md)
+and [the remote/multi-user expansion gate](../architecture/remote-multi-user-expansion-gate.md)).
+Until then, “local-first” describes ownership of state and orchestration, not
+the network behavior of the configured AI CLI.
 
 <!-- Source: src/runner/backend-runner-factory.ts -->
 <!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->

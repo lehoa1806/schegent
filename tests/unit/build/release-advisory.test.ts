@@ -439,12 +439,42 @@ describe('findings: usage and disposition verdicts (AR5, AR6, research R13, R14)
     expect(viaPath.findings.at(0)?.usage).toBe('unknown');
   });
 
-  it('reports an uncovered finding with its verdict and does not refuse (R14)', async () => {
-    const result = await evaluate(withFinding('root', finding()));
-    expect(result.refusal).toBeNull();
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings.at(0)?.disposition).toBe('not-recorded');
-    expect(result.verdicts['not-recorded']).toBe(1);
+  it('refuses uncovered findings (not-recorded, expired, does-not-cover) while still reporting every verdict (FR-R7-14 14-12)', async () => {
+    const notRecorded = await evaluate(withFinding('root', finding()));
+    expect(notRecorded.refusal?.reason).toBe('advisory-uncovered');
+    expect(notRecorded.refusal?.tree).toBe('root');
+    expect(notRecorded.refusal?.message).toContain('not-recorded');
+    expect(notRecorded.findings).toHaveLength(1);
+    expect(notRecorded.findings.at(0)?.disposition).toBe('not-recorded');
+    expect(notRecorded.verdicts['not-recorded']).toBe(1);
+
+    const expired = await evaluate({
+      ...withFinding('root', finding()),
+      dispositionsText: listOf(entry({ expiresOn: '2026-11-02' }))
+    });
+    expect(expired.refusal?.reason).toBe('advisory-uncovered');
+    expect(expired.refusal?.message).toContain('expired');
+
+    const wrongTree = await evaluate({
+      ...withFinding('root', finding()),
+      dispositionsText: listOf(entry({ tree: 'webview-ui' }))
+    });
+    expect(wrongTree.refusal?.reason).toBe('advisory-uncovered');
+
+    const actionableOnly = await evaluate({
+      ...withFinding('root', finding()),
+      dispositionsText: listOf(entry({ status: 'actionable' }))
+    });
+    expect(actionableOnly.refusal?.reason).toBe('advisory-uncovered');
+    expect(actionableOnly.refusal?.message).toContain('actionable');
+    expect(wrongTree.refusal?.message).toContain('does-not-cover');
+
+    const covered = await evaluate({
+      ...withFinding('root', finding()),
+      dispositionsText: listOf(entry())
+    });
+    expect(covered.refusal).toBeNull();
+    expect(covered.verdicts.covers).toBe(1);
   });
 
   it('shows covers, expired and does-not-cover from the list, evaluated at now', async () => {

@@ -9,7 +9,11 @@ import * as vscode from 'vscode';
 
 import { CatalogSession } from './catalog-loading';
 import { createHostCatalogStore, createHostCatalogLifecycle } from './catalog-store-wiring';
-import { registerCatalogFsForStore, registerWorkspaceLockForStore } from './sqlite-cutover-wiring';
+import {
+  registerCatalogFsForStore,
+  registerWorkspaceLockForStore,
+  resetCutoverStage2
+} from './sqlite-cutover-wiring';
 import type { CatalogConfigReader } from '../config/pipeline-config-loader';
 import { createCatalogReader } from './catalog-settings-wiring';
 import { nodeDigest } from './catalog-store-wiring';
@@ -173,7 +177,14 @@ store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir },
 // FR-R4-F01 (FR-033) — the logger is how a release that did not go is said; the clock and the
 // scheduler are the manager's own defaults, passed positionally to reach it.
 const lock = new WorkspaceLockManager(store, ownerId, systemClock, systemScheduler, logger);
-registerWorkspaceLockForStore(store, lock, disposables);
+registerWorkspaceLockForStore(store, lock, disposables, {
+  allowMissingCatalogFs: catalogStore === null
+});
+disposables.push({
+  dispose() {
+    resetCutoverStage2(store);
+  }
+});
 // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
 // owner id as the workspace lock so a crash strands both together, but a
 // separate manager over a separate key: holding a queue's execution lease

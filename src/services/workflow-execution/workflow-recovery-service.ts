@@ -72,6 +72,10 @@ import {
 } from './workflow-control-transition-table';
 import type { ConnectedRunWriter } from './workflow-launcher';
 import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
+import {
+  commitRecoveredRunAndReleaseTerminalPins,
+  releaseTerminalHandoffPinsIfConfirmed
+} from './phase-handoff-execution-bridge';
 
 export interface DurableAttemptEvidenceResult {
   readonly completed?: boolean;
@@ -309,8 +313,9 @@ export class WorkflowRecoveryService {
       }
     }
 
-    // 1. Terminal runs: no-op, ensure lease is released.
+    // 1. Terminal runs: no-op, ensure lease and terminal handoff pins are released idempotently.
     if (rootFrame !== undefined && isTerminalInvocationStatus(rootFrame.status)) {
+      releaseTerminalHandoffPinsIfConfirmed(this.deps.phaseHandoffCoordinator, run);
       await this.deps.releaseQueueLease?.(queueId, run.connectedRunId);
       return {
         runId: run.connectedRunId,
@@ -372,11 +377,9 @@ export class WorkflowRecoveryService {
         reasonCode: 'bound-queue-or-task-deleted'
       });
       nextRun = setRecoveryDisposition({ ...nextRun, revision: run.revision }, disposition);
-      const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-        nextRun,
-        run.revision
+      const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+        this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, nextRun, run.revision
       );
-      const finalRun = written.outcome === 'written' ? written.run : written.current ?? nextRun;
       await this.deps.releaseQueueLease?.(queueId, run.connectedRunId);
       return {
         runId: finalRun.connectedRunId,
@@ -446,12 +449,9 @@ export class WorkflowRecoveryService {
             { ...staging.current(), revision: run.revision },
             disposition
           );
-          const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-            withDisposition,
-            run.revision
+          const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+            this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
           );
-          const finalRun =
-            written.outcome === 'written' ? written.run : written.current ?? withDisposition;
           return {
             runId: finalRun.connectedRunId,
             mutated: true,
@@ -499,12 +499,9 @@ export class WorkflowRecoveryService {
           { ...fallbackRun, revision: run.revision },
           disposition
         );
-        const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-          withDisposition,
-          run.revision
+        const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+          this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
         );
-        const finalRun =
-          written.outcome === 'written' ? written.run : written.current ?? withDisposition;
         return {
           runId: finalRun.connectedRunId,
           mutated: true,
@@ -608,12 +605,9 @@ export class WorkflowRecoveryService {
           { ...staging.current(), revision: run.revision },
           disposition
         );
-        const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-          withDisposition,
-          run.revision
+        const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+          this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
         );
-        const finalRun =
-          written.outcome === 'written' ? written.run : written.current ?? withDisposition;
         const settledRoot = finalRun.invocations?.[rootId];
         if (settledRoot !== undefined && isTerminalInvocationStatus(settledRoot.status)) {
           await this.deps.releaseQueueLease?.(queueId, finalRun.connectedRunId);
@@ -680,12 +674,9 @@ export class WorkflowRecoveryService {
             { ...recoveredRun, revision: run.revision },
             disposition
           );
-          const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-            withDisposition,
-            run.revision
+          const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+            this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
           );
-          const finalRun =
-            written.outcome === 'written' ? written.run : written.current ?? withDisposition;
           return {
             runId: finalRun.connectedRunId,
             mutated: true,
@@ -874,12 +865,9 @@ export class WorkflowRecoveryService {
           { ...staging.current(), revision: run.revision },
           disposition
         );
-        const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-          withDisposition,
-          run.revision
+        const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+          this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
         );
-        const finalRun =
-          written.outcome === 'written' ? written.run : written.current ?? withDisposition;
         return {
           runId: finalRun.connectedRunId,
           mutated: true,
@@ -982,12 +970,9 @@ export class WorkflowRecoveryService {
               { ...staging.current(), revision: run.revision },
               disposition
             );
-            const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-              withDisposition,
-              run.revision
+            const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+              this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
             );
-            const finalRun =
-              written.outcome === 'written' ? written.run : written.current ?? withDisposition;
             return {
               runId: finalRun.connectedRunId,
               mutated: true,
@@ -1047,12 +1032,9 @@ export class WorkflowRecoveryService {
             { ...staging.current(), revision: run.revision },
             disposition
           );
-          const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-            withDisposition,
-            run.revision
+          const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+            this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
           );
-          const finalRun =
-            written.outcome === 'written' ? written.run : written.current ?? withDisposition;
           return {
             runId: finalRun.connectedRunId,
             mutated: true,
@@ -1171,12 +1153,9 @@ export class WorkflowRecoveryService {
           { ...staging.current(), revision: run.revision },
           disposition
         );
-        const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-          withDisposition,
-          run.revision
+        const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+          this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
         );
-        const finalRun =
-          written.outcome === 'written' ? written.run : written.current ?? withDisposition;
         return {
           runId: finalRun.connectedRunId,
           mutated: true,

@@ -310,3 +310,21 @@ The original table reported fallback and comparison time for a single consumer. 
 | `large-history-with-catalogs` | 0.0481 / 0.0543 / 0.0652 | 0.0959 / 0.1072 / 0.2445 | 0.0506 / 0.0576 / 0.0678 | 0.1007 / 0.1122 / 0.2501 | 0.3339 / 0.4181 / 0.6630 | 0.4047 / 0.5049 / 0.7373 |
 
 Values are p50 / p95 / max. Both consumers' fallback and flush p95 stayed below 8 ms on all five workloads, so the revision implementation remains deferred.
+
+## 10. Measurement boundaries and re-measurement triggers (`FR-R7-14` / `14-20`)
+
+**`FR-R7-09`'s measured deferral stays in force.** With two-consumer host routine flush p95 at `0.5049 ms` against the declared `8 ms` threshold (more than 15× headroom), host-internal per-slice revision tracking remains deferred so content-equality soundness is preserved without extra IPC/invalidation complexity.
+
+Every UI performance claim must keep three distinct latency layers separate and never substitute one for another:
+
+| Layer | What is measured here | What it does **not** measure |
+|---|---|---|
+| **Host CPU & serialization work** | Cold host activation CPU (`45.30 ms`), full-resync payload (`780,316 B`), routine update payload (`16,817 B`), and dual-consumer host flush p95 (`0.5049 ms` against `8 ms`). | Browser layout/paint scheduling, VS Code webview postMessage bridge overhead, or operator-perceived responsiveness. |
+| **Render scheduling (Chromium harness)** | Time to the second `requestAnimationFrame` in standalone Playwright Chromium (`32.9 ms` p95 for 200 of 2,000 History entries over 200 samples in `tests/visual/snapshot-render-cost.visual.spec.ts`, sitting near the ~33.33 ms two-frame cadence floor at 60 Hz). | Real VS Code Electron webview host overhead, concurrent extension-host SQLite/process load, or end-to-end keyboard/click latency. |
+| **Time-to-interactive editor cost** | Not captured by standalone Node or Playwright Chromium harnesses; remains pending qualification in section 7. | Must not be inferred from host CPU milliseconds or Chromium `rAF` scheduling figures alone. |
+
+**Explicit re-measurement triggers before raising capacity or broadening UI performance claims:**
+
+1. Re-run `tests/perf/webview-snapshot-cost.test.ts`, `tests/perf/snapshot-slice-equality-cost.test.ts`, and `tests/visual/snapshot-render-cost.visual.spec.ts` (plus schema-9 write and startup/recovery benchmarks) before raising `MAX_RETAINED_HISTORY_ENTRIES`, `MAX_QUEUES`, rendered History/phase-log row caps, or typical catalog sizes.
+2. Re-evaluate `FR-R7-09`'s deferral only if dual-consumer host routine flush p95 approaches or exceeds the declared `8 ms` threshold on a supported platform, or if full-resync payload size approaches the `1 MiB` ceiling.
+3. Measure interactive latency directly inside a real desktop VS Code extension host + webview (and on Linux/Windows hosts) before making time-to-interactive or cross-platform UI responsiveness claims.

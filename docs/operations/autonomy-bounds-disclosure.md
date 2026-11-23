@@ -186,3 +186,12 @@ authored bound is not used, and the limits view then shows the operator's value 
 Precedence is per denomination and independent: a phase declaring only a token bound keeps the
 operator's dollar bound rather than clearing it.
 See `docs/features/custom-phases.md` for the authored field table and its bounds.
+
+## Relationship to strict-USD control admission and historical usage reports
+
+The bounds table above describes the **post-turn `SpendBoundWatcher`** (`src/services/spend-bound-watcher.ts`), which pauses at `phase-end` (allowing phase-end overshoot). Two sibling mechanisms complement it:
+
+- **Pre-dispatch `strict-usd` control admission** (`src/services/workflow-execution/control-usage-accounting.ts`): gates connected-workflow control blocks before launching the next attempt, refusing with `spend-unverifiable` or `spend-limit-reached` and never coercing unpriced or token-only usage to `$0` verified USD.
+- **F06 historical usage accounting** (`src/services/usage-accounting/usage-accounting-service.ts`): separates `reportedTotal` from `estimatedTotal` and pairs every total with its `completeness` (`known`, `partial`, `unknown`, `conflicting`) and `coverage`.
+
+All figures come from CLI-reported stdout/ACP usage payloads and are **not** authenticated provider billing statements. See [Usage and Metrics Accounting](usage-accounting.md) for the full priced vs incomplete/unmeasurable operator walkthrough and reproducibility boundaries.

@@ -18,3 +18,15 @@ export function isAgentIdentifier(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0) return false;
   return value.length <= ACP_RUNTIME_LIMITS.identifierMaxLength && !UNSAFE_IDENTIFIER_CHARACTER.test(value);
 }
+
+/**
+ * FR-R7-14 (14-04) — Strict non-option identifier pattern for provider conversation IDs
+ * (`session_id`, `thread_id`) passed to backend CLI resume flags (`--resume <id>`,
+ * `exec resume --json <id>`). Starts with an ASCII alphanumeric character and excludes
+ * leading `-`, whitespace, `=`, path separators, and control characters to block option injection.
+ */
+export const SAFE_PROVIDER_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+
+export function isSafeProviderSessionId(value: unknown): value is string {
+  return isAgentIdentifier(value) && SAFE_PROVIDER_SESSION_ID_RE.test(value);
+}

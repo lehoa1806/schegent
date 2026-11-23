@@ -5,14 +5,29 @@
 
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import * as vscode from 'vscode';
+import { env as vscodeEnv, workspace as vscodeWorkspace } from 'vscode';
 
 import type { SanitizedLogger } from '../lib/logger';
 import { createSideEffectFailureReporter } from '../lib/side-effect-failure-reporter';
 import type { BackendRunnerFactoryOptions } from '../runner/backend-runner-factory';
+import {
+  createInMemoryAcpSessionBindingStore,
+  type AcpSessionBindingStore
+} from '../services/acp-runtime/acp-durable-runtime-store';
+import { classifyHostLocality } from '../services/acp-runtime/profiles';
 import { AcpAuthorityGate } from '../services/containment-qualification/acp-authority-gate';
 import type { WorkspaceStateStore } from '../state/workspace-state';
 import { getSqliteCutoverCoordinator } from './sqlite-cutover-wiring';
+
+/** Optional durable ACP hooks exposed by `SqliteCutoverCoordinator` when SQLite cutover is active. */
+interface AcpDurableCoordinatorHooks {
+  getAcpSessionBindingStore?(): AcpSessionBindingStore | null;
+  allocateAcpConnectionGeneration?(): number | null;
+  getAcpDurableRuntimeStore?(): {
+    readonly sessionBindings: AcpSessionBindingStore;
+    allocateConnectionGeneration(): number;
+  } | null;
+}
 
 /** An authorization receipt was decided while no SQLite store was attached to record it. */
 class AcpReceiptStoreDetachedError extends Error {
@@ -29,8 +44,17 @@ const VALID_SELECTORS: ReadonlySet<string> = new Set([
   'codex-acp-bridge'
 ]);
 
+function readHostRemoteName(): string | undefined {
+  try {
+    return vscodeEnv.remoteName;
+  } catch {
+    // Partial unit-test `vi.mock('vscode')` stubs may omit `env`; real VS Code hosts always expose it.
+    return undefined;
+  }
+}
+
 function readUncachedAcpProfileSelector(): string {
-  const raw = vscode.workspace.getConfiguration('schegent.acp').get<unknown>('profile');
+  const raw = vscodeWorkspace.getConfiguration('schegent.acp').get<unknown>('profile');
   if (typeof raw === 'string' && VALID_SELECTORS.has(raw)) {
     return raw;
   }
@@ -51,6 +75,16 @@ export interface HostAcpDispatchWiringDeps {
   readonly logger: SanitizedLogger;
   readonly isWorkspaceTrusted: () => boolean;
   readonly hasPrimacy: () => Promise<boolean>;
+  /** Optional explicit durable session binding store (defaults to SQLite cutover coordinator or in-memory fallback). */
+  readonly sessionBindingStore?: AcpSessionBindingStore;
+  /** Optional explicit durable connection-generation allocator (defaults to SQLite cutover coordinator). */
+  readonly allocateConnectionGeneration?: () => number;
+  /** Optional fence-loss event subscription to immediately invalidate cached primacy & SQLite writes. */
+  readonly onFenceLost?: (listener: () => void) => { dispose(): void };
+  /** Optional disposables collection for the `onFenceLost` subscription. */
+  readonly disposables?: { push(disposable: { dispose(): void }): unknown };
+  /** Optional test seam overriding `vscode.env.remoteName` for host locality classification. */
+  readonly readRemoteName?: () => string | undefined;
 }
 
 export function buildHostAcpDispatchOptions(
@@ -58,18 +92,49 @@ export function buildHostAcpDispatchOptions(
 ): NonNullable<BackendRunnerFactoryOptions['acpDispatch']> {
   const bridgeScriptPath = resolveBridgeScriptPath();
   const reportReceiptFailure = createSideEffectFailureReporter(deps.logger);
+  const fallbackSessionBindings = createInMemoryAcpSessionBindingStore();
+  let fallbackGeneration = 0;
   // The last authoritative `hasPrimacy()` verdict; null until the first one lands.
   let lastVerifiedPrimacy: boolean | null = null;
   let ownershipGeneration = 1;
+  let primacyRequestSeq = 0;
+  let lastSettledPrimacySeq = 0;
+  let pendingPrimacyChecks = 0;
 
-  /** Asks the lock once and records the verdict; an unreadable lock is a lost one. */
+  /**
+   * Asks the lock once and records the verdict with monotonic sequencing so an older slow `true`
+   * resolution can never overwrite a newer `false` loss; an unreadable lock is a lost one.
+   */
   const verifyPrimacy = async (): Promise<boolean> => {
+    const seq = ++primacyRequestSeq;
+    const startOwnershipGeneration = ownershipGeneration;
+    pendingPrimacyChecks += 1;
     let held: boolean;
     try {
-      held = await deps.hasPrimacy();
+      held = (await deps.hasPrimacy()) === true;
     } catch {
       held = false;
+    } finally {
+      pendingPrimacyChecks = Math.max(0, pendingPrimacyChecks - 1);
     }
+    if (ownershipGeneration !== startOwnershipGeneration) {
+      if (!held) {
+        if (lastVerifiedPrimacy === true) {
+          ownershipGeneration += 1;
+        }
+        lastVerifiedPrimacy = false;
+      }
+      return false;
+    }
+    if (seq < lastSettledPrimacySeq) {
+      if (!held) {
+        ownershipGeneration += 1;
+        lastVerifiedPrimacy = false;
+        return false;
+      }
+      return lastVerifiedPrimacy === true;
+    }
+    lastSettledPrimacySeq = seq;
     if (lastVerifiedPrimacy === true && !held) {
       ownershipGeneration += 1;
     }
@@ -80,24 +145,84 @@ export function buildHostAcpDispatchOptions(
     void verifyPrimacy();
   };
 
-  // Review gap GC-08 (2026-11-12) — the authoritative verdict decides. "A SQLite store is attached"
-  // used to satisfy primacy outright, and it stays true in a window that opened its store while
-  // primary and then lost primacy. The follow-up the same day removed it as a stand-in too: a
-  // session awaits `primeAuthority` before it registers its scope, so a verdict is in place before
-  // its first callback, and no verdict denies. The synchronous `isHeld()` is the advisory mirror,
-  // which FR-R3-024 keeps out of decisions.
+  const canWriteDurableAcpState = (): boolean =>
+    deps.isWorkspaceTrusted() && lastVerifiedPrimacy === true;
+
+  if (deps.onFenceLost !== undefined) {
+    const sub = deps.onFenceLost(() => {
+      lastSettledPrimacySeq = ++primacyRequestSeq;
+      lastVerifiedPrimacy = false;
+      ownershipGeneration += 1;
+    });
+    deps.disposables?.push(sub);
+  }
+
+  const resolveCoordinatorHooks = (): AcpDurableCoordinatorHooks | undefined =>
+    getSqliteCutoverCoordinator(deps.store) as (AcpDurableCoordinatorHooks | undefined);
+
+  const sessionBindingStore: AcpSessionBindingStore = {
+    getBinding(persistedSessionId) {
+      const store =
+        deps.sessionBindingStore ??
+        resolveCoordinatorHooks()?.getAcpSessionBindingStore?.() ??
+        resolveCoordinatorHooks()?.getAcpDurableRuntimeStore?.()?.sessionBindings ??
+        fallbackSessionBindings;
+      return store.getBinding(persistedSessionId);
+    },
+    putBinding(binding) {
+      if (deps.sessionBindingStore !== undefined) {
+        deps.sessionBindingStore.putBinding(binding);
+        return;
+      }
+      if (!canWriteDurableAcpState()) {
+        fallbackSessionBindings.putBinding(binding);
+        return;
+      }
+      const store =
+        resolveCoordinatorHooks()?.getAcpSessionBindingStore?.() ??
+        resolveCoordinatorHooks()?.getAcpDurableRuntimeStore?.()?.sessionBindings ??
+        fallbackSessionBindings;
+      store.putBinding(binding);
+    }
+  };
+
+  const allocateConnectionGeneration = (): number => {
+    if (deps.allocateConnectionGeneration !== undefined) {
+      return deps.allocateConnectionGeneration();
+    }
+    if (canWriteDurableAcpState()) {
+      const hooks = resolveCoordinatorHooks();
+      const durableGen =
+        hooks?.allocateAcpConnectionGeneration?.() ??
+        hooks?.getAcpDurableRuntimeStore?.()?.allocateConnectionGeneration();
+      if (typeof durableGen === 'number' && Number.isSafeInteger(durableGen) && durableGen >= 1) {
+        fallbackGeneration = Math.max(fallbackGeneration, durableGen);
+        return durableGen;
+      }
+    }
+    fallbackGeneration += 1;
+    return fallbackGeneration;
+  };
+
+  const remoteName = deps.readRemoteName ? deps.readRemoteName() : readHostRemoteName();
+  const hostLocality = classifyHostLocality(remoteName);
+
+  // Review gap GC-08 (2026-11-12) & FR-R7-14 (14-07) — the authoritative verdict decides.
+  // Sensitive callbacks await `verifyPrimacy()` via `authorizeAsync()`; synchronous `holdsPrimacy()`
+  // fails closed while any probe is pending or before the first verdict settles without spawning
+  // floating refreshes.
   const authorityGate = new AcpAuthorityGate(
     {
       isWorkspaceTrusted: () => deps.isWorkspaceTrusted(),
-      holdsPrimacy: () => {
-        refreshPrimacyState();
-        return deps.isWorkspaceTrusted() && lastVerifiedPrimacy === true;
-      },
+      holdsPrimacy: () =>
+        pendingPrimacyChecks === 0 && deps.isWorkspaceTrusted() && lastVerifiedPrimacy === true,
+      verifyPrimacy,
       currentOwnershipGeneration: () => ownershipGeneration
     },
     {
       // The gate swallows a writer failure, so the writer reports its own: once per operation.
       run(sql, ...params) {
+        if (!canWriteDurableAcpState()) return;
         const conn = getSqliteCutoverCoordinator(deps.store)?.getSqliteStore()?.writerConnection;
         if (conn === undefined) {
           reportReceiptFailure('acp-authorization-receipt', new AcpReceiptStoreDetachedError());
@@ -120,15 +245,21 @@ export function buildHostAcpDispatchOptions(
     primaryWorkspaceRoot: deps.workspaceRoot,
     protectedDatabasePaths: () => getSqliteCutoverCoordinator(deps.store)?.getDatabaseProtectedPaths() ?? [],
     readConfiguredProfile: () => readUncachedAcpProfileSelector(),
-    // Read once per session, as it registers its scope: start a verify so a verdict is in place
-    // before the session's first callback.
+    // Trigger an initial verify only before any verdict has landed so already-primed sessions do
+    // not fire floating checks during scope registration.
     currentOwnershipGeneration: () => {
-      refreshPrimacyState();
+      if (lastVerifiedPrimacy === null && pendingPrimacyChecks === 0) {
+        refreshPrimacyState();
+      }
       return ownershipGeneration;
     },
-    primeAuthority: async () => (await verifyPrimacy()) && deps.isWorkspaceTrusted(),
+    primeAuthority: async () => (await verifyPrimacy()) && canWriteDurableAcpState(),
     onAcpObservation: (event) => {
+      if (!canWriteDurableAcpState()) return;
       getSqliteCutoverCoordinator(deps.store)?.recordAcpObservation(event);
-    }
+    },
+    sessionBindingStore,
+    allocateConnectionGeneration,
+    hostLocality
   };
 }

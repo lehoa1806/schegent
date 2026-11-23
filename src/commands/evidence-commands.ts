@@ -38,10 +38,14 @@ export const DELETE_EVIDENCE_TEXT = {
   confirmPrompt: "Delete this Run's evidence?",
   confirmDetail:
     "Removes, for this Run only: its session directory (transport included), raw transcripts, verbose " +
-    'diagnostics, failure records and private recovery checkpoint. Keeps: the shared audit log, the ' +
-    'runtime log, the metrics rollup, Run history, and any shared legacy transport file until it ages ' +
-    'out. Backend CLI session stores under your home directory are owned by the CLI and are not modified ' +
-    'by Schegent. This cannot be undone.',
+    'diagnostics, failure records and private recovery checkpoint. Keeps: the shared audit log and its ' +
+    'external head checkpoint, the runtime log, the metrics rollup, Run history, the folder-scoped ' +
+    'SQLite store (including phase-context handoff records), any SQLite backups, F05 external ' +
+    'artifact/handoff publications and materialized copies, opt-in metadata-only OTLP telemetry spool ' +
+    'batches (and remote collector data), and any shared legacy transport file until it ages out. ' +
+    'Backend CLI session stores under your home directory (Claude, Codex, Agy) and any prompts or ' +
+    'phase-context handoffs already sent to model vendors are owned outside Schegent and are not ' +
+    'modified by this command. This cannot be undone.',
   confirmLabel: 'Delete evidence',
   result: (removed: number, retained: number): string =>
     `Deleted ${removed} item(s) of this Run's evidence. ${retained} item(s) were kept.`,
@@ -50,10 +54,15 @@ export const DELETE_EVIDENCE_TEXT = {
   retainedViewTitle: 'Retained after deleting this Run\'s evidence',
   /** The label of each kept store in the retained-items view. */
   keptStore: {
-    'audit-log': 'Audit log — shared by every Run, never deleted by a Run\'s deletion',
+    'audit-log': 'Audit log & head checkpoint — shared by every Run, never deleted by a Run\'s deletion',
     'runtime-log': 'Runtime log — host diagnostics, rotated by size and generation count',
     'metrics-rollup': 'Metrics rollup — cumulative totals across Runs',
-    'run-history': 'Run history — kept so the Run stays listed'
+    'run-history': 'Run history — kept so the Run stays listed',
+    'sqlite-store': 'SQLite application store — folder-scoped state, ledgers, and opted-in phase-context handoff records outside the workspace',
+    'sqlite-backups': 'SQLite store backups — operator-created recovery snapshots outside the workspace, managed separately',
+    'external-artifacts-and-handoffs': 'External artifact & handoff files — F05 blobs, published results, and materialized handoff copies governed by artifact lifecycle',
+    'telemetry-spool': 'Opt-in OTLP telemetry spool & remote collector — metadata-only spool batches (32 MiB cap) and external collector retention',
+    'provider-cli-stores': 'Backend CLI session stores & model-vendor copies — vendor-owned histories under your home directory and remote vendor records'
   },
   legacyTransport: (agesOutBy: string | null): string =>
     agesOutBy === null

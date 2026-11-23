@@ -19,9 +19,9 @@
 // bytes named, and a file replaced after the check cannot be the one the record vouches for.
 //
 // WHAT IT REFUSES, in the order it finds out: a tree git cannot name or that is dirty; stale,
-// incomplete or foreign advisory evidence; a failed step; a build whose identity is unknown, dirty
-// or not HEAD's; an archive or SBOM that fails inspection; a tree that moved while it worked. An
-// advisory finding with no covering disposition is reported, not refused (research R14).
+// incomplete, foreign, or uncovered advisory evidence; a failed step; a build whose identity is
+// unknown, dirty or not HEAD's; an archive or SBOM that fails inspection; a tree that moved while
+// it worked. FR-R7-14 (14-12) refuses any uncovered or expired finding (`advisory-uncovered`).
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { TREES, TREE_NAMES } from './advisory-model.mjs';
 import { escapeForTerminal } from './advisory-report.mjs';
@@ -29,6 +29,7 @@ import {
   assertSbomMatchesArchive as realAssertSbomMatchesArchive,
   inspectVsixBytes as realInspectVsixBytes
 } from './check-vsix-smoke.mjs';
+import { decideQualification } from './backend-qualification.mjs';
 import { decideRelease, describeObservation } from './gate-attestation.mjs';
 import { buildSbom, bundledComponents } from './generate-sbom.mjs';
 import {
@@ -110,7 +111,10 @@ const ADVISORY_REMEDY = Object.freeze({
   'advisory-observed-after-now': 'Check the clock of the machine that made the capture, then capture again.',
   'advisory-stale': 'Capture the tree again; a capture older than the budget is not release evidence.',
   'dispositions-unusable':
-    'Repair docs/release/advisory-dispositions.json in a reviewed commit (see docs/release/advisory-dispositions.md).'
+    'Repair docs/release/advisory-dispositions.json in a reviewed commit (see docs/release/advisory-dispositions.md).',
+  'advisory-uncovered':
+    'Patch the dependency or record a dated disposition (with owner, rationale, and expiry) in ' +
+    'docs/release/advisory-dispositions.json in a reviewed commit (see docs/release/advisory-dispositions.md).'
 });
 
 /**
@@ -437,6 +441,68 @@ export function releaseCandidate(deps) {
     unknownProvenance: headline('schegent:unknownProvenanceCount')
   };
   const { sha256: dispositionsDigest, entries: dispositionEntries } = advisory.dispositions;
+  const qualificationText = tryText('.backend-qualification.json');
+  const unqualifiedOverride = deps.unqualifiedOverride === true;
+  let backendQualification = null;
+  if (qualificationText !== undefined) {
+    let parsed;
+    let parseFailed = false;
+    try {
+      parsed = JSON.parse(qualificationText);
+    } catch {
+      parseFailed = true;
+    }
+    if (parseFailed || !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (!unqualifiedOverride) {
+        return refuse(
+          'backend-qualification-invalid',
+          '.backend-qualification.json is malformed or not a JSON object. Re-run `npm run canary` to produce a valid v2 live qualification record.'
+        );
+      }
+    } else {
+      const fingerprintFormatOk =
+        typeof parsed.sourceFingerprint === 'string' && /^[0-9a-f]{64}$/.test(parsed.sourceFingerprint);
+      const changedPaths = deps.changedQualificationPaths
+        ? deps.changedQualificationPaths(parsed.commit, head)
+        : parsed.commit === head
+          ? []
+          : null;
+      const expectedFingerprint = deps.computeQualificationFingerprint
+        ? deps.computeQualificationFingerprint()
+        : undefined;
+      const qualVerdict = decideQualification({
+        record: parsed,
+        head,
+        installedVersions: {},
+        changedPaths,
+        ...(expectedFingerprint !== undefined ? { expectedFingerprint } : {}),
+        now: new Date(evaluatedMs).toISOString(),
+        requireLive: true
+      });
+      if (!fingerprintFormatOk || !qualVerdict.ok) {
+        if (!unqualifiedOverride) {
+          return refuse(
+            'backend-qualification-invalid',
+            !fingerprintFormatOk
+              ? '.backend-qualification.json is missing a valid 64-hex SHA-256 sourceFingerprint. Re-run `npm run canary`.'
+              : qualVerdict.message
+          );
+        }
+      } else {
+        backendQualification = {
+          version: parsed.version,
+          mode: parsed.mode,
+          qualifiedAt: parsed.qualifiedAt,
+          commit: parsed.commit,
+          sourceFingerprint: parsed.sourceFingerprint,
+          versions: parsed.versions,
+          states: parsed.states,
+          transports: parsed.transports,
+          profiles: parsed.profiles
+        };
+      }
+    }
+  }
   const record = {
     releaseRecordVersion: 1,
     preparedAt: new Date(deps.now()).toISOString(),
@@ -475,6 +541,7 @@ export function releaseCandidate(deps) {
       envelope: attestation.envelope,
       trees: attestation.trees
     },
+    ...(backendQualification !== null ? { backendQualification } : {}),
     tagged: false,
     published: false
   };

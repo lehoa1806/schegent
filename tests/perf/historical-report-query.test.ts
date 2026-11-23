@@ -9,16 +9,17 @@
 // 100,000 rows on top of the captured population pass the shared 32 MiB budget (R11), and the cap
 // is a visible outcome, never a shortened success (US4 scenario 3).
 //
-// Measured and printed:
-//   - first-page reads (capture, aggregation and the first page), 3 warm-up and 20 measured;
-//   - later-page reads, through the F03 sampler (20 warm-up, 200 measured);
+// Measured, printed, and enforced (FR-R7-14 14-19):
+//   - first-page reads (capture, aggregation and the first page), 3 warm-up and 20 measured,
+//     asserted against FIRST_PAGE_P95_BUDGET_MS (1,000 ms);
+//   - later-page reads, through the F03 sampler (20 warm-up, 200 measured), asserted against
+//     LATER_PAGE_P95_BUDGET_MS (50 ms) so fast cursor reads cannot mask opening delay;
 //   - the capture, timed around the read pool call (research R1: one unsliced read);
 //   - host work per scheduled slice, as the gaps between back-to-back `setImmediate` probes while
 //     one report is built: each gap is the host work done between two yields, the capture included.
-// Asserted: later-page p95 within 500 ms (NFR-002), cancellation acknowledged within 1 s (NFR-004),
-// the deadline ending `limited` with `deadline-exceeded` and the work yielding more than once.
-// First-page p95 (NFR-002) and slice p95 (NFR-005) are SHOULDs: recorded with their measured
-// values, met or missed, and not asserted (spec: a missed target is recorded, not loosened).
+// Also asserted: cancellation acknowledged within 1 s (NFR-004), the deadline ending `limited`
+// with `deadline-exceeded`, `attempt-detail` ending `limited` with `working-data`, and the work
+// yielding more than once. Slice p95 (NFR-005) remains recorded as an informational SHOULD.
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -42,7 +43,8 @@ const ATTEMPTS_PER_ROOT = 4;
 const PAGE_ROWS = 200;
 const FIRST_PAGE_WARMUP = 3;
 const FIRST_PAGE_MEASURED = 20;
-const PAGE_P95_BUDGET_MS = 500;
+const FIRST_PAGE_P95_BUDGET_MS = 1_000;
+const LATER_PAGE_P95_BUDGET_MS = 50;
 const CANCEL_ACK_BUDGET_MS = 1_000;
 const TEST_TIMEOUT_MS = 900_000;
 const QUERY = Object.freeze({
@@ -122,7 +124,7 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
   });
 
   it(
-    'reads pages within 500 ms at p95, cancels within 1 s and ends at the deadline',
+    'enforces separate first-page and later-page p95 budgets, cancels within 1 s and ends at the deadline',
     async () => {
       storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schegent-310-perf-'));
       const conn = new NodeSqliteConnection({ databasePath: path.join(storeDir, 'runs.sqlite') });
@@ -201,12 +203,41 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
       const attemptDetail = await service.runReport({ ...QUERY, view: 'attempt-detail' });
 
       const slicedGaps = gaps.filter((gap) => gap < probedCaptureMs);
+      const firstPageP50Ms = rounded(percentile(firstPageMs, 0.5));
+      const firstPageP95Ms = rounded(percentile(firstPageMs, 0.95));
+      const firstPageMaxMs = rounded(Math.max(...firstPageMs));
+      const cpus = os.cpus();
       const result = {
+        hardware: {
+          platform: `${os.platform()}-${os.arch()}`,
+          osRelease: os.release(),
+          cpuModel: cpus.at(0)?.model ?? 'unknown',
+          cpuCount: cpus.length,
+          totalMemoryMiB: Math.round(os.totalmem() / (1024 * 1024)),
+          node: process.version
+        },
         platform: `${os.platform()}-${os.arch()}`,
         node: process.version,
-        fixture: { roots: ROOT_COUNT, attempts: ROOT_COUNT * ATTEMPTS_PER_ROOT, pageRows: PAGE_ROWS },
+        fixture: {
+          runCount: ROOT_COUNT,
+          roots: ROOT_COUNT,
+          attemptCount: ROOT_COUNT * ATTEMPTS_PER_ROOT,
+          attempts: ROOT_COUNT * ATTEMPTS_PER_ROOT,
+          pageRows: PAGE_ROWS
+        },
+        warmup: {
+          firstPageWarmupIterations: FIRST_PAGE_WARMUP,
+          firstPageMeasuredIterations: FIRST_PAGE_MEASURED,
+          laterPageWarmupIterations: SQLITE_BENCHMARK_WARMUP_SAMPLES,
+          laterPageMeasuredIterations: SQLITE_BENCHMARK_MEASURED_SAMPLES
+        },
+        budgets: {
+          firstPageP95BudgetMs: FIRST_PAGE_P95_BUDGET_MS,
+          laterPageP95BudgetMs: LATER_PAGE_P95_BUDGET_MS,
+          cancelAckBudgetMs: CANCEL_ACK_BUDGET_MS
+        },
         seed: { ms: Number(seedMs.toFixed(0)) },
-        firstPage: { p50Ms: rounded(percentile(firstPageMs, 0.5)), p95Ms: rounded(percentile(firstPageMs, 0.95)), maxMs: rounded(Math.max(...firstPageMs)) },
+        firstPage: { p50Ms: firstPageP50Ms, p95Ms: firstPageP95Ms, maxMs: firstPageMaxMs },
         laterPage: { p50Ms: later.p50Ms, p95Ms: later.p95Ms, p99Ms: later.p99Ms, maxMs: later.maxMs, maxBytes: maxPageBytes },
         capture: { p50Ms: rounded(percentile(captureMs, 0.5)), maxMs: rounded(Math.max(...captureMs)) },
         workingData: { executionSummaryBytes: probedBytes },
@@ -223,8 +254,9 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
       };
       console.info(JSON.stringify(result));
 
+      expect(firstPageP95Ms).toBeLessThanOrEqual(FIRST_PAGE_P95_BUDGET_MS);
       expect(later.failureCount).toBe(0);
-      expect(later.p95Ms).toBeLessThanOrEqual(PAGE_P95_BUDGET_MS);
+      expect(later.p95Ms).toBeLessThanOrEqual(LATER_PAGE_P95_BUDGET_MS);
       expect(cancelled).toEqual({ ok: false, outcome: 'cancelled' });
       expect(cancelAckMs).toBeLessThanOrEqual(CANCEL_ACK_BUDGET_MS);
       expect(deadlined).toEqual({ ok: false, outcome: 'limited', limit: 'deadline-exceeded' });

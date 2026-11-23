@@ -55,7 +55,18 @@ export interface RetainedItem {
 
 /** A store a Run's deletion never touches, named so the result cannot read as "gone from the machine". */
 export type KeptStore =
-  | { readonly store: 'audit-log' | 'runtime-log' | 'metrics-rollup' | 'run-history' }
+  | {
+      readonly store:
+        | 'audit-log'
+        | 'runtime-log'
+        | 'metrics-rollup'
+        | 'run-history'
+        | 'sqlite-store'
+        | 'sqlite-backups'
+        | 'external-artifacts-and-handoffs'
+        | 'telemetry-spool'
+        | 'provider-cli-stores';
+    }
   | { readonly store: 'legacy-transport'; readonly agesOutBy: string | null };
 
 export type DeleteOutcome =
@@ -76,6 +87,26 @@ const PRIVATE_STORAGE_LABEL = '<private storage>';
 
 /** The directory under `.schegent/` that holds each Run's full history description. */
 const HISTORY_PREFIX = '.schegent/history/';
+
+/**
+ * FR-R7-14 (14-14) — Top-level `.schegent/` subtrees explicitly declared as `kept` in
+ * `retentionDisclosure()` and `keptStores()` (F05 artifact-lifecycle blobs/reports, F15
+ * handoff staging/materialized outputs, catalog, ownership leases, telemetry spool, and SQLite).
+ * `deleteRunEvidence` never walks or unlinks these directories so it cannot break disclosure
+ * promises or remove SQLite-indexed external files without lifecycle tombstones.
+ */
+const KEPT_SCHEGENT_SUBDIRS: ReadonlySet<string> = new Set([
+  'results',
+  'immutable-results',
+  'handoff-materialized',
+  'transcripts',
+  'diagnostics',
+  'reports',
+  'catalog',
+  'ownership',
+  'telemetry',
+  'sqlite'
+]);
 
 /** Anything under the in-flight spool is, by definition, being written. */
 const ACTIVE_MARKERS = [/(^|\/)\.pending(\/|$)/, /\.lock$/] as const;
@@ -159,6 +190,9 @@ export async function deleteRunEvidence(
       if (mine && ACTIVE_MARKERS.some((marker) => marker.test(relative))) return relative;
 
       if (entry.isDirectory()) {
+        if (relativeDir === '.schegent' && KEPT_SCHEGENT_SUBDIRS.has(entry.name.toLowerCase())) {
+          continue;
+        }
         // Descend regardless of the directory's own name — the spool is the case
         // this exists for. A run-matching directory is ALSO a target, so it is
         // not silently left behind once emptied.
@@ -168,11 +202,25 @@ export async function deleteRunEvidence(
         continue;
       }
 
-      if (mine && relative.startsWith(HISTORY_PREFIX)) history.push(relative);
+      if (mine && relative.toLowerCase().startsWith(HISTORY_PREFIX)) history.push(relative);
       else if (mine) targets.push({ relative, isDirectory: false });
     }
     return null;
   };
+
+  const schegentRoot = path.join(workspaceRoot, '.schegent');
+  try {
+    const rootStat = await fsp.lstat(schegentRoot);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      return {
+        outcome: 'refused',
+        reason: 'no-evidence',
+        artifact: '.schegent is a symbolic link or not a directory; refusing to follow'
+      };
+    }
+  } catch {
+    return { outcome: 'refused', reason: 'no-evidence', artifact: `no evidence found for run ${runId}` };
+  }
 
   const blocked = await walk('.schegent');
   if (blocked !== null) {
@@ -186,16 +234,14 @@ export async function deleteRunEvidence(
   const retained: RetainedItem[] = [];
   for (const target of targets) {
     const absolute = path.join(workspaceRoot, target.relative);
-    // Containment before removal, every time, through the shared oracle — and
-    // the removal acts on the RESOLVED path the oracle returned, not on the name
-    // that was judged. A verdict about a name followed by an operation on that
-    // name is the SEC-03 shape: a concurrent writer swaps a parent component in
-    // between and the operation lands outside the root the verdict was about.
+    // Containment before removal, every time, through the shared oracle — anchored at
+    // `<workspaceRoot>/.schegent` so a symlinked `.schegent` or child can never target
+    // workspace files outside `.schegent/`.
     //
     // `resolveContainedLink` is the right form here: `rm` acts on the directory
     // entry and does not follow it, so resolving the leaf would refuse a removal
     // that never touches the link's target.
-    const verdict = await resolveContainedLink(absolute, [workspaceRoot]);
+    const verdict = await resolveContainedLink(absolute, [schegentRoot]);
     if (verdict.outcome !== 'contained') {
       retained.push({
         path: target.relative,
@@ -229,13 +275,18 @@ export async function deleteRunEvidence(
   };
 }
 
-/** The stores this deletion never touches (D5). The legacy transport is listed exactly when one exists. */
+/** The stores this deletion never touches (D5, FR-R7-14 14-14). The legacy transport is listed exactly when one exists. */
 function keptStores(deps: DeleteDeps): readonly KeptStore[] {
   const kept: KeptStore[] = [
     { store: 'audit-log' },
     { store: 'runtime-log' },
     { store: 'metrics-rollup' },
-    { store: 'run-history' }
+    { store: 'run-history' },
+    { store: 'sqlite-store' },
+    { store: 'sqlite-backups' },
+    { store: 'external-artifacts-and-handoffs' },
+    { store: 'telemetry-spool' },
+    { store: 'provider-cli-stores' }
   ];
   let agesOutBy: string | null = null;
   try {

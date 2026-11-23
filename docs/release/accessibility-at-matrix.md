@@ -1,7 +1,7 @@
 # Assistive-technology matrix
 
-**Captured**: 2026-08-25 · **Updated**: 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA
-**Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`)
+**Captured**: 2026-08-25 · **Updated**: 2026-11-23 (`FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA
+**Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`), 328 (`FR-R7-14`, 14-17)
 
 <!-- at-matrix-review-date: 2026-11-27 -->
 
@@ -21,7 +21,7 @@ looked**.
 
 | OS | Screen reader | Version | Exercised | Result | Trigger |
 |---|---|---|---|---|---|
-| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-06 (`FR-R5-F20`) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure); see *Why it is untested* |
+| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-23 (`FR-R7-14`, 14-17) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure) on a clean editor profile; see *Why it is untested* |
 | Windows | NVDA | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Windows | Narrator | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Linux | Orca | — | **Nothing** | **UNTESTED** | Linux platform verification (`FR-R3-129`) |
@@ -76,27 +76,38 @@ Feature 282 (`FR-R5-F21`) re-read this matrix ahead of its date.
 - **The date stands at 2026-11-27.** Only that run can move the row, and it has not happened, so the
   review cannot renew the date. A clean automated scan would not change this either.
 
+### Review 2026-11-23
+
+Feature 328 (`FR-R7-14`, finding `14-17`) diagnosed and stabilized the intermittent `1000 × 600` small-window keyboard navigation failure and extended the manual VoiceOver procedure below.
+
+- **Automated diagnosis and fix**: In `repo/tests/a11y/workflow-run-overflow.a11y.spec.ts`, `claude-speckit-plan` (`height = 174 px`) sits cleanly inside the `operations-scroll` viewport (`[89, 263]` within `[44, 572]`) after a single `488 px` `PageDown` from `run-detail-back`, so keyboard geometry was not skipping the node. The intermittent miss was caused by the fixed `SETTLE_MS = 60` (`page.waitForTimeout(60)`) delay firing the next `PageDown` before scroll movement settled under load. The test now awaits observable focus (`toBeFocused()`), overflow readiness (`scrollHeight > clientHeight`, `scrollTop === 0`, all 11 nodes laid out), and consecutive `requestAnimationFrame` scroll stabilization before sampling each step, and passed 10 consecutive isolated runs plus full `npm run a11y`.
+- **Still owed**: This automated fix moves **no** row in the matrix above. One human run of [the procedure below](#the-procedure) — extended to cover **launch, pause, recovery, and evidence deletion** on a clean editor profile — is still owed by the maintainer at a macOS machine with VoiceOver enabled.
+- **The date stands at 2026-11-27.** No human VoiceOver session has been observed, so the review does not renew the date.
+
 ### The procedure
 
 Run the operator journey from
-[`docs/tutorials/user-quickstart.md`](../tutorials/user-quickstart.md) with **VoiceOver on and the
-mouse untouched** — keyboard and screen reader only, start to finish. One row per task. A task that
-needs sighted correction is a **fail** with the barrier named, not a partial pass.
+[`docs/tutorials/user-quickstart.md`](../tutorials/user-quickstart.md) on a **clean editor profile**
+with **VoiceOver on and the mouse untouched** — keyboard and screen reader only, start to finish,
+explicitly covering **launch, pause, recovery, and evidence deletion**. One row per task. A task
+that needs sighted correction is a **fail** with the barrier named, not a partial pass.
 
 | # | Task | From | Completed by keyboard + VoiceOver alone? |
 |---|---|---|---|
-| 1 | Reach and open the dashboard | quickstart §1 | |
+| 1 | Reach and open the dashboard on a clean editor profile | quickstart §1 | |
 | 2 | Import the example process | quickstart §2 | |
-| 3 | Compose and queue a run | quickstart §3 | |
+| 3 | Compose, queue, and **launch** a run | quickstart §3 | |
 | 4 | Determine the run's current phase and status without looking | quickstart §4 | |
-| 5 | Pause the run, and confirm by ear that it paused | `PhaseControlMenu` | |
-| 6 | Resume it, and confirm by ear that it resumed | `PhaseControlMenu` | |
+| 5 | **Pause** the run, and confirm by ear that it paused | `PhaseControlMenu` | |
+| 6 | **Recover** / resume the run (paused or interrupted state), and confirm by ear that it resumed | `PhaseControlMenu` / recovery surface | |
 | 7 | Reach the evidence for a completed phase and read a verdict | history surface | |
-| 8 | Reach the settings surface and change one setting | settings route | |
+| 8 | Trigger **evidence deletion**, read the retention disclosure and confirmation prompt by ear, and confirm completion | evidence delete command / history surface | |
+| 9 | Reach the settings surface and change one setting | settings route | |
 
-Record, per row: VoiceOver's exact macOS version, the OS version, the route, and the barrier if the
-task failed. Then fill the matrix row above with the date and the pass/fail tally, and **file each
-failure as its own item** — a failure recorded only in this table is a finding with no owner.
+Record, per row: platform, assistive technology, VoiceOver's exact macOS version, the OS version,
+the route, the task outcome, and any remaining blockers if the task failed. Then fill the matrix
+row above with the date and the pass/fail tally, and **file each failure as its own item** — a
+failure recorded only in this table is a finding with no owner.
 
 ## What the automated scan found, and what happened to it
 

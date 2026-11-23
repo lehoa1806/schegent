@@ -3,12 +3,16 @@
 **Audience**: any operator running Schegent. **Status**: derived — see below.
 
 Schegent writes its own evidence to your workstation and makes no network call of its own, apart from
-the optional OTLP telemetry export, which is off by default and sends metadata only. That does
-**not** mean your content stays there: the Claude Code CLI that Schegent drives sends repository content
-and prompts to the model vendor, whatever the capture settings below say, and no setting here changes it
-(see [local-first, not offline](../concepts/local-first-not-offline.md)). This page says what Schegent
-writes, where, whether the content is redacted, and for how long. It exists because `PRIV-01` found there
-was no moment at which an operator was told any of that.
+the optional OTLP telemetry export, which is off by default (`schegent.telemetry.export.enabled: false`)
+and sends metadata only. That does **not** mean your content stays on this machine: the backend CLIs
+that Schegent drives (`claude`, `codex`, and `agy`) transmit prompts, repository content they read, and
+any opted-in phase-context handoff blocks or artifacts to the model vendor, whatever the capture settings
+below say, and no local retention setting changes that (see
+[local-first, not offline](../concepts/local-first-not-offline.md)). This page is the single retention
+and egress inventory: what Schegent writes, where it lives, whether it is redacted, when confirmation
+applies, what can leave the machine, and who owns deletion for every copy. It exists because `PRIV-01`
+and `FR-R7-14` (`14-14`) require one honest account across local stores, provider CLIs, and remote
+collectors.
 
 ## Derived, not written
 
@@ -47,6 +51,11 @@ drifted again.
 | Workspace memento state | `<workspaceState>/schegent.*` | state, redacted | the Run map, queues and history that survive a reload; history is capped at 50 entries per queue, the oldest dropped first | append | the cap applies to history entries only | kept | n/a | `HISTORY_CAP_PER_QUEUE in src/state/workspace-state.ts` |
 | Operator pseudonym | `<workspaceState>/schegent.operatorPseudonym` | state, redacted | one random label of the form `pseudonym-` and 16 hex digits, made on first use and written into audit rows in place of an account name; replaced only by the reset command, which records the reset first | none | not applicable | kept | n/a | `schegent.operatorPseudonym in src/state/workspace-state.ts; src/lib/operator-attribution.ts` |
 | Export, audit-export and bundle destinations | `<destination>/<export>` | redacted content, redacted | a directory or file you choose; each artifact is carried up to 16 MiB and anything larger is omitted with the reason in the manifest; owner-only permissions; Schegent never removes or ages what it exported | none | not applicable: outside the workspace once written | n/a | n/a | `MAX_ARTIFACT_BYTES in src/services/evidence-export.ts` |
+| SQLite application store | `<globalStorage>/sqlite/<scope>/schegent-state.db`, `<globalStorage>/sqlite/<scope>/schegent-state.db-wal`, `<globalStorage>/sqlite/<scope>/schegent-state.db-shm` | unredacted content, **not redacted** | folder-keyed operational store (schema 9, min reader 9) holding queues, Runs, catalog versions, usage accounting ledgers, artifact metadata/tombstones, telemetry ledgers, and opted-in phase-context handoff records (up to 64 KiB manifest / 32 KiB rendered context each); no automatic age bound; lives outside the workspace and survives workspace deletion | none | single-writer SQLite WAL owned by the primary trusted window; protected against agent writes and Run evidence deletion | kept | n/a | `SQLITE_SCHEMA_CURRENT_VERSION / SQLITE_MIN_READER_VERSION in src/contracts/sqlite-store/schema-types.ts; src/services/sqlite-store/storage-location-resolver.ts` |
+| SQLite store backups | `<globalStorage>/sqlite/<scope>/backups/<backupId>.db`, `<globalStorage>/sqlite/<scope>/backups/<backupId>.db.manifest.json` | recovery material, **not redacted** | operator-created online snapshots via `Schegent: Back Up Store`; bounded at 512 MiB database image, 16 MiB manifest, 10,000 external dependencies, and 512 MiB external dependency bytes; no automatic age sweep; lives outside the workspace and survives workspace deletion | none | read-only snapshot image and manifest; never pruned automatically and never modified by Delete Run Evidence | kept | n/a | `MAX_BACKUP_DATABASE_BYTES / MAX_BACKUP_MANIFEST_BYTES in src/services/sqlite-store/backup-manifest-store.ts; MAX_BACKUP_EXTERNAL_DEPENDENCIES / MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES in src/contracts/sqlite-store/schema-types.ts` |
+| External artifact and live-log bytes | `.schegent/transcripts/<artifact>`, `.schegent/diagnostics/<artifact>`, `.schegent/reports/<artifact>` | unredacted content, **not redacted** | artifact-lifecycle-managed external blobs, reports, and live-log segments indexed in SQLite (`artifacts`, `artifact_locations`, `live_log_segments`); aged only under an adopted F05 retention policy revision from terminal settlement, while deletion tombstones remain in SQLite | activation, run-end | artifacts pinned by active or paused Runs or active handoff owner references are exempt until terminal settlement commits | kept | omitted | `buildScanRoots in src/activation/sqlite-cutover-helpers.ts; src/services/artifact-lifecycle/retention-policy.ts` |
+| Phase-context handoff publications and materialized copies | `.schegent/results/<rootAlias>/<attemptAlias>/<file>`, `.schegent/immutable-results/<attemptAlias>/<file>`, `.schegent/handoff-materialized/<attemptAlias>/<file>` | unredacted content, **not redacted** | created when a workflow connection opts in via `contextPolicy` (or stages attempt outputs); staged JSON capped at 256 KiB, cross-root materialized copies capped at 64 files / 16 MiB per file / 64 MiB total; registered and pinned in F05 until terminal workflow settlement commits | run-end, activation | F05 owner-reference pins hold captured and materialized handoff files until the workflow terminal revision commits | kept | omitted | `PHASE_CONTEXT_LIMITS in src/contracts/phase-context/context-policy.ts; src/services/phase-context/attempt-result-publisher.ts; src/services/phase-context/handoff-materializer.ts` |
+| Opt-in OTLP telemetry spool | `<globalStorage>/telemetry-spool/<batch>` | metadata, redacted | off by default (`schegent.telemetry.export.enabled: false`); when opted in, spools metadata-only OTLP metric batches up to 32 MiB total and 24 hours per batch, indexed in SQLite `telemetry_spool_batches`; remote collector copies are owned and deleted outside Schegent | append, activation, settings-change | reconciled on startup and settings change; oldest batches drop when the spool cap or expiry is exceeded | kept | n/a | `TELEMETRY_EXPORT_BOUNDS in src/contracts/telemetry-export.ts; schegent.telemetry.export.enabled; src/services/telemetry-host/telemetry-durable-store.ts` |
 
 The 90-second stall threshold is a constant (`MONITOR_STALL_THRESHOLD_MS`), not a setting: a Run that has been silent that long is reported as stalled, and no setting changes it.
 
@@ -79,18 +88,49 @@ look reaches can therefore outlive its age by up to an hour in an open window; t
 the host stays open; and all of it, for as long as the host stays closed.
 Audit files, current and archived, are owner-only (`0600`).
 
-## The one artifact that is deliberately unredacted
+## Artifacts that are deliberately unredacted
 
-`.schegent/sessions/raw-<runId>.log` holds the backend's output **verbatim**. That is the threat
-model's stated position, not an oversight: it is a developer-debug artefact, comparable to terminal
-scrollback, never read back by the host, never shipped to a webview, and gitignored. If your prompts
-or your repository contain secrets, that file can contain them too.
+Multiple local stores hold unredacted content by design — not only raw session transcripts. Each is
+classified as **not redacted** in the derived table above:
 
-It is the reason this page exists rather than a reason it does not.
+- `.schegent/sessions/raw-<runId>.log` (and its `.pending/` staging file and `<temp>/schegent-raw-spool-*/`
+  invocation capture) holds the backend's prompts and output **verbatim** — deliberately unredacted as a
+  developer-debug artefact, comparable to terminal scrollback, never read back into control decisions,
+  never shipped to a webview, and gitignored.
+- `.schegent/sessions/<runId>/diagnostics/` holds verbose diagnostic dumps (`stream.jsonl`, `debug.json`,
+  `verbose.log`).
+- `<globalStorage>/checkpoints/<runId>/` holds unredacted Git recovery diffs outside the workspace.
+- `<globalStorage>/sqlite/<scope>/schegent-state.db` (and its WAL/SHM files) holds operational workflow
+  state, prompts, and opted-in `phase_handoff_records` verbatim outside the workspace.
+- `<globalStorage>/sqlite/<scope>/backups/<backupId>.db` (and its manifest) holds a full point-in-time
+  copy of the operational SQLite store, including opted-in `phase_handoff_records`.
+- `.schegent/transcripts/`, `.schegent/diagnostics/`, `.schegent/reports/`, `.schegent/results/`,
+  `.schegent/immutable-results/`, and `.schegent/handoff-materialized/` hold F05-managed external
+  artifact bytes and F15-B staged/immutable/materialized phase-context handoff files verbatim.
+
+If your prompts, diffs, or repository contain secrets, any of these unredacted local stores can contain
+them too. That is the reason this inventory exists rather than a reason it does not.
 
 **The export is the exception, and deliberately so.** An export crosses a trust boundary that a local
-file does not — someone else receives it — so every artifact is redacted on the way out, including
-this one. Redacting more than the product's own set is fine; redacting less is not.
+file does not — someone else receives it — so every exported artifact is redacted on the way out,
+including raw transcripts. Redacting more than the product's own set is fine; redacting less is not.
+
+## Unified 8-copy retention and egress inventory
+
+Deleting a workspace directory or running `Schegent: Delete Run Evidence` does **not** erase every copy
+produced by running Schegent. The table below unifies all eight local, provider, and collector copy
+categories, what can leave the machine, when confirmation applies, and who can delete each copy:
+
+| # | Copy category | Location / destination | Leaves machine? | Confirmation gate | Deletion owner |
+|---|---|---|---|---|---|
+| 1 | Folder-scoped SQLite store | `<globalStorage>/sqlite/<scope>/schegent-state.db` (`-wal`, `-shm`) | No (local disk outside workspace) | Workspace Trust required for writes | Operator manually deletes `<globalStorage>/sqlite/<scope>/` (survives workspace deletion and `Schegent: Delete Run Evidence`) |
+| 2 | Separate SQLite backups | `<globalStorage>/sqlite/<scope>/backups/<backupId>.db` + `.db.manifest.json` | No (local disk outside workspace) | Explicit `Schegent: Back Up Store` command | Operator manually removes backup files (never pruned automatically; survives workspace deletion and `Delete Run Evidence`) |
+| 3 | External artifact & handoff bytes | F05 blobs/live logs (`.schegent/transcripts/`, `.schegent/diagnostics/`, `.schegent/reports/`) and F15-B `.schegent/results/`, `.schegent/immutable-results/`, `.schegent/handoff-materialized/` | Only if selected by an opted-in handoff route or read by a backend CLI | Opt-in `connection.contextPolicy` (`manual` or `automatic` approval) for handoff delivery | F05 lifecycle retention (after terminal workflow settlement commits and pins release) or operator deleting `.schegent/`; `Delete Run Evidence` does not remove attempt-keyed F05/F15-B directories |
+| 4 | Raw unredacted staging & retained transcripts | `<temp>/schegent-raw-spool-<pid>-<suffix>/`, `.schegent/sessions/.pending/raw-<runId>.log`, `.schegent/sessions/raw-<runId>.log`, `.schegent/sessions/<runId>/diagnostics/` | No (local disk/temp; exported copies are redacted first) | Default `errors-only` keeps failed/paused/canceled Runs until aged or deleted; `Delete Run Evidence` prompts with a modal confirmation | `Schegent: Delete Run Evidence` (when Run is not active), automatic session retention sweep (30 days / 512 MiB), or operator deleting `.schegent/` |
+| 5 | Shared audit chain & external head checkpoint | `.schegent/audit.log`, `.schegent/audit.log.<stamp>`, `.schegent/audit.log.cuts`, `.schegent/audit-generation.json`, `<globalStorage>/audit-checkpoints/<key>.json` | No (metadata-only local chain; `Schegent: Export Metadata-Only Audit` writes local file) | `Schegent: Reset Audit History Checkpoint` confirms retiring the external checkpoint | Workspace log rotates/prunes by settings; `Delete Run Evidence` never erases audit history; external checkpoint survives workspace deletion until retired by `Schegent: Reset Audit History Checkpoint` or manual `<globalStorage>` cleanup |
+| 6 | Per-provider CLI histories | `<home>/.claude/`, `<home>/.codex/`, `<home>/.gemini/antigravity/` | Vendor CLI sync/retention policies apply outside Schegent | `schegent.backend.uncontainedBackends` opt-in for uncontained backends (`claude`, `agy`, or unqualified `codex`) | Vendor CLI / operator outside Schegent — never touched by Schegent privacy profiles, sweeps, or `Delete Run Evidence` |
+| 7 | Opt-in metadata-only OTLP spool & remote collector | Local spool `<globalStorage>/telemetry-spool/` + SQLite `telemetry_spool_batches` (32 MiB / 24 h cap) → configured HTTPS/loopback OTLP collector | **Yes (metadata-only metrics)**, only when `schegent.telemetry.export.enabled` is `true` | User-scoped application setting (`schegent.telemetry.export.enabled`, default `false`) plus trusted workspace | Local spool ages/drops automatically (32 MiB / 24 h) or when disabled/reconfigured; remote OTLP collector data is owned and deleted solely by the collector operator outside Schegent |
+| 8 | Phase-context handoff data & model-vendor egress | SQLite `phase_handoff_records` + `acpPromptBlocks` sent over ACP `session/prompt` to `claude`, `codex`, or `agy` → model vendor APIs | **Yes (prompts, repository context, and opted-in rendered handoff context / embedded ≤8 KiB text / resource-linked or materialized artifacts)** | Transition requires explicit `connection.contextPolicy` opt-in (`approvalMode: 'manual'` pauses for explicit revision approval before dispatch; `'automatic'` dispatches once ready); backend launch requires trust and containment allowance | Local SQLite record/files are owned by the operator; content transmitted to Anthropic (Claude), OpenAI (Codex), or Google (Agy) is governed by the provider's retention and deletion controls outside Schegent. See [phase-context-handoff.md](phase-context-handoff.md) for the full disabled vs opted-in transition trace. |
 
 ## Errors-only remains the default, and is evaluated at the Run level
 

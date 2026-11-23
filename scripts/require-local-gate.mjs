@@ -11,6 +11,7 @@ import { checkManifestVersions } from './check-manifest-versions.mjs';
 import {
   DRIFT_OVERRIDE_ENV,
   changedQualificationPaths,
+  computeQualificationSourceFingerprint,
   decideQualification,
   probeInstalledVersions,
   readQualification
@@ -50,6 +51,10 @@ if (!verdict.ok) {
 // sentence that the record is local. Continuation lines are indented under the first, so the
 // observation reads as part of the answer and not as stray output.
 console.log(`require-local-gate: ${verdict.message.split('\n').join('\n  ')}`);
+console.log(
+  'require-local-gate: note — the attested gate covers the 23 local `npm run gate` checks only; ' +
+    'the Linux arm64 unit-tier container leg (`npm run verify:linux`) runs separately via `npm run verify:release`.'
+);
 
 // FR-R3-104 (FR-051, FR-053, FR-055, FR-058) — the second binding: the gate attestation says the
 // verification suite passed on this tree, and it says nothing about whether the three third-party
@@ -70,6 +75,7 @@ const qualificationVerdict = decideQualification({
   head,
   installedVersions: probeInstalledVersions(),
   changedPaths: changedQualificationPaths(qualification?.commit, head),
+  expectedFingerprint: computeQualificationSourceFingerprint(),
   now: new Date().toISOString(),
   overrideRequested: process.env[DRIFT_OVERRIDE_ENV] === '1'
 });

@@ -86,6 +86,7 @@ export interface DurableHandoffStore extends HandoffStorePort {
   listObservations(handoffId: string): readonly HandoffObservation[];
   listHandoffIdsForRun(runId: string): readonly string[];
   listAllHandoffIds(): readonly string[];
+  clearPendingMetadata?(): void;
   loadOrCreateReviewLoop(params: {
     readonly loopId: string;
     readonly runId: string;
@@ -224,8 +225,8 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     if (this.inImmediateTxDepth > 0) {
       return work();
     }
-    this.inImmediateTxDepth += 1;
     this.conn.exec('BEGIN IMMEDIATE');
+    this.inImmediateTxDepth += 1;
     try {
       const outcome = work();
       this.conn.exec('COMMIT');
@@ -285,7 +286,11 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
           now,
           now
         );
-        return res.changes === 1;
+        if (res.changes === 1) {
+          this.pendingMetaByHandoffId.delete(record.handoffId);
+          return true;
+        }
+        return false;
       } catch {
         return false;
       }
@@ -327,15 +332,24 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
       record.handoffId,
       expectedVersion
     );
-    return res.changes === 1;
+    if (res.changes === 1) {
+      this.pendingMetaByHandoffId.delete(record.handoffId);
+      return true;
+    }
+    return false;
   }
 
   public bindRunMetadata(handoffId: string, metadata: HandoffRunMetadata): void {
-    this.pendingMetaByHandoffId.set(handoffId, metadata);
     const existing = this.readRawRow(handoffId);
-    if (existing === undefined) return;
+    if (existing === undefined) {
+      this.pendingMetaByHandoffId.set(handoffId, metadata);
+      return;
+    }
     const env = parseEnvelope(existing.record_json, existing.revision);
-    if (env === null) return;
+    if (env === null) {
+      this.pendingMetaByHandoffId.set(handoffId, metadata);
+      return;
+    }
     const updatedEnv: StoredHandoffEnvelope = {
       ...env,
       laneId: metadata.laneId !== undefined ? metadata.laneId : env.laneId
@@ -358,6 +372,7 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
       this.nowMs(),
       handoffId
     );
+    this.pendingMetaByHandoffId.delete(handoffId);
   }
 
   public getRunMetadata(handoffId: string): HandoffRunMetadata | null {
@@ -443,7 +458,7 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
 
   public listHandoffIdsForRun(runId: string): readonly string[] {
     const rows = this.conn.all<{ readonly handoff_id: string }>(
-      `SELECT handoff_id FROM phase_handoff_records WHERE run_id = ? ORDER BY created_at_ms ASC, handoff_id ASC`,
+      `SELECT handoff_id FROM phase_handoff_records WHERE run_id = ? ORDER BY updated_at_ms DESC, rowid DESC`,
       runId
     );
     return rows.map((r) => r.handoff_id);
@@ -454,6 +469,10 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
       `SELECT handoff_id FROM phase_handoff_records ORDER BY updated_at_ms DESC, handoff_id ASC`
     );
     return rows.map((r) => r.handoff_id);
+  }
+
+  public clearPendingMetadata(): void {
+    this.pendingMetaByHandoffId.clear();
   }
 
   public loadOrCreateReviewLoop(params: {

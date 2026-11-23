@@ -688,3 +688,115 @@ describe('hostile agent data', () => {
     expect(connection.describe()).toMatchObject({ state: 'ready', lastFailure: null });
   });
 });
+
+describe('FR-R7-14 (14-04 & 14-07) — providerSessionId metadata and awaited permission/resource callbacks', () => {
+  it('captures _meta.providerSessionId from updates and prompt results and sends _meta on session/load only when provided', async () => {
+    const agent = agentWith()
+      .on('session/load', () => ({ result: {} }))
+      .on('session/prompt', () => ({
+        result: { stopReason: 'end_turn', _meta: { providerSessionId: 'prov-from-result-1' } }
+      }));
+    const { connection } = await withSession(agent);
+
+    expect(connection.providerSessionIdOf('sess-1')).toBeNull();
+    const outcome = await connection.prompt(request());
+    // AcpPromptOutcome exact shape stays unchanged (no extra providerSessionId field).
+    expect(outcome).toEqual({
+      kind: 'completed',
+      turnId: 'turn-7-1',
+      stopReason: 'end_turn',
+      hostValidationRequired: true
+    });
+    expect(connection.providerSessionIdOf('sess-1')).toBe('prov-from-result-1');
+
+    // session/load sends _meta only when providerSessionId is supplied.
+    expect(await connection.loadSession('loaded-with-meta', '/work', { mayLoad: true, providerSessionId: 'prov-loaded-9' })).toEqual({
+      ok: true,
+      sessionId: 'loaded-with-meta'
+    });
+    expect(connection.providerSessionIdOf('loaded-with-meta')).toBe('prov-loaded-9');
+    expect(agent.sent('session/load').at(-1)?.params).toEqual({
+      sessionId: 'loaded-with-meta',
+      cwd: '/work',
+      mcpServers: [],
+      _meta: { providerSessionId: 'prov-loaded-9' }
+    });
+  });
+
+  it('awaits async permissionPolicy and fails closed on cancel, turn end, or policy rejection', async () => {
+    const agent = agentWith().on('session/prompt', () => 'silent');
+    let resolvePolicy: ((decision: { optionId: string } | 'undecided') => void) | null = null;
+    let rejectPolicy: ((err: Error) => void) | null = null;
+    const { connection } = await withSession(agent, {
+      permissionPolicy: () =>
+        new Promise((resolve, reject) => {
+          resolvePolicy = resolve;
+          rejectPolicy = reject;
+        })
+    });
+
+    const turnPromise = connection.prompt(request());
+
+    // 1. Confirmed async allow resolves cleanly.
+    agent.request(401, 'session/request_permission', PERMISSION);
+    await flush();
+    expect(agent.answersTo(401)).toHaveLength(0);
+    resolvePolicy!({ optionId: 'allow' });
+    await flush();
+    expect(agent.answersTo(401)).toMatchObject([{ result: { outcome: { outcome: 'selected', optionId: 'allow' } } }]);
+
+    // 2. Rejected async policy falls back to reject_once.
+    agent.request(402, 'session/request_permission', PERMISSION);
+    await flush();
+    rejectPolicy!(new Error('primacy lock error'));
+    await flush();
+    expect(agent.answersTo(402)).toMatchObject([{ result: { outcome: { outcome: 'selected', optionId: 'reject' } } }]);
+
+    // 3. Cancellation arriving while async policy is pending overrides decision to cancelled.
+    agent.request(403, 'session/request_permission', PERMISSION);
+    await flush();
+    connection.cancel('sess-1');
+    resolvePolicy!({ optionId: 'allow' });
+    await flush();
+    expect(agent.answersTo(403)).toMatchObject([{ result: { outcome: { outcome: 'cancelled' } } }]);
+
+    answerPrompt(agent, 'cancelled');
+    await expect(turnPromise).resolves.toEqual({ kind: 'cancelled', turnId: 'turn-7-1', hostValidationRequired: true });
+  });
+
+  it('awaits async verifyResourceLink, guards concurrent prompts during validation, and refuses on cancel or rejection', async () => {
+    const agent = agentWith().on('session/prompt', () => ({ result: { stopReason: 'end_turn' } }));
+    let resolveLink: ((ok: boolean) => void) | null = null;
+    let rejectLink: ((err: Error) => void) | null = null;
+    const { connection } = await withSession(agent, {
+      verifyResourceLink: () =>
+        new Promise<boolean>((resolve, reject) => {
+          resolveLink = resolve;
+          rejectLink = reject;
+        })
+    });
+
+    const linkBlock = [{ type: 'resource-link' as const, uri: 'file:///work/a.ts', name: 'a.ts' }];
+
+    // 1. Concurrent prompt during async validation is refused as prompt-in-flight; resolving true dispatches once.
+    const first = connection.prompt(request(linkBlock));
+    expect(agent.sent('session/prompt')).toHaveLength(0);
+    await expect(connection.prompt(request())).resolves.toEqual({ kind: 'refused', reason: 'prompt-in-flight' });
+    resolveLink!(true);
+    await expect(first).resolves.toMatchObject({ kind: 'completed', stopReason: 'end_turn' });
+    expect(agent.sent('session/prompt')).toHaveLength(1);
+
+    // 2. Rejecting verifier refuses resource-inaccessible without writing session/prompt.
+    const rejected = connection.prompt(request(linkBlock));
+    rejectLink!(new Error('primacy read failed'));
+    await expect(rejected).resolves.toEqual({ kind: 'refused', reason: 'resource-inaccessible' });
+    expect(agent.sent('session/prompt')).toHaveLength(1);
+
+    // 3. Cancel during async validation refuses without writing session/prompt.
+    const cancelled = connection.prompt(request(linkBlock));
+    connection.cancel('sess-1');
+    resolveLink!(true);
+    await expect(cancelled).resolves.toEqual({ kind: 'refused', reason: 'connection-not-ready', detail: 'cancelled' });
+    expect(agent.sent('session/prompt')).toHaveLength(1);
+  });
+});

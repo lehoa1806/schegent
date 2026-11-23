@@ -1,26 +1,28 @@
-// FR-R3-104 — the declaration side of `backend-qualification.mjs`, so `typecheck:tests` can see
-// the pure decision without the script becoming TypeScript. Same arrangement as
-// `gate-attestation.d.mts`, whose binding this one sits beside on the release path.
+// FR-R3-104 & FR-R7-14 (14-10) — declaration side of `backend-qualification.mjs`.
 
-/** Where the untracked qualification record lives. */
 export declare const QUALIFICATION_PATH: string;
-
-/** How long a qualification stands. The operator disclosure derives from this. */
 export declare const QUALIFICATION_MAX_AGE_MS: number;
-
-/** Path prefixes whose change invalidates an older qualification. */
+export declare const ADVERTISED_BACKENDS: readonly ['claude', 'codex', 'agy'];
+export declare const EXPECTED_BACKEND_TRANSPORTS: Readonly<Record<string, string>>;
+export declare const EXPECTED_BACKEND_PROFILES: Readonly<Record<string, string>>;
 export declare const QUALIFICATION_PATHS: readonly string[];
-
-/** The environment variable that turns a refusal into a recorded unqualified release. */
+export declare const QUALIFICATION_BUILD_OUTPUTS: readonly string[];
 export declare const DRIFT_OVERRIDE_ENV: string;
+
+export type QualificationMode = 'live' | 'fixture';
 
 export interface QualificationRecord {
   version?: number;
+  mode?: QualificationMode | string;
   qualifiedAt?: string;
   commit?: string | null;
   platform?: string;
+  sourceFingerprint?: string | null;
   versions?: Record<string, string | null>;
   states?: Record<string, string>;
+  transports?: Record<string, string>;
+  profiles?: Record<string, string>;
+  executables?: Record<string, string | null>;
   malformed?: boolean;
 }
 
@@ -30,18 +32,15 @@ export interface QualificationVerdict {
   message: string;
 }
 
+export declare function computeQualificationSourceFingerprint(repoRoot?: string): string | null;
 export declare function readQualification(path?: string): QualificationRecord | null;
-
-/** `null` means the question could not be answered, which the decision treats as a refusal. */
 export declare function changedQualificationPaths(
   qualifiedCommit: string | null | undefined,
   head?: string
 ): string[] | null;
-
 export declare function probeInstalledVersions(
   commands?: Record<string, string>
 ): Record<string, string | null>;
-
 export declare function versionToken(line: unknown): string | null;
 
 export declare function decideQualification(inputs: {
@@ -52,6 +51,9 @@ export declare function decideQualification(inputs: {
   now: string;
   overrideRequested?: boolean;
   maxAgeMs?: number;
+  expectedFingerprint?: string | null;
+  requireLive?: boolean;
+  requiredBackends?: readonly string[];
 }): QualificationVerdict;
 
 export declare function buildQualificationRecord(inputs: {
@@ -60,13 +62,23 @@ export declare function buildQualificationRecord(inputs: {
   commit: string | null;
   platform: string;
   now: string;
+  mode?: QualificationMode;
+  sourceFingerprint?: string | null;
+  transports?: Record<string, string>;
+  profiles?: Record<string, string>;
+  executables?: Record<string, string | null>;
 }): {
   version: number;
+  mode: QualificationMode;
   qualifiedAt: string;
   commit: string | null;
   platform: string;
+  sourceFingerprint: string | null;
   versions: Record<string, string | null>;
   states: Record<string, string>;
+  transports: Record<string, string>;
+  profiles: Record<string, string>;
+  executables?: Record<string, string | null>;
 };
 
 export declare function readHeadCommit(): string | null;
@@ -76,13 +88,27 @@ export declare function recordFromCanaryResults(
     backend: string;
     state: string;
     observedVersion?: string | null;
+    transport?: string;
+    profileId?: string;
+    executable?: string | null;
   }>,
-  context: { commit: string | null; platform: string; now: string }
+  context: {
+    commit: string | null;
+    platform: string;
+    now: string;
+    mode?: QualificationMode;
+    sourceFingerprint?: string | null;
+  }
 ): {
   version: number;
+  mode: QualificationMode;
   qualifiedAt: string;
   commit: string | null;
   platform: string;
+  sourceFingerprint: string | null;
   versions: Record<string, string | null>;
   states: Record<string, string>;
+  transports: Record<string, string>;
+  profiles: Record<string, string>;
+  executables: Record<string, string | null>;
 };

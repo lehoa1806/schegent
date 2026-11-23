@@ -22,8 +22,11 @@ three built-in profiles (`agy-acp-native`, `claude-acp-bridge`, `codex-acp-bridg
 package. Production dispatch routes new-architecture attempts through `AcpBackedRunner` while
 draining any pre-cutover in-flight legacy CLI attempts without dual live authority. Profiles are
 host-owned constants; repository text cannot install or replace an agent profile. Qualification is
-recorded per platform (`darwin/arm64` qualified from local host observations; Linux, Windows, and
-remote extension hosts remain `unqualified` and refuse before spawn).
+recorded per platform and host locality (`darwin/arm64` with `locality: 'local'` qualified from
+local host observations; Linux, Windows, and **any remote extension host** where
+`vscode.env.remoteName` is set — including remote `darwin/arm64` over SSH, Containers, or
+WSL-style tunnels — classify as `locality: 'remote'`, evaluate as `unqualified`, and refuse with
+`profile-unqualified` before spawning any child process).
 
 ## Protocol
 

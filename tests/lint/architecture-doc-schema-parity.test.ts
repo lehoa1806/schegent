@@ -28,6 +28,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { AUDIT_SCHEMA_VERSION } from '../../src/contracts/audit-events';
+import {
+  SQLITE_MIN_READER_VERSION,
+  SQLITE_SCHEMA_CURRENT_VERSION
+} from '../../src/contracts/sqlite-store/schema-types';
 import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
 // FR-R3-145 (T1572) — `DEFAULT_GLOBAL_CONCURRENCY_CAP` moved here from
 // `src/state/workspace-state.ts`, beside the ceiling it is bounded by.
@@ -89,6 +93,8 @@ const FLAT = ARCH.replace(/\s+/g, ' ');
 /** Every constant whose value the document may state, with its true value. */
 const VERSION_CONSTANTS = [
   ['STATE_SCHEMA_VERSION', STATE_SCHEMA_VERSION],
+  ['SQLITE_SCHEMA_CURRENT_VERSION', SQLITE_SCHEMA_CURRENT_VERSION],
+  ['SQLITE_MIN_READER_VERSION', SQLITE_MIN_READER_VERSION],
   ['AUDIT_SCHEMA_VERSION', AUDIT_SCHEMA_VERSION]
 ] as const;
 

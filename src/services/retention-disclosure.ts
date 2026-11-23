@@ -37,6 +37,14 @@ import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { CATALOG_RETENTION_BOUND } from '../contracts/catalog-store';
 import { FAILURE_RECORD_DIR, FAILURE_RECORD_MAX_BYTES, FAILURE_RECORD_RETAINED_MAX } from '../contracts/failure-record';
 import { MONITOR_STALL_THRESHOLD_MS } from '../contracts/monitor-events';
+import { PHASE_CONTEXT_LIMITS } from '../contracts/phase-context/context-policy';
+import {
+  MAX_BACKUP_EXTERNAL_DEPENDENCIES,
+  MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES,
+  SQLITE_MIN_READER_VERSION,
+  SQLITE_SCHEMA_CURRENT_VERSION
+} from '../contracts/sqlite-store/schema-types';
+import { TELEMETRY_EXPORT_BOUNDS } from '../contracts/telemetry-export';
 import { MAX_ARTIFACT_BYTES } from './evidence-export';
 import { HISTORY_DESCRIPTION_DIR, HISTORY_ORPHAN_GRACE_MS, HISTORY_SWEEP_MAX_REMOVALS } from './history/history-description-store';
 import { resolveRuntimeLogPath } from '../lib/runtime-log/runtime-log-path';
@@ -48,6 +56,11 @@ import {
   TRANSPORT_SPOOL_PREFIX,
   TRANSPORT_WORKSPACE_MAX_BYTES
 } from '../monitor/transport/transport-policy';
+import {
+  MANIFEST_SUFFIX,
+  MAX_BACKUP_DATABASE_BYTES,
+  MAX_BACKUP_MANIFEST_BYTES
+} from './sqlite-store/backup-manifest-store';
 import { HISTORY_CAP_PER_QUEUE } from '../state/workspace-state';
 import {
   CHECKPOINT_MAX_AGE_MS,
@@ -420,6 +433,99 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       onDelete: 'n/a',
       onExport: 'n/a',
       source: 'MAX_ARTIFACT_BYTES in src/services/evidence-export.ts'
+    },
+    {
+      // FR-R7-14 (14-14) — folder-keyed operational store outside the workspace.
+      store: 'SQLite application store',
+      location:
+        '<globalStorage>/sqlite/<scope>/schegent-state.db <globalStorage>/sqlite/<scope>/schegent-state.db-wal <globalStorage>/sqlite/<scope>/schegent-state.db-shm',
+      contentClass: 'unredacted content',
+      redacted: false,
+      bounds:
+        `folder-keyed operational store (schema ${SQLITE_SCHEMA_CURRENT_VERSION}, min reader ${SQLITE_MIN_READER_VERSION}) ` +
+        'holding queues, Runs, catalog versions, usage accounting ledgers, artifact metadata/tombstones, telemetry ledgers, ' +
+        `and opted-in phase-context handoff records (up to ${kib(PHASE_CONTEXT_LIMITS.manifestBytesMax)} KiB manifest / ` +
+        `${kib(PHASE_CONTEXT_LIMITS.renderedContextBytesMax)} KiB rendered context each); no automatic age bound; lives outside the ` +
+        'workspace and survives workspace deletion',
+      sweptBy: ['none'],
+      liveProtection:
+        'single-writer SQLite WAL owned by the primary trusted window; protected against agent writes and Run evidence deletion',
+      onDelete: 'kept',
+      onExport: 'n/a',
+      source:
+        'SQLITE_SCHEMA_CURRENT_VERSION / SQLITE_MIN_READER_VERSION in src/contracts/sqlite-store/schema-types.ts; src/services/sqlite-store/storage-location-resolver.ts'
+    },
+    {
+      // FR-R7-14 (14-14) — separate operator-created SQLite backup images and manifests.
+      store: 'SQLite store backups',
+      location: `<globalStorage>/sqlite/<scope>/backups/<backupId>.db <globalStorage>/sqlite/<scope>/backups/<backupId>.db${MANIFEST_SUFFIX}`,
+      contentClass: 'recovery material',
+      redacted: false,
+      bounds:
+        `operator-created online snapshots via \`Schegent: Back Up Store\`; bounded at ${mib(MAX_BACKUP_DATABASE_BYTES)} MiB ` +
+        `database image, ${mib(MAX_BACKUP_MANIFEST_BYTES)} MiB manifest, ${count(MAX_BACKUP_EXTERNAL_DEPENDENCIES)} external ` +
+        `dependencies, and ${mib(MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES)} MiB external dependency bytes; no automatic age sweep; ` +
+        'lives outside the workspace and survives workspace deletion',
+      sweptBy: ['none'],
+      liveProtection: 'read-only snapshot image and manifest; never pruned automatically and never modified by Delete Run Evidence',
+      onDelete: 'kept',
+      onExport: 'n/a',
+      source:
+        'MAX_BACKUP_DATABASE_BYTES / MAX_BACKUP_MANIFEST_BYTES in src/services/sqlite-store/backup-manifest-store.ts; MAX_BACKUP_EXTERNAL_DEPENDENCIES / MAX_BACKUP_EXTERNAL_DEPENDENCY_BYTES in src/contracts/sqlite-store/schema-types.ts'
+    },
+    {
+      // FR-R7-14 (14-14) — F05 artifact-lifecycle external blobs and live-log segments.
+      store: 'External artifact and live-log bytes',
+      location: '.schegent/transcripts/<artifact> .schegent/diagnostics/<artifact> .schegent/reports/<artifact>',
+      contentClass: 'unredacted content',
+      redacted: false,
+      bounds:
+        'artifact-lifecycle-managed external blobs, reports, and live-log segments indexed in SQLite (`artifacts`, ' +
+        '`artifact_locations`, `live_log_segments`); aged only under an adopted F05 retention policy revision from terminal ' +
+        'settlement, while deletion tombstones remain in SQLite',
+      sweptBy: ['activation', 'run-end'],
+      liveProtection:
+        'artifacts pinned by active or paused Runs or active handoff owner references are exempt until terminal settlement commits',
+      onDelete: 'kept',
+      onExport: 'omitted',
+      source: 'buildScanRoots in src/activation/sqlite-cutover-helpers.ts; src/services/artifact-lifecycle/retention-policy.ts'
+    },
+    {
+      // FR-R7-14 (14-14) — F15-B phase-context staged/immutable results and cross-root materialized copies.
+      store: 'Phase-context handoff publications and materialized copies',
+      location:
+        '.schegent/results/<rootAlias>/<attemptAlias>/<file> .schegent/immutable-results/<attemptAlias>/<file> .schegent/handoff-materialized/<attemptAlias>/<file>',
+      contentClass: 'unredacted content',
+      redacted: false,
+      bounds:
+        'created when a workflow connection opts in via `contextPolicy` (or stages attempt outputs); staged JSON capped at ' +
+        `${kib(PHASE_CONTEXT_LIMITS.reviewArtifactBytesMax)} KiB, cross-root materialized copies capped at ` +
+        `${PHASE_CONTEXT_LIMITS.materializedFilesMax} files / ${mib(PHASE_CONTEXT_LIMITS.materializedFileBytesMax)} MiB per file / ` +
+        `${mib(PHASE_CONTEXT_LIMITS.materializedTotalBytesMax)} MiB total; registered and pinned in F05 until terminal workflow settlement commits`,
+      sweptBy: ['run-end', 'activation'],
+      liveProtection:
+        'F05 owner-reference pins hold captured and materialized handoff files until the workflow terminal revision commits',
+      onDelete: 'kept',
+      onExport: 'omitted',
+      source:
+        'PHASE_CONTEXT_LIMITS in src/contracts/phase-context/context-policy.ts; src/services/phase-context/attempt-result-publisher.ts; src/services/phase-context/handoff-materializer.ts'
+    },
+    {
+      // FR-R7-14 (14-14) — opt-in metadata-only OTLP telemetry spool.
+      store: 'Opt-in OTLP telemetry spool',
+      location: '<globalStorage>/telemetry-spool/<batch>',
+      contentClass: 'metadata',
+      redacted: true,
+      bounds:
+        'off by default (`schegent.telemetry.export.enabled: false`); when opted in, spools metadata-only OTLP metric batches ' +
+        `up to ${mib(TELEMETRY_EXPORT_BOUNDS.diskSpoolBytes)} MiB total and ${hours(TELEMETRY_EXPORT_BOUNDS.copyExpiryMs)} hours per batch, ` +
+        'indexed in SQLite `telemetry_spool_batches`; remote collector copies are owned and deleted outside Schegent',
+      sweptBy: ['append', 'activation', 'settings-change'],
+      liveProtection: 'reconciled on startup and settings change; oldest batches drop when the spool cap or expiry is exceeded',
+      onDelete: 'kept',
+      onExport: 'n/a',
+      source:
+        'TELEMETRY_EXPORT_BOUNDS in src/contracts/telemetry-export.ts; schegent.telemetry.export.enabled; src/services/telemetry-host/telemetry-durable-store.ts'
     }
   ]);
 }

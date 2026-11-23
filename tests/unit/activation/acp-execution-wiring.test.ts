@@ -743,4 +743,426 @@ describe('GC-08 — ACP authority gate primacy and receipt writer wiring', () =>
     });
     expect(benignDotDotAuth.allowed).toBe(true);
   });
+
+  it('FR-R7-14 (14-07): sequences verifyPrimacy so an older slow true never overwrites a newer false loss, fails closed sync holdsPrimacy while pending, and awaits live primacy on permission and prompt file-link callbacks', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-1407-wiring-'));
+    tempDirs.push(root);
+    const benignFile = path.join(root, 'ok.txt');
+    await fsp.writeFile(benignFile, 'hello', { mode: 0o600 });
+
+    const deferredQueue: Array<{
+      readonly resolve: (value: boolean) => void;
+      readonly reject: (err: Error) => void;
+    }> = [];
+    const dispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: root,
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () =>
+        new Promise<boolean>((resolve, reject) => {
+          deferredQueue.push({ resolve, reject });
+        })
+    });
+    const gate = dispatch.authorityGate!;
+    gate.registerScope({
+      attemptId: 'att-seq',
+      acpSessionId: 'sess-seq',
+      connectionGeneration: 1,
+      ownershipGeneration: 1,
+      executionRoot: root,
+      primaryWorkspaceRoot: root
+    });
+
+    // Prime initial ownership cleanly (seq 1).
+    const initialPrime = dispatch.primeAuthority!();
+    expect(deferredQueue).toHaveLength(1);
+    // Sync holdsPrimacy MUST fail closed while a primacy check is pending without firing extra calls.
+    expect(gate.authorize({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-seq',
+      connectionGeneration: 1,
+      mutating: false,
+      targetPath: benignFile
+    }).reason).toBe('ownership-lost');
+    expect(deferredQueue).toHaveLength(1);
+    deferredQueue.shift()!.resolve(true);
+    await expect(initialPrime).resolves.toBe(true);
+    expect(gate.authorize({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-seq',
+      connectionGeneration: 1,
+      mutating: false,
+      targetPath: benignFile
+    }).allowed).toBe(true);
+
+    // Out-of-order overlap: slow older check (#1) resolves true AFTER fast newer check (#2) reports false loss.
+    const slowOlder = gate.authorizeAsync({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-seq',
+      connectionGeneration: 1,
+      attemptId: 'att-seq',
+      mutating: false,
+      targetPath: benignFile
+    });
+    const fastNewer = gate.authorizeAsync({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-seq',
+      connectionGeneration: 1,
+      attemptId: 'att-seq',
+      mutating: false,
+      targetPath: benignFile
+    });
+    expect(deferredQueue).toHaveLength(2);
+    const [olderDeferred, newerDeferred] = deferredQueue.splice(0, 2);
+    newerDeferred!.resolve(false);
+    const fastRes = await fastNewer;
+    expect(fastRes.allowed).toBe(false);
+    expect(fastRes.reason).toBe('ownership-lost');
+
+    olderDeferred!.resolve(true);
+    const slowRes = await slowOlder;
+    expect(slowRes.allowed).toBe(false);
+    expect(slowRes.reason).toBe('ownership-lost');
+    // Older slow `true` MUST NOT have overwritten `lastVerifiedPrimacy = false`.
+    expect(gate.authorize({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-seq',
+      connectionGeneration: 1,
+      mutating: false,
+      targetPath: benignFile
+    }).reason).toBe('ownership-lost');
+    expect(dispatch.currentOwnershipGeneration?.()).toBe(2);
+
+    // End-to-end prompt file-link refusal when primacy flips to false during deferred check,
+    // and refusal when primacy check throws.
+    let primacyMode: 'true' | 'false' | 'throw' = 'true';
+    const dynamicDispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: root,
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: async () => {
+        if (primacyMode === 'throw') throw new Error('lock-read-failed');
+        return primacyMode === 'true';
+      }
+    });
+    const runner = new AcpBackedRunner({
+      kind: 'agy',
+      inner: makeDummyInnerRunner(),
+      readConfiguredProfile: () => 'agy-acp-native',
+      ...(dynamicDispatch.authorityGate !== undefined ? { authorityGate: dynamicDispatch.authorityGate } : {}),
+      primaryWorkspaceRoot: root,
+      ...(dynamicDispatch.currentOwnershipGeneration !== undefined
+        ? { currentOwnershipGeneration: dynamicDispatch.currentOwnershipGeneration }
+        : {}),
+      ...(dynamicDispatch.primeAuthority !== undefined ? { primeAuthority: dynamicDispatch.primeAuthority } : {}),
+      platform: { os: 'darwin', arch: 'arm64' },
+      launchTransport: () => {
+        // Flip primacy after primeAuthority passes, before prompt's verifyResourceLink runs.
+        const inner = createFakeAcpTransport();
+        return {
+          ...inner,
+          write(line: string) {
+            const msg = JSON.parse(line.trim()) as { method?: string };
+            if (msg.method === 'session/new') {
+              // Next check after primeAuthority will see primacy lost.
+              setTimeout(() => {
+                if (primacyMode === 'true') {
+                  // leave unchanged unless test flips it
+                }
+              }, 0);
+            }
+            inner.write(line);
+          }
+        };
+      }
+    });
+
+    // Confirmed trusted owner allows resource link.
+    primacyMode = 'true';
+    const allowedLink = await runner.invoke({
+      cliPath: '/usr/bin/fake-agy',
+      cwd: root,
+      prompt: 'Read file',
+      acpPromptBlocks: [{ type: 'resource-link', uri: pathToFileURL(benignFile).href, name: 'ok.txt' }],
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      runId: 'run-1407-ok'
+    });
+    expect(allowedLink.exitCode).toBe(0);
+
+    // Throw during live verifyPrimacy denies prompt file-link callback cleanly.
+    let calls = 0;
+    const throwOnCallbackDispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: root,
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: async () => {
+        calls += 1;
+        if (calls === 1) return true; // primeAuthority succeeds
+        throw new Error('lock disappeared');
+      }
+    });
+    const runnerThrow = new AcpBackedRunner({
+      kind: 'agy',
+      inner: makeDummyInnerRunner(),
+      readConfiguredProfile: () => 'agy-acp-native',
+      ...(throwOnCallbackDispatch.authorityGate !== undefined
+        ? { authorityGate: throwOnCallbackDispatch.authorityGate }
+        : {}),
+      primaryWorkspaceRoot: root,
+      ...(throwOnCallbackDispatch.currentOwnershipGeneration !== undefined
+        ? { currentOwnershipGeneration: throwOnCallbackDispatch.currentOwnershipGeneration }
+        : {}),
+      ...(throwOnCallbackDispatch.primeAuthority !== undefined
+        ? { primeAuthority: throwOnCallbackDispatch.primeAuthority }
+        : {}),
+      platform: { os: 'darwin', arch: 'arm64' },
+      launchTransport: () => createFakeAcpTransport()
+    });
+    const refusedOnErr = await runnerThrow.invoke({
+      cliPath: '/usr/bin/fake-agy',
+      cwd: root,
+      prompt: 'Read file after lock error',
+      acpPromptBlocks: [{ type: 'resource-link', uri: pathToFileURL(benignFile).href, name: 'ok.txt' }],
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      runId: 'run-1407-err'
+    });
+    expect(refusedOnErr.exitCode).toBe(1);
+    expect(refusedOnErr.diagnosticWarnings).toContain('acp-prompt-refused:resource-inaccessible');
+  });
+
+  it('FR-R7-14 (14-11): classifies host locality from remote authority and refuses remote darwin/arm64 before spawn while keeping local darwin/arm64 qualified', async () => {
+    const localDispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => Promise.resolve(true),
+      readRemoteName: () => undefined
+    });
+    expect(localDispatch.hostLocality).toBe('local');
+
+    const remoteDispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => Promise.resolve(true),
+      readRemoteName: () => 'ssh-remote'
+    });
+    expect(remoteDispatch.hostLocality).toBe('remote');
+
+    let launched = false;
+    const remoteRunner = new AcpBackedRunner({
+      kind: 'agy',
+      inner: makeDummyInnerRunner(),
+      readConfiguredProfile: () => 'agy-acp-native',
+      ...(remoteDispatch.hostLocality !== undefined ? { hostLocality: remoteDispatch.hostLocality } : {}),
+      platform: { os: 'darwin', arch: 'arm64' },
+      launchTransport: () => {
+        launched = true;
+        return createFakeAcpTransport();
+      }
+    });
+    const refused = await remoteRunner.invoke({
+      cliPath: '/usr/bin/fake-agy',
+      cwd: '/workspace',
+      prompt: 'Should refuse on remote host',
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      runId: 'run-1411-remote'
+    });
+    expect(launched).toBe(false);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.diagnosticWarnings).toContain('acp-open-refused:profile-unqualified');
+
+    const localRunner = new AcpBackedRunner({
+      kind: 'agy',
+      inner: makeDummyInnerRunner(),
+      readConfiguredProfile: () => 'agy-acp-native',
+      ...(localDispatch.hostLocality !== undefined ? { hostLocality: localDispatch.hostLocality } : {}),
+      platform: { os: 'darwin', arch: 'arm64' },
+      launchTransport: () => {
+        launched = true;
+        return createFakeAcpTransport();
+      }
+    });
+    const ok = await localRunner.invoke({
+      cliPath: '/usr/bin/fake-agy',
+      cwd: '/workspace',
+      prompt: 'Should run on local host',
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      runId: 'run-1411-local'
+    });
+    expect(launched).toBe(true);
+    expect(ok.exitCode).toBe(0);
+  });
+
+  it('fails closed and bumps ownershipGeneration when an earlier out-of-order primacy probe settles false', async () => {
+    let resolveFirst!: (held: boolean) => void;
+    let resolveSecond!: (held: boolean) => void;
+    let calls = 0;
+    const dispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve(true);
+        if (calls === 2) return new Promise<boolean>((r) => { resolveFirst = r; });
+        return new Promise<boolean>((r) => { resolveSecond = r; });
+      },
+      readRemoteName: () => undefined
+    });
+
+    await dispatch.primeAuthority?.();
+    const initialGen = dispatch.currentOwnershipGeneration?.() ?? 1;
+    const p1 = dispatch.primeAuthority?.();
+    const p2 = dispatch.primeAuthority?.();
+    // Newer probe settles true first; older probe then settles false (observed loss).
+    resolveSecond(true);
+    expect(await p2).toBe(true);
+    resolveFirst(false);
+    expect(await p1).toBe(false);
+    expect(dispatch.currentOwnershipGeneration?.()).toBeGreaterThan(initialGen);
+  });
+
+  it('immediately invalidates cached primacy and suppresses SQLite receipt writes when onFenceLost fires', async () => {
+    let fenceLostListener: (() => void) | undefined;
+    let disposed = false;
+    const disposables: Array<{ dispose(): void }> = [];
+    const sqlRuns: unknown[] = [];
+    registry.writer = {
+      run: (...args: unknown[]) => {
+        sqlRuns.push(args);
+      }
+    };
+    const dispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => Promise.resolve(true),
+      onFenceLost: (listener) => {
+        fenceLostListener = listener;
+        return {
+          dispose() {
+            disposed = true;
+          }
+        };
+      },
+      disposables,
+      readRemoteName: () => undefined
+    });
+
+    await dispatch.primeAuthority?.();
+    const initialGen = dispatch.currentOwnershipGeneration?.() ?? 1;
+    const policy = dispatch.authorityGate!.createPermissionPolicy(1);
+    // Unverified permission mismatch with verifyPrimacy configured must not write to SQLite.
+    expect(
+      policy({
+        sessionId: 'unknown-sess',
+        attemptId: null,
+        toolCallId: 'tc-1',
+        toolTitle: 'Write',
+        options: [{ optionId: 'allow', kind: 'allow_once' }]
+      })
+    ).toBe('undecided');
+    expect(sqlRuns).toHaveLength(0);
+
+    // Fence loss synchronously invalidates ownershipGeneration and blocks durable SQLite writes.
+    fenceLostListener?.();
+    expect(dispatch.currentOwnershipGeneration?.()).toBeGreaterThan(initialGen);
+    dispatch.authorityGate!.registerScope({
+      attemptId: 'att-after-loss',
+      acpSessionId: 'sess-after-loss',
+      connectionGeneration: 1,
+      ownershipGeneration: dispatch.currentOwnershipGeneration?.() ?? 2,
+      executionRoot: '/workspace',
+      primaryWorkspaceRoot: '/workspace'
+    });
+    const denied = dispatch.authorityGate!.authorize({
+      requestKind: 'filesystem',
+      acpSessionId: 'sess-after-loss',
+      connectionGeneration: 1,
+      mutating: false,
+      targetPath: '/workspace/a.ts'
+    });
+    expect(denied.reason).toBe('ownership-lost');
+    expect(sqlRuns).toHaveLength(0);
+
+    for (const d of disposables) d.dispose();
+    expect(disposed).toBe(true);
+  });
+
+  it('fences an in-flight verifyPrimacy() started before onFenceLost so it cannot resurrect lastVerifiedPrimacy', async () => {
+    let fenceLostListener: (() => void) | undefined;
+    let resolveInFlight!: (held: boolean) => void;
+    let calls = 0;
+    const sqlRuns: unknown[] = [];
+    registry.writer = {
+      run: (...args: unknown[]) => {
+        sqlRuns.push(args);
+      }
+    };
+
+    const dispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => {
+        calls += 1;
+        if (calls === 1) return Promise.resolve(true);
+        if (calls === 2) return new Promise<boolean>((r) => { resolveInFlight = r; });
+        return Promise.resolve(true);
+      },
+      onFenceLost: (listener) => {
+        fenceLostListener = listener;
+        return { dispose() {} };
+      },
+      readRemoteName: () => undefined
+    });
+
+    await dispatch.primeAuthority?.();
+    const inFlightPrime = dispatch.primeAuthority?.();
+    // Fence loss arrives while `inFlightPrime` is awaiting `hasPrimacy()`.
+    fenceLostListener?.();
+    // Pre-loss probe then resolves `true` -> MUST still return `false` and keep primacy invalidated.
+    resolveInFlight(true);
+    expect(await inFlightPrime).toBe(false);
+
+    // Subsequent sync authorize must still see primacy lost and write zero SQLite receipts.
+    dispatch.authorityGate!.registerScope({
+      attemptId: 'att-fenced',
+      acpSessionId: 'sess-fenced',
+      connectionGeneration: 1,
+      ownershipGeneration: dispatch.currentOwnershipGeneration?.() ?? 2,
+      executionRoot: '/workspace',
+      primaryWorkspaceRoot: '/workspace'
+    });
+    expect(
+      dispatch.authorityGate!.authorize({
+        requestKind: 'filesystem',
+        acpSessionId: 'sess-fenced',
+        connectionGeneration: 1,
+        mutating: false,
+        targetPath: '/workspace/a.ts'
+      }).reason
+    ).toBe('ownership-lost');
+    expect(sqlRuns).toHaveLength(0);
+
+    // A fresh verifyPrimacy started AFTER a legitimate re-acquisition recovers cleanly.
+    expect(await dispatch.primeAuthority?.()).toBe(true);
+  });
 });

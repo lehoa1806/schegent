@@ -29,7 +29,8 @@ const VIEWPORTS = [
 ] as const;
 const MAX_SCROLL_STEPS = 40;
 const WHEEL_DELTA_PX = 240;
-const SETTLE_MS = 60;
+const SCROLL_SETTLE_FRAMES = 3;
+const MAX_SCROLL_SETTLE_FRAMES = 120;
 
 function readNodeIds(): readonly string[] {
   const yaml = readFileSync(EXAMPLE_WORKFLOW, 'utf8');
@@ -142,7 +143,101 @@ async function openOverflowRun(page: Page, viewport: { readonly width: number; r
   }, JSON.parse(JSON.stringify(snapshot)) as unknown);
   await page.getByTestId('dashboard-route-operations').click();
   await page.getByTestId(`queue-card-${QUEUE_ID}`).click();
-  await page.getByTestId('queue-detail-tier').waitFor();
+  await expect(page.getByTestId('queue-detail-tier')).toBeVisible();
+}
+
+interface ScrollState {
+  readonly scrollTop: number;
+  readonly clientHeight: number;
+  readonly scrollHeight: number;
+  readonly atBottom: boolean;
+}
+
+// String form, like `runScopedAxe`: the test tsconfig carries no DOM lib.
+function overflowReadyScript(nodeIds: readonly string[]): string {
+  return `(() => {
+    const scroller = document.querySelector('[data-testid="operations-scroll"]');
+    if (scroller === null) return false;
+    if (scroller.clientHeight <= 0 || scroller.scrollHeight <= scroller.clientHeight) return false;
+    if (Math.abs(scroller.scrollTop) > 1) return false;
+    const ids = ${JSON.stringify(nodeIds)};
+    for (const id of ids) {
+      const node = document.querySelector('[data-testid="workflow-node-' + id + '"]');
+      if (node === null || node.getBoundingClientRect().height <= 0) return false;
+    }
+    return true;
+  })()`;
+}
+
+function readScrollStateScript(): string {
+  return `(() => {
+    const scroller = document.querySelector('[data-testid="operations-scroll"]');
+    if (scroller === null) {
+      return { scrollTop: 0, clientHeight: 0, scrollHeight: 0, atBottom: true };
+    }
+    const scrollTop = scroller.scrollTop;
+    const clientHeight = scroller.clientHeight;
+    const scrollHeight = scroller.scrollHeight;
+    return {
+      scrollTop,
+      clientHeight,
+      scrollHeight,
+      atBottom: scrollTop + clientHeight >= scrollHeight - 1
+    };
+  })()`;
+}
+
+function scrollAdvancedScript(beforeTop: number): string {
+  return `(() => {
+    const scroller = document.querySelector('[data-testid="operations-scroll"]');
+    if (scroller === null) return true;
+    const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+    return scroller.scrollTop > ${String(beforeTop)} + 0.5 || atBottom;
+  })()`;
+}
+
+function waitForAnimationFramesScript(frames: number): string {
+  return `new Promise((resolve) => {
+    let remaining = ${String(frames)};
+    const tick = () => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        resolve(true);
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`;
+}
+
+function waitForScrollStableScript(): string {
+  return `new Promise((resolve) => {
+    const scroller = document.querySelector('[data-testid="operations-scroll"]');
+    if (scroller === null) {
+      resolve(0);
+      return;
+    }
+    let lastTop = scroller.scrollTop;
+    let stableFrames = 0;
+    let totalFrames = 0;
+    const tick = () => {
+      totalFrames += 1;
+      const currentTop = scroller.scrollTop;
+      if (Math.abs(currentTop - lastTop) < 0.5) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+        lastTop = currentTop;
+      }
+      if (stableFrames >= ${String(SCROLL_SETTLE_FRAMES)} || totalFrames >= ${String(MAX_SCROLL_SETTLE_FRAMES)}) {
+        resolve(currentTop);
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`;
 }
 
 // String form, like `runScopedAxe`: the test tsconfig carries no DOM lib.
@@ -168,12 +263,30 @@ function fullyVisibleNodesScript(nodeIds: readonly string[]): string {
   })()`;
 }
 
+async function waitForOverflowReady(page: Page, nodeIds: readonly string[]): Promise<void> {
+  await expect(page.getByTestId('workflow-run')).toBeVisible();
+  await page.waitForFunction(overflowReadyScript(nodeIds));
+  await page.evaluate(waitForAnimationFramesScript(2));
+}
+
+async function readScrollState(page: Page): Promise<ScrollState> {
+  return (await page.evaluate(readScrollStateScript())) as ScrollState;
+}
+
 async function collectReachable(page: Page, nodeIds: readonly string[], step: () => Promise<void>): Promise<readonly string[]> {
   const seen = new Set<string>();
-  for (let index = 0; index < MAX_SCROLL_STEPS && seen.size < nodeIds.length; index += 1) {
+  const sampleVisible = async (): Promise<void> => {
     for (const id of (await page.evaluate(fullyVisibleNodesScript(nodeIds))) as string[]) seen.add(id);
+  };
+
+  await sampleVisible();
+  for (let index = 0; index < MAX_SCROLL_STEPS && seen.size < nodeIds.length; index += 1) {
+    const before = await readScrollState(page);
+    if (before.atBottom) break;
     await step();
-    await page.waitForTimeout(SETTLE_MS);
+    await page.waitForFunction(scrollAdvancedScript(before.scrollTop));
+    await page.evaluate(waitForScrollStableScript());
+    await sampleVisible();
   }
   return nodeIds.filter((id) => seen.has(id));
 }
@@ -190,8 +303,9 @@ test.describe('Feature 265 BUG-001 — a long Workflow run is reachable in the r
     test(`every node is reachable by wheel at ${viewport.width}x${viewport.height}`, async ({ page }) => {
       await openOverflowRun(page, viewport, snapshot);
       await page.getByTestId(`queue-run-row-${RUN_ID}`).click();
-      await page.getByTestId('workflow-run').waitFor();
+      await waitForOverflowReady(page, nodeIds);
       const box = await page.getByTestId('workflow-run').boundingBox();
+      expect(box).not.toBeNull();
       await page.mouse.move(viewport.width / 2, Math.min(viewport.height - 20, (box?.y ?? 0) + 40));
       const reached = await collectReachable(page, nodeIds, async () => {
         await page.mouse.wheel(0, WHEEL_DELTA_PX);
@@ -202,13 +316,16 @@ test.describe('Feature 265 BUG-001 — a long Workflow run is reachable in the r
     test(`every node is reachable by keyboard from Back at ${viewport.width}x${viewport.height}`, async ({ page }) => {
       await openOverflowRun(page, viewport, snapshot);
       await page.getByTestId(`queue-run-row-${RUN_ID}`).click();
-      await page.getByTestId('workflow-run').waitFor();
-      await page.getByTestId('run-detail-back').focus();
+      await waitForOverflowReady(page, nodeIds);
+      const backButton = page.getByTestId('run-detail-back');
+      await expect(backButton).toBeVisible();
+      await backButton.focus();
+      await expect(backButton).toBeFocused();
       const reached = await collectReachable(page, nodeIds, async () => {
         await page.keyboard.press('PageDown');
       });
       expect(reached).toEqual(nodeIds);
-      await expect(page.getByTestId('run-detail-back')).toBeFocused();
+      await expect(backButton).toBeFocused();
     });
   }
 

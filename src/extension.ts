@@ -395,7 +395,8 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     processEnvironmentPolicy,
     memento: getOperationalMementoForStore(store) ?? context.workspaceState,
     isWorkspaceTrusted,
-    hasPrimacy: () => lock.hasPrimacy()
+    hasPrimacy: () => lock.hasPrimacy(),
+    onFenceLost: (listener) => lock.onFenceLost(listener)
   });
   const {
     monitor,
