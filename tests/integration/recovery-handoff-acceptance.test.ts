@@ -42,8 +42,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { MutationAuthority } from '../../src/contracts/artifact-lifecycle/lifecycle-types';
 import { DEFAULT_RETENTION_POLICY } from '../../src/contracts/artifact-lifecycle/retention-policy-types';
-import type { HandoffCutoff, HandoffLineage, SessionOwner } from '../../src/contracts/recovery-handoff/handoff-types';
+import {
+  MAX_HANDOFF_EXPLANATION_BYTES,
+  type HandoffCutoff,
+  type HandoffLineage,
+  type SessionOwner
+} from '../../src/contracts/recovery-handoff/handoff-types';
 import { SanitizedLogger } from '../../src/lib/logger';
+import { createSqliteAcpDurableRuntimeStore } from '../../src/services/acp-runtime/acp-durable-runtime-store';
 import {
   ArtifactRecordStore,
   createArtifactLifecycleService,
@@ -59,12 +65,17 @@ import {
   type StorageScanRoot
 } from '../../src/services/artifact-lifecycle';
 import {
+  assessRecoveryEnvelopeProtection,
   createRecoveryHandoffService,
+  EXPLANATION_DECISION_PAGE_LIMIT,
   type LegacyHandoffRecord,
   type RecordIntentInput,
   type RecoveryHandoffService
 } from '../../src/services/recovery-handoff';
+import { assessRunSegmentProtection } from '../../src/services/recovery-handoff/handoff-envelope-protection';
 import { createHandoffStore } from '../../src/services/recovery-handoff/handoff-store';
+import { recoveryPinnedRunPredicate } from '../../src/services/artifact-lifecycle/run-recovery-pins';
+import { CHECKPOINT_MAX_AGE_MS, RunCheckpointRetentionService } from '../../src/services/run-checkpoint-retention';
 import { RunCheckpointService } from '../../src/services/run-checkpoint-service';
 import { RunMutationLedger } from '../../src/services/run-mutation-ledger';
 import { NodeSqliteConnection, SchemaBootstrapService } from '../../src/services/sqlite-store';
@@ -96,7 +107,7 @@ const OWNER: SessionOwner = { agentId: 'agent-1', accountScope: 'scope-1' };
 
 const LINEAGE: HandoffLineage = {
   workspaceId: 'ws-1',
-  rootExecutionId: 'root-1',
+  rootExecutionId: RUN_ID,
   invocationId: 'inv-1',
   sourceAttemptId: SOURCE_ATTEMPT
 };
@@ -184,7 +195,14 @@ function startHost(): Host {
   const conn = new NodeSqliteConnection({ databasePath: workspacePath('.schegent', 'state.db') });
   openConnections.push(conn);
   SchemaBootstrapService.bootstrapAndMigrate(conn, () => now);
-  const checkpoints = new RunCheckpointService(path.join(base, 'store'), gitPath(), new SanitizedLogger(), () => 1, ledger());
+  const checkpoints = new RunCheckpointService(
+    path.join(base, 'store'),
+    gitPath(),
+    new SanitizedLogger(),
+    () => 1,
+    ledger(),
+    (runSegment, handoverSegment) => assessRecoveryEnvelopeProtection(conn, runSegment, handoverSegment).protected
+  );
   /** The handoff service is built on the lifecycle service, which asks it who owns a pin. */
   const late: { handoffs?: RecoveryHandoffService } = {};
   const lifecycleDeps: ArtifactLifecycleServiceDependencies = {
@@ -201,11 +219,13 @@ function startHost(): Host {
     workspaceRoot: workspacePath()
   };
   const lifecycle = createArtifactLifecycleService(lifecycleDeps);
+  const acpRuntime = createSqliteAcpDurableRuntimeStore(conn, 'ws-1', () => now);
   const handoffs = createRecoveryHandoffService({
     conn,
     lifecycle,
     probe: realProbe,
     envelopes: checkpoints,
+    acpSessionBindings: acpRuntime.sessionBindings,
     clock: () => now
   });
   late.handoffs = handoffs;
@@ -350,7 +370,7 @@ async function manifestFromEnvelope(host: Host): Promise<{ manifest: Record<stri
     ],
     excluded: [{ itemId: 'transcript-1', reason: 'raw-transcript' }],
     contextId: null,
-    envelope: { artifactId: 'env-1', digest: assessed.envelopeDigest }
+    envelope: { artifactId: HANDOVER_ID, digest: assessed.envelopeDigest }
   };
   return { manifest, digest: assessed.envelopeDigest };
 }
@@ -695,5 +715,263 @@ describe('FR-R6-F08 acceptance — US5 legacy records and future versions', () =
       intent(handoffId, envelopeDigest, { revisionNo: 2, targetAttemptId: 'att-after-close' })
     );
     expect(afterClose.ok ? 'ok' : afterClose.code).toBe('handoff-closed');
+  });
+});
+
+describe('FR-R7-16 (16-11, 16-12, 16-13) — post-restart hardening acceptance', () => {
+  it('16-11: preserves protected/ambiguous envelopes across restart while reaping unowned ones without displacing fresh checkpoints', async () => {
+    let host = startHost();
+    await seedArtifacts(host);
+
+    const openManifest = {
+      version: 1,
+      sourceOutcome: { status: 'incomplete', reason: 'credits' },
+      frozenDefinitionDigest: FROZEN,
+      certainty: 'uncertain',
+      coverage: 'partial',
+      workspace: { entries: [], omittedCount: 0 },
+      references: [],
+      excluded: [],
+      contextId: null,
+      envelope: { artifactId: 'hand-00', digest: sha256Hex('env-00') }
+    };
+    const prep = host.handoffs.prepare(
+      { workspaceId: 'ws-1', rootExecutionId: RUN_ID, invocationId: 'inv-p0', sourceAttemptId: 'att-p0' },
+      CUTOFF,
+      openManifest
+    );
+    if (!prep.ok) throw new Error(prep.code);
+
+    // Restart so protection comes purely from persisted SQLite state.
+    host = restart(host);
+    const runDir = path.join(base, 'store', 'checkpoints', RUN_ID);
+    await fs.mkdir(runDir, { recursive: true, mode: 0o700 });
+    for (let i = 0; i < 25; i += 1) {
+      await fs.writeFile(path.join(runDir, `hand-${String(i).padStart(2, '0')}.recovery.json`), '{}', { mode: 0o600 });
+    }
+
+    await host.checkpoints.checkpoint(
+      {
+        id: RUN_ID,
+        featureId: 'feat-1',
+        featureDir: 'specs/001-x',
+        status: 'running',
+        currentPhase: 'speckit-implement',
+        currentIteration: 0,
+        startedAt: now,
+        lastTransitionAt: now,
+        phasesCompleted: [],
+        lastError: null,
+        delayedRetryCount: 0,
+        pendingRetryAt: null,
+        pendingRetryCause: null,
+        phaseOverrides: [],
+        manualPauseAt: null,
+        manualPauseCause: null,
+        phaseBreakpoints: [],
+        resumeTargetPhaseId: null
+      },
+      'speckit-implement'
+    );
+
+    const files = await fs.readdir(runDir);
+    expect(files.filter((f) => f.endsWith('.patch'))).toHaveLength(1);
+    expect(files).toContain('hand-00.recovery.json'); // open handoff -> protected
+    expect(files).not.toContain('hand-01.recovery.json'); // unowned past cap -> reaped
+    expect(files).not.toContain('hand-04.recovery.json'); // unowned past cap -> reaped
+
+    // Cross-run RunCheckpointRetentionService also spares RUN_ID across restart while reaping an unowned aged run.
+    const unownedDir = path.join(base, 'store', 'checkpoints', 'run-unowned-old');
+    await fs.mkdir(unownedDir, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(unownedDir, 'old.patch'), 'x'.repeat(128), { mode: 0o600 });
+    const agedStamp = new Date(now - 30 * DAY_MS);
+    for (const targetDir of [runDir, unownedDir]) {
+      for (const entry of await fs.readdir(targetDir)) {
+        await fs.utimes(path.join(targetDir, entry), agedStamp, agedStamp);
+      }
+      await fs.utimes(targetDir, agedStamp, agedStamp);
+    }
+
+    const inMemoryPinned = recoveryPinnedRunPredicate(() => ({}));
+    const retention = new RunCheckpointRetentionService({
+      globalStorageRoot: path.join(base, 'store'),
+      logger: new SanitizedLogger(),
+      now: () => now,
+      policy: { maxAgeMs: CHECKPOINT_MAX_AGE_MS, maxTotalBytes: 1, recentRunFloor: 0 },
+      isPinnedRun: (seg) => inMemoryPinned(seg) || assessRunSegmentProtection(host.conn, seg).protected
+    });
+    const sweepResult = await retention.sweep();
+    expect(sweepResult.removedRunCount).toBe(1);
+    expect(await fs.readdir(path.join(base, 'store', 'checkpoints'))).toEqual([RUN_ID]);
+    expect(await fs.readdir(runDir)).toContain('hand-00.recovery.json');
+  });
+
+  it('16-12: preserves operator resume on retried paused legacy drain, enforces stored ACP bindings, and detects changed/deleted bytes at use', async () => {
+    let host = startHost();
+    await seedArtifacts(host);
+    adoptZeroAgePolicy(host);
+
+    const pausedLegacy = legacyRecord({ status: 'paused', providerSessionId: 'sess-provider-legacy-1' });
+    const imported = host.handoffs.importLegacy(pausedLegacy);
+    if (!imported.ok || !('revisionNo' in imported)) throw new Error(JSON.stringify(imported));
+    expect(host.handoffs.issue(imported.handoffId, imported.revisionNo).ok).toBe(true);
+
+    // Restart, operator resumes, then drain retries the paused legacy record.
+    host = restart(host);
+    expect(host.handoffs.setHandoffPaused(imported.handoffId, false)).toEqual({
+      ok: true,
+      pinPurpose: 'pending-handoff'
+    });
+    expect(host.handoffs.importLegacy(pausedLegacy)).toMatchObject({
+      ok: true,
+      handoffId: imported.handoffId,
+      created: false
+    });
+    expect(createHandoffStore(host.conn).getHandoff(imported.handoffId)?.paused).toBe(false);
+    expect(handoffPins(host, VALIDATED, imported.handoffId)).toEqual(['pending-handoff']);
+
+    // Persist an explicit ACP binding for sess-provider-legacy-1 in SQLite and restart.
+    const acpStore = createSqliteAcpDurableRuntimeStore(host.conn, 'ws-1', () => now);
+    acpStore.sessionBindings.putBinding({
+      persistedSessionId: 'acp-sess-claude-durable-1',
+      backend: 'claude',
+      workspaceRoot: workspacePath(),
+      providerSessionId: 'sess-provider-legacy-1',
+      updatedAtMs: now
+    });
+    host = restart(host);
+
+    // Spoofed caller source='acp' without explicit mapping forces fresh legacy-session.
+    const spoofed = host.handoffs.recordIntent(
+      intent(imported.handoffId, FROZEN, {
+        targetAttemptId: 'att-spoof-restart',
+        backendId: 'acp-claude',
+        priorSession: {
+          sessionId: 'sess-provider-legacy-1',
+          source: 'acp',
+          owner: OWNER,
+          backendId: 'acp-claude',
+          profileId: 'profile-1',
+          profileVersion: '1',
+          capabilitiesDigest: CAPABILITIES
+        }
+      })
+    );
+    expect(spoofed).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // Valid explicit ACP mapping matching persisted SQLite AcpSessionBindingStore loads the ACP session.
+    const imported2 = host.handoffs.importLegacy(
+      legacyRecord({ attemptId: 'att-legacy-mapped', providerSessionId: 'sess-provider-legacy-1' })
+    );
+    if (!imported2.ok || !('revisionNo' in imported2)) throw new Error(JSON.stringify(imported2));
+    expect(host.handoffs.issue(imported2.handoffId, imported2.revisionNo).ok).toBe(true);
+    const mapped = host.handoffs.recordIntent(
+      intent(imported2.handoffId, FROZEN, {
+        targetAttemptId: 'att-mapped-restart',
+        backendId: 'acp-claude',
+        priorSession: {
+          sessionId: 'acp-sess-claude-durable-1',
+          source: 'acp',
+          owner: OWNER,
+          backendId: 'acp-claude',
+          profileId: 'profile-1',
+          profileVersion: '1',
+          capabilitiesDigest: CAPABILITIES,
+          acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-durable-1' }
+        }
+      })
+    );
+    expect(mapped).toMatchObject({
+      ok: true,
+      sessionPlan: { plan: 'load-session', sessionId: 'acp-sess-claude-durable-1' }
+    });
+
+    // At-use byte/digest verification after prior 'available' resolution: mutate and delete on-disk bytes.
+    const capturedDigest = await captureSourceAttempt(host);
+    const { manifest: freshManifest } = await manifestFromEnvelope(host);
+    const prepUse = host.handoffs.prepare(
+      { workspaceId: 'ws-1', rootExecutionId: RUN_ID, invocationId: 'inv-use', sourceAttemptId: 'att-use' },
+      CUTOFF,
+      freshManifest
+    );
+    if (!prepUse.ok) throw new Error(prepUse.code);
+    expect(host.handoffs.issue(prepUse.handoffId, 1).ok).toBe(true);
+    const beforeMutateDefault = await host.handoffs.verifyForUse(prepUse.handoffId);
+    expect(beforeMutateDefault).toMatchObject({ ok: true, status: 'usable', envelopeResolution: 'available' });
+    const beforeMutate = await host.handoffs.verifyForUse(prepUse.handoffId, {
+      envelopeLocation: { runId: RUN_ID, handoverId: HANDOVER_ID }
+    });
+    expect(beforeMutate).toMatchObject({ ok: true, status: 'usable', envelopeResolution: 'available' });
+
+    // Tamper required artifact bytes on disk without updating F05 availability ('present') or cached last_resolution ('available').
+    await fs.writeFile(workspacePath(reportRel(VALIDATED)), 'tampered bytes!\n');
+    host = restart(host);
+    const afterTamper = await host.handoffs.verifyForUse(prepUse.handoffId, {
+      envelopeLocation: { runId: RUN_ID, handoverId: HANDOVER_ID }
+    });
+    expect(afterTamper).toMatchObject({ ok: true, status: 'blocked', envelopeResolution: 'available' });
+    if (afterTamper.ok) {
+      expect(afterTamper.references.find((r) => r.artifactId === VALIDATED)?.resolution).toBe('changed');
+    }
+
+    // Restore artifact, then delete the checkpoint recovery envelope file on disk.
+    await fs.writeFile(workspacePath(reportRel(VALIDATED)), `bytes of ${VALIDATED}\n`);
+    await fs.rm(path.join(base, 'store', 'checkpoints', RUN_ID, `${HANDOVER_ID}.recovery.json`));
+    const afterEnvDeleteDefault = await host.handoffs.verifyForUse(prepUse.handoffId);
+    expect(afterEnvDeleteDefault).toMatchObject({ ok: true, status: 'blocked', envelopeResolution: 'missing' });
+    const afterEnvDelete = await host.handoffs.verifyForUse(prepUse.handoffId, {
+      envelopeLocation: { runId: RUN_ID, handoverId: HANDOVER_ID }
+    });
+    expect(afterEnvDelete).toMatchObject({ ok: true, status: 'blocked', envelopeResolution: 'missing' });
+    expect(capturedDigest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('16-13: bounds explanation read work and output <= 64 KiB across restart after 2,500 historical decisions', async () => {
+    const delivering = await deliverAcrossRestarts();
+    const { handoffId } = delivering;
+    let host = restart(delivering.host);
+    host.handoffs.reopen();
+
+    // Seed 2,499 stale refusals (revision 99) plus 1 newest accepted decision (revision 1).
+    const store = createHandoffStore(host.conn);
+    store.transaction(() => {
+      for (let i = 0; i < 2_499; i += 1) {
+        now += 1;
+        store.insertDecision({
+          decisionId: i.toString(16).padStart(64, '0'),
+          handoffId,
+          revisionNo: 99,
+          decision: 'continue-new-attempt',
+          outcome: 'refused-stale',
+          nowMs: now
+        });
+      }
+    });
+    now += 10;
+    expect(host.handoffs.decide(handoffId, 1, 'continue-new-attempt', 'req-latest')).toMatchObject({
+      ok: true,
+      outcome: 'accepted'
+    });
+
+    host = restart(host);
+    const page = createHandoffStore(host.conn).listRecentDecisions(handoffId);
+    expect(page.rows).toHaveLength(EXPLANATION_DECISION_PAGE_LIMIT);
+    expect(page.totalCount).toBe(2_500);
+    expect(page.omittedCount).toBe(2_500 - EXPLANATION_DECISION_PAGE_LIMIT);
+
+    const explained = host.handoffs.explain(handoffId);
+    if (!explained.ok) throw new Error(explained.code);
+    expect(Buffer.byteLength(JSON.stringify(explained.explanation), 'utf8')).toBeLessThanOrEqual(
+      MAX_HANDOFF_EXPLANATION_BYTES
+    );
+    expect(
+      explained.explanation.decisions.length + explained.explanation.truncatedCounts.decisions
+    ).toBe(2_500);
+    expect(explained.explanation.decisions.at(0)).toEqual({
+      revisionNo: 1,
+      decision: 'continue-new-attempt',
+      outcome: 'accepted',
+      consumed: false
+    });
   });
 });

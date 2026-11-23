@@ -10,7 +10,24 @@
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { LaneGitRunner } from './git-runner';
+import type { GitFailureCode, LaneGitRunner } from './git-runner';
+
+/** Bounded Git failure metadata preserved across read-only observations (never stderr). */
+export interface GitRunFailure {
+  readonly code: GitFailureCode;
+  readonly exitCode: number | null;
+}
+
+export type GitObserveResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly failure: GitRunFailure };
+
+export type AncestryOutcome = 'ancestor' | 'not-ancestor' | 'missing-ref' | 'git-error';
+
+export interface AncestryResult {
+  readonly outcome: AncestryOutcome;
+  readonly failure?: GitRunFailure;
+}
 
 /** Where and how long a read may take. */
 export interface GitContext {
@@ -46,6 +63,8 @@ const LFS_FILTER_NEEDLE = 'filter=lfs';
 const ATTRIBUTES_PATHSPEC = ':(glob)**/.gitattributes';
 const GIT_VERSION_PATTERN = /^git version (\d+)\.(\d+)(?:\.(\d+))?/;
 const NOT_ANCESTOR_EXIT = 1;
+const MISSING_OBJECT_EXIT = 128;
+const REV_PARSE_MISSING_EXIT = 1;
 const GREP_NO_MATCH_EXIT = 1;
 
 /** Parse `git --version` output; `null` when it is not one. */
@@ -107,13 +126,24 @@ export function parseWorktreeList(text: string): readonly WorktreeEntry[] {
   return entries;
 }
 
-async function stdoutOf(ctx: GitContext, args: readonly string[], maxBuffer?: number): Promise<string | null> {
+async function runDetailed(
+  ctx: GitContext,
+  args: readonly string[],
+  maxBuffer?: number
+): Promise<GitObserveResult<string>> {
   const result = await ctx.git.run(args, {
     cwd: ctx.cwd,
     timeoutMs: ctx.timeoutMs,
     ...(maxBuffer === undefined ? {} : { maxBuffer })
   });
-  return result.ok ? result.stdout : null;
+  return result.ok
+    ? { ok: true, value: result.stdout }
+    : { ok: false, failure: { code: result.code, exitCode: result.exitCode } };
+}
+
+async function stdoutOf(ctx: GitContext, args: readonly string[], maxBuffer?: number): Promise<string | null> {
+  const result = await runDetailed(ctx, args, maxBuffer);
+  return result.ok ? result.value : null;
 }
 
 export async function readGitVersion(ctx: GitContext): Promise<GitVersion | null> {
@@ -121,9 +151,15 @@ export async function readGitVersion(ctx: GitContext): Promise<GitVersion | null
   return out === null ? null : parseGitVersion(out);
 }
 
+/** `listWorktrees` preserving exact {@link GitRunFailure} (`timeout` / `buffer` / `exit` / `spawn`). */
+export async function listWorktreesDetailed(ctx: GitContext): Promise<GitObserveResult<readonly WorktreeEntry[]>> {
+  const result = await runDetailed(ctx, ['worktree', 'list', '--porcelain']);
+  return result.ok ? { ok: true, value: parseWorktreeList(result.value) } : result;
+}
+
 export async function listWorktrees(ctx: GitContext): Promise<readonly WorktreeEntry[] | null> {
-  const out = await stdoutOf(ctx, ['worktree', 'list', '--porcelain']);
-  return out === null ? null : parseWorktreeList(out);
+  const result = await listWorktreesDetailed(ctx);
+  return result.ok ? result.value : null;
 }
 
 /** The commit `rev` names, or `null` when it names none. */
@@ -140,14 +176,48 @@ export async function treeOf(ctx: GitContext, commit: string): Promise<string | 
   return id === '' ? null : id;
 }
 
-/** Whether `ancestor` is an ancestor of (or equal to) `descendant`; `null` when Git cannot say. */
-export async function isAncestor(ctx: GitContext, ancestor: string, descendant: string): Promise<boolean | null> {
+/**
+ * Distinguishes ancestry (`ancestor` / `not-ancestor`), an absent or GC'd commit (`missing-ref`),
+ * and a Git subprocess failure (`git-error` carrying the exact `GitRunFailure`).
+ */
+export async function isAncestorDetailed(
+  ctx: GitContext,
+  ancestor: string,
+  descendant: string
+): Promise<AncestryResult> {
   const result = await ctx.git.run(['merge-base', '--is-ancestor', ancestor, descendant], {
     cwd: ctx.cwd,
     timeoutMs: ctx.timeoutMs
   });
-  if (result.ok) return true;
-  return result.code === 'exit' && result.exitCode === NOT_ANCESTOR_EXIT ? false : null;
+  if (result.ok) return { outcome: 'ancestor' };
+  if (result.code === 'exit' && result.exitCode === NOT_ANCESTOR_EXIT) return { outcome: 'not-ancestor' };
+  const failure: GitRunFailure = { code: result.code, exitCode: result.exitCode };
+  if (result.code === 'exit' && result.exitCode === MISSING_OBJECT_EXIT) {
+    // Disambiguate an absent/GC'd commit from a general Git exit-128 error (e.g. corrupt repo or
+    // injected fault): `rev-parse --verify --quiet <rev>^{commit}` exits 1 specifically when the
+    // commit does not exist in a healthy repository.
+    for (const rev of [ancestor, descendant]) {
+      const check = await ctx.git.run(['rev-parse', '--verify', '--quiet', `${rev}^{commit}`], {
+        cwd: ctx.cwd,
+        timeoutMs: ctx.timeoutMs
+      });
+      if (!check.ok) {
+        if (check.code === 'exit' && check.exitCode === REV_PARSE_MISSING_EXIT) {
+          return { outcome: 'missing-ref', failure };
+        }
+        return { outcome: 'git-error', failure: { code: check.code, exitCode: check.exitCode } };
+      }
+    }
+  }
+  return { outcome: 'git-error', failure };
+}
+
+/** Whether `ancestor` is an ancestor of (or equal to) `descendant`; `null` when Git cannot say. */
+export async function isAncestor(ctx: GitContext, ancestor: string, descendant: string): Promise<boolean | null> {
+  const detailed = await isAncestorDetailed(ctx, ancestor, descendant);
+  if (detailed.outcome === 'ancestor') return true;
+  if (detailed.outcome === 'not-ancestor') return false;
+  return null;
 }
 
 /** Whether `commit`'s tree holds a gitlink (mode 160000) at any depth. */
@@ -167,25 +237,40 @@ export async function hasLfsAttributes(ctx: GitContext, commit: string): Promise
   return result.code === 'exit' && result.exitCode === GREP_NO_MATCH_EXIT ? false : null;
 }
 
-async function statusLineCount(ctx: GitContext, untracked: 'no' | 'all'): Promise<number | null> {
-  const out = await stdoutOf(ctx, [
+async function statusLineCountDetailed(
+  ctx: GitContext,
+  untracked: 'no' | 'all'
+): Promise<GitObserveResult<number>> {
+  const result = await runDetailed(ctx, [
     '--no-optional-locks',
     'status',
     '--porcelain=v1',
     `--untracked-files=${untracked}`
   ]);
-  if (out === null) return null;
-  return out.split('\n').filter((line) => line !== '').length;
+  if (!result.ok) return result;
+  return { ok: true, value: result.value.split('\n').filter((line) => line !== '').length };
+}
+
+/** Changed tracked paths in `cwd`, preserving exact `GitRunFailure` on timeout/buffer/exit/spawn. */
+export function trackedDirtyCountDetailed(ctx: GitContext): Promise<GitObserveResult<number>> {
+  return statusLineCountDetailed(ctx, 'no');
+}
+
+/** Changed tracked paths plus every untracked file (ignored excluded), preserving `GitRunFailure`. */
+export function allDirtyCountDetailed(ctx: GitContext): Promise<GitObserveResult<number>> {
+  return statusLineCountDetailed(ctx, 'all');
 }
 
 /** Changed tracked paths in the working tree at `cwd`. */
-export function trackedDirtyCount(ctx: GitContext): Promise<number | null> {
-  return statusLineCount(ctx, 'no');
+export async function trackedDirtyCount(ctx: GitContext): Promise<number | null> {
+  const result = await trackedDirtyCountDetailed(ctx);
+  return result.ok ? result.value : null;
 }
 
 /** Changed tracked paths plus every untracked file (ignored files excluded). */
-export function allDirtyCount(ctx: GitContext): Promise<number | null> {
-  return statusLineCount(ctx, 'all');
+export async function allDirtyCount(ctx: GitContext): Promise<number | null> {
+  const result = await allDirtyCountDetailed(ctx);
+  return result.ok ? result.value : null;
 }
 
 /** Research R8: SHA-256 hex of the real path of the shared Git directory. */

@@ -2,6 +2,7 @@
 // See specs/020-phase-level-logs/contracts/phase-log-service.md §5 and
 // research.md §6.
 
+import { isSentinel } from './live-log-entry-budget';
 import type { PhaseLogDisplayEntry, ToolArgumentValue } from './types';
 
 const CAPPED_FIELDS = [
@@ -23,18 +24,21 @@ function truncateUtf8(value: string, capBytes: number): TruncateResult {
   if (byteLength <= capBytes) {
     return { value, originalLength: null };
   }
-  // Encode + slice at capBytes, then snap back to a valid UTF-8 boundary.
-  // A continuation byte in UTF-8 is 10xxxxxx (0x80..0xBF). Walk back
-  // while the next byte at the slice index is a continuation byte (the
-  // slice would split a codepoint).
-  const buf = Buffer.from(value, 'utf8');
-  let cut = capBytes;
+  // Every UTF-16 code unit encodes to at least 1 UTF-8 byte, so the first
+  // `capBytes` code units are guaranteed to cover any prefix <= `capBytes` bytes.
+  // Slicing before `Buffer.from` avoids multi-MiB buffer allocations on oversized
+  // fields, then snaps back to a valid UTF-8 boundary (continuation bytes are
+  // 10xxxxxx, 0x80..0xBF).
+  const maxCodeUnits = Math.max(0, capBytes);
+  const candidate = value.length > maxCodeUnits ? value.slice(0, maxCodeUnits) : value;
+  const buf = Buffer.from(candidate, 'utf8');
+  let cut = Math.min(maxCodeUnits, buf.length);
   // Walk left until the byte AT the cut position is a leading byte
   // (i.e. NOT a continuation byte). If we cut at byte `cut`, the bytes
   // included are [0, cut). The first byte excluded is at index `cut`.
   // If byte[cut] is a continuation byte, byte[cut-1..cut] is a partial
   // codepoint — back up.
-  while (cut > 0 && (buf[cut] & 0xc0) === 0x80) cut -= 1;
+  while (cut > 0 && cut < buf.length && (buf[cut] & 0xc0) === 0x80) cut -= 1;
   const truncated = buf.subarray(0, cut).toString('utf8');
   return { value: truncated, originalLength: byteLength };
 }
@@ -43,17 +47,21 @@ export interface TruncateCaps {
   readonly perFieldBytes: number;
 }
 
-function safeJsonStringifyByteLength(value: ToolArgumentValue): {
-  readonly text: string;
-  readonly byteLength: number;
-} {
-  let text = '';
+type SafeJsonStringifyResult =
+  | { readonly ok: true; readonly text: string; readonly byteLength: number }
+  | { readonly ok: false };
+
+function safeJsonStringifyByteLength(value: ToolArgumentValue): SafeJsonStringifyResult {
+  let text: unknown;
   try {
-    text = JSON.stringify(value) ?? '';
+    text = JSON.stringify(value);
   } catch {
-    text = '';
+    return { ok: false };
   }
-  return { text, byteLength: Buffer.byteLength(text, 'utf8') };
+  if (typeof text !== 'string') {
+    return { ok: false };
+  }
+  return { ok: true, text, byteLength: Buffer.byteLength(text, 'utf8') };
 }
 
 export function truncateDisplayEntryBody(
@@ -76,16 +84,23 @@ export function truncateDisplayEntryBody(
     }
   }
   // Feature 029 — apply the same per-field byte cap to `toolArguments`
-  // (measured against the JSON-stringified shape). If oversized, replace
-  // with a typed truncation sentinel so the renderer can surface a
-  // marker. The legacy `toolInput` string remains the canonical
-  // truncation source for fallback rendering.
+  // (measured against the JSON-stringified shape). If oversized or
+  // unserializable (cyclic, BigInt, throwing/undefined `toJSON`), fail
+  // closed by replacing with a typed truncation sentinel so downstream
+  // sanitizer/budget code never sees unserializable shapes. The legacy
+  // `toolInput` string remains the canonical truncation source for
+  // fallback rendering.
   const args = entry.body.toolArguments;
-  if (args !== undefined) {
-    const { byteLength } = safeJsonStringifyByteLength(args);
-    if (byteLength > caps.perFieldBytes) {
-      newBody['toolArguments'] = { __truncated: true, originalBytes: byteLength };
-      truncatedMap['toolArguments'] = { originalLength: byteLength };
+  if (args !== undefined && !isSentinel(args)) {
+    const serialized = safeJsonStringifyByteLength(args);
+    if (!serialized.ok) {
+      const originalBytes = caps.perFieldBytes + 1;
+      newBody['toolArguments'] = { __truncated: true, originalBytes };
+      truncatedMap['toolArguments'] = { originalLength: originalBytes };
+      anyTruncated = true;
+    } else if (serialized.byteLength > caps.perFieldBytes) {
+      newBody['toolArguments'] = { __truncated: true, originalBytes: serialized.byteLength };
+      truncatedMap['toolArguments'] = { originalLength: serialized.byteLength };
       anyTruncated = true;
     }
   }

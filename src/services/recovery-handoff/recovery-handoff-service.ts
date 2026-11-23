@@ -19,6 +19,7 @@ import {
   type HandoffOwnerResolution,
   type HandoffRefusal
 } from '../../contracts/recovery-handoff/handoff-types';
+import type { AcpSessionBindingStore } from '../acp-runtime/acp-durable-runtime-store';
 import type { ArtifactLifecycleService } from '../artifact-lifecycle';
 import { ArtifactRecordStore, type ArtifactByteProbe } from '../artifact-lifecycle/artifact-records';
 import type { NodeSqliteConnection } from '../sqlite-store';
@@ -43,7 +44,11 @@ import {
 } from './handoff-operator';
 import { handoffOwnerResolution, isNewerBuildStore } from './handoff-pins';
 import { issueRevision, prepareRevision, type HandoffWriteDeps, type IssueResult, type PrepareResult } from './handoff-prepare';
-import { resolveRevision, type RevisionResolution } from './handoff-resolver';
+import {
+  resolveRevision,
+  type EnvelopeVerificationLocation,
+  type RevisionResolution
+} from './handoff-resolver';
 import {
   acknowledgeIntent,
   consumeHandoff,
@@ -62,10 +67,17 @@ export interface RecoveryHandoffServiceDeps {
   /** Bootstrapped through migration 5. */
   readonly conn: NodeSqliteConnection;
   readonly lifecycle: ArtifactLifecycleService;
-  readonly probe: Pick<ArtifactByteProbe, 'digestSha256'>;
+  readonly probe: Pick<ArtifactByteProbe, 'digestSha256'> & Partial<Pick<ArtifactByteProbe, 'observe'>>;
   readonly envelopes: RecoveryEnvelopePort;
+  /** Optional durable ACP session binding store for cross-checking legacy-to-ACP mappings (`16-12`). */
+  readonly acpSessionBindings?: AcpSessionBindingStore;
   /** Epoch ms. */
   readonly clock: () => number;
+}
+
+export interface VerifyForUseOptions {
+  readonly revisionNo?: number;
+  readonly envelopeLocation?: EnvelopeVerificationLocation;
 }
 
 export type ResolveResult =
@@ -77,8 +89,10 @@ export interface RecoveryHandoffService {
   assessAttempt(runId: string, handoverId: string): Promise<AssessAttemptResult>;
   prepare(lineage: HandoffLineage, cutoff: HandoffCutoff, manifest: unknown, legacyProvenance?: string): PrepareResult;
   issue(handoffId: string, revisionNo: number): IssueResult;
-  /** Resolves the given revision, else the current one. */
+  /** Resolves the given revision, else the current one, with fresh byte/digest probing. */
   resolve(handoffId: string, revisionNo?: number): Promise<ResolveResult>;
+  /** Freshly verifies artifact and envelope bytes/digests at use regardless of cached metadata (`16-12`). */
+  verifyForUse(handoffId: string, options?: VerifyForUseOptions): Promise<ResolveResult>;
   ownerResolution(handoffId: string): HandoffOwnerResolution;
   recordIntent(input: RecordIntentInput): RecordIntentResult;
   acknowledge(intentId: string): AcknowledgeResult;
@@ -99,26 +113,43 @@ export interface RecoveryHandoffService {
 export function createRecoveryHandoffService(deps: RecoveryHandoffServiceDeps): RecoveryHandoffService {
   const store = createHandoffStore(deps.conn);
   const records = new ArtifactRecordStore(deps.conn, deps.clock);
-  const writes: HandoffWriteDeps = { conn: deps.conn, store, lifecycle: deps.lifecycle, nowMs: deps.clock };
+  const writes: HandoffWriteDeps = {
+    conn: deps.conn,
+    store,
+    lifecycle: deps.lifecycle,
+    ...(deps.acpSessionBindings !== undefined ? { acpSessionBindings: deps.acpSessionBindings } : {}),
+    nowMs: deps.clock
+  };
   const resolverDeps = {
     store,
     lifecycle: deps.lifecycle,
     locatorOf: (artifactId: string) => records.locatorOf(artifactId),
     probe: deps.probe,
+    envelopes: deps.envelopes,
     nowMs: deps.clock
   };
 
-  async function resolve(handoffId: string, revisionNo?: number): Promise<ResolveResult> {
+  async function resolveWithOptions(
+    handoffId: string,
+    options?: VerifyForUseOptions,
+    requireEnvelope = false
+  ): Promise<ResolveResult> {
     if (isNewerBuildStore(deps.conn)) return { ok: false, code: 'unsupported-version' };
     const handoff = store.getHandoff(handoffId);
     if (handoff === undefined) return { ok: false, code: 'not-found' };
     if (handoff.state === 'unsupported') return { ok: false, code: 'unsupported-version' };
-    const target = revisionNo ?? handoff.currentRevision;
+    const target = options?.revisionNo ?? handoff.currentRevision;
     const revision = target === null ? undefined : store.getRevision(handoffId, target);
     if (target === null || revision === undefined) return { ok: false, code: 'not-found' };
     // A revision a newer build wrote is kept as it is and never consumed (FR-015).
     if (revision.manifestVersion > HANDOFF_MANIFEST_VERSION) return { ok: false, code: 'unsupported-version' };
-    return { ok: true, ...(await resolveRevision(resolverDeps, handoffId, target)) };
+    return {
+      ok: true,
+      ...(await resolveRevision(resolverDeps, handoffId, target, {
+        ...(options?.envelopeLocation !== undefined ? { envelopeLocation: options.envelopeLocation } : {}),
+        requireEnvelope
+      }))
+    };
   }
 
   return {
@@ -127,7 +158,9 @@ export function createRecoveryHandoffService(deps: RecoveryHandoffServiceDeps): 
     prepare: (lineage, cutoff, manifest, legacyProvenance) =>
       prepareRevision(writes, lineage, cutoff, manifest, legacyProvenance),
     issue: (handoffId, revisionNo) => issueRevision(writes, handoffId, revisionNo),
-    resolve,
+    resolve: (handoffId, revisionNo) =>
+      resolveWithOptions(handoffId, revisionNo === undefined ? undefined : { revisionNo }, false),
+    verifyForUse: (handoffId, options) => resolveWithOptions(handoffId, options, true),
     ownerResolution: (handoffId) => handoffOwnerResolution(deps.conn, handoffId),
     recordIntent: (input) => recordIntent(writes, input),
     acknowledge: (intentId) => acknowledgeIntent(writes, intentId),

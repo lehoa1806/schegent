@@ -27,6 +27,10 @@ import {
   type AckPoster,
   type RouterDeps
 } from '../../../../src/ui/sidebar/message-router';
+import {
+  boundedTailErrorCode,
+  logPhaseLogTailFailure
+} from '../../../../src/ui/sidebar/commands/phase-log-tail-error';
 import type { SidebarCommand } from '../../../../src/ui/sidebar/messages';
 
 const noopExecuteCommand: RouterDeps['executeCommand'] = (() =>
@@ -187,4 +191,164 @@ describe('FR-R6-F07 T019 — CMD_ACK_PHASE_LOG_TAIL forwards to the tail service
     const reply = await lastAckOf(router, ACK_COMMAND);
     expect(reply).toMatchObject({ status: 'rejected', reason: 'internal-error' });
   });
+});
+
+describe('FR-R7-16 (16-10) — path-free bounded error logs for start, ack, and stop tail commands', () => {
+  const OPEN = { isPrimary: () => true, isTrusted: () => true };
+  const BOUNDED_CODE_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+
+  const POSIX_PATH = '/Users/alice/private-workspace/.schegent/sessions/run-1/stream.jsonl';
+  const WINDOWS_PATH = 'C:\\Users\\alice\\private-workspace\\.schegent\\sessions\\run-1\\stream.jsonl';
+  const ARBITRARY_SECRET_TEXT = 'raw-thrown-payload ' + 'sk' + '-tail0secret0value0123456789012345';
+
+  function errnoError(code: string, message: string): NodeJS.ErrnoException {
+    const err: NodeJS.ErrnoException = new Error(message);
+    err.code = code;
+    return err;
+  }
+
+  it('boundedTailErrorCode normalizes valid codes and falls back to unknown on crafted or path-bearing codes', () => {
+    expect(boundedTailErrorCode(errnoError('EACCES', `open '${POSIX_PATH}'`))).toBe('EACCES');
+    expect(boundedTailErrorCode(errnoError('ENOENT', `open '${WINDOWS_PATH}'`))).toBe('ENOENT');
+    expect(boundedTailErrorCode(new TypeError(ARBITRARY_SECRET_TEXT))).toBe('TypeError');
+    expect(boundedTailErrorCode(errnoError(POSIX_PATH, 'boom'))).toBe('unknown');
+    expect(boundedTailErrorCode(errnoError(WINDOWS_PATH, 'boom'))).toBe('unknown');
+    expect(boundedTailErrorCode(errnoError('ERR with space', 'boom'))).toBe('unknown');
+    expect(boundedTailErrorCode(errnoError('A'.repeat(65), 'boom'))).toBe('unknown');
+    expect(boundedTailErrorCode(`raw string ${POSIX_PATH}`)).toBe('unknown');
+    expect(boundedTailErrorCode(null)).toBe('unknown');
+
+    class BadNamedError extends Error {}
+    Object.defineProperty(BadNamedError, 'name', { value: POSIX_PATH });
+    expect(boundedTailErrorCode(new BadNamedError('boom'))).toBe('unknown');
+
+    const warn = vi.fn();
+    logPhaseLogTailFailure({ warn }, 'start', errnoError('EPERM', `denied '${POSIX_PATH}'`));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('sidebar router: phase-log tail start failed: EPERM', {
+      operation: 'start',
+      errorCode: 'EPERM'
+    });
+  });
+
+  const TAIL_HANDLERS: ReadonlyArray<{
+    readonly operation: 'start' | 'ack' | 'stop';
+    readonly command: SidebarCommand;
+    readonly buildService: (throwErr: () => Promise<never>) => NonNullable<RouterDeps['phaseLogTailService']>;
+  }> = [
+    {
+      operation: 'start',
+      command: {
+        type: CMD_START_PHASE_LOG_TAIL,
+        correlationId: 'corr-err-start',
+        payload: { selection: SELECTION }
+      },
+      buildService: (throwErr) => ({
+        start: throwErr,
+        ack: () => Promise.resolve({ outcome: 'failure', sessionId: 's' }),
+        stop: (req) => Promise.resolve({ outcome: 'failure', sessionId: req.sessionId })
+      })
+    },
+    {
+      operation: 'ack',
+      command: {
+        type: CMD_ACK_PHASE_LOG_TAIL,
+        correlationId: 'corr-err-ack',
+        payload: { sessionId: 'session-xyz', batchSeq: 1 }
+      },
+      buildService: (throwErr) => ({
+        start: () => Promise.resolve({ outcome: 'failure', reason: 'internal-error' }),
+        ack: throwErr,
+        stop: (req) => Promise.resolve({ outcome: 'failure', sessionId: req.sessionId })
+      })
+    },
+    {
+      operation: 'stop',
+      command: {
+        type: CMD_STOP_PHASE_LOG_TAIL,
+        correlationId: 'corr-err-stop',
+        payload: { sessionId: 'session-xyz' }
+      },
+      buildService: (throwErr) => ({
+        start: () => Promise.resolve({ outcome: 'failure', reason: 'internal-error' }),
+        ack: () => Promise.resolve({ outcome: 'failure', sessionId: 's' }),
+        stop: throwErr
+      })
+    }
+  ];
+
+  const ERROR_CASES: ReadonlyArray<{
+    readonly label: string;
+    readonly err: unknown;
+    readonly expectedCode: string;
+    readonly forbiddenSubstrings: readonly string[];
+  }> = [
+    {
+      label: 'POSIX path-bearing ErrnoException',
+      err: errnoError('EACCES', `EACCES: permission denied, open '${POSIX_PATH}'`),
+      expectedCode: 'EACCES',
+      forbiddenSubstrings: [POSIX_PATH, '/Users/alice', 'permission denied']
+    },
+    {
+      label: 'Windows path-bearing ErrnoException',
+      err: errnoError('ENOENT', `ENOENT: no such file or directory, open '${WINDOWS_PATH}'`),
+      expectedCode: 'ENOENT',
+      forbiddenSubstrings: [WINDOWS_PATH, 'C:\\Users', 'no such file']
+    },
+    {
+      label: 'arbitrary message Error',
+      err: new Error(`${ARBITRARY_SECRET_TEXT} at ${POSIX_PATH}`),
+      expectedCode: 'Error',
+      forbiddenSubstrings: [ARBITRARY_SECRET_TEXT, 'sk' + '-tail0secret', POSIX_PATH]
+    },
+    {
+      label: 'crafted POSIX path-bearing err.code',
+      err: errnoError(POSIX_PATH, `thrown-text ${ARBITRARY_SECRET_TEXT}`),
+      expectedCode: 'unknown',
+      forbiddenSubstrings: [POSIX_PATH, '/Users/alice', 'thrown-text', ARBITRARY_SECRET_TEXT]
+    },
+    {
+      label: 'crafted Windows path-bearing err.code',
+      err: errnoError(WINDOWS_PATH, `thrown-text ${ARBITRARY_SECRET_TEXT}`),
+      expectedCode: 'unknown',
+      forbiddenSubstrings: [WINDOWS_PATH, 'C:\\Users', 'thrown-text', ARBITRARY_SECRET_TEXT]
+    }
+  ];
+
+  for (const { operation, command, buildService } of TAIL_HANDLERS) {
+    for (const { label, err, expectedCode, forbiddenSubstrings } of ERROR_CASES) {
+      it(`${operation} handler logs distinct operation and bounded code (${expectedCode}) on ${label} with zero path or message leakage`, async () => {
+        const warn = vi.fn();
+        const sanitize = vi.fn((s: string) => s);
+        const router = new MessageRouter({
+          phaseLogTailService: buildService(() => Promise.reject(err)),
+          executeCommand: noopExecuteCommand,
+          isPrimary: OPEN.isPrimary,
+          isTrusted: OPEN.isTrusted,
+          logger: {
+            info: vi.fn(),
+            warn,
+            error: vi.fn(),
+            debug: vi.fn(),
+            sanitize
+          }
+        });
+
+        const reply = await lastAckOf(router, command);
+        expect(reply).toMatchObject({ status: 'rejected', reason: 'internal-error' });
+        expect(sanitize).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        const [message, context] = warn.mock.calls[0] as [string, { operation: string; errorCode: string }];
+        expect(message).toBe(`sidebar router: phase-log tail ${operation} failed: ${expectedCode}`);
+        expect(context).toEqual({ operation, errorCode: expectedCode });
+        expect(context.errorCode).toMatch(BOUNDED_CODE_RE);
+
+        const loggedText = JSON.stringify(warn.mock.calls);
+        for (const forbidden of forbiddenSubstrings) {
+          expect(loggedText).not.toContain(forbidden);
+        }
+      });
+    }
+  }
 });

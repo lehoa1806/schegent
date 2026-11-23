@@ -72,10 +72,14 @@ export async function freezeCandidate(
   lane: LaneRecord,
   root: string
 ): Promise<LaneResult<CandidateRecord>> {
+  const entryFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!entryFence.ok) return laneRefused(entryFence.refusal.reason);
   if (ctx.integrations.countLaneRequests(lane.laneId, LANE_BUSY_STATES) > 0) return laneRefused('lane-busy');
   if (!(await hasIdentity(ctx, root))) return laneRefused('git-identity-missing');
 
   const head = await stdoutOf(ctx, root, ['rev-parse', '--verify', 'HEAD^{commit}']);
+  const preAddFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!preAddFence.ok) return laneRefused(preAddFence.refusal.reason);
   await stdoutOf(ctx, root, ['add', '-A']);
   const tree = await stdoutOf(ctx, root, ['write-tree']);
   // "No changes" is measured from the last recorded candidate, not from HEAD: a freeze that
@@ -84,15 +88,27 @@ export async function freezeCandidate(
   const recordedTree = await stdoutOf(ctx, root, ['rev-parse', '--verify', `${recorded}^{tree}`]);
   if (tree === recordedTree) return laneRefused('candidate-empty');
 
+  const preCommitFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!preCommitFence.ok) return laneRefused(preCommitFence.refusal.reason);
   const message = `${CANDIDATE_MESSAGE} ${lane.laneId}`;
   const commit = await stdoutOf(ctx, root, ['commit-tree', '--no-gpg-sign', '-p', head, '-m', message, tree]);
+
+  const preHeadFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!preHeadFence.ok) return laneRefused(preHeadFence.refusal.reason);
   await stdoutOf(ctx, root, ['update-ref', '--no-deref', 'HEAD', commit, head]);
+
+  const preRefFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
+  if (!preRefFence.ok) return laneRefused(preRefFence.refusal.reason);
   await stdoutOf(ctx, root, ['update-ref', lane.candidateRef, commit]);
 
   const now = new Date(ctx.clock()).toISOString();
   const candidateId = ctx.random(ID_BYTES).toString('hex');
   return ctx.lanes.fenced(ctx.workspaceId, ctx.generation, () => {
-    ctx.integrations.blockOpenRequestsForLane(lane.laneId, { now, generation: ctx.generation });
+    ctx.integrations.blockOpenRequestsForLane(lane.laneId, {
+      now,
+      generation: ctx.generation,
+      random: ctx.random
+    });
     return laneOk(
       ctx.lanes.insertCandidate({
         candidateId,

@@ -132,14 +132,38 @@ interface F04Row {
   readonly state: string | null;
 }
 
+const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:/;
+
+function hasAsciiControlChar(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 /**
- * A workspace file locator names a path beneath the workspace: never absolute, never a NUL,
- * and no `..` segment under either separator. The deletion and copy boundaries still check
- * containment on their own; this refuses the obviously escaping locator at the door.
+ * A workspace file locator names a canonical relative POSIX path beneath the workspace:
+ * non-empty, no ASCII control characters (including NUL), no backslashes, no leading slash
+ * or absolute/Windows-drive prefix, and no empty (`//`), `.`, or `..` segments. The deletion
+ * and copy boundaries still check containment on their own; this refuses non-canonical or
+ * escaping locators at the door.
  */
 function isWorkspaceRelative(locator: string): boolean {
-  if (locator.includes('\0') || path.isAbsolute(locator) || path.win32.isAbsolute(locator)) return false;
-  return !locator.split(/[\\/]/).includes('..');
+  if (
+    locator.length === 0 ||
+    hasAsciiControlChar(locator) ||
+    locator.includes('\\') ||
+    locator.startsWith('/') ||
+    path.isAbsolute(locator) ||
+    path.win32.isAbsolute(locator) ||
+    WINDOWS_DRIVE_PREFIX.test(locator)
+  ) {
+    return false;
+  }
+  return locator
+    .split('/')
+    .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..' && !WINDOWS_DRIVE_PREFIX.test(segment));
 }
 
 function validateRegistration(input: RegisterArtifactInput): string | null {
@@ -295,10 +319,37 @@ export class ArtifactRecordStore {
     return result;
   }
 
-  /** Host-internal: the private locator, for the byte probe and the deletion boundary only. */
+  /**
+   * Host-internal: the private primary locator, for the byte probe and the deletion boundary only.
+   *
+   * Primary-over-copy ranking (`16-04`, `FR-004`): ranks the canonical original (`<id>#0`) first,
+   * any other non-copy original second, and materialized copy locators (`#copy:` or
+   * `materialized-copy`-pinned) last, breaking ties by earliest `verified_at_ms` then `location_id`.
+   * Uses wildcard-safe `substr`/`instr` comparisons (never SQL `LIKE`, because `artifact_id` permits `_`).
+   */
   public locatorOf(artifactId: string): ArtifactLocator | null {
     const row = this.conn.get<{ storage_tier: string; uri_or_relpath: string }>(
-      `SELECT storage_tier, uri_or_relpath FROM artifact_locations WHERE artifact_id = ? ORDER BY location_id LIMIT 1`,
+      `SELECT loc.storage_tier, loc.uri_or_relpath
+         FROM artifact_locations loc
+        WHERE loc.artifact_id = ?
+        ORDER BY
+          CASE
+            WHEN loc.location_id = loc.artifact_id || '#0' THEN 0
+            WHEN substr(loc.location_id, 1, length(loc.artifact_id) + 6) = loc.artifact_id || '#copy:'
+              OR instr(loc.location_id, '#copy:') > 0
+              OR EXISTS (
+                SELECT 1
+                  FROM artifact_pins p
+                 WHERE p.artifact_id = loc.artifact_id
+                   AND p.reason = 'materialized-copy'
+                   AND loc.location_id = p.artifact_id || '#copy:' || p.owner_export_id
+              )
+              THEN 2
+            ELSE 1
+          END ASC,
+          loc.verified_at_ms ASC,
+          loc.location_id ASC
+        LIMIT 1`,
       artifactId
     );
     if (row === undefined || !includesValue(STORAGE_TIERS, row.storage_tier)) return null;

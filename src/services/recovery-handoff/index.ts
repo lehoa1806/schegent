@@ -8,8 +8,18 @@ export {
   createRecoveryHandoffService,
   type RecoveryHandoffService,
   type RecoveryHandoffServiceDeps,
-  type ResolveResult
+  type ResolveResult,
+  type VerifyForUseOptions
 } from './recovery-handoff-service';
+export {
+  assessRecoveryEnvelopeProtection,
+  type EnvelopeProtectionAssessment,
+  type EnvelopeProtectionDecision
+} from './handoff-envelope-protection';
+export {
+  EXPLANATION_DECISION_PAGE_LIMIT,
+  type BoundedDecisionPage
+} from './handoff-store';
 export {
   envelopeDigestOf,
   type AssessAttemptResult,
@@ -44,9 +54,10 @@ export {
 } from './delivery-policy';
 export { planSession, type PriorSession, type SessionParty, type SessionPlanInput } from './session-plan';
 export { cutoffKeyFor, decisionIdFor, handoffIdFor, intentIdFor, ownerDigestFor } from './handoff-identity';
-export { HANDOFF_PIN_LIMIT, pinPurposeFor, type PinRefusal } from './handoff-pins';
+export { HANDOFF_PIN_LIMIT, handoffOwnerResolution, pinPurposeFor, type PinRefusal } from './handoff-pins';
 export {
   classifyResolution,
+  type EnvelopeVerificationLocation,
   type OmittedReference,
   type ResolvedReference,
   type RevisionResolution,
@@ -59,11 +70,15 @@ export {
 } from '../../contracts/recovery-handoff/handoff-manifest';
 export type { ImportLegacyResult } from './legacy-handoff-import';
 export {
+  isValidAcpSessionMapping,
   LEGACY_RECORD_STATUSES,
   legacyPriorSession,
   mapLegacyRecord,
+  MAX_LEGACY_MAPPED_REFERENCES,
+  parseLegacyProvenance,
   type AcpSessionMapping,
   type LegacyHandoffRecord,
   type LegacyMapping,
-  type LegacyRecordStatus
+  type LegacyRecordStatus,
+  type ParsedLegacyProvenance
 } from './legacy-handoff-mapping';

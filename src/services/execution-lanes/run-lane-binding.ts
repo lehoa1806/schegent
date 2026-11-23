@@ -3,13 +3,28 @@
  * Per-Run isolated lane admission, execution-root resolution, lifecycle synchronization,
  * and retention-pin discovery.
  *
+ * Authority boundary (`16-22`): `RunLaneCoordinator` ONLY manages lane provisioning, execution-root
+ * resolution, pause/resume/terminal lifecycle sync, and best-effort candidate freeze on Run
+ * completion. It NEVER calls `requestIntegration`, `verifyRequest`, `approveRequest`, or
+ * `landRequest` on behalf of a Run or agent: integration verification profiles, review approval,
+ * and branch landing remain strictly separated host/human-operator actions so an agent cannot
+ * propose its own verification `argv`, self-approve, or auto-land into a branch.
+ *
  * NOTE: Lives under `src/services/execution-lanes/`, so `execution-lanes-git-verbs.test.ts`
  * scans every string literal here for forbidden Git tokens (`--force`, `-f`, `reset`, `rebase`,
  * `stash`, `push`, `checkout`, `clean`, `--hard`). None of those tokens appear here.
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 
-import type { LaneRefusalReason, LaneView } from '../../contracts/execution-lanes';
+import {
+  LANE_PAGE_LIMIT_MAX,
+  LIVE_LANE_STATES,
+  type IntegrationRequestView,
+  type IntegrationState,
+  type LaneRefusalReason,
+  type LaneState,
+  type LaneView
+} from '../../contracts/execution-lanes';
 import type { LaneService } from './lane-service';
 
 /**
@@ -50,7 +65,7 @@ export interface RunLaneCoordinatorDeps {
   readonly dependencyRecipe?: string;
 }
 
-const OPEN_REQUEST_STATES = new Set([
+const OPEN_REQUEST_STATES_LIST: readonly IntegrationState[] = Object.freeze([
   'queued',
   'verifying',
   'awaiting-review',
@@ -59,7 +74,51 @@ const OPEN_REQUEST_STATES = new Set([
   'uncertain'
 ]);
 
-const CANCELABLE_ON_ABORT_STATES = new Set(['queued', 'awaiting-review', 'blocked']);
+const CANCELABLE_ON_ABORT_STATES = new Set<IntegrationState>(['queued', 'awaiting-review', 'blocked']);
+
+const CACHEABLE_LANE_STATES: readonly LaneState[] = Object.freeze([
+  ...LIVE_LANE_STATES,
+  'completed',
+  'retained'
+]);
+
+function listAllLanes(service: LaneService, states?: readonly LaneState[]): readonly LaneView[] {
+  const items: LaneView[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = service.listLanes({
+      limit: LANE_PAGE_LIMIT_MAX,
+      ...(cursor === undefined ? {} : { cursor }),
+      ...(states === undefined ? {} : { states })
+    });
+    if (!page.ok) break;
+    items.push(...page.value.items);
+    if (page.value.nextCursor === null || page.value.nextCursor === cursor) break;
+    cursor = page.value.nextCursor;
+  }
+  return items;
+}
+
+function listAllRequests(
+  service: LaneService,
+  filter: { readonly laneId?: string; readonly states?: readonly IntegrationState[] } = {}
+): readonly IntegrationRequestView[] {
+  const items: IntegrationRequestView[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = service.listRequests({
+      limit: LANE_PAGE_LIMIT_MAX,
+      ...(cursor === undefined ? {} : { cursor }),
+      ...(filter.laneId === undefined ? {} : { laneId: filter.laneId }),
+      ...(filter.states === undefined ? {} : { states: filter.states })
+    });
+    if (!page.ok) break;
+    items.push(...page.value.items);
+    if (page.value.nextCursor === null || page.value.nextCursor === cursor) break;
+    cursor = page.value.nextCursor;
+  }
+  return items;
+}
 
 export interface RunLaneCoordinator {
   provisionForRun(
@@ -94,17 +153,21 @@ export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneC
   const rootByLaneId = new Map<string, string>();
   const laneIdByRunId = new Map<string, string>();
 
+  const rememberRunLaneId = (rootExecutionId: string, laneId: string): void => {
+    if (!laneIdByRunId.has(rootExecutionId) && laneIdByRunId.size >= MAX_CACHED_LANE_ROOTS) {
+      const oldestRun = laneIdByRunId.keys().next().value;
+      if (oldestRun !== undefined) laneIdByRunId.delete(oldestRun);
+    }
+    laneIdByRunId.set(rootExecutionId, laneId);
+  };
+
   const rememberLaneRoot = (laneId: string, rootExecutionId: string, resolvedRoot: string): void => {
     if (!rootByLaneId.has(laneId) && rootByLaneId.size >= MAX_CACHED_LANE_ROOTS) {
       const oldest = rootByLaneId.keys().next().value;
       if (oldest !== undefined) rootByLaneId.delete(oldest);
     }
     rootByLaneId.set(laneId, resolvedRoot);
-    if (!laneIdByRunId.has(rootExecutionId) && laneIdByRunId.size >= MAX_CACHED_LANE_ROOTS) {
-      const oldestRun = laneIdByRunId.keys().next().value;
-      if (oldestRun !== undefined) laneIdByRunId.delete(oldestRun);
-    }
-    laneIdByRunId.set(rootExecutionId, laneId);
+    rememberRunLaneId(rootExecutionId, laneId);
   };
 
   const findLaneForRun = (service: LaneService, runId: string, explicitLaneId?: string): LaneView | null => {
@@ -113,19 +176,25 @@ export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneC
       const direct = service.getLane({ laneId: targetLaneId });
       if (direct.ok) return direct.value;
     }
-    const page = service.listLanes({ limit: 200 });
-    if (!page.ok) return null;
-    const matched = page.value.items.find((item) => item.rootExecutionId === runId) ?? null;
+    // Check live lanes first (bounded by liveLaneCap) so historical terminal lanes cannot shadow
+    // or crowd out an active/paused/preparing lane, then paginate all states via nextCursor.
+    let matched: LaneView | null = null;
+    for (const item of listAllLanes(service, LIVE_LANE_STATES)) {
+      if (item.rootExecutionId === runId) matched = item;
+    }
+    if (matched === null) {
+      for (const item of listAllLanes(service)) {
+        if (item.rootExecutionId === runId) matched = item;
+      }
+    }
     if (matched !== null) {
-      laneIdByRunId.set(runId, matched.laneId);
+      rememberRunLaneId(runId, matched.laneId);
     }
     return matched;
   };
 
   const cancelPendingRequestsForLane = (service: LaneService, laneId: string): void => {
-    const reqs = service.listRequests({ laneId, limit: 200 });
-    if (!reqs.ok) return;
-    for (const item of reqs.value.items) {
+    for (const item of listAllRequests(service, { laneId, states: OPEN_REQUEST_STATES_LIST })) {
       if (CANCELABLE_ON_ABORT_STATES.has(item.state)) {
         service.cancelRequest({ requestId: item.requestId });
       }
@@ -279,18 +348,11 @@ export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneC
       const out = new Set<string>();
       const service = deps.getLaneService();
       if (service === null) return out;
-      const lanes = service.listLanes({ limit: 200 });
-      if (!lanes.ok) return out;
       const openReqLaneIds = new Set<string>();
-      const reqs = service.listRequests({ limit: 200 });
-      if (reqs.ok) {
-        for (const req of reqs.value.items) {
-          if (OPEN_REQUEST_STATES.has(req.state)) {
-            openReqLaneIds.add(req.laneId);
-          }
-        }
+      for (const req of listAllRequests(service, { states: OPEN_REQUEST_STATES_LIST })) {
+        openReqLaneIds.add(req.laneId);
       }
-      for (const lane of lanes.value.items) {
+      for (const lane of listAllLanes(service)) {
         const isLive =
           lane.state === 'preparing' || lane.state === 'active' || lane.state === 'paused';
         if (
@@ -309,10 +371,8 @@ export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneC
     async refreshCacheFromStore(): Promise<void> {
       const service = deps.getLaneService();
       if (service === null) return;
-      const lanes = service.listLanes({ limit: 200 });
-      if (!lanes.ok) return;
-      for (const lane of lanes.value.items) {
-        laneIdByRunId.set(lane.rootExecutionId, lane.laneId);
+      for (const lane of listAllLanes(service, CACHEABLE_LANE_STATES)) {
+        rememberRunLaneId(lane.rootExecutionId, lane.laneId);
         if (lane.state === 'active' || lane.state === 'paused' || lane.state === 'completed' || lane.state === 'retained') {
           const resolved = await service.resolveLaneRoot(rootRefOf(lane));
           if (resolved !== null) {

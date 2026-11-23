@@ -53,6 +53,20 @@ import {
 
 export type { DecisionRow, DeliveryRow, HandoffRow, ReferenceRow, RevisionRow } from './handoff-store-rows';
 
+/**
+ * FR-R7-16 (`16-13`, FR-013) — maximum decision rows loaded for a 64 KiB explanation page.
+ * The shortest serialized `ExplainedDecision` is 74 bytes (+1 comma), so at most ~869 decisions
+ * fit inside `MAX_HANDOFF_EXPLANATION_BYTES` (65,536). Loading 900 newest-first rows always fills
+ * the bound while keeping SQLite read work and JS memory strictly O(1).
+ */
+export const EXPLANATION_DECISION_PAGE_LIMIT = 900 as const;
+
+export interface BoundedDecisionPage {
+  readonly rows: readonly DecisionRow[];
+  readonly totalCount: number;
+  readonly omittedCount: number;
+}
+
 /** Thrown when a caller asks for a revision move the lifecycle forbids. */
 export class HandoffStoreError extends Error {
   public constructor(
@@ -71,6 +85,8 @@ export interface NewHandoffRow {
   readonly invocationId: string;
   readonly sourceAttemptId: string;
   readonly legacyProvenance: string | null;
+  /** Initial paused state written atomically on initial `INSERT` only (`ON CONFLICT DO NOTHING`). */
+  readonly initialPaused?: boolean;
   readonly nowMs: number;
 }
 
@@ -180,12 +196,13 @@ export class SqliteHandoffStore {
     return this.write(
       `INSERT INTO recovery_handoffs (handoff_id, workspace_id, root_execution_id, invocation_id,
          source_attempt_id, state, paused, legacy_provenance, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, 'preparing', 0, ?, ?, ?) ON CONFLICT DO NOTHING`,
+       VALUES (?, ?, ?, ?, ?, 'preparing', ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
       row.handoffId,
       row.workspaceId,
       row.rootExecutionId,
       row.invocationId,
       row.sourceAttemptId,
+      row.initialPaused === true ? 1 : 0,
       row.legacyProvenance,
       row.nowMs,
       row.nowMs
@@ -497,6 +514,92 @@ export class SqliteHandoffStore {
         handoffId
       )
       .map(toDecisionRow);
+  }
+
+  /**
+   * FR-R7-16 (`16-13`, FR-013) — fetches at most `limit` newest-first decisions alongside the
+   * exact SQL total and omission counts without reading older historical refusal rows into JS.
+   */
+  public listRecentDecisions(
+    handoffId: string,
+    limit: number = EXPLANATION_DECISION_PAGE_LIMIT
+  ): BoundedDecisionPage {
+    const safeLimit = Number.isSafeInteger(limit) && limit >= 0 ? limit : EXPLANATION_DECISION_PAGE_LIMIT;
+    const totalCount =
+      this.conn.scalar<number>(
+        `SELECT COUNT(*) FROM recovery_handoff_decisions WHERE handoff_id = ?`,
+        handoffId
+      ) ?? 0;
+    const rows =
+      totalCount > 0 && safeLimit > 0
+        ? this.conn
+            .all<RawDecisionRow>(
+              `SELECT * FROM recovery_handoff_decisions
+                WHERE handoff_id = ?
+                ORDER BY recorded_at_ms DESC, decision_id DESC
+                LIMIT ?`,
+              handoffId,
+              safeLimit
+            )
+            .map(toDecisionRow)
+        : [];
+    return Object.freeze({
+      rows: Object.freeze(rows),
+      totalCount,
+      omittedCount: Math.max(0, totalCount - rows.length)
+    });
+  }
+
+  /** FR-R7-16 (`16-13`, FR-013) — bounded read of accepted, unconsumed decisions. */
+  public listUnconsumedAcceptedDecisions(
+    handoffId: string,
+    limit: number = EXPLANATION_DECISION_PAGE_LIMIT
+  ): readonly DecisionRow[] {
+    const safeLimit = Number.isSafeInteger(limit) && limit >= 0 ? limit : EXPLANATION_DECISION_PAGE_LIMIT;
+    if (safeLimit === 0) return [];
+    return this.conn
+      .all<RawDecisionRow>(
+        `SELECT * FROM recovery_handoff_decisions
+          WHERE handoff_id = ? AND outcome = 'accepted' AND consumed_by_intent_id IS NULL
+          ORDER BY recorded_at_ms, decision_id
+          LIMIT ?`,
+        handoffId,
+        safeLimit
+      )
+      .map(toDecisionRow);
+  }
+
+  /** FR-R7-16 (`16-13`, SR-B11) — O(1) bounded lookup of the newest unconsumed accepted decision for one revision. */
+  public findUnconsumedAcceptedDecision(
+    handoffId: string,
+    revisionNo: number,
+    decision: HandoffDecision
+  ): DecisionRow | null {
+    const raw = this.conn.get<RawDecisionRow>(
+      `SELECT * FROM recovery_handoff_decisions
+        WHERE handoff_id = ? AND outcome = 'accepted' AND consumed_by_intent_id IS NULL
+          AND revision_no = ? AND decision = ?
+        ORDER BY recorded_at_ms DESC, decision_id DESC
+        LIMIT 1`,
+      handoffId,
+      revisionNo,
+      decision
+    );
+    return raw === undefined ? null : toDecisionRow(raw);
+  }
+
+  /** FR-R7-16 (`16-13`, FR-013) — marks all unconsumed accepted decisions consumed in one SQL statement. */
+  public lapseOutstandingDecisions(handoffId: string, intentId: string): number {
+    return this.transaction(
+      () =>
+        this.conn.run(
+          `UPDATE recovery_handoff_decisions
+              SET consumed_by_intent_id = ?
+            WHERE handoff_id = ? AND outcome = 'accepted' AND consumed_by_intent_id IS NULL`,
+          intentId,
+          handoffId
+        ).changes
+    );
   }
 
   /** Binds an accepted decision to the one intent that consumes it; a second bind is refused. */

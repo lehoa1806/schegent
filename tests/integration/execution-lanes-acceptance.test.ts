@@ -109,13 +109,14 @@ function openHost(options: HostOptions): Host {
   const container = path.dirname(fixture.root);
   const storageDir = options.storageDir?.(fixture) ?? fixture.sibling('storage');
   const databasePath = path.join(fixture.sibling('db'), 'lanes.sqlite');
-  const emptyConfig = path.join(fixture.sibling('config'), 'gitconfig');
-  fs.writeFileSync(emptyConfig, '');
+  const isolatedHome = fixture.sibling('home');
   const gitEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    HOME: isolatedHome,
+    XDG_CONFIG_HOME: isolatedHome,
+    USERPROFILE: isolatedHome,
     [SENTINEL_NAME]: SENTINEL,
     GIT_CEILING_DIRECTORIES: container,
-    GIT_CONFIG_GLOBAL: emptyConfig,
     GIT_CONFIG_NOSYSTEM: '1'
   };
   const real = createExecFileGitRunner({ baseEnv: gitEnv });
@@ -134,7 +135,8 @@ function openHost(options: HostOptions): Host {
     git: wrap === undefined ? real : wrap(real),
     clock: () => NOW_MS,
     random: (size) => randomBytes(size),
-    spawnCheck
+    spawnCheck,
+    authorizeApproval: () => true
   });
 
   let connection = openStore(databasePath);

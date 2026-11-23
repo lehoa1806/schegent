@@ -18,7 +18,7 @@ import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 
 import { resolveContainedLink } from '../../lib/path-containment';
-import { openWithinRoot, type SafeOpenResult } from '../../lib/safe-open';
+import { openWithinRoot, walkDirectoriesWithinRoot, type SafeOpenResult } from '../../lib/safe-open';
 
 export type LegacyReadOutcome =
   | { readonly outcome: 'read'; readonly bytes: Buffer }
@@ -90,8 +90,41 @@ async function writeNew(root: string, segments: readonly string[], bytes: Buffer
   }
 }
 
+const WINDOWS_DRIVE_PREFIX = /^[A-Za-z]:/;
+
+function hasAsciiControlChar(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function isInvalidSegment(segment: string): boolean {
+  return (
+    typeof segment !== 'string' ||
+    segment.length === 0 ||
+    segment === '.' ||
+    segment === '..' ||
+    segment.includes('/') ||
+    segment.includes('\\') ||
+    hasAsciiControlChar(segment) ||
+    WINDOWS_DRIVE_PREFIX.test(segment) ||
+    path.isAbsolute(segment) ||
+    path.win32.isAbsolute(segment)
+  );
+}
+
 async function removeContained(root: string, segments: readonly string[]): Promise<LegacyUnlinkOutcome> {
-  const verdict = await resolveContainedLink(path.join(root, ...segments), [root]);
+  const parts = Array.from(segments);
+  const leaf = parts.at(-1);
+  if (leaf === undefined || parts.some(isInvalidSegment)) return 'refused';
+  const walked = await walkDirectoriesWithinRoot(root, parts.slice(0, -1));
+  if (walked.outcome === 'refused') {
+    if (isMissing(walked)) return 'absent';
+    return walked.reason === 'io-failed' ? 'failed' : 'refused';
+  }
+  const verdict = await resolveContainedLink(path.join(walked.directory, leaf), [root]);
   if (verdict.outcome === 'absent') return 'absent';
   if (verdict.outcome === 'refused') return 'refused';
   let isFile: boolean;

@@ -270,4 +270,44 @@ describe('projection (T018)', () => {
       expect(plan.map((row) => row.detail).join(' ')).toContain('idx_accounting_contributions_open (attempt_id=? AND <expr>=? AND measure=? AND unit=?)');
     }
   });
+
+  it('freezes compacted open contributions (selected_observation_id IS NULL) against later reevaluation (16-07)', () => {
+    const firstIntent = ingest(conn, observation('compacted-1', 'attempt-compact', tokens(100, 'derived')));
+    applyProjectionIntent(conn, firstIntent, 'ingest', PROJECTION);
+    // Simulate post-horizon compaction detaching the selected observation.
+    conn.run("UPDATE accounting_contributions SET selected_observation_id = NULL WHERE attempt_id = 'attempt-compact'");
+
+    const laterIntent = ingest(conn, observation('compacted-2', 'attempt-compact', tokens(1000, 'provider-reported')));
+    applyProjectionIntent(conn, laterIntent, 'ingest', PROJECTION);
+
+    const open = readOpenContributions(conn, 'attempt-compact');
+    expect(open.map((row) => [row.measure, row.quantity, row.selectedObservationId])).toEqual([
+      ['input_tokens', 100n, null],
+      ['output_tokens', 50n, null]
+    ]);
+  });
+
+  it('never downgrades a conflicting open contribution to known after rival evidence is pruned (16-07)', () => {
+    applyProjectionIntent(conn, ingest(conn, observation('c-1', 'attempt-conflict', tokens(100, 'derived'))), 'ingest', PROJECTION);
+    applyProjectionIntent(conn, ingest(conn, observation('c-2', 'attempt-conflict', tokens(200, 'derived'))), 'ingest', PROJECTION);
+    expect(readOpenContributions(conn, 'attempt-conflict').map((r) => r.completeness)).toEqual(['conflicting', 'conflicting']);
+
+    // Prune the non-selected conflicting observation directly (simulating post-horizon expiry).
+    conn.run("DELETE FROM accounting_projection_intents WHERE observation_id IN (SELECT observation_id FROM accounting_observations WHERE source_identity = 'c-2')");
+    conn.run("DELETE FROM accounting_observations WHERE source_identity = 'c-2'");
+
+    // A later lower-ranked estimate or same-rank corroborator triggers reevaluation.
+    applyProjectionIntent(conn, ingest(conn, observation('c-3', 'attempt-conflict', tokens(100, 'estimated'))), 'ingest', PROJECTION);
+    expect(readOpenContributions(conn, 'attempt-conflict').map((r) => [r.measure, r.quantity, r.completeness])).toEqual([
+      ['input_tokens', 100n, 'conflicting'],
+      ['output_tokens', 50n, 'conflicting']
+    ]);
+
+    // A strictly higher-ranked known observation resolves the conflict.
+    applyProjectionIntent(conn, ingest(conn, observation('c-4', 'attempt-conflict', tokens(110, 'provider-reported'))), 'ingest', PROJECTION);
+    expect(readOpenContributions(conn, 'attempt-conflict').map((r) => [r.measure, r.quantity, r.completeness])).toEqual([
+      ['input_tokens', 110n, 'known'],
+      ['output_tokens', 55n, 'known']
+    ]);
+  });
 });

@@ -21,7 +21,11 @@ export function receiptViewOf(receipt: ReceiptRecord): ReceiptView {
   };
 }
 
-export function requestViewOf(request: RequestRecord, receipt: ReceiptRecord | null): IntegrationRequestView {
+export function requestViewOf(
+  request: RequestRecord,
+  receipt: ReceiptRecord | null,
+  priorBlockedReasons: readonly string[] = []
+): IntegrationRequestView {
   return {
     requestId: request.requestId,
     laneId: request.laneId,
@@ -32,6 +36,7 @@ export function requestViewOf(request: RequestRecord, receipt: ReceiptRecord | n
     profile: { profileId: request.profileId, revision: request.profileRevision, digest: request.profileDigest },
     state: request.state,
     reason: request.reason,
+    priorBlockedReasons: [...priorBlockedReasons],
     verificationAttempt: request.verificationAttempt,
     receipt: receipt === null ? null : receiptViewOf(receipt),
     createdAt: request.createdAt,

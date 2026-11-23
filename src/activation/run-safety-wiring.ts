@@ -307,12 +307,15 @@ export async function createRunSafetyWiring(input: {
     )
   );
 
-  // FR-R6-F05 (FR-005) — active and paused runs pin their checkpoints; the
-  // predicate reads the run map at sweep time, not at construction.
+  // FR-R6-F05 (FR-005) / FR-R7-16 (SR-B2) — active and paused runs, open SQLite
+  // recovery handoffs, and active F05 protective pins pin their checkpoint run
+  // directories; fails closed when SQLite is unavailable.
+  const inMemoryPinned = recoveryPinnedRunPredicate(() => input.store.getRunMap());
   const checkpointRetention = new RunCheckpointRetentionService({
     globalStorageRoot: input.context.globalStorageUri.fsPath,
     logger: input.logger,
-    isPinnedRun: recoveryPinnedRunPredicate(() => input.store.getRunMap()),
+    isPinnedRun: (runSegment) =>
+      inMemoryPinned(runSegment) || (sqliteCutover?.isRecoveryRunProtected(runSegment) ?? true),
     protectedPaths: () => getSqliteCutoverCoordinator(input.store)?.getDatabaseProtectedPaths() ?? []
   });
   // FR-R3-136 (FR-011) — deferred with the same reasoning, and it needs its own
@@ -339,13 +342,14 @@ export async function createRunSafetyWiring(input: {
       laneRootRef: run.laneRootRef
     });
   };
-  const checkpoints = new RunCheckpointService(
+  const checkpoints: RunCheckpointService = new RunCheckpointService(
     input.context.globalStorageUri.fsPath,
     input.workspaceRoot,
     input.logger,
     () => inFlightRuns().length,
     mutationLedger,
-    undefined,
+    (runSegment: string, handoverSegment: string): boolean =>
+      sqliteCutover?.isRecoveryEnvelopeProtected(runSegment, handoverSegment) ?? true,
     resolveRunCwd
   );
   const lockRegistration = getWorkspaceLockForStore(input.store);

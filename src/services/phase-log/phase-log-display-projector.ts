@@ -30,7 +30,12 @@ function elideValueAtDepth(value: unknown, depth: number): ToolArgumentValue {
   if (t === 'object') {
     const out: { [k: string]: ToolArgumentValue } = {};
     for (const [k, v] of Object.entries(value as object)) {
-      out[k] = elideValueAtDepth(v, depth + 1);
+      Object.defineProperty(out, k, {
+        value: elideValueAtDepth(v, depth + 1),
+        enumerable: true,
+        writable: true,
+        configurable: true
+      });
     }
     return out;
   }

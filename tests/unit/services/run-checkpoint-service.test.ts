@@ -410,5 +410,24 @@ describe('RunCheckpointService — naming and retention (K3, FR-030, D4)', () =>
     expect(prefixes.has(`${base + 2}-speckit-implement`)).toBe(false);
     expect(prefixes.has(`${base + 3}-speckit-implement`)).toBe(true);
   });
+
+  it('completes a finished checkpoint when post-write prune throws an I/O error (16-11)', async () => {
+    const svc = service(() => 1);
+    const pruneSpy = vi
+      .spyOn(svc as unknown as { prune: (dir: string) => Promise<void> }, 'prune')
+      .mockRejectedValueOnce(new Error('EACCES /private/run-a'));
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), 'finished work\n');
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+    try {
+      await expect(svc.checkpoint(RUN, 'speckit-implement')).resolves.toBeUndefined();
+    } finally {
+      pruneSpy.mockRestore();
+    }
+    const files = await artifacts();
+    expect(files.filter((name) => name.endsWith('.patch'))).toHaveLength(1);
+    expect(files.filter((name) => name.endsWith('.json'))).toHaveLength(1);
+    expect(warnings).toContain('checkpoint prune failed after checkpoint completed');
+    expect(warnings.some((message) => message.includes('/private/'))).toBe(false);
+  });
 });
 

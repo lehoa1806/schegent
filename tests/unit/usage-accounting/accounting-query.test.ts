@@ -334,3 +334,187 @@ describe('accounting query rootIds scope (FR-R6-F11 T008)', () => {
     expect(result).toEqual({ ok: false, refusal: { code: 'invalid-query', detail: 'rootIds' } });
   });
 });
+
+describe('FR-R7-16 (16-05): per-(row, measure) unit cap and readable overflow at limit: 1', () => {
+  const currencyOf = (index: number): string =>
+    `C${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`;
+
+  it('caps serialized units per (row, measure) in deterministic unit ASC order and reports omittedUnitCount', () => {
+    const accounting = service();
+    // 40 distinct currencies across 40 attempts in one group (each attempt stays well under the 16-unit ingest cap).
+    for (let index = 0; index < 40; index += 1) {
+      ingest(accounting, {
+        attemptId: `a-cur-${String(index)}`,
+        backend: 'acp',
+        measures: [cost('0.10', currencyOf(index))]
+      });
+    }
+    const response = okValue(accounting.query({ groupBy: ['backend'], limit: 1 }));
+    expect(response.rows).toHaveLength(1);
+    const row = response.rows.at(0)!;
+    const costMeasures = row.measures.filter((m) => m.measure === 'cost');
+    expect(costMeasures).toHaveLength(32);
+    expect(costMeasures.map((m) => m.unit)).toEqual(Array.from({ length: 32 }, (_, i) => currencyOf(i)));
+    expect(row.omittedUnitCount).toBe(8);
+    expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(1_048_576);
+  });
+
+  it('omits omittedUnitCount when all units fit and sums omitted units across cost and credits', () => {
+    const accounting = service({ maxUnitsPerRowMeasure: 3 });
+    for (let index = 0; index < 3; index += 1) {
+      ingest(accounting, {
+        attemptId: `a-fit-${String(index)}`,
+        backend: 'claude',
+        measures: [cost('0.10', currencyOf(index))]
+      });
+    }
+    const fitting = okValue(accounting.query({ groupBy: ['backend'], filters: { backend: 'claude' }, limit: 1 }));
+    expect(fitting.rows.at(0)?.omittedUnitCount).toBeUndefined();
+    expect('omittedUnitCount' in (fitting.rows.at(0) ?? {})).toBe(false);
+
+    // 5 distinct cost currencies + 4 distinct credit units in one group with row cap 3 -> omits (5-3) + (4-3) = 3.
+    for (let index = 0; index < 5; index += 1) {
+      ingest(accounting, {
+        attemptId: `a-mix-${String(index)}`,
+        backend: 'acp',
+        measures: [
+          cost('0.10', currencyOf(index)),
+          ...(index < 4
+            ? [{ measure: 'credits' as const, quantity: '1.0', unit: `cred-${String(index)}`, provenance: 'derived' as const }]
+            : [])
+        ]
+      });
+    }
+    const capped = okValue(accounting.query({ groupBy: ['backend'], filters: { backend: 'acp' }, limit: 1 }));
+    expect(capped.rows.at(0)?.omittedUnitCount).toBe(3);
+    expect(capped.rows.at(0)?.measures.filter((m) => m.measure === 'cost').map((m) => m.unit)).toEqual(['CAA', 'CAB', 'CAC']);
+    expect(capped.rows.at(0)?.measures.filter((m) => m.measure === 'credits').map((m) => m.unit)).toEqual([
+      'cred-0',
+      'cred-1',
+      'cred-2'
+    ]);
+  });
+});
+
+describe('FR-R7-16 (16-06): query-bound v2 paging cursor', () => {
+  it('emits v2 cursors and refuses changed-query reuse across every bound parameter plus legacy v1 cursors', () => {
+    const accounting = service();
+    ingest(accounting, {
+      attemptId: 'a-1',
+      rootId: 'root-1',
+      backend: 'claude',
+      model: 'm-1',
+      phaseId: 'phase-0',
+      eventUtc: '2026-11-10T08:00:00.000Z',
+      measures: [...tokens(10, 5), cost('0.10')]
+    });
+    ingest(accounting, {
+      attemptId: 'a-2',
+      rootId: 'root-2',
+      backend: 'claude',
+      model: 'm-2',
+      phaseId: 'phase-1',
+      eventUtc: '2026-11-10T09:00:00.000Z',
+      measures: [...tokens(20, 6), cost('0.20')]
+    });
+    ingest(accounting, {
+      attemptId: 'a-3',
+      rootId: 'root-3',
+      backend: 'codex',
+      model: 'm-1',
+      phaseId: 'phase-2',
+      eventUtc: '2026-11-10T10:00:00.000Z',
+      measures: [...tokens(30, 7), cost('0.30')]
+    });
+
+    const base = {
+      groupBy: ['phaseId', 'model'] as const,
+      from: '2026-11-10T00:00:00.000Z',
+      to: '2026-11-11T00:00:00.000Z',
+      filters: { backend: 'claude' as const },
+      measures: ['input_tokens', 'cost'] as const,
+      rootIds: ['root-1', 'root-2'] as const,
+      includeLegacy: false,
+      limit: 1
+    };
+    const page1 = okValue(accounting.query(base));
+    expect(page1.nextCursor).toBeDefined();
+    const cursor = page1.nextCursor as string;
+    expect(cursor).toMatch(/^2~\d+~[0-9a-f]{32}~phase-0~m-1$/);
+    expect(cursor.length).toBeLessThanOrEqual(512);
+
+    // Every changed query parameter must refuse cursor reuse as invalid-query (detail: 'cursor').
+    const mutatedRequests = [
+      { ...base, filters: { backend: 'codex' } },
+      { ...base, filters: undefined },
+      { ...base, from: '2026-11-10T01:00:00.000Z' },
+      { ...base, to: '2026-11-11T01:00:00.000Z' },
+      { ...base, measures: ['input_tokens'] },
+      { ...base, measures: undefined },
+      { ...base, groupBy: ['model', 'phaseId'] },
+      { ...base, groupBy: ['phaseId'] },
+      { ...base, rootIds: ['root-1', 'root-3'] },
+      { ...base, rootIds: undefined },
+      { ...base, includeLegacy: true },
+      { ...base, asOfRevision: Math.max(1, page1.revision - 1) }
+    ];
+    for (const mutated of mutatedRequests) {
+      expect(accounting.query({ ...mutated, cursor })).toEqual({
+        ok: false,
+        refusal: { code: 'invalid-query', detail: 'cursor' }
+      });
+    }
+
+    // Legacy v1 cursor format is refused.
+    expect(accounting.query({ ...base, cursor: `1~${String(page1.revision)}~phase-0~m-1` })).toEqual({
+      ok: false,
+      refusal: { code: 'invalid-query', detail: 'cursor' }
+    });
+
+    // Tampered query digest is refused.
+    const tampered = cursor.replace(/~[0-9a-f]{32}~/, `~${'0'.repeat(32)}~`);
+    expect(accounting.query({ ...base, cursor: tampered })).toEqual({
+      ok: false,
+      refusal: { code: 'invalid-query', detail: 'cursor' }
+    });
+
+    // Canonical equivalence (reordered measures/rootIds, different limit, explicit matching asOfRevision) succeeds.
+    const page2 = okValue(
+      accounting.query({
+        ...base,
+        measures: ['cost', 'input_tokens'],
+        rootIds: ['root-2', 'root-1'],
+        asOfRevision: page1.revision,
+        limit: 5,
+        cursor
+      })
+    );
+    expect(page2.revision).toBe(page1.revision);
+    expect(page2.rows.map((r) => r.key)).toEqual([{ phaseId: 'phase-1', model: 'm-2' }]);
+  });
+
+  it('supports multi-revision pagination when page 1 omits asOfRevision and later pages pin it after new writes', () => {
+    const accounting = service();
+    ingest(accounting, { attemptId: 'a-1', phaseId: 'phase-a', measures: tokens(10, 1) });
+    ingest(accounting, { attemptId: 'a-2', phaseId: 'phase-b', measures: tokens(20, 1) });
+
+    const page1 = okValue(accounting.query({ groupBy: ['phaseId'], limit: 1 }));
+    expect(page1.rows.map((r) => r.key.phaseId)).toEqual(['phase-a']);
+    expect(page1.nextCursor).toBeDefined();
+
+    // Commit a new revision before fetching page 2.
+    ingest(accounting, { attemptId: 'a-3', phaseId: 'phase-c', measures: tokens(30, 1) });
+
+    const page2 = okValue(
+      accounting.query({
+        groupBy: ['phaseId'],
+        asOfRevision: page1.revision,
+        limit: 1,
+        cursor: page1.nextCursor
+      })
+    );
+    expect(page2.revision).toBe(page1.revision);
+    expect(page2.rows.map((r) => r.key.phaseId)).toEqual(['phase-b']);
+    expect(page2.nextCursor).toBeUndefined();
+  });
+});

@@ -378,6 +378,32 @@ describe('FR-R6-F08 T023 — the 64 KiB bound', () => {
     // The newest delivery is kept: trimming drops from the end, which holds the oldest.
     expect(explanation.deliveries.at(0)?.targetAttemptId).toBe(`att-${deliveries.length + 1}`);
   });
+
+  it('seeds SQL-omitted decision counts into truncatedCounts.decisions both with and without in-memory trimming (16-13)', () => {
+    // Without in-memory trimming: 5 decisions + 1,600 pre-omitted = 1,605 total.
+    const small = buildExplanation(
+      snapshot({
+        decisions: Array.from({ length: 5 }, (_, index) => decisionRow(index)),
+        omittedDecisionCount: 1_600
+      })
+    );
+    expect(small.decisions).toHaveLength(5);
+    expect(small.truncatedCounts.decisions).toBe(1_600);
+    expect(small.decisions.length + small.truncatedCounts.decisions).toBe(1_605);
+
+    // With in-memory trimming: 900 paged decisions + 1,600 pre-omitted = 2,500 total.
+    const paged = Array.from({ length: 900 }, (_, index) => decisionRow(1_600 + index));
+    const bounded = buildExplanation(
+      snapshot({
+        decisions: paged,
+        omittedDecisionCount: 1_600
+      })
+    );
+    expect(bytesOf(bounded)).toBeLessThanOrEqual(MAX_HANDOFF_EXPLANATION_BYTES);
+    expect(bounded.decisions.length + bounded.truncatedCounts.decisions).toBe(2_500);
+    expect(bounded.truncatedCounts.decisions).toBeGreaterThan(1_600);
+    expect(bounded.decisions.at(0)?.revisionNo).toBe(1);
+  });
 });
 
 describe('FR-R6-F08 T023 — content guard', () => {

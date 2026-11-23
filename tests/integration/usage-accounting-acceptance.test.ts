@@ -519,5 +519,145 @@ describe('usage accounting acceptance (T051)', () => {
     },
     DRIFT_TIMEOUT_MS
   );
+
+  it('FR-R7-16 (16-05..16-08): enforces unit/clock bounds, query-bound v2 cursors, post-horizon compaction & conflict retention, and zero writes to F04 placeholder tables', () => {
+    let clockNow = NOW;
+    const conn = openStore('hardening.db');
+    const service = createUsageAccountingService({
+      conn,
+      nowUtc: () => clockNow,
+      monotonicMs: () => 1,
+      workspaceId: 'ws-hardening',
+      bounds: { maxRetainedObservations: 45, maxUnitsPerRowMeasure: 32 }
+    });
+
+    // 16-05: 36 distinct currencies across 36 attempts in one group stay readable at limit: 1 with omittedUnitCount.
+    const currencyOf = (index: number): string =>
+      `C${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + (index % 26))}`;
+    for (let index = 0; index < 36; index += 1) {
+      ingested(
+        service,
+        observation({
+          attemptId: `att-cur-${String(index)}`,
+          rootId: `root-cur-${String(index)}`,
+          sourceIdentity: `cur:${String(index)}`,
+          dimensions: { backend: 'claude', phaseId: `phase-${String(index % 3)}` },
+          measures: [{ measure: 'cost', quantity: '0.10', unit: currencyOf(index), provenance: 'provider-reported' }]
+        })
+      );
+    }
+    const capped = answerOf(service, { groupBy: ['backend'], limit: 1 });
+    expect(capped.rows).toHaveLength(1);
+    expect(capped.rows.at(0)?.measures.filter((m) => m.measure === 'cost')).toHaveLength(32);
+    expect(capped.rows.at(0)?.omittedUnitCount).toBe(4);
+    expect(Buffer.byteLength(JSON.stringify(capped), 'utf8')).toBeLessThanOrEqual(1_048_576);
+
+    // 16-05: >24h future skew is refused and counted as ingest-failed.
+    expect(
+      service.ingestObservation(
+        observation({
+          attemptId: 'att-skew',
+          rootId: 'root-skew',
+          sourceIdentity: 'skew:far',
+          eventUtc: '2026-11-12T12:00:00.000Z'
+        })
+      )
+    ).toEqual({ ok: false, refusal: { code: 'invalid-observation', detail: 'eventUtc' } });
+
+    // 16-06: v2 cursor refuses changed query & v1 format, while unchanged multi-revision paging succeeds.
+    const p1 = answerOf(service, { groupBy: ['phaseId'], limit: 1 });
+    expect(p1.nextCursor).toMatch(/^2~\d+~[0-9a-f]{32}~phase-0$/);
+    expect(service.query({ groupBy: ['phaseId'], filters: { backend: 'codex' }, limit: 1, cursor: p1.nextCursor })).toEqual({
+      ok: false,
+      refusal: { code: 'invalid-query', detail: 'cursor' }
+    });
+    expect(service.query({ groupBy: ['phaseId'], limit: 1, cursor: `1~${String(p1.revision)}~phase-0` })).toEqual({
+      ok: false,
+      refusal: { code: 'invalid-query', detail: 'cursor' }
+    });
+    const p2 = answerOf(service, { groupBy: ['phaseId'], asOfRevision: p1.revision, limit: 1, cursor: p1.nextCursor });
+    expect(p2.rows.at(0)?.key.phaseId).toBe('phase-1');
+
+    // 16-07: conflicting evidence survives expiry of rival observation & post-horizon compaction keeps totals intact.
+    ingested(
+      service,
+      observation({
+        attemptId: 'att-conflict',
+        rootId: 'root-conflict',
+        sourceIdentity: 'conflict:winner',
+        eventUtc: '2026-11-10T11:00:00.000Z',
+        measures: [{ measure: 'input_tokens', quantity: 100, unit: 'count', provenance: 'derived' }]
+      })
+    );
+    ingested(
+      service,
+      observation({
+        attemptId: 'att-conflict',
+        rootId: 'root-conflict',
+        sourceIdentity: 'conflict:rival',
+        eventUtc: '2026-08-14T11:00:00.000Z',
+        measures: [{ measure: 'input_tokens', quantity: 250, unit: 'count', provenance: 'derived' }]
+      })
+    );
+    clockNow = '2026-11-14T12:00:00.000Z';
+    // Ingest a newer observation on an unrelated attempt so `conflict:rival` is no longer MAX(ingest_seq).
+    ingested(
+      service,
+      observation({
+        attemptId: 'att-sentinel-seq',
+        rootId: 'root-sentinel-seq',
+        sourceIdentity: 'sentinel:seq',
+        eventUtc: '2026-11-14T11:00:00.000Z',
+        observedUtc: '2026-11-14T11:00:01.000Z',
+        measures: [{ measure: 'input_tokens', quantity: 1, unit: 'count', provenance: 'provider-reported' }]
+      })
+    );
+    expect(service.pruneExpired()).toMatchObject({ ok: true, value: { observationsPruned: 1 } });
+    // Trigger reevaluation with a corroborating observation; completeness stays conflicting.
+    ingested(
+      service,
+      observation({
+        attemptId: 'att-conflict',
+        rootId: 'root-conflict',
+        sourceIdentity: 'conflict:corroborate',
+        eventUtc: '2026-11-14T11:00:00.000Z',
+        measures: [{ measure: 'input_tokens', quantity: 100, unit: 'count', provenance: 'derived' }]
+      })
+    );
+    expect(
+      conn.scalar("SELECT completeness FROM accounting_contributions WHERE attempt_id = 'att-conflict' AND to_revision IS NULL")
+    ).toBe('conflicting');
+
+    // Advance past 90-day horizon for all earlier rows: compaction reclaims aged selected observations and keeps totals readable.
+    clockNow = '2027-03-01T12:00:00.000Z';
+    ingested(
+      service,
+      observation({
+        attemptId: 'att-fresh-post-horizon',
+        rootId: 'root-fresh',
+        sourceIdentity: 'fresh:1',
+        eventUtc: '2027-03-01T11:00:00.000Z',
+        observedUtc: '2027-03-01T11:00:01.000Z',
+        measures: [{ measure: 'input_tokens', quantity: 5, unit: 'count', provenance: 'provider-reported' }]
+      })
+    );
+    const pruned = service.pruneExpired();
+    expect(pruned.ok && pruned.value.observationsPruned).toBeGreaterThanOrEqual(36);
+    const compactedCount = count(conn, 'SELECT count(*) FROM accounting_contributions WHERE to_revision IS NULL AND selected_observation_id IS NULL');
+    expect(compactedCount).toBeGreaterThanOrEqual(36);
+
+    // 16-08: All 7 F04 placeholder usage/log tables exist in schema v9 and hold zero production writes.
+    for (const table of [
+      'usage_observations',
+      'usage_corrections',
+      'usage_accounting_applications',
+      'attempt_usage_revisions',
+      'log_streams',
+      'log_segments',
+      'log_gaps'
+    ]) {
+      expect(count(conn, `SELECT count(*) FROM "${table}"`), `placeholder ${table} must stay empty`).toBe(0);
+    }
+  });
 });
 

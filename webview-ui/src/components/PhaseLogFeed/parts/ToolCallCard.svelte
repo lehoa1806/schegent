@@ -39,20 +39,14 @@
   // when the typed payload was over budget or recursion depth was
   // exceeded; we render a small explanatory pill.
   function isSentinel(value: ToolArgumentValue): null | 'elided' | 'truncated' {
-    if (
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      (value as any).__elided === true
-    ) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    const record = value as Readonly<Record<string, unknown>>;
+    if (Object.hasOwn(record, '__elided') && record['__elided'] === true) {
       return 'elided';
     }
-    if (
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      (value as any).__truncated === true
-    ) {
+    if (Object.hasOwn(record, '__truncated') && record['__truncated'] === true) {
       return 'truncated';
     }
     return null;

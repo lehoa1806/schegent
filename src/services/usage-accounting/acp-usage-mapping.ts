@@ -111,7 +111,9 @@ function occupancyMeasure(measure: 'context_used' | 'context_size', value: unkno
 
 /**
  * A session-cumulative amount (money or credits): known only with a valid unit and a qualified
- * baseline. `validUnit` is `null` when the producer named no acceptable unit.
+ * baseline. `validUnit` is `null` when the producer named no acceptable unit. When no baseline is
+ * qualified, the unknown measure folds to `fallbackUnit` so an unbaselined ACP producer cannot
+ * mint arbitrary distinct currencies or credit units (FR-R7-16 / 16-05).
  */
 function cumulativeMeasure(
   measure: 'cost' | 'credits',
@@ -123,7 +125,7 @@ function cumulativeMeasure(
   if (amount === undefined) return unknownMeasure(measure, fallbackUnit, REASON_NOT_REPORTED);
   if (validUnit === null || typeof amount !== 'string') return unknownMeasure(measure, fallbackUnit, REASON_REJECTED);
   const qualification = qualifyAcpSessionCost(hasQualifiedSessionBaseline);
-  if (!qualification.known) return unknownMeasure(measure, validUnit, qualification.reason);
+  if (!qualification.known) return unknownMeasure(measure, fallbackUnit, qualification.reason);
   return { measure, quantity: amount, unit: validUnit, provenance: qualification.provenance };
 }
 

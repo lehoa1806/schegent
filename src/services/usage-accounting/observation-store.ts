@@ -14,11 +14,13 @@
 import { createHash } from 'node:crypto';
 import {
   type AccountingBounds,
+  type AccountingRefusal,
   type AccountingRefusalCode,
   type AccountingResult,
   type GapKind,
   type IngestDisposition,
-  ACCOUNTING_NORMALIZATION_VERSION
+  ACCOUNTING_NORMALIZATION_VERSION,
+  COUNT_MEASURES
 } from '../../contracts/usage-accounting/accounting-types';
 import type { NodeSqliteConnection } from '../sqlite-store';
 import { inImmediateTransaction } from './accounting-transaction';
@@ -59,8 +61,53 @@ function gapScopeOf(attemptId: unknown): string {
   return typeof attemptId === 'string' && GAP_SCOPE_PATTERN.test(attemptId) ? attemptId : UNATTRIBUTED_GAP_SCOPE;
 }
 
+/**
+ * Refusal objects whose gap `ingestObservationRecord` already committed to `accounting_gaps`.
+ *
+ * Tracked out-of-band by refusal object identity so `AccountingResult` / `AccountingRefusal`
+ * preserves its exact wire shape (`{ ok: false, refusal: { code, detail? } }`), while
+ * `UsageAccountingWiring` can tell unambiguously whether the store already counted a gap — even
+ * for refusal codes such as `invalid-observation` where some sites commit a gap (future clock
+ * skew > 24 h, per-attempt unit cap overflow) and others do not.
+ */
+const STORE_COUNTED_REFUSALS = new WeakSet<AccountingRefusal>();
+
+/**
+ * Refusal codes for which `ingestObservationRecord` always commits a gap. Checked alongside
+ * `STORE_COUNTED_REFUSALS` so test doubles returning plain refusal objects still behave
+ * identically for always-counted codes.
+ */
+const ALWAYS_STORE_COUNTED_CODES: ReadonlySet<AccountingRefusalCode> = new Set<AccountingRefusalCode>([
+  'invalid-counter',
+  'observation-too-large',
+  'telemetry-echo',
+  'expired-source',
+  'unattributed-limit',
+  'projection-backlog-full',
+  'store-full'
+]);
+
+/** True when the store already committed a gap row for this refusal. */
+export function isStoreCountedRefusal(refusal: AccountingRefusal): boolean {
+  return STORE_COUNTED_REFUSALS.has(refusal) || ALWAYS_STORE_COUNTED_CODES.has(refusal.code);
+}
+
 function refusal<T>(code: AccountingRefusalCode, detail?: string): AccountingResult<T> {
   return { ok: false, refusal: { code, ...(detail !== undefined ? { detail } : {}) } };
+}
+
+function recordGapAndRefuse<T>(
+  conn: NodeSqliteConnection,
+  gap: GapKind,
+  scope: string,
+  ctx: IngestContext,
+  code: AccountingRefusalCode,
+  detail?: string
+): AccountingResult<T> {
+  recordGap(conn, gap, scope, ctx.nowUtc, ctx.bounds.maxGapKeys);
+  const body: AccountingRefusal = { code, ...(detail !== undefined ? { detail } : {}) };
+  STORE_COUNTED_REFUSALS.add(body);
+  return { ok: false, refusal: body };
 }
 
 interface RevisionSlot {
@@ -91,8 +138,10 @@ function nextIngestSeq(conn: NodeSqliteConnection): number {
 }
 
 function boundRefusal(conn: NodeSqliteConnection, obs: NormalizedObservation, ingestSeq: number, bounds: AccountingBounds): { code: AccountingRefusalCode; gap: GapKind } | undefined {
-  if (obs.disposition === 'unattributed') {
-    const held = Number(conn.scalar("SELECT count(*) FROM accounting_observations WHERE disposition = 'unattributed'") ?? 0);
+  if (obs.disposition === 'unattributed' || obs.disposition === 'historical') {
+    const held = Number(
+      conn.scalar("SELECT count(*) FROM accounting_observations WHERE disposition IN ('unattributed', 'historical')") ?? 0
+    );
     if (held >= bounds.maxUnattributed) return { code: 'unattributed-limit', gap: 'unattributed-limit' };
   }
   if (obs.disposition === 'attributed') {
@@ -203,6 +252,56 @@ function insertObservationRows(
   }
 }
 
+function exceedsAttemptUnitCap(
+  conn: NodeSqliteConnection,
+  obs: NormalizedObservation,
+  maxUnitsPerAttemptMeasure: number
+): boolean {
+  const attemptId = obs.attemptId;
+  if (attemptId === null) return false;
+  for (const item of obs.measures) {
+    if (COUNT_MEASURES.has(item.measure)) continue;
+    const alreadyInContributions = conn.get<{ hit: number }>(
+      `SELECT 1 AS hit FROM accounting_contributions
+        WHERE attempt_id = ? AND measure = ? AND unit = ? AND to_revision IS NULL
+        LIMIT 1`,
+      attemptId,
+      item.measure,
+      item.unit
+    );
+    if (alreadyInContributions !== undefined) continue;
+    const alreadyInObservations = conn.get<{ hit: number }>(
+      `SELECT 1 AS hit FROM accounting_observations o
+         JOIN accounting_observation_measures m ON m.observation_id = o.observation_id
+        WHERE o.attempt_id = ? AND o.disposition NOT IN ('unattributed', 'historical')
+          AND m.measure = ? AND m.unit = ?
+        LIMIT 1`,
+      attemptId,
+      item.measure,
+      item.unit
+    );
+    if (alreadyInObservations !== undefined) continue;
+    const existingDistinctUnits = Number(
+      conn.scalar(
+        `SELECT count(*) FROM (
+           SELECT unit FROM accounting_contributions
+            WHERE attempt_id = ? AND measure = ? AND to_revision IS NULL
+           UNION
+           SELECT m.unit AS unit FROM accounting_observations o
+             JOIN accounting_observation_measures m ON m.observation_id = o.observation_id
+            WHERE o.attempt_id = ? AND o.disposition NOT IN ('unattributed', 'historical') AND m.measure = ?
+         )`,
+        attemptId,
+        item.measure,
+        attemptId,
+        item.measure
+      ) ?? 0
+    );
+    if (existingDistinctUnits >= maxUnitsPerAttemptMeasure) return true;
+  }
+  return false;
+}
+
 function storeNormalized(conn: NodeSqliteConnection, obs: NormalizedObservation, ctx: IngestContext): AccountingResult<StoredObservation> {
   const scope = gapScopeOf(obs.attemptId);
   const slot = findRevisionSlot(conn, obs);
@@ -213,10 +312,12 @@ function storeNormalized(conn: NodeSqliteConnection, obs: NormalizedObservation,
   const ingestSeq = nextIngestSeq(conn);
   const bound = boundRefusal(conn, obs, ingestSeq, ctx.bounds);
   if (bound !== undefined) {
-    recordGap(conn, bound.gap, scope, ctx.nowUtc, ctx.bounds.maxGapKeys);
-    return refusal(bound.code);
+    return recordGapAndRefuse(conn, bound.gap, scope, ctx, bound.code);
   }
   const attributed = obs.disposition === 'attributed';
+  if (attributed && exceedsAttemptUnitCap(conn, obs, ctx.bounds.maxUnitsPerAttemptMeasure)) {
+    return recordGapAndRefuse(conn, 'ingest-failed', scope, ctx, 'invalid-observation', 'unit');
+  }
   if (attributed && !upsertAttempt(conn, obs, ctx.workspaceId)) return refusal('invalid-observation', 'rootId');
 
   const observationId =
@@ -261,7 +362,7 @@ export function ingestObservationRecord(
     if (gap !== undefined) {
       const raw: unknown = input;
       const scope = gapScopeOf(typeof raw === 'object' && raw !== null ? (raw as { attemptId?: unknown }).attemptId : undefined);
-      inImmediateTransaction(conn, () => recordGap(conn, gap, scope, ctx.nowUtc, ctx.bounds.maxGapKeys));
+      return inImmediateTransaction(conn, () => recordGapAndRefuse(conn, gap, scope, ctx, code, detail));
     }
     return refusal(code, detail);
   }

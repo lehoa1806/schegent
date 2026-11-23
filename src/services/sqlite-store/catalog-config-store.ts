@@ -31,6 +31,85 @@ const LAYER_ORDER: Readonly<Record<CatalogLayer, number>> = {
   workflow: 2
 };
 
+export type LegacySourceStandingReason =
+  | 'catalog-head'
+  | 'published-version'
+  | 'frozen-closure';
+
+export interface LegacySourceStanding {
+  readonly referenced: boolean;
+  readonly reasons: readonly LegacySourceStandingReason[];
+}
+
+export interface LegacySourceRef {
+  readonly kind: CatalogLayer;
+  readonly id: string;
+  readonly versionId: string;
+}
+
+const LEGACY_VERSION_ID_PATTERN = /^v(\d+)$/;
+const VALID_CATALOG_LAYERS: ReadonlySet<string> = new Set<CatalogLayer>(['phase', 'pipeline', 'workflow']);
+
+/**
+ * FR-R7-16 (`16-02`, `FR-002`) — Authoritative F04 SQLite catalog per-source
+ * standing query for a legacy catalog version (`kind`, `id`, `versionId`).
+ *
+ * Returns `{ referenced: true, reasons }` when any matching `definition_versions`
+ * row is pointed to by `catalog_heads` (`published_version_id` or `draft_version_id`),
+ * carries `status = 'published'`, or is pinned by `frozen_closures` /
+ * `frozen_closure_members`. A bare unpointed `'draft'` row carries no standing
+ * here so unreferenced version-before-manifest residue stays eligible for quarantine.
+ */
+export function queryLegacySourceStanding(
+  conn: NodeSqliteConnection,
+  ref: LegacySourceRef
+): LegacySourceStanding {
+  if (!VALID_CATALOG_LAYERS.has(ref.kind)) {
+    return { referenced: false, reasons: [] };
+  }
+  const match = LEGACY_VERSION_ID_PATTERN.exec(ref.versionId);
+  if (!match) {
+    return { referenced: false, reasons: [] };
+  }
+  const versionNumber = Number(match[1]);
+  if (!Number.isSafeInteger(versionNumber) || versionNumber < 1) {
+    return { referenced: false, reasons: [] };
+  }
+
+  const row = conn.get<{
+    readonly in_head: number | null;
+    readonly is_published: number | null;
+    readonly in_closure: number | null;
+  }>(
+    `SELECT
+       MAX(CASE WHEN EXISTS (
+         SELECT 1 FROM catalog_heads ch
+          WHERE ch.published_version_id = dv.definition_version_id
+             OR ch.draft_version_id = dv.definition_version_id
+       ) THEN 1 ELSE 0 END) AS in_head,
+       MAX(CASE WHEN dv.status = 'published' THEN 1 ELSE 0 END) AS is_published,
+       MAX(CASE WHEN EXISTS (
+         SELECT 1 FROM frozen_closures fc
+          WHERE fc.root_definition_version_id = dv.definition_version_id
+       ) OR EXISTS (
+         SELECT 1 FROM frozen_closure_members fcm
+          WHERE fcm.definition_version_id = dv.definition_version_id
+       ) THEN 1 ELSE 0 END) AS in_closure
+     FROM definition_versions dv
+     JOIN definitions d ON d.definition_id = dv.definition_id
+     WHERE d.layer = ? AND d.slug = ? AND dv.version_number = ?`,
+    ref.kind,
+    ref.id,
+    versionNumber
+  );
+
+  const reasons: LegacySourceStandingReason[] = [];
+  if (row?.in_head === 1) reasons.push('catalog-head');
+  if (row?.is_published === 1) reasons.push('published-version');
+  if (row?.in_closure === 1) reasons.push('frozen-closure');
+  return { referenced: reasons.length > 0, reasons };
+}
+
 export function canonicalizeYamlText(yamlText: string): string {
   const normalizedLines = yamlText
     .replace(/\r\n/g, '\n')
@@ -264,6 +343,11 @@ export class CatalogConfigStoreAdapter {
       revision: row.revision,
       updatedAtMs: row.updated_at_ms
     };
+  }
+
+  /** FR-R7-16 (`16-02`): authoritative F04 catalog standing for a legacy catalog source version. */
+  public getLegacySourceStanding(ref: LegacySourceRef): LegacySourceStanding {
+    return queryLegacySourceStanding(this.conn, ref);
   }
 
   /**

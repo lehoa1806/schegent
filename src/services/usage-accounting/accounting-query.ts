@@ -20,6 +20,7 @@
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
+import { createHash } from 'node:crypto';
 import {
   ACCOUNTING_CALCULATION_VERSION,
   ACCOUNTING_POLICY_VERSION,
@@ -36,6 +37,7 @@ import {
 } from '../../contracts/usage-accounting/accounting-types';
 import {
   DIMENSION_VALUE_PATTERNS,
+  MAX_QUERY_CURSOR_CHARS,
   MAX_REPORTED_GAP_KINDS,
   type AccountingDimension,
   type AccountingGapRow,
@@ -62,8 +64,10 @@ export interface QueryContext {
 type SqlParam = string | number | bigint | null;
 type Refusal<T> = AccountingResult<T> & { readonly ok: false };
 
-const CURSOR_VERSION = '1';
+const QUERY_CURSOR_VERSION = '2';
+const GAP_CURSOR_VERSION = '1';
 const CURSOR_SEPARATOR = '~';
+const QUERY_DIGEST_PATTERN = /^[0-9a-f]{32}$/;
 const MONEY_MEASURES: ReadonlySet<Measure> = new Set<Measure>(['cost', 'credits']);
 const OCCUPANCY_LIST = [...OCCUPANCY_MEASURES].map((measure) => `'${measure}'`).join(', ');
 const VISIBLE = 'c.from_revision <= ? AND (c.to_revision IS NULL OR c.to_revision > ?)';
@@ -98,24 +102,59 @@ function isDimensionValue(dimension: AccountingDimension, value: string): boolea
   }
 }
 
+/**
+ * First 32 lowercase hex chars of SHA-256 over the canonical query shape (excluding `limit` and
+ * `asOfRevision`, while `cursor.revision === request.asOfRevision` is still checked separately so
+ * callers such as `report-usage.ts` can fix `asOfRevision` from page 1 on page 2+).
+ */
+function computeQueryDigest(request: AccountingQueryRequest): string {
+  const filters: Record<string, string> = {};
+  if (request.filters !== undefined) {
+    for (const key of Object.keys(request.filters).sort()) {
+      const value = request.filters[key as AccountingDimension];
+      if (value !== undefined) filters[key] = value;
+    }
+  }
+  const canonical = {
+    groupBy: [...request.groupBy],
+    from: request.from ?? null,
+    to: request.to ?? null,
+    filters,
+    measures: request.measures === undefined ? null : [...new Set(request.measures)].sort(),
+    rootIds: request.rootIds === undefined ? null : [...new Set(request.rootIds)].sort(),
+    includeLegacy: request.includeLegacy === true
+  };
+  return createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex').slice(0, 32);
+}
+
 interface DecodedCursor {
   readonly revision: number;
+  readonly queryDigest: string;
   readonly keys: readonly string[];
 }
 
-/** `1~<revision>~<key>...`; an empty key is the null bucket. */
-function decodeQueryCursor(cursor: string, groupBy: readonly AccountingDimension[]): DecodedCursor | undefined {
+/** `2~<revision>~<queryDigest32Hex>~<key>...`; an empty key is the null bucket. Legacy v1 cursors are refused. */
+function decodeQueryCursor(
+  cursor: string,
+  groupBy: readonly AccountingDimension[],
+  expectedDigest: string
+): DecodedCursor | undefined {
+  if (cursor.length > MAX_QUERY_CURSOR_CHARS) return undefined;
   const parts = cursor.split(CURSOR_SEPARATOR);
-  if (parts.length !== groupBy.length + 2 || parts.at(0) !== CURSOR_VERSION) return undefined;
+  if (parts.length !== groupBy.length + 3 || parts.at(0) !== QUERY_CURSOR_VERSION) return undefined;
   const revisionText = parts.at(1) ?? '';
   if (!/^[1-9]\d{0,15}$/.test(revisionText)) return undefined;
-  const keys = parts.slice(2);
+  const revision = Number(revisionText);
+  if (!Number.isSafeInteger(revision) || revision < 1) return undefined;
+  const queryDigest = parts.at(2) ?? '';
+  if (!QUERY_DIGEST_PATTERN.test(queryDigest) || queryDigest !== expectedDigest) return undefined;
+  const keys = parts.slice(3);
   const valid = keys.every((key, index) => key === '' || isDimensionValue(groupBy.at(index) as AccountingDimension, key));
-  return valid ? { revision: Number(revisionText), keys } : undefined;
+  return valid ? { revision, queryDigest, keys } : undefined;
 }
 
-function encodeQueryCursor(revision: number, keys: readonly string[]): string {
-  return [CURSOR_VERSION, String(revision), ...keys].join(CURSOR_SEPARATOR);
+function encodeQueryCursor(revision: number, queryDigest: string, keys: readonly string[]): string {
+  return [QUERY_CURSOR_VERSION, String(revision), queryDigest, ...keys].join(CURSOR_SEPARATOR);
 }
 
 interface ScopeSql {
@@ -198,6 +237,7 @@ interface MeasureAggregate {
   laneTotal: bigint;
   estimatedTotal: bigint;
   known: number;
+  hasConflicting: boolean;
 }
 
 type RawAggregate = Record<string, unknown> & {
@@ -206,6 +246,7 @@ type RawAggregate = Record<string, unknown> & {
   readonly lane_text: string | null;
   readonly estimated_text: string | null;
   readonly known: number | bigint;
+  readonly has_conflicting: number | bigint;
 };
 
 type RawLatest = Record<string, unknown> & { readonly measure: Measure; readonly unit: string; readonly quantity_text: string };
@@ -256,7 +297,8 @@ function readMeasureAggregates(
        CAST(SUM(CASE WHEN c.measure IN (${OCCUPANCY_LIST}) OR c.cost_origin IS 'estimated' THEN NULL ELSE c.quantity END) AS TEXT) AS lane_text,
        CAST(SUM(CASE WHEN c.cost_origin IS 'estimated' THEN c.quantity END) AS TEXT) AS estimated_text,
        count(DISTINCT c.attempt_id)
-         - count(DISTINCT CASE WHEN c.cost_origin IS 'estimated' OR c.completeness <> 'known' OR c.quantity IS NULL THEN c.attempt_id END) AS known
+         - count(DISTINCT CASE WHEN c.cost_origin IS 'estimated' OR c.completeness <> 'known' OR c.quantity IS NULL THEN c.attempt_id END) AS known,
+       MAX(CASE WHEN c.completeness = 'conflicting' THEN 1 ELSE 0 END) AS has_conflicting
      ${from} GROUP BY ${groupColumns}c.measure, c.unit`,
     ...params
   );
@@ -268,7 +310,8 @@ function readMeasureAggregates(
       unit: row.unit,
       laneTotal: parseSumText(row.lane_text),
       estimatedTotal: parseSumText(row.estimated_text),
-      known: Number(row.known)
+      known: Number(row.known),
+      hasConflicting: Number(row.has_conflicting) > 0
     });
   }
   const partition = `${groupColumns}c.measure, c.unit`;
@@ -291,7 +334,8 @@ function formatQuantity(measure: Measure, value: bigint): string {
   return MONEY_MEASURES.has(measure) ? formatMicros(value) : value.toString();
 }
 
-function completenessOf(known: number, denominator: number): Completeness {
+function completenessOf(known: number, denominator: number, hasConflicting: boolean): Completeness {
+  if (hasConflicting) return 'conflicting';
   if (known >= denominator) return 'known';
   return known === 0 ? 'unknown' : 'partial';
 }
@@ -305,7 +349,7 @@ function toMeasureTotal(aggregate: MeasureAggregate, denominator: number): Accou
     ...(aggregate.measure === 'cost'
       ? { reportedTotal: total, estimatedTotal: formatQuantity('cost', aggregate.estimatedTotal) }
       : {}),
-    completeness: completenessOf(aggregate.known, denominator),
+    completeness: completenessOf(aggregate.known, denominator, aggregate.hasConflicting),
     coverage: { known: aggregate.known, denominator }
   };
 }
@@ -317,7 +361,12 @@ function compareMeasures(left: MeasureAggregate, right: MeasureAggregate): numbe
   return left.unit < right.unit ? -1 : 1;
 }
 
-function buildRows(request: AccountingQueryRequest, groups: readonly GroupRow[], aggregates: Map<string, MeasureAggregate>): AccountingRow[] {
+function buildRows(
+  request: AccountingQueryRequest,
+  groups: readonly GroupRow[],
+  aggregates: Map<string, MeasureAggregate>,
+  maxUnitsPerRowMeasure: number
+): AccountingRow[] {
   const byGroup = new Map<string, MeasureAggregate[]>();
   for (const aggregate of aggregates.values()) {
     const list = byGroup.get(aggregate.groupKey) ?? [];
@@ -330,8 +379,26 @@ function buildRows(request: AccountingQueryRequest, groups: readonly GroupRow[],
       const value = group.keys.at(index) ?? '';
       key[dimension] = value === '' ? null : value;
     });
-    const measures = (byGroup.get(JSON.stringify(group.keys)) ?? []).sort(compareMeasures);
-    return { key, attempts: group.attempts, roots: group.roots, measures: measures.map((item) => toMeasureTotal(item, group.attempts)) };
+    const sorted = (byGroup.get(JSON.stringify(group.keys)) ?? []).sort(compareMeasures);
+    const kept: AccountingMeasureTotal[] = [];
+    const seenPerMeasure = new Map<Measure, number>();
+    let omittedUnitCount = 0;
+    for (const item of sorted) {
+      const seen = seenPerMeasure.get(item.measure) ?? 0;
+      if (seen < maxUnitsPerRowMeasure) {
+        seenPerMeasure.set(item.measure, seen + 1);
+        kept.push(toMeasureTotal(item, group.attempts));
+      } else {
+        omittedUnitCount += 1;
+      }
+    }
+    return {
+      key,
+      attempts: group.attempts,
+      roots: group.roots,
+      measures: kept,
+      ...(omittedUnitCount > 0 ? { omittedUnitCount } : {})
+    };
   });
 }
 
@@ -396,7 +463,8 @@ export function runAccountingQuery(
   if (request.limit > ctx.bounds.maxQueryLimit) return refuse('invalid-query', 'limit');
 
   const dimensions = request.groupBy.length;
-  const cursor = request.cursor === undefined ? undefined : decodeQueryCursor(request.cursor, request.groupBy);
+  const queryDigest = computeQueryDigest(request);
+  const cursor = request.cursor === undefined ? undefined : decodeQueryCursor(request.cursor, request.groupBy, queryDigest);
   if (request.cursor !== undefined && (cursor === undefined || dimensions === 0)) return refuse('invalid-query', 'cursor');
   const resolved = resolveRevision(conn, request, cursor);
   if (!resolved.ok) return resolved;
@@ -408,7 +476,7 @@ export function runAccountingQuery(
     const scope = attemptScope(request, revision);
     const fetched = readGroups(conn, scope, dimensions, cursor?.keys, request.limit + 1);
     const groups = fetched.slice(0, request.limit);
-    if (fetched.length > request.limit) nextCursor = encodeQueryCursor(revision, (groups.at(-1) as GroupRow).keys);
+    if (fetched.length > request.limit) nextCursor = encodeQueryCursor(revision, queryDigest, (groups.at(-1) as GroupRow).keys);
     if (overDeadline()) return refuse('deadline-exceeded');
     if (groups.length > 0) {
       let aggregates: Map<string, MeasureAggregate>;
@@ -418,7 +486,7 @@ export function runAccountingQuery(
         if (error instanceof Error && OVERFLOW_MESSAGE.test(error.message)) return refuse('aggregate-overflow');
         throw error;
       }
-      rows = buildRows(request, groups, aggregates);
+      rows = buildRows(request, groups, aggregates, ctx.bounds.maxUnitsPerRowMeasure);
     }
   }
   if (overDeadline()) return refuse('deadline-exceeded');
@@ -442,7 +510,7 @@ export function runAccountingQuery(
 function decodeGapCursor(cursor: string): { readonly kind: string; readonly scope: string } | undefined {
   const first = cursor.indexOf(CURSOR_SEPARATOR);
   const second = cursor.indexOf(CURSOR_SEPARATOR, first + 1);
-  if (first < 0 || second < 0 || cursor.slice(0, first) !== CURSOR_VERSION) return undefined;
+  if (first < 0 || second < 0 || cursor.slice(0, first) !== GAP_CURSOR_VERSION) return undefined;
   const kind = cursor.slice(first + 1, second);
   const scope = cursor.slice(second + 1);
   if (!(GAP_KINDS as readonly string[]).includes(kind) || scope.length === 0) return undefined;
@@ -482,7 +550,7 @@ export function readGapsPage(
   const last = page.at(-1);
   const nextCursor =
     fetched.length > request.limit && last !== undefined
-      ? [CURSOR_VERSION, last.gap_kind, last.scope_key].join(CURSOR_SEPARATOR)
+      ? [GAP_CURSOR_VERSION, last.gap_kind, last.scope_key].join(CURSOR_SEPARATOR)
       : undefined;
   return { ok: true, value: { gaps, ...(nextCursor !== undefined ? { nextCursor } : {}) } };
 }

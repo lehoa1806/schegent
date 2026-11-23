@@ -1,11 +1,10 @@
 // FR-R6-F10 — a `LaneService` over a fresh fixture repository, shared by the lane tests from US3
 // on.
 //
-// The Git runner reads no global or system config (`GIT_CONFIG_GLOBAL` names an empty file,
-// `GIT_CONFIG_NOSYSTEM=1`), so a test that unsets the fixture's identity sees it missing on any
-// machine. The `GIT_CONFIG_COUNT` entries the global setup adds still apply.
+// The Git runner isolates `HOME` / `XDG_CONFIG_HOME` / `USERPROFILE` to an empty sibling directory
+// and sets `GIT_CONFIG_NOSYSTEM=1` (since `buildLaneGitEnv` strips `GIT_CONFIG_GLOBAL`), so a test
+// that unsets the fixture's identity sees it missing on any machine.
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { LaneView } from '../../../src/contracts/execution-lanes';
 import { createExecFileGitRunner, type LaneGitRunner } from '../../../src/services/execution-lanes/git-runner';
@@ -61,12 +60,13 @@ export function createLaneHarness(options: LaneHarnessOptions = {}): LaneHarness
   opened.connections.push(conn);
 
   const storageDir = fixture.sibling('storage');
-  const emptyConfig = path.join(fixture.sibling('config'), 'gitconfig');
-  fs.writeFileSync(emptyConfig, '');
+  const isolatedHome = fixture.sibling('home');
   const gitEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    HOME: isolatedHome,
+    XDG_CONFIG_HOME: isolatedHome,
+    USERPROFILE: isolatedHome,
     GIT_CEILING_DIRECTORIES: path.dirname(fixture.root),
-    GIT_CONFIG_GLOBAL: emptyConfig,
     GIT_CONFIG_NOSYSTEM: '1'
   };
   const real = createExecFileGitRunner({ baseEnv: gitEnv });
@@ -82,8 +82,12 @@ export function createLaneHarness(options: LaneHarnessOptions = {}): LaneHarness
     clock: () => HARNESS_NOW_MS,
     random: (size) => {
       counter += 1;
-      return Buffer.alloc(size, counter);
+      const buf = Buffer.alloc(size);
+      if (size >= 4) buf.writeUInt32BE(counter, size - 4);
+      else buf.writeUIntBE(counter & ((1 << (size * 8)) - 1), 0, size);
+      return buf;
     },
+    authorizeApproval: () => true,
     ...options.overrides
   };
   const service = LaneService.open(deps);

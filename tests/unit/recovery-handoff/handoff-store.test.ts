@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createHandoffStore,
+  EXPLANATION_DECISION_PAGE_LIMIT,
   type NewDeliveryRow,
   type NewHandoffRow,
   type NewRevisionRow
@@ -270,6 +271,96 @@ describe('FR-R6-F08 T008 — handoff store', () => {
       ).toThrow('boom');
       expect(store.getHandoff(HANDOFF_ID)).toBeUndefined();
       expect(store.transaction(() => store.insertHandoff(handoffRow()))).toBe(true);
+    });
+  });
+
+  it('writes initial paused atomically only on initial INSERT and preserves updates on conflict (16-12)', () => {
+    withStore((store) => {
+      expect(store.insertHandoff(handoffRow({ initialPaused: true }))).toBe(true);
+      expect(store.getHandoff(HANDOFF_ID)?.paused).toBe(true);
+      store.updateHandoff(HANDOFF_ID, { paused: false }, NOW + 5);
+      expect(store.getHandoff(HANDOFF_ID)?.paused).toBe(false);
+      // Retrying insertHandoff with initialPaused: true must NOT overwrite the operator resume.
+      expect(store.insertHandoff(handoffRow({ initialPaused: true, nowMs: NOW + 10 }))).toBe(false);
+      expect(store.getHandoff(HANDOFF_ID)?.paused).toBe(false);
+    });
+  });
+
+  it('pages recent decisions newest-first with exact omission counts and bounds unconsumed/lapse SQL (16-13)', () => {
+    withStore((store) => {
+      store.insertHandoff(handoffRow());
+      const total = 1_150;
+      store.transaction(() => {
+        for (let i = 0; i < total; i += 1) {
+          store.insertDecision({
+            decisionId: i.toString(16).padStart(64, '0'),
+            handoffId: HANDOFF_ID,
+            revisionNo: 1,
+            decision: 'continue-new-attempt',
+            outcome: i === total - 1 || i === total - 2 ? 'accepted' : 'refused-stale',
+            nowMs: NOW + i
+          });
+        }
+      });
+
+      const page = store.listRecentDecisions(HANDOFF_ID);
+      expect(page.totalCount).toBe(total);
+      expect(page.rows).toHaveLength(EXPLANATION_DECISION_PAGE_LIMIT);
+      expect(page.omittedCount).toBe(total - EXPLANATION_DECISION_PAGE_LIMIT);
+      expect(page.rows.at(0)?.recordedAtMs).toBe(NOW + total - 1);
+      expect(page.rows.at(-1)?.recordedAtMs).toBe(NOW + total - EXPLANATION_DECISION_PAGE_LIMIT);
+
+      const unconsumed = store.listUnconsumedAcceptedDecisions(HANDOFF_ID);
+      expect(unconsumed).toHaveLength(2);
+      expect(unconsumed.every((row) => row.outcome === 'accepted' && row.consumedByIntentId === null)).toBe(true);
+
+      const lapsed = store.lapseOutstandingDecisions(HANDOFF_ID, 'i'.repeat(64));
+      expect(lapsed).toBe(2);
+      expect(store.listUnconsumedAcceptedDecisions(HANDOFF_ID)).toEqual([]);
+      // Refused rows stay unconsumed (consumed_by_intent_id remains NULL).
+      expect(store.getDecision((0).toString(16).padStart(64, '0'))?.consumedByIntentId).toBeNull();
+    });
+  });
+
+  it('finds one newest unconsumed accepted decision and caps listUnconsumedAcceptedDecisions (SR-B11)', () => {
+    withStore((store) => {
+      store.insertHandoff(handoffRow());
+      const totalAccepted = EXPLANATION_DECISION_PAGE_LIMIT + 150;
+      store.transaction(() => {
+        for (let i = 0; i < totalAccepted; i += 1) {
+          store.insertDecision({
+            decisionId: i.toString(16).padStart(64, '0'),
+            handoffId: HANDOFF_ID,
+            revisionNo: i % 2 === 0 ? 1 : 2,
+            decision: 'continue-new-attempt',
+            outcome: 'accepted',
+            nowMs: NOW + i
+          });
+        }
+      });
+
+      expect(store.listUnconsumedAcceptedDecisions(HANDOFF_ID)).toHaveLength(EXPLANATION_DECISION_PAGE_LIMIT);
+      expect(store.listUnconsumedAcceptedDecisions(HANDOFF_ID, 5)).toHaveLength(5);
+      expect(store.listUnconsumedAcceptedDecisions(HANDOFF_ID, 0)).toEqual([]);
+
+      // Newest accepted for revision 2 is totalAccepted - 1 (odd index = 1049).
+      const rev2 = store.findUnconsumedAcceptedDecision(HANDOFF_ID, 2, 'continue-new-attempt');
+      expect(rev2?.decisionId).toBe((totalAccepted - 1).toString(16).padStart(64, '0'));
+      expect(rev2?.revisionNo).toBe(2);
+
+      // Newest accepted for revision 1 is totalAccepted - 2 (even index = 1048).
+      const rev1 = store.findUnconsumedAcceptedDecision(HANDOFF_ID, 1, 'continue-new-attempt');
+      expect(rev1?.decisionId).toBe((totalAccepted - 2).toString(16).padStart(64, '0'));
+      expect(rev1?.revisionNo).toBe(1);
+
+      // Non-matching revision or decision returns null.
+      expect(store.findUnconsumedAcceptedDecision(HANDOFF_ID, 3, 'continue-new-attempt')).toBeNull();
+      expect(store.findUnconsumedAcceptedDecision(HANDOFF_ID, 2, 'abandon')).toBeNull();
+
+      // Lapsing in SQL consumes every row (even past EXPLANATION_DECISION_PAGE_LIMIT).
+      expect(store.lapseOutstandingDecisions(HANDOFF_ID, 'i'.repeat(64))).toBe(totalAccepted);
+      expect(store.findUnconsumedAcceptedDecision(HANDOFF_ID, 2, 'continue-new-attempt')).toBeNull();
+      expect(store.listUnconsumedAcceptedDecisions(HANDOFF_ID)).toEqual([]);
     });
   });
 });

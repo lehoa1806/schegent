@@ -16,9 +16,15 @@ import {
   type LaneState,
   type VerificationProfile
 } from '../../contracts/execution-lanes';
+import { isAncestorDetailed as observeIsAncestorDetailed, type AncestryResult } from './git-observe';
 import { LaneGitError, type LaneGitRunner } from './git-runner';
 import type { IntegrationStore, RequestRecord } from './integration-store';
-import { canonicalProfileJson, isValidProfile, isValidTargetBranch, profileDigest } from './lane-input-rules';
+import {
+  canonicalProfileJson,
+  isValidTargetBranch,
+  profileDigest,
+  snapshotVerificationProfile
+} from './lane-input-rules';
 import type { LaneStore } from './lane-store';
 import type { CandidateRecord, LaneRecord } from './lane-store-rows';
 
@@ -62,17 +68,30 @@ export async function resolveRef(
   throw new LaneGitError('rev-parse', result);
 }
 
-/** Whether `ancestor` is reachable from `descendant`. */
+/**
+ * Distinguishes ancestry (`ancestor` / `not-ancestor`), an absent/GC'd commit (`missing-ref`),
+ * and a Git subprocess failure (`git-error`).
+ */
+export function isAncestorDetailed(
+  git: LaneGitRunner,
+  cwd: string,
+  ancestor: string,
+  descendant: string
+): Promise<AncestryResult> {
+  return observeIsAncestorDetailed({ git, cwd, timeoutMs: GIT_TIMEOUT_MS }, ancestor, descendant);
+}
+
+/** Whether `ancestor` is reachable from `descendant`. Throws `LaneGitError` on Git failure. */
 export async function isAncestor(
   git: LaneGitRunner,
   cwd: string,
   ancestor: string,
   descendant: string
 ): Promise<boolean> {
-  const result = await git.run(['merge-base', '--is-ancestor', ancestor, descendant], { cwd, timeoutMs: GIT_TIMEOUT_MS });
-  if (result.ok) return true;
-  if (result.code === 'exit' && result.exitCode === GIT_NO_EXIT_CODE) return false;
-  throw new LaneGitError('merge-base', result);
+  const result = await isAncestorDetailed(git, cwd, ancestor, descendant);
+  if (result.outcome === 'ancestor') return true;
+  if (result.outcome === 'not-ancestor' || result.outcome === 'missing-ref') return false;
+  throw new LaneGitError('merge-base', result.failure ?? { code: 'exit', exitCode: null });
 }
 
 async function treeOf(ctx: RequestContext, commit: string): Promise<string> {
@@ -88,11 +107,12 @@ function recordOf(
   ctx: RequestContext,
   lane: LaneRecord,
   candidate: CandidateRecord,
-  input: RequestIntegrationInput,
+  targetBranch: string,
+  profile: VerificationProfile,
   tip: string
 ): RequestRecord {
   const now = new Date(ctx.clock()).toISOString();
-  const profileJson = canonicalProfileJson(input.profile);
+  const profileJson = canonicalProfileJson(profile);
   return {
     requestId: ctx.random(ID_BYTES).toString('hex'),
     laneId: lane.laneId,
@@ -100,10 +120,10 @@ function recordOf(
     repositoryId: lane.repositoryId,
     candidateId: candidate.candidateId,
     candidateCommit: candidate.commit,
-    targetRef: `${BRANCH_REF_PREFIX}${input.targetBranch}`,
+    targetRef: `${BRANCH_REF_PREFIX}${targetBranch}`,
     expectedTargetCommit: tip,
-    profileId: input.profile.profileId,
-    profileRevision: input.profile.revision,
+    profileId: profile.profileId,
+    profileRevision: profile.revision,
     profileDigest: profileDigest(profileJson),
     profileJson,
     state: 'queued',
@@ -117,24 +137,39 @@ function recordOf(
 
 /**
  * Opens a `queued` request for `lane`'s current candidate against `targetBranch`, or the first
- * refusal. Throws `LaneGitError` when Git cannot answer.
+ * refusal. Snapshots `targetBranch` and `profile` once before any asynchronous Git step so caller
+ * getters or post-call mutations cannot diverge. Throws `LaneGitError` when Git cannot answer.
  */
 export async function createIntegrationRequest(
   ctx: RequestContext,
   lane: LaneRecord,
   input: RequestIntegrationInput
 ): Promise<LaneResult<RequestRecord>> {
-  if (!isValidTargetBranch(input.targetBranch) || !isValidProfile(input.profile)) return laneRefused('invalid-input');
+  let targetBranch: unknown;
+  let rawProfile: unknown;
+  try {
+    targetBranch = input.targetBranch;
+    rawProfile = input.profile;
+  } catch {
+    return laneRefused('invalid-input');
+  }
+  if (typeof targetBranch !== 'string' || !isValidTargetBranch(targetBranch)) return laneRefused('invalid-input');
+  const profile = snapshotVerificationProfile(rawProfile);
+  if (profile === null) return laneRefused('invalid-input');
   if (!REQUESTABLE_LANE_STATES.includes(lane.state)) return laneRefused('lane-state-invalid');
   const candidate = ctx.lanes.currentCandidate(lane.laneId);
   if (candidate === null) return laneRefused('candidate-empty');
 
-  const tip = await resolveRef(ctx, `${BRANCH_REF_PREFIX}${input.targetBranch}`);
+  const tip = await resolveRef(ctx, `${BRANCH_REF_PREFIX}${targetBranch}`);
   if (tip === null) return laneRefused('invalid-input');
-  if (!(await isAncestor(ctx.git, ctx.workspaceRoot, tip, candidate.commit))) return laneRefused('target-diverged');
+  const ancestry = await isAncestorDetailed(ctx.git, ctx.workspaceRoot, tip, candidate.commit);
+  if (ancestry.outcome === 'git-error') {
+    throw new LaneGitError('merge-base', ancestry.failure ?? { code: 'exit', exitCode: null });
+  }
+  if (ancestry.outcome !== 'ancestor') return laneRefused('target-diverged');
   if ((await treeOf(ctx, tip)) === candidate.tree) return laneRefused('candidate-empty');
 
-  const record = recordOf(ctx, lane, candidate, input, tip);
+  const record = recordOf(ctx, lane, candidate, targetBranch, profile, tip);
   return ctx.lanes.fenced(ctx.workspaceId, ctx.generation, () => {
     const current = ctx.lanes.currentCandidate(lane.laneId);
     if (current === null || current.candidateId !== candidate.candidateId) return laneRefused('lane-busy');

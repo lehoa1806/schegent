@@ -88,6 +88,8 @@ export interface BackendCapabilityServiceDeps {
   readonly readTimeoutSeconds: () => unknown;
   readonly buildEnv: () => NodeJS.ProcessEnv;
   readonly logger: Pick<SanitizedLogger, 'debug' | 'warn'>;
+  /** FR-R7-16 (16-14): live workspace trust check; when false, probes return unavailable with zero spawns. */
+  readonly isTrusted?: () => boolean;
   readonly onDidChange?: () => void;
   readonly spawnFn?: SpawnFn;
   /** Test seam; production always uses the complete closed registry. */
@@ -199,7 +201,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
   }
 
   public async probe(kind: BackendRunnerKind): Promise<BackendProbeResult> {
-    if (this.disposed) {
+    if (this.disposed || this.deps.isTrusted?.() === false) {
       return { runner: kind, available: false, cause: 'unknown' };
     }
     const result = await this.runBoundedCommand(kind, ['--help']);
@@ -305,7 +307,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     kind: BackendRunnerKind,
     args: readonly string[]
   ): Promise<CommandResult> {
-    if (this.disposed) {
+    if (this.disposed || this.deps.isTrusted?.() === false) {
       return { ok: false, timedOut: false, exitCode: null, stdout: '' };
     }
     let cliPath: string;
@@ -324,7 +326,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     return new Promise<CommandResult>((resolve) => {
       let child: ChildProcess;
       try {
-        // Review gap GC-24 -- on win32 a bare name resolves along PATH only, never the cwd.
+        // Review gap GC-24 & FR-R7-16 (16-16): resolve against the child's exact env on real spawns.
         child = this.spawnFn(spawnCommandFor(cliPath, env), args, {
           cwd: this.deps.cwd,
           env,

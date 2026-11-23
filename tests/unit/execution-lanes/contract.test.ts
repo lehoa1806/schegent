@@ -26,8 +26,9 @@ describe('execution-lanes contract (FR-R6-F10)', () => {
     expect(LANE_DISCLOSURE).toBe(
       'A lane is a separate Git working tree. It is a working-tree boundary, not a permission boundary: ' +
         "the repository's hooks, configuration, credentials and object store are shared with it, and a " +
-        "process in a lane can reach anything the operator's checkout can. Lane operations may run the " +
-        "repository's hooks, and a fast-forward landing in a checked-out branch may run `post-merge`."
+        "process in a lane can reach anything the operator's checkout can. Host Git operations disable " +
+        'repository hooks and fsmonitor (`core.hooksPath=/dev/null`, `core.fsmonitor=false`), while ' +
+        'configured clean/smudge filters and any Git command run by a process in the lane still execute as the operator.'
     );
   });
 

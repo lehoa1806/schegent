@@ -34,13 +34,20 @@
 //     resolves `unsupported-version` and stays `live` for its owner;
 //   - an invalid record writes nothing; an existing handoff under the lineage is `conflict`.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { RecoveryEnvelope, RecoveryEnvelopeSerializeResult } from '../../../src/contracts/recovery-envelope';
-import type { HandoffCutoff, HandoffLineage, SessionOwner } from '../../../src/contracts/recovery-handoff/handoff-types';
-import { createHandoffStore } from '../../../src/services/recovery-handoff/handoff-store';
+import {
+  MAX_HANDOFF_EXPLANATION_BYTES,
+  type HandoffCutoff,
+  type HandoffLineage,
+  type SessionOwner
+} from '../../../src/contracts/recovery-handoff/handoff-types';
+import { createInMemoryAcpSessionBindingStore } from '../../../src/services/acp-runtime/acp-durable-runtime-store';
+import { createHandoffStore, EXPLANATION_DECISION_PAGE_LIMIT } from '../../../src/services/recovery-handoff/handoff-store';
 import { decisionIdFor } from '../../../src/services/recovery-handoff/handoff-identity';
 import {
   createRecoveryHandoffService,
+  envelopeDigestOf,
   type LegacyHandoffRecord,
   type RecordIntentInput,
   type RecoveryEnvelopePort,
@@ -366,13 +373,56 @@ describe('FR-R6-F08 T014 — issue and revisions', () => {
 
 describe('FR-R6-F08 T014 — resolve and ownerResolution', () => {
   it('resolves the current revision as usable and reports the owner live', async () => {
-    const h = harness();
+    const h = harness(['art-validated-1', 'art-partial-1', 'env-1']);
     const handoffId = preparedAndIssued(h);
     const resolved = await h.service.resolve(handoffId);
     if (!resolved.ok) throw new Error(resolved.code);
     expect(resolved.status).toBe('usable');
+    expect(resolved.envelopeResolution).toBe('available');
     expect(resolved.references.map((ref) => ref.resolution)).toEqual(['available', 'available']);
     expect(h.service.ownerResolution(handoffId)).toBe('live');
+  });
+
+  it('blocks verifyForUse when checkpoint .recovery.json is deleted, both with and without envelopeLocation (CR-B6/SR-B1)', async () => {
+    const h = harness();
+    const env = envelope();
+    const envDigest = envelopeDigestOf(env);
+    h.port.stored = env;
+    const handoffId = preparedAndIssued(h, {
+      envelope: { artifactId: 'hand-ckpt-1', digest: envDigest }
+    });
+
+    expect(await h.service.verifyForUse(handoffId)).toMatchObject({
+      ok: true,
+      status: 'usable',
+      envelopeResolution: 'available'
+    });
+    expect(
+      await h.service.verifyForUse(handoffId, {
+        envelopeLocation: { runId: LINEAGE.rootExecutionId, handoverId: 'hand-ckpt-1' }
+      })
+    ).toMatchObject({
+      ok: true,
+      status: 'usable',
+      envelopeResolution: 'available'
+    });
+
+    // Delete the .recovery.json file on disk (envelope port now returns null).
+    h.port.stored = null;
+    expect(await h.service.verifyForUse(handoffId)).toMatchObject({
+      ok: true,
+      status: 'blocked',
+      envelopeResolution: 'missing'
+    });
+    expect(
+      await h.service.verifyForUse(handoffId, {
+        envelopeLocation: { runId: LINEAGE.rootExecutionId, handoverId: 'hand-ckpt-1' }
+      })
+    ).toMatchObject({
+      ok: true,
+      status: 'blocked',
+      envelopeResolution: 'missing'
+    });
   });
 
   it('refuses to resolve an unknown handoff with not-found', async () => {
@@ -997,5 +1047,519 @@ describe('FR-R6-F08 T029 — importLegacy', () => {
     if (!imported.ok) throw new Error(imported.code);
     expect(h.service.importLegacy(legacyRecord({ envelope: { version: 7 } }))).toEqual({ ok: false, code: 'conflict' });
     expect(createHandoffStore(h.conn).getHandoff(imported.handoffId)).toMatchObject({ state: 'preparing' });
+  });
+
+  it('preserves an intervening operator resume when a paused legacy drain is retried (16-12)', () => {
+    const h = harness();
+    const pausedRecord = legacyRecord({ status: 'paused' });
+    const first = h.service.importLegacy(pausedRecord);
+    if (!first.ok) throw new Error(first.code);
+    expect(createHandoffStore(h.conn).getHandoff(first.handoffId)?.paused).toBe(true);
+    expect(activePinPurposes(h.conn, first.handoffId)).toEqual(['paused-recovery']);
+
+    // Operator resumes the handoff.
+    expect(h.service.setHandoffPaused(first.handoffId, false)).toEqual({ ok: true, pinPurpose: 'pending-handoff' });
+    expect(createHandoffStore(h.conn).getHandoff(first.handoffId)?.paused).toBe(false);
+    expect(activePinPurposes(h.conn, first.handoffId)).toEqual(['pending-handoff']);
+
+    // Retrying the same paused legacy record must preserve the operator's resume.
+    const retried = h.service.importLegacy(pausedRecord);
+    expect(retried).toMatchObject({ ok: true, handoffId: first.handoffId, created: false });
+    expect(createHandoffStore(h.conn).getHandoff(first.handoffId)?.paused).toBe(false);
+    expect(activePinPurposes(h.conn, first.handoffId)).toEqual(['pending-handoff']);
+  });
+
+  it('writes zero rows on refused legacy mappings and keeps refused source records recoverable (16-12)', () => {
+    const h = harness();
+
+    // Unmappable evidenceRef
+    expect(
+      h.service.importLegacy(
+        legacyRecord({
+          envelope: {
+            version: 1,
+            invocationId: 'inv-legacy-1',
+            upstreamArtifactRefs: ['art-validated-1'],
+            partialArtifactRefs: [],
+            workspace: { coverage: 'complete', omittedCount: 0, entries: [] },
+            effects: { certainty: 'uncertain', evidenceRefs: ['bad/evidence/ref'] },
+            truncated: false
+          }
+        })
+      )
+    ).toEqual({ ok: false, code: 'invalid-ref', field: 'references.1.artifactId' });
+
+    // Duplicate role
+    expect(
+      h.service.importLegacy(
+        legacyRecord({
+          envelope: {
+            version: 1,
+            invocationId: 'inv-legacy-1',
+            upstreamArtifactRefs: ['art-validated-1'],
+            partialArtifactRefs: ['art-validated-1'],
+            workspace: { coverage: 'complete', omittedCount: 0, entries: [] },
+            effects: { certainty: 'uncertain', evidenceRefs: [] },
+            truncated: false
+          }
+        })
+      )
+    ).toEqual({ ok: false, code: 'invalid', field: 'references.1.artifactId' });
+
+    // Inconsistent complete + omittedCount > 0
+    expect(
+      h.service.importLegacy(
+        legacyRecord({
+          envelope: {
+            version: 1,
+            invocationId: 'inv-legacy-1',
+            upstreamArtifactRefs: [],
+            partialArtifactRefs: [],
+            workspace: { coverage: 'complete', omittedCount: 2, entries: [] },
+            effects: { certainty: 'uncertain', evidenceRefs: [] },
+            truncated: false
+          }
+        })
+      )
+    ).toEqual({ ok: false, code: 'invalid', field: 'coverage' });
+
+    // Valid <= 16 KiB RecoveryEnvelope whose post-mapping HandoffManifest exceeds 16,384 bytes
+    expect(
+      h.service.importLegacy(
+        legacyRecord({
+          envelope: {
+            version: 1,
+            invocationId: 'inv-legacy-1',
+            upstreamArtifactRefs: Array.from(
+              { length: 32 },
+              (_, i) => `u-${String(i).padStart(2, '0')}-${'a'.repeat(120)}`
+            ),
+            partialArtifactRefs: [],
+            workspace: {
+              coverage: 'partial',
+              omittedCount: 1,
+              entries: Array.from({ length: 28 }, (_, i) => ({
+                path: `d${String(i).padStart(2, '0')}/${'p'.repeat(335)}.ts`,
+                existedBefore: true,
+                dirtyBefore: false,
+                attribution: 'attempt'
+              }))
+            },
+            effects: { certainty: 'uncertain', evidenceRefs: [] },
+            truncated: false
+          }
+        })
+      )
+    ).toEqual({ ok: false, code: 'over-limit', field: 'manifest' });
+
+    // Zero rows were written across all handoff tables; once fixed, the same lineage imports cleanly.
+    expect(count(h.conn, 'recovery_handoffs')).toBe(0);
+    expect(count(h.conn, 'recovery_handoff_revisions')).toBe(0);
+    expect(count(h.conn, 'recovery_handoff_references')).toBe(0);
+
+    const recovered = h.service.importLegacy(
+      legacyRecord({
+        envelope: {
+          version: 1,
+          invocationId: 'inv-legacy-1',
+          upstreamArtifactRefs: ['art-validated-1'],
+          partialArtifactRefs: ['art-partial-1'],
+          workspace: { coverage: 'complete', omittedCount: 0, entries: [] },
+          effects: { certainty: 'uncertain', evidenceRefs: ['art-ev-1'] },
+          truncated: false
+        }
+      })
+    );
+    expect(recovered).toMatchObject({ ok: true, created: true });
+    if (recovered.ok && 'revisionNo' in recovered) {
+      const refs = createHandoffStore(h.conn).listReferences(recovered.handoffId, recovered.revisionNo);
+      expect(refs.find((r) => r.artifactId === 'art-ev-1')).toMatchObject({ role: 'evidence', required: false });
+    }
+  });
+});
+
+describe('FR-R7-16 (16-12) — stored provenance, explicit ACP session mapping, and envelope digest consistency', () => {
+  it('ignores spoofed caller source=acp on legacy handoffs and requires valid non-ephemeral explicit ACP mapping', () => {
+    const fixture = lifecycleFixture();
+    const lifecycle = fixture.build();
+    for (const id of ['art-validated-1', 'art-partial-1']) {
+      expect(lifecycle.registerArtifact(checkpointArtifact(id)).ok).toBe(true);
+    }
+    const bindings = createInMemoryAcpSessionBindingStore();
+    bindings.putBinding({
+      persistedSessionId: 'acp-sess-claude-verified-1',
+      backend: 'claude',
+      workspaceRoot: '/ws',
+      providerSessionId: 'sess-provider-9',
+      updatedAtMs: NOW
+    });
+    bindings.putBinding({
+      persistedSessionId: 'acp-sess-claude-other-provider',
+      backend: 'claude',
+      workspaceRoot: '/ws',
+      providerSessionId: 'sess-provider-OTHER',
+      updatedAtMs: NOW
+    });
+
+    const svc = createRecoveryHandoffService({
+      conn: fixture.conn,
+      lifecycle,
+      probe: { digestSha256: () => Promise.resolve(RECORDED) },
+      envelopes: fakePort(),
+      acpSessionBindings: bindings,
+      clock: () => NOW + 5
+    });
+
+    const importAndIssue = (attemptId: string, providerSessionId = 'sess-provider-9'): string => {
+      const imp = svc.importLegacy(legacyRecord({ attemptId, providerSessionId }));
+      if (!imp.ok || !('revisionNo' in imp)) throw new Error(JSON.stringify(imp));
+      const iss = svc.issue(imp.handoffId, imp.revisionNo);
+      if (!iss.ok) throw new Error(iss.code);
+      return imp.handoffId;
+    };
+
+    const basePrior = {
+      source: 'acp' as const,
+      owner: OWNER,
+      backendId: 'acp-claude',
+      profileId: 'profile-1',
+      profileVersion: '1',
+      capabilitiesDigest: RECORDED
+    };
+
+    // 1. Spoofed source='acp' with the legacy provider session ID -> forced to fresh legacy-session.
+    const h1 = importAndIssue('att-spoof-1');
+    expect(
+      svc.recordIntent(
+        intent(h1, {
+          backendId: 'acp-claude',
+          priorSession: { ...basePrior, sessionId: 'sess-provider-9' }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 2. Spoofed source='acp' with another ID but NO explicit acpMapping -> forced to fresh legacy-session.
+    const h2 = importAndIssue('att-spoof-2');
+    expect(
+      svc.recordIntent(
+        intent(h2, {
+          backendId: 'acp-claude',
+          priorSession: { ...basePrior, sessionId: 'acp-sess-claude-verified-1' }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 3. Ephemeral bridge session ID -> forced to fresh legacy-session even with acpMapping.
+    const h3 = importAndIssue('att-ephemeral');
+    expect(
+      svc.recordIntent(
+        intent(h3, {
+          backendId: 'acp-claude',
+          priorSession: {
+            ...basePrior,
+            sessionId: 'acp-claude-session-1',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-claude-session-1' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 4. Explicit acpMapping pointing to a binding for a DIFFERENT provider session -> forced to fresh legacy-session.
+    const h4 = importAndIssue('att-mismatch-binding');
+    expect(
+      svc.recordIntent(
+        intent(h4, {
+          backendId: 'acp-claude',
+          priorSession: {
+            ...basePrior,
+            sessionId: 'acp-sess-claude-other-provider',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-other-provider' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 5. Malformed stored legacy_provenance JSON -> forced to fresh legacy-session even with valid mapping.
+    const h5 = importAndIssue('att-malformed-prov');
+    fixture.conn.run(`UPDATE recovery_handoffs SET legacy_provenance = '{bad-json' WHERE handoff_id = ?`, h5);
+    expect(
+      svc.recordIntent(
+        intent(h5, {
+          backendId: 'acp-claude',
+          priorSession: {
+            ...basePrior,
+            sessionId: 'acp-sess-claude-verified-1',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-verified-1' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 6. Valid explicit non-ephemeral acpMapping verified against AcpSessionBindingStore -> load-session!
+    const h6 = importAndIssue('att-valid-mapping');
+    expect(
+      svc.recordIntent(
+        intent(h6, {
+          backendId: 'acp-claude',
+          priorSession: {
+            ...basePrior,
+            sessionId: 'acp-sess-claude-verified-1',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-verified-1' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'load-session', sessionId: 'acp-sess-claude-verified-1' } });
+
+    // 7. Non-canonical backendId fails closed even with a matching binding (CR-B4/SR-B6).
+    const h7 = importAndIssue('att-noncanonical-backend');
+    expect(
+      svc.recordIntent(
+        intent(h7, {
+          backendId: 'custom-backend',
+          priorSession: {
+            ...basePrior,
+            backendId: 'custom-backend',
+            sessionId: 'acp-sess-claude-verified-1',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-verified-1' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 8. Mismatched canonical backendId fails closed (CR-B4/SR-B6).
+    const h8 = importAndIssue('att-mismatched-backend');
+    expect(
+      svc.recordIntent(
+        intent(h8, {
+          backendId: 'acp-codex',
+          priorSession: {
+            ...basePrior,
+            backendId: 'acp-codex',
+            sessionId: 'acp-sess-claude-verified-1',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-verified-1' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 9. Legacy record with providerSessionId omitted (stored providerSession: null) fails closed (SR-B6).
+    const impNoProvider = svc.importLegacy(legacyRecord({ attemptId: 'att-no-provider-session' }));
+    if (!impNoProvider.ok || !('revisionNo' in impNoProvider)) throw new Error(JSON.stringify(impNoProvider));
+    expect(svc.issue(impNoProvider.handoffId, impNoProvider.revisionNo).ok).toBe(true);
+    expect(
+      svc.recordIntent(
+        intent(impNoProvider.handoffId, {
+          backendId: 'acp-claude',
+          priorSession: {
+            ...basePrior,
+            sessionId: 'acp-sess-claude-verified-1',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-verified-1' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    // 10. Missing acpSessionBindings store fails closed even with valid mapping and providerSessionId (CR-B4/SR-B6).
+    const svcNoBindings = createRecoveryHandoffService({
+      conn: fixture.conn,
+      lifecycle,
+      probe: { digestSha256: () => Promise.resolve(RECORDED) },
+      envelopes: fakePort(),
+      clock: () => NOW + 5
+    });
+    const h10 = importAndIssue('att-no-binding-store');
+    expect(
+      svcNoBindings.recordIntent(
+        intent(h10, {
+          backendId: 'acp-claude',
+          priorSession: {
+            ...basePrior,
+            sessionId: 'acp-sess-claude-verified-1',
+            acpMapping: { kind: 'acp-session', sessionId: 'acp-sess-claude-verified-1' }
+          }
+        })
+      )
+    ).toMatchObject({ ok: true, sessionPlan: { plan: 'fresh-session', reason: 'legacy-session' } });
+
+    fixture.conn.close();
+  });
+
+  it('refuses recordIntent when input.envelopeDigest conflicts with manifest.envelope.digest', () => {
+    const h = harness();
+    const handoffId = preparedAndIssued(h);
+    expect(h.service.recordIntent(intent(handoffId, { envelopeDigest: FROZEN }))).toEqual({
+      ok: false,
+      code: 'conflict'
+    });
+  });
+});
+
+describe('FR-R7-16 (16-13) — bounded explanation read work after >=2,500 historical decisions', () => {
+  it('reads <= 900 decisions, keeps output <= 64 KiB, preserves newest-first order, and reports exact omission count', () => {
+    const fixture = lifecycleFixture();
+    const lifecycle = fixture.build();
+    for (const id of ['art-validated-1', 'art-partial-1']) {
+      expect(lifecycle.registerArtifact(checkpointArtifact(id)).ok).toBe(true);
+    }
+    let clockMs = NOW;
+    const svc = createRecoveryHandoffService({
+      conn: fixture.conn,
+      lifecycle,
+      probe: { digestSha256: () => Promise.resolve(RECORDED) },
+      envelopes: fakePort(),
+      clock: () => (clockMs += 1)
+    });
+
+    const prepared = svc.prepare(LINEAGE, CUTOFF_1, manifest());
+    if (!prepared.ok) throw new Error(prepared.code);
+    const handoffId = prepared.handoffId;
+    expect(svc.issue(handoffId, 1).ok).toBe(true);
+    const prep2 = svc.prepare(LINEAGE, CUTOFF_2, manifest());
+    if (!prep2.ok) throw new Error(prep2.code);
+    expect(svc.issue(handoffId, 2).ok).toBe(true);
+
+    // Record 2,500 stale refusal decisions against revision 1 plus 2 newest accepted decisions on revision 2.
+    const totalDecisions = 2_502;
+    for (let i = 0; i < 2_500; i += 1) {
+      const res = svc.decide(handoffId, 1, 'continue-new-attempt', `req-stale-${i}`);
+      if (!res.ok || res.outcome !== 'refused-stale') throw new Error(`unexpected decide ${i}`);
+    }
+    expect(svc.decide(handoffId, 2, 'continue-new-attempt', 'req-newest-1')).toMatchObject({
+      ok: true,
+      outcome: 'accepted'
+    });
+    expect(svc.decide(handoffId, 2, 'continue-new-attempt', 'req-newest-2')).toMatchObject({
+      ok: true,
+      outcome: 'accepted'
+    });
+
+    // Spy on conn.all and conn.get to prove explain() never loads more than EXPLANATION_DECISION_PAGE_LIMIT
+    // rows and recordIntent() uses O(1) bounded lookup (LIMIT 1) instead of loading all decisions.
+    const decisionQueryRowCounts: number[] = [];
+    let decisionGetQueries = 0;
+    const originalAll = fixture.conn.all.bind(fixture.conn);
+    const originalGet = fixture.conn.get.bind(fixture.conn);
+    const allSpy = vi.spyOn(fixture.conn, 'all').mockImplementation((sql: string, ...params) => {
+      const rows = originalAll(sql, ...params);
+      if (sql.includes('recovery_handoff_decisions')) {
+        decisionQueryRowCounts.push(rows.length);
+      }
+      return rows;
+    });
+    const getSpy = vi.spyOn(fixture.conn, 'get').mockImplementation((sql: string, ...params) => {
+      if (sql.includes('recovery_handoff_decisions')) {
+        decisionGetQueries += 1;
+      }
+      return originalGet(sql, ...params);
+    });
+
+    try {
+      const explained = svc.explain(handoffId);
+      if (!explained.ok) throw new Error(explained.code);
+      const { explanation } = explained;
+
+      expect(decisionQueryRowCounts).toEqual([EXPLANATION_DECISION_PAGE_LIMIT]);
+      expect(Buffer.byteLength(JSON.stringify(explanation), 'utf8')).toBeLessThanOrEqual(
+        MAX_HANDOFF_EXPLANATION_BYTES
+      );
+      expect(explanation.decisions.length + explanation.truncatedCounts.decisions).toBe(totalDecisions);
+      // The 2 newest decisions (revisionNo 2, outcome 'accepted') sit at the front in newest-first order.
+      expect(explanation.decisions.slice(0, 2)).toEqual([
+        { revisionNo: 2, decision: 'continue-new-attempt', outcome: 'accepted', consumed: false },
+        { revisionNo: 2, decision: 'continue-new-attempt', outcome: 'accepted', consumed: false }
+      ]);
+      expect(explanation.decisions.at(2)).toEqual({
+        revisionNo: 1,
+        decision: 'continue-new-attempt',
+        outcome: 'refused-stale',
+        consumed: false
+      });
+
+      // Recording an intent uses a single LIMIT 1 query (conn.get), never conn.all, and lapses via SQL.
+      decisionQueryRowCounts.length = 0;
+      decisionGetQueries = 0;
+      const rec = svc.recordIntent(intent(handoffId, { revisionNo: 2 }));
+      expect(rec).toMatchObject({ ok: true, duplicate: false });
+      expect(decisionQueryRowCounts).toEqual([]);
+      expect(decisionGetQueries).toBe(1);
+    } finally {
+      allSpy.mockRestore();
+      getSpy.mockRestore();
+      fixture.conn.close();
+    }
+  });
+
+  it('bounds decision loading in recordIntent to LIMIT 1 even with 1,200 unconsumed accepted decisions (SR-B11)', () => {
+    const fixture = lifecycleFixture();
+    const lifecycle = fixture.build();
+    for (const id of ['art-validated-1', 'art-partial-1']) {
+      expect(lifecycle.registerArtifact(checkpointArtifact(id)).ok).toBe(true);
+    }
+    let clockMs = NOW;
+    const svc = createRecoveryHandoffService({
+      conn: fixture.conn,
+      lifecycle,
+      probe: { digestSha256: () => Promise.resolve(RECORDED) },
+      envelopes: fakePort(),
+      clock: () => (clockMs += 1)
+    });
+
+    const prepared = svc.prepare(LINEAGE, CUTOFF_1, manifest());
+    if (!prepared.ok) throw new Error(prepared.code);
+    const handoffId = prepared.handoffId;
+    expect(svc.issue(handoffId, 1).ok).toBe(true);
+
+    // Record first intent and reopen so redelivery requires an accepted continue-new-attempt decision.
+    const first = svc.recordIntent(intent(handoffId, { targetAttemptId: 'att-first' }));
+    if (!first.ok) throw new Error(first.code);
+    expect(svc.reopen().pendingToUncertain).toBe(1);
+
+    // Seed 1,200 unconsumed accepted decisions on revision 1.
+    const totalAccepted = 1_200;
+    let newestDecisionId = '';
+    for (let i = 0; i < totalAccepted; i += 1) {
+      const dec = svc.decide(handoffId, 1, 'continue-new-attempt', `req-acc-${i}`);
+      if (!dec.ok || dec.outcome !== 'accepted') throw new Error(`unexpected decide ${i}`);
+      newestDecisionId = dec.decisionId;
+    }
+
+    const decisionAllCalls: number[] = [];
+    let decisionGetCalls = 0;
+    const originalAll = fixture.conn.all.bind(fixture.conn);
+    const originalGet = fixture.conn.get.bind(fixture.conn);
+    const allSpy = vi.spyOn(fixture.conn, 'all').mockImplementation((sql: string, ...params) => {
+      const rows = originalAll(sql, ...params);
+      if (sql.includes('recovery_handoff_decisions')) {
+        decisionAllCalls.push(rows.length);
+      }
+      return rows;
+    });
+    const getSpy = vi.spyOn(fixture.conn, 'get').mockImplementation((sql: string, ...params) => {
+      if (sql.includes('recovery_handoff_decisions')) {
+        decisionGetCalls += 1;
+      }
+      return originalGet(sql, ...params);
+    });
+
+    try {
+      const retry = svc.recordIntent(intent(handoffId, { targetAttemptId: 'att-retry', connectionId: 'conn-2' }));
+      expect(retry).toMatchObject({
+        ok: true,
+        duplicate: false,
+        sessionPlan: { plan: 'fresh-session', reason: 'uncertain-prior' }
+      });
+      expect(decisionAllCalls).toEqual([]);
+      expect(decisionGetCalls).toBe(1);
+
+      const store = createHandoffStore(fixture.conn);
+      if (retry.ok) {
+        expect(store.getDelivery(retry.intentId)?.decisionId).toBe(newestDecisionId);
+      }
+      expect(store.listUnconsumedAcceptedDecisions(handoffId)).toEqual([]);
+    } finally {
+      allSpy.mockRestore();
+      getSpy.mockRestore();
+      fixture.conn.close();
+    }
   });
 });
