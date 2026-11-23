@@ -108,9 +108,12 @@ export default defineConfig({
       //
       // Functions raised 81 → 83 on the webview redesign port, whose tests
       // measured 91.85% statements / 81.08% branches / 88.12% functions /
-      // 91.85% lines at its tip; only functions was flagged. The functions
-      // covered in MetricsDashboard.svelte vary from run to run, which can
-      // move that total by 0.09 points.
+      // 91.85% lines at its tip; only functions was flagged. FR-R7-15 W13
+      // (2026-11-23) traced the historical 0.09-point MetricsDashboard
+      // fluctuation to an unawaited lazy-route import racing cleanup in
+      // App.nav.test.ts, stabilized it, and verified 0.00 pp function
+      // variance across 5 isolated runs (89.11% / 1,579 of 1,772 functions;
+      // floors 86/75/83/86 stay within the 1-point headroom tolerance).
       thresholds: {
         statements: 86,
         branches: 75,

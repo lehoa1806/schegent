@@ -9,6 +9,7 @@
    * (`settings-search.svelte.ts`), and a status line tells assistive technology how many settings
    * match. The line waits for a pause in typing, so a word typed quickly is announced once.
    */
+  import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
   import type { SettingsPage } from './settings-page.svelte';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import { SETTINGS_PAGE_HEADER_DESCRIPTIONS } from './SettingsPageHeader.descriptions';
@@ -27,6 +28,56 @@
   const saveOff = $derived(!page.canSave);
 
   let announced = $state('');
+  let saveError = $state<string | null>(null);
+  let saveGeneration = 0;
+
+  /**
+   * Prefixes of common API/provider credential formats that might otherwise match
+   * `CODE_SHAPE` when lowercase. Never echo them even if an exception carries one as
+   * its bare `.message`.
+   */
+  const SECRET_TOKEN_PREFIX = /^(?:sk|xox[baprs]|xapp|glpat|gh[pousr])-/i;
+
+  $effect(() => () => {
+    saveGeneration += 1;
+  });
+
+  /**
+   * Formats a rejected `page.save()` value for the header alert without echoing raw paths,
+   * stacks, secret-shaped tokens, or arbitrary exception text, and without ever throwing.
+   */
+  function formatSaveFailure(error: unknown): string {
+    try {
+      const raw: unknown = error instanceof Error ? error.message : error;
+      if (typeof raw !== 'string' || SECRET_TOKEN_PREFIX.test(raw)) {
+        return boundaryRefusalText('');
+      }
+      return boundaryRefusalText(raw);
+    } catch {
+      return boundaryRefusalText('');
+    }
+  }
+
+  async function handleSave(): Promise<void> {
+    if (saveOff) return;
+    const token = ++saveGeneration;
+    saveError = null;
+    try {
+      await page.save();
+    } catch (error: unknown) {
+      if (token === saveGeneration) {
+        saveError = formatSaveFailure(error);
+      }
+    }
+  }
+
+  function handleRevert(): void {
+    if (revertOff) return;
+    saveGeneration += 1;
+    saveError = null;
+    page.revert();
+  }
+
   // Every key runs this again, also a key that leaves the count as it was, so the wait starts
   // again each time and the line speaks once, after the last key.
   $effect(() => {
@@ -84,9 +135,7 @@
       class="btn btn-secondary"
       data-testid="settings-revert"
       aria-disabled={revertOff ? 'true' : 'false'}
-      onclick={() => {
-        if (!revertOff) page.revert();
-      }}
+      onclick={handleRevert}
       use:hoverTextAnchor={{ controlId: 'revert', description: SETTINGS_PAGE_HEADER_DESCRIPTIONS.revert }}
     >Revert</button>
     <button
@@ -94,17 +143,24 @@
       class="btn btn-primary"
       data-testid="settings-save"
       aria-disabled={saveOff ? 'true' : 'false'}
-      onclick={() => {
-        if (!saveOff) void page.save();
-      }}
+      onclick={() => void handleSave()}
       use:hoverTextAnchor={{ controlId: 'save', description: SETTINGS_PAGE_HEADER_DESCRIPTIONS.save }}
     >Save</button>
   </div>
+  {#if saveError !== null}
+    <p class="small s-err save-error" role="alert" data-testid="settings-save-error">{saveError}</p>
+  {/if}
 </div>
 
 <style>
   .purpose {
     margin-bottom: 0;
+  }
+
+  .save-error {
+    flex-basis: 100%;
+    margin: 0;
+    overflow-wrap: anywhere;
   }
 
   /* The row of actions claims a fixed share of the header: the field at its narrowest, a count

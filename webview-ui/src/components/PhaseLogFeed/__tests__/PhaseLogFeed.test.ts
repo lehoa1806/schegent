@@ -1323,13 +1323,16 @@ describe('Feature 067 US3 — Live button re-enables auto-following', () => {
       currentPipelineId: 'standard',
       currentPhase: 'speckit-plan'
     });
-    const { getByTestId, rerender } = render(PhaseLogFeed, {
+    const { getByRole, getByTestId, rerender } = render(PhaseLogFeed, {
       props: { snapshot: initial, store }
     });
     await tick();
     await tick();
 
-    const jumpBtn = getByTestId('phase-log-jump-current') as HTMLButtonElement;
+    const jumpBtn = getByRole('button', { name: 'Live' }) as HTMLButtonElement;
+    expect(jumpBtn).toBe(getByTestId('phase-log-jump-current'));
+    expect(jumpBtn.textContent.trim()).toBe('Live');
+    expect(jumpBtn.title).toBe('Jump to the currently executing Phase');
     await fireEvent.click(jumpBtn);
     await tick();
     await tick();
@@ -1394,6 +1397,7 @@ describe('Feature 067 US3 — Live button re-enables auto-following', () => {
     const selectionBefore = { ...store.state.selection };
 
     const jumpBtn = getByTestId('phase-log-jump-current') as HTMLButtonElement;
+    expect(jumpBtn.textContent.trim()).toBe('Live');
     await fireEvent.click(jumpBtn);
     await tick();
     await tick();
@@ -1433,6 +1437,7 @@ describe('Feature 067 US3 — Live button re-enables auto-following', () => {
     await tick();
 
     const jumpBtn = getByTestId('phase-log-jump-current') as HTMLButtonElement;
+    expect(jumpBtn.textContent.trim()).toBe('Live');
     await fireEvent.click(jumpBtn);
     await tick();
     await tick();

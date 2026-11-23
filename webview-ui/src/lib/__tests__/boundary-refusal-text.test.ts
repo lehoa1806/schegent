@@ -46,7 +46,7 @@ describe('boundaryRefusalText (T11)', () => {
   });
 
   // FR-R4-F05 code review (I5) — the helpers report the ledger's `unknown` as `timeout`. A
-  // surface that falls back here showed "The host refused this action (`timeout`)".
+  // surface that falls back here showed "The host refused this action (timeout)".
   it('words the helpers\' timeout as not yet known, never as a refusal', () => {
     expect(boundaryRefusalText('timeout')).toBe(OUTCOME_NOT_YET_KNOWN_TEXT);
     expect(isOutcomeNotYetKnown('timeout')).toBe(true);
@@ -60,19 +60,19 @@ describe('boundaryRefusalText (T11)', () => {
     );
   });
 
-  it('names a code-shaped unknown reason inside a fixed sentence', () => {
-    expect(boundaryRefusalText('some-new-host-refusal')).toBe(
-      'The host refused this action (`some-new-host-refusal`).'
-    );
+  it('names a code-shaped unknown reason inside a fixed sentence without backticks', () => {
+    const unknown = boundaryRefusalText('some-new-host-refusal');
+    expect(unknown).toBe('The host refused this action (some-new-host-refusal).');
+    expect(unknown).not.toContain('`');
     expect(boundaryRefusalText('0-leading-digit')).toBe(
-      'The host refused this action (`0-leading-digit`).'
+      'The host refused this action (0-leading-digit).'
     );
   });
 
   it('accepts a code of exactly 64 characters', () => {
     const code = 'a'.repeat(64);
 
-    expect(boundaryRefusalText(code)).toBe(`The host refused this action (\`${code}\`).`);
+    expect(boundaryRefusalText(code)).toBe(`The host refused this action (${code}).`);
   });
 
   it.each([
@@ -88,5 +88,17 @@ describe('boundaryRefusalText (T11)', () => {
 
     expect(text).toBe('The host refused this action.');
     if (reason.length > 0) expect(text).not.toContain(reason);
+  });
+
+  it('never throws or coerces non-string runtime values into refusal codes', () => {
+    const nullProto = Object.create(null) as unknown;
+    const throwingToString = {
+      toString(): string {
+        throw new Error('poisoned toString');
+      }
+    };
+    for (const input of [undefined, null, 42, true, {}, nullProto, throwingToString]) {
+      expect(boundaryRefusalText(input)).toBe('The host refused this action.');
+    }
   });
 });

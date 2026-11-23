@@ -253,3 +253,77 @@ describe('WorkflowToolbar export inclusion (T023, FR-013 / Feature 326)', () => 
     }
   });
 });
+
+describe('WorkflowToolbar Save focus preservation (W02, FR-002)', () => {
+  const renderSave = (
+    overrides: Partial<{ saveDisabled: boolean; savePending: boolean; onsave: () => void }> = {}
+  ) =>
+    render(WorkflowToolbar, {
+      savePending: false,
+      mutatingDisabled: false,
+      noPipelines: false,
+      duplicateDisabled: false,
+      removeDisabled: false,
+      saveDisabled: true,
+      selected: row(),
+      onduplicate: () => {},
+      onremove: () => {},
+      onsave: () => {},
+      ...overrides
+    });
+
+  it('uses aria-disabled instead of native disabled on workflows-save-all across state transitions', async () => {
+    const { getByTestId, rerender } = renderSave({ saveDisabled: true, savePending: false });
+    const saveBtn = getByTestId('workflows-save-all') as HTMLButtonElement;
+
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Save');
+
+    await rerender({ saveDisabled: false, savePending: false });
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+
+    await rerender({ saveDisabled: true, savePending: true });
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Saving…');
+  });
+
+  it('keeps keyboard focus on Save when saveDisabled flips true and ignores activations while off', async () => {
+    const onsave = vi.fn();
+    const { getByTestId, rerender } = renderSave({
+      saveDisabled: false,
+      savePending: false,
+      onsave
+    });
+    const saveBtn = getByTestId('workflows-save-all') as HTMLButtonElement;
+
+    saveBtn.focus();
+    expect(document.activeElement).toBe(saveBtn);
+
+    await fireEvent.keyDown(saveBtn, { key: 'Enter' });
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(1);
+
+    await rerender({ saveDisabled: true, savePending: true });
+    expect(document.activeElement).toBe(saveBtn);
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+
+    await fireEvent.keyDown(saveBtn, { key: ' ' });
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(saveBtn);
+
+    await rerender({ saveDisabled: true, savePending: false });
+    expect(document.activeElement).toBe(saveBtn);
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(1);
+
+    await rerender({ saveDisabled: false, savePending: false });
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(2);
+  });
+});

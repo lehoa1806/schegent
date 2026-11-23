@@ -514,4 +514,33 @@ describe('MetricsDashboard — coverage windows for totals and detail (FR-R3-009
     expect(queryByTestId('metrics-toolbar')).not.toBeNull();
     expect(header?.innerHTML).toBe(headerHtmlBefore);
   });
+
+  it('switches Overview and Reports tabs deterministically via keyboard Arrow/Home/End (W13)', async () => {
+    const { getByTestId, queryByTestId } = render(MetricsDashboard, {
+      props: { active: true }
+    });
+    await tick();
+    await tick();
+
+    const overviewTab = getByTestId('metrics-mode-rollup');
+    const reportsTab = getByTestId('metrics-mode-reports');
+
+    await fireEvent.keyDown(overviewTab, { key: 'ArrowRight' });
+    await tick();
+    expect(reportsTab.getAttribute('aria-selected')).toBe('true');
+    expect(queryByTestId('metrics-toolbar')).toBeNull();
+
+    await fireEvent.keyDown(reportsTab, { key: 'ArrowLeft' });
+    await tick();
+    expect(overviewTab.getAttribute('aria-selected')).toBe('true');
+    expect(queryByTestId('metrics-toolbar')).not.toBeNull();
+
+    await fireEvent.keyDown(overviewTab, { key: 'End' });
+    await tick();
+    expect(reportsTab.getAttribute('aria-selected')).toBe('true');
+
+    await fireEvent.keyDown(reportsTab, { key: 'Home' });
+    await tick();
+    expect(overviewTab.getAttribute('aria-selected')).toBe('true');
+  });
 });

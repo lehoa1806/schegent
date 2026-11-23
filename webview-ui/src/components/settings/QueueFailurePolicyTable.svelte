@@ -85,22 +85,24 @@
                 {/each}
               </select>
               <!-- Feature 195 (FR-019) — one message per row, so an answer about one queue never
-                   shows on another's. The region stays in place so a screen reader hears each
-                   change to it. -->
+                   shows on another's. The polite status region stays in place for non-refusal
+                   messages; a refusal is an alert of its own outside it. -->
               <div role="status">
-                {#if row.message !== null && row.message.refused}
-                  <p
-                    class="small s-err policy-message"
-                    data-testid="queue-failure-policy-message-{row.queueId}"
-                    use:refusal
-                  >{row.message.text}</p>
-                {:else if row.message !== null}
+                {#if row.message !== null && !row.message.refused}
                   <p
                     class="small muted policy-message"
                     data-testid="queue-failure-policy-message-{row.queueId}"
                   >{row.message.text}</p>
                 {/if}
               </div>
+              {#if row.message !== null && row.message.refused}
+                <p
+                  class="small s-err policy-message"
+                  role="alert"
+                  data-testid="queue-failure-policy-message-{row.queueId}"
+                  use:refusal
+                >{row.message.text}</p>
+              {/if}
             </td>
           </tr>
         {/each}

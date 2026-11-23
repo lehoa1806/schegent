@@ -8,7 +8,7 @@
 // `SettingsSurface.test.ts` holds the header's count and what Revert and Save do; the last
 // describe here holds how they are off: dimmed by `aria-disabled`, so a press that turns one
 // off leaves the focus on it, and a press while off does nothing.
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -188,5 +188,260 @@ describe('SettingsPageHeader, Revert and Save while they are off', () => {
 
     expect(getByTestId('settings-revert').getAttribute('aria-disabled')).toBe('false');
     expect(getByTestId('settings-save').getAttribute('aria-disabled')).toBe('false');
+  });
+});
+
+describe('SettingsPageHeader, a refused save at the button boundary (W01)', () => {
+  async function captureUnhandledRejections(action: () => Promise<void>): Promise<unknown[]> {
+    const unhandled: unknown[] = [];
+    const onNodeRejection = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    const onWindowRejection = (event: PromiseRejectionEvent): void => {
+      event.preventDefault();
+      unhandled.push(event.reason);
+    };
+    process.on('unhandledRejection', onNodeRejection);
+    window.addEventListener('unhandledrejection', onWindowRejection);
+    try {
+      await action();
+      await Promise.resolve();
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    } finally {
+      process.off('unhandledRejection', onNodeRejection);
+      window.removeEventListener('unhandledrejection', onWindowRejection);
+    }
+    return unhandled;
+  }
+
+  function rejectingPart(save: () => Promise<void>): SettingsPart {
+    return {
+      changes: () => ({ execution: 1 }),
+      canSave: () => true,
+      save,
+      revert: vi.fn()
+    };
+  }
+
+  it('catches a rejected page.save() with zero unhandled rejections, renders settings-save-error outside .phead > .actions, and keeps Save focusable for retry', async () => {
+    const page = new SettingsPage();
+    const save = vi.fn(() => Promise.reject(new Error('future-gate')));
+    page.register(rejectingPart(save));
+    const { container, getByTestId, queryByTestId } = mount(page);
+    expect(queryByTestId('settings-save-error')).toBeNull();
+
+    const saveButton = getByTestId('settings-save');
+    saveButton.focus();
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(saveButton);
+      await waitFor(() => expect(getByTestId('settings-save-error')).toBeTruthy());
+    });
+
+    expect(unhandled).toEqual([]);
+    const errorNode = getByTestId('settings-save-error');
+    expect(errorNode.getAttribute('role')).toBe('alert');
+    expect(errorNode.textContent.trim()).toBe('The host refused this action (future-gate).');
+    expect(errorNode.textContent).not.toContain('`');
+
+    const header = container.querySelector('.phead');
+    const actions = container.querySelector('.phead > .actions');
+    expect(header?.contains(errorNode)).toBe(true);
+    expect(actions?.contains(errorNode)).toBe(false);
+    const controls = Array.from(actions?.querySelectorAll('input, button') ?? []).map((control) =>
+      control.getAttribute('data-testid')
+    );
+    expect(controls).toEqual(['settings-search', 'settings-revert', 'settings-save']);
+
+    expect(getByTestId('settings-unsaved').textContent.trim()).toBe('1 unsaved change');
+    expect(saveButton.getAttribute('aria-disabled')).toBe('false');
+    expect(saveButton.hasAttribute('disabled')).toBe(false);
+    expect(document.activeElement).toBe(saveButton);
+  });
+
+  it('sanitizes raw paths and stacks from rejected save errors while mapping known boundary codes', async () => {
+    const page = new SettingsPage();
+    const save = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(
+        new Error('EACCES: open /synthetic/home/user-252/secret.json\n  at write (/host/fs.ts:42)')
+      )
+      .mockRejectedValueOnce('untrusted-workspace');
+    page.register(rejectingPart(save));
+    const { getByTestId } = mount(page);
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(getByTestId('settings-save'));
+      await waitFor(() =>
+        expect(getByTestId('settings-save-error').textContent.trim()).toBe(
+          'The host refused this action.'
+        )
+      );
+      expect(getByTestId('settings-save-error').textContent).not.toContain('user-252');
+      expect(getByTestId('settings-save-error').textContent).not.toContain('secret.json');
+      expect(getByTestId('settings-save-error').textContent).not.toContain('`');
+
+      await fireEvent.click(getByTestId('settings-save'));
+      await waitFor(() =>
+        expect(getByTestId('settings-save-error').textContent.trim()).toBe(
+          'The workspace is not trusted, so this action is unavailable.'
+        )
+      );
+    });
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('clears settings-save-error when retry starts and stays clear when retry succeeds', async () => {
+    let finishRetry: (() => void) | undefined;
+    const page = new SettingsPage();
+    const save = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('future-gate'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishRetry = resolve;
+          })
+      );
+    page.register(rejectingPart(save));
+    const { getByTestId, queryByTestId } = mount(page);
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(getByTestId('settings-save'));
+      await waitFor(() => expect(getByTestId('settings-save-error')).toBeTruthy());
+
+      await fireEvent.click(getByTestId('settings-save'));
+      await waitFor(() => expect(queryByTestId('settings-save-error')).toBeNull());
+
+      finishRetry?.();
+      await tick();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(queryByTestId('settings-save-error')).toBeNull();
+  });
+
+  it('clears settings-save-error when Revert is activated', async () => {
+    const page = new SettingsPage();
+    const part = rejectingPart(vi.fn(() => Promise.reject(new Error('future-gate'))));
+    page.register(part);
+    const { getByTestId, queryByTestId } = mount(page);
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(getByTestId('settings-save'));
+      await waitFor(() => expect(getByTestId('settings-save-error')).toBeTruthy());
+
+      await fireEvent.click(getByTestId('settings-revert'));
+      await waitFor(() => expect(queryByTestId('settings-save-error')).toBeNull());
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(part.revert).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a stale save rejection that arrives after Revert was clicked while save was pending', async () => {
+    let rejectPending: ((reason?: unknown) => void) | undefined;
+    let dirty = true;
+    const page = new SettingsPage();
+    page.register({
+      changes: () => (dirty ? { execution: 1 } : {}),
+      canSave: () => dirty,
+      save: vi.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectPending = reject;
+          })
+      ),
+      revert: vi.fn(() => {
+        dirty = false;
+      })
+    });
+    const { getByTestId, queryByTestId } = mount(page);
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(getByTestId('settings-save'));
+      await fireEvent.click(getByTestId('settings-revert'));
+      rejectPending?.(new Error('future-gate'));
+      await tick();
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(queryByTestId('settings-save-error')).toBeNull();
+  });
+
+  it('ignores a late save rejection after the header unmounts with zero unhandled rejections', async () => {
+    let rejectPending: ((reason?: unknown) => void) | undefined;
+    const page = new SettingsPage();
+    page.register(
+      rejectingPart(
+        vi.fn(
+          () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectPending = reject;
+            })
+        )
+      )
+    );
+    const { getByTestId, unmount } = mount(page);
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      await fireEvent.click(getByTestId('settings-save'));
+      unmount();
+      rejectPending?.(new Error('future-gate'));
+      await tick();
+    });
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it('handles non-string error messages, throwing getters, and token-shaped messages safely without leaking or throwing', async () => {
+    const nullProtoMessage = new Error('placeholder');
+    Object.defineProperty(nullProtoMessage, 'message', {
+      value: Object.create(null) as unknown,
+      configurable: true
+    });
+    const undefinedMessage = new Error('placeholder');
+    Object.defineProperty(undefinedMessage, 'message', {
+      value: undefined,
+      configurable: true
+    });
+    const throwingGetter = new Error('placeholder');
+    Object.defineProperty(throwingGetter, 'message', {
+      get() {
+        throw new Error('getter exploded');
+      },
+      configurable: true
+    });
+    const tokenLikeError = new Error('sk-ant-api03-synthetic0123456789abcdef');
+
+    const page = new SettingsPage();
+    const save = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(nullProtoMessage)
+      .mockRejectedValueOnce(undefinedMessage)
+      .mockRejectedValueOnce(throwingGetter)
+      .mockRejectedValueOnce(tokenLikeError);
+    page.register(rejectingPart(save));
+    const { getByTestId } = mount(page);
+
+    const unhandled = await captureUnhandledRejections(async () => {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await fireEvent.click(getByTestId('settings-save'));
+        await waitFor(() =>
+          expect(getByTestId('settings-save-error').textContent.trim()).toBe(
+            'The host refused this action.'
+          )
+        );
+        expect(getByTestId('settings-save-error').textContent).not.toContain('sk-ant');
+        expect(getByTestId('settings-save-error').textContent).not.toContain('undefined');
+      }
+    });
+
+    expect(unhandled).toEqual([]);
+    expect(save).toHaveBeenCalledTimes(4);
   });
 });

@@ -277,10 +277,18 @@ It lists both kinds of skipped change: a merge that did not carry the line, and 
 
 - **It is not enforced at the merge.** Nothing refuses a merge without the line, and the listing finds
   one afterwards. The workspace push refuses it later, before it leaves the machine; see [Enforcement at workspace push](#enforcement-at-workspace-push--2026-11-06-fr-r5-f20).
-- **It names the branch head, not the merge.** Right after the merge, `npm run gate:distance` reads 1
-  commit behind: the merge commit itself. If `develop` had not moved since the branch was cut, the
-  merge commit's tree is the branch head's, so the record covers it. If it had moved, the distance
-  reads more than 1 and the combination was never gated, as the bot rule says above.
+- **It names the branch head, not the merge.** `npm run gate:distance` computes
+  `git rev-list --count <head>..HEAD`, which counts every commit reachable from `HEAD` and not from
+  `<head>`. Right after a first merge of a branch cut from `develop`, `npm run gate:distance` reads 1
+  commit behind: the merge commit itself. Distance greater than 1 alone does **not** prove an ungated
+  tree combination: when a long-lived branch was merged into `develop` earlier (`1b103988` at commit
+  72) and later merged again (`a54e2517` at commit 134, branch head `32e6682f`),
+  `git rev-list --count 32e6682f..a54e2517` reads `2` (covering both `1b103988` and `a54e2517`) even
+  though their trees are byte-for-byte identical (`d3f3bfdcedfd296cc46081ab5f5636b921617c2a`;
+  `git diff --stat 32e6682f a54e2517` is empty). Compare `git rev-parse <branch-head>^{tree}` against
+  `git rev-parse <merge>^{tree}` (as `scripts/merge-record-status.sh` does) rather than inferring
+  tree divergence from commit distance alone. Regardless of tree equality, `npm run release:preflight`
+  still requires a gate record at the exact release commit (`attestation.head === HEAD`).
 - **It keeps one record per checkout.** A recording on a branch replaces the record `develop` had
   here.
 - **It does not replace the release recording.** `npm run release:preflight` refuses a record that
@@ -389,3 +397,27 @@ whether the hooks are active in each repository.
 as `exempt` in its summary line, not silently dropped. The default is in the script, and
 `MERGE_RECORD_START` overrides it. The full contract, with every reason code and its remedy, is in the
 workspace at `specs/281-verification-evidence-qualification/contracts/merge-record-check.md`.
+
+## Bisecting across historical gate hazards
+
+When bisecting across the merged `webview-redesign-port` series (`552d457a..32e6682f`, merged into
+`develop` as `a54e2517`), several intermediate commit ranges fail individual gate checks even though
+the integrated tips pass. Account for these known hazard ranges rather than treating them as the
+regression under investigation:
+
+- **Commits 15–38 (`9b6c1eb7`..`4990a06b`)** — failed a host lint check; subset **commits 28–37
+  (`de6ec028`..`5d159e82`)** also failed the compiler strictness ratchet.
+- **Commit 71 (`88944036`)** — failed the compiler strictness ratchet and `typecheck:tests`.
+- **Known passing tip 1 — commit 72 (`e3ed0210`)** — merged into `develop` as `1b103988`.
+- **Commits 115–132 (`dd64176f`..`2d5c20d5`)** — failed webview coverage headroom
+  (`test:webview:coverage`, floor `81` lagging measured coverage above `88.00%`), corrected in commit
+  133.
+- **Known passing tips 2 — commit 133 (`2ce9b6f1`) and commit 134 (`32e6682f`)** — `2ce9b6f1` raised
+  the webview function coverage floor to `83`, and `32e6682f` carries the archived passing gate
+  record `docs/gate-records/32e6682f3e096438c72f2672070470c368a3e2e9.json` in the planning workspace
+  (merged into `develop` as `a54e2517`, whose tree `d3f3bfdcedfd296cc46081ab5f5636b921617c2a` matches
+  `32e6682f`).
+
+**Release rule.** For any release cut from this series (including `a54e2517`, despite its matching
+tree), obtain a fresh `npm run gate:record` at the exact release commit so
+`npm run release:preflight` observes `attestation.head === HEAD`.

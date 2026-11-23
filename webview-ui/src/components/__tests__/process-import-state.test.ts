@@ -1436,7 +1436,7 @@ describe('Feature 096 T023 — projecting the Model Catalog ack onto the plan (F
     expect(results[0]).toEqual({
       resourceId: 'custom-model-b',
       outcome: 'failed',
-      detail: 'The host refused this action (`persistence-failed`).'
+      detail: 'The host refused this action (persistence-failed).'
     });
   });
 

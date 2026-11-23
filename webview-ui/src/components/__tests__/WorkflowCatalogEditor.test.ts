@@ -1642,14 +1642,16 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     expect(notice?.getAttribute('role')).toBe('status');
     expect(notice?.textContent ?? '').toMatch(/Phase/i);
     expect((notice?.textContent ?? '').trim().length).toBeGreaterThan(20);
-    expect(saveIn(container).disabled).toBe(true);
+    expect(saveIn(container).hasAttribute('disabled')).toBe(false);
+    expect(saveIn(container).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('treats a catalog whose every Pipeline is invalid exactly like an empty one', async () => {
     const { container, getByTestId } = mountWith(ALL_INVALID);
     await fireEvent.click(getByTestId('workflows-add'));
     expect(noticeIn(container)).not.toBeNull();
-    expect(saveIn(container).disabled).toBe(true);
+    expect(saveIn(container).hasAttribute('disabled')).toBe(false);
+    expect(saveIn(container).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('still renders the stored rows rather than hiding the Library', () => {
@@ -1667,20 +1669,23 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     await fireEvent.click(getByTestId('workflows-duplicate'));
 
     expect(getByTestId('workflow-field-workflowId')).toBeTruthy();
-    expect(saveIn(container).disabled).toBe(true);
+    expect(saveIn(container).hasAttribute('disabled')).toBe(false);
+    expect(saveIn(container).getAttribute('aria-disabled')).toBe('true');
   });
 
   it('becomes usable when a refreshed snapshot carries a valid Pipeline, with no reload', async () => {
     const { container, getByTestId, rerender } = mountWith(EMPTY, [record()]);
     await fireEvent.click(rowFor(container, 'design-then-build'));
     await fireEvent.click(getByTestId('workflows-duplicate'));
-    expect(saveIn(container).disabled).toBe(true);
+    expect(saveIn(container).hasAttribute('disabled')).toBe(false);
+    expect(saveIn(container).getAttribute('aria-disabled')).toBe('true');
 
     // Same component instance, same in-progress draft — only the snapshot moved.
     await rerender({ snapshot: snapshot([record()]) });
 
     expect(noticeIn(container)).toBeNull();
-    expect(saveIn(container).disabled).toBe(false);
+    expect(saveIn(container).hasAttribute('disabled')).toBe(false);
+    expect(saveIn(container).getAttribute('aria-disabled')).toBe('false');
   });
 
   it('says nothing about a missing Pipeline while the catalog is still loading', async () => {
@@ -1689,7 +1694,8 @@ describe('missing-Pipeline prerequisite (US7, FR-045)', () => {
     const { container, getByTestId } = mountWith(undefined);
     await fireEvent.click(getByTestId('workflows-add'));
     expect(noticeIn(container)).toBeNull();
-    expect(saveIn(container).disabled).toBe(true);
+    expect(saveIn(container).hasAttribute('disabled')).toBe(false);
+    expect(saveIn(container).getAttribute('aria-disabled')).toBe('true');
   });
 });
 
@@ -1981,4 +1987,106 @@ describe('Unified Workflow Authoring (FR-R5-F05)', () => {
       restoreTransport();
     }
   }, 15_000);
+});
+
+describe('WorkflowCatalogEditor Save keyboard focus preservation (W02, FR-002)', () => {
+  async function activateFocusedButton(
+    button: HTMLButtonElement,
+    key: 'Enter' | ' ' = 'Enter'
+  ): Promise<void> {
+    await fireEvent.keyDown(button, { key });
+    await fireEvent.keyUp(button, { key });
+    await fireEvent.click(button);
+  }
+
+  it('keeps focus on Save across keyboard activation, pending, revision ack, and subsequent edit', async () => {
+    const { saveDefinitionDraft } = await import('../../lib/catalog-lifecycle');
+    vi.mocked(saveDefinitionDraft).mockClear();
+
+    const initialRecord = record();
+    const { container, getByTestId, rerender } = render(WorkflowCatalogEditor, {
+      props: { snapshot: snapshot([initialRecord]), trusted: true }
+    });
+
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await tick();
+
+    const saveBtn = getByTestId('workflows-save-all') as HTMLButtonElement;
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Save');
+
+    // 1. Edit the Workflow to make it dirty.
+    const nameInput = getByTestId('workflow-field-name') as HTMLInputElement;
+    await fireEvent.input(nameInput, { target: { value: 'Design then Build v2' } });
+    await tick();
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+
+    // 2. Focus Save, activate via keyboard + click, verify focus retained and pending state set.
+    saveBtn.focus();
+    expect(document.activeElement).toBe(saveBtn);
+    await activateFocusedButton(saveBtn, 'Enter');
+    await tick();
+
+    expect(document.activeElement).toBe(saveBtn);
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Saving…');
+    expect(saveDefinitionDraft).toHaveBeenCalledTimes(1);
+
+    // 3. Re-activate Save while pending — zero duplicate command and focus stays on Save.
+    await activateFocusedButton(saveBtn, ' ');
+    await fireEvent.click(saveBtn);
+    await tick();
+    expect(saveDefinitionDraft).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(saveBtn);
+
+    // 4. Deliver updated snapshot with incremented workflowCatalog.revision acknowledging the save.
+    const updatedRecord = record({
+      definition: {
+        ...initialRecord.definition,
+        name: 'Design then Build v2'
+      } as WorkflowCatalogSourceProjection['definition']
+    });
+    const baseNext = snapshot([updatedRecord]);
+    const acknowledgedSnapshot = {
+      ...baseNext,
+      workflowCatalog: {
+        ...baseNext.workflowCatalog,
+        revision: 'w-2'
+      }
+    } as unknown as WorkflowSnapshot;
+
+    await rerender({ snapshot: acknowledgedSnapshot, trusted: true });
+    await tick();
+
+    expect(document.activeElement).toBe(saveBtn);
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Save');
+
+    // 5. Re-activate Save while clean — zero duplicate command and focus stays on Save.
+    await activateFocusedButton(saveBtn, 'Enter');
+    await fireEvent.click(saveBtn);
+    await tick();
+    expect(saveDefinitionDraft).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(saveBtn);
+
+    // 6. Edit the Workflow again — Save re-enables and posts a fresh second save cleanly.
+    await fireEvent.input(getByTestId('workflow-field-name'), {
+      target: { value: 'Design then Build v3' }
+    });
+    await tick();
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+
+    saveBtn.focus();
+    await activateFocusedButton(saveBtn, 'Enter');
+    await tick();
+    expect(saveDefinitionDraft).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(saveBtn);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Saving…');
+  });
 });
