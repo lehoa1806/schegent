@@ -73,6 +73,34 @@ export function verifyWithin(
 }
 
 /**
+ * FR-R8-01 (01-03) — Bound `OwnershipRegistry.readStatus` with the same
+ * `OWNERSHIP_VERIFY_DEADLINE_MS` deadline used by `verifyWithin`, failing
+ * closed (`{ outcome: 'unavailable' }`) on timeout or I/O failure.
+ */
+export function readOwnershipStatusWithinDeadline(
+  registry: Pick<OwnershipRegistry, 'readStatus'>,
+  resource: string,
+  deadlineMs: number,
+  scheduler: Scheduler
+): Promise<Awaited<ReturnType<OwnershipRegistry['readStatus']>>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (result: Awaited<ReturnType<OwnershipRegistry['readStatus']>>): void => {
+      if (settled) return;
+      settled = true;
+      timer.clear();
+      resolve(result);
+    };
+    const timer = scheduler.setInterval(() => {
+      settle({ outcome: 'unavailable' });
+    }, deadlineMs);
+    registry.readStatus(resource).then(settle, () => {
+      settle({ outcome: 'unavailable' });
+    });
+  });
+}
+
+/**
  * Why a commit carries no fence. Closed on purpose.
  *
  * Each arm is a place where no lease can exist yet, or exists no longer:

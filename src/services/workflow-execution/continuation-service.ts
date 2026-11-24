@@ -172,6 +172,7 @@ export async function continueConnectedRun(
 ): Promise<ContinueWorkflowResult> {
   const commandService =
     deps.controlCommandService ??
+    deps.productionComposition?.controlCommandService ??
     (deps.controlCommandServiceDeps !== undefined
       ? new ControlCommandService(deps.controlCommandServiceDeps)
       : undefined);
@@ -200,7 +201,7 @@ export async function continueConnectedRun(
       getOrCreateProductionWorkflowComposition(runs, {
         ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {})
       });
-    const controlService = composition.createControlService({
+    const serviceToRun = composition.createControlService({
       connectedRuns: runs,
       ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {}),
       dispatchPhase: async (phaseInput) => {
@@ -208,52 +209,14 @@ export async function continueConnectedRun(
           return { outcome: 'rejected', reason: 'missing-closure' };
         }
         return phaseDispatchResultOf(
-          await startPhaseAttempt(deps, phaseInput, input.workspaceRoot, { continuesWorkflow: true })
+          await startPhaseAttempt(deps, phaseInput, input.workspaceRoot, {
+            continuesWorkflow: true
+          })
         );
       },
+      ...(commandService !== undefined ? { controlCommandService: commandService } : {}),
       ...deps.workflowControlHooks
     });
-    const effectiveControlService =
-      commandService !== undefined
-        ? composition.createControlService({
-            connectedRuns: runs,
-            ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {}),
-            dispatchPhase: async (phaseInput) => {
-              if (run.frozenClosure === undefined) {
-                return { outcome: 'rejected', reason: 'missing-closure' };
-              }
-              return phaseDispatchResultOf(
-                await startPhaseAttempt(deps, phaseInput, input.workspaceRoot, {
-                  continuesWorkflow: true
-                })
-              );
-            },
-            ...deps.workflowControlHooks
-          })
-        : controlService;
-    // If an explicit commandService was supplied on deps, preserve it for candidate retry redirection
-    const serviceToRun =
-      commandService !== undefined
-        ? new (effectiveControlService.constructor as typeof import('./workflow-control-service').WorkflowControlService)({
-            connectedRuns: runs,
-            controlAdmission: composition.controlAdmission,
-            repeatExecutor: composition.repeatExecutor,
-            forEachExecutor: composition.forEachExecutor,
-            ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {}),
-            dispatchPhase: async (phaseInput) => {
-              if (run.frozenClosure === undefined) {
-                return { outcome: 'rejected', reason: 'missing-closure' };
-              }
-              return phaseDispatchResultOf(
-                await startPhaseAttempt(deps, phaseInput, input.workspaceRoot, {
-                  continuesWorkflow: true
-                })
-              );
-            },
-            controlCommandService: commandService,
-            ...deps.workflowControlHooks
-          })
-        : effectiveControlService;
     const outcome = await serviceToRun.executeCommand({
       runId: run.connectedRunId,
       commandId:

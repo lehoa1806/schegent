@@ -36,7 +36,7 @@ import type { FeatureRequest, QueueState } from '../queue/feature-request';
 import type { AgentConfigGrant, AgentConfigGrantMap } from './agent-config-grants';
 import type { ConfirmSuppressionState } from './confirm-suppression';
 import type { ConnectedWorkflowRun } from './connected-workflow-run';
-import type { ExecutionLease } from './execution-lease';
+import type { ClaimTenure, ExecutionLease } from './execution-lease';
 import type { GitPlanGrant, GitPlanGrantMap } from './git-plan-grants';
 import { systemScheduler, type Scheduler } from './lock';
 import { MementoWriteGate, StorageWriteQuarantinedError } from './memento-write-gate';
@@ -367,9 +367,12 @@ export class WorkspaceStateStore {
     this.primacyClaimSource = source;
   }
 
-  public canCommitConnectedRun(): Promise<boolean> {
-    return this.primacyClaimSource?.canCommitConnectedRun() ?? Promise.resolve(true);
-  }
+  public canCommitConnectedRun(): Promise<boolean> { return this.primacyClaimSource?.canCommitConnectedRun() ?? Promise.resolve(true); }
+  public primacyClaim(): OwnershipClaim | null { return this.primacyClaimSource?.primacyClaim?.() ?? null; }
+  public runClaimFor(queueId: string): OwnershipClaim | null { return this.runClaimSource?.claimFor(queueId) ?? null; }
+  public runTenureOf(queueId: string): ClaimTenure { return this.runClaimSource?.tenureOf?.(queueId) ?? { state: 'never-held' }; }
+  public markRunClaimLost(queueId: string, reason: 'superseded'): void { this.runClaimSource?.markLost?.(queueId, reason); }
+  public get supportsBatchWrite(): boolean { return this.familyContext.supportsBatchWrite; }
 
   public runCommitClaim(queueId: string): RunCommitClaim {
     this.refuseIfClaimLost(queueId);
@@ -813,59 +816,17 @@ export class WorkspaceStateStore {
 
   // ── Connected Runs, Control Ledger & Reset ────────────────────────────────────
 
-  public getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>> {
-    return connectedFamily.getConnectedRuns(this.familyContext, this.connectedRunsWarned);
-  }
-
-  public getConnectedRun(connectedRunId: string): ConnectedWorkflowRun | null {
-    return connectedFamily.getConnectedRun(
-      this.familyContext,
-      this.connectedRunsWarned,
-      connectedRunId
-    );
-  }
-
-  public compareAndSetConnectedRun(
-    next: ConnectedWorkflowRun,
-    expectedRevision: number
-  ): Promise<ConnectedRunWriteResult> {
-    return connectedFamily.compareAndSetConnectedRun(
-      this.familyContext,
-      this.connectedRunsWarned,
-      next,
-      expectedRevision
-    );
-  }
-
-  public deleteConnectedRuns(connectedRunIds: readonly string[]): Promise<number> {
-    return connectedFamily.deleteConnectedRuns(
-      this.familyContext,
-      this.connectedRunsWarned,
-      connectedRunIds
-    );
-  }
-
-  public getRawControlLedger(): unknown {
-    return connectedFamily.getRawControlLedger(this.familyContext);
-  }
-
-  public transactControlLedger<T>(
-    op: (raw: unknown, write: (next: unknown) => Promise<void>) => Promise<T>
-  ): Promise<T> {
-    return connectedFamily.transactControlLedger(this.familyContext, op);
-  }
-
-  public getResetMarker(): ResetMarker | null {
-    return connectedFamily.getResetMarker(this.familyContext);
-  }
-
-  public reset(): Promise<number> {
-    return connectedFamily.resetWorkspaceState(this.familyContext);
-  }
-
-  public completeInterruptedReset(): Promise<number | null> {
-    return connectedFamily.completeInterruptedReset(this.familyContext);
-  }
+  public getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>> { return connectedFamily.getConnectedRuns(this.familyContext, this.connectedRunsWarned); }
+  public getConnectedRun(connectedRunId: string): ConnectedWorkflowRun | null { return connectedFamily.getConnectedRun(this.familyContext, this.connectedRunsWarned, connectedRunId); }
+  public compareAndSetConnectedRun(next: ConnectedWorkflowRun, expectedRevision: number): Promise<ConnectedRunWriteResult> { return connectedFamily.compareAndSetConnectedRun(this.familyContext, this.connectedRunsWarned, next, expectedRevision); }
+  public deleteConnectedRuns(connectedRunIds: readonly string[]): Promise<number> { return connectedFamily.deleteConnectedRuns(this.familyContext, this.connectedRunsWarned, connectedRunIds); }
+  public deleteUnstartedConnectedRun(connectedRunId: string, expectedRevision: number): Promise<boolean> { return connectedFamily.deleteUnstartedConnectedRun(this.familyContext, this.connectedRunsWarned, connectedRunId, expectedRevision); }
+  public admitComposableWorkflowLaunchAtomically(input: connectedFamily.AtomicComposableLaunchInput): Promise<connectedFamily.AtomicComposableLaunchOutcome> { return connectedFamily.admitComposableWorkflowLaunchAtomically(this.familyContext, this.connectedRunsWarned, input); }
+  public getRawControlLedger(): unknown { return connectedFamily.getRawControlLedger(this.familyContext); }
+  public transactControlLedger<T>(op: (raw: unknown, write: (next: unknown) => Promise<void>) => Promise<T>): Promise<T> { return connectedFamily.transactControlLedger(this.familyContext, op); }
+  public getResetMarker(): ResetMarker | null { return connectedFamily.getResetMarker(this.familyContext); }
+  public reset(): Promise<number> { return connectedFamily.resetWorkspaceState(this.familyContext); }
+  public completeInterruptedReset(): Promise<number | null> { return connectedFamily.completeInterruptedReset(this.familyContext); }
 
   // ── Single Serialization Chain (Hard Rule 58) ─────────────────────────────────
 

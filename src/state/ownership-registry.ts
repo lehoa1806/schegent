@@ -306,6 +306,54 @@ export class OwnershipRegistry {
     }
   }
 
+  /**
+   * Tri-state authoritative read for fail-closed ownership checks (FR-R8-01).
+   * Distinguishes absent (`never-held`), present (`record`), and I/O or parse
+   * failure (`unavailable`) so callers never fail open on storage errors.
+   */
+  public async readStatus(
+    resource: string
+  ): Promise<
+    | { readonly outcome: 'present'; readonly record: OwnershipRecord }
+    | { readonly outcome: 'absent' }
+    | { readonly outcome: 'unavailable' }
+  > {
+    try {
+      await this.ensureDir();
+      const prefix = `${prefixFor(resource)}.g`;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const generations = (await this.fs.list(this.dir))
+          .map((name) => generationOf(name, prefix))
+          .filter((generation): generation is number => generation !== null)
+          .sort((a, b) => b - a);
+        if (generations.length === 0) return { outcome: 'absent' };
+        let sawExistingFile = false;
+        let sawEnoent = false;
+        for (const generation of generations) {
+          const raw = await this.fs.read(this.fileFor(resource, generation));
+          if (raw === null) {
+            sawEnoent = true;
+            continue;
+          }
+          sawExistingFile = true;
+          const record = parseRecord(raw, resource, generation);
+          // Skip an aborted/partial newest generation file (consistent with readState())
+          // so a dead contender cannot wedge a live holder; if no valid older generation
+          // exists at all, fall through to fail closed ('unavailable').
+          if (record === null) continue;
+          return { outcome: 'present', record };
+        }
+        if (sawExistingFile) return { outcome: 'unavailable' };
+        // Every listed generation vanished (e.g. concurrent pruneBelow during rival acquire):
+        // retry list() once; if it vanishes again, fail closed instead of returning 'absent'.
+        if (!sawEnoent) return { outcome: 'unavailable' };
+      }
+      return { outcome: 'unavailable' };
+    } catch {
+      return { outcome: 'unavailable' };
+    }
+  }
+
   private async mutateAsHolder(
     resource: string,
     ownerId: string,

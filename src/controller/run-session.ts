@@ -68,7 +68,8 @@ export class RunSessionRegistry {
 
   constructor(
     private readonly createDriver: RunDriverFactory,
-    private readonly resolveRun: (queueId: string) => WorkflowRun | null
+    private readonly resolveRun: (queueId: string) => WorkflowRun | null,
+    private readonly isOwnershipLost?: (queueId: string) => boolean
   ) {}
 
   /**
@@ -207,7 +208,8 @@ export class RunSessionRegistry {
     if (session.driver.running) return false;
     if (session.isContinueGate.isArmed()) return false;
     const run = this.resolveRun(queueId);
-    if (run !== null && !isTerminalRunStatus(run.status)) return false;
+    const lost = this.isOwnershipLost?.(queueId) === true;
+    if (!lost && run !== null && !isTerminalRunStatus(run.status)) return false;
     this.sessions.delete(queueId);
     return true;
   }

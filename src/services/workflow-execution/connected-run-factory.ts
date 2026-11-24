@@ -385,6 +385,8 @@ export interface CreateNodeAttemptInput {
   readonly targetDefinitionId: string;
   readonly inputEnvelope: InvocationInputEnvelope;
   readonly startedAt: number;
+  readonly attemptId?: string;
+  readonly attemptIndex?: number;
   readonly status?: 'pending-dispatch' | 'in-flight';
   readonly queueItemId?: string;
   readonly childInvocationId?: string;
@@ -396,8 +398,9 @@ export interface CreateNodeAttemptInput {
  */
 export function createNodeAttemptRecord(input: CreateNodeAttemptInput): NodeAttemptRecord {
   const existingAttempts = attemptsForNode(input.frame, input.nodeId);
-  const attemptIndex = existingAttempts.length + 1;
-  const attemptId = `${input.frame.invocationId}:${input.nodeId}:attempt-${attemptIndex}`;
+  const attemptIndex = input.attemptIndex ?? existingAttempts.length + 1;
+  const attemptId =
+    input.attemptId ?? `${input.frame.invocationId}:${input.nodeId}:attempt-${attemptIndex}`;
   const parentPrefix =
     input.frame.parentInvocationId === null
       ? ''

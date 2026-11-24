@@ -13,6 +13,7 @@
 import type { RunRequest } from '../../contracts/run-request';
 import type { ControlAdmissionPort, ExecutionFence } from '../../contracts/control-ledger';
 import type { DecisionFieldValue } from '../../contracts/decision-results';
+import type { WorkflowLeafTarget } from '../../contracts/workflow-leaf-target';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import {
   appendCommandReceipt,
@@ -58,6 +59,11 @@ import type { ConnectedRunWriter } from './workflow-launcher';
 import type { ControlCommandAcknowledgement } from '../../contracts/sidebar-ipc/workflow-run';
 import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
 import { validateAndApproveContinueHandoff } from './phase-handoff-execution-bridge';
+import type { CandidateBlockExecutor } from './candidate-block-executor';
+import type {
+  CandidateSettlementExtras,
+  CandidateSpecResolver
+} from './candidate-block-coordinator';
 import type { ControlCommandService } from './control-command-service';
 
 export interface ActiveLeafAbortInput {
@@ -67,6 +73,8 @@ export interface ActiveLeafAbortInput {
   readonly nodeId: string;
   readonly attemptId: string;
   readonly queueItemId?: string;
+  /** When true, only abort this window's local child process/timer without mutating shared Run/Queue/Audit. */
+  readonly localOnly?: boolean;
 }
 
 export interface WorkflowControlStore extends ConnectedRunWriter {
@@ -88,7 +96,7 @@ export interface WorkflowControlServiceDeps {
     queueId: string,
     runId: string
   ) => Promise<void> | void;
-  readonly verifyLeaseFence?: (queueId: string, runId: string) => boolean;
+  readonly verifyLeaseFence?: (queueId: string, runId: string) => boolean | Promise<boolean>;
   readonly isQueuePresent?: (queueId: string) => boolean;
   /**
    * FR-R5-F08 — optional evidence probe used during `resume` on a paused leaf Phase
@@ -107,8 +115,7 @@ export interface WorkflowControlServiceDeps {
    */
   readonly isQueueOrTaskPresent?: (queueId: string, queueItemId?: string) => boolean;
   readonly cancelOrphanedQueueItem?: (
-    queueItemId: string,
-    queueId: string
+    target: WorkflowLeafTarget
   ) => Promise<void> | void;
   /**
    * FR-R5-F31 — optional candidate-block control command service used to redirect
@@ -120,6 +127,8 @@ export interface WorkflowControlServiceDeps {
   readonly controlAdmission?: ControlAdmissionPort | undefined;
   readonly repeatExecutor?: RepeatExecutor | undefined;
   readonly forEachExecutor?: ForEachExecutor | undefined;
+  readonly candidateBlockExecutor?: CandidateBlockExecutor | undefined;
+  readonly resolveCandidateSpec?: CandidateSpecResolver | undefined;
   readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly resolveExecutionFence?: (run: ConnectedWorkflowRun, queueId: string) => ExecutionFence;
@@ -159,6 +168,7 @@ export type WorkflowControlCommandOutcome =
 
 interface StagingBuffer {
   readonly writer: ConnectedRunWriter;
+  readonly dispatchedQueueItemIds: string[];
   readonly current: () => ConnectedWorkflowRun;
   readonly set: (run: ConnectedWorkflowRun) => void;
 }
@@ -202,16 +212,21 @@ function describeUndispatchedStep(
   return step.outcome === 'workflow-failed' ? step.failureCode : step.outcome;
 }
 
+const stagedDispatchedByWriter = new WeakMap<ConnectedRunWriter, string[]>();
+
 function createStagingWriter(initial: ConnectedWorkflowRun): StagingBuffer {
   let staged = initial;
+  const dispatchedQueueItemIds: string[] = [];
   const writer: ConnectedRunWriter = {
     async compareAndSetConnectedRun(next: ConnectedWorkflowRun, _expectedRevision: number) {
       staged = next;
       return { outcome: 'written' as const, run: staged };
     }
   };
+  stagedDispatchedByWriter.set(writer, dispatchedQueueItemIds);
   return {
     writer,
+    dispatchedQueueItemIds,
     current: () => staged,
     set: (run: ConnectedWorkflowRun) => {
       staged = run;
@@ -225,12 +240,16 @@ function collectAncestorInvocationIds(
 ): readonly string[] {
   const invocations = run.invocations ?? {};
   const ancestors: string[] = [];
-  let cursor = invocations[invocationId]?.parentInvocationId ?? null;
+  let cursor = Object.hasOwn(invocations, invocationId)
+    ? (invocations[invocationId]?.parentInvocationId ?? null)
+    : null;
   const seen = new Set<string>();
   while (cursor !== null && !seen.has(cursor)) {
     seen.add(cursor);
     ancestors.push(cursor);
-    cursor = invocations[cursor]?.parentInvocationId ?? null;
+    cursor = Object.hasOwn(invocations, cursor)
+      ? (invocations[cursor]?.parentInvocationId ?? null)
+      : null;
   }
   return ancestors;
 }
@@ -242,7 +261,7 @@ function findInFlightLeafAttempts(
   const results: { frame: WorkflowInvocationFrame; attempt: NodeAttemptRecord }[] = [];
   const invocations = run.invocations ?? {};
   for (const id of invocationIds) {
-    const frame = invocations[id];
+    const frame = Object.hasOwn(invocations, id) ? invocations[id] : undefined;
     if (frame === undefined) continue;
     for (const attempts of Object.values(frame.attemptsByNodeId)) {
       for (const attempt of attempts) {
@@ -295,14 +314,45 @@ export class WorkflowControlService {
   constructor(private readonly deps: WorkflowControlServiceDeps) {}
 
   private coordinatorDeps(writer: ConnectedRunWriter): ComposableWorkflowCoordinatorDeps {
-    const { controlAdmission, repeatExecutor, forEachExecutor, phaseHandoffCoordinator, workspaceRoot, resolveExecutionFence, cancelOrphanedQueueItem } = this.deps;
+    const {
+      controlAdmission,
+      repeatExecutor,
+      forEachExecutor,
+      candidateBlockExecutor,
+      resolveCandidateSpec,
+      phaseHandoffCoordinator,
+      workspaceRoot,
+      resolveExecutionFence,
+      cancelOrphanedQueueItem
+    } = this.deps;
+    const stagedDispatched = stagedDispatchedByWriter.get(writer);
+    const isStaged = writer !== this.deps.connectedRuns;
+    const effectiveControlAdmission: ControlAdmissionPort | undefined =
+      controlAdmission === undefined || !isStaged
+        ? controlAdmission
+        : {
+            prepareAttempt: (inp) => controlAdmission.prepareAttempt(inp),
+            commitAttempt: (tok) => controlAdmission.commitAttempt(tok),
+            ...(controlAdmission.settleAttempt !== undefined ? { settleAttempt: (inp) => controlAdmission.settleAttempt!(inp) } : {}),
+            ...(controlAdmission.releaseUnstartedRootLink !== undefined ? { releaseUnstartedRootLink: (inp) => controlAdmission.releaseUnstartedRootLink!(inp) } : {}),
+            ...(controlAdmission.listRootRunIds !== undefined ? { listRootRunIds: () => controlAdmission.listRootRunIds!() } : {})
+          };
     return {
       connectedRuns: writer,
-      dispatchPhase: this.deps.dispatchPhase,
-      deferTerminalPinRelease: writer !== this.deps.connectedRuns,
-      ...(controlAdmission !== undefined ? { controlAdmission } : {}),
+      dispatchPhase:
+        stagedDispatched === undefined
+          ? this.deps.dispatchPhase
+          : async (input) => {
+              const res = await this.deps.dispatchPhase(input);
+              if (res.outcome === 'dispatched') stagedDispatched.push(res.queueItemId);
+              return res;
+            },
+      deferTerminalPinRelease: isStaged,
+      ...(effectiveControlAdmission !== undefined ? { controlAdmission: effectiveControlAdmission } : {}),
       ...(repeatExecutor !== undefined ? { repeatExecutor } : {}),
       ...(forEachExecutor !== undefined ? { forEachExecutor } : {}),
+      ...(candidateBlockExecutor !== undefined ? { candidateBlockExecutor } : {}),
+      ...(resolveCandidateSpec !== undefined ? { resolveCandidateSpec } : {}),
       ...(phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator } : {}),
       ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
       ...(resolveExecutionFence !== undefined ? { resolveExecutionFence } : {}),
@@ -372,6 +422,7 @@ export class WorkflowControlService {
     readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>>;
     readonly verdict?: 'pass' | 'fail' | null;
     readonly failureCode?: string;
+    readonly candidateExtras?: CandidateSettlementExtras;
   }): Promise<
     | ComposableWorkflowStepResult
     | { readonly outcome: 'ignored-not-in-flight'; readonly run: ConnectedWorkflowRun }
@@ -385,7 +436,11 @@ export class WorkflowControlService {
       if (currentRun === null) {
         return { outcome: 'rejected-stale', current: null };
       }
-      const frame = currentRun.invocations?.[input.invocationId];
+      const frame =
+        currentRun.invocations !== undefined &&
+        Object.hasOwn(currentRun.invocations, input.invocationId)
+          ? currentRun.invocations[input.invocationId]
+          : undefined;
       if (frame === undefined || frame.status !== 'in-flight') {
         return { outcome: 'ignored-not-in-flight', run: currentRun };
       }
@@ -414,7 +469,8 @@ export class WorkflowControlService {
             ? { decisionResults: input.decisionResults }
             : {}),
           ...(input.verdict !== undefined ? { verdict: input.verdict } : {}),
-          ...(input.failureCode !== undefined ? { failureCode: input.failureCode } : {})
+          ...(input.failureCode !== undefined ? { failureCode: input.failureCode } : {}),
+          ...(input.candidateExtras !== undefined ? { candidateExtras: input.candidateExtras } : {})
         }
       );
 
@@ -459,39 +515,28 @@ export class WorkflowControlService {
       (entry) => entry.commandId === request.commandId
     );
     if (existingReceipt !== undefined) {
-      return {
-        accepted: true,
-        idempotentReplay: true,
-        run,
-        receipt: existingReceipt,
-        projection: buildWorkflowRunControlProjection(run)
-      };
+      const requestedInv = request.targetInvocationId ?? resolveRootInvocationId(run);
+      const matches = existingReceipt.operation === request.operation && existingReceipt.targetInvocationId === requestedInv &&
+        (request.targetNodeId === undefined || existingReceipt.targetNodeId === undefined || existingReceipt.targetNodeId === request.targetNodeId);
+      if (!matches) {
+        return { accepted: false, refusalCode: 'invalid-state-for-operation', reason: `Command id '${request.commandId}' already committed for another target.`, currentRevision: run.revision, run, projection: buildWorkflowRunControlProjection(run) };
+      }
+      return { accepted: true, idempotentReplay: true, run, receipt: existingReceipt, projection: buildWorkflowRunControlProjection(run) };
     }
 
     // 2. Check window primacy / lease fence before mutating or touching runner.
-    if (
-      this.deps.verifyLeaseFence !== undefined &&
-      !this.deps.verifyLeaseFence(queueId, run.connectedRunId)
-    ) {
-      const rootId = resolveRootInvocationId(run);
-      const allIds = collectSubtreeInvocationIds(run, rootId);
+    if (this.deps.verifyLeaseFence !== undefined && !(await this.deps.verifyLeaseFence(queueId, run.connectedRunId))) {
+      const allIds = collectSubtreeInvocationIds(run, resolveRootInvocationId(run));
       for (const { frame, attempt } of findInFlightLeafAttempts(run, allIds)) {
         await this.deps.abortActiveLeaf?.({
-          runId: run.connectedRunId,
-          queueId,
-          invocationId: frame.invocationId,
-          nodeId: attempt.nodeId,
-          attemptId: attempt.attemptId,
+          runId: run.connectedRunId, queueId, invocationId: frame.invocationId,
+          nodeId: attempt.nodeId, attemptId: attempt.attemptId, localOnly: true,
           ...(attempt.queueItemId !== undefined ? { queueItemId: attempt.queueItemId } : {})
         });
       }
       return {
-        accepted: false,
-        refusalCode: 'fence-lost',
-        reason: `Window lost lease primacy for queue '${queueId}'.`,
-        currentRevision: run.revision,
-        run,
-        projection: buildWorkflowRunControlProjection(run)
+        accepted: false, refusalCode: 'fence-lost', reason: `Window lost lease primacy for queue '${queueId}'.`,
+        currentRevision: run.revision, run, projection: buildWorkflowRunControlProjection(run)
       };
     }
 
@@ -522,29 +567,21 @@ export class WorkflowControlService {
     // 5. Redirect generic `retry-phase` targeting a candidate-block-owned invocation
     //    through `ControlCommandService` (FR-R5-F31-T05) so it cannot spawn separately
     //    or bypass exhausted candidate/block counters.
-    const candidateTargetFrameId =
-      request.targetInvocationId ?? resolveRootInvocationId(run);
+    const candidateTargetFrameId = request.targetInvocationId ?? resolveRootInvocationId(run);
+    const candidateLedgerRunId = run.controlState?.ledgerRunId ?? run.connectedRunId;
     if (
       request.operation === 'retry-phase' &&
       this.deps.controlCommandService !== undefined &&
-      this.deps.controlCommandService.hasCandidateFrame(
-        run.connectedRunId,
-        candidateTargetFrameId
-      )
+      this.deps.controlCommandService.hasCandidateFrame(candidateLedgerRunId, candidateTargetFrameId)
     ) {
       const redirected = await this.deps.controlCommandService.redirectLegacyRetryPhase({
-        commandId: request.commandId,
-        rootRunId: run.connectedRunId,
-        queueId,
+        commandId: request.commandId, rootRunId: candidateLedgerRunId, queueId,
         invocationId: candidateTargetFrameId,
-        ...(request.targetNodeId !== undefined
-          ? { candidateId: request.targetNodeId }
-          : {})
+        ...(request.targetNodeId !== undefined ? { candidateId: request.targetNodeId } : {})
       });
       if (redirected.outcome === 'refused') {
         const mappedRefusal: WorkflowControlRefusalCode =
-          redirected.reason === 'spend-limit-reached' ||
-          redirected.reason === 'spend-unverifiable'
+          redirected.reason === 'spend-limit-reached' || redirected.reason === 'spend-unverifiable'
             ? 'spend-bound-exceeded'
             : redirected.reason === 'candidate-ineligible'
               ? 'retry-bound-exceeded'
@@ -552,51 +589,33 @@ export class WorkflowControlService {
                 ? 'stale-revision'
                 : 'invalid-state-for-operation';
         return {
-          accepted: false,
-          refusalCode: mappedRefusal,
+          accepted: false, refusalCode: mappedRefusal,
           reason: `Candidate-block retry refused (${redirected.reason ?? 'illegal-state'}).`,
-          currentRevision: run.revision,
-          run,
-          projection: buildWorkflowRunControlProjection(run)
+          currentRevision: run.revision, run, projection: buildWorkflowRunControlProjection(run)
         };
       }
       const rootId = resolveRootInvocationId(run);
       const rootStatus = run.invocations?.[rootId]?.status ?? 'in-flight';
-      const targetStatus =
-        run.invocations?.[candidateTargetFrameId]?.status ?? rootStatus;
+      const targetStatus = run.invocations?.[candidateTargetFrameId]?.status ?? rootStatus;
       const receipt: CommittedCommandReceipt = Object.freeze({
-        commandId: request.commandId,
-        operation: request.operation,
+        commandId: request.commandId, operation: request.operation,
         targetInvocationId: candidateTargetFrameId,
         ...(request.targetNodeId !== undefined ? { targetNodeId: request.targetNodeId } : {}),
-        committedRevision: run.revision + 1,
-        committedAt: request.now,
-        resultingRunStatus: rootStatus,
-        resultingInvocationStatus: targetStatus
+        committedRevision: run.revision + 1, committedAt: request.now,
+        resultingRunStatus: rootStatus, resultingInvocationStatus: targetStatus
       });
       const withReceipt = appendCommandReceipt({ ...run, revision: run.revision }, receipt);
-      const written = await this.deps.connectedRuns.compareAndSetConnectedRun(
-        withReceipt,
-        run.revision
-      );
+      const written = await this.deps.connectedRuns.compareAndSetConnectedRun(withReceipt, run.revision);
       if (written.outcome === 'stale') {
         return {
-          accepted: false,
-          refusalCode: 'stale-revision',
+          accepted: false, refusalCode: 'stale-revision',
           reason: 'Concurrent modification detected during command commit.',
-          currentRevision: written.current?.revision ?? null,
-          run: written.current,
-          projection:
-            written.current !== null
-              ? buildWorkflowRunControlProjection(written.current)
-              : null
+          currentRevision: written.current?.revision ?? null, run: written.current,
+          projection: written.current !== null ? buildWorkflowRunControlProjection(written.current) : null
         };
       }
       return {
-        accepted: true,
-        idempotentReplay: false,
-        run: written.run,
-        receipt,
+        accepted: true, idempotentReplay: false, run: written.run, receipt,
         projection: buildWorkflowRunControlProjection(written.run)
       };
     }
@@ -718,6 +737,9 @@ export class WorkflowControlService {
     // refusal, not an accepted command: the staged frames are dropped, so the run,
     // its attempt counts and its pending handoff stay exactly as the operator saw them.
     if (undispatched !== undefined) {
+      for (const taskId of staging.dispatchedQueueItemIds) {
+        await this.deps.cancelOrphanedQueueItem?.({ queueId, taskId });
+      }
       return {
         accepted: false,
         refusalCode: 'invalid-state-for-operation',
@@ -758,25 +780,24 @@ export class WorkflowControlService {
       run.revision
     );
     if (written.outcome === 'stale') {
+      for (const taskId of staging.dispatchedQueueItemIds) {
+        await this.deps.cancelOrphanedQueueItem?.({ queueId, taskId });
+      }
       return {
-        accepted: false,
-        refusalCode: 'stale-revision',
+        accepted: false, refusalCode: 'stale-revision',
         reason: 'Concurrent modification detected during command commit.',
-        currentRevision: written.current?.revision ?? null,
-        run: written.current,
-        projection:
-          written.current !== null
-            ? buildWorkflowRunControlProjection(written.current)
-            : null
+        currentRevision: written.current?.revision ?? null, run: written.current,
+        projection: written.current !== null ? buildWorkflowRunControlProjection(written.current) : null
       };
     }
 
     const finalRootFrame = written.run.invocations?.[rootId];
-    if (finalRootFrame !== undefined && isTerminalInvocationStatus(finalRootFrame.status)) {
-      this.deps.phaseHandoffCoordinator?.releaseTerminalRunPins(written.run.connectedRunId);
-      if (this.deps.releaseQueueLease !== undefined) {
-        await this.deps.releaseQueueLease(queueId, written.run.connectedRunId);
+    if (finalRootFrame !== undefined && (finalRootFrame.status === 'completed' || finalRootFrame.status === 'failed' || finalRootFrame.status === 'canceled')) {
+      if (written.run.controlState !== undefined) {
+        await this.deps.controlAdmission?.markRootTerminal?.({ ledgerRunId: written.run.controlState.ledgerRunId, connectedRunId: written.run.connectedRunId, status: finalRootFrame.status, completedAt: request.now });
       }
+      this.deps.phaseHandoffCoordinator?.releaseTerminalRunPins(written.run.connectedRunId);
+      await this.deps.releaseQueueLease?.(queueId, written.run.connectedRunId);
     }
 
     return {

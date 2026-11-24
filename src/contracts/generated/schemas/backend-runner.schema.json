@@ -79,6 +79,16 @@
           "type": "boolean"
         },
         {
+          "name": "onBeforeSpawn",
+          "optional": true,
+          "type": "(ctx?: { readonly helperInvocation?: boolean }) => Promise<void> | void"
+        },
+        {
+          "name": "onAfterSpawn",
+          "optional": true,
+          "type": "(pid: number | undefined) => Promise<void> | void"
+        },
+        {
           "name": "prompt",
           "optional": false,
           "type": "string"

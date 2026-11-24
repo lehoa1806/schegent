@@ -28,7 +28,9 @@ import type { ChildRunStateReader } from '../connected-run-projector';
 import type { CompletionProvenance } from '../../../queue/feature-request';
 import type { QueueDeletionImpact } from '../../../queue/queue-manager';
 import type { WorkflowLeafControlHooks } from '../../../services/workflow-execution/workflow-leaf-control';
+import type { ProductionWorkflowComposition } from '../../../services/workflow-execution/production-workflow-composition';
 import type {
+  GuardedRunService,
   GuardedScheduleRequest,
   GuardedScheduleResult
 } from '../../../services/guarded-run-service';
@@ -366,6 +368,7 @@ export interface RouterDeps {
    */
   readonly guardedRun?: {
     scheduleOrEnqueue(request: GuardedScheduleRequest): Promise<GuardedScheduleResult>;
+    admitComposableWorkflowLaunchAtomically?: GuardedRunService['admitComposableWorkflowLaunchAtomically'];
   };
   /**
    * Feature 087 (FR-030) — the effective global backend, as the run factory and
@@ -407,6 +410,8 @@ export interface RouterDeps {
    * answer `startPipelineRun` already gives when `guardedRun` is absent.
    */
   readonly connectedRuns?: ConnectedRunPort;
+  /** FR-R8-01 (01-03) — resolves the SQLite-backed production composition registered on `WorkspaceStateStore`. */
+  readonly getProductionComposition?: () => ProductionWorkflowComposition;
   /** Reaches `continueConnectedRun` with the rest of these deps; see `ContinuationDeps`. */
   readonly workflowControlHooks?: WorkflowLeafControlHooks;
   /** Reaches `continueConnectedRun` the same way; see `ContinuationDeps`. */

@@ -279,6 +279,7 @@ export async function executeComposableWorkflowControlCommand(
     controlAdmission: composition.controlAdmission,
     repeatExecutor: composition.repeatExecutor,
     forEachExecutor: composition.forEachExecutor,
+    candidateBlockExecutor: composition.candidateBlockExecutor,
     controlCommandService: composition.controlCommandService,
     ...deps
   });
@@ -310,6 +311,7 @@ export async function recoverComposableWorkflowRun(
     controlAdmission: composition.controlAdmission,
     repeatExecutor: composition.repeatExecutor,
     forEachExecutor: composition.forEachExecutor,
+    candidateBlockExecutor: composition.candidateBlockExecutor,
     quotaPermitArbiter: composition.quotaPermitArbiter,
     notificationService: composition.notificationService,
     usageAccounting: composition.usageAccounting,

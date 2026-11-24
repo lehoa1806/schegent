@@ -39,6 +39,9 @@ export const handler: CommandHandler<ContinueWorkflowCommand> = async (ctx, comm
   const result = await continueConnectedRun(
     {
       ...ctx.deps,
+      ...(ctx.deps.getProductionComposition !== undefined
+        ? { productionComposition: ctx.deps.getProductionComposition() }
+        : {}),
       projectRun: (run, readChildState) =>
         sanitizeConnectedRun(projectConnectedRun(run, readChildState), sanitize),
       isNodeStartable

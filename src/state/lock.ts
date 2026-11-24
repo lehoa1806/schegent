@@ -246,6 +246,11 @@ export class WorkspaceLockManager {
     return this.hasPrimacy();
   }
 
+  /** FR-R8-01 (01-03) — expose this window's primacy claim + monotonic generation for live fencing. */
+  public primacyClaim(): OwnershipClaim | null {
+    return this.claim();
+  }
+
   /** This window's claim, or `null` when it holds none. */
   private claim(): OwnershipClaim | null {
     if (this.fence === null) return null;

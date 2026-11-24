@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto';
 import { MIN_QUOTA_CHECK_INTERVAL_MS } from '../../contracts/backend-availability';
 import {
+  executionFencesEqual,
   MAX_ACTIVE_AVAILABILITY_CHECKS,
   MAX_CONTROL_COMMAND_RECEIPTS_PER_ROOT,
   type CandidateRuntimeSlot,
@@ -602,7 +603,7 @@ export interface ControlCommandServiceDeps {
   readonly ledgerStore: ControlLedgerStore;
   readonly clock?: ControlClockPort | undefined;
   readonly isTrusted?: (() => boolean) | undefined;
-  readonly verifyFence?: ((root: RootControlState) => boolean) | undefined;
+  readonly verifyFence?: ((root: RootControlState) => boolean | Promise<boolean>) | undefined;
   readonly sanitize?: ((value: string) => string) | undefined;
   readonly onTeardownActiveAttempt?:
     | ((input: {
@@ -694,21 +695,24 @@ export class ControlCommandService {
         ? { kind: 'resume' }
         : { kind: 'try-now', candidateId: targetCandidateId };
 
-    return this.executeValidatedLocked({
-      version: 1,
-      commandId: input.commandId,
-      rootRunId: input.rootRunId,
-      queueId: input.queueId,
-      invocationId: input.invocationId,
-      expectedGeneration: currentGen,
-      action
-    });
+    return this.serializeOnQueue(input.queueId, () =>
+      this.executeValidatedLocked({
+        version: 1,
+        commandId: input.commandId,
+        rootRunId: input.rootRunId,
+        queueId: input.queueId,
+        invocationId: input.invocationId,
+        expectedGeneration: currentGen,
+        action
+      })
+    );
   }
 
   public hasCandidateFrame(rootRunId: string, invocationId: string): boolean {
     const root = this.deps.ledgerStore.getRoot(rootRunId);
     if (root === null) return false;
-    return this.findFrame(root, invocationId) !== undefined;
+    const frame = this.findFrame(root, invocationId);
+    return frame !== undefined && frame.kind === 'candidate-block';
   }
 
   private findFrame(
@@ -841,7 +845,7 @@ export class ControlCommandService {
 
     // 3. Check generation high-water mark, expectedGeneration, and ownership fence
     const fenceValid =
-      this.deps.verifyFence === undefined || this.deps.verifyFence(initialRoot);
+      this.deps.verifyFence === undefined ? true : (await this.deps.verifyFence(initialRoot)) === true;
     if (
       !fenceValid ||
       (initialRoot.receiptHighWaterGeneration !== undefined &&
@@ -915,15 +919,20 @@ export class ControlCommandService {
     const mutated = await this.deps.ledgerStore.mutate<{
       readonly ack: ControlCommandAcknowledgement;
       readonly checkCandidateIds?: readonly string[];
-    }>({}, ({ ledger }) => {
+    }>({ targetRootId: envelope.rootRunId, expectedFence: initialRoot.fence }, ({ ledger }) => {
       const root = lookupRecord(ledger.roots, envelope.rootRunId);
       const frame = root !== undefined ? this.findFrame(root, envelope.invocationId) : undefined;
       if (root === undefined || frame === undefined) {
-        return {
-          commit: false,
-          code: 'control-ledger-corrupt',
-          message: 'Target root or frame disappeared before commit.'
-        };
+        return { commit: false, code: 'control-ledger-corrupt', message: 'Target root or frame disappeared before commit.' };
+      }
+      const liveGen = frame.frameGeneration ?? root.fence.rootGeneration;
+      if (
+        !executionFencesEqual(root.fence, initialRoot.fence) ||
+        liveGen !== currentGeneration ||
+        (root.commandReceipts ?? []).some((r) => r.commandId === envelope.commandId) ||
+        !evaluateControlActionLegality({ root, frame, ledger, action: envelope.action, nowWallMs, isTrusted: true }).allowed
+      ) {
+        return { commit: false, code: 'stale-execution-fence', message: 'Target root or frame changed concurrently before commit.' };
       }
 
       const slots = frame.candidateSlots ?? [];
@@ -1241,7 +1250,9 @@ export class ControlCommandService {
         ...restRoot,
         status: nextRootStatus,
         ...(nextRootPauseCause !== undefined ? { pauseCause: nextRootPauseCause } : {}),
-        ...(nextRootStatus === 'canceled' ? { completedAt: nowWallMs } : {}),
+        ...(nextRootStatus === 'canceled'
+          ? { linkState: 'terminal' as const, completedAt: nowWallMs }
+          : {}),
         fence: nextFence,
         dispatchedAttempts: nextRootDispatches,
         attemptsById: nextAttemptsById,
@@ -1288,7 +1299,7 @@ export class ControlCommandService {
         plan: {
           nextLedger,
           targetRootId: envelope.rootRunId,
-          expectedFence: root.fence,
+          expectedFence: initialRoot.fence,
           allowSettlementReserve:
             envelope.action.kind === 'pause' || envelope.action.kind === 'cancel',
           result: {

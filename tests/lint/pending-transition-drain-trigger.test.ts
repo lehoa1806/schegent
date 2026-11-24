@@ -121,6 +121,15 @@ const PENDING_WRITERS: readonly PendingWriter[] = [
       'died mid-run, and it runs during state load, before a controller exists to drain ' +
       'with. Per BUG-001 (FR-017, FR-019), startup pauses the queue rather than auto-draining ' +
       'on open, and explicit operator Resume (`resumePausedQueueExecution`) drains those rows.'
+  },
+  {
+    file: 'src/services/guarded-run-service.ts',
+    commandId: null,
+    reason:
+      'FR-R8-01 (01-02): `admitComposableWorkflowLaunchAtomically` writes the initial pending ' +
+      'leaf Task row for a composable Workflow launch in one atomic SQLite batch alongside ' +
+      'KEYS.connectedRuns and KEYS.controlLedger, honoring the same start-intent lifecycle ' +
+      'table as QueueManager.enqueue (drained on operator Start Queue or wakeWorkflowQueue).'
   }
 ];
 

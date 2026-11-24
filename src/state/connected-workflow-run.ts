@@ -25,26 +25,39 @@ import type {
   WorkflowNodeKind,
   WorkflowNodeTerminalStatus
 } from '../contracts/workflow-definitions';
-import {
-  validateExecutionDecisionObservation,
-  type ExecutionDecisionObservation
-} from '../contracts/execution-decision-observation';
-import {
-  isValidConnectedRunControlLink,
-  type ConnectedRunControlLink
-} from '../contracts/control-ledger';
+import type { ExecutionDecisionObservation } from '../contracts/execution-decision-observation';
+import type { ConnectedRunControlLink } from '../contracts/control-ledger';
 import type { AttemptOutcomeStatus } from '../contracts/decision-results';
 import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
+import { setOwnProp } from '../lib/operational-value-helpers';
 import type { WorkflowRunPipeline } from './workflow-run';
+import {
+  COMPARED_MAX_LENGTH,
+  ConnectedRunInvariantError,
+  assertConnectedRunStructure,
+  assertInvocationControlMarkers,
+  type ConnectedRunInvariantOptions
+} from './connected-run-invariants';
 
-/**
- * How much of a compared value is recorded (FR-066). Long enough to identify
- * what the comparison saw, short enough that the record cannot become a copy of
- * the document behind an output reference. A longer value is recorded as
- * resolved with `compared` omitted rather than truncated, because a truncated
- * path or sentence still carries content.
- */
-export const COMPARED_MAX_LENGTH = 64;
+export const MAX_COMMAND_RECEIPTS = 64;
+
+export function assertConnectedRunInvariants(
+  run: ConnectedWorkflowRun,
+  options: ConnectedRunInvariantOptions = {}
+): void {
+  assertConnectedRunStructure(run, {
+    ...options,
+    requireFrozen: true,
+    maxCommandReceipts: MAX_COMMAND_RECEIPTS
+  });
+}
+
+export {
+  COMPARED_MAX_LENGTH,
+  ConnectedRunInvariantError,
+  assertInvocationControlMarkers,
+  type ConnectedRunInvariantOptions
+};
 
 /** A reference to one child Pipeline Run. An identifier and a timestamp — nothing else. */
 export interface ChildRunRef {
@@ -142,7 +155,6 @@ export type WorkflowControlOperation =
   | 'retry-invocation'
   | 'continue-handoff';
 
-export const MAX_COMMAND_RECEIPTS = 64;
 export const DEFAULT_MAX_PHASE_ATTEMPTS = 5;
 
 /**
@@ -376,60 +388,6 @@ export interface ConnectedWorkflowRun {
   readonly controlState?: ConnectedRunControlLink;
 }
 
-export class ConnectedRunInvariantError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConnectedRunInvariantError';
-  }
-}
-
-const AGGREGATE_KEYS: readonly string[] = [
-  'commandReceipts',
-  'connectedRunId',
-  'controlState',
-  'decisionObservations',
-  'decisions',
-  'frozenClosure',
-  'graph',
-  'inputEnvelopes',
-  'invocations',
-  'launchContext',
-  'nodes',
-  'pendingHandoff',
-  'pipelines',
-  'queueId',
-  'recoveryDisposition',
-  'revision',
-  'startedAt',
-  'workflowId'
-];
-const NODE_KEYS: readonly string[] = ['attempts', 'nodeId'];
-const ATTEMPT_KEYS: readonly string[] = ['queueItemId', 'startedAt'];
-const DECISION_KEYS: readonly string[] = [
-  'attemptIndex',
-  'connections',
-  'decidedAt',
-  'defaultApplied',
-  'eligible',
-  'nodeId',
-  'operands'
-];
-const OPERAND_KEYS: readonly string[] = ['compared', 'field', 'nodeId', 'resolved', 'source'];
-const OUTCOME_KEYS: readonly string[] = ['index', 'isDefault', 'matched'];
-
-/** POSIX and Windows absolute forms. Workspace-relative references are the only legal shape. */
-const ABSOLUTE_PATH = /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/;
-
-function fail(message: string): never {
-  throw new ConnectedRunInvariantError(message);
-}
-
-function assertKeys(value: object, allowed: readonly string[], what: string): void {
-  for (const key of Object.keys(value)) {
-    if (!allowed.includes(key)) fail(`${what} carries an undeclared field: ${key}`);
-  }
-}
-
 /**
  * Freeze in place, depth-first. Applied to the graph and Pipeline snapshots at
  * creation so a stray write is a `TypeError` at the moment it happens rather
@@ -453,7 +411,7 @@ function deepCopy<T>(value: T): T {
   if (Array.isArray(value)) return value.map(deepCopy) as unknown as T;
   const copy: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-    copy[key] = deepCopy(nested);
+    setOwnProp(copy, key, deepCopy(nested));
   }
   return copy as T;
 }
@@ -471,48 +429,6 @@ export function renderCompared(value: unknown): string | undefined {
   return value.length <= COMPARED_MAX_LENGTH ? value : undefined;
 }
 
-function assertOperand(operand: OperandResolution): void {
-  assertKeys(operand, OPERAND_KEYS, 'operand resolution');
-  if (operand.source === 'node-status' && operand.field !== undefined) {
-    fail('a node-status operand has no field');
-  }
-  if (operand.compared === undefined) return;
-  if (operand.compared.length > COMPARED_MAX_LENGTH) {
-    fail(`compared value exceeds ${COMPARED_MAX_LENGTH} characters`);
-  }
-  if (ABSOLUTE_PATH.test(operand.compared)) fail('compared value looks like an absolute path');
-}
-
-function assertDecision(decision: RoutingDecision, run: ConnectedWorkflowRun): void {
-  assertKeys(decision, DECISION_KEYS, 'routing decision');
-  const attempts = run.nodes[decision.nodeId]?.attempts;
-  if (attempts === undefined) fail(`decision references an unstarted node: ${decision.nodeId}`);
-  if (decision.attemptIndex < 0 || decision.attemptIndex >= attempts.length) {
-    fail(`decision references attempt ${decision.attemptIndex}, which does not exist`);
-  }
-  const connectionCount = run.graph.connections.length;
-  for (const outcome of decision.connections) {
-    assertKeys(outcome, OUTCOME_KEYS, 'connection outcome');
-    if (outcome.index < 0 || outcome.index >= connectionCount) {
-      fail(`decision names connection ${outcome.index}, which the frozen graph does not have`);
-    }
-  }
-  const named = new Set(decision.connections.map((outcome) => outcome.index));
-  for (const index of decision.eligible) {
-    if (!named.has(index)) fail(`eligible connection ${index} has no recorded outcome`);
-  }
-  if (decision.defaultApplied) {
-    const explicitMatched = decision.connections.some(
-      (outcome) => outcome.matched && !outcome.isDefault
-    );
-    // FR-027 reads "only when no explicit condition matched". A decision that
-    // records both is not a preference conflict to resolve later — it is two
-    // incompatible claims about the same evaluation.
-    if (explicitMatched) fail('defaultApplied is set while an explicit condition matched');
-  }
-  decision.operands.forEach(assertOperand);
-}
-
 /**
  * Feature 092 (T079, FR-046) — the queue this run's children enqueue into.
  *
@@ -524,163 +440,6 @@ function assertDecision(decision: RoutingDecision, run: ConnectedWorkflowRun): v
  */
 export function resolveBoundQueueId(run: ConnectedWorkflowRun): string {
   return run.queueId ?? DEFAULT_QUEUE_ID;
-}
-
-/**
- * What a caller can tell the invariants that the record cannot tell them.
- *
- * The queue registry is the one such thing, and it is optional on purpose. The
- * aggregate module holds no registry and must not import one — it is loaded by
- * the migrator, which reads a memento and has no registry to hand. So a caller
- * that HAS the registry gets the containment check, and one that does not gets
- * the shape checks and nothing weaker for either.
- */
-export interface ConnectedRunInvariantOptions {
-  readonly knownQueueIds?: ReadonlySet<string>;
-}
-
-/**
- * Every invariant that can be checked from the record alone, at every write.
- *
- * Invariant 3 — at most one non-terminal child — is deliberately absent: it is
- * checked against the child runs' live statuses by the launcher gate, because
- * the aggregate stores no status to check it against.
- */
-export function assertConnectedRunInvariants(
-  run: ConnectedWorkflowRun,
-  options: ConnectedRunInvariantOptions = {}
-): void {
-  assertKeys(run, AGGREGATE_KEYS, 'connected run');
-  if (!Number.isInteger(run.revision) || run.revision < 1) {
-    fail(`revision must be a positive integer, not ${String(run.revision)}`);
-  }
-  if (run.queueId !== undefined) {
-    if (typeof run.queueId !== 'string' || run.queueId.length === 0) {
-      fail(`queueId must be a non-empty string, not ${String(run.queueId)}`);
-    }
-    // FR-045. Present means bound, and a binding that names nothing is not a
-    // weaker binding — it is a run whose children have nowhere to go.
-    if (options.knownQueueIds !== undefined && !options.knownQueueIds.has(run.queueId)) {
-      fail(`queueId names no queue in the registry: ${run.queueId}`);
-    }
-  }
-  if (!Object.isFrozen(run.graph) || !Object.isFrozen(run.pipelines)) {
-    fail('the graph and Pipeline snapshots must be frozen');
-  }
-  if (run.frozenClosure !== undefined) {
-    if (
-      !Object.isFrozen(run.frozenClosure) ||
-      !Object.isFrozen(run.frozenClosure.workflowsById) ||
-      !Object.isFrozen(run.frozenClosure.phasesById)
-    ) {
-      fail('the frozenWorkflowClosure must be frozen');
-    }
-  }
-  if (run.invocations !== undefined) {
-    if (!Object.isFrozen(run.invocations)) {
-      fail('the invocations map must be frozen');
-    }
-    for (const [invId, frame] of Object.entries(run.invocations)) {
-      if (frame.invocationId !== invId) {
-        fail(`invocation frame ${invId} disagrees with its key`);
-      }
-      if (frame.controlMarkers !== undefined) {
-        assertInvocationControlMarkers(frame);
-      }
-      for (const attempts of Object.values(frame.attemptsByNodeId)) {
-        for (const attempt of attempts) {
-          if (attempt.status === 'pending-dispatch') {
-            if (attempt.completedAt !== undefined) {
-              fail(
-                `pending-dispatch attempt ${attempt.attemptId} in invocation ${invId} must not set completedAt`
-              );
-            }
-            if (attempt.queueItemId !== undefined) {
-              fail(
-                `pending-dispatch attempt ${attempt.attemptId} in invocation ${invId} must not bind queueItemId`
-              );
-            }
-          }
-        }
-      }
-    }
-  }
-  if (run.inputEnvelopes !== undefined && !Object.isFrozen(run.inputEnvelopes)) {
-    fail('the inputEnvelopes list must be frozen');
-  }
-  if (run.launchContext !== undefined && !Object.isFrozen(run.launchContext)) {
-    fail('the launchContext must be frozen');
-  }
-  if (run.commandReceipts !== undefined) {
-    if (!Object.isFrozen(run.commandReceipts)) {
-      fail('the commandReceipts list must be frozen');
-    }
-    if (run.commandReceipts.length > MAX_COMMAND_RECEIPTS) {
-      fail(`commandReceipts exceeds ${MAX_COMMAND_RECEIPTS} entries`);
-    }
-  }
-  if (run.decisionObservations !== undefined) {
-    if (!Object.isFrozen(run.decisionObservations)) fail('the decisionObservations list must be frozen');
-    if (run.decisionObservations.length > 256) {
-      fail('decisionObservations exceeds 256 entries');
-    }
-    for (const obs of run.decisionObservations) {
-      const checked = validateExecutionDecisionObservation(obs);
-      if (!checked.valid) fail(`invalid decisionObservation: ${checked.errors[0]?.message ?? 'invalid shape'}`);
-    }
-  }
-  if (run.controlState !== undefined) {
-    if (!Object.isFrozen(run.controlState)) {
-      fail('the controlState link must be frozen');
-    }
-    assertKeys(run.controlState, ['version', 'ledgerRunId'], 'controlState link');
-    if (!isValidConnectedRunControlLink(run.controlState)) {
-      fail('controlState must have version 1 and a non-empty string ledgerRunId');
-    }
-  }
-  const nodeIds = new Set(run.graph.nodes.map((node) => node.nodeId));
-  for (const [key, record] of Object.entries(run.nodes)) {
-    assertKeys(record, NODE_KEYS, 'node record');
-    if (record.nodeId !== key) fail(`node record ${key} disagrees with its key`);
-    if (!nodeIds.has(key)) fail(`node record ${key} is not in the frozen graph`);
-    if (record.attempts.length === 0) fail(`node record ${key} has no attempts`);
-    record.attempts.forEach((attempt) => assertKeys(attempt, ATTEMPT_KEYS, 'attempt'));
-  }
-  run.decisions.forEach((decision) => assertDecision(decision, run));
-}
-
-export function assertInvocationControlMarkers(frame: WorkflowInvocationFrame): void {
-  const markers = frame.controlMarkers;
-  if (markers === undefined) return;
-  const pauseTimeNull = markers.manualPauseAt === null;
-  const pauseCauseNull = markers.manualPauseCause === null;
-  if (pauseTimeNull !== pauseCauseNull) {
-    fail(
-      `invocation ${frame.invocationId} violates paired manualPauseAt/manualPauseCause invariant`
-    );
-  }
-  const retryTimeNull = markers.pendingRetryAt === null;
-  const retryCauseNull = markers.pendingRetryCause === null;
-  if (retryTimeNull !== retryCauseNull) {
-    fail(
-      `invocation ${frame.invocationId} violates paired pendingRetryAt/pendingRetryCause invariant`
-    );
-  }
-  if (frame.status === 'paused') {
-    if (markers.manualPauseAt === null || markers.manualPauseCause === null) {
-      fail(`paused invocation ${frame.invocationId} is missing manualPauseAt/manualPauseCause`);
-    }
-    if (markers.pendingRetryAt !== null || markers.pendingRetryCause !== null) {
-      fail(`paused invocation ${frame.invocationId} must clear pendingRetryAt/pendingRetryCause`);
-    }
-  }
-  if (frame.status === 'canceled' || frame.status === 'completed') {
-    if (markers.pendingRetryAt !== null || markers.pendingRetryCause !== null) {
-      fail(
-        `terminal invocation ${frame.invocationId} must clear pendingRetryAt/pendingRetryCause`
-      );
-    }
-  }
 }
 
 export interface CreateConnectedRunInput {
@@ -749,7 +508,7 @@ export function appendAttempt(
   nodeId: string,
   attempt: ChildRunRef
 ): ConnectedWorkflowRun {
-  const existing = run.nodes[nodeId];
+  const existing = Object.hasOwn(run.nodes, nodeId) ? run.nodes[nodeId] : undefined;
   const record: ConnectedNodeRecord = Object.freeze({
     nodeId,
     attempts: Object.freeze([...(existing?.attempts ?? []), Object.freeze({ ...attempt })])

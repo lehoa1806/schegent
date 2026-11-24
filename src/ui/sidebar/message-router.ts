@@ -30,7 +30,8 @@ function hasControlCommandService(deps: RouterDeps): boolean {
   };
   return (
     extended.controlCommandService !== undefined ||
-    extended.controlCommandServiceDeps !== undefined
+    extended.controlCommandServiceDeps !== undefined ||
+    extended.getProductionComposition !== undefined
   );
 }
 

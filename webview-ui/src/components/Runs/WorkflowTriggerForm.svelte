@@ -77,8 +77,15 @@
     return found;
   });
 
+  const showStartNodePicker = $derived(
+    startNodes.length > 1 && graph?.control?.kind !== 'candidate-block',
+  );
+
   const startNodeId = $derived.by<string | null>(() => {
     if (startNodes.length === 1) return startNodes.at(0)?.nodeId ?? null;
+    if (graph?.control?.kind === 'candidate-block') {
+      return startNodes.at(0)?.nodeId ?? null;
+    }
     return startNodes.some((node) => node.nodeId === chosenStartNodeId)
       ? chosenStartNodeId
       : null;
@@ -164,7 +171,7 @@
   }
 
   function chooseStart(nodeId: string): void {
-    if (nodeId === startNodeId) return;
+    if (!showStartNodePicker || nodeId === startNodeId) return;
     chosenStartNodeId = nodeId;
     forget();
   }
@@ -352,7 +359,7 @@
       nodes cannot be named yet. Reopen Add work once the catalog has loaded.
     </p>
   {:else}
-    {#if startNodes.length > 1}
+    {#if showStartNodePicker}
       <fieldset class="start-question" data-testid="workflow-trigger-start-question">
         <legend class="step">Which node should this run begin at?</legend>
         <ul class="start-list">

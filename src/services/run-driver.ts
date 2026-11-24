@@ -58,6 +58,7 @@ import type { RunOutputRecord } from '../contracts/run-results';
 import { resolveRunOutputs } from './run-output/run-output-resolver';
 import { createBoundedOutputProbe } from './run-output/run-output-probe';
 import { withPhaseOutputFacts } from './run-phase-facts';
+import { handleAttemptSpawnFenceLoss, withAttemptSpawnCheckpoints } from './workflow-execution/attempt-spawn-checkpoints';
 
 /**
  * FR-R3-004 — a phase's own account of what it wrote, taken from the audit
@@ -404,9 +405,13 @@ export class RunDriver {
     let output: PhaseRunOutput | null = null;
     const outputs: PhaseRunOutput[] = [];
     try {
-      output = await dispatchResumingIncompleteTurns(this.deps.runner, inputs, (each) => {
-        outputs.push(each);
-      });
+      output = await withAttemptSpawnCheckpoints(
+        { store: this.deps.store, queue: this.deps.queue, run, activePhaseDef: inputs.phaseDef },
+        async () => {
+          const res = await dispatchResumingIncompleteTurns(this.deps.runner, inputs, (each) => { outputs.push(each); });
+          return res;
+        }
+      );
       return output;
     } finally {
       const declared = output === null ? null : declaredMutations(outputs);
@@ -1034,9 +1039,9 @@ export class RunDriver {
         });
       }
     } catch (error) {
+      if (handleAttemptSpawnFenceLoss(error, this.deps.store, this.deps.queue, run, this.logger)) { allowAutoDrain = false; return; }
       const auditUnavailable =
-        error instanceof RequiredEvidenceUnavailableError ||
-        this.deps.options.isAuditEvidenceAvailable?.() === false;
+        error instanceof RequiredEvidenceUnavailableError || this.deps.options.isAuditEvidenceAvailable?.() === false;
       if (!auditUnavailable) throw error;
 
       allowAutoDrain = false;

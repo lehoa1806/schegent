@@ -29,19 +29,28 @@
 //
 // No `vscode` import: the store and the child-status probe arrive as ports.
 
+import { randomUUID } from 'node:crypto';
 import * as fs from 'fs/promises';
 import type {
   ExecutionEnvelope,
+  FrozenWorkflowClosure,
   ResolvedPortValue,
   RunRequest,
   RunRequestFieldError
 } from '../../contracts/run-request';
 import type { PhaseDefinition } from '../../contracts/process-definitions';
 import type { WorkflowDefinition, WorkflowNode } from '../../contracts/workflow-definitions';
+import type { WorkflowLeafTarget } from '../../contracts/workflow-leaf-target';
+import type { ControlLedger } from '../../contracts/control-ledger';
 import type { PipelineCatalog } from '../../config/pipeline-config';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
-import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
-import { appendAttempt, resolveBoundQueueId } from '../../state/connected-workflow-run';
+import type { ConnectedWorkflowRun, NodeAttemptRecord } from '../../state/connected-workflow-run';
+import {
+  appendAttempt,
+  recordNodeAttempt,
+  resolveBoundQueueId,
+  upsertInvocationFrame
+} from '../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../state/workspace-state';
 import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';
 import { validateRunRequest } from '../run-request/run-request-validator';
@@ -137,16 +146,22 @@ export type ChildRunSettledProbe = (queueItemId: string) => boolean;
 
 /** The compare-and-set write path (FR-046). Structurally the workspace store. */
 export interface ConnectedRunWriter {
+  getConnectedRun?(connectedRunId: string): ConnectedWorkflowRun | null;
   compareAndSetConnectedRun(
     next: ConnectedWorkflowRun,
     expectedRevision: number
   ): Promise<ConnectedRunWriteResult>;
+  deleteUnstartedConnectedRun?(
+    connectedRunId: string,
+    expectedRevision: number
+  ): Promise<boolean>;
 }
 
 export interface WorkflowLauncherDeps extends NodeRunStartDeps {
   readonly connectedRuns: ConnectedRunWriter;
   readonly isChildSettled: ChildRunSettledProbe;
   readonly productionComposition?: ProductionWorkflowComposition;
+  readonly cancelOrphanedQueueItem?: (target: WorkflowLeafTarget) => Promise<void> | void;
 }
 
 export interface LaunchWorkflowInput {
@@ -226,11 +241,15 @@ function refusalOf(
   if (started.outcome === 'rejected-validation') {
     return { outcome: 'rejected-validation', errors: started.errors };
   }
-  if (started.outcome === 'rejected-queue') {
+  if (started.outcome === 'rejected-queue' || started.outcome === 'rejected-foreign-lock') {
     return {
       outcome: 'rejected-queue',
       reason: 'queue-refused',
-      ...(started.detail !== undefined ? { detail: started.detail } : {})
+      ...(started.detail !== undefined
+        ? { detail: started.detail }
+        : started.outcome === 'rejected-foreign-lock'
+          ? { detail: 'stale-execution-fence' }
+          : {})
     };
   }
   if (started.reason === 'pipeline-not-found') {
@@ -549,34 +568,80 @@ export interface LaunchComposableWorkflowInput {
 }
 
 function collectRequiredLaunchCollaborators(
-  rootWorkflow: WorkflowDefinition,
-  entryNodeId: string
+  closure: FrozenWorkflowClosure
 ): readonly ControlCollaboratorKind[] {
   const required = new Set<ControlCollaboratorKind>([
     'controlAdmission',
     'cutoverAuthorityGuard'
   ]);
-  if (rootWorkflow.control?.kind === 'candidate-block') {
-    required.add('candidateBlockExecutor');
-  }
-  const entryNode = rootWorkflow.nodes.find((n) => n.nodeId === entryNodeId);
-  if (entryNode?.control?.kind === 'repeat') {
-    required.add('repeatExecutor');
-  }
-  if (entryNode?.control?.kind === 'for-each') {
-    required.add('forEachExecutor');
-  }
-  for (const node of rootWorkflow.nodes) {
-    if (node.control?.kind === 'repeat') required.add('repeatExecutor');
-    if (node.control?.kind === 'for-each') required.add('forEachExecutor');
+  for (const workflow of Object.values(closure.workflowsById)) {
+    if (workflow.control?.kind === 'candidate-block') {
+      required.add('candidateBlockExecutor');
+    }
+    for (const node of workflow.nodes) {
+      if (node.control?.kind === 'repeat') required.add('repeatExecutor');
+      if (node.control?.kind === 'for-each') required.add('forEachExecutor');
+    }
   }
   return Object.freeze([...required]);
 }
 
-function isRootInvocationFailed(run: ConnectedWorkflowRun, rootInvocationId: string): boolean {
-  return Object.values(run.invocations ?? {}).some(
-    (frame) => frame.invocationId === rootInvocationId && frame.status === 'failed'
-  );
+function bindQueueItemOnStagedRun(
+  run: ConnectedWorkflowRun,
+  invocationId: string,
+  nodeId: string,
+  attemptId: string,
+  queueItemId: string
+): ConnectedWorkflowRun {
+  const frame = run.invocations?.[invocationId];
+  if (frame === undefined) return run;
+  const attempts = frame.attemptsByNodeId[nodeId] ?? [];
+  const pending = attempts.find((a) => a.attemptId === attemptId);
+  if (pending === undefined) return run;
+  const inFlight: NodeAttemptRecord = Object.freeze({
+    ...pending,
+    status: 'in-flight',
+    queueItemId
+  });
+  const bound = upsertInvocationFrame(run, recordNodeAttempt(frame, inFlight));
+  return Object.freeze({ ...bound, revision: Math.max(1, run.revision) });
+}
+
+function stampQueueItemOnRawLedger(
+  rawLedger: unknown,
+  ledgerRunId: string,
+  attemptId: string,
+  queueItemId: string
+): { readonly ok: true; readonly nextLedger: unknown } {
+  if (typeof rawLedger !== 'object' || rawLedger === null || !('roots' in rawLedger)) {
+    return { ok: true, nextLedger: rawLedger };
+  }
+  const ledger = rawLedger as ControlLedger;
+  if (!Object.hasOwn(ledger.roots, ledgerRunId)) {
+    return { ok: true, nextLedger: rawLedger };
+  }
+  const root = ledger.roots[ledgerRunId];
+  if (root === undefined || !Object.hasOwn(root.attemptsById, attemptId)) {
+    return { ok: true, nextLedger: rawLedger };
+  }
+  const attempt = root.attemptsById[attemptId];
+  if (attempt === undefined) {
+    return { ok: true, nextLedger: rawLedger };
+  }
+  const updatedRoot = Object.freeze({
+    ...root,
+    attemptsById: {
+      ...root.attemptsById,
+      [attemptId]: Object.freeze({ ...attempt, queueItemId })
+    }
+  });
+  return {
+    ok: true,
+    nextLedger: Object.freeze({
+      ...ledger,
+      roots: { ...ledger.roots, [ledgerRunId]: updatedRoot }
+    })
+  };
 }
 
 function buildRootInputsFromEnvelope(
@@ -605,12 +670,68 @@ function buildRootInputsFromEnvelope(
  * and guarantee lease release in `finally` if admission or initial start fails
  * (FR-001, FR-002, FR-017).
  */
+const inFlightLaunchTails = new WeakMap<object, Map<string, Promise<unknown>>>();
+
+async function serializeComposableLaunch<T>(
+  storeKey: object,
+  connectedRunId: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  let byRun = inFlightLaunchTails.get(storeKey);
+  if (byRun === undefined) {
+    byRun = new Map<string, Promise<unknown>>();
+    inFlightLaunchTails.set(storeKey, byRun);
+  }
+  const prev = byRun.get(connectedRunId) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(fn);
+  const tail = next.then(() => undefined, () => undefined);
+  byRun.set(connectedRunId, tail);
+  try {
+    return await next;
+  } finally {
+    if (byRun.get(connectedRunId) === tail) {
+      byRun.delete(connectedRunId);
+    }
+  }
+}
+
 export async function launchComposableWorkflow(
+  deps: WorkflowLauncherDeps,
+  input: LaunchComposableWorkflowInput
+): Promise<LaunchWorkflowResult> {
+  const serializationKey: object =
+    deps.productionComposition?.ledgerStore ??
+    (input.workspaceRoot !== null && input.workspaceRoot.trim().length > 0
+      ? getOrCreateProductionWorkflowComposition(deps.connectedRuns, {
+          workspaceRoot: input.workspaceRoot
+        }).ledgerStore
+      : deps.connectedRuns);
+  return serializeComposableLaunch(serializationKey, input.connectedRunId, () =>
+    launchComposableWorkflowLocked(deps, input)
+  );
+}
+
+async function launchComposableWorkflowLocked(
   deps: WorkflowLauncherDeps,
   input: LaunchComposableWorkflowInput
 ): Promise<LaunchWorkflowResult> {
   const boundQueueId = input.queueId ?? 'default';
   let startedSuccessfully = false;
+  let linkedComposition: ProductionWorkflowComposition | null = null;
+  let linkedLedgerRunId: string | null = null;
+  const launchState: {
+    unstartedParentRevision: number | null;
+    lastFailure: LaunchWorkflowResult | null;
+    firstQueueItemId: string | null;
+    stagedPendingRun: ConnectedWorkflowRun | null;
+    atomicCommittedRun: ConnectedWorkflowRun | null;
+  } = {
+    unstartedParentRevision: null,
+    lastFailure: null,
+    firstQueueItemId: null,
+    stagedPendingRun: null,
+    atomicCommittedRun: null
+  };
 
   try {
     const closure = input.envelope.frozenClosure;
@@ -636,10 +757,7 @@ export async function launchComposableWorkflow(
         workspaceRoot: input.workspaceRoot
       });
 
-    const requiredCollaborators = collectRequiredLaunchCollaborators(
-      rootWorkflow,
-      entryNodeId
-    );
+    const requiredCollaborators = collectRequiredLaunchCollaborators(closure);
     const preCheck = composition.verifyPreAdmission({
       entryPointId: input.entryPointId ?? 'ui.launchWorkflow',
       rootExecutionId: input.connectedRunId,
@@ -673,28 +791,152 @@ export async function launchComposableWorkflow(
       return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
     }
 
-    const linkedRun = await composition.ensureRootControlLink(snapshot.run, boundQueueId);
+    // FR-R8-01 (01-02): Deduplicate repeated delivery of an already-persisted `connectedRunId`
+    // before mutating ControlLedger or creating rollback reservations.
+    const existingConnectedRun = deps.connectedRuns.getConnectedRun?.(input.connectedRunId) ?? null;
+    if (existingConnectedRun !== null) {
+      let existingQueueItemId: string | null = null;
+      for (const frame of Object.values(existingConnectedRun.invocations ?? {})) {
+        for (const attempts of Object.values(frame.attemptsByNodeId)) {
+          const hit = attempts.find((a) => a.queueItemId !== undefined);
+          if (hit?.queueItemId !== undefined) {
+            existingQueueItemId = hit.queueItemId;
+            break;
+          }
+        }
+        if (existingQueueItemId !== null) break;
+      }
+      startedSuccessfully = true;
+      return {
+        outcome: 'started',
+        run: existingConnectedRun,
+        queueItemId: existingQueueItemId ?? `existing:${existingConnectedRun.connectedRunId}`
+      };
+    }
 
-    let lastFailure: LaunchWorkflowResult | null = null;
-    let firstQueueItemId: string | null = null;
+    const hadPriorControlRoot = composition.ledgerStore.getRoot(input.connectedRunId) !== null;
+    const linkedResult = await composition.ensureRootControlLink(snapshot.run, boundQueueId);
+    if (!linkedResult.ok) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: linkedResult.refusal.reasonCode,
+        refusal: linkedResult.refusal
+      };
+    }
+    const linkedRun = linkedResult.run;
+    if (!hadPriorControlRoot) {
+      linkedComposition = composition;
+      linkedLedgerRunId = linkedRun.controlState?.ledgerRunId ?? input.connectedRunId;
+    }
+
+    const atomicAdmit = deps.guardedRun?.admitComposableWorkflowLaunchAtomically?.bind(
+      deps.guardedRun
+    );
+    const supportsAtomicLaunch = atomicAdmit !== undefined;
+    const supportsParentRollback = deps.connectedRuns.deleteUnstartedConnectedRun !== undefined;
 
     const coordinatorDeps = composition.createCoordinatorDeps({
       connectedRuns: {
-        compareAndSetConnectedRun: async (next) =>
-          // Before the first phase is enqueued, or when a launch's root already failed,
-          // keep the pre-dispatch state in memory so a refused launch leaves no
-          // connected-run state behind (FR-012).
-          firstQueueItemId === null || isRootInvocationFailed(next, snapshot.rootInvocationId)
-            ? { outcome: 'written', run: next }
-            : deps.connectedRuns.compareAndSetConnectedRun(next, 0)
+        compareAndSetConnectedRun: async (next, expectedRevision) => {
+          if (supportsAtomicLaunch) {
+            if (launchState.atomicCommittedRun !== null) {
+              return { outcome: 'written', run: launchState.atomicCommittedRun };
+            }
+            if (launchState.firstQueueItemId === null) {
+              launchState.stagedPendingRun = next;
+              return { outcome: 'written', run: next };
+            }
+            return deps.connectedRuns.compareAndSetConnectedRun(next, expectedRevision);
+          }
+          if (supportsParentRollback) {
+            const effectiveExpected =
+              launchState.unstartedParentRevision === null && launchState.firstQueueItemId === null
+                ? 0
+                : expectedRevision;
+            const written = await deps.connectedRuns.compareAndSetConnectedRun(
+              next,
+              effectiveExpected
+            );
+            if (written.outcome === 'written' && launchState.firstQueueItemId === null) {
+              launchState.unstartedParentRevision = written.run.revision;
+            }
+            return written;
+          }
+          // Bare test mock writer lacking atomic commit and rollback: defer initial write until
+          // first phase enqueue succeeds so FR-012 ("refused launch leaves no state") holds.
+          if (launchState.firstQueueItemId === null) {
+            launchState.stagedPendingRun = next;
+            return { outcome: 'written', run: next };
+          }
+          return deps.connectedRuns.compareAndSetConnectedRun(next, 0);
+        }
       },
       dispatchPhase: async (phaseInput) => {
+        if (
+          supportsAtomicLaunch &&
+          launchState.firstQueueItemId === null &&
+          launchState.stagedPendingRun !== null
+        ) {
+          const pendingRun = launchState.stagedPendingRun;
+          const allocatedId = randomUUID();
+          const finalRun = bindQueueItemOnStagedRun(
+            pendingRun,
+            phaseInput.frame.invocationId,
+            phaseInput.node.nodeId,
+            phaseInput.attemptId,
+            allocatedId
+          );
+          const ledgerRunId = linkedLedgerRunId ?? input.connectedRunId;
+          const atomicDeps: NodeRunStartDeps = {
+            ...deps,
+            guardedRun: {
+              scheduleOrEnqueue: async (req) => {
+                const res = await atomicAdmit({
+                  req,
+                  queueItemId: allocatedId,
+                  connectedRun: finalRun,
+                  mutateControlLedger: async (rawLedger: unknown) =>
+                    stampQueueItemOnRawLedger(rawLedger, ledgerRunId, phaseInput.attemptId, allocatedId)
+                });
+                if (res.outcome === 'enqueued' && res.queueItemId !== undefined) {
+                  launchState.atomicCommittedRun =
+                    res.queueItemId === allocatedId
+                      ? finalRun
+                      : bindQueueItemOnStagedRun(
+                          pendingRun,
+                          phaseInput.frame.invocationId,
+                          phaseInput.node.nodeId,
+                          phaseInput.attemptId,
+                          res.queueItemId
+                        );
+                }
+                return res;
+              }
+            }
+          };
+          const started = await startPhaseAttempt(atomicDeps, phaseInput, input.workspaceRoot);
+          if (started.outcome === 'enqueued') {
+            launchState.firstQueueItemId = started.queueItemId;
+          } else {
+            launchState.lastFailure = refusalOf(started);
+          }
+          return phaseDispatchResultOf(started);
+        }
+
         const started = await startPhaseAttempt(deps, phaseInput, input.workspaceRoot);
-        if (started.outcome === 'enqueued') firstQueueItemId = started.queueItemId;
-        else lastFailure = refusalOf(started);
+        if (started.outcome === 'enqueued') {
+          launchState.firstQueueItemId = started.queueItemId;
+          launchState.unstartedParentRevision = null;
+        } else {
+          launchState.lastFailure = refusalOf(started);
+        }
         return phaseDispatchResultOf(started);
       },
-      workspaceRoot: input.workspaceRoot
+      workspaceRoot: input.workspaceRoot,
+      ...(deps.cancelOrphanedQueueItem !== undefined
+        ? { cancelOrphanedQueueItem: deps.cancelOrphanedQueueItem }
+        : {})
     });
 
     const stepResult = await dispatchComposableNode(coordinatorDeps, {
@@ -704,14 +946,30 @@ export async function launchComposableWorkflow(
       startedAt: input.startedAt
     });
 
-    if (lastFailure !== null) {
-      return lastFailure;
+    if (launchState.lastFailure !== null) {
+      return launchState.lastFailure;
+    }
+    if (stepResult.outcome === 'rejected-stale') {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail:
+          stepResult.reason === 'stale-fence'
+            ? 'stale-execution-fence'
+            : 'connected-run-stale'
+      };
     }
     if (stepResult.outcome === 'workflow-completed') {
-      const persisted = await deps.connectedRuns.compareAndSetConnectedRun(stepResult.run, 0);
+      const persisted =
+        launchState.atomicCommittedRun !== null
+          ? { outcome: 'written' as const, run: launchState.atomicCommittedRun }
+          : launchState.unstartedParentRevision !== null
+            ? { outcome: 'written' as const, run: stepResult.run }
+            : await deps.connectedRuns.compareAndSetConnectedRun(stepResult.run, 0);
       if (persisted.outcome === 'stale') {
         return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
       }
+      launchState.unstartedParentRevision = null;
       startedSuccessfully = true;
       return {
         outcome: 'started',
@@ -719,7 +977,30 @@ export async function launchComposableWorkflow(
         queueItemId: `completed:${input.connectedRunId}`
       };
     }
-    if (stepResult.outcome !== 'phase-dispatched' || firstQueueItemId === null) {
+    if (stepResult.outcome === 'workflow-paused') {
+      const persisted =
+        launchState.unstartedParentRevision !== null
+          ? { outcome: 'written' as const, run: stepResult.run }
+          : await deps.connectedRuns.compareAndSetConnectedRun(stepResult.run, 0);
+      if (persisted.outcome === 'stale') {
+        return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
+      }
+      launchState.unstartedParentRevision = null;
+      startedSuccessfully = true;
+      return {
+        outcome: 'started',
+        run: persisted.run,
+        queueItemId: `paused:${input.connectedRunId}`
+      };
+    }
+    if (stepResult.outcome === 'workflow-failed') {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: stepResult.failureCode
+      };
+    }
+    if (stepResult.outcome !== 'phase-dispatched' || launchState.firstQueueItemId === null) {
       return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
     }
 
@@ -727,11 +1008,29 @@ export async function launchComposableWorkflow(
     return {
       outcome: 'started',
       run: stepResult.run,
-      queueItemId: firstQueueItemId
+      queueItemId: launchState.firstQueueItemId
     };
   } finally {
-    if (!startedSuccessfully && input.releaseRootLease !== undefined) {
-      await input.releaseRootLease(boundQueueId, input.connectedRunId);
+    if (!startedSuccessfully) {
+      if (
+        launchState.unstartedParentRevision !== null &&
+        deps.connectedRuns.deleteUnstartedConnectedRun !== undefined
+      ) {
+        await deps.connectedRuns
+          .deleteUnstartedConnectedRun(input.connectedRunId, launchState.unstartedParentRevision)
+          .catch(() => undefined);
+      }
+      if (linkedComposition !== null && linkedLedgerRunId !== null) {
+        await linkedComposition.controlAdmission
+          .releaseUnstartedRootLink({
+            ledgerRunId: linkedLedgerRunId,
+            connectedRunId: input.connectedRunId
+          })
+          .catch(() => undefined);
+      }
+      if (input.releaseRootLease !== undefined) {
+        await input.releaseRootLease(boundQueueId, input.connectedRunId);
+      }
     }
   }
 }

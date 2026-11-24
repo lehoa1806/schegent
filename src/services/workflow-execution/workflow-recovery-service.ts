@@ -51,6 +51,10 @@ import {
   type PhaseAttemptDispatchInput,
   type PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
+import type { CandidateBlockExecutor } from './candidate-block-executor';
+import type { CandidateSpecResolver } from './candidate-block-coordinator';
+import { tryReconcileCandidateBlockFrames } from './candidate-block-recovery';
+import { reconcileOrphanedControlLedgerRoots } from './control-root-lifecycle';
 import {
   handleRepeatChildCompletion,
   type RepeatExecutor
@@ -129,15 +133,15 @@ export interface WorkflowRecoveryServiceDeps {
     | undefined;
   readonly repeatExecutor?: RepeatExecutor | undefined;
   readonly forEachExecutor?: ForEachExecutor | undefined;
+  readonly candidateBlockExecutor?: CandidateBlockExecutor | undefined;
+  readonly resolveCandidateSpec?: CandidateSpecResolver | undefined;
   readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator | undefined;
   readonly workspaceRoot?: string | undefined;
   readonly quotaPermitArbiter?: QuotaPermitArbiter | undefined;
   readonly notificationService?: ControlNotificationService | undefined;
   readonly usageAccounting?: ControlUsageAccountingService | undefined;
-  readonly resolveRecoveryFence?: (
-    run: ConnectedWorkflowRun,
-    queueId: string
-  ) => ExecutionFence;
+  readonly resolveRecoveryFence?: (run: ConnectedWorkflowRun, queueId: string) => ExecutionFence;
+  readonly resolveOrphanFence?: (ref: { readonly ledgerRunId: string; readonly connectedRunId: string; readonly queueId: string; readonly rootGeneration?: number | undefined }) => ExecutionFence;
 }
 
 export interface ReconcileConnectedRunResult {
@@ -265,6 +269,12 @@ export class WorkflowRecoveryService {
       ...(this.deps.controlAdmission !== undefined ? { controlAdmission: this.deps.controlAdmission } : {}),
       ...(this.deps.repeatExecutor !== undefined ? { repeatExecutor: this.deps.repeatExecutor } : {}),
       ...(this.deps.forEachExecutor !== undefined ? { forEachExecutor: this.deps.forEachExecutor } : {}),
+      ...(this.deps.candidateBlockExecutor !== undefined
+        ? { candidateBlockExecutor: this.deps.candidateBlockExecutor }
+        : {}),
+      ...(this.deps.resolveCandidateSpec !== undefined
+        ? { resolveCandidateSpec: this.deps.resolveCandidateSpec }
+        : {}),
       ...(this.deps.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: this.deps.phaseHandoffCoordinator } : {}),
       ...(this.deps.workspaceRoot !== undefined ? { workspaceRoot: this.deps.workspaceRoot } : {}),
       ...(this.deps.resolveRecoveryFence !== undefined ? { resolveExecutionFence: this.deps.resolveRecoveryFence } : {})
@@ -293,6 +303,7 @@ export class WorkflowRecoveryService {
 
     let retainedUncertainPermits: readonly QuotaPermit[] | undefined;
     let claimedNotificationIds: readonly string[] | undefined;
+    let controlRootPausedUncertain = false;
     if (run.controlState !== undefined && this.deps.controlAdmission !== undefined) {
       const recoveryFence =
         this.deps.resolveRecoveryFence?.(run, queueId) ?? {
@@ -308,6 +319,7 @@ export class WorkflowRecoveryService {
           ? { processEvidencePort: this.deps.processEvidencePort }
           : {})
       });
+      controlRootPausedUncertain = reconciledRoot.disposition === 'paused-uncertain-effect';
       if (reconciledRoot.ledger !== undefined) {
         const uncertainList: QuotaPermit[] = [];
         for (const pRec of Object.values(reconciledRoot.ledger.permits)) {
@@ -333,8 +345,21 @@ export class WorkflowRecoveryService {
       }
     }
 
-    // 1. Terminal runs: no-op, ensure lease and terminal handoff pins are released idempotently.
-    if (rootFrame !== undefined && isTerminalInvocationStatus(rootFrame.status)) {
+    // 1. Terminal runs: no-op, ensure ledger root, lease, and terminal handoff pins are finalized idempotently.
+    if (
+      rootFrame !== undefined &&
+      (rootFrame.status === 'completed' ||
+        rootFrame.status === 'failed' ||
+        rootFrame.status === 'canceled')
+    ) {
+      if (run.controlState !== undefined) {
+        await this.deps.controlAdmission?.markRootTerminal?.({
+          ledgerRunId: run.controlState.ledgerRunId,
+          connectedRunId: run.connectedRunId,
+          status: rootFrame.status,
+          completedAt: rootFrame.completedAt ?? now
+        });
+      }
       releaseTerminalHandoffPinsIfConfirmed(this.deps.phaseHandoffCoordinator, run);
       await this.deps.releaseQueueLease?.(queueId, run.connectedRunId);
       return {
@@ -400,6 +425,14 @@ export class WorkflowRecoveryService {
       const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
         this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, nextRun, run.revision
       );
+      if (finalRun.controlState !== undefined) {
+        await this.deps.controlAdmission?.markRootTerminal?.({
+          ledgerRunId: finalRun.controlState.ledgerRunId,
+          connectedRunId: finalRun.connectedRunId,
+          status: 'canceled',
+          completedAt: now
+        });
+      }
       await this.deps.releaseQueueLease?.(queueId, run.connectedRunId);
       return {
         runId: finalRun.connectedRunId,
@@ -698,6 +731,7 @@ export class WorkflowRecoveryService {
       }
 
       if (
+        !controlRootPausedUncertain &&
         attempt.status === 'in-flight' &&
         attempt.queueItemId !== undefined &&
         this.deps.isAttemptPendingInQueue !== undefined &&
@@ -1121,6 +1155,29 @@ export class WorkflowRecoveryService {
       }
     }
 
+    if (this.deps.candidateBlockExecutor !== undefined) {
+      const cbReconciled = await tryReconcileCandidateBlockFrames({
+        run,
+        rootId,
+        queueId,
+        now,
+        executor: this.deps.candidateBlockExecutor,
+        connectedRuns: this.deps.connectedRuns,
+        phaseHandoffCoordinator: this.deps.phaseHandoffCoordinator,
+        controlAdmission: this.deps.controlAdmission,
+        releaseQueueLease: this.deps.releaseQueueLease,
+        completeParent: ({ writer, decisionResults, ...rest }) =>
+          completeComposableNodeAttempt(this.recoveryCoordinatorDeps(writer), {
+            ...rest,
+            status: 'completed',
+            ...(decisionResults !== undefined ? { decisionResults } : {})
+          }),
+        dispatchStep: ({ writer, ...rest }) =>
+          dispatchComposableNode(this.recoveryCoordinatorDeps(writer), rest)
+      });
+      if (cbReconciled !== null) return cbReconciled;
+    }
+
     return {
       runId: run.connectedRunId,
       mutated: false,
@@ -1140,10 +1197,17 @@ export class WorkflowRecoveryService {
     const list = this.deps.connectedRuns.list?.() ?? [];
     const results: ReconcileConnectedRunResult[] = [];
     for (const run of list) {
-      const reconciled = await this.reconcileRun(run.connectedRunId, now);
-      if (reconciled !== undefined) {
-        results.push(reconciled);
-      }
+      try {
+        const reconciled = await this.reconcileRun(run.connectedRunId, now);
+        if (reconciled !== undefined) results.push(reconciled);
+      } catch { /* isolate malformed run so sibling recovery proceeds */ }
+    }
+    if (this.deps.controlAdmission !== undefined) {
+      await reconcileOrphanedControlLedgerRoots({
+        controlAdmission: this.deps.controlAdmission, knownRunIds: new Set(list.map((r) => r.connectedRunId)),
+        ...(this.deps.resolveOrphanFence !== undefined ? { resolveOrphanFence: this.deps.resolveOrphanFence } : {}),
+        processEvidencePort: this.deps.processEvidencePort
+      });
     }
     return Object.freeze(results);
   }

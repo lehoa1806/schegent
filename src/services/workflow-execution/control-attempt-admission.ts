@@ -60,6 +60,11 @@ import {
   lookupRecord,
   measureRootLedgerBytes
 } from './control-ledger-store';
+import {
+  listControlRootRefs,
+  markControlRootTerminal,
+  releaseUnstartedControlRootLink
+} from './control-root-lifecycle';
 import { quotaIdSetsEqual, sortQuotaIds } from './quota-permit-arbiter';
 
 export interface ControlAttemptAdmissionDeps {
@@ -72,6 +77,8 @@ export interface ControlAttemptAdmissionDeps {
     fence: ExecutionFence,
     context: { readonly ledgerRunId: string; readonly queueId: string }
   ) => Promise<boolean> | boolean;
+  /** FR-R8-01 (01-03) — when true (desktop composition), fail closed if `verifyLiveFence` is absent. */
+  readonly requireLiveFenceVerifier?: boolean | undefined;
 }
 
 export interface PrepareRootLinkInput {
@@ -221,6 +228,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
         context: { readonly ledgerRunId: string; readonly queueId: string }
       ) => Promise<boolean> | boolean)
     | undefined;
+  private readonly requireLiveFenceVerifier: boolean;
   private readonly unconsumedTokens = new Map<string, PreparedControlAttemptToken>();
   private readonly consumedTokenIds = new Set<string>();
   private tokenCounter = 0;
@@ -232,6 +240,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
     this.processEvidencePort = deps.processEvidencePort;
     this.hasProcessCapacity = deps.hasProcessCapacity;
     this.verifyLiveFence = deps.verifyLiveFence;
+    this.requireLiveFenceVerifier = deps.requireLiveFenceVerifier === true;
   }
 
   private async checkFence(
@@ -245,7 +254,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
     if (this.verifyLiveFence !== undefined) {
       return await this.verifyLiveFence(fence, { ledgerRunId, queueId });
     }
-    return true;
+    return !this.requireLiveFenceVerifier;
   }
 
   public async prepareRootLink(
@@ -374,6 +383,17 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
   public async activateRootLink(
     input: ActivateRootLinkInput
   ): Promise<ActivateRootLinkOutcome> {
+    const preRead = this.store.getRoot(input.ledgerRunId);
+    if (preRead !== null) {
+      const fenceOk = await this.checkFence(input.fence, input.ledgerRunId, preRead.queueId);
+      if (!fenceOk) {
+        return {
+          ok: false,
+          code: 'stale-execution-fence',
+          message: 'Cannot activate control root link with an invalid or stale execution fence.'
+        };
+      }
+    }
     const mutated = await this.store.mutate<RootControlState>(
       {
         targetRootId: input.ledgerRunId,
@@ -562,6 +582,13 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
     const attemptIndex = input.attemptIndex ?? nodeAttemptsInRoot.length + 1;
     const attemptId =
       input.attemptId ?? `${input.invocationId}:${input.nodeId}:attempt-${attemptIndex}`;
+    if (lookupRecord(root.attemptsById, attemptId) !== undefined) {
+      return {
+        ok: false,
+        code: 'invalid-attempt-stage',
+        message: `Attempt '${attemptId}' already exists in control root '${input.ledgerRunId}'.`
+      };
+    }
 
     const now = this.clock.nowWallMs();
     const simulatedAttempt: ControlAttemptRecord = {
@@ -822,6 +849,9 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
         }
 
         // Revalidate no duplicate active permit for this attemptId and all-or-none quota capacity
+        if (lookupRecord(root.attemptsById, token.attemptId) !== undefined) {
+          return { commit: false, code: 'invalid-attempt-stage', message: `Attempt '${token.attemptId}' already exists in control root '${token.ledgerRunId}'.` };
+        }
         for (const existingPermit of Object.values(ledger.permits)) {
           if (
             existingPermit.attemptId === token.attemptId &&
@@ -927,6 +957,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
         );
 
         const nextFrame: ControlFrame = Object.freeze({
+          ...(existingFrame ?? {}),
           frameKey: token.frameKey,
           parentFrameKey: existingFrame?.parentFrameKey ?? (token.frameKey === 'root' ? null : 'root'),
           invocationId: token.invocationId,
@@ -937,7 +968,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
               ? { nodeId: token.nodeId }
               : {}),
           kind: existingFrame?.kind ?? token.frameKind,
-          status: 'in-flight',
+          status: existingFrame?.kind === 'candidate-block' ? 'executing' : 'in-flight',
           createdAt: existingFrame?.createdAt ?? now,
           updatedAt: now,
           activeAttemptId: token.attemptId,
@@ -952,13 +983,7 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
             : existingFrame?.maxDispatches !== undefined
               ? { maxDispatches: existingFrame.maxDispatches }
               : {}),
-          ...(updatedSlots !== undefined ? { candidateSlots: Object.freeze(updatedSlots) } : {}),
-          ...(existingFrame?.repeatState !== undefined
-            ? { repeatState: existingFrame.repeatState }
-            : {}),
-          ...(existingFrame?.forEachState !== undefined
-            ? { forEachState: existingFrame.forEachState }
-            : {})
+          ...(updatedSlots !== undefined ? { candidateSlots: Object.freeze(updatedSlots) } : {})
         });
 
         const nextRoot: RootControlState = Object.freeze({
@@ -1081,6 +1106,13 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
             message: `Control root '${input.ledgerRunId}' not found.`
           };
         }
+        if (root.linkState !== 'active' || root.status !== 'in-flight') {
+          return {
+            commit: false,
+            code: 'control-root-not-active',
+            message: `Control root '${input.ledgerRunId}' is not active (${root.linkState}/${root.status}).`
+          };
+        }
         const existingAttempt = lookupRecord(root.attemptsById, input.attemptId);
         if (existingAttempt === undefined) {
           return {
@@ -1190,6 +1222,13 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
             message: `Control root '${input.ledgerRunId}' not found.`
           };
         }
+        if (root.linkState !== 'active' || root.status !== 'in-flight') {
+          return {
+            commit: false,
+            code: 'control-root-not-active',
+            message: `Control root '${input.ledgerRunId}' is not active (${root.linkState}/${root.status}).`
+          };
+        }
         const existingAttempt = lookupRecord(root.attemptsById, input.attemptId);
         if (existingAttempt === undefined) {
           return {
@@ -1210,12 +1249,13 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
           };
         }
         const now = this.clock.nowWallMs();
+        const validPid = typeof input.pid === 'number' && Number.isSafeInteger(input.pid) && input.pid > 1 ? input.pid : undefined;
         const updatedAttempt: ControlAttemptRecord = Object.freeze({
           ...existingAttempt,
           stage: 'started',
           startedAt: existingAttempt.startedAt ?? now,
           ...(input.queueItemId !== undefined ? { queueItemId: input.queueItemId } : {}),
-          ...(input.pid !== undefined ? { pid: input.pid } : {})
+          ...(validPid !== undefined ? { pid: validPid } : {})
         });
         const nextRoot: RootControlState = Object.freeze({
           ...root,
@@ -1485,77 +1525,48 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
 
     const existingRoot = lookupRecord(readResult.ledger.roots, input.ledgerRunId);
     const runHasMatchingLink =
-      input.connectedRun?.controlState?.ledgerRunId === input.ledgerRunId;
-
-    // Crash point 1: root prepared in ledger, but ConnectedWorkflowRun never linked it.
-    if (existingRoot !== undefined && !runHasMatchingLink) {
-      if (existingRoot.linkState === 'prepared') {
-        const cleaned = await this.store.mutate<void>(
-          { allowSettlementReserve: true },
-          ({ ledger }) => {
-            const roots = { ...ledger.roots };
-            delete roots[input.ledgerRunId];
-            return {
-              commit: true,
-              plan: {
-                nextLedger: { ...ledger, roots },
-                allowSettlementReserve: true,
-                result: undefined
-              }
-            };
-          }
-        );
-        if (!cleaned.ok) {
-          return {
-            ok: false,
-            disposition: 'noop',
-            affectedAttemptIds: [],
-            errorCode: cleaned.code,
-            message: cleaned.message
-          };
-        }
-        return {
-          ok: true,
-          disposition: 'cleaned-prepared-root',
-          ledger: cleaned.ledger,
-          affectedAttemptIds: []
-        };
-      }
-    }
+      input.connectedRun?.controlState?.ledgerRunId === input.ledgerRunId &&
+      (existingRoot === undefined ||
+        existingRoot.connectedRunId === input.connectedRun.connectedRunId);
 
     // Missing root when ConnectedWorkflowRun claims a link.
     if (existingRoot === undefined) {
       if (runHasMatchingLink) {
         return {
-          ok: false,
-          disposition: 'missing-ledger-root',
-          affectedAttemptIds: [],
-          pauseCause: 'recovery-uncertain-effect',
-          errorCode: 'control-root-not-found',
+          ok: false, disposition: 'missing-ledger-root', affectedAttemptIds: [],
+          pauseCause: 'recovery-uncertain-effect', errorCode: 'control-root-not-found',
           message: `ConnectedWorkflowRun references missing control ledger root '${input.ledgerRunId}'.`
         };
       }
+      return { ok: true, disposition: 'noop', ledger: readResult.ledger, affectedAttemptIds: [] };
+    }
+
+    const fenceOk = await this.checkFence(input.newFence, input.ledgerRunId, existingRoot.queueId);
+    if (!fenceOk) {
       return {
-        ok: true,
-        disposition: 'noop',
-        ledger: readResult.ledger,
-        affectedAttemptIds: []
+        ok: false, disposition: 'noop', affectedAttemptIds: [], errorCode: 'stale-execution-fence',
+        message: `Cannot reconcile control root '${input.ledgerRunId}' with a stale or invalid fence.`
       };
     }
 
-    const fenceOk = await this.checkFence(
-      input.newFence,
-      input.ledgerRunId,
-      existingRoot.queueId
-    );
-    if (!fenceOk) {
-      return {
-        ok: false,
-        disposition: 'noop',
-        affectedAttemptIds: [],
-        errorCode: 'stale-execution-fence',
-        message: `Cannot reconcile control root '${input.ledgerRunId}' with a stale or invalid fence.`
-      };
+    // Crash point 1: root prepared in ledger, but ConnectedWorkflowRun never linked it.
+    if (!runHasMatchingLink && existingRoot.linkState === 'prepared') {
+      const cleaned = await this.store.mutate<void>(
+        { targetRootId: input.ledgerRunId, allowSettlementReserve: true },
+        ({ ledger }) => {
+          const current = lookupRecord(ledger.roots, input.ledgerRunId);
+          if (current === undefined || current.linkState !== 'prepared' || current.connectedRunId !== existingRoot.connectedRunId) {
+            return { commit: false, code: 'stale-ledger-revision', message: 'Prepared control root changed before cleanup.' };
+          }
+          const roots = { ...ledger.roots };
+          delete roots[input.ledgerRunId];
+          return { commit: true, plan: { nextLedger: { ...ledger, roots }, allowSettlementReserve: true, result: undefined } };
+        }
+      );
+      if (!cleaned.ok) {
+        return { ok: false, disposition: 'noop', affectedAttemptIds: [], errorCode: cleaned.code, message: cleaned.message };
+      }
+      return { ok: true, disposition: 'cleaned-prepared-root', ledger: cleaned.ledger, affectedAttemptIds: [] };
     }
 
     const nonSettledAttempts = Object.values(existingRoot.attemptsById).filter(
@@ -1794,25 +1805,29 @@ export class ControlAttemptAdmissionService implements ControlAdmissionPort {
     );
 
     if (!mutated.ok) {
-      return {
-        ok: false,
-        disposition: 'noop',
-        affectedAttemptIds: [],
-        errorCode: mutated.code,
-        message: mutated.message
-      };
+      return { ok: false, disposition: 'noop', affectedAttemptIds: [], errorCode: mutated.code, message: mutated.message };
     }
-
     return {
-      ok: true,
-      disposition: mutated.result.disposition,
-      ledger: mutated.ledger,
-      root: mutated.result.root,
-      affectedAttemptIds: mutated.result.affectedAttemptIds,
-      ...(mutated.result.pauseCause !== undefined
-        ? { pauseCause: mutated.result.pauseCause }
-        : {})
+      ok: true, disposition: mutated.result.disposition, ledger: mutated.ledger,
+      root: mutated.result.root, affectedAttemptIds: mutated.result.affectedAttemptIds,
+      ...(mutated.result.pauseCause !== undefined ? { pauseCause: mutated.result.pauseCause } : {})
     };
+  }
+
+  public async markRootTerminal(input: { readonly ledgerRunId: string; readonly connectedRunId: string; readonly status: 'completed' | 'failed' | 'canceled'; readonly completedAt: number; readonly fence?: ExecutionFence | undefined }): Promise<boolean> {
+    const ok = await markControlRootTerminal(this.store, { ...input, ...(input.fence !== undefined ? { expectedFence: input.fence } : {}), checkFence: (f, r, q) => this.checkFence(f, r, q) });
+    if (ok) this.pruneRootTokens(input.ledgerRunId);
+    return ok;
+  }
+
+  public async releaseUnstartedRootLink(input: { readonly ledgerRunId: string; readonly connectedRunId: string; readonly fence?: ExecutionFence | undefined; readonly allowRecoveryTakeover?: boolean | undefined }): Promise<boolean> {
+    const ok = await releaseUnstartedControlRootLink(this.store, { ...input, ...(input.fence !== undefined ? { expectedFence: input.fence } : {}), checkFence: (f, r, q) => this.checkFence(f, r, q) });
+    if (ok) this.pruneRootTokens(input.ledgerRunId);
+    return ok;
+  }
+
+  public listRootRunIds() {
+    return listControlRootRefs(this.store);
   }
 
   public pruneRootTokens(ledgerRunId: string): void {

@@ -8,10 +8,11 @@
  * Zero `vscode` imports (hard-rules.md rule 13).
  */
 
-import type {
-  ProcessEvidencePort,
-  ProcessEvidenceProbeInput,
-  ProcessEvidenceSnapshot
+import {
+  LIVE_PROCESS_STATE,
+  type ProcessEvidencePort,
+  type ProcessEvidenceProbeInput,
+  type ProcessEvidenceSnapshot
 } from '../../contracts/control-ledger';
 import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import {
@@ -233,8 +234,9 @@ export function isAttemptPendingInQueue(input: {
 export function createStoreProcessEvidencePort(input: {
   readonly store: RecoveryLivenessStore;
   readonly historyStore?: RecoveryLivenessHistoryStore | undefined;
+  readonly isProcessAlive?: ((pid: number) => boolean) | undefined;
 }): ProcessEvidencePort {
-  const { store, historyStore } = input;
+  const { store, historyStore, isProcessAlive } = input;
   return {
     inspectAttempt(probe: ProcessEvidenceProbeInput): ProcessEvidenceSnapshot {
       const connectedRun = lookupOwn(store.getConnectedRuns(), probe.connectedRunId);
@@ -271,10 +273,30 @@ export function createStoreProcessEvidencePort(input: {
         }
       }
 
+      if (
+        probe.pid !== undefined &&
+        Number.isSafeInteger(probe.pid) &&
+        probe.pid > 1 &&
+        isProcessAlive !== undefined &&
+        isProcessAlive(probe.pid)
+      ) {
+        return {
+          processState: LIVE_PROCESS_STATE,
+          ...(requests !== undefined
+            ? { queueItemPresent: matchedReq !== undefined && matchedReq.status !== 'canceled' }
+            : {})
+        };
+      }
+
       if (requests !== undefined) {
+        const stillPendingWithoutStart =
+          matchedReq !== undefined &&
+          matchedReq.status === 'pending' &&
+          (effectiveTaskId === undefined ||
+            !hasStartedWorkflowRunForTask(store, historyStore, effectiveTaskId));
         return {
           processState: 'not-found',
-          queueItemPresent: matchedReq !== undefined && matchedReq.status !== 'canceled'
+          queueItemPresent: stillPendingWithoutStart
         };
       }
       return { processState: 'not-found' };

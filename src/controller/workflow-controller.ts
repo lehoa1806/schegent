@@ -331,7 +331,7 @@ export class SchegentWorkflowController {
       mutationLedger: deps.mutationLedger,
       scheduleAutoDrain: () => this.scheduleAutoDrain(),
       releaseExecutionLease: (run) => this.releaseExecutionLeaseForRun(run)
-    }), (queueId) => store.getRun(queueId));
+    }), (queueId) => store.getRun(queueId), (queueId) => store.runTenureOf(queueId).state === 'lost');
     this.phaseControlService = new PhaseControlService({
       store,
       queue,
