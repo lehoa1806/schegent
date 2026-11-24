@@ -774,6 +774,29 @@ function classifyChainFileNames(allNames: readonly string[]): ChainFiles | null 
   };
 }
 
+export type AuditChainPathRefusalReason =
+  | 'symlink-component'
+  | 'not-a-directory'
+  | 'symlink-leaf'
+  | 'not-a-regular-file';
+
+/**
+ * Typed containment refusal thrown by `audit-chain.ts` when an audit directory or chain file is
+ * a symlink or non-regular filesystem object. Kept in this zero-relative-import module so both
+ * `scripts/verify-audit-chain.ts` and `classifyAuditWriteFailure` can classify it as `path-refused`.
+ */
+export class AuditChainPathRefusedError extends Error {
+  public readonly reason: AuditChainPathRefusalReason;
+  public readonly errno: string;
+
+  public constructor(reason: AuditChainPathRefusalReason, errno: string, message: string) {
+    super(message);
+    this.name = 'AuditChainPathRefusedError';
+    this.reason = reason;
+    this.errno = errno;
+  }
+}
+
 /**
  * Which files make up the chain, in walk order.
  *
@@ -792,7 +815,11 @@ export function collectChainFiles(auditDir: string): ChainFiles | null {
     throw err;
   }
   if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
-    throw new Error('Audit directory must be a non-symlink directory');
+    throw new AuditChainPathRefusedError(
+      dirStat.isSymbolicLink() ? 'symlink-component' : 'not-a-directory',
+      'none',
+      'Audit directory must be a non-symlink directory'
+    );
   }
   return classifyChainFileNames(readdirSync(normalizedDir));
 }
@@ -807,7 +834,11 @@ async function collectChainFilesAsync(auditDir: string): Promise<ChainFiles | nu
     throw err;
   }
   if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
-    throw new Error('Audit directory must be a non-symlink directory');
+    throw new AuditChainPathRefusedError(
+      dirStat.isSymbolicLink() ? 'symlink-component' : 'not-a-directory',
+      'none',
+      'Audit directory must be a non-symlink directory'
+    );
   }
   const names = await readdir(normalizedDir);
   return classifyChainFileNames(names);
@@ -856,19 +887,47 @@ function readContainedRegularFileSync(auditDir: string, name: string): Buffer {
   if (noFollow === 0) {
     const entryStat = lstatSync(target);
     if (entryStat.isSymbolicLink() || !entryStat.isFile()) {
-      throw new Error(`Refused non-regular or symlink audit file: ${name}`);
+      throw new AuditChainPathRefusedError(
+        entryStat.isSymbolicLink() ? 'symlink-leaf' : 'not-a-regular-file',
+        'none',
+        `Refused non-regular or symlink audit file: ${name}`
+      );
     }
   }
-  const fd = openSync(
-    target,
-    fsConstants.O_RDONLY |
-      ((fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0) |
-      ((fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0)
-  );
+  let fd: number;
+  try {
+    fd = openSync(
+      target,
+      fsConstants.O_RDONLY |
+        ((fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0) |
+        ((fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0)
+    );
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ELOOP') {
+      throw new AuditChainPathRefusedError(
+        'symlink-leaf',
+        'ELOOP',
+        `Refused non-regular or symlink audit file: ${name}`
+      );
+    }
+    if (code === 'ENXIO') {
+      throw new AuditChainPathRefusedError(
+        'not-a-regular-file',
+        'ENXIO',
+        `Refused non-regular audit file: ${name}`
+      );
+    }
+    throw err;
+  }
   try {
     const handleStat = fstatSync(fd);
     if (!handleStat.isFile()) {
-      throw new Error(`Refused non-regular audit file: ${name}`);
+      throw new AuditChainPathRefusedError(
+        'not-a-regular-file',
+        'none',
+        `Refused non-regular audit file: ${name}`
+      );
     }
     return readFileSync(fd);
   } finally {
@@ -960,19 +1019,47 @@ async function readContainedRegularFileAsync(auditDir: string, name: string): Pr
   if (noFollow === 0) {
     const entryStat = await lstat(target);
     if (entryStat.isSymbolicLink() || !entryStat.isFile()) {
-      throw new Error(`Refused non-regular or symlink audit file: ${name}`);
+      throw new AuditChainPathRefusedError(
+        entryStat.isSymbolicLink() ? 'symlink-leaf' : 'not-a-regular-file',
+        'none',
+        `Refused non-regular or symlink audit file: ${name}`
+      );
     }
   }
-  const handle = await openRegularFile(
-    target,
-    fsConstants.O_RDONLY |
-      ((fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0) |
-      ((fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0)
-  );
+  let handle;
+  try {
+    handle = await openRegularFile(
+      target,
+      fsConstants.O_RDONLY |
+        ((fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0) |
+        ((fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0)
+    );
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ELOOP') {
+      throw new AuditChainPathRefusedError(
+        'symlink-leaf',
+        'ELOOP',
+        `Refused non-regular or symlink audit file: ${name}`
+      );
+    }
+    if (code === 'ENXIO') {
+      throw new AuditChainPathRefusedError(
+        'not-a-regular-file',
+        'ENXIO',
+        `Refused non-regular audit file: ${name}`
+      );
+    }
+    throw err;
+  }
   try {
     const handleStat = await handle.stat();
     if (!handleStat.isFile()) {
-      throw new Error(`Refused non-regular audit file: ${name}`);
+      throw new AuditChainPathRefusedError(
+        'not-a-regular-file',
+        'none',
+        `Refused non-regular audit file: ${name}`
+      );
     }
     return await handle.readFile();
   } finally {

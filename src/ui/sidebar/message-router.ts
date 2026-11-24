@@ -48,7 +48,7 @@ function hasControlCommandService(deps: RouterDeps): boolean {
  */
 function isWorkflowCancelCommand(
   command: SidebarCommand,
-  controlServiceWired: boolean
+  isControlServiceWired: () => boolean
 ): boolean {
   if (command.type !== CMD_CONTINUE_WORKFLOW) return false;
   const payload = (command as { payload?: unknown }).payload;
@@ -58,14 +58,16 @@ function isWorkflowCancelCommand(
     controlCommand?: unknown;
   };
   if (controlCommand !== undefined) {
-    if (!controlServiceWired) return false;
     if (typeof controlCommand !== 'object' || controlCommand === null) return false;
     const action = (controlCommand as { action?: unknown }).action;
-    return (
-      typeof action === 'object' &&
-      action !== null &&
-      (action as { kind?: unknown }).kind === 'cancel'
-    );
+    if (
+      typeof action !== 'object' ||
+      action === null ||
+      (action as { kind?: unknown }).kind !== 'cancel'
+    ) {
+      return false;
+    }
+    return isControlServiceWired();
   }
   return operation === 'cancel';
 }
@@ -131,7 +133,7 @@ export class MessageRouter {
     }
     const shouldSerialize =
       authority.execution === 'serialized' &&
-      !isWorkflowCancelCommand(command, hasControlCommandService(this.deps));
+      !isWorkflowCancelCommand(command, () => hasControlCommandService(this.deps));
     await this.mutations.execute(
       command.correlationId,
       postAck,
