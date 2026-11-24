@@ -149,12 +149,23 @@ export async function invokeNativeReviewer(
   const capture = await rawTranscript?.createInvocationCapture(runId, mode) ?? null;
   try {
     const raw = await invoke(request, capture ?? undefined);
+    const decision = raw.admissionDecision;
+    const isCodexSecurity = backend === 'codex' && request.review?.kind === 'security';
+    const permissionMode =
+      decision?.permissionMode ??
+      (backend === 'codex' && request.review?.kind === 'code'
+        ? 'read-only'
+        : isCodexSecurity
+          ? 'unrestricted'
+          : getBackendDescriptor(backend).defaultAuditPermissionMode);
+    const executableTarget =
+      decision?.executableTarget ?? (isCodexSecurity ? 'codex-security' : backend);
     await recordInvocation(projectAuditPayload('cli-invocation', {
       operation: 'native-review',
       runner: backend,
-      permissionMode: backend === 'codex' && request.review?.kind === 'code'
-        ? 'read-only'
-        : getBackendDescriptor(backend).defaultAuditPermissionMode,
+      permissionMode,
+      executableTarget,
+      ...(decision !== undefined ? { containmentPosture: decision.containmentPosture } : {}),
       continued: false,
       sessionReused: false,
       ...(request.model !== undefined ? { modelId: request.model } : {}),

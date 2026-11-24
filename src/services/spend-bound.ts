@@ -43,7 +43,8 @@ export type IncompleteReason =
   | 'read-failed'
   | 'damaged-row'
   | 'unknown-row-schema'
-  | 'evicted';
+  | 'evicted'
+  | 'missing-usage';
 
 export type SpendCompleteness =
   | { readonly kind: 'complete' }
@@ -63,6 +64,10 @@ export interface RunSpendTotal {
   readonly completeness: SpendCompleteness;
   /** Provenance and de-duplication: the ids of the `phase-end` rows folded into this total. */
   readonly countedRowIds: ReadonlySet<string>;
+  /** FR-R8-02 (02-01): true when at least one non-synthetic `phase-end` row omitted USD cost. */
+  readonly missingUsdRows?: boolean;
+  /** FR-R8-02 (02-01): true when at least one non-synthetic `phase-end` row omitted billable tokens. */
+  readonly missingTokenRows?: boolean;
 }
 
 export interface SpendBoundConfig {
@@ -130,6 +135,11 @@ export function evaluateSpend(
   if (total.completeness.kind === 'incomplete') {
     return { kind: 'incomplete', denomination, reason: total.completeness.reason };
   }
+  const missingDenomination =
+    denomination === 'usd' ? total.missingUsdRows === true : total.missingTokenRows === true;
+  if (missingDenomination) {
+    return { kind: 'incomplete', denomination, reason: 'missing-usage' };
+  }
   return { kind: 'within' };
 }
 
@@ -178,11 +188,25 @@ export function accumulateSpend(
   const costUsd =
     usage.costUsd.kind === 'present' ? (prev.costUsd ?? 0) + usage.costUsd.value : prev.costUsd;
   const tokens = rowTokens === undefined ? prev.totalTokens : (prev.totalTokens ?? 0) + rowTokens;
+  const nonInvocationRow =
+    payload.cause === 'cap_exhausted' || payload.cause === 'pre_spawn_refusal';
+  const anyRejectedTokenField =
+    usage.inputTokens.kind === 'rejected' ||
+    usage.outputTokens.kind === 'rejected' ||
+    usage.cacheCreationInputTokens.kind === 'rejected' ||
+    usage.cacheReadInputTokens.kind === 'rejected';
+  const missingUsdRows =
+    prev.missingUsdRows === true || (!nonInvocationRow && usage.costUsd.kind !== 'present');
+  const missingTokenRows =
+    prev.missingTokenRows === true ||
+    (!nonInvocationRow && (rowTokens === undefined || anyRejectedTokenField));
   return {
     costUsd,
     totalTokens: tokens,
     completeness: prev.completeness,
-    countedRowIds: new Set([...prev.countedRowIds, rowId])
+    countedRowIds: new Set([...prev.countedRowIds, rowId]),
+    ...(missingUsdRows ? { missingUsdRows: true } : {}),
+    ...(missingTokenRows ? { missingTokenRows: true } : {})
   };
 }
 
@@ -242,6 +266,8 @@ export function preserveSpendTotalAcrossBackendSwitch(
     costUsd: prev.costUsd,
     totalTokens: prev.totalTokens,
     completeness: prev.completeness,
-    countedRowIds: new Set(prev.countedRowIds)
+    countedRowIds: new Set(prev.countedRowIds),
+    ...(prev.missingUsdRows === true ? { missingUsdRows: true } : {}),
+    ...(prev.missingTokenRows === true ? { missingTokenRows: true } : {})
   };
 }

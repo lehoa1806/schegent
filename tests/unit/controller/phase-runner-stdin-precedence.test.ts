@@ -123,7 +123,10 @@ describe('stdin delivery precedence', () => {
     const timeoutArm = source.indexOf(
       "if (raw.timedOut && (result.kind !== 'clean' || requiresHostVerification(inputs)))"
     );
-    const killedArm = source.indexOf('if (raw.killed && raw.exitCode === null)');
+    // FR-R8-02 (02-04) extended the cancel arm (`|| forceCancel`) so an ACP turn whose terminal
+    // reconciliation reported `'cancelled'` (even with exitCode 130) enters the cancel path rather
+    // than bypassing it. Keep the exact literal so any arm reorder still fails immediately.
+    const killedArm = source.indexOf('if ((raw.killed && raw.exitCode === null) || forceCancel)');
     const cleanNonZero = source.indexOf("if (result.kind === 'clean' && raw.exitCode !== null");
 
     expect(stdinArm).toBeGreaterThan(-1);

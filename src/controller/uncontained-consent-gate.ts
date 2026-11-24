@@ -114,8 +114,17 @@ export class UncontainedConsentGate {
     // throws, for the same reason.
     if (!isUncontainedBackendRefusal(err) || !this.request) return { action: 'report', err };
     if (this.granted.has(err.kind)) return { action: 'report', err };
-    // FR-R6-F09 (R3) -- a refusal no consent can lift is reported without a modal.
-    if (isContainmentAdmissionRefusal(err) && !err.consentable) return { action: 'report', err };
+    // FR-R6-F09 (R3) & FR-R8-02 (02-02) -- a refusal no core-backend consent can lift, or a
+    // standalone review-scanner refusal (`scannerTarget !== undefined` or mismatched fingerprint
+    // backend), is reported directly and NEVER grants an uncontained core backend.
+    if (
+      isContainmentAdmissionRefusal(err) &&
+      (!err.consentable ||
+        err.scannerTarget !== undefined ||
+        (err.fingerprint !== undefined && err.fingerprint.components.backend !== err.kind))
+    ) {
+      return { action: 'report', err };
+    }
 
     const outcome = await this.request({
       kind: err.kind,
@@ -134,6 +143,9 @@ export class UncontainedConsentGate {
   /** True when there is nothing to record or the record took. Never logs the error. */
   private async recordAcceptance(err: Error): Promise<boolean> {
     if (!isContainmentAdmissionRefusal(err) || err.fingerprint === undefined) return true;
+    if (err.scannerTarget !== undefined || err.fingerprint.components.backend !== err.kind) {
+      return false;
+    }
     if (this.onAccepted === undefined) return true;
     try {
       await this.onAccepted(err.kind, err.fingerprint);

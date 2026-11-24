@@ -71,6 +71,10 @@ export interface ManagedCliChild {
   endStdin(): void;
   onStdout(listener: (chunk: Uint8Array) => void): void;
   onStderr(listener: (chunk: Uint8Array) => void): void;
+  pauseStdout?(): void;
+  resumeStdout?(): void;
+  pauseStderr?(): void;
+  resumeStderr?(): void;
   isProcessTreeGone(): boolean;
   terminate(): Promise<void>;
 }
@@ -163,8 +167,27 @@ class StdioTransport implements AcpStdioTransport {
     this.closeListeners.push(listener);
   }
 
+  pauseStdout(): void {
+    this.child.stdout?.pause();
+  }
+
+  resumeStdout(): void {
+    this.child.stdout?.resume();
+  }
+
+  pauseStderr(): void {
+    this.child.stderr?.pause();
+  }
+
+  resumeStderr(): void {
+    this.child.stderr?.resume();
+  }
+
   close(): Promise<void> {
     if (this.closing !== null) return this.closing;
+    // Resume any backpressure-paused stdio streams before teardown so child exit cannot stall on pipe close.
+    this.child.stdout?.resume();
+    this.child.stderr?.resume();
     this.closing = teardownChildTree(this.child, this.channel, this.exited);
     return this.closing;
   }
@@ -229,12 +252,30 @@ class ManagedCliChildImpl implements ManagedCliChild {
     this.stderrListeners.push(listener);
   }
 
+  pauseStdout(): void {
+    this.child.stdout?.pause();
+  }
+
+  resumeStdout(): void {
+    this.child.stdout?.resume();
+  }
+
+  pauseStderr(): void {
+    this.child.stderr?.pause();
+  }
+
+  resumeStderr(): void {
+    this.child.stderr?.resume();
+  }
+
   isProcessTreeGone(): boolean {
     return processTreeIsGone(this.child);
   }
 
   terminate(): Promise<void> {
     if (this.terminating !== null) return this.terminating;
+    this.child.stdout?.resume();
+    this.child.stderr?.resume();
     this.terminating = teardownChildTree(this.child, this.channel, this.exited);
     return this.terminating;
   }

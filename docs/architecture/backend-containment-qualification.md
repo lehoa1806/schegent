@@ -503,5 +503,27 @@ around direct child tools. Therefore:
 4. Protocol cancellation (`session/cancel`) is paired with `verifyAcpTransportTeardown`: a
    successful protocol response never conceals surviving helper processes in the OS process group.
 
+### 13.1 Standalone review scanners (`codex-security`, `FR-R8-02` / `02-02`)
+
+Native security reviews on the `codex` backend invoke the companion `codex-security` binary rather than
+`codex exec --sandbox ...`. Because `codex-security` runs outside Codex's Seatbelt sandbox, a qualified
+`codex` approval never implicitly authorizes `codex-security`:
+
+1. **Separate admission gate (`src/services/containment-qualification/scanner-admission.ts`)**:
+   `SpawnAdmissionGate.admitWithDecision` routes `codex` security-review requests through the dedicated
+   scanner admission gate before any process spawns. Restricted Mode, missing acceptance, revoked grant,
+   unresolved executable, or a changed resolved path / SHA-256 binary digest / version / platform tuple
+   all fail closed with zero spawns.
+2. **Exact path handoff**: the host resolves the `codex-security` binary once at admission and passes
+   its absolute path to `dist/acp-stdio-bridge.js` via `--scanner-cli <absolutePath>`; the bridge
+   refuses security review if `--scanner-cli` is missing or relative and never re-resolves `codex-security`
+   from `PATH`.
+3. **Truthful audit posture**: `cli-invocation` audit rows record the closed metadata fields
+   `executableTarget: 'codex-security'`, `containmentPosture: 'accepted-uncontained'`, and
+   `permissionMode: 'unrestricted'` (never `'workspace-write'` or `'read-only'`), while `codex` code
+   reviews record `executableTarget: 'codex'`, `containmentPosture: 'contained'`, and
+   `permissionMode: 'read-only'`.
+
 <!-- Source: src/services/containment-qualification/acp-authority-gate.ts -->
+<!-- Source: src/services/containment-qualification/scanner-admission.ts -->
 <!-- Source: src/services/acp-runtime/profiles.ts -->

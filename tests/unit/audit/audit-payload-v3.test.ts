@@ -39,6 +39,63 @@ describe('audit payload schema v3', () => {
     });
   });
 
+  it('projects closed executableTarget and containmentPosture for native review and rejects non-allowlisted values', () => {
+    expect(projectAuditPayload('cli-invocation', {
+      runner: 'codex',
+      operation: 'native-review',
+      permissionMode: 'unrestricted',
+      executableTarget: 'codex-security',
+      containmentPosture: 'accepted-uncontained',
+      diagnosticsEnabled: false
+    })).toEqual({
+      runner: 'codex',
+      operation: 'native-review',
+      permissionMode: 'unrestricted',
+      executableTarget: 'codex-security',
+      containmentPosture: 'accepted-uncontained',
+      continued: false,
+      sessionReused: false,
+      diagnosticsEnabled: false
+    });
+
+    expect(() => projectAuditPayload('cli-invocation', {
+      runner: 'codex',
+      operation: 'native-review',
+      executableTarget: '/usr/local/bin/codex-security'
+    })).toThrowError(/invalid-executable-target/);
+
+    expect(() => projectAuditPayload('cli-invocation', {
+      runner: 'codex',
+      operation: 'native-review',
+      containmentPosture: 'sandboxed'
+    })).toThrowError(/invalid-containment-posture/);
+
+    // FR-R8-02 (02-02) cross-field invariants: codex-security must never be projected as contained, read-only, or non-codex.
+    expect(() => projectAuditPayload('cli-invocation', {
+      runner: 'codex',
+      operation: 'native-review',
+      permissionMode: 'unrestricted',
+      executableTarget: 'codex-security',
+      containmentPosture: 'contained'
+    })).toThrowError(/invalid-containment-posture/);
+
+    expect(() => projectAuditPayload('cli-invocation', {
+      runner: 'codex',
+      operation: 'native-review',
+      permissionMode: 'read-only',
+      executableTarget: 'codex-security',
+      containmentPosture: 'accepted-uncontained'
+    })).toThrowError(/invalid-permission-mode/);
+
+    expect(() => projectAuditPayload('cli-invocation', {
+      runner: 'claude',
+      operation: 'native-review',
+      permissionMode: 'unrestricted',
+      executableTarget: 'codex-security',
+      containmentPosture: 'accepted-uncontained'
+    })).toThrowError(/invalid-executable-target/);
+  });
+
   it('turns model-reported file and command lists into counts only', () => {
     expect(projectAuditPayload('phase-end', {
       outcome: 'clean',
@@ -290,6 +347,16 @@ describe('phase-end warning vocabulary', () => {
       // no member — an absence declared in advance is not an event.
       '[evidence] audit log absent on clean response, best-effort',
       '[evidence] audit log absent, best-effort',
+      // FR-R8-02 (02-03, 02-04). Closed code-resident literals for ACP stream overflow and
+      // terminal reconciliation refusals — never spliced with raw CLI text or paths.
+      'acp-contradictory-exit',
+      'acp-contradictory-terminal-record',
+      'acp-missing-terminal-record',
+      'acp-stream-overflow',
+      'acp-terminal-reconciliation-failed',
+      'acp-turn-refusal',
+      'acp-turn-uncertain',
+      'acp-verbose-tee-overflow',
       // FR-R3-080 (T1076). Five code-resident literals, one per evidence sink,
       // composed by `pathRefusedWarning` from a closed sink-name union — never
       // by splicing a path or an errno onto a prefix. Enumerated as a set rather

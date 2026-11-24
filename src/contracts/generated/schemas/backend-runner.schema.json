@@ -347,6 +347,21 @@
           "name": "streamFatalMatch",
           "optional": true,
           "type": "FatalClassification"
+        },
+        {
+          "name": "admissionDecision",
+          "optional": true,
+          "type": "SpawnAdmissionDecision"
+        },
+        {
+          "name": "terminalReconciliation",
+          "optional": true,
+          "type": "AcpTerminalReconciliation"
+        },
+        {
+          "name": "streamPendingHighWaterBytes",
+          "optional": true,
+          "type": "number"
         }
       ]
     },

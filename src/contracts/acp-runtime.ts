@@ -18,6 +18,13 @@ export const ACP_PROTOCOL_VERSION = 1;
 const KIB = 1024;
 const MIB = 1024 * KIB;
 
+/** FR-R8-02 (02-03): per-line raw byte ceiling before newline in maintained ACP bridges. */
+export const ACP_MAX_CLI_LINE_BYTES = 2 * MIB;
+/** FR-R8-02 (02-03): pending bridge stdout drain backlog ceiling before overflow abort. */
+export const ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES = 4 * MIB;
+/** FR-R8-02 (02-03): pending host verbose diagnostic tee backlog ceiling per ACP invocation. */
+export const ACP_MAX_VERBOSE_TEE_PENDING_BYTES = 4 * MIB;
+
 /** Every bound the runtime enforces (spec NFR-001, NFR-002 and Clarifications). */
 export const ACP_RUNTIME_LIMITS = Object.freeze({
   /** Absolute deadline for `initialize`, `session/new` and `session/load`. */
@@ -30,6 +37,12 @@ export const ACP_RUNTIME_LIMITS = Object.freeze({
   maxMessageBytes: 2 * MIB,
   /** Largest undecoded remainder plus incoming chunk held at once. */
   maxPendingBytes: 8 * MIB,
+  /** Pre-newline raw byte ceiling per bridged CLI stdout line (FR-R8-02 02-03). */
+  maxCliLineBytes: ACP_MAX_CLI_LINE_BYTES,
+  /** Pending bridge stdout drain backlog ceiling before overflow abort (FR-R8-02 02-03). */
+  maxBridgePendingStdoutBytes: ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES,
+  /** Pending host verbose diagnostic tee bytes per invocation (FR-R8-02 02-03). */
+  maxVerboseTeePendingBytes: ACP_MAX_VERBOSE_TEE_PENDING_BYTES,
   /** Diagnostic stderr kept per connection. */
   stderrTailBytes: 64 * KIB,
   /**
@@ -40,6 +53,18 @@ export const ACP_RUNTIME_LIMITS = Object.freeze({
   /** Most options one permission request may offer. */
   maxPermissionOptions: 32
 });
+
+/**
+ * FR-R8-02 (02-01): optional provider-reported billable token counters carried strictly separately
+ * from ACP `used`/`size` context occupancy. Every present field is a non-negative safe integer;
+ * absent or invalid counters are omitted and never coerced to zero.
+ */
+export interface AcpBillableTokens {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
+  readonly cacheReadInputTokens?: number;
+}
 
 export const ACP_PROFILE_KINDS = Object.freeze(['native', 'bridge'] as const);
 export type AcpProfileKind = (typeof ACP_PROFILE_KINDS)[number];
@@ -205,7 +230,7 @@ export type AcpPromptOutcome =
   | { readonly kind: 'uncertain'; readonly turnId: string; readonly reason: AcpFailureReason }
   | { readonly kind: 'not-dispatched'; readonly reason: AcpFailureReason }
   | { readonly kind: 'refused'; readonly reason: AcpRefusalReason; readonly detail?: string }
-  | { readonly kind: 'rejected'; readonly turnId: string; readonly code: number };
+  | { readonly kind: 'rejected'; readonly turnId: string; readonly code: number; readonly detail?: string };
 
 export type AcpObservationOrigin = 'live' | 'history';
 
@@ -278,6 +303,11 @@ export interface AcpTransport {
   onStdout(listener: (chunk: Uint8Array) => void): void;
   onStderr(listener: (chunk: Uint8Array) => void): void;
   onClose(listener: () => void): void;
+  /** Optional backpressure controls for slow evidence sinks (FR-R8-02 02-03). */
+  pauseStdout?(): void;
+  resumeStdout?(): void;
+  pauseStderr?(): void;
+  resumeStderr?(): void;
   /** Idempotent teardown. */
   close(): Promise<void>;
 }

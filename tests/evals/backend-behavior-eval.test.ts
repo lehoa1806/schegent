@@ -23,7 +23,10 @@ import { join, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { SUPPORTED_BACKENDS } from '../../src/contracts/backend-kinds';
 import { BACKEND_DESCRIPTORS } from '../../src/contracts/backend-descriptors';
+import { encodeUsageResultLine } from '../../src/runner/acp-runner-stream-helpers';
+import { PROMPT_COMPOSITION_VERSION } from '../../src/runner/prompt-identity';
 import { parseBridgeCliArgv } from '../../src/services/acp-runtime/bridges/acp-stdio-bridge';
+import { reconcileBridgeTurnOutcome } from '../../src/services/acp-runtime/terminal-reconciliation';
 import {
   BEHAVIOR_EVAL_MAX_AGE_DAYS,
   BEHAVIOR_EVAL_SCHEMA_VERSION,
@@ -292,5 +295,43 @@ describe('FR-R7-18 N04 — 30-day freshness gate and negative defect-detection c
     expect(
       refusalVerdict.violations.some((v) => v.includes('ACTED_ON_THE_NOTE'))
     ).toBe(true);
+  });
+
+  it('FR-R8-02 (02-05) — keeps ACP usage/reconciliation invariants aligned with offline eval boundaries without spawning processes', () => {
+    expect(PROMPT_COMPOSITION_VERSION).toBeGreaterThanOrEqual(2);
+    // Absent billable tokens MUST NOT fabricate zero token counts for any advertised backend.
+    for (const backend of SUPPORTED_BACKENDS) {
+      const line = encodeUsageResultLine(backend, 'sess-eval-1', 100, null, undefined);
+      expect(line).not.toContain('"input_tokens":0');
+      expect(line).not.toContain('"output_tokens":0');
+    }
+    // Missing terminal record or contradictory exit MUST fail closed rather than synthesizing end_turn.
+    expect(
+      reconcileBridgeTurnOutcome({
+        backend: 'claude',
+        isNativeReview: false,
+        isSecurityReview: false,
+        cancelled: false,
+        exit: { code: 0, signal: null, launchFailed: false },
+        terminalEvents: [],
+        streamErrorText: null,
+        lineOverflowed: false,
+        pendingBacklogOverflowed: false
+      }).outcome
+    ).toBe('error');
+    expect(
+      reconcileBridgeTurnOutcome({
+        backend: 'codex',
+        rejectDuplicateSuccessRecords: true,
+        isNativeReview: false,
+        isSecurityReview: false,
+        cancelled: false,
+        exit: { code: 1, signal: null, launchFailed: false },
+        terminalEvents: [{ kind: 'success', stopReason: 'end_turn' }],
+        streamErrorText: null,
+        lineOverflowed: false,
+        pendingBacklogOverflowed: false
+      }).outcome
+    ).toBe('error');
   });
 });
