@@ -6,10 +6,23 @@ export declare const ADVERTISED_BACKENDS: readonly ['claude', 'codex', 'agy'];
 export declare const EXPECTED_BACKEND_TRANSPORTS: Readonly<Record<string, string>>;
 export declare const EXPECTED_BACKEND_PROFILES: Readonly<Record<string, string>>;
 export declare const QUALIFICATION_PATHS: readonly string[];
+export declare const QUALIFICATION_LOCALITIES: readonly ['local', 'remote'];
+export declare const QUALIFICATION_CHECK_KEYS: readonly [
+  'resume',
+  'policyDenial',
+  'permissionTitleSanitized'
+];
 export declare const QUALIFICATION_BUILD_OUTPUTS: readonly string[];
 export declare const DRIFT_OVERRIDE_ENV: string;
 
 export type QualificationMode = 'live' | 'fixture';
+export type QualificationLocality = 'local' | 'remote';
+
+export interface QualificationChecks {
+  resume?: boolean;
+  policyDenial?: boolean;
+  permissionTitleSanitized?: boolean;
+}
 
 export interface QualificationRecord {
   version?: number;
@@ -17,12 +30,14 @@ export interface QualificationRecord {
   qualifiedAt?: string;
   commit?: string | null;
   platform?: string;
+  locality?: QualificationLocality | string;
   sourceFingerprint?: string | null;
   versions?: Record<string, string | null>;
   states?: Record<string, string>;
   transports?: Record<string, string>;
   profiles?: Record<string, string>;
   executables?: Record<string, string | null>;
+  checks?: QualificationChecks;
   malformed?: boolean;
 }
 
@@ -54,6 +69,8 @@ export declare function decideQualification(inputs: {
   expectedFingerprint?: string | null;
   requireLive?: boolean;
   requiredBackends?: readonly string[];
+  expectedLocality?: QualificationLocality;
+  requireChecks?: boolean;
 }): QualificationVerdict;
 
 export declare function buildQualificationRecord(inputs: {
@@ -67,18 +84,22 @@ export declare function buildQualificationRecord(inputs: {
   transports?: Record<string, string>;
   profiles?: Record<string, string>;
   executables?: Record<string, string | null>;
+  locality?: QualificationLocality;
+  checks?: QualificationChecks;
 }): {
   version: number;
   mode: QualificationMode;
   qualifiedAt: string;
   commit: string | null;
   platform: string;
+  locality?: QualificationLocality;
   sourceFingerprint: string | null;
   versions: Record<string, string | null>;
   states: Record<string, string>;
   transports: Record<string, string>;
   profiles: Record<string, string>;
   executables?: Record<string, string | null>;
+  checks?: QualificationChecks;
 };
 
 export declare function readHeadCommit(): string | null;
@@ -98,6 +119,8 @@ export declare function recordFromCanaryResults(
     now: string;
     mode?: QualificationMode;
     sourceFingerprint?: string | null;
+    locality?: QualificationLocality;
+    checks?: QualificationChecks;
   }
 ): {
   version: number;
@@ -105,10 +128,12 @@ export declare function recordFromCanaryResults(
   qualifiedAt: string;
   commit: string | null;
   platform: string;
+  locality?: QualificationLocality;
   sourceFingerprint: string | null;
   versions: Record<string, string | null>;
   states: Record<string, string>;
   transports: Record<string, string>;
   profiles: Record<string, string>;
   executables: Record<string, string | null>;
+  checks?: QualificationChecks;
 };

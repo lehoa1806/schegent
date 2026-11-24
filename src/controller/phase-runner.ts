@@ -572,6 +572,7 @@ export class PhaseRunner {
     // FR-R3-086 — refuse before `phase-start`; see `capability-decision-recorder`.
     await recordCapabilityDecision(inputs, effectiveRunnerKind, this.appendAudit.bind(this), this.ambientConfigObserver);
 
+    const handoffAllowsReuse = inputs.envelope?.phaseHandoff?.sessionReusePermitted !== false;
     const startPayload: Record<string, unknown> = {
       ...(inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId }),
       phaseId: inputs.phaseDef?.id ?? inputs.phase,
@@ -582,10 +583,10 @@ export class PhaseRunner {
       // non-`=== true` `inputs.isContinue` records `false`. Matches the
       // strict gate used by the runner's `-c` / `--resume` argv append
       // so the audit record and the spawned argv stay in lock-step.
-      isContinue: inputs.isContinue === true,
+      isContinue: handoffAllowsReuse && inputs.isContinue === true,
       // Session reuse — strict-boolean cost-optimization telemetry.
       // Always present (never omitted); defaults `undefined` → `false`.
-      sessionReuse: inputs.sessionReuse === true,
+      sessionReuse: handoffAllowsReuse && inputs.sessionReuse === true,
       promptIdentity,
     };
     if (inputs.phaseDef?.model) startPayload.model = inputs.phaseDef.model;
@@ -643,10 +644,10 @@ export class PhaseRunner {
       });
     }
     // Compact sessions before cross-phase reuse on backends that support compaction.
-    let effectiveSessionReuse = inputs.sessionReuse === true;
-    let effectiveIsContinue = inputs.isContinue === true;
-    let effectiveResumeSessionId = inputs.resumeSessionId;
-    if (backendDescriptor.supportsSessionCompaction && effectiveSessionReuse && typeof inputs.resumeSessionId === 'string') {
+    let effectiveSessionReuse = handoffAllowsReuse && inputs.sessionReuse === true;
+    let effectiveIsContinue = handoffAllowsReuse && inputs.isContinue === true;
+    let effectiveResumeSessionId = handoffAllowsReuse ? inputs.resumeSessionId : undefined;
+    if (backendDescriptor.supportsSessionCompaction && effectiveSessionReuse && typeof effectiveResumeSessionId === 'string') {
       try {
         await this.compactSession(inputs, backendRunner);
       } catch (err) {

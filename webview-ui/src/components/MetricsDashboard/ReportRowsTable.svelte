@@ -3,13 +3,13 @@
   the form asks for no grouping. So the first row's kind picks the columns, and each row draws the
   cells of its own kind.
 
-  The first heading carries the order the form chose. The headings are not sort buttons, as they
-  are in the mockup: the sort is part of the query, pinned with it when the report is saved.
+  Only the column currently being sorted carries `aria-sort`. The headings are not sort buttons:
+  the sort is part of the query, pinned with it when the report is saved.
 -->
 <script lang="ts">
   import { availabilityPhrase } from '../../../../src/contracts/change-review';
   import type { ReportSort } from '../../../../src/contracts/reporting/report-query';
-  import type { Distribution, ReportRow } from '../../../../src/contracts/reporting/report-rows';
+  import type { Distribution, PercentileValue, ReportRow, UsageRow } from '../../../../src/contracts/reporting/report-rows';
   import { formatDuration } from '../../lib/format-duration';
   import ReportStatusChip from './ReportStatusChip.svelte';
 
@@ -23,16 +23,45 @@
   const { rows, sort, onOpenRoot }: Props = $props();
 
   const rowKind = $derived(rows.at(0)?.kind);
-  const sortOrder = $derived(sort.includes('asc') ? 'ascending' : 'descending');
+  const rootCreatedSort = $derived<'ascending' | 'descending' | undefined>(
+    sort === 'root-created-asc' ? 'ascending' : sort === 'root-created-desc' ? 'descending' : undefined
+  );
+  const statusSort = $derived<'ascending' | undefined>(sort === 'outcome-asc' ? 'ascending' : undefined);
+  const durationSort = $derived<'descending' | undefined>(sort === 'duration-desc' ? 'descending' : undefined);
+  const groupKeySort = $derived<'ascending' | undefined>(sort === 'key-asc' ? 'ascending' : undefined);
+  const rootsCountSort = $derived<'descending' | undefined>(sort === 'roots-desc' ? 'descending' : undefined);
 
   function fmtMs(ms: number | null): string {
     return ms === null ? availabilityPhrase('unknown') : formatDuration(ms);
   }
 
+  function fmtPct(value: PercentileValue): string {
+    return value === 'unavailable' ? availabilityPhrase('unavailable') : `${value}ms`;
+  }
+
   function fmtDist(d: Distribution): string {
-    const p50 = d.p50 === 'unavailable' ? 'n/a' : `${d.p50}ms`;
-    const p90 = d.p90 === 'unavailable' ? 'n/a' : `${d.p90}ms`;
-    return `p50 ${p50}, p90 ${p90} (${d.known}/${d.samples} known)`;
+    return `${d.basis}: p50 ${fmtPct(d.p50)}, p90 ${fmtPct(d.p90)}, p99 ${fmtPct(d.p99)} (${d.known}/${d.samples} known)`;
+  }
+
+  function fmtInvocations(invocations: UsageRow['invocations'] | number): string {
+    return invocations === 'not-recorded' ? 'Not recorded' : String(invocations);
+  }
+
+  function hasPositiveEstimate(value: string | undefined): boolean {
+    return value !== undefined && !/^0(?:\.0+)?$/.test(value);
+  }
+
+  function fmtMeasure(m: UsageRow['measures'][number]): string {
+    if (m.completeness === 'unknown' && m.coverage.known === 0) {
+      return hasPositiveEstimate(m.estimatedTotal)
+        ? `${m.measure}: ${availabilityPhrase('unknown')} [estimated ${m.estimatedTotal} ${m.unit}] (${m.completeness})`
+        : `${m.measure}: ${availabilityPhrase('unknown')} (${m.completeness})`;
+    }
+    const lanes: string[] = [];
+    if (m.reportedTotal !== undefined) lanes.push(`reported ${m.reportedTotal}`);
+    if (m.estimatedTotal !== undefined) lanes.push(`estimated ${m.estimatedTotal}`);
+    const split = lanes.length > 0 ? ` [${lanes.join(', ')}]` : '';
+    return `${m.measure}: ${m.total} ${m.unit}${split} (${m.completeness})`;
   }
 </script>
 
@@ -41,26 +70,26 @@
     <thead>
       <tr>
         {#if rowKind === 'root'}
-          <th scope="col" aria-sort={sortOrder}>Run</th>
+          <th scope="col" aria-sort={rootCreatedSort}>Run</th>
           <th scope="col">Workflow</th>
-          <th scope="col">Status</th>
+          <th scope="col" aria-sort={statusSort}>Status</th>
           <th scope="col" class="num">Attempts</th>
-          <th scope="col" class="num">Duration</th>
+          <th scope="col" class="num" aria-sort={durationSort}>Duration</th>
           <th scope="col"><span class="sr-only">Open</span></th>
         {:else if rowKind === 'attempt'}
-          <th scope="col" aria-sort={sortOrder}>Attempt</th>
+          <th scope="col">Attempt</th>
           <th scope="col">Step</th>
           <th scope="col">Status</th>
           <th scope="col" class="num">Duration</th>
-          <th scope="col">Run</th>
+          <th scope="col" aria-sort={rootCreatedSort}>Run</th>
         {:else if rowKind === 'group'}
-          <th scope="col" aria-sort={sortOrder}>Group</th>
-          <th scope="col" class="num">Runs</th>
+          <th scope="col" aria-sort={groupKeySort}>Group</th>
+          <th scope="col" class="num" aria-sort={rootsCountSort}>Runs</th>
           <th scope="col" class="num">Attempts</th>
-          <th scope="col">Run time</th>
+          <th scope="col">Duration</th>
         {:else}
-          <th scope="col" aria-sort={sortOrder}>Group</th>
-          <th scope="col" class="num">Runs</th>
+          <th scope="col" aria-sort={groupKeySort}>Group</th>
+          <th scope="col" class="num" aria-sort={rootsCountSort}>Runs</th>
           <th scope="col" class="num">Attempts</th>
           <th scope="col" class="num">Backend calls</th>
           <th scope="col">Measures</th>
@@ -104,13 +133,18 @@
             <td>{row.key === null ? 'All runs' : Object.entries(row.key).map(([k, v]) => `${k}=${v ?? 'none'}`).join(', ')}</td>
             <td class="num">{row.roots}</td>
             <td class="num">{row.attempts}</td>
-            <td>{fmtDist(row.rootDuration)}</td>
+            <td>
+              <div>{fmtDist(row.rootDuration)}</div>
+              {#if row.attemptDuration !== undefined}
+                <div class="sub">{fmtDist(row.attemptDuration)}</div>
+              {/if}
+            </td>
           {:else}
             <td>{Object.entries(row.key).map(([k, v]) => `${k}=${v ?? 'unattributed'}`).join(', ') || 'All usage'}</td>
             <td class="num">{row.roots}</td>
             <td class="num">{row.attempts}</td>
-            <td class="num">{row.invocations}</td>
-            <td>{row.measures.map((m) => `${m.measure}: ${m.total} ${m.unit} (${m.completeness})`).join(' · ')}</td>
+            <td class="num">{fmtInvocations(row.invocations)}</td>
+            <td>{row.measures.map(fmtMeasure).join(' · ')}</td>
           {/if}
         </tr>
       {/each}

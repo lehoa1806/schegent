@@ -93,6 +93,7 @@ import { lookupRecord } from './control-ledger-store';
 import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
 import {
   buildAttemptHandoffDelivery,
+  readCandidateRefPort,
   releaseTerminalHandoffPinsIfConfirmed,
   settleAndPrepareTransitionHandoff
 } from './phase-handoff-execution-bridge';
@@ -776,7 +777,10 @@ async function dispatchNodeInternal(
       const declaredOutputs = buildForEachDeclaredOutputs({
         parentWorkflow: workflow,
         nodeId,
-        resultIndexJson: emptyIdx.resultIndexJson
+        resultIndexJson: emptyIdx.resultIndexJson,
+        ...(emptyIdx.artifactRelativePath !== undefined
+          ? { artifactRelativePath: emptyIdx.artifactRelativePath }
+          : {})
       });
       return settleAttemptInternal(
         deps,
@@ -1039,6 +1043,7 @@ async function settleAttemptInternal(
     );
   }
   const preparedHandoffId = handoffStep.handoffId;
+  const preparedHandoffRevision = handoffStep.handoffRevision;
   const preparedWaitingApproval = handoffStep.waitingApproval;
 
   if (
@@ -1120,9 +1125,11 @@ async function settleAttemptInternal(
             explicitDecisionResults: decisionResults, repeatExecutor: deps.repeatExecutor, fence
           });
           if (repeatRes.kind === 'accepted') {
+            const currentCandidateRef = readCandidateRefPort(publicOutputs.resolvedByPort);
             const repeatCheck = deps.phaseHandoffCoordinator?.verifyRepeatExitAllowed({
               runId: nextRun.connectedRunId,
-              repeatNodeId: parentNode.nodeId
+              repeatNodeId: parentNode.nodeId,
+              ...(currentCandidateRef !== undefined ? { currentCandidateRef } : {})
             });
             if (repeatCheck !== undefined && !repeatCheck.ok) {
               return failFrameAndPropagate(
@@ -1240,7 +1247,8 @@ async function settleAttemptInternal(
       target: { kind: 'node' as const, nodeId: targetNodeId },
       prefilledInputsByPort,
       pausedAt: completedAt,
-      ...(preparedHandoffId !== undefined ? { phaseHandoffId: preparedHandoffId } : {})
+      ...(preparedHandoffId !== undefined ? { phaseHandoffId: preparedHandoffId } : {}),
+      ...(preparedHandoffRevision !== undefined ? { phaseHandoffRevision: preparedHandoffRevision } : {})
     });
     nextRun = upsertInvocationFrame(nextRun, {
       ...updatedFrame,

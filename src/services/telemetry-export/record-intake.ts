@@ -84,6 +84,16 @@ export function copyIdentityOf(profileId: string, sourceId: string, sourceRevisi
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+function safeNow(clock: ExporterClock, fallback: number): number {
+  try {
+    const value = clock.now();
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+  } catch {
+    // Host clock faults must not escape synchronous intake or sealing calls.
+    return fallback;
+  }
+}
+
 export function createRecordIntake(options: RecordIntakeOptions): RecordIntake {
   const { ledger, counters, clock, onBound } = options;
   /** One guard for the exporter's lifetime, so the attribute-set limit holds across batches. */
@@ -91,6 +101,13 @@ export function createRecordIntake(options: RecordIntakeOptions): RecordIntake {
   /** One mapper for the same lifetime: equal attribute lists are one object, built once. */
   const mapRecord = createRecordMapper();
   let open: OpenBatch | null = null;
+  let lastNow = 0;
+
+  function readNow(fallback = lastNow): number {
+    const value = safeNow(clock, fallback);
+    lastNow = value;
+    return value;
+  }
 
   function takeOpen(): OpenBatch | null {
     const taken = open;
@@ -114,7 +131,7 @@ export function createRecordIntake(options: RecordIntakeOptions): RecordIntake {
 
   function openBatch(): OpenBatch {
     const batch = createMetricsBatch(options.batch);
-    return { batch, startedAt: clock.now(), coverageReserve: batch.growthOf(ALL_COVERAGE), records: 0 };
+    return { batch, startedAt: readNow(), coverageReserve: batch.growthOf(ALL_COVERAGE), records: 0 };
   }
 
   /** Whether this copy is the first one; a ledger that throws refuses the record. */
@@ -173,7 +190,10 @@ export function createRecordIntake(options: RecordIntakeOptions): RecordIntake {
     close() {
       const closing = takeOpen();
       if (closing === null || closing.records === 0) return null;
-      return { body: closing.batch.encode({ startTimeMs: closing.startedAt, timeMs: clock.now() }), records: closing.records };
+      return {
+        body: closing.batch.encode({ startTimeMs: closing.startedAt, timeMs: readNow(closing.startedAt) }),
+        records: closing.records
+      };
     },
     discard() {
       const discarded = takeOpen();

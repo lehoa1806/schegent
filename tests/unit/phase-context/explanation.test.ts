@@ -15,7 +15,9 @@ import {
 } from '../../../src/contracts/phase-context/context-manifest';
 import { PHASE_CONTEXT_LIMITS } from '../../../src/contracts/phase-context/context-policy';
 import { createAcceptanceService, soundRecord, type AcceptanceService } from '../../../src/services/phase-context/acceptance';
-import { explainHandoff, explainReviewLoop, observationOf, observePrepared } from '../../../src/services/phase-context/explanation';
+import { compareHandoffRevisions, explainHandoff, explainReviewLoop, observationOf, observePrepared } from '../../../src/services/phase-context/explanation';
+import { createPhaseContextApi } from '../../../src/headless/phase-context-api';
+import type { PhaseHandoffCoordinator } from '../../../src/services/phase-context/phase-handoff-coordinator';
 import { createFindingLedger, type FindingLedger } from '../../../src/services/phase-context/finding-ledger';
 import { buildManifest, manifestDigestOf, serializeManifest, type ManifestInput } from '../../../src/services/phase-context/manifest';
 import { createMemoryHandoffStore } from '../../../src/services/phase-context/memory-store';
@@ -636,5 +638,77 @@ describe('a seeded marker (SC-007)', () => {
       ['claims', 'id', 'openedInPass', 'severity', 'status'],
       ['claims', 'id', 'openedInPass', 'severity', 'status']
     ]);
+  });
+});
+
+describe('FR-R7-17 — compareHandoffRevisions and unsupported stored manifest versions', () => {
+  it('returns strictly metadata-only diff between two persisted revisions with zero source prose', () => {
+    const seededPlan = manifestSource('plan', {
+      outcomes: [SEED],
+      summary: SEED,
+      artifacts: [artifactRef({ artifactId: 'art-old', immutableVersion: 'v1' })]
+    });
+    const seededResearch = manifestSource('research', {
+      required: false,
+      outcomes: [SEED],
+      artifacts: [artifactRef({ artifactId: 'art-research', immutableVersion: 'v1' })]
+    });
+    const rev1 = prepared({ omissions: [omission('notes')], omissionsUnlisted: 1 }, [seededPlan, seededResearch]);
+    const editedPlan = {
+      ...seededPlan,
+      outcomes: [`${SEED} revised`],
+      artifacts: [artifactRef({ artifactId: 'art-new', immutableVersion: 'v2' })]
+    };
+    const rev2 = prepared(
+      {
+        revision: 2,
+        previousRevision: 1,
+        origin: 'edited',
+        identity: rev1.manifest.identity,
+        omissions: [omission('notes'), omission('extra')],
+        omissionsUnlisted: 2
+      },
+      [editedPlan]
+    );
+    const { service, record, handoffId } = accepted(rev1, rev2);
+
+    const diffResult = passed(compareHandoffRevisions(record, 1, 2));
+    expect(diffResult.diff).toEqual({
+      handoffId,
+      fromRevision: 1,
+      toRevision: 2,
+      fromManifestDigest: rev1.manifestDigest,
+      toManifestDigest: rev2.manifestDigest,
+      addedSourceIds: [],
+      removedSourceIds: ['research#occ-1:att-research'],
+      addedArtifactIds: ['art-new@v2'],
+      removedArtifactIds: ['art-old@v1', 'art-research@v1'],
+      omissionCountDelta: 2,
+      renderedBytesDelta: rev2.rendered.bytes - rev1.rendered.bytes
+    });
+    expect(JSON.stringify(diffResult)).not.toContain(SEED_WORD);
+
+    // Reverse direction shows addedSourceIds cleanly.
+    const reverse = passed(compareHandoffRevisions(record, 2, 1));
+    expect(reverse.diff.addedSourceIds).toEqual(['research#occ-1:att-research']);
+    expect(reverse.diff.removedSourceIds).toEqual([]);
+
+    // Headless PhaseContextApi exposes compareHandoffRevisions cleanly.
+    const api = createPhaseContextApi(() => ({ acceptance: service }) as unknown as PhaseHandoffCoordinator);
+    expect(api.compareHandoffRevisions(handoffId, 1, 2)).toEqual(diffResult);
+    expect(createPhaseContextApi(() => null).compareHandoffRevisions(handoffId, 1, 2)).toEqual(
+      refusal('storage-unavailable', 'handoff-coordinator-unavailable')
+    );
+  });
+
+  it('surfaces unsupported-version / manifest-version when a stored revision holds a future manifestVersion', () => {
+    const first = described();
+    const { record } = accepted(first);
+    const futureText = JSON.stringify({ ...JSON.parse(first.serialized), manifestVersion: 2 });
+    const futureRecord = withStoredText(record, futureText);
+
+    expect(explainHandoff(futureRecord, 1)).toEqual(refusal('unsupported-version', 'manifest-version'));
+    expect(compareHandoffRevisions(futureRecord, 1, 1)).toEqual(refusal('unsupported-version', 'manifest-version'));
+    expect(compareHandoffRevisions(record, 1, 9)).toEqual(refusal('stale-revision', 'unknown-revision'));
   });
 });

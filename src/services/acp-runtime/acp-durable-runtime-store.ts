@@ -152,6 +152,20 @@ function computeObservationPayloadSha256(
     case 'usage':
       detail['usage'] = obs.usage;
       break;
+    case 'permission-requested':
+      detail['permissionRequestId'] = obs.permissionRequestId;
+      break;
+    case 'permission-resolved':
+      detail['permissionRequestId'] = obs.permissionRequestId;
+      detail['granted'] = obs.granted;
+      break;
+    case 'turn-canceled':
+      detail['reason'] = obs.reason ?? 'cancelled';
+      break;
+    case 'turn-uncertain':
+    case 'transport-disconnected':
+      detail['reason'] = obs.reason;
+      break;
   }
   return createHash('sha256').update(JSON.stringify(detail), 'utf8').digest('hex');
 }
@@ -379,11 +393,16 @@ export function createSqliteAcpDurableRuntimeStore(
     const hostReceiveSeq = Math.max(1, Math.floor(obs.hostReceiveSeq || 1));
     const turnId = obs.turnId || 'idle';
     const attemptId = obs.attemptId ?? input.attemptId;
-    const eventKind = obs.kind === 'display' ? `display:${obs.event.kind}` : obs.kind;
+    const eventKind =
+      obs.kind === 'display'
+        ? `display:${obs.event.kind}`
+        : obs.kind === 'turn-completed' && obs.stopReason === 'cancelled'
+          ? 'turn-canceled'
+          : obs.kind;
     const payloadSha256 = computeObservationPayloadSha256(obs, eventKind, sessionId, attemptId);
 
     return runImmediateTransaction(conn, () => {
-      const remapKey = `${input.profileId}:${rawGeneration}:${sessionId}:${attemptId}`;
+      const remapKey = JSON.stringify([input.profileId, rawGeneration, sessionId, attemptId]);
       let targetGeneration = allocatedByThisHost.has(rawGeneration)
         ? rawGeneration
         : (remappedGenerations.get(remapKey) ?? rawGeneration);

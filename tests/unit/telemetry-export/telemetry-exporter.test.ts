@@ -15,12 +15,17 @@ import {
   type TransportResult
 } from '../../../src/contracts/telemetry-export';
 import { createInMemoryLedger } from '../../../src/services/telemetry-export/in-memory-ledger';
+import { createTelemetryExporter } from '../../../src/services/telemetry-export/telemetry-exporter';
 import {
   HARNESS_START_MS,
   SYNTHETIC_CREDENTIAL,
   SYNTHETIC_ENDPOINT,
   SYNTHETIC_HEADER,
+  authorized,
+  createCountingSecrets,
+  createFakeTime,
   createHarness,
+  createScriptedTransport,
   failure,
   ok,
   settle,
@@ -777,5 +782,213 @@ describe('telemetry exporter: disable, authorization change and shutdown', () =>
     await harness.time.advance(1);
     expect(resolved).toBe(true);
     expect(harness.time.pendingTimers()).toBe(0);
+  });
+});
+
+describe('telemetry exporter: clock, timer and random exception safety (R7-17-06)', () => {
+  async function withUnhandledRejectionGuard(work: () => Promise<void>): Promise<void> {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', listener);
+    try {
+      await work();
+      await settle();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', listener);
+    }
+  }
+
+  it.each([
+    ['offer-seal-cold', [1, 2, 3], 1],
+    ['offer-seal-warm', [2, 3], 2],
+    ['pump-take-expired', [4], 2],
+    ['begin-attempt', [5], 2],
+    ['conclude', [6], 2]
+  ] as const)(
+    'catches throwing clock.now() at %s with zero unhandled rejections and does not wedge delivery',
+    async (site, throwOnCalls, expectedAcknowledged) => {
+      await withUnhandledRejectionGuard(async () => {
+        const time = createFakeTime();
+        const transport = createScriptedTransport();
+        const secrets = createCountingSecrets();
+        const ledger = createInMemoryLedger();
+        const throwSet = new Set<number>(throwOnCalls);
+        let clockCalls = 0;
+        const exporter = createTelemetryExporter({
+          transport,
+          clock: {
+            now() {
+              clockCalls += 1;
+              if (throwSet.has(clockCalls)) throw new Error(`synthetic clock fault #${String(clockCalls)}`);
+              return time.clock.now();
+            }
+          },
+          timers: time.timers,
+          random: () => 0.5,
+          secrets,
+          ledger
+        });
+
+        exporter.configure(authorized(), 1);
+        expect(() => {
+          exporter.offer([usageRecord({ sourceId: `clock-fault-${site}-1` })]);
+          exporter.flush();
+        }).not.toThrow();
+        await exporter.idle();
+
+        // Subsequent delivery succeeds without wedging inFlight.
+        expect(() => {
+          exporter.offer([usageRecord({ sourceId: `clock-fault-${site}-2` })]);
+          exporter.flush();
+        }).not.toThrow();
+        await exporter.idle();
+
+        expect(transport.requests).toHaveLength(expectedAcknowledged);
+        expect(exporter.health()).toMatchObject({
+          state: 'healthy',
+          acknowledgedBatches: expectedAcknowledged,
+          queuedBatches: 0
+        });
+        await expect(exporter.shutdown()).resolves.toBeUndefined();
+      });
+    }
+  );
+
+  it('catches throwing timers.set() in scheduleRetry without wedging retryTimer or subsequent batches', async () => {
+    await withUnhandledRejectionGuard(async () => {
+      const time = createFakeTime();
+      const transport = createScriptedTransport();
+      const secrets = createCountingSecrets();
+      const ledger = createInMemoryLedger();
+      let setCalls = 0;
+      const exporter = createTelemetryExporter({
+        transport,
+        clock: time.clock,
+        timers: {
+          set(cb, delayMs) {
+            setCalls += 1;
+            if (setCalls === 1) throw new Error('synthetic timers.set fault in scheduleRetry');
+            return time.timers.set(cb, delayMs);
+          },
+          clear: time.timers.clear
+        },
+        random: () => 0.5,
+        secrets,
+        ledger
+      });
+
+      exporter.configure(authorized(), 1);
+      transport.answer(status(503), ok());
+      exporter.offer([usageRecord({ sourceId: 'timer-set-retry-1' })]);
+      exporter.flush();
+      await exporter.idle();
+
+      expect(setCalls).toBe(1);
+      expect(exporter.health().expiryReasons['retry-budget-exhausted']).toBe(1);
+      expect(exporter.health().queuedBatches).toBe(0);
+
+      // Delivery is NOT wedged behind a broken retryTimer slot.
+      exporter.offer([usageRecord({ sourceId: 'timer-set-retry-2' })]);
+      exporter.flush();
+      await exporter.idle();
+
+      expect(transport.requests).toHaveLength(2);
+      expect(exporter.health()).toMatchObject({ state: 'healthy', acknowledgedBatches: 1, queuedBatches: 0 });
+      await expect(exporter.shutdown()).resolves.toBeUndefined();
+    });
+  });
+
+  it('resolves shutdown cleanly within budget even when timers.set() and timers.clear() throw', async () => {
+    await withUnhandledRejectionGuard(async () => {
+      const time = createFakeTime();
+      const stuck: TelemetryTransport = { send: () => new Promise<TransportResult>(() => undefined) };
+      const exporter = createTelemetryExporter({
+        transport: stuck,
+        clock: time.clock,
+        timers: {
+          set() {
+            throw new Error('synthetic timers.set fault in shutdown');
+          },
+          clear() {
+            throw new Error('synthetic timers.clear fault in shutdown');
+          }
+        },
+        random: () => 0.5,
+        secrets: createCountingSecrets(),
+        ledger: createInMemoryLedger()
+      });
+
+      exporter.configure(authorized(), 1);
+      exporter.offer([usageRecord({ sourceId: 'timer-set-shutdown-stuck' })]);
+      exporter.flush();
+      await settle();
+
+      const started = Date.now();
+      await expect(exporter.shutdown()).resolves.toBeUndefined();
+      // Fallback budget timer resolves around shutdownBudgetMs (250 ms) with zero unhandled rejections.
+      expect(Date.now() - started).toBeLessThan(1_500);
+    });
+  });
+
+  it('catches throwing timers.clear() in clearRetryTimer and shutdown with zero unhandled rejections', async () => {
+    await withUnhandledRejectionGuard(async () => {
+      const time = createFakeTime();
+      const transport = createScriptedTransport();
+      const exporter = createTelemetryExporter({
+        transport,
+        clock: time.clock,
+        timers: {
+          set: time.timers.set,
+          clear() {
+            throw new Error('synthetic timers.clear fault');
+          }
+        },
+        random: () => 0.5,
+        secrets: createCountingSecrets(),
+        ledger: createInMemoryLedger()
+      });
+
+      exporter.configure(authorized(), 1);
+      transport.answer(status(503), 'hang');
+      exporter.offer([usageRecord({ sourceId: 'timer-clear-1' })]);
+      exporter.flush();
+      await settle();
+      expect(time.pendingTimers()).toBe(1);
+
+      // clearRetryTimer runs inside disable() without throwing.
+      expect(() => {
+        exporter.disable();
+      }).not.toThrow();
+
+      // Re-authorize, hang an in-flight request, and verify shutdown() catches timers.clear().
+      exporter.configure(authorized(), 2);
+      exporter.offer([usageRecord({ sourceId: 'timer-clear-2' })]);
+      exporter.flush();
+      await settle();
+      await expect(exporter.shutdown()).resolves.toBeUndefined();
+    });
+  });
+
+  it('catches throwing random() in retry jitter calculation and retries with full backoff delay', async () => {
+    await withUnhandledRejectionGuard(async () => {
+      const harness = createHarness({
+        random() {
+          throw new Error('synthetic random fault');
+        }
+      });
+      harness.authorize();
+      harness.transport.answer(status(503), ok());
+      sealOne(harness, 'random-fault-1');
+      await settle();
+      expect(harness.time.delays()).toEqual([BOUNDS.retryBaseDelayMs]);
+      await harness.time.advance(BOUNDS.retryBaseDelayMs);
+      await harness.exporter.idle();
+      expect(harness.transport.requests).toHaveLength(2);
+      expect(harness.exporter.health()).toMatchObject({ state: 'healthy', acknowledgedBatches: 1 });
+      await expect(harness.exporter.shutdown()).resolves.toBeUndefined();
+    });
   });
 });

@@ -36,6 +36,7 @@ import {
   normalizeProtectedComparePath,
   verifySymlinkFreeUnderAnchorSync
 } from '../../lib/protected-path-match';
+import { sanitizeAgentDisplayTitle } from '../acp-runtime/agent-identifier';
 import type { AcpStdioTransport } from '../acp-runtime/stdio-transport';
 
 export interface AcpReceiptSqlSink {
@@ -102,6 +103,46 @@ export interface AcpAuthorizationDecision {
   readonly decision: 'allowed' | 'denied' | 'cancelled';
   readonly reason: AcpAuthorizationReason;
   readonly receipt: AcpAuthorizationReceipt;
+}
+
+/**
+ * FR-R7-17 (`R7-17-05`) — bounded, sanitized permission-decision summary safe for diagnostic
+ * logging or display surfaces. `toolTitle` is always passed through `sanitizeAgentDisplayTitle`.
+ */
+export interface SanitizedPermissionDecisionSummary {
+  readonly sessionId: string;
+  readonly attemptId: string | null;
+  readonly toolCallId: string | null;
+  readonly toolTitle: string | null;
+  readonly allowed: boolean;
+  readonly decision: 'allowed' | 'denied' | 'cancelled';
+  readonly reason: AcpAuthorizationReason;
+  readonly receiptId: string;
+}
+
+/** Sanitizes an `AcpPermissionRequest`'s `toolTitle` at the authority boundary. */
+export function sanitizePermissionRequestForBoundary(
+  request: AcpPermissionRequest
+): AcpPermissionRequest {
+  const safeTitle = sanitizeAgentDisplayTitle(request.toolTitle);
+  return safeTitle === request.toolTitle ? request : { ...request, toolTitle: safeTitle };
+}
+
+/** Builds a display/logging-safe permission decision summary with a sanitized `toolTitle`. */
+export function summarizePermissionDecision(
+  request: AcpPermissionRequest,
+  decision: AcpAuthorizationDecision
+): SanitizedPermissionDecisionSummary {
+  return Object.freeze({
+    sessionId: request.sessionId,
+    attemptId: request.attemptId,
+    toolCallId: request.toolCallId,
+    toolTitle: sanitizeAgentDisplayTitle(request.toolTitle),
+    allowed: decision.allowed,
+    decision: decision.decision,
+    reason: decision.reason,
+    receiptId: decision.receipt.receiptId
+  });
 }
 
 const MAX_IN_MEMORY_RECEIPTS = 512;
@@ -551,7 +592,11 @@ export class AcpAuthorityGate {
     }
 
     if (request.mutating && request.effectRequestKey !== undefined) {
-      const dedupeKey = `${scope.connectionGeneration}:${scope.acpSessionId}:${request.effectRequestKey}`;
+      const dedupeKey = JSON.stringify([
+        scope.connectionGeneration,
+        scope.acpSessionId,
+        request.effectRequestKey
+      ]);
       if (this.seenEffectKeys.has(dedupeKey)) {
         return record(scope.attemptId, 'denied', 'duplicate-effect-request');
       }
@@ -568,27 +613,45 @@ export class AcpAuthorityGate {
   /**
    * Builds an `AcpPermissionPolicy` that re-evaluates workspace trust, primacy generation,
    * session-to-attempt binding, declared capabilities, and duplicate `toolCallId` replay on
-   * every `session/request_permission` callback.
+   * every `session/request_permission` callback. Always sanitizes `request.toolTitle` through
+   * `sanitizeAgentDisplayTitle` before any summary or logging callback.
    */
   createPermissionPolicy(
     connectionGeneration: number,
-    options: { readonly allowAuthorizedOnce?: boolean } = {}
+    options: {
+      readonly allowAuthorizedOnce?: boolean;
+      readonly onPermissionDecision?: (summary: SanitizedPermissionDecisionSummary) => void;
+    } = {}
   ): AcpPermissionPolicy {
+    const reportDecision = (
+      safeRequest: AcpPermissionRequest,
+      decision: AcpAuthorizationDecision
+    ): void => {
+      if (options.onPermissionDecision === undefined) return;
+      try {
+        options.onPermissionDecision(summarizePermissionDecision(safeRequest, decision));
+      } catch {
+        // Diagnostic callback must not disrupt fail-closed permission evaluation.
+      }
+    };
+
     const pickOption = (
-      request: AcpPermissionRequest,
-      allowed: boolean
+      safeRequest: AcpPermissionRequest,
+      decision: AcpAuthorizationDecision
     ): AcpPermissionDecision => {
-      if (!allowed || options.allowAuthorizedOnce === false) {
+      reportDecision(safeRequest, decision);
+      if (!decision.allowed || options.allowAuthorizedOnce === false) {
         return 'undecided';
       }
-      const allowOnce = request.options.find((opt) => opt.kind === 'allow_once');
+      const allowOnce = safeRequest.options.find((opt) => opt.kind === 'allow_once');
       return allowOnce !== undefined ? { optionId: allowOnce.optionId } : 'undecided';
     };
 
-    return (request: AcpPermissionRequest) => {
+    return (rawRequest: AcpPermissionRequest) => {
+      const request = sanitizePermissionRequestForBoundary(rawRequest);
       const resolved = this.resolveScope(request.sessionId, connectionGeneration);
       if (resolved.kind !== 'matched' || request.attemptId !== resolved.scope.attemptId) {
-        this.authorizeInternal(
+        const denied = this.authorizeInternal(
           {
             requestKind: 'permission',
             acpSessionId: request.sessionId,
@@ -598,6 +661,7 @@ export class AcpAuthorityGate {
           },
           this.liveProbe.verifyPrimacy === undefined
         );
+        reportDecision(request, denied);
         return 'undecided';
       }
 
@@ -612,13 +676,13 @@ export class AcpAuthorityGate {
 
       if (this.liveProbe.verifyPrimacy !== undefined) {
         return this.authorizeAsync(authRequest).then(
-          (decision) => pickOption(request, decision.allowed),
+          (decision) => pickOption(request, decision),
           () => 'undecided'
         );
       }
 
       const decision = this.authorize(authRequest);
-      return pickOption(request, decision.allowed);
+      return pickOption(request, decision);
     };
   }
 

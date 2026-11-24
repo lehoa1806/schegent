@@ -1,9 +1,9 @@
 /**
- * FR-R6-F06 (T039, FR-023, FR-024, SC-009, research R12) — one ACP usage update becomes one
- * accounting observation, read by the source's own semantics.
+ * FR-R6-F06 (T039, FR-023, FR-024, SC-009, research R12) & FR-R7-17 (`R7-17-04`) — one ACP usage
+ * update becomes one accounting observation, read by the source's own semantics.
  *
- * F13 (the ACP transport) is not built, so `AcpUsageUpdate` is the F06-owned shape that the
- * fixtures freeze; live qualification is F13's release evidence.
+ * `AcpUsageUpdate` is the shared F06/F13 contract wired through production ACP observation
+ * ingestion (`recordAcpObservation`).
  *
  * - `used` and `size` are context occupancy and capacity: measures `context_used` and
  *   `context_size`, scope `acp-context-occupancy`. They are never billable tokens, and the
@@ -14,16 +14,20 @@
  *   relabelled or converted to money.
  * - Attribution needs an admitted prompt-to-attempt binding for the same profile, ACP session,
  *   connection generation and turn. Anything else stays unattributed.
- * - The source identity is the producer's event id within its profile and ACP session. The
- *   host receive sequence and the connection generation are never part of it, so a replay
- *   across connections deduplicates. A replay with no producer event id and no qualified
- *   baseline is `historical`: stored and never counted.
- *
- * Only identifiers that match a bounded character set are copied; no message content is read.
+ * - The canonical source identity is a fixed-length 71-byte domain-separated SHA-256 hash
+ *   `acp-v1:<sha256>` over `(profileId, acpSessionId, producerEventId)` where `profileId`
+ *   matches `PROFILE_IDENTIFIER` and both `acpSessionId` and `producerEventId` satisfy
+ *   `isAgentIdentifier` (1–256 printable UTF-16 code units, rejecting `Cc`/`Cf`/`Cs`/`Zl`/`Zp`).
+ *   The host receive sequence and the connection generation are never part of it, so a replay
+ *   across connections deduplicates with zero colon-concatenation ambiguity while staying within
+ *   the immutable 256-byte SQLite `source_identity` column constraint. A replay with no valid
+ *   source identity and no qualified baseline is `historical`: stored and never counted.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
+import { createHash } from 'node:crypto';
 import { ACP_USAGE_PRODUCER_NAMESPACE } from '../../contracts/usage-accounting/accounting-types';
+import { isAgentIdentifier } from '../acp-runtime/agent-identifier';
 import { qualifyAcpSessionCost } from './cumulative-qualifier';
 import { isCreditUnit, isCurrencyCode } from './exact-quantities';
 import type { AccountingMeasureInput, AccountingObservationInput } from './observation-normalizer';
@@ -32,7 +36,9 @@ export const ACP_USAGE_ADAPTER_VERSION = 'acp-usage/1';
 export const ACP_USAGE_SOURCE = 'acp-usage-update';
 export const ACP_BACKEND = 'acp';
 
-const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PROFILE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ACP_USAGE_SOURCE_DOMAIN = 'acp-usage-source/1';
+const ACP_USAGE_SOURCE_PREFIX = 'acp-v1:';
 const COUNT_UNIT = 'count';
 /** The unit an unknown cost is filed under when the producer named no valid currency. */
 const UNKNOWN_COST_UNIT = 'USD';
@@ -78,8 +84,8 @@ export interface AcpAttemptBinding {
   readonly attemptId: string;
 }
 
-function identifier(value: unknown): string | null {
-  return typeof value === 'string' && IDENTIFIER.test(value) ? value : null;
+function isProfileIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && PROFILE_IDENTIFIER.test(value);
 }
 
 function bindingMatches(update: AcpUsageUpdate, binding: AcpAttemptBinding): boolean {
@@ -91,10 +97,30 @@ function bindingMatches(update: AcpUsageUpdate, binding: AcpAttemptBinding): boo
   );
 }
 
-function sourceIdentityOf(update: AcpUsageUpdate): string | null {
-  const parts = [identifier(update.profileId), identifier(update.acpSessionId), identifier(update.producerEventId)];
-  if (parts.some((part) => part === null)) return null;
-  return parts.join(':');
+/**
+ * Derives the uniform 71-byte ASCII canonical source identity (`acp-v1:<sha256>`) for one ACP
+ * usage update, or `null` when any required identity component is missing or invalid.
+ */
+export function sourceIdentityOf(update: AcpUsageUpdate): string | null {
+  if (
+    !isProfileIdentifier(update.profileId) ||
+    !isAgentIdentifier(update.acpSessionId) ||
+    !isAgentIdentifier(update.producerEventId)
+  ) {
+    return null;
+  }
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify([
+        ACP_USAGE_SOURCE_DOMAIN,
+        update.profileId,
+        update.acpSessionId,
+        update.producerEventId
+      ]),
+      'utf8'
+    )
+    .digest('hex');
+  return `${ACP_USAGE_SOURCE_PREFIX}${digest}`;
 }
 
 function unknownMeasure(measure: AccountingMeasureInput['measure'], unit: string, reason: string): AccountingMeasureInput {

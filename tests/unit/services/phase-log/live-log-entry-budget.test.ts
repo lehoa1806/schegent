@@ -107,8 +107,18 @@ describe('fitEntryToBudget (FR-R6-F07)', () => {
     expect(fitted.bodyTruncated?.toolArguments?.originalLength).toBe(argBytes);
   });
 
+  it('shrinks oversized toolName within budget and records originalLength (R7-17-05)', () => {
+    const hugeToolName = 'n'.repeat(120_000);
+    const entry = entryWith({ toolName: hugeToolName, text: 'short' });
+    const fitted = fitEntryToBudget(entry, 2000);
+    expect(fitted.kind).toBe('tool-use');
+    expect(sizeOf(fitted)).toBeLessThanOrEqual(2000);
+    expect(fitted.bodyTruncated?.toolName?.originalLength).toBe(120_000);
+    expect((fitted.body.toolName ?? '').length).toBeLessThan(hugeToolName.length);
+  });
+
   it('becomes a display-truncation coverage gap when it cannot fit', () => {
-    const entry = entryWith({ toolName: 'n'.repeat(5000), text: 'short' });
+    const entry = entryWith({ systemSubtype: 's'.repeat(5000), text: 'short' });
     const original = sizeOf(entry);
     const fitted = fitEntryToBudget(entry, 2000);
     expect(fitted).toEqual({

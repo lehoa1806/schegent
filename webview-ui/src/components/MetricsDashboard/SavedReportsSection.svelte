@@ -46,6 +46,10 @@
 
 <section class="section saved" aria-labelledby="saved-reports-heading" data-testid="saved-reports-section">
   <h2 id="saved-reports-heading">Saved reports</h2>
+  <p class="small muted saved-note" data-testid="saved-reports-retention-note">
+    Deleting a saved report removes only the saved definition and manifest; previously exported
+    files on disk are not touched.
+  </p>
   {#if reports.length === 0}
     <p class="empty">No saved reports yet. Run a report, then choose Save report to keep it here.</p>
   {:else}
@@ -102,6 +106,9 @@
 </section>
 
 <style>
+  .saved-note {
+    margin: 0 0 var(--schegent-space-2);
+  }
   .row-actions {
     display: flex;
     align-items: center;

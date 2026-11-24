@@ -40,7 +40,6 @@ import {
   type PhaseAttemptDispatchInput,
   type PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
-import { continueWaitingHandoff } from './continuation-composer';
 import type { ForEachExecutor } from './foreach-executor';
 import type { RepeatExecutor } from './repeat-executor';
 import {
@@ -58,7 +57,7 @@ import type { DurableAttemptEvidence } from './workflow-recovery-service';
 import type { ConnectedRunWriter } from './workflow-launcher';
 import type { ControlCommandAcknowledgement } from '../../contracts/sidebar-ipc/workflow-run';
 import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
-import { approvePendingPhaseHandoffForContinue } from './phase-handoff-execution-bridge';
+import { validateAndApproveContinueHandoff } from './phase-handoff-execution-bridge';
 import type { ControlCommandService } from './control-command-service';
 
 export interface ActiveLeafAbortInput {
@@ -136,6 +135,8 @@ export interface WorkflowControlCommandRequest {
   readonly pauseCause?: WorkflowPauseCause;
   readonly reason?: string;
   readonly continuationRequest?: RunRequest;
+  /** FR-R6-F15 (FR-012) — expected phase-context handoff revision being approved on `continue-handoff`. */
+  readonly expectedHandoffRevision?: number;
   readonly now: number;
 }
 
@@ -694,13 +695,14 @@ export class WorkflowControlService {
           decision.targetNodeId ?? '',
           request.continuationRequest,
           request.commandId,
-          request.now
+          request.now,
+          request.expectedHandoffRevision
         );
         if (!out.accepted) {
           return {
             accepted: false,
-            refusalCode: 'handoff-not-pending',
-            reason: 'Pending handoff could not be accepted for the target node.',
+            refusalCode: out.refusalCode ?? 'handoff-not-pending',
+            reason: out.reason ?? 'Pending handoff could not be accepted for the target node.',
             currentRevision: run.revision,
             run,
             projection: buildWorkflowRunControlProjection(run)
@@ -1187,35 +1189,29 @@ export class WorkflowControlService {
     targetNodeId: string,
     continuationRequest: RunRequest | undefined,
     commandId: string,
-    now: number
-  ): Promise<DispatchStepOutcome & { readonly accepted: boolean }> {
-    if (!approvePendingPhaseHandoffForContinue(this.deps.phaseHandoffCoordinator, run, targetInvocationId, commandId)) {
-      return { accepted: false };
+    now: number,
+    expectedHandoffRevision?: number
+  ): Promise<
+    DispatchStepOutcome & {
+      readonly accepted: boolean;
+      readonly refusalCode?: WorkflowControlRefusalCode;
+      readonly reason?: string;
     }
-
-    const requestPayload: RunRequest = continuationRequest ?? {
-      pipelineId: targetNodeId,
-      workflowId: run.workflowId,
-      inputs: [],
-      supplemental: [],
-      outputs: []
-    };
-
-    const accepted = await continueWaitingHandoff(
-      { connectedRuns: staging.writer },
-      {
-        run: staging.current(),
-        expectedRevision: staging.current().revision,
-        invocationId: targetInvocationId,
-        targetNodeId,
-        request: requestPayload,
-        acceptedAt: now
-      }
-    );
-
-    if (accepted.outcome !== 'accepted') {
-      return { accepted: false };
-    }
+  > {
+    const validated = await validateAndApproveContinueHandoff({
+      stagingWriter: staging.writer,
+      stagedRun: staging.current(),
+      readLiveRun: () => this.deps.connectedRuns.get(run.connectedRunId),
+      coordinator: this.deps.phaseHandoffCoordinator,
+      run,
+      targetInvocationId,
+      targetNodeId,
+      continuationRequest,
+      commandId,
+      now,
+      expectedHandoffRevision
+    });
+    if (!validated.accepted) return validated;
 
     const dispatched = await dispatchComposableNode(
       this.coordinatorDeps(staging.writer),

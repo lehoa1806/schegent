@@ -5,8 +5,13 @@
  * Bounded metadata-only projections (<= 64 KiB per explanation, zero finding/context prose).
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
-import type { AcceptedRevision, HandoffExplanation } from '../contracts/phase-context/context-manifest';
+import type {
+  AcceptedRevision,
+  HandoffExplanation,
+  HandoffRevisionDiff
+} from '../contracts/phase-context/context-manifest';
 import type { Refusal } from '../contracts/phase-context/context-policy';
+import { compareHandoffRevisions } from '../services/phase-context/explanation';
 import type {
   PhaseHandoffCoordinator,
   ReviewLoopInspection
@@ -17,6 +22,11 @@ export interface PhaseContextApi {
     handoffId: string,
     revision?: number
   ): { readonly ok: true; readonly explanation: HandoffExplanation } | Refusal;
+  compareHandoffRevisions?(
+    handoffId: string,
+    fromRevision: number,
+    toRevision: number
+  ): { readonly ok: true; readonly diff: HandoffRevisionDiff } | Refusal;
   inspectReviewLoop(loopId: string): ReviewLoopInspection | null;
   listRunHandoffs(runId: string): readonly HandoffExplanation[];
   listRunReviewLoops(runId: string): readonly ReviewLoopInspection[];
@@ -34,7 +44,7 @@ export interface PhaseContextApi {
 
 export function createPhaseContextApi(
   getCoordinator: () => PhaseHandoffCoordinator | null
-): PhaseContextApi {
+): Required<PhaseContextApi> {
   const unavailable = (): Refusal => ({
     ok: false,
     failure: 'storage-unavailable',
@@ -45,6 +55,26 @@ export function createPhaseContextApi(
     inspectHandoff(handoffId, revision) {
       const coord = getCoordinator();
       return coord === null ? unavailable() : coord.inspectHandoff(handoffId, revision);
+    },
+    compareHandoffRevisions(handoffId, fromRevision, toRevision) {
+      const coord = getCoordinator();
+      if (coord === null) return unavailable();
+      const maybeWithDiff = coord as PhaseHandoffCoordinator & {
+        readonly compareHandoffRevisions?: (
+          id: string,
+          fromRev: number,
+          toRev: number
+        ) => { readonly ok: true; readonly diff: HandoffRevisionDiff } | Refusal;
+      };
+      if (typeof maybeWithDiff.compareHandoffRevisions === 'function') {
+        return maybeWithDiff.compareHandoffRevisions(handoffId, fromRevision, toRevision);
+      }
+      const inspected = coord.acceptance.inspect(handoffId);
+      if (!inspected.ok) return inspected;
+      if (inspected.record === null) {
+        return { ok: false, failure: 'stale-revision', detail: 'unknown-handoff' };
+      }
+      return compareHandoffRevisions(inspected.record, fromRevision, toRevision);
     },
     inspectReviewLoop(loopId) {
       const coord = getCoordinator();

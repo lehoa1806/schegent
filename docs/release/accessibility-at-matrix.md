@@ -1,7 +1,7 @@
 # Assistive-technology matrix
 
-**Captured**: 2026-08-25 · **Updated**: 2026-11-23 (`FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA
-**Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`), 328 (`FR-R7-14`, 14-17)
+**Captured**: 2026-08-25 · **Updated**: 2026-11-23 (`FR-R7-17`, Features 310/311/331; `FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA (whole-app automated scan baseline); WCAG 2.2 Level AA (`F11-NFR-07` / `NFR-007` for Feature 310 and `F12-NFR-04` / `NFR-004` for Feature 311 operator journeys)
+**Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`), 310 (`FR-R6-F11`), 311 (`FR-R6-F12`), 328 (`FR-R7-14`, 14-17), 331 (`FR-R7-17`, `R7-17-01` / `R7-17-03`)
 
 <!-- at-matrix-review-date: 2026-11-27 -->
 
@@ -21,7 +21,7 @@ looked**.
 
 | OS | Screen reader | Version | Exercised | Result | Trigger |
 |---|---|---|---|---|---|
-| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-23 (`FR-R7-14`, 14-17) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure) on a clean editor profile; see *Why it is untested* |
+| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-23 (`FR-R7-14`, 14-17; `FR-R7-17`, Features 310 & 311) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure) on a clean editor profile; see *Why it is untested* |
 | Windows | NVDA | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Windows | Narrator | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Linux | Orca | — | **Nothing** | **UNTESTED** | Linux platform verification (`FR-R3-129`) |
@@ -78,18 +78,22 @@ Feature 282 (`FR-R5-F21`) re-read this matrix ahead of its date.
 
 ### Review 2026-11-23
 
-Feature 328 (`FR-R7-14`, finding `14-17`) diagnosed and stabilized the intermittent `1000 × 600` small-window keyboard navigation failure and extended the manual VoiceOver procedure below.
+Feature 328 (`FR-R7-14`, finding `14-17`) diagnosed and stabilized the intermittent `1000 × 600` small-window keyboard navigation failure and extended the manual VoiceOver procedure below. Feature 331 (`FR-R7-17`, items `R7-17-01` and `R7-17-03`) expanded the automated Playwright accessibility scan and added Feature 310 and Feature 311 operator rows to the manual VoiceOver procedure.
 
-- **Automated diagnosis and fix**: In `repo/tests/a11y/workflow-run-overflow.a11y.spec.ts`, `claude-speckit-plan` (`height = 174 px`) sits cleanly inside the `operations-scroll` viewport (`[89, 263]` within `[44, 572]`) after a single `488 px` `PageDown` from `run-detail-back`, so keyboard geometry was not skipping the node. The intermittent miss was caused by the fixed `SETTLE_MS = 60` (`page.waitForTimeout(60)`) delay firing the next `PageDown` before scroll movement settled under load. The test now awaits observable focus (`toBeFocused()`), overflow readiness (`scrollHeight > clientHeight`, `scrollTop === 0`, all 11 nodes laid out), and consecutive `requestAnimationFrame` scroll stabilization before sampling each step, and passed 10 consecutive isolated runs plus full `npm run a11y`.
-- **Still owed**: This automated fix moves **no** row in the matrix above. One human run of [the procedure below](#the-procedure) — extended to cover **launch, pause, recovery, and evidence deletion** on a clean editor profile — is still owed by the maintainer at a macOS machine with VoiceOver enabled.
+- **Automated diagnosis and fix (`FR-R7-14`, `14-17`)**: In `repo/tests/a11y/workflow-run-overflow.a11y.spec.ts`, `claude-speckit-plan` (`height = 174 px`) sits cleanly inside the `operations-scroll` viewport (`[89, 263]` within `[44, 572]`) after a single `488 px` `PageDown` from `run-detail-back`, so keyboard geometry was not skipping the node. The intermittent miss was caused by the fixed `SETTLE_MS = 60` (`page.waitForTimeout(60)`) delay firing the next `PageDown` before scroll movement settled under load. The test now awaits observable focus (`toBeFocused()`), overflow readiness (`scrollHeight > clientHeight`, `scrollTop === 0`, all 11 nodes laid out), and consecutive `requestAnimationFrame` scroll stabilization before sampling each step, and passed 10 consecutive isolated runs plus full `npm run a11y`.
+- **Automated Feature 310 / 311 / 313 scan expansion (`FR-R7-17`, `R7-17-01` & `R7-17-03`)**: `repo/tests/a11y/a11y-scan.spec.ts` now also scans Historical Reports (`metrics-mode-reports`, `HistoricalReportsPanel`, retention disclosure, root drill-down and focus restoration on close, two-step saved-report delete focus), System Runtime Health (`TelemetryRuntimeHealthPanel` including visible `content-export-unsupported` refusal), and Active/History drill-downs with expanded `ExecutionVisibilityPanel` and `ChangeReviewPanel` (distinct non-numeric availability/recovery readings, keyboard-scrollable `.cr-files`, refresh/close status announcements, and waiting-approval handoff controls) across all three shipped themes (`light`, `dark`, `high-contrast`), plus desktop target-size sanity checks (`>= 24 px`).
+- **Scope vs target (`NFR-007` / `NFR-004`)**: Automated Playwright axe scans evaluate the WCAG 2.1 Level AA rule set (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`) plus targeted keyboard, focus, and target-size sanity checks, while Feature 310 (`NFR-007` / `F11-NFR-07`) and Feature 311 (`NFR-004` / `F12-NFR-04`) target **WCAG 2.2 Level AA** for their operator journeys. **Automated Playwright axe scans (including the newly added Feature 310 and Feature 311 states) are automated checks, not human AT conformance**, and move **no** row in the matrix above.
+- **Still owed**: One human run of [the procedure below](#the-procedure) — covering **launch, pause, recovery, evidence deletion, Feature 310 Historical Reports, and Feature 311 Execution Visibility & Change Review** on a clean editor profile — is still owed by the maintainer at a macOS machine (`VS Code 1.107.0` floor on local `darwin/arm64`) with VoiceOver enabled. Every human AT platform row (macOS VoiceOver, Windows NVDA, Windows Narrator, Linux Orca) remains truthfully **`UNTESTED`** / **`not observed`**.
 - **The date stands at 2026-11-27.** No human VoiceOver session has been observed, so the review does not renew the date.
 
 ### The procedure
 
 Run the operator journey from
-[`docs/tutorials/user-quickstart.md`](../tutorials/user-quickstart.md) on a **clean editor profile**
+[`docs/tutorials/user-quickstart.md`](../tutorials/user-quickstart.md) together with the Feature 310
+([`docs/operations/historical-reporting.md`](../operations/historical-reporting.md)) and Feature 311
+([`docs/operations/change-review.md`](../operations/change-review.md)) operator journeys on a **clean editor profile**
 with **VoiceOver on and the mouse untouched** — keyboard and screen reader only, start to finish,
-explicitly covering **launch, pause, recovery, and evidence deletion**. One row per task. A task
+explicitly covering **launch, pause, recovery, evidence deletion, Historical Reports (Feature 310), and Execution Visibility & Change Review (Feature 311)**. One row per task. A task
 that needs sighted correction is a **fail** with the barrier named, not a partial pass.
 
 | # | Task | From | Completed by keyboard + VoiceOver alone? |
@@ -103,6 +107,12 @@ that needs sighted correction is a **fail** with the barrier named, not a partia
 | 7 | Reach the evidence for a completed phase and read a verdict | history surface | |
 | 8 | Trigger **evidence deletion**, read the retention disclosure and confirmation prompt by ear, and confirm completion | evidence delete command / history surface | |
 | 9 | Reach the settings surface and change one setting | settings route | |
+| 10 | **Feature 310 (Historical Reports) — query & filter**: switch to the **Reports** tab under Metrics (`metrics-mode-reports`), select a report view and filters (`Report`, `Window`, `Workflow ID` / `Outcome` or `Backend`, `Sort by`), and run the report while confirming polite status announcements by ear | `HistoricalReportsPanel` (`NFR-007`, WCAG 2.2 AA target) | |
+| 11 | **Feature 310 (Historical Reports) — drill-down, focus restoration & retention disclosure**: open a root execution drill-down, inspect attempts/usage/omissions, close the drill-down and confirm focus restores to the triggering row button, and read the external-file retention disclosure (`outside-managed-retention`) by ear | `HistoricalReportsPanel` / `ReportDrillDownPanel` (`NFR-007`) | |
+| 12 | **Feature 310 (Historical Reports) — two-step saved-report deletion**: open a saved report's action menu, trigger `Delete…`, verify focus moves to `Confirm delete`, read the disclosure that previously exported files on disk remain untouched, and confirm (or cancel with `Keep`) the two-step deletion by ear | `SavedReportsSection` (`NFR-007`) | |
+| 13 | **Feature 311 (Execution Visibility) — drill-down & distinct non-numeric readings**: expand `ExecutionVisibilityPanel` inside an active or historical run drill-down, filter by attempt, and confirm by ear that evidence availability (`Missing`, `Expired`, `Partial`, `Unavailable`), live-log coverage, normalized ACP state, and recovery posture (`Verified`, `Degraded`, `Uncertain`) read as distinct non-numeric phrases | `ExecutionVisibilityPanel` (`NFR-004`, WCAG 2.2 AA target) | |
+| 14 | **Feature 311 (Change Review) — open, refresh, close & keyboard scrolling**: open Change Review in both the native `vscode.changes` multi-file view and the disclosed `vscode.diff` single-file fallback, trigger `Refresh review` and `Close review` while confirming status announcements, and focus and scroll `.cr-files` (`change-review-file-list`) via keyboard alone | `ChangeReviewPanel` (`NFR-004`) | |
+| 15 | **Feature 311 (Phase Handoff) — review & approve revision**: navigate to a waiting-approval phase handoff inside `ExecutionVisibilityPanel`, read its revision, source, and omission summary, and approve (or edit and supersede) the handoff revision by keyboard and VoiceOver alone | `ExecutionVisibilityPanel` (`NFR-004`) | |
 
 Record, per row: platform, assistive technology, VoiceOver's exact macOS version, the OS version,
 the route, the task outcome, and any remaining blockers if the task failed. Then fill the matrix

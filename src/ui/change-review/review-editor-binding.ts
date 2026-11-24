@@ -3,7 +3,7 @@
  *
  * The only module of the feature that imports the editor API. The content provider reads a review
  * document by handle and nothing else: the display segment of the path is never used to find
- * content. Nothing in activation imports this yet; a host wires it when a review surface ships.
+ * content. Wired into host activation via `src/activation/round6-visibility-wiring.ts`.
  */
 
 import * as vscode from 'vscode';

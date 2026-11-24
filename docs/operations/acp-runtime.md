@@ -39,8 +39,12 @@ WSL-style tunnels — classify as `locality: 'remote'`, evaluate as `unqualified
   `-32601` (method not found) and counted in `refusedAgentRequests`.
 - The host configures no MCP server. ACP v1 requires a server list on `session/new` and
   `session/load`, so the client always sends the empty list. The expansion freeze
-  (`FR-R3-086` §5) still forbids every other MCP spelling in `src`, including a non-empty list;
-  `tests/lint/expansion-freeze.test.ts` allows only that empty literal, in the ACP client.
+  (`FR-R3-086` §5) still forbids every other MCP spelling in `src`, including any third site,
+  non-empty list, variable/shorthand, or occurrence outside `acp-client.ts`; the dated
+  `2026-11-23` disposition in
+  [`docs/architecture/release-posture-engineering-preview.md`](../../../docs/architecture/release-posture-engineering-preview.md#acp-v1-empty-mcpservers--ratification-2026-11-23-fr-r7-17--r7-17-05)
+  ratifies only those exact two empty literals in `src/services/acp-runtime/acp-client.ts`,
+  enforced by `tests/lint/expansion-freeze.test.ts`.
 - Agent stdin is written through the shared line channel in `src/runner/child-stdin.ts`
   (`FR-R3-047`): the error listener is attached before any byte, so a dead agent pipe cannot
   crash the host. A line the channel refuses is never treated as written, and a pipe that breaks
@@ -144,10 +148,14 @@ writes `session/cancel`, and keeps accepting the cancelled turn's updates until 
 Without a response within 5 seconds, teardown runs once, the connection fails with
 `cancel-bound-elapsed`, and the prompt is `uncertain`.
 
-Permission requests go to a host-supplied policy. The tool title in a request is the agent's own
-text, passed as received; a policy must not log or render it raw. With no policy, or one that answers
-`undecided`, the answer is a reject option the agent offered (`reject_once` first); with no
-reject option, it is `cancelled`. During or after cancellation every answer is `cancelled`.
+Permission requests go to a host-supplied policy. The tool title in a request (and live tool
+names across the stream encoder and phase-log projection) is sanitized through
+`sanitizeAgentDisplayTitle` before policy evaluation, display, or logging: raw text is pre-capped,
+ANSI CSI/OSC escapes, control (`Cc`), format/bidi (`Cf`), lone-surrogate (`Cs`), and
+line/paragraph-separator (`Zl`/`Zp`) characters are stripped, secrets are redacted via
+`SanitizedLogger`, and output is bounded to 128 UTF-16 code units. With no policy, or one that
+answers `undecided`, the answer is a reject option the agent offered (`reject_once` first); with
+no reject option, it is `cancelled`. During or after cancellation every answer is `cancelled`.
 
 ## Identities and history
 
@@ -201,7 +209,10 @@ Each observation also maps to F02's `AcpEventEnvelope` through `toSharedAcpEnvel
 - the last refusal and last failure;
 - the session count and the counters.
 
-It never holds a command, argument or environment value. No UI shows it yet.
+It never holds a command, argument or environment value. Normalized ACP runtime posture
+(`connected`, `awaiting-permission`, `canceled`, `uncertain`, `disconnected`, `not-recorded`)
+derived from durable lifecycle observations is surfaced in the Execution Visibility panel without
+exposing launch values.
 
 ## Release matrix
 
@@ -209,11 +220,36 @@ Qualified profiles on `darwin/arm64`: 3 (`unqualified` on Linux, Windows, and re
 
 | Profile | Kind | Qualification (`darwin/arm64`) | Maintenance owner | Notes & residuals |
 |---------|------|--------------------------------|-------------------|-------------------|
-| `claude-acp-bridge` | `bridge` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/bridges/`) | Maintained ACP v1 stdio bridge (`dist/acp-stdio-bridge.js` `1.0.0`) fronting `claude` `2.1.322` (`-p --output-format stream-json --verbose`). Credential-free local binary/handshake verified; live provider turns depend on operator credentials. |
-| `codex-acp-bridge` | `bridge` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/bridges/`) | Maintained ACP v1 stdio bridge (`dist/acp-stdio-bridge.js` `1.0.0`) fronting `codex-cli` `0.163.0` (`exec --json` / `exec resume --json`). Preserves `codex` `--sandbox` flags and section 10 containment residuals. |
-| `agy-acp-native` | `native` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/profiles.ts`) | Native `agy acp --stdio --disable-telemetry` (`agy` `1.5.5`, `Antigravity ACP Server` protocol v1, `loadSession: true`, `embeddedContext: true`). Credential-free handshake verified on `darwin/arm64`. |
+| `claude-acp-bridge` | `bridge` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/bridges/`) | Maintained ACP v1 stdio bridge (`dist/acp-stdio-bridge.js` `1.0.0`) fronting `claude` (live-qualified baseline `2.1.302` per `BACKEND_DESCRIPTORS` and `docs/release/backend-qualification-log.md`; `-p --output-format stream-json --verbose`). |
+| `codex-acp-bridge` | `bridge` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/bridges/`) | Maintained ACP v1 stdio bridge (`dist/acp-stdio-bridge.js` `1.0.0`) fronting `codex-cli` (live-qualified baseline `0.159.2` per `BACKEND_DESCRIPTORS` and `docs/release/backend-qualification-log.md`; `exec --json` / `exec resume --json`). Preserves `codex` `--sandbox` flags and section 10 containment residuals. |
+| `agy-acp-native` | `native` | `qualified` | Schegent runtime maintainers (`src/services/acp-runtime/profiles.ts`) | Native `agy acp --stdio --disable-telemetry` (live-qualified baseline `1.4.2` per `BACKEND_DESCRIPTORS` and `docs/release/backend-qualification-log.md`; ACP v1, `loadSession: true`, `embeddedContext: true`). |
 | Fixture agent | `native` / `bridge` | `fixture` | Host test suite | Deterministic fixtures only (`tests/fixtures/acp/`); never opened in production (`allowFixtureProfiles` omitted). |
 
-Unverified platforms (`linux/*`, `win32/*`, `darwin/x64`) resolve `acpQualificationForPlatform` to
-`unqualified`, causing `openAcpConnection` to refuse with `profile-unqualified` prior to process
-launch without falling back to legacy direct-CLI dispatch.
+### Deterministic fixture / production-path checks vs. live paid provider qualification
+
+Handshake checks and deterministic tests are **not** equivalent to live paid provider
+qualification:
+
+- **Deterministic credential-free verification (`mode: 'fixture'`, local CI/tests):** Exercises
+  the advertised built-in profiles (`claude-acp-bridge`, `codex-acp-bridge`, `agy-acp-native`),
+  shipped `dist/acp-stdio-bridge.js` and native ACP stdio paths, `AcpBackedRunner` +
+  `AcpAuthorityGate` production dispatch, cross-process `session/load` resume,
+  `session/request_permission` policy denial, sanitized permission/tool title handling, and F06
+  SQLite usage accounting ingestion (`node scripts/backend-canary-run.mjs --fixture`,
+  `tests/integration/acp-cross-process-session-resume.test.ts`,
+  `tests/integration/acp-runtime-acceptance.test.ts`). Records produced in fixture mode are
+  explicitly refused by `npm run release:preflight` for live releases.
+- **Live paid provider qualification (`mode: 'live'`, required before external release):**
+  Produced deliberately via `npm run canary` against authenticated provider CLIs and recorded in
+  `.backend-qualification.json` and [`docs/release/backend-qualification-log.md`](../release/backend-qualification-log.md).
+  Live qualification requires executing against the actual advertised profile, production dispatch
+  path, target platform and host locality (`locality: 'local'`), real `session/load` resume,
+  `session/request_permission` policy denial, and sanitized permission title handling. Any change
+  under `QUALIFICATION_PATHS` (including `src/services/containment-qualification/acp-authority-gate.ts`
+  and `src/activation/acp-execution-wiring.ts`) or `dist/acp-stdio-bridge.js` invalidates prior
+  records until re-qualified.
+
+Unverified platforms (`linux/*`, `win32/*`, `darwin/x64`) and remote extension hosts
+(`locality: 'remote'`) resolve `acpQualificationForPlatform` to `unqualified`, causing
+`openAcpConnection` to refuse with `profile-unqualified` prior to process launch without falling
+back to legacy direct-CLI dispatch.

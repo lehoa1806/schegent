@@ -3,8 +3,8 @@
  * the closed failure list and the input shapes of a phase-to-phase context handoff: the opt-in
  * policy, what one finished attempt contributes, and the identity of one handoff.
  *
- * Pure types and frozen constants. Nothing in the shipped extension constructs a handoff yet:
- * the durable record, the pins and the wiring into workflow execution are F15-B.
+ * Pure types and frozen constants shared by F15-A core handoff logic and F15-B durable SQLite
+ * coordination, pinning, materialization, and workflow execution wiring.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
@@ -40,7 +40,7 @@ export const PHASE_CONTEXT_LIMITS = Object.freeze({
   preparationDeadlineMs: 2_000,
   /** Largest text artifact that may be embedded in the prompt. */
   embedBytesMax: 8 * KIB,
-  /** NFR-007: declared for F15-B, which copies files; nothing in this delivery reads them. */
+  /** NFR-007: cross-root artifact materialization bounds enforced by `handoff-materializer.ts`. */
   materializedFilesMax: 64,
   materializedFileBytesMax: 16 * MIB,
   materializedTotalBytesMax: 64 * MIB,

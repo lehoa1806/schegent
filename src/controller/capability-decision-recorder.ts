@@ -152,19 +152,54 @@ export function capabilityRequestFields(
 ): {
   capabilities?: DeclaredCapabilitySet;
   attemptId?: string;
+  phaseHandoffId?: string;
+  phaseHandoffRepresentationDigest?: string;
   acpPromptBlocks?: readonly AcpPromptBlock[];
   authorizedUpstreamInputPaths?: readonly string[];
   authorizedOutputPaths?: readonly string[];
+  isContinue?: boolean;
+  sessionReuse?: boolean;
+  resumeSessionId?: string;
   resumeSessionOrigin?: 'acp' | 'legacy-cli';
 } {
   const declared = context.phaseDef?.capabilities;
   const handoff = context.envelope?.phaseHandoff;
+  // FR-R7-17 (FR-008): when the handoff policy requires a fresh session
+  // (`sessionReusePermitted === false`), explicitly clear ambient reuse and continuation
+  // fields so spreading into `InvocationRequest` cannot inherit an earlier session or `-c`.
+  const freshSessionOverride: {
+    isContinue?: boolean;
+    sessionReuse?: boolean;
+    resumeSessionId?: string;
+    resumeSessionOrigin?: 'acp' | 'legacy-cli';
+  } =
+    handoff?.sessionReusePermitted === false
+      ? ({
+          isContinue: false,
+          sessionReuse: false,
+          resumeSessionId: undefined,
+          resumeSessionOrigin: undefined
+        } as unknown as {
+          isContinue: false;
+          sessionReuse: false;
+          resumeSessionId?: string;
+          resumeSessionOrigin?: 'acp' | 'legacy-cli';
+        })
+      : {};
   return {
     ...(declared === undefined ? {} : { capabilities: declaredCapabilitySet(declared) }),
     ...(handoff === undefined
       ? {}
       : {
           attemptId: handoff.attemptId,
+          ...(handoff.handoffId !== null
+            ? {
+                phaseHandoffId: handoff.handoffId,
+                ...(handoff.representationDigest !== null
+                  ? { phaseHandoffRepresentationDigest: handoff.representationDigest }
+                  : {})
+              }
+            : {}),
           ...(handoff.acpPromptBlocks !== undefined && handoff.acpPromptBlocks.length > 0
             ? { acpPromptBlocks: handoff.acpPromptBlocks }
             : {}),
@@ -175,7 +210,8 @@ export function capabilityRequestFields(
           ...(handoff.authorizedOutputPaths !== undefined && handoff.authorizedOutputPaths.length > 0
             ? { authorizedOutputPaths: handoff.authorizedOutputPaths }
             : {}),
-          ...(handoff.sessionReusePermitted === true ? { resumeSessionOrigin: 'acp' as const } : {})
+          ...(handoff.sessionReusePermitted === true ? { resumeSessionOrigin: 'acp' as const } : {}),
+          ...freshSessionOverride
         })
   };
 }

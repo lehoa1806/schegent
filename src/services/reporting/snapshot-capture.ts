@@ -303,7 +303,7 @@ function readAuxiliaryMetadata(
        phr.revision, phr.status, phr.record_bytes
      FROM phase_handoff_records phr
      JOIN runs r ON r.run_id = phr.run_id
-     WHERE ${ROOT_RANGE} ${filter.sql} AND phr.created_at_ms < ?
+     WHERE ${ROOT_RANGE} ${filter.sql} AND phr.status IN ('accepted', 'ready', 'intent', 'delivered', 'uncertain') AND phr.created_at_ms < ?
      ORDER BY phr.run_id, phr.handoff_id LIMIT ?`,
     ...head,
     ...filter.params,

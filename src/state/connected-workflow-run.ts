@@ -240,6 +240,8 @@ export interface PendingHandoffRecord {
   readonly acceptedEnvelope?: InvocationInputEnvelope;
   /** FR-R6-F15 (F15-B) — durable phase-context handoff identifier awaiting manual approval. */
   readonly phaseHandoffId?: string;
+  /** FR-R6-F15 (F15-B; FR-012) — phase-context handoff revision pinned when pausing for manual approval. */
+  readonly phaseHandoffRevision?: number;
 }
 
 export type WorkflowInvocationStatus =

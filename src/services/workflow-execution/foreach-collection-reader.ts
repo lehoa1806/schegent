@@ -848,16 +848,29 @@ export function extractCollectionPayloadFromParentFrame(input: {
     : { relativeFilePath: outVal.value };
 }
 
+export function deriveForEachResultIndexArtifactPath(resultIndexJson: string): string {
+  const digest = createHash('sha256').update(resultIndexJson, 'utf8').digest('hex');
+  return `.schegent/foreach-results/fe-idx-${digest.slice(0, 32)}.json`;
+}
+
 export function buildForEachDeclaredOutputs(input: {
   readonly parentWorkflow: WorkflowDefinition;
   readonly nodeId: string;
   readonly resultIndexJson: string;
+  readonly artifactRelativePath?: string | undefined;
 }): Readonly<Record<string, ResolvedPortValue>> {
+  const artifactPath =
+    input.artifactRelativePath ?? deriveForEachResultIndexArtifactPath(input.resultIndexJson);
   const outputs: Record<string, ResolvedPortValue> = {
     resultIndex: Object.freeze({
       portId: 'resultIndex',
       type: 'structured-data',
       value: input.resultIndexJson
+    }),
+    resultIndexArtifact: Object.freeze({
+      portId: 'resultIndexArtifact',
+      type: 'file',
+      value: artifactPath
     })
   };
   for (const b of input.parentWorkflow.bindings ?? []) {

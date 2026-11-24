@@ -95,9 +95,9 @@ const UNAVAILABLE_RUNTIME_POSTURE: RuntimePostureVisibility = {
     droppedCopyCount: 0,
     spooledBatchCount: 0,
     spooledBytes: 0,
-    spoolCeilingBytes: 10 * 1024 * 1024,
+    spoolCeilingBytes: 32 * 1024 * 1024,
     activeSeriesCount: 0,
-    seriesCap: 256,
+    seriesCap: 1_000,
     overflowCount: 0,
     previewSummary: 'Metrics only (metadata-only allowlist). Content export is unsupported and refused.'
   }

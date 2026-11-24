@@ -39,6 +39,7 @@
   import { formatAbsoluteTime } from '../lib/format';
   import { formatDuration } from '../lib/format-duration';
   import { runStatusChip } from '../lib/run-status-chip';
+  import { snapshotStore } from '../lib/snapshot-store.svelte';
   import HistoryEvidencePanel from './HistoryEvidencePanel.svelte';
   import ExecutionVisibilityPanel from './ExecutionVisibilityPanel.svelte';
 
@@ -46,6 +47,8 @@
     row: HistoryRow;
     onBack: () => void;
     catalogNames?: CatalogNames;
+    /** Whether this window holds workspace primacy; falls back to live `snapshotStore.isPrimary`. */
+    isPrimary?: boolean;
     /**
      * FR-R3-127 (FR-004) — the two facts the evidence panel needs to say whether
      * this Run's unredacted transcript is being kept, and for how long.
@@ -80,11 +83,14 @@
     row,
     onBack,
     catalogNames = NO_CATALOG_NAMES,
+    isPrimary,
     onRerun,
     rawTranscriptMode = 'errors-only',
     retentionMaxAgeDays = 30,
     headingId
   }: Props = $props();
+
+  const effectiveIsPrimary = $derived(isPrimary ?? snapshotStore.isPrimary);
 
   /**
    * The metrics join, as three states and not two.
@@ -374,7 +380,7 @@
       </dl>
     </details>
 
-    <ExecutionVisibilityPanel rootExecutionId={runId} isPrimary={true} />
+    <ExecutionVisibilityPanel rootExecutionId={runId} isPrimary={effectiveIsPrimary} />
   </div>
 
   <div class="df">

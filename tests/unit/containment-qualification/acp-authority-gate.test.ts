@@ -526,4 +526,74 @@ describe('FR-R6-F09 T017 — ACP authority gate and containment channel (F09-AC-
     expect(untrustedDenied.reason).toBe('session-attempt-mismatch');
     expect(sqlWrites).toHaveLength(0);
   });
+
+  it('does not collide seenEffectKeys across colon-containing sessionId and effectRequestKey pairs (CR-312-1)', () => {
+    const root = path.join(os.tmpdir(), 'schegent-f09-dedupe-collision');
+    const gate = new AcpAuthorityGate({
+      isWorkspaceTrusted: () => true,
+      holdsPrimacy: () => true,
+      currentOwnershipGeneration: () => 1,
+      nowMs: () => 1_700_000_010_000
+    });
+
+    gate.registerScope({
+      attemptId: 'att-col-1',
+      acpSessionId: 'a:b',
+      connectionGeneration: 1,
+      ownershipGeneration: 1,
+      executionRoot: root
+    });
+    gate.registerScope({
+      attemptId: 'att-col-2',
+      acpSessionId: 'a',
+      connectionGeneration: 1,
+      ownershipGeneration: 1,
+      executionRoot: root
+    });
+
+    const first = gate.authorize({
+      requestKind: 'permission',
+      acpSessionId: 'a:b',
+      connectionGeneration: 1,
+      attemptId: 'att-col-1',
+      effectRequestKey: 'c',
+      mutating: true
+    });
+    expect(first.allowed).toBe(true);
+    expect(first.reason).toBe('authorized');
+
+    const second = gate.authorize({
+      requestKind: 'permission',
+      acpSessionId: 'a',
+      connectionGeneration: 1,
+      attemptId: 'att-col-2',
+      effectRequestKey: 'b:c',
+      mutating: true
+    });
+    expect(second.allowed).toBe(true);
+    expect(second.reason).toBe('authorized');
+
+    // True duplicates for each tuple must still deny with duplicate-effect-request
+    const dupFirst = gate.authorize({
+      requestKind: 'permission',
+      acpSessionId: 'a:b',
+      connectionGeneration: 1,
+      attemptId: 'att-col-1',
+      effectRequestKey: 'c',
+      mutating: true
+    });
+    expect(dupFirst.allowed).toBe(false);
+    expect(dupFirst.reason).toBe('duplicate-effect-request');
+
+    const dupSecond = gate.authorize({
+      requestKind: 'permission',
+      acpSessionId: 'a',
+      connectionGeneration: 1,
+      attemptId: 'att-col-2',
+      effectRequestKey: 'b:c',
+      mutating: true
+    });
+    expect(dupSecond.allowed).toBe(false);
+    expect(dupSecond.reason).toBe('duplicate-effect-request');
+  });
 });

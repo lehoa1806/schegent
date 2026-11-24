@@ -160,6 +160,18 @@ export function buildScanRoots(workspaceRoot: string): readonly StorageScanRoot[
       root: path.join(workspaceRoot, '.schegent', 'reports'),
       retentionClass: 'generated-reports-handoff-exports',
       storeKind: 'report'
+    },
+    {
+      rootId: 'handoff-materialized',
+      root: path.join(workspaceRoot, '.schegent', 'handoff-materialized'),
+      retentionClass: 'generated-reports-handoff-exports',
+      storeKind: 'handoff-context'
+    },
+    {
+      rootId: 'immutable-results',
+      root: path.join(workspaceRoot, '.schegent', 'immutable-results'),
+      retentionClass: 'generated-reports-handoff-exports',
+      storeKind: 'handoff-context'
     }
   ];
 }
