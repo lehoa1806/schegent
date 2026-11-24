@@ -1,7 +1,7 @@
 # Assistive-technology matrix
 
-**Captured**: 2026-08-25 · **Updated**: 2026-11-23 (`FR-R7-17`, Features 310/311/331; `FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA (whole-app automated scan baseline); WCAG 2.2 Level AA (`F11-NFR-07` / `NFR-007` for Feature 310 and `F12-NFR-04` / `NFR-004` for Feature 311 operator journeys)
-**Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`), 310 (`FR-R6-F11`), 311 (`FR-R6-F12`), 328 (`FR-R7-14`, 14-17), 331 (`FR-R7-17`, `R7-17-01` / `R7-17-03`)
+**Captured**: 2026-08-25 · **Updated**: 2026-11-24 (`FR-R8-03`, `03-07`); 2026-11-23 (`FR-R7-17`, Features 310/311/331; `FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA (whole-app automated scan baseline); WCAG 2.2 Level AA (`F11-NFR-07` / `NFR-007` for Feature 310 and `F12-NFR-04` / `NFR-004` for Feature 311 operator journeys) · **Language scope**: English-only by product decision ([English-only is a product decision](../concepts/english-only-not-localizable.md))
+**Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`), 310 (`FR-R6-F11`), 311 (`FR-R6-F12`), 328 (`FR-R7-14`, 14-17), 331 (`FR-R7-17`, `R7-17-01` / `R7-17-03`), 335 (`FR-R8-03`, `03-07`)
 
 <!-- at-matrix-review-date: 2026-11-27 -->
 
@@ -21,7 +21,7 @@ looked**.
 
 | OS | Screen reader | Version | Exercised | Result | Trigger |
 |---|---|---|---|---|---|
-| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-23 (`FR-R7-14`, 14-17; `FR-R7-17`, Features 310 & 311) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure) on a clean editor profile; see *Why it is untested* |
+| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-24 (`FR-R8-03`, 03-07; `FR-R7-14`, 14-17; `FR-R7-17`, Features 310 & 311) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure) on a clean editor profile; see *Why it is untested* |
 | Windows | NVDA | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Windows | Narrator | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Linux | Orca | — | **Nothing** | **UNTESTED** | Linux platform verification (`FR-R3-129`) |
@@ -86,6 +86,14 @@ Feature 328 (`FR-R7-14`, finding `14-17`) diagnosed and stabilized the intermitt
 - **Still owed**: One human run of [the procedure below](#the-procedure) — covering **launch, pause, recovery, evidence deletion, Feature 310 Historical Reports, and Feature 311 Execution Visibility & Change Review** on a clean editor profile — is still owed by the maintainer at a macOS machine (`VS Code 1.107.0` floor on local `darwin/arm64`) with VoiceOver enabled. Every human AT platform row (macOS VoiceOver, Windows NVDA, Windows Narrator, Linux Orca) remains truthfully **`UNTESTED`** / **`not observed`**.
 - **The date stands at 2026-11-27.** No human VoiceOver session has been observed, so the review does not renew the date.
 
+### Review 2026-11-24 (`FR-R8-03` / `03-07`)
+
+Feature 335 (`FR-R8-03`, item `03-07`) extended the automated Playwright accessibility, keyboard, focus, and high-contrast suite (`repo/tests/a11y/a11y-scan.spec.ts`) to small-viewport (`1000 × 600`) interactive states across all three shipped themes (`light`, `dark`, `high-contrast`), covering Settings privacy/logging controls, System Runtime Health & Isolated Workspaces diagnostics, Operations Execution Visibility & Change Review, and Metrics Historical Reports two-step deletion confirmation.
+
+- **English-only scope stays explicit**: all accessibility and assistive-technology scope applies solely to the English UI (`docs/concepts/english-only-not-localizable.md`); no localization or multi-locale screen-reader support is claimed.
+- **Human AT remains truthfully `UNTESTED`**: no human VoiceOver session at a macOS machine has been executed in this cycle. All four matrix rows (macOS VoiceOver, Windows NVDA, Windows Narrator, Linux Orca) remain **`UNTESTED`** / **`not observed`**, and the review date stands at **2026-11-27**.
+- **Procedure expanded**: added Task 16 (isolated execution lane inspection and recovery command palette journey from `FR-R8-01` `01-07`) and Task 17 (`1000 × 600` small-viewport keyboard traversal) to [the procedure below](#the-procedure).
+
 ### The procedure
 
 Run the operator journey from
@@ -113,6 +121,8 @@ that needs sighted correction is a **fail** with the barrier named, not a partia
 | 13 | **Feature 311 (Execution Visibility) — drill-down & distinct non-numeric readings**: expand `ExecutionVisibilityPanel` inside an active or historical run drill-down, filter by attempt, and confirm by ear that evidence availability (`Missing`, `Expired`, `Partial`, `Unavailable`), live-log coverage, normalized ACP state, and recovery posture (`Verified`, `Degraded`, `Uncertain`) read as distinct non-numeric phrases | `ExecutionVisibilityPanel` (`NFR-004`, WCAG 2.2 AA target) | |
 | 14 | **Feature 311 (Change Review) — open, refresh, close & keyboard scrolling**: open Change Review in both the native `vscode.changes` multi-file view and the disclosed `vscode.diff` single-file fallback, trigger `Refresh review` and `Close review` while confirming status announcements, and focus and scroll `.cr-files` (`change-review-file-list`) via keyboard alone | `ChangeReviewPanel` (`NFR-004`) | |
 | 15 | **Feature 311 (Phase Handoff) — review & approve revision**: navigate to a waiting-approval phase handoff inside `ExecutionVisibilityPanel`, read its revision, source, and omission summary, and approve (or edit and supersede) the handoff revision by keyboard and VoiceOver alone | `ExecutionVisibilityPanel` (`NFR-004`) | |
+| 16 | **Isolated execution lane recovery (`FR-R8-01` / `01-07`)**: run `Schegent: Inspect Execution Lanes` and `Schegent: Recover Execution Lane` from the Command Palette, read lane state and recovery action labels by ear, and complete inspection or cancel cleanly by keyboard + VoiceOver alone | Command Palette (`src/commands/execution-lane-recovery.ts`) & `TelemetryRuntimeHealthPanel` | |
+| 17 | **Small-viewport (`1000 × 600`) keyboard traversal (`FR-R8-03` / `03-07`)**: resize the editor window to `1000 × 600` and reach Settings privacy/logging, System Runtime Health, Operations Change Review, and Historical Reports delete confirmation by keyboard + VoiceOver without obscured focus or clipped controls | Dashboard routes at `1000 × 600` | |
 
 Record, per row: platform, assistive technology, VoiceOver's exact macOS version, the OS version,
 the route, the task outcome, and any remaining blockers if the task failed. Then fill the matrix

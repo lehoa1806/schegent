@@ -31,7 +31,7 @@ import { MAX_PAGE_BYTES, type ReportQuery } from '../../contracts/reporting/repo
 import type { ReportCoverage, ReportPage, ReportRow, RootDrillDown } from '../../contracts/reporting/report-rows';
 import { DIMENSION_VALUE_PATTERNS } from '../../contracts/usage-accounting/query-contract';
 import { buildRunRows } from './report-aggregates';
-import { captureReport, sourcesOf, type Capture, type ReportingLogger } from './report-capture';
+import { captureReportAsync, sourcesOf, type Capture, type ReportingLogger } from './report-capture';
 import { encodeReportCursor, resolveReportCursor } from './report-cursor';
 import { drillIntoRoot } from './report-drill-down';
 import { canonicalQueryJson, queryDigest, validateReportQuery } from './report-query-validator';
@@ -203,7 +203,7 @@ export function createReportEngine(options: ReportEngineOptions): ReportEngine {
   async function capturedReport(context: RunContext, tally: ReservationTally): Promise<ReportResult<LiveReport>> {
     const slicer = slicerFor(context.signal);
     context.emit('capturing', 0);
-    const capture = captureReport(source, context.query, context.cutoffMs, context.signal);
+    const capture = await captureReportAsync(source, context.query, context.cutoffMs, context.signal);
     if (!capture.ok) {
       return capture;
     }
@@ -329,7 +329,7 @@ export function createReportEngine(options: ReportEngineOptions): ReportEngine {
     }
     const tally: ReservationTally = { bytes: 0 };
     try {
-      const capture = captureReport(source, query, cutoffMs, signal, accountingRevision ?? undefined);
+      const capture = await captureReportAsync(source, query, cutoffMs, signal, accountingRevision ?? undefined);
       if (!capture.ok) {
         return capture;
       }

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   STREAM_TRUNCATION_MARKER,
-  ZippedStreamBuffer
+  ZippedStreamBuffer,
+  readStreamPressure,
+  readStreamPressurePeak,
+  resetStreamPressure
 } from '../../../src/runner/zipped-stream-buffer';
 
 function read(buffer: ZippedStreamBuffer): string {
@@ -116,6 +119,26 @@ describe('ZippedStreamBuffer', () => {
     expect(trailing).toContain('AUTHENTICATION');
     expect(trailing).toContain(STREAM_TRUNCATION_MARKER);
     expect(trailing.endsWith('x'.repeat(16))).toBe(true);
+  });
+
+  it('tracks per-buffer and aggregate high-water retained bytes across eviction and finalize (FR-R8-03 03-02)', () => {
+    resetStreamPressure();
+    const b1 = new ZippedStreamBuffer(8, 24);
+    const b2 = new ZippedStreamBuffer(8, 24);
+    b1.append('abcdefghij0123456789'); // 20 bytes
+    b2.append('klmnopqrst9876543210EXTRA'); // capped at 24 bytes
+    expect(b1.highWaterRetainedBytes).toBe(20);
+    expect(b2.highWaterRetainedBytes).toBe(24);
+    expect(readStreamPressurePeak()).toBe(44);
+    b1.finalize();
+    b2.finalize();
+    expect(readStreamPressure().retainedBytes).toBe(0);
+    // High-water mark stays preserved after finalize so diagnostics can report peak pressure.
+    expect(b1.highWaterRetainedBytes).toBe(20);
+    expect(b2.highWaterRetainedBytes).toBe(24);
+    expect(readStreamPressurePeak()).toBe(44);
+    resetStreamPressure();
+    expect(readStreamPressurePeak()).toBe(0);
   });
 
   it('reports an empty finalized buffer', () => {

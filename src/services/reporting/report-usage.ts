@@ -37,6 +37,11 @@ import { toUtcIso } from './report-time';
 /** The F06 read the usage view needs; `UsageAccountingService` satisfies it. */
 export interface AccountingPort {
   query(request: AccountingQueryRequest & { readonly limit: number }, signal?: AbortSignal): AccountingResult<AccountingQueryResponse>;
+  /** FR-R8-03 (03-03) — optional non-blocking read-only worker execution on file-backed stores. */
+  queryAsync?(
+    request: AccountingQueryRequest & { readonly limit: number },
+    signal?: AbortSignal
+  ): Promise<AccountingResult<AccountingQueryResponse>>;
 }
 
 /** The usage dimensions a report may group by (VIEW_SHAPES.usage). */
@@ -213,6 +218,72 @@ export function readUsage(
       return reportCancelled();
     }
     const page = port.query(pageRequest(request, limit, revision, cursor), options.signal);
+    if (!page.ok) {
+      return failureOf(page.refusal, options.signal);
+    }
+    last = page.value;
+    revision = page.value.revision;
+    rows.push(...page.value.rows.map((row) => usageRowOf(row, request.groupBy)));
+    if (rows.length > options.cap) {
+      return reportLimited('snapshot-rows');
+    }
+    cursor = request.groupBy.length === 0 ? undefined : page.value.nextCursor;
+  } while (cursor !== undefined);
+
+  rows.sort((left, right) => compareCodePoints(keyValues(left, request.groupBy), keyValues(right, request.groupBy)));
+  return reportOk(snapshotOf(last, last.revision, rows));
+}
+
+async function queryPortAsync(
+  port: AccountingPort,
+  request: AccountingQueryRequest & { readonly limit: number },
+  signal: AbortSignal | undefined
+): Promise<AccountingResult<AccountingQueryResponse>> {
+  return port.queryAsync !== undefined ? port.queryAsync(request, signal) : port.query(request, signal);
+}
+
+async function readRevisionZeroAsync(
+  port: AccountingPort,
+  request: UsageRequest,
+  signal: AbortSignal | undefined
+): Promise<ReportResult<UsageSnapshot>> {
+  const page = await queryPortAsync(port, pageRequest({ ...request, groupBy: [] }, 1, undefined, undefined), signal);
+  if (!page.ok) {
+    return failureOf(page.refusal, signal);
+  }
+  return reportOk(snapshotOf(page.value, 0, []));
+}
+
+/**
+ * FR-R8-03 (03-03) — async variant of `readUsage` that delegates to `AccountingPort.queryAsync`
+ * (off-main-thread read-only worker on file-backed SQLite stores) so retention-limit reporting
+ * keeps the extension host event loop responsive.
+ */
+export async function readUsageAsync(
+  port: AccountingPort | null,
+  request: UsageRequest,
+  options: UsageReadOptions
+): Promise<ReportResult<UsageSnapshot>> {
+  if (port === null) {
+    return reportRefused('accounting-unavailable');
+  }
+  const aborted = (): boolean => options.signal?.aborted === true;
+  if (aborted()) {
+    return reportCancelled();
+  }
+  if (request.asOfRevision === 0) {
+    return readRevisionZeroAsync(port, request, options.signal);
+  }
+  const limit = Math.min(options.pageLimit ?? MAX_QUERY_LIMIT, MAX_QUERY_LIMIT);
+  const rows: UsageRow[] = [];
+  let revision = request.asOfRevision;
+  let cursor: string | undefined;
+  let last: AccountingQueryResponse | undefined;
+  do {
+    if (aborted()) {
+      return reportCancelled();
+    }
+    const page = await queryPortAsync(port, pageRequest(request, limit, revision, cursor), options.signal);
     if (!page.ok) {
       return failureOf(page.refusal, options.signal);
     }

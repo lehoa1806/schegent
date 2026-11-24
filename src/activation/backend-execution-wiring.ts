@@ -380,7 +380,11 @@ const monitorHook: MonitorSidecarHook = (event) => {
         exitCode: event.exitCode,
         signal: event.signal,
         killed: event.killed,
-        timedOut: event.timedOut
+        timedOut: event.timedOut,
+        ...(event.attemptId !== undefined ? { attemptId: event.attemptId } : {}),
+        ...(event.streamHighWaterBytes !== undefined ? { streamHighWaterBytes: event.streamHighWaterBytes } : {}),
+        ...(event.streamObservedBytes !== undefined ? { streamObservedBytes: event.streamObservedBytes } : {}),
+        ...(event.streamTruncated !== undefined ? { streamTruncated: event.streamTruncated } : {})
       },
       // Feature 093 BUG-001 (T103) — which child exited, so the monitor can
       // answer whether it was the one whose life is this Run's phase.

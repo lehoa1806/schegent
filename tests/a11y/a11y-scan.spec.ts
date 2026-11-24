@@ -1121,3 +1121,119 @@ test.describe('FR-R7-17 — WCAG 2.1 AA, keyboard, focus & target-size scan for 
     });
   }
 });
+
+test.describe('FR-R8-03 (03-07) — Small-viewport (1000x600) & interactive-state WCAG 2.1 AA, keyboard, focus, and high-contrast scan', () => {
+  for (const theme of THEMES) {
+    test(`Small viewport (1000x600) preserves zero axe findings, keyboard flow, focus retention, and target sizes across interactive states in ${theme} theme`, async ({
+      page
+    }) => {
+      await installRound6HostBridge(page);
+      await openDashboard(page, theme);
+      await page.setViewportSize({ width: 1000, height: 600 });
+
+      // 1. Settings privacy profile & retention disclosure interactive state at small viewport
+      await page.getByTestId('dashboard-route-settings').click();
+      await page.getByTestId('settings-search').waitFor({ state: 'visible', timeout: 15_000 });
+      const navButtons = page.getByRole('navigation', { name: 'Settings sections' }).getByRole('button');
+      const privacyBtn = navButtons.filter({ hasText: /Privacy|Logging|Evidence/i }).first();
+      await expect(privacyBtn).toBeVisible();
+      await privacyBtn.focus();
+      await expect(privacyBtn).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(privacyBtn).toHaveAttribute('aria-current', 'true');
+
+      const smallSettingsScan = await scanRendered(page, 'small-viewport+settings-privacy', theme);
+      expect(smallSettingsScan.examined).toBeGreaterThanOrEqual(MIN_NODES_EXAMINED);
+      expect(
+        smallSettingsScan.findings.map(key),
+        `Small-viewport Settings privacy/logging axe findings in ${theme}`
+      ).toEqual([]);
+
+      // 2. System -> Runtime Health & Isolated Workspaces diagnostics expanded at small viewport
+      await page.getByTestId('dashboard-route-system').click();
+      await page.getByTestId('system-tab').waitFor({ state: 'visible', timeout: 15_000 });
+      const runtimeTab = page.getByTestId('system-view-telemetry');
+      await runtimeTab.focus();
+      await page.keyboard.press('Enter');
+      await expect(runtimeTab).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByTestId('lanes-health-card')).toBeVisible();
+      await expect(page.getByTestId('otlp-health-card')).toBeVisible();
+
+      const laneDiagSummary = page.locator('[data-testid="lanes-health-card"] details.diag > summary');
+      await laneDiagSummary.focus();
+      await expect(laneDiagSummary).toBeFocused();
+      await page.keyboard.press('Enter');
+
+      const smallRuntimeScan = await scanRendered(page, 'small-viewport+system-runtime-lanes', theme);
+      expect(smallRuntimeScan.examined).toBeGreaterThanOrEqual(MIN_NODES_EXAMINED);
+      expect(
+        smallRuntimeScan.findings.map(key),
+        `Small-viewport Runtime/Lanes axe findings in ${theme}`
+      ).toEqual([]);
+
+      await assertMinTargetSizes(
+        page,
+        ['system-view-telemetry', 'runtime-health-refresh'],
+        `Small-viewport Runtime Health (${theme})`
+      );
+
+      // 3. Operations drill-down + ExecutionVisibility + ChangeReview file inventory at small viewport
+      await page.getByTestId('dashboard-route-operations').click();
+      await page.getByTestId('queues-tier').waitFor({ state: 'visible', timeout: 15_000 });
+      await page.getByTestId('queue-card-default').click();
+      await page.getByTestId('queue-task-row-visual-task-active').click();
+      await expect(page.getByTestId('run-detail-tier')).toBeVisible();
+      await page.getByRole('tab', { name: 'Context' }).click();
+      await expect(page.getByTestId('execution-visibility-posture')).toBeVisible();
+      await page.getByTestId('change-review-inspect-btn').click();
+      await expect(page.getByTestId('change-review-file-list')).toBeVisible();
+
+      const smallOpsScan = await scanRendered(page, 'small-viewport+operations-visibility-review', theme);
+      expect(smallOpsScan.examined).toBeGreaterThanOrEqual(MIN_NODES_EXAMINED);
+      expect(
+        smallOpsScan.findings.map(key),
+        `Small-viewport Operations visibility + change review axe findings in ${theme}`
+      ).toEqual([]);
+
+      await assertMinTargetSizes(
+        page,
+        ['change-review-refresh-btn', 'change-review-close-btn', 'execution-visibility-refresh'],
+        `Small-viewport Operations (${theme})`
+      );
+
+      // 4. Metrics -> Historical Reports two-step deletion confirm at small viewport
+      await page.getByTestId('dashboard-route-metrics').click();
+      await page.getByTestId('metrics-section').waitFor({ state: 'visible', timeout: 15_000 });
+      const reportsTab = page.getByTestId('metrics-mode-reports');
+      await reportsTab.click();
+      await expect(page.getByTestId('historical-reports-panel')).toBeVisible();
+      await expect(page.getByTestId('report-rows-table')).toBeVisible();
+      const savedActionsBtn = page.getByTestId('saved-actions-rep-saved-1');
+      await savedActionsBtn.scrollIntoViewIfNeeded();
+      await expect(savedActionsBtn).toBeVisible();
+      await savedActionsBtn.focus();
+      await expect(savedActionsBtn).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(savedActionsBtn).toHaveAttribute('aria-expanded', 'true');
+      const deleteMenuItem = page.getByTestId('saved-delete-rep-saved-1');
+      await expect(deleteMenuItem).toBeVisible();
+      await page.keyboard.press('End');
+      await expect(deleteMenuItem).toBeFocused();
+      await page.keyboard.press('Enter');
+      const confirmDeleteBtn = page.getByTestId('saved-confirm-delete-rep-saved-1');
+      await expect(confirmDeleteBtn).toBeVisible();
+      await expect(confirmDeleteBtn).toBeFocused();
+
+      const smallDeleteScan = await scanRendered(page, 'small-viewport+reports-delete-confirm', theme);
+      expect(smallDeleteScan.examined).toBeGreaterThanOrEqual(MIN_NODES_EXAMINED);
+      expect(
+        smallDeleteScan.findings.map(key),
+        `Small-viewport Reports two-step delete confirm axe findings in ${theme}`
+      ).toEqual([]);
+
+      // Keyboard Escape or Keep dismisses confirmation cleanly
+      await page.getByRole('button', { name: 'Keep' }).click();
+      await expect(confirmDeleteBtn).toHaveCount(0);
+    });
+  }
+});

@@ -524,9 +524,13 @@ Every outcome ends with `Nothing was tagged, published or uploaded.`
 **Advisory evidence.** The driver reads feature 249's captures and runs no audit itself. It refuses a
 capture that is incomplete or unavailable (the audit gave no report), one made for a lockfile other
 than the one HEAD holds, one observed after the preparation time, one **more than seven days
-old** (exactly seven days is accepted), a disposition list it cannot use, and — since `FR-R7-14`
-(`14-12`) — **any uncovered or expired finding** (`advisory-uncovered`: `not-recorded`, `expired`,
-or `does-not-cover`). Each finding
+old** (exactly seven days is accepted), a disposition list it cannot use, — since `FR-R8-03` (`03-05`),
+evaluated before `advisory-uncovered` once module graphs are built — **any finding not proven
+`build-only` (`usage: "shipped"` or `usage: "unknown"`, including unmapped virtual modules or a
+missing tree graph)** (`advisory-shipped`), which blocks release preparation unconditionally even when
+an `accepted` disposition exists, and **any uncovered, actionable, or expired finding**
+(`advisory-uncovered`: `not-recorded`, `expired`, `does-not-cover`, or `status: "actionable"` — since
+`FR-R7-14` / `14-12`). Each finding
 is listed by its advisory id and URL with its severity, whether the package is in the shipped
 code (`shipped`, `build-only`, or `unknown`), and its disposition verdict.
 The list is [`docs/release/advisory-dispositions.json`](docs/release/advisory-dispositions.md),

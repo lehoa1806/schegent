@@ -2,15 +2,18 @@
 
 `docs/release/advisory-dispositions.json` is the tracked list of recorded decisions about
 dependency advisories. It started empty, held 86 entries from the 2026-11-06 review (`FR-R5-F21`),
-and was refreshed on **2026-11-23 (`FR-R7-14` / `14-12`)**: safe non-breaking lockfile updates via
-`npm audit fix` eliminated all 14 High-severity advisories and 9 Moderate advisories across both
-trees (cutting normalized findings from 61 → 7 in `root` and 24 → 7 in `webview-ui`). The
-remaining 14 entries (7 `root`, 7 `webview-ui`, expiring `2027-02-21`) are all **builder-only**
+was refreshed on 2026-11-23 (`FR-R7-14` / `14-12`) after `npm audit fix` eliminated all 14 High and
+9 Moderate advisories (cutting findings from 61 → 7 in `root` and 24 → 7 in `webview-ui`), and was
+re-verified live on **2026-11-24 (`FR-R8-03` / `03-05`)**: both trees remain at 7 normalized findings
+each (`5 moderate`, `2 critical`, expiring `2027-02-22`), all 14 classified **`build-only`**
 devDependencies (`@vitest/mocker`, `vitest`, `tinypool`, `glob`, `minimatch`) held behind
 semver-major upgrades (`vitest@5.x` / `@vscode/vsce@4.x`) and verified absent from both shipped
 runtime bundles (`dist/module-graph/host.json`: 0 bundled third-party packages;
-`dist/module-graph/webview.json`: `svelte` and `esm-env` only) and `schegent-sbom.cdx.json`. A
-finding with no valid non-expired entry refuses release preparation. Two commands read it and
+`dist/module-graph/webview.json`: `svelte` and `esm-env` only) and `schegent-sbom.cdx.json`. Once
+module graphs are built, **any finding not proven `build-only` (`usage: "shipped"` or
+`usage: "unknown"`, including unmapped virtual modules or missing tree graphs) unconditionally
+refuses release preparation** (`advisory-shipped`) even if an `accepted` disposition exists; any
+remaining finding with no valid non-expired entry refuses release preparation (`advisory-uncovered`). Two commands read it and
 nothing writes it:
 
 - `npm run security:advisory-diff -- compare --dispositions docs/release/advisory-dispositions.json`
@@ -79,8 +82,13 @@ time of preparation:
   installed version out.
 - **not-recorded**: no entry relates to the finding.
 
-An uncovered or actionable finding (`not-recorded`, `expired`, `does-not-cover`, or `status: "actionable"`) **refuses release
-preparation** (`advisory-uncovered`, the eighth refusal condition in [releasing](../../RELEASE.md)).
+Since `FR-R8-03` (`03-05`), once module graphs are supplied, **any finding whose bundled usage
+classification is not `build-only` (`usage: "shipped"` or `usage: "unknown"`, including unmapped
+virtual modules or a missing tree graph) unconditionally refuses release preparation**
+(`advisory-shipped`, the eighth refusal condition in [releasing](../../RELEASE.md)) — an `accepted`
+disposition cannot override a shipped or unverified-runtime advisory. Any remaining uncovered or
+actionable finding (`not-recorded`, `expired`, `does-not-cover`, or `status: "actionable"`) **refuses
+release preparation** (`advisory-uncovered`, the ninth refusal condition).
 Every finding is still reported with its verdict, severity, and bundled usage classification;
 `npm run security:audit` and `npm run security:advisory-diff` remain report-only outside release
 verdicts.

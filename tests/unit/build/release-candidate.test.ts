@@ -527,7 +527,61 @@ describe('an accepted candidate (RP3, RP5)', () => {
     expect(printed).not.toContain(`${ESC}[`);
   });
 
-  it('lists each covered finding by canonical id with its URL, severity, usage and verdict, ranking none', async () => {
+  it('lists each covered build-only finding by canonical id with its URL, severity, usage and verdict, ranking none', async () => {
+    const buildOnlyFinding = advisoryFinding({
+      package: 'vitest',
+      locations: [{ location: 'node_modules/vitest', version: '3.2.7', direct: true, production: false }]
+    });
+    const coveringDispositions = asBuffer({
+      dispositionListVersion: 1,
+      dispositions: [
+        {
+          advisory: 'GHSA-aaaa-bbbb-cccc',
+          ecosystem: 'npm',
+          package: 'vitest',
+          tree: 'webview-ui',
+          range: '<4.0.0',
+          status: 'accepted',
+          owner: 'maintainer',
+          decidedOn: '2026-11-01',
+          expiresOn: '2027-02-01',
+          rationale: 'Reviewed builder-only disposition for test candidate.'
+        }
+      ]
+    });
+    const { logs, written } = await run({
+      captures: {
+        'webview-ui': asBuffer(capture('webview-ui', { findings: [buildOnlyFinding] }))
+      },
+      dispositions: coveringDispositions
+    });
+    const line = logs.find((entry) => entry.includes('GHSA-aaaa-bbbb-cccc'));
+    expect(line).toBeDefined();
+    for (const part of [
+      'webview-ui',
+      'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
+      'moderate',
+      'usage=build-only',
+      'disposition=covers'
+    ]) {
+      expect(line).toContain(part);
+    }
+    expect(logs.join('\n')).not.toMatch(/\btotal\b|\bmost\b|\bworst\b|\branked\b/i);
+    const record = JSON.parse(written.at(0)?.text ?? '{}');
+    expect(record.advisory.findings).toEqual([
+      {
+        tree: 'webview-ui',
+        advisory: 'GHSA-aaaa-bbbb-cccc',
+        url: 'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
+        package: 'vitest',
+        severity: 'moderate',
+        usage: 'build-only',
+        disposition: 'covers'
+      }
+    ]);
+  });
+
+  it('refuses preparation with advisory-shipped when a runtime-reachable bundled finding is present even if accepted (FR-R8-03 03-05)', async () => {
     const coveringDispositions = asBuffer({
       dispositionListVersion: 1,
       dispositions: [
@@ -541,40 +595,60 @@ describe('an accepted candidate (RP3, RP5)', () => {
           owner: 'maintainer',
           decidedOn: '2026-11-01',
           expiresOn: '2027-02-01',
-          rationale: 'Reviewed disposition for test candidate.'
+          rationale: 'Attempted acceptance of shipped dependency must still be refused.'
         }
       ]
     });
-    const { logs, written } = await run({
+    const outcome = await run({
       captures: {
         'webview-ui': asBuffer(capture('webview-ui', { findings: [advisoryFinding()] }))
       },
       dispositions: coveringDispositions
     });
-    const line = logs.find((entry) => entry.includes('GHSA-aaaa-bbbb-cccc'));
-    expect(line).toBeDefined();
-    for (const part of [
-      'webview-ui',
-      'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
-      'moderate',
-      'usage=shipped',
-      'disposition=covers'
-    ]) {
-      expect(line).toContain(part);
-    }
-    expect(logs.join('\n')).not.toMatch(/\btotal\b|\bmost\b|\bworst\b|\branked\b/i);
-    const record = JSON.parse(written.at(0)?.text ?? '{}');
-    expect(record.advisory.findings).toEqual([
-      {
-        tree: 'webview-ui',
-        advisory: 'GHSA-aaaa-bbbb-cccc',
-        url: 'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',
-        package: 'svelte',
-        severity: 'moderate',
-        usage: 'shipped',
-        disposition: 'covers'
+    expectRefused(outcome, 'advisory-shipped');
+    expect(outcome.errors.join('\n')).toContain('svelte');
+    expect(outcome.errors.join('\n')).toContain('usage=shipped');
+    expect(outcome.errors.join('\n')).toContain('Patch or upgrade the runtime-reachable dependency');
+  });
+
+  it('fails closed with advisory-shipped when an accepted finding matches an unmapped virtual module (FR-R8-03 03-05)', async () => {
+    const viteDispositions = asBuffer({
+      dispositionListVersion: 1,
+      dispositions: [
+        {
+          advisory: 'GHSA-aaaa-bbbb-cccc',
+          ecosystem: 'npm',
+          package: 'vite',
+          tree: 'webview-ui',
+          range: '>=7.0.0',
+          status: 'accepted',
+          owner: 'maintainer',
+          decidedOn: '2026-11-01',
+          expiresOn: '2027-02-01',
+          rationale: 'Accepted disposition must still fail closed when unmapped virtual module matches package.'
+        }
+      ]
+    });
+    const viteFinding = advisoryFinding({
+      package: 'vite',
+      locations: [{ location: 'node_modules/vite', version: '7.0.0', direct: true, production: false }]
+    });
+    const outcome = await run({
+      captures: {
+        'webview-ui': asBuffer(capture('webview-ui', { findings: [viteFinding] }))
+      },
+      dispositions: viteDispositions,
+      build: (files) => {
+        freshBuild(files);
+        files.set(
+          'dist/module-graph/webview.json',
+          asBuffer(graph('webview', { unmapped: [{ label: 'vite/preload-helper.js', reason: 'virtual' }] }))
+        );
       }
-    ]);
+    });
+    expectRefused(outcome, 'advisory-shipped');
+    expect(outcome.errors.join('\n')).toContain('usage=unknown');
+    expect(outcome.errors.join('\n')).toContain('Patch or upgrade the runtime-reachable dependency');
   });
 
   it('refuses preparation with advisory-uncovered when any finding lacks a valid disposition (FR-R7-14 14-12)', async () => {
@@ -698,9 +772,9 @@ describe('an accepted candidate (RP3, RP5)', () => {
         {
           advisory: 'GHSA-aaaa-bbbb-cccc',
           ecosystem: 'npm',
-          package: 'svelte',
+          package: 'vitest',
           tree: 'webview-ui',
-          range: '<6.0.0',
+          range: '<4.0.0',
           status: 'accepted',
           owner: 'maintainer',
           decidedOn: '2026-11-01',
@@ -713,7 +787,13 @@ describe('an accepted candidate (RP3, RP5)', () => {
       captures: {
         'webview-ui': asBuffer(
           capture('webview-ui', {
-            findings: [advisoryFinding({ url: `https://example.test/${ESC}[31mred`, package: 'svelte' })]
+            findings: [
+              advisoryFinding({
+                url: `https://example.test/${ESC}[31mred`,
+                package: 'vitest',
+                locations: [{ location: 'node_modules/vitest', version: '3.2.7', direct: true, production: false }]
+              })
+            ]
           })
         )
       },

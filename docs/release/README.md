@@ -11,6 +11,7 @@ Current records consulted when preparing, qualifying, or auditing a local VSIX r
 | File | Role |
 |---|---|
 | [Current release controls](current-release-controls.md) | Generated single present-tense authority for what actually runs in this tree today (`FR-R3-138`). |
+| [Preview release-candidate evidence](preview-rc-evidence.md) | Bound local preview candidate record: host/Node/editor tuple, VSIX smoke bounds, advisory posture, Round 8 verification summary, and explicit unqualified prerequisites (`FR-R8-03` / `03-08`). |
 | [Qualification matrix](qualification-matrix.md) | Node 22 and 24 across macOS, Linux, and Windows — each cell is either an observed run with five recorded facts or explicitly `unobserved` with its prerequisite (`FR-R4-F09`). |
 | [Backend qualification log](backend-qualification-log.md) | Live backend canary results produced by `npm run canary` (`FR-R3-084`, `FR-R3-104`). |
 | [Advisory dispositions](advisory-dispositions.md) | Policy, field definitions, and rationale requirements governing dependency advisories; `accepted` is a recorded disposition label, not a waiver (`FR-R4-F09`). |

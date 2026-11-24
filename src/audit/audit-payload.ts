@@ -85,6 +85,8 @@ export interface CliInvocationPayloadV3 {
   readonly executableTarget?: ExecutableTargetId;
   /** FR-R8-02 (02-02): closed containment posture decided by spawn admission. */
   readonly containmentPosture?: ContainmentPosture;
+  /** FR-R8-03 (03-02): optional phase-start attempt UUID correlating child identity/permission with phase-end. */
+  readonly attemptId?: string;
   readonly continued: boolean;
   readonly sessionReused: boolean;
   readonly modelId?: string;
@@ -279,6 +281,14 @@ export interface MonitorInvocationSummaryPayloadV3 {
   readonly firstOutputAt: string | null;
   readonly lastOutputAt: string | null;
   readonly detectedIssues: ReadonlyArray<string>;
+  /** FR-R8-03 (03-02): optional phase-start attempt UUID for metadata-only correlation. */
+  readonly attemptId?: string;
+  /** FR-R8-03 (03-02): optional peak retained stream bytes observed for this invocation. */
+  readonly streamHighWaterBytes?: number;
+  /** FR-R8-03 (03-02): optional total raw stream bytes observed across stdout/stderr. */
+  readonly streamObservedBytes?: number;
+  /** FR-R8-03 (03-02): optional flag recording whether bounded stream retention truncated output. */
+  readonly streamTruncated?: boolean;
 }
 
 export interface MetricsViewOpenedPayloadV3 {
@@ -466,6 +476,10 @@ function projectMetrics(value: unknown): Readonly<Record<string, number>> {
   return Object.freeze(Object.fromEntries(entries));
 }
 
+function projectAttemptId(value: unknown): string | undefined {
+  return typeof value === 'string' && ATTEMPT_ID_RE.test(value) ? value : undefined;
+}
+
 function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPayloadV3 {
   const runner = stringValue(payload.runner, DEFAULT_BACKEND);
   const descriptor = findBackendDescriptor(runner);
@@ -476,19 +490,18 @@ function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPa
   if (!['phase', 'native-review', 'session-compaction', 'probe'].includes(operation)) {
     throw new AuditPayloadValidationError('invalid-operation');
   }
-  const permissionMode = stringValue(
-    payload.permissionMode,
-    descriptor.defaultAuditPermissionMode
-  );
+  const permissionMode = stringValue(payload.permissionMode, descriptor.defaultAuditPermissionMode);
   if (!['read-only', 'workspace-write', 'unrestricted'].includes(permissionMode)) {
     throw new AuditPayloadValidationError('invalid-permission-mode');
   }
   const targetPosture = projectExecutableTargetAndPosture(payload, descriptor.kind, permissionMode);
+  const attemptId = projectAttemptId(payload.attemptId);
   return Object.freeze({
     runner: descriptor.kind,
     operation: operation as CliInvocationPayloadV3['operation'],
     permissionMode: permissionMode as AuditPermissionMode,
     ...targetPosture,
+    ...(attemptId !== undefined ? { attemptId } : {}),
     continued: booleanValue(payload.continued ?? payload.isContinue),
     sessionReused: booleanValue(payload.sessionReused ?? payload.sessionReuse),
     ...(typeof (payload.modelId ?? payload.model) === 'string'
@@ -602,21 +615,9 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const rawOutcome = stringValue(payload.outcome, 'malformed');
   // `malformed` is the resolution for a value from outside the vocabulary, not the default
   // for most of it — see `PHASE_END_OUTCOMES`.
-  const outcome: PhaseEndOutcome = PHASE_END_OUTCOME_SET.has(rawOutcome)
-    ? (rawOutcome as PhaseEndOutcome)
-    : 'malformed';
-  const explicitMetrics = projectMetrics(payload.metrics);
-  const legacyMetrics: Record<string, number> = { ...explicitMetrics };
-  for (const key of [
-    'durationMs',
-    'cliDurationMs',
-    'numTurns',
-    'totalCostUsd',
-    'inputTokens',
-    'outputTokens',
-    'cacheCreationInputTokens',
-    'cacheReadInputTokens'
-  ]) {
+  const outcome: PhaseEndOutcome = PHASE_END_OUTCOME_SET.has(rawOutcome) ? (rawOutcome as PhaseEndOutcome) : 'malformed';
+  const legacyMetrics: Record<string, number> = { ...projectMetrics(payload.metrics) };
+  for (const key of ['durationMs', 'cliDurationMs', 'numTurns', 'totalCostUsd', 'inputTokens', 'outputTokens', 'cacheCreationInputTokens', 'cacheReadInputTokens', 'streamHighWaterBytes', 'streamObservedBytes']) {
     const value = payload[key];
     if (typeof value === 'number' && Number.isFinite(value)) legacyMetrics[key] = value;
   }
@@ -624,10 +625,7 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const rawModified = payload.filesModified ?? payload.files_modified;
   const rawDeleted = payload.filesDeleted ?? payload.files_deleted;
   const rawCommands = payload.commandsExecuted ?? payload.commands_executed;
-  const created = countArray(rawCreated);
-  const modified = countArray(rawModified);
-  const deleted = countArray(rawDeleted);
-  const omittedTools = countArray(rawCommands);
+  const [created, modified, deleted, omittedTools] = [rawCreated, rawModified, rawDeleted, rawCommands].map(countArray) as [number, number, number, number];
   // Feature 212 (FR-008, FR-009) — WAS THE AUDIT BLOCK PARSED AT ALL?
   //
   // `countArray` yields 0 for an absent value, so the four counts below recorded
@@ -661,34 +659,15 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   // emits", which asserts the writer's four-key shape AND a partial one — the
   // partial case is what kills the `.every()` mutant now that the four-key
   // shape no longer can.
-  const auditBlockParsed = [rawCreated, rawModified, rawDeleted, rawCommands].some((value) =>
-    Array.isArray(value)
-  );
+  const auditBlockParsed = [rawCreated, rawModified, rawDeleted, rawCommands].some(Array.isArray);
   const warnings = projectPhaseEndWarnings(payload.warnings);
-  // Feature 212 (FR-002) — the `phase-start` row's `AuditEntry.id`. Shape-checked
-  // like every other carried value: this projection never trusts the shape of what
-  // it is handed, even for a field only this codebase writes. See `ATTEMPT_ID_RE`
-  // for why the shape and not just the length.
-  const rawAttemptId = payload.attemptId;
-  const attemptId =
-    typeof rawAttemptId === 'string' && ATTEMPT_ID_RE.test(rawAttemptId)
-      ? rawAttemptId
-      : undefined;
-  // Feature 212 (FR-005, FR-014) — closed two-member set, omitted rather than
-  // defaulted when absent or unrecognised, exactly as `verdictBasis` is below.
-  // Defaulting either way would assert an envelope fact nobody observed.
+  // Feature 212 (FR-002) — the `phase-start` row's `AuditEntry.id`, shape-checked against `ATTEMPT_ID_RE`.
+  const attemptId = projectAttemptId(payload.attemptId);
   const rawResultEnvelope = payload.resultEnvelope;
-  const resultEnvelope =
-    rawResultEnvelope === 'received' || rawResultEnvelope === 'absent'
-      ? rawResultEnvelope
-      : undefined;
-  // FR-R6-F06 — the parser's cost-baseline marker, matched against its closed set.
+  const resultEnvelope = rawResultEnvelope === 'received' || rawResultEnvelope === 'absent' ? rawResultEnvelope : undefined;
   const costBaseline = costBaselineOf(payload.costBaseline);
-  // FR-R3-117 — closed set, and omitted rather than defaulted when absent or
-  // unrecognised. Defaulting would assert a basis nobody recorded.
   const rawBasis = payload.verdictBasis;
-  const verdictBasis =
-    rawBasis === 'exit-code' || rawBasis === 'model-token' ? rawBasis : undefined;
+  const verdictBasis = rawBasis === 'exit-code' || rawBasis === 'model-token' ? rawBasis : undefined;
   // Feature 194 (FR-001 through FR-004) — `specs/010-pipeline-resilience/contracts/
   // audit-events.md` §"phase-end — new payload.cause field" has specified this field, and
   // its two-member vocabulary (a redacted fatal-signature string, or the literal
@@ -785,32 +764,33 @@ function projectActivityStamp(value: unknown): string | null {
   return typeof value === 'string' && ISO_INSTANT_RE.test(value) ? value : null;
 }
 
-function projectMonitorInvocationSummary(
-  payload: Record<string, unknown>
-): MonitorInvocationSummaryPayloadV3 {
+function nonNegativeIntOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function projectMonitorInvocationSummary(payload: Record<string, unknown>): MonitorInvocationSummaryPayloadV3 {
   const issues = Array.isArray(payload.detectedIssues) ? payload.detectedIssues : [];
-  if (issues.length > AUDIT_PAYLOAD_MAX_ARRAY_LENGTH) {
-    throw new AuditPayloadValidationError('array-too-long');
-  }
+  if (issues.length > AUDIT_PAYLOAD_MAX_ARRAY_LENGTH) throw new AuditPayloadValidationError('array-too-long');
+  const attemptId = projectAttemptId(payload.attemptId);
+  const streamHighWaterBytes = nonNegativeIntOrUndefined(payload.streamHighWaterBytes);
+  const streamObservedBytes = nonNegativeIntOrUndefined(payload.streamObservedBytes);
+  const streamTruncated = typeof payload.streamTruncated === 'boolean' ? payload.streamTruncated : undefined;
   return Object.freeze({
     status: boundedMetadataString(payload.status, 'unknown'),
     durationMs: numberValue(payload.durationMs),
-    exitCode:
-      payload.exitCode === null || payload.exitCode === undefined
-        ? null
-        : numberValue(payload.exitCode, 0),
-    signal: typeof payload.signal === 'string'
-      ? boundedMetadataString(payload.signal, 'unknown')
-      : null,
+    exitCode: payload.exitCode === null || payload.exitCode === undefined ? null : numberValue(payload.exitCode, 0),
+    signal: typeof payload.signal === 'string' ? boundedMetadataString(payload.signal, 'unknown') : null,
     stdoutLines: numberValue(payload.stdoutLines),
     stderrLines: numberValue(payload.stderrLines),
     firstOutputAt: projectActivityStamp(payload.firstOutputAt),
     lastOutputAt: projectActivityStamp(payload.lastOutputAt),
     detectedIssues: Object.freeze(
-      issues
-        .filter((issue): issue is string => typeof issue === 'string')
-        .map((issue) => boundedMetadataString(issue, 'unknown'))
-    )
+      issues.filter((issue): issue is string => typeof issue === 'string').map((issue) => boundedMetadataString(issue, 'unknown'))
+    ),
+    ...(attemptId !== undefined ? { attemptId } : {}),
+    ...(streamHighWaterBytes !== undefined ? { streamHighWaterBytes } : {}),
+    ...(streamObservedBytes !== undefined ? { streamObservedBytes } : {}),
+    ...(streamTruncated !== undefined ? { streamTruncated } : {})
   });
 }
 
