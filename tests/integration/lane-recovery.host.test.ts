@@ -38,7 +38,7 @@ const NOW_MS = Date.UTC(2026, 10, 24, 16, 0, 0);
 const PROFILE: VerificationProfile = {
   profileId: 'host-recovery',
   revision: 1,
-  checks: [{ name: 'ok', argv: [process.execPath, '-e', 'process.exitCode = 0'], timeoutMs: 30_000 }]
+  checks: [{ name: 'ok', argv: ['git', 'rev-parse', '--is-inside-work-tree'], timeoutMs: 30_000 }]
 };
 
 async function waitForExtensionActive(): Promise<vscode.Extension<unknown>> {
@@ -361,6 +361,7 @@ export async function run(): Promise<void> {
     assert.ok(uReq.ok);
     const uVer = await service.verifyRequest({ requestId: uReq.value.requestId });
     assert.ok(uVer.ok);
+    assert.equal(uVer.value.state, 'awaiting-review');
     assert.ok(
       service.approveRequest({
         requestId: uVer.value.requestId,
