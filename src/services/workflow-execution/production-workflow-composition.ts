@@ -37,11 +37,13 @@ import {
 } from '../backend-availability-service';
 import { ResultOperator } from '../result-operator';
 import {
+  assertDesktopWorkflowCollaborators,
   buildRootControlBudget,
   createInMemoryMemento,
   evaluateWorkflowSettlementOutcome,
   isControlLedgerBackingStore,
   toRootLinkFailure,
+  type RequiredDesktopWorkflowCollaborators,
   type SettlementEvaluationInput,
   type SettlementEvaluationResult
 } from './production-workflow-helpers';
@@ -166,6 +168,22 @@ export interface ProductionWorkflowCompositionOptions {
   readonly phaseHandoffCoordinator?: PhaseHandoffCoordinator | undefined;
   readonly admissionDeps?: Partial<ControlAttemptAdmissionDeps> | undefined;
   readonly commandServiceDeps?: Partial<ControlCommandServiceDeps> | undefined;
+}
+
+/**
+ * FR-R8-04 (`04-02`) — Strict desktop host composition options requiring all
+ * live trust, ownership-fence, handoff, and post-cutover collaborators at
+ * compile time and unconditionally enabling fail-closed live fence verification.
+ */
+export type DesktopWorkflowCompositionOptions = Omit<
+  ProductionWorkflowCompositionOptions,
+  keyof RequiredDesktopWorkflowCollaborators | 'requireLiveFenceVerifier' | 'allowFixtureCapabilities' | 'collaboratorOverrides' | 'admissionDeps' | 'commandServiceDeps'
+> &
+  RequiredDesktopWorkflowCollaborators;
+
+export function createDesktopWorkflowComposition(options: DesktopWorkflowCompositionOptions): ProductionWorkflowComposition {
+  assertDesktopWorkflowCollaborators(options);
+  return createProductionWorkflowComposition({ ...options, requireLiveFenceVerifier: true, allowFixtureCapabilities: false, collaboratorOverrides: undefined, admissionDeps: undefined, commandServiceDeps: undefined });
 }
 
 export interface ProductionWorkflowComposition {
