@@ -28,6 +28,7 @@ import { GuardedRunService } from '../../src/services/guarded-run-service';
 import { ScheduledStartCoordinator } from '../../src/services/scheduled-start-coordinator';
 import {
   createProductionWorkflowComposition,
+  registerProductionWorkflowComposition,
   type ProductionWorkflowComposition
 } from '../../src/services/workflow-execution/production-workflow-composition';
 import {
@@ -221,7 +222,13 @@ async function openRealSession(
   let invocationCounter = 0;
 
   const runner = {
-    invoke: vi.fn(async (req: { phase: string }) => {
+    invoke: vi.fn(async (req: {
+      phase: string;
+      helperInvocation?: boolean;
+      onBeforeSpawn?: (ctx?: { readonly helperInvocation?: boolean }) => Promise<void> | void;
+      onAfterSpawn?: (pid: number | undefined) => Promise<void> | void;
+    }) => {
+      await req.onBeforeSpawn?.({ helperInvocation: req.helperInvocation === true });
       invocationCounter += 1;
       invokedPhases.push(req.phase);
       if (options.onPhaseInvoke !== undefined) {
@@ -237,6 +244,7 @@ async function openRealSession(
   const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
   const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
   const composition = createProductionWorkflowComposition({ store, workspaceRoot });
+  registerProductionWorkflowComposition(store, composition);
 
   const lateRefs: {
     guardedRun?: GuardedRunService;

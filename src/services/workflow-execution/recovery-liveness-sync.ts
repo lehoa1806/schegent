@@ -28,6 +28,7 @@ import {
   type WorkflowPauseCause
 } from '../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../state/workspace-state';
+import { getRegisteredProductionWorkflowComposition } from './production-workflow-composition';
 
 export interface RecoveryLivenessQueueRow {
   readonly id: string;
@@ -289,14 +290,15 @@ export function createStoreProcessEvidencePort(input: {
       }
 
       if (requests !== undefined) {
-        const stillPendingWithoutStart =
+        const stillLivePreSpawnRow =
           matchedReq !== undefined &&
-          matchedReq.status === 'pending' &&
-          (effectiveTaskId === undefined ||
-            !hasStartedWorkflowRunForTask(store, historyStore, effectiveTaskId));
+          (matchedReq.status === 'paused' ||
+            (matchedReq.status === 'pending' &&
+              (effectiveTaskId === undefined ||
+                !hasStartedWorkflowRunForTask(store, historyStore, effectiveTaskId))));
         return {
           processState: 'not-found',
-          queueItemPresent: stillPendingWithoutStart
+          queueItemPresent: stillLivePreSpawnRow
         };
       }
       return { processState: 'not-found' };
@@ -337,6 +339,7 @@ const MAX_REACTIVATION_CAS_RETRIES = 3;
  */
 export async function reactivateRecoveryPausedConnectedRunForTask(input: {
   readonly store: ConnectedRunReactivationStore;
+  readonly ledgerStoreOwner?: object | undefined;
   readonly taskId: string;
   readonly logger?: { readonly warn?: (msg: string) => void } | undefined;
 }): Promise<ConnectedRunReactivationResult> {
@@ -446,6 +449,64 @@ export async function reactivateRecoveryPausedConnectedRunForTask(input: {
 
     const written = await store.compareAndSetConnectedRun(finalNext, run.revision);
     if (written.outcome === 'written') {
+      const composition = getRegisteredProductionWorkflowComposition(
+        input.ledgerStoreOwner ?? store
+      );
+      if (composition !== undefined) {
+        const ledgerRunId = run.controlState?.ledgerRunId ?? run.connectedRunId;
+        const root = composition.ledgerStore.getRoot(ledgerRunId);
+        if (
+          root !== null &&
+          root.connectedRunId === run.connectedRunId &&
+          root.linkState === 'active' &&
+          root.status === 'paused' &&
+          root.pauseCause === 'recovery-uncertain-effect' &&
+          (await composition.verifyLiveFence(root.fence, {
+            rootRunId: ledgerRunId,
+            queueId: root.queueId
+          }))
+        ) {
+          await composition.ledgerStore.mutate(
+            { targetRootId: ledgerRunId, expectedFence: root.fence, allowSettlementReserve: true },
+            ({ ledger }) => {
+              const liveRoot = lookupOwn(ledger.roots, ledgerRunId);
+              if (
+                liveRoot === undefined ||
+                liveRoot.connectedRunId !== run.connectedRunId ||
+                liveRoot.linkState !== 'active' ||
+                liveRoot.status !== 'paused' ||
+                liveRoot.pauseCause !== 'recovery-uncertain-effect'
+              ) {
+                return { commit: false, code: 'stale-ledger-revision', message: 'Root no longer recovery-paused.' };
+              }
+              const nextFrames = { ...liveRoot.framesByKey };
+              for (const [k, f] of Object.entries(nextFrames)) {
+                if (f.status === 'paused' && f.pauseCause === 'recovery-uncertain-effect') {
+                  const { pauseCause: _clearedFrameCause, ...restFrame } = f;
+                  nextFrames[k] = Object.freeze({ ...restFrame, status: 'in-flight', updatedAt: Date.now() });
+                }
+              }
+              const { pauseCause: _clearedRootCause, ...restRoot } = liveRoot;
+              const nextRoot = Object.freeze({
+                ...restRoot,
+                status: 'in-flight' as const,
+                framesByKey: Object.freeze(nextFrames),
+                updatedAt: Date.now()
+              });
+              return {
+                commit: true,
+                plan: {
+                  nextLedger: { ...ledger, roots: { ...ledger.roots, [ledgerRunId]: nextRoot } },
+                  targetRootId: ledgerRunId,
+                  expectedFence: liveRoot.fence,
+                  allowSettlementReserve: true,
+                  result: true
+                }
+              };
+            }
+          );
+        }
+      }
       return {
         outcome: 'reactivated',
         runId: run.connectedRunId,

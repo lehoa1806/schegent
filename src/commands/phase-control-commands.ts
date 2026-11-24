@@ -94,17 +94,19 @@ export function runPausePhase(
   return runPhaseControl('pause', deps, () => deps.controller.pauseActivePhase(queueId));
 }
 
-function resolveResumedTaskId(
+function resolveResumedPausedTaskId(
   queueId: string | undefined,
   store: NonNullable<PhaseControlCommandDeps['store']>
 ): string | undefined {
   if (queueId !== undefined) {
-    return store.getRun(queueId)?.featureId;
+    const run = store.getRun(queueId);
+    return run?.status === 'paused' ? run.featureId : undefined;
   }
   const nonTerminal = Object.values(store.getRunMap()).filter(
     (run) => !isTerminalRunStatus(run.status)
   );
-  return nonTerminal.length === 1 ? nonTerminal.at(0)?.featureId : undefined;
+  const sole = nonTerminal.length === 1 ? nonTerminal.at(0) : undefined;
+  return sole?.status === 'paused' ? sole.featureId : undefined;
 }
 
 export async function runResumePhase(
@@ -113,18 +115,18 @@ export async function runResumePhase(
   deps: PhaseControlCommandDeps
 ): Promise<CommandOutcome> {
   const targetTaskId =
-    deps.store !== undefined ? resolveResumedTaskId(queueId, deps.store) : undefined;
-  const outcome = await runPhaseControl('resume', deps, () =>
-    deps.controller.resumeActivePhase(prompt, queueId)
-  );
-  if (outcome.outcome === 'accepted' && targetTaskId !== undefined && deps.store !== undefined) {
+    deps.store !== undefined ? resolveResumedPausedTaskId(queueId, deps.store) : undefined;
+  if (targetTaskId !== undefined && deps.store !== undefined) {
     await reactivateRecoveryPausedConnectedRunForTask({
       store: deps.store,
+      ledgerStoreOwner: deps.store,
       taskId: targetTaskId,
       logger: deps.logger
     });
   }
-  return outcome;
+  return runPhaseControl('resume', deps, () =>
+    deps.controller.resumeActivePhase(prompt, queueId)
+  );
 }
 
 export function runRestartPhase(
