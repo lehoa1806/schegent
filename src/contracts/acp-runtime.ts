@@ -1,11 +1,11 @@
 /**
- * FR-R6-F13 (F13-A; FR-001 to FR-022) — the host-owned ACP agent runtime: profiles, negotiated
+ * FR-R6-F13 (FR-001 to FR-022) — the host-owned ACP agent runtime: profiles, negotiated
  * capabilities, the per-operation capability matrix, refusal and failure reasons, prompt
  * outcomes, observations and the connection projection.
  *
- * The runtime speaks ACP protocol version 1 over newline-delimited JSON-RPC on stdio. It is
- * built and tested against deterministic fixtures only: no activation path constructs it, and
- * no profile is qualified in this delivery (F13-B qualifies one, F13-C moves dispatch).
+ * The runtime speaks ACP protocol version 1 over newline-delimited JSON-RPC on stdio. Built-in
+ * host-owned profiles (`agy-acp-native`, `claude-acp-bridge`, `codex-acp-bridge`) are routed via
+ * `AcpBackedRunner`, with platform and host-locality qualification enforced prior to launch.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
@@ -231,7 +231,16 @@ export type AcpObservation =
       readonly stopReason: AcpStopReason;
     })
   | (AcpObservationBase & { readonly kind: 'display'; readonly event: AcpNormalizedEvent })
-  | (AcpObservationBase & { readonly kind: 'usage'; readonly usage: AcpUsageUpdate });
+  | (AcpObservationBase & { readonly kind: 'usage'; readonly usage: AcpUsageUpdate })
+  | (AcpObservationBase & { readonly kind: 'permission-requested'; readonly permissionRequestId: string })
+  | (AcpObservationBase & {
+      readonly kind: 'permission-resolved';
+      readonly permissionRequestId: string;
+      readonly granted: boolean;
+    })
+  | (AcpObservationBase & { readonly kind: 'turn-canceled'; readonly reason?: AcpFailureReason | 'cancelled' })
+  | (AcpObservationBase & { readonly kind: 'turn-uncertain'; readonly reason: AcpFailureReason })
+  | (AcpObservationBase & { readonly kind: 'transport-disconnected'; readonly reason: AcpFailureReason });
 
 export interface AcpConnectionCounters {
   readonly unknownResponses: number;
@@ -289,7 +298,7 @@ export interface AcpPermissionRequest {
   readonly sessionId: string;
   readonly attemptId: string | null;
   readonly toolCallId: string | null;
-  /** Agent-written text, as received: not bounded below one message and not sanitized. Never log or render it raw. */
+  /** Agent-written text, sanitized and bounded via `sanitizeAgentDisplayTitle` (<= 128 chars, ANSI/controls/bidi/surrogates stripped, secrets redacted) before policy evaluation, display, or logging. */
   readonly toolTitle: string | null;
   readonly options: readonly { readonly optionId: string; readonly kind: AcpPermissionOptionKind }[];
 }

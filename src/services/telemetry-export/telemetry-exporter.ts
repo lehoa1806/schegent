@@ -10,7 +10,8 @@
  * queued. The transport, the secret port and the ledger are each called behind a guard, so a
  * throw from one of them is counted and never reaches the caller.
  *
- * Nothing constructs this in production yet (F14-B owns the wiring).
+ * Constructed in production exclusively by `TelemetryHostService`
+ * (`src/services/telemetry-host/telemetry-host-service.ts`).
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
@@ -20,6 +21,8 @@ import {
   TELEMETRY_EXPORT_BOUNDS,
   type DeliveryErrorClass,
   type DropReason,
+  type ExporterClock,
+  type ExporterTimers,
   type ExpiryReason,
   type OfferResult,
   type ProfileEvaluation,
@@ -100,14 +103,69 @@ function errorClassOf(verdict: DeliveryClassification): DeliveryErrorClass | nul
   }
 }
 
+function safeNow(clock: ExporterClock, fallback: number): number {
+  try {
+    const value = clock.now();
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+  } catch {
+    // Host clock faults must not escape synchronously or reject async delivery continuations.
+    return fallback;
+  }
+}
+
+function safeTimerSet(
+  timers: ExporterTimers,
+  callback: () => void,
+  delayMs: number
+): { readonly ok: true; readonly handle: unknown } | { readonly ok: false } {
+  try {
+    return { ok: true, handle: timers.set(callback, delayMs) };
+  } catch {
+    // Host timer faults are caught cleanly so retry scheduling and shutdown never throw or wedge.
+    return { ok: false };
+  }
+}
+
+function safeTimerClear(timers: ExporterTimers, handle: unknown): void {
+  try {
+    timers.clear(handle);
+  } catch {
+    // Host timer clear faults must not escape retry teardown or shutdown.
+  }
+}
+
+function safeRandom(random: () => number): () => number {
+  return () => {
+    try {
+      const value = random();
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1 ? value : 1;
+    } catch {
+      // A throwing random source falls back to unjittered full backoff delay (`jitterOf` treats 1 as 1.0).
+      return 1;
+    }
+  };
+}
+
 export function createTelemetryExporter(options: TelemetryExporterOptions): TelemetryExporter {
   const { transport, clock, timers, random, secrets, ledger } = options;
+  const safeRandomSource = safeRandom(random);
+  let lastNow = 0;
+
+  function readNow(fallback = lastNow): number {
+    const value = safeNow(clock, fallback);
+    lastNow = value;
+    return value;
+  }
+
+  const safeClock: ExporterClock = {
+    now: () => readNow()
+  };
   const batches = createExportQueue();
   const counters = createHealthCounters();
   const intake = createRecordIntake({
     ledger,
     counters,
-    clock,
+    clock: safeClock,
     batch: options.serviceVersion === undefined ? {} : { serviceVersion: options.serviceVersion },
     onBound: () => {
       seal();
@@ -148,8 +206,9 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
 
   function clearRetryTimer(): void {
     if (retryTimer === null) return;
-    timers.clear(retryTimer.handle);
+    const { handle } = retryTimer;
     retryTimer = null;
+    safeTimerClear(timers, handle);
   }
 
   function resolveIdle(): void {
@@ -171,11 +230,19 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
     resolveIdle();
     if (aborted === null) return null;
     unwinding += 1;
-    aborted.controller.abort();
-    return aborted.done.then(() => {
-      unwinding -= 1;
-      pump();
-    });
+    try {
+      aborted.controller.abort();
+    } catch {
+      // A transport abort-listener fault must not skip unwinding or escape teardown.
+    }
+    return aborted.done
+      .catch(() => {
+        // Aborted flight errors are already handled; keep teardown's returned promise non-rejecting.
+      })
+      .finally(() => {
+        unwinding = Math.max(0, unwinding - 1);
+        pump();
+      });
   }
 
   async function sendOnce(request: TransportRequest): Promise<TransportResult> {
@@ -193,7 +260,7 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
       firstAttemptAt: attempt.firstAttemptAt ?? now,
       now,
       retryAfterMs,
-      random
+      random: safeRandomSource
     });
     if (decision.kind === 'exhausted') {
       batches.remove(attempt.batchId);
@@ -203,15 +270,28 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
     batches.awaitRetry(attempt.batchId);
     const slot: TimerSlot = { handle: undefined };
     retryTimer = slot;
-    slot.handle = timers.set(() => {
-      if (retryTimer !== slot) return;
-      retryTimer = null;
-      pump();
-    }, decision.delayMs);
+    const scheduled = safeTimerSet(
+      timers,
+      () => {
+        if (retryTimer !== slot) return;
+        retryTimer = null;
+        pump();
+      },
+      decision.delayMs
+    );
+    if (!scheduled.ok) {
+      // Never leave retryTimer non-null with `{ handle: undefined }` when `timers.set` throws;
+      // expire the batch cleanly so later batches are never wedged.
+      if (retryTimer === slot) retryTimer = null;
+      batches.remove(attempt.batchId);
+      finishExpired(attempt.batchId, 'retry-budget-exhausted');
+      return;
+    }
+    slot.handle = scheduled.handle;
   }
 
   function conclude(attempt: QueuedBatch, attemptId: string, result: TransportResult): void {
-    const now = clock.now();
+    const now = readNow(attempt.firstAttemptAt ?? lastNow);
     const verdict = classifyDelivery(result);
     const { batchId } = attempt;
     const errorClass = errorClassOf(verdict);
@@ -244,41 +324,49 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
   }
 
   async function deliver(head: QueuedBatch, target: Destination, signal: AbortSignal, sendEpoch: number): Promise<void> {
-    const reference = target.resolved.credential;
-    let held = credential;
-    if (reference !== null && held.kind === 'unread') {
-      held = await readCredential(secrets, reference.reference);
+    try {
+      const reference = target.resolved.credential;
+      let held = credential;
+      if (reference !== null && held.kind === 'unread') {
+        held = await readCredential(secrets, reference.reference);
+        if (epoch !== sendEpoch) return;
+        credential = held;
+      }
+      if (held.kind === 'failed') {
+        // Saturation may have dropped the batch while the credential was read.
+        if (batches.remove(head.batchId) === undefined) return;
+        counters.error(held.reason);
+        finishDropped(head.batchId, held.reason);
+        return;
+      }
+      const attempt = batches.beginAttempt(head.batchId, readNow(head.sealedAt));
+      if (attempt === undefined) return;
+      const headers: Record<string, string> = { 'content-type': CONTENT_TYPE };
+      if (reference !== null && held.kind === 'value') headers[reference.headerName] = held.value;
+      const attemptId = randomUUID();
+      const result = await sendOnce({
+        url: target.url,
+        plaintextLoopback: target.resolved.plaintextLoopback,
+        headers,
+        body: attempt.body,
+        deadlineMs: BOUNDS.requestDeadlineMs,
+        signal
+      });
       if (epoch !== sendEpoch) return;
-      credential = held;
+      conclude(attempt, attemptId, result);
+    } catch {
+      // Defensive catch-all so no unexpected fault escapes as an unhandled rejection or wedges `sending`.
+      if (epoch === sendEpoch && batches.remove(head.batchId) !== undefined) {
+        counters.error('network');
+        finishDropped(head.batchId, 'rejected');
+      }
     }
-    if (held.kind === 'failed') {
-      // Saturation may have dropped the batch while the credential was read.
-      if (batches.remove(head.batchId) === undefined) return;
-      counters.error(held.reason);
-      finishDropped(head.batchId, held.reason);
-      return;
-    }
-    const attempt = batches.beginAttempt(head.batchId, clock.now());
-    if (attempt === undefined) return;
-    const headers: Record<string, string> = { 'content-type': CONTENT_TYPE };
-    if (reference !== null && held.kind === 'value') headers[reference.headerName] = held.value;
-    const attemptId = randomUUID();
-    const result = await sendOnce({
-      url: target.url,
-      plaintextLoopback: target.resolved.plaintextLoopback,
-      headers,
-      body: attempt.body,
-      deadlineMs: BOUNDS.requestDeadlineMs,
-      signal
-    });
-    if (epoch !== sendEpoch) return;
-    conclude(attempt, attemptId, result);
   }
 
   /** Starts the next delivery when nothing is in flight and no retry is pending. */
   function pump(): void {
     if (shutDown || destination === null || inFlight !== null || retryTimer !== null || unwinding > 0) return;
-    for (const batch of batches.takeExpired(clock.now())) finishExpired(batch.batchId, 'age');
+    for (const batch of batches.takeExpired(readNow())) finishExpired(batch.batchId, 'age');
     const head = batches.head();
     if (head === undefined) {
       resolveIdle();
@@ -287,11 +375,15 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
     const controller = new AbortController();
     const flight: InFlight = { controller, done: Promise.resolve() };
     inFlight = flight;
-    flight.done = deliver(head, destination, controller.signal, epoch).then(() => {
-      if (inFlight !== flight) return;
-      inFlight = null;
-      pump();
-    });
+    flight.done = deliver(head, destination, controller.signal, epoch)
+      .catch(() => {
+        // deliver() guards its own body; this ensures flight.done never rejects.
+      })
+      .finally(() => {
+        if (inFlight !== flight) return;
+        inFlight = null;
+        pump();
+      });
   }
 
   /** Closes the open batch into the queue and starts delivery. */
@@ -303,7 +395,7 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
       finishDropped(batchId, 'batch-oversized');
       return;
     }
-    const sealed = { batchId, ...closed, sealedAt: clock.now(), authorizationGeneration: destination.generation };
+    const sealed = { batchId, ...closed, sealedAt: readNow(), authorizationGeneration: destination.generation };
     for (const dropped of batches.enqueue(sealed)) finishDropped(dropped.batchId, 'queue-saturated');
     // The batch that was waiting for its retry may be the one that made room.
     const head = batches.head();
@@ -350,15 +442,29 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
       if (aborted === null) return Promise.resolve();
       return new Promise<void>((resolve) => {
         const slot: TimerSlot = { handle: undefined };
+        let hasHostTimer = false;
+        let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
         let finished = false;
+        const isFinished = (): boolean => finished;
         const finish = (): void => {
           if (finished) return;
           finished = true;
-          timers.clear(slot.handle);
+          if (hasHostTimer) safeTimerClear(timers, slot.handle);
+          if (fallbackTimer !== null) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
           resolve();
         };
-        slot.handle = timers.set(finish, BOUNDS.shutdownBudgetMs);
-        void aborted.then(finish);
+        const scheduled = safeTimerSet(timers, finish, BOUNDS.shutdownBudgetMs);
+        if (scheduled.ok) {
+          slot.handle = scheduled.handle;
+          if (isFinished()) safeTimerClear(timers, slot.handle);
+          else hasHostTimer = true;
+        } else if (!isFinished()) {
+          fallbackTimer = setTimeout(finish, BOUNDS.shutdownBudgetMs);
+        }
+        void aborted.then(finish, finish);
       });
     },
     health() {

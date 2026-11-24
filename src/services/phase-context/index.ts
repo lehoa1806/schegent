@@ -70,10 +70,17 @@ export { selectSources, type SelectionInput, type SelectionResult, type SourceCo
 export { parseSourceContribution, type ContributionParse } from './source-contribution';
 export {
   createSqliteHandoffStore,
+  HandoffStoreCorruptionError,
   type DurableHandoffStore,
   type HandoffRunMetadata,
   type StoredReviewLoopEntry
 } from './sqlite-handoff-store';
+export {
+  materializedCopyArtifactId,
+  sanitizePhaseContextToken,
+  verifyNegotiatedHandoffCapabilities
+} from './phase-context-helpers';
+export { resolveNodeReviewRole, type NodeReviewRole } from './review-loop-coordinator';
 export {
   createPhaseHandoffCoordinator,
   normalizeNodePathForHandoff,

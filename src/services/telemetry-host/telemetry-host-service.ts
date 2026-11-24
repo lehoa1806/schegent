@@ -7,44 +7,32 @@
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import {
-  COVERAGE_OUTCOMES,
-  DROP_REASONS,
-  EXPIRY_REASONS,
   TELEMETRY_EXPORT_BOUNDS,
   TELEMETRY_MAPPING_REVISION,
   TELEMETRY_PROTOCOL_REVISION,
   TELEMETRY_SEMANTIC_CONVENTIONS,
   TELEMETRY_SOURCE_SCHEMA,
-  type CoverageOutcome,
+  type DeliveryErrorClass,
   type DeliveryHealth,
   type DropReason,
   type ExpiryReason,
-  type ExportCompleteness,
-  type ExportMeasure,
   type ExportSourceRecord,
   type ExporterClock,
   type ExporterTimers,
   type OfferResult,
   type ProfileEvaluation,
   type ProfileEvaluationContext,
-  type ProfileRefusalReason,
   type ResolvedDestination,
-  type TelemetryContentPolicy,
   type TelemetryExporter,
   type TelemetryLedgerPort,
-  type TelemetryProtocol,
   type TelemetrySecretPort,
-  type TelemetryTransport
+  type TelemetryTransport,
+  type TransportResult
 } from '../../contracts/telemetry-export';
-import type {
-  AttemptOutcome,
-  CacheRelation,
-  Measure,
-  Provenance
-} from '../../contracts/usage-accounting/accounting-types';
+import type { AttemptOutcome, Measure } from '../../contracts/usage-accounting/accounting-types';
 import type { SideEffectFailureReport } from '../../lib/side-effect-failure-reporter';
 import type { SqliteApplicationStore } from '../sqlite-store';
 import {
@@ -54,36 +42,37 @@ import {
   evaluateProfiles,
   type NameLookup
 } from '../telemetry-export';
+import { isHeaderValue } from '../telemetry-export/credential-reader';
+import { CONNECTION_LOST, isTransportResult } from '../telemetry-export/retry-policy';
+import { parseSourceRecord } from '../telemetry-export/source-record';
 import {
   createSqliteTelemetryLedger,
   createTelemetrySpoolStore,
   type SqliteTelemetryLedger,
   type TelemetrySpoolStore
 } from './telemetry-durable-store';
+import {
+  buildProfileObjectFromUserSettings,
+  destinationFingerprintOf,
+  destinationMatches,
+  emptyDisabledHealth,
+  formatTelemetryExportPreview,
+  normalizeAcceptedObservationFromSqlite,
+  normalizeContentPolicy,
+  sanitizedCardinalityDimension,
+  stableSourceCorrelationId,
+  type NormalizedTelemetryContentPolicy,
+  type TelemetryExportPreview,
+  type TelemetryUserSettingsInput
+} from './telemetry-host-helpers';
 
-export interface TelemetryUserSettingsInput {
-  readonly enabled: boolean;
-  readonly endpoint: string;
-  readonly protocol: TelemetryProtocol | string;
-  readonly allowPlaintextLoopback: boolean;
-  readonly credentialSecretKey: string;
-  readonly credentialHeaderName: string;
-  readonly contentPolicy: TelemetryContentPolicy | string;
-  readonly profileRevision?: number;
-}
-
-export interface TelemetryExportPreview {
-  readonly requestedContentPolicy: string;
-  readonly effectiveStatus: 'disabled' | 'authorized-metadata-only' | 'refused';
-  readonly refusalReason: ProfileRefusalReason | null;
-  readonly contentExportSupported: false;
-  readonly mappingRevision: typeof TELEMETRY_MAPPING_REVISION;
-  readonly protocolRevision: typeof TELEMETRY_PROTOCOL_REVISION;
-  readonly semanticConventionsRevision: typeof TELEMETRY_SEMANTIC_CONVENTIONS;
-  readonly allowlistedFields: readonly string[];
-  readonly excludedCategories: readonly string[];
-  readonly redactionLimitsDisclosure: string;
-}
+export {
+  buildProfileObjectFromUserSettings,
+  normalizeAcceptedObservationFromSqlite,
+  type NormalizedTelemetryContentPolicy,
+  type TelemetryExportPreview,
+  type TelemetryUserSettingsInput
+} from './telemetry-host-helpers';
 
 export interface TelemetryHostStatus {
   readonly evaluation: ProfileEvaluation;
@@ -149,190 +138,13 @@ export interface TelemetryHostService {
   readonly spool: TelemetrySpoolStore;
 }
 
-const ALLOWLISTED_FIELDS: readonly string[] = Object.freeze([
-  'sourceSchema',
-  'kind',
-  'sourceId(hashed-correlation-id)',
-  'sourceRevision',
-  'backend',
-  'modelRequested',
-  'modelReported',
-  'measures(measure,quantity,unit,completeness,provenance,cacheRelation)',
-  'durationMs',
-  'outcome',
-  'correction(measure,unit,previousQuantity,replacementQuantity)'
-]);
-
-const EXCLUDED_CATEGORIES: readonly string[] = Object.freeze([
-  'prompts',
-  'responses',
-  'tool-arguments',
-  'transcript-text',
-  'credentials',
-  'workspace-paths',
-  'home-paths',
-  'workspace-root-run-attempt-session-phase-workflow-ids'
-]);
-
-const REDACTION_LIMITS_DISCLOSURE =
-  'Pattern-based redaction provides risk reduction rather than a guarantee. Mapping revision 1 exports allowlisted aggregate accounting metadata only (`metadata-only`) and refuses `content` export (`content-export-unsupported`). Enabling metadata export never enables prompt or response capture and never alters local transcript retention.';
-
-function emptyDisabledHealth(extraDropped?: Readonly<Partial<Record<DropReason, number>>>, extraExpired?: Readonly<Partial<Record<ExpiryReason, number>>>): DeliveryHealth {
-  const dropReasons = Object.fromEntries(
-    DROP_REASONS.map((r) => [r, extraDropped?.[r] ?? 0])
-  ) as Record<DropReason, number>;
-  const expiryReasons = Object.fromEntries(
-    EXPIRY_REASONS.map((r) => [r, extraExpired?.[r] ?? 0])
-  ) as Record<ExpiryReason, number>;
-  const coverage = Object.fromEntries(
-    COVERAGE_OUTCOMES.map((c) => [c, 0])
-  ) as Record<CoverageOutcome, number>;
-  const droppedBatches = Object.values(dropReasons).reduce((a, b) => a + b, 0);
-  const expiredBatches = Object.values(expiryReasons).reduce((a, b) => a + b, 0);
-  return Object.freeze({
-    state: 'disabled',
-    mappingRevision: TELEMETRY_MAPPING_REVISION,
-    lastSuccessAt: null,
-    queuedBatches: 0,
-    queuedBytes: 0,
-    acknowledgedBatches: 0,
-    expiredBatches,
-    droppedBatches,
-    dropReasons: Object.freeze(dropReasons),
-    expiryReasons: Object.freeze(expiryReasons),
-    duplicateRecords: 0,
-    unsupportedSchemaRecords: 0,
-    invalidRecords: 0,
-    refusedOffers: 0,
-    rejectedDataPoints: 0,
-    ledgerFaults: 0,
-    lastError: null,
-    coverage: Object.freeze(coverage)
-  });
-}
-
-export function buildProfileObjectFromUserSettings(
-  settings: TelemetryUserSettingsInput
-): Record<string, unknown> {
-  const secretRef = settings.credentialSecretKey.trim();
-  const credential =
-    secretRef.length > 0
-      ? {
-          reference: secretRef,
-          headerName: settings.credentialHeaderName
-        }
-      : null;
-  return {
-    id: 'user-default',
-    revision: settings.profileRevision ?? 1,
-    enabled: settings.enabled === true,
-    scope: 'user',
-    protocol: settings.protocol,
-    signals: ['metrics'],
-    contentPolicy: settings.contentPolicy,
-    endpoint: settings.endpoint.trim(),
-    allowPlaintextLoopback: settings.allowPlaintextLoopback === true,
-    credential
-  };
-}
-
 export function buildTelemetryExportPreview(
   settings: TelemetryUserSettingsInput,
   context: ProfileEvaluationContext
 ): TelemetryExportPreview {
   const profile = buildProfileObjectFromUserSettings(settings);
   const evaluation = evaluateProfiles([profile], context);
-  return Object.freeze({
-    requestedContentPolicy: String(settings.contentPolicy),
-    effectiveStatus:
-      evaluation.kind === 'authorized'
-        ? 'authorized-metadata-only'
-        : evaluation.kind === 'refused'
-          ? 'refused'
-          : 'disabled',
-    refusalReason: evaluation.kind === 'refused' ? evaluation.reason : null,
-    contentExportSupported: false,
-    mappingRevision: TELEMETRY_MAPPING_REVISION,
-    protocolRevision: TELEMETRY_PROTOCOL_REVISION,
-    semanticConventionsRevision: TELEMETRY_SEMANTIC_CONVENTIONS,
-    allowlistedFields: ALLOWLISTED_FIELDS,
-    excludedCategories: EXCLUDED_CATEGORIES,
-    redactionLimitsDisclosure: REDACTION_LIMITS_DISCLOSURE
-  });
-}
-
-function stableSourceCorrelationId(prefix: string, rawId: string): string {
-  const hex = createHash('sha256').update(`${prefix}\n${rawId}`, 'utf8').digest('hex').slice(0, 32);
-  return `${prefix}-${hex}`;
-}
-
-export function normalizeAcceptedObservationFromSqlite(
-  sqliteStore: SqliteApplicationStore,
-  observationId: string
-): ExportSourceRecord | null {
-  const conn = sqliteStore.writerConnection;
-  const obs = conn.get<{
-    observation_id: string;
-    observation_revision: number;
-    backend: string | null;
-    model_requested: string | null;
-    model_reported: string | null;
-  }>(
-    `SELECT observation_id, observation_revision, backend, model_requested, model_reported
-     FROM accounting_observations
-     WHERE observation_id = ?`,
-    observationId
-  );
-  if (obs === undefined) return null;
-
-  const measureRows = conn.all<{
-    measure: Measure;
-    quantity: number | null;
-    unit: string;
-    completeness: ExportCompleteness;
-    provenance: Provenance;
-    cache_relation: CacheRelation | null;
-  }>(
-    `SELECT measure, quantity, unit, completeness, provenance, cache_relation
-     FROM accounting_observation_measures
-     WHERE observation_id = ?
-     ORDER BY measure ASC`,
-    observationId
-  );
-
-  const measures: ExportMeasure[] = measureRows.map((m) =>
-    Object.freeze({
-      measure: m.measure,
-      quantity: m.quantity === null ? null : String(m.quantity),
-      unit: m.unit,
-      completeness: m.completeness,
-      provenance: m.provenance,
-      cacheRelation: m.cache_relation
-    })
-  );
-
-  return Object.freeze({
-    sourceSchema: TELEMETRY_SOURCE_SCHEMA,
-    kind: 'usage',
-    sourceId: stableSourceCorrelationId('obs', obs.observation_id),
-    sourceRevision: obs.observation_revision,
-    backend: obs.backend ?? 'unknown',
-    modelRequested: obs.model_requested,
-    modelReported: obs.model_reported,
-    measures: Object.freeze(measures)
-  });
-}
-
-function destinationMatches(a: ResolvedDestination | null, b: ResolvedDestination | null): boolean {
-  if (a === null || b === null) return a === b;
-  return (
-    a.profileId === b.profileId &&
-    a.profileRevision === b.profileRevision &&
-    a.endpoint === b.endpoint &&
-    a.plaintextLoopback === b.plaintextLoopback &&
-    (a.credential?.reference ?? null) === (b.credential?.reference ?? null) &&
-    (a.credential?.headerName ?? null) === (b.credential?.headerName ?? null)
-  );
+  return formatTelemetryExportPreview(normalizeContentPolicy(settings.contentPolicy), evaluation);
 }
 
 export function createTelemetryHostService(deps: TelemetryHostServiceDeps): TelemetryHostService {
@@ -343,20 +155,49 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
   };
   const random = deps.random ?? (() => Math.random());
 
-  const ledger = createSqliteTelemetryLedger(deps.sqliteStore, () => clock.now());
+  let lastHostNow = 0;
+  function readHostNow(): number {
+    try {
+      const value = clock.now();
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        lastHostNow = value;
+        return value;
+      }
+    } catch {
+      // Host clock failures must not throw synchronously or reject replay/spool operations.
+    }
+    return lastHostNow;
+  }
+
+  const ledger = createSqliteTelemetryLedger(deps.sqliteStore, () => readHostNow());
   const spool = createTelemetrySpoolStore({
     sqliteStore: deps.sqliteStore,
     storageRoot: deps.storageRoot,
-    nowMs: () => clock.now()
+    nowMs: () => readHostNow()
   });
 
   let evaluation: ProfileEvaluation = Object.freeze({ kind: 'disabled' });
   let activeDestination: ResolvedDestination | null = null;
-  let authorizationGeneration = ledger.readAuthorizationGeneration();
-  let lastPreviewPolicy = 'metadata-only';
+  let authorizationGeneration = 1;
+  try {
+    authorizationGeneration = ledger.readAuthorizationGeneration();
+  } catch {
+    // Store may already be closed in fault-injection tests; keep generation 1.
+  }
+  let lastPreviewPolicy: NormalizedTelemetryContentPolicy = 'metadata-only';
   let transport: TelemetryTransport | null = null;
   let exporter: TelemetryExporter | null = null;
   let lastFailedBody: Uint8Array | null = null;
+  const activeReplayControllers = new Set<AbortController>();
+  let activeReplay: Promise<{
+    readonly replayed: number;
+    readonly acknowledged: number;
+    readonly dropped: number;
+    readonly expired: number;
+  }> | null = null;
+  let shutDown = false;
+  let pendingReconcileDropped = 0;
+  let pendingReconcileExpired = 0;
 
   /** Unawaited spool work, so `idle()` can wait for it; each entry has already handled its failure. */
   const pendingSpoolWork = new Set<Promise<void>>();
@@ -369,6 +210,32 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
     );
     pendingSpoolWork.add(settled);
     void settled.then(() => pendingSpoolWork.delete(settled));
+  }
+
+  async function drainPendingSpoolWork(): Promise<void> {
+    while (pendingSpoolWork.size > 0) {
+      await Promise.all([...pendingSpoolWork]);
+    }
+  }
+
+  function abortActiveReplay(): void {
+    const controllers = [...activeReplayControllers];
+    activeReplayControllers.clear();
+    for (const controller of controllers) {
+      try {
+        controller.abort();
+      } catch {
+        // Transport abort listener faults must never break revocation or shutdown.
+      }
+    }
+  }
+
+  function safeSpoolStats(): { readonly spooledBatches: number; readonly spooledBytes: number } {
+    try {
+      return spool.stats();
+    } catch {
+      return { spooledBatches: 0, spooledBytes: 0 };
+    }
   }
 
   const spoolDropCounts: Partial<Record<DropReason, number>> = {};
@@ -392,10 +259,25 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
     }
   }
 
+  function safeSecretAvailability(): ProfileEvaluationContext['secretStore'] {
+    if (deps.secrets === null) return 'absent';
+    try {
+      return deps.secrets.availability() === 'available' ? 'available' : 'unavailable';
+    } catch {
+      return 'unavailable';
+    }
+  }
+
   function evaluationContext(): ProfileEvaluationContext {
+    let workspaceTrusted = false;
+    try {
+      workspaceTrusted = deps.isWorkspaceTrusted() === true;
+    } catch {
+      workspaceTrusted = false;
+    }
     return {
-      workspaceTrusted: deps.isWorkspaceTrusted(),
-      secretStore: deps.secrets === null ? 'absent' : deps.secrets.availability()
+      workspaceTrusted,
+      secretStore: safeSecretAvailability()
     };
   }
 
@@ -409,12 +291,27 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
     return transport;
   }
 
+  function revocationDropReason(): DropReason {
+    if (shutDown) return 'shutdown';
+    return activeDestination === null ? 'disabled' : 'authorization-changed';
+  }
+
+  function isRevokedFor(dest: ResolvedDestination, gen: number): boolean {
+    return shutDown || activeDestination !== dest || authorizationGeneration !== gen;
+  }
+
   function ensureExporter(): TelemetryExporter {
     if (exporter !== null) return exporter;
     const underlyingTransport = ensureTransport();
     const wrappedTransport: TelemetryTransport = {
       async send(req) {
-        const res = await underlyingTransport.send(req);
+        let res: TransportResult;
+        try {
+          const raw: unknown = await underlyingTransport.send(req);
+          res = isTransportResult(raw) ? raw : CONNECTION_LOST;
+        } catch {
+          res = CONNECTION_LOST;
+        }
         const verdict = classifyDelivery(res);
         if (verdict.outcome === 'retry') {
           lastFailedBody = req.body;
@@ -438,25 +335,35 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
           state === 'expired' &&
           reason === 'retry-budget-exhausted' &&
           lastFailedBody !== null &&
-          activeDestination !== null
+          activeDestination !== null &&
+          !shutDown
         ) {
           const bodyToSpool = lastFailedBody;
           const destSnapshot = activeDestination;
           const genSnapshot = authorizationGeneration;
           lastFailedBody = null;
           trackSpoolWork(
-            spool
-              .spoolBatch({
+            (async () => {
+              if (isRevokedFor(destSnapshot, genSnapshot)) {
+                recordSpoolDrop(batchId, revocationDropReason());
+                return;
+              }
+              const spooled = await spool.spoolBatch({
                 batchId,
                 destination: destSnapshot,
                 authorizationGeneration: genSnapshot,
                 body: bodyToSpool
-              })
-              .then((spooled) => {
-                for (const evictedId of spooled.droppedBatchIds) {
-                  recordSpoolDrop(evictedId, 'queue-saturated');
+              });
+              for (const evictedId of spooled.droppedBatchIds) {
+                recordSpoolDrop(evictedId, 'queue-saturated');
+              }
+              if (spooled.spooled && isRevokedFor(destSnapshot, genSnapshot)) {
+                const removed = await spool.removeBatch(batchId);
+                if (removed) {
+                  recordSpoolDrop(batchId, revocationDropReason());
                 }
-              })
+              }
+            })()
           );
         }
       }
@@ -475,12 +382,27 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
   }
 
   function applyEvaluation(nextEval: ProfileEvaluation): ProfileEvaluation {
+    if (shutDown) return evaluation;
     const nextDest = nextEval.kind === 'authorized' ? nextEval.destination : null;
-    const changed = !destinationMatches(activeDestination, nextDest);
+    const changedInMemory = !destinationMatches(activeDestination, nextDest);
+    const nextFingerprint = destinationFingerprintOf(nextDest);
 
-    if (changed && (activeDestination !== null || nextDest !== null)) {
-      authorizationGeneration = ledger.bumpAuthorizationGeneration();
+    let generationChanged = false;
+    try {
+      const synced = ledger.syncAuthorizationDestination(nextFingerprint);
+      authorizationGeneration = synced.generation;
+      generationChanged = synced.changed;
+    } catch {
+      if (changedInMemory && (activeDestination !== null || nextDest !== null)) {
+        authorizationGeneration += 1;
+        generationChanged = true;
+      }
     }
+
+    if (changedInMemory || nextDest === null || generationChanged) {
+      abortActiveReplay();
+    }
+
     evaluation = nextEval;
     activeDestination = nextDest;
 
@@ -490,29 +412,45 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
         exporter.configure(nextEval, authorizationGeneration);
       }
       // Revoke any spooled batches if any exist in SQLite without creating directories in disabled mode.
-      if (spool.stats().spooledBatches > 0) {
+      if (safeSpoolStats().spooledBatches > 0) {
         trackSpoolWork(
           spool.reconcileForDestination({
             activeDestination: null,
             authorizationGeneration,
-            onDropped: recordSpoolDrop,
-            onExpired: recordSpoolExpiry
+            onDropped: (batchId, reason) => {
+              pendingReconcileDropped += 1;
+              recordSpoolDrop(batchId, reason);
+            },
+            onExpired: (batchId, reason) => {
+              pendingReconcileExpired += 1;
+              recordSpoolExpiry(batchId, reason);
+            }
           })
         );
       }
       return evaluation;
     }
 
-    ledger.setActiveProfileId(nextDest.profileId);
+    try {
+      ledger.setActiveProfileId(nextDest.profileId);
+    } catch {
+      // Guarded profile-id update.
+    }
     const exp = ensureExporter();
     exp.configure(nextEval, authorizationGeneration);
-    if (spool.stats().spooledBatches > 0) {
+    if (safeSpoolStats().spooledBatches > 0) {
       trackSpoolWork(
         spool.reconcileForDestination({
           activeDestination: nextDest,
           authorizationGeneration,
-          onDropped: recordSpoolDrop,
-          onExpired: recordSpoolExpiry
+          onDropped: (batchId, reason) => {
+            pendingReconcileDropped += 1;
+            recordSpoolDrop(batchId, reason);
+          },
+          onExpired: (batchId, reason) => {
+            pendingReconcileExpired += 1;
+            recordSpoolExpiry(batchId, reason);
+          }
         })
       );
     }
@@ -523,21 +461,25 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
     if (activeDestination === null) return;
     const profileId = activeDestination.profileId;
     for (const raw of records) {
-      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
-      const rec = raw as Partial<ExportSourceRecord>;
-      if (typeof rec.backend !== 'string') continue;
+      const parsed = parseSourceRecord(raw);
+      if (parsed.kind !== 'record') continue;
+      const rec = parsed.record;
       const key = JSON.stringify([
-        rec.backend,
-        rec.modelRequested ?? '',
-        rec.modelReported ?? '',
-        rec.kind ?? ''
+        sanitizedCardinalityDimension('backend', rec.backend),
+        sanitizedCardinalityDimension('model', rec.modelRequested),
+        sanitizedCardinalityDimension('model', rec.modelReported),
+        rec.kind
       ]);
-      ledger.admitCardinalitySet({
-        profileId,
-        mappingRevision: TELEMETRY_MAPPING_REVISION,
-        instrument: rec.kind === 'operation' ? 'operation-duration' : 'token-usage',
-        attributeSetKey: key
-      });
+      try {
+        ledger.admitCardinalitySet({
+          profileId,
+          mappingRevision: TELEMETRY_MAPPING_REVISION,
+          instrument: rec.kind === 'operation' ? 'operation-duration' : 'token-usage',
+          attributeSetKey: key
+        });
+      } catch {
+        // Cardinality tracking must never fail or refuse export ingestion.
+      }
     }
   }
 
@@ -546,25 +488,31 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
     spool,
 
     configureFromUserSettings(settings) {
-      lastPreviewPolicy = String(settings.contentPolicy);
+      lastPreviewPolicy = normalizeContentPolicy(settings.contentPolicy);
       const profile = buildProfileObjectFromUserSettings(settings);
       return applyEvaluation(evaluateProfiles([profile], evaluationContext()));
     },
 
     configureFromRawProfiles(profiles, previewPolicy = 'metadata-only') {
-      lastPreviewPolicy = previewPolicy;
+      lastPreviewPolicy = normalizeContentPolicy(previewPolicy);
       return applyEvaluation(evaluateProfiles(profiles, evaluationContext()));
     },
 
     offerRecords(records) {
+      if (!Array.isArray(records)) {
+        return { accepted: 0, duplicate: 0, refused: 0 };
+      }
       if (exporter === null || activeDestination === null) {
-        return { accepted: 0, duplicate: 0, refused: Array.isArray(records) ? records.length : 0 };
+        return { accepted: 0, duplicate: 0, refused: records.length };
       }
       try {
-        trackDurableCardinality(records);
-        return exporter.offer(records);
+        const result = exporter.offer(records);
+        if (result.accepted > 0) {
+          trackDurableCardinality(records);
+        }
+        return result;
       } catch {
-        return { accepted: 0, duplicate: 0, refused: records.length };
+        return { accepted: 0, duplicate: 0, refused: Array.isArray(records) ? records.length : 0 };
       }
     },
 
@@ -575,8 +523,11 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
       try {
         const record = normalizeAcceptedObservationFromSqlite(deps.sqliteStore, observationId);
         if (record === null) return { accepted: 0, duplicate: 0, refused: 0 };
-        trackDurableCardinality([record]);
-        return exporter.offer([record]);
+        const result = exporter.offer([record]);
+        if (result.accepted > 0) {
+          trackDurableCardinality([record]);
+        }
+        return result;
       } catch {
         return { accepted: 0, duplicate: 0, refused: 1 };
       }
@@ -605,8 +556,11 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
           durationMs: params.durationMs,
           outcome: params.outcome
         });
-        trackDurableCardinality([record]);
-        return exporter.offer([record]);
+        const result = exporter.offer([record]);
+        if (result.accepted > 0) {
+          trackDurableCardinality([record]);
+        }
+        return result;
       } catch {
         return { accepted: 0, duplicate: 0, refused: 1 };
       }
@@ -658,110 +612,243 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
               row.replacement_quantity === null ? null : String(row.replacement_quantity)
           })
         });
-        trackDurableCardinality([record]);
-        return exporter.offer([record]);
+        const result = exporter.offer([record]);
+        if (result.accepted > 0) {
+          trackDurableCardinality([record]);
+        }
+        return result;
       } catch {
         return { accepted: 0, duplicate: 0, refused: 1 };
       }
     },
 
-    async reconcileAndReplaySpool() {
-      let acknowledged = 0;
-      let dropped = 0;
-      let expired = 0;
-      const kept = await spool.reconcileForDestination({
-        activeDestination,
-        authorizationGeneration,
-        onDropped: (batchId, reason) => {
-          dropped += 1;
-          recordSpoolDrop(batchId, reason);
-        },
-        onExpired: (batchId, reason) => {
-          expired += 1;
-          recordSpoolExpiry(batchId, reason);
-        }
-      });
-
-      if (kept.length === 0 || activeDestination === null) {
-        return { replayed: 0, acknowledged, dropped, expired };
+    reconcileAndReplaySpool() {
+      if (activeReplay !== null) {
+        return activeReplay;
       }
 
-      const target = activeDestination;
-      const genAtStart = authorizationGeneration;
-      const net = ensureTransport();
-      const headers: Record<string, string> = { 'content-type': 'application/json' };
-      if (target.credential !== null) {
-        if (deps.secrets === null || deps.secrets.availability() !== 'available') {
-          for (const entry of kept) {
-            await spool.removeBatch(entry.batchId);
-            dropped += 1;
-            recordSpoolDrop(entry.batchId, 'credential-unavailable');
+      const runReconcileAndReplaySpool = async (): Promise<{
+        readonly replayed: number;
+        readonly acknowledged: number;
+        readonly dropped: number;
+        readonly expired: number;
+      }> => {
+        let replayed = 0;
+        let acknowledged = 0;
+        let dropped = 0;
+        let expired = 0;
+
+        const drainReconcileDeltas = (): void => {
+          dropped += pendingReconcileDropped;
+          pendingReconcileDropped = 0;
+          expired += pendingReconcileExpired;
+          pendingReconcileExpired = 0;
+        };
+
+        const dropRemainingEntries = async (
+          entries: readonly { readonly batchId: string }[],
+          startIndex: number,
+          reason: DropReason
+        ): Promise<void> => {
+          for (let idx = startIndex; idx < entries.length; idx += 1) {
+            const entry = entries[idx]!;
+            try {
+              const removed = await spool.removeBatch(entry.batchId);
+              if (removed) {
+                dropped += 1;
+                recordSpoolDrop(entry.batchId, reason);
+              }
+            } catch {
+              // Store may already be closed during shutdown.
+            }
           }
-          return { replayed: kept.length, acknowledged, dropped, expired };
-        }
-        const secretValue = await deps.secrets.read(target.credential.reference);
-        if (secretValue === null || secretValue.length === 0) {
-          for (const entry of kept) {
-            await spool.removeBatch(entry.batchId);
-            dropped += 1;
-            recordSpoolDrop(entry.batchId, 'credential-unavailable');
+        };
+
+        const settleRevocationAndDrop = async (
+          entries: readonly { readonly batchId: string }[],
+          startIndex: number
+        ): Promise<void> => {
+          await drainPendingSpoolWork();
+          drainReconcileDeltas();
+          await dropRemainingEntries(entries, startIndex, revocationDropReason());
+          await drainPendingSpoolWork();
+          drainReconcileDeltas();
+        };
+
+        try {
+          await drainPendingSpoolWork();
+          drainReconcileDeltas();
+
+          if (shutDown) {
+            return { replayed: 0, acknowledged, dropped, expired };
           }
-          return { replayed: kept.length, acknowledged, dropped, expired };
-        }
-        headers[target.credential.headerName] = secretValue;
-      }
 
-      let replayed = 0;
-      for (const entry of kept) {
-        if (activeDestination !== target || authorizationGeneration !== genAtStart) {
-          await spool.removeBatch(entry.batchId);
-          dropped += 1;
-          recordSpoolDrop(entry.batchId, 'authorization-changed');
-          continue;
-        }
-        const body = await spool.readSpooledPayload(entry);
-        if (body === null) {
-          await spool.removeBatch(entry.batchId);
-          dropped += 1;
-          recordSpoolDrop(entry.batchId, 'rejected');
-          continue;
-        }
-        replayed += 1;
-        const controller = new AbortController();
-        const result = await net.send({
-          url: new URL(target.endpoint),
-          plaintextLoopback: target.plaintextLoopback,
-          headers,
-          body,
-          deadlineMs: TELEMETRY_EXPORT_BOUNDS.requestDeadlineMs,
-          signal: controller.signal
-        });
-        const verdict = classifyDelivery(result);
-        ledger.recordReceipt({
-          batchId: entry.batchId,
-          attemptId: randomUUID(),
-          at: clock.now(),
-          outcome: verdict.outcome,
-          statusCode: result.kind === 'response' ? result.statusCode : null,
-          rejectedDataPoints: verdict.outcome === 'acknowledged' ? verdict.rejectedDataPoints : 0,
-          errorClass: null
-        });
-        if (verdict.outcome === 'acknowledged') {
-          await spool.removeBatch(entry.batchId);
-          ledger.recordDisposition(entry.batchId, 'acknowledged', null);
-          acknowledged += 1;
-        } else if (verdict.outcome !== 'retry') {
-          await spool.removeBatch(entry.batchId);
-          dropped += 1;
-          recordSpoolDrop(entry.batchId, verdict.outcome);
-        }
-      }
+          const target = activeDestination;
+          const genAtStart = authorizationGeneration;
+          const isStillAuthorized = (): boolean =>
+            !shutDown && target !== null && activeDestination === target && authorizationGeneration === genAtStart;
 
-      return { replayed, acknowledged, dropped, expired };
+          const kept = await spool.reconcileForDestination({
+            activeDestination: target,
+            authorizationGeneration: genAtStart,
+            onDropped: (batchId, reason) => {
+              dropped += 1;
+              recordSpoolDrop(batchId, reason);
+            },
+            onExpired: (batchId, reason) => {
+              expired += 1;
+              recordSpoolExpiry(batchId, reason);
+            }
+          });
+
+          if (kept.length === 0 || target === null) {
+            return { replayed: 0, acknowledged, dropped, expired };
+          }
+          if (!isStillAuthorized()) {
+            await settleRevocationAndDrop(kept, 0);
+            return { replayed: 0, acknowledged, dropped, expired };
+          }
+
+          let targetUrl: URL;
+          try {
+            targetUrl = new URL(target.endpoint);
+          } catch {
+            await dropRemainingEntries(kept, 0, 'rejected');
+            return { replayed: 0, acknowledged, dropped, expired };
+          }
+
+          const net = ensureTransport();
+          const headers: Record<string, string> = { 'content-type': 'application/json' };
+          if (target.credential !== null) {
+            if (deps.secrets === null || safeSecretAvailability() !== 'available') {
+              await dropRemainingEntries(kept, 0, 'credential-unavailable');
+              return { replayed: 0, acknowledged, dropped, expired };
+            }
+            let secretValue: unknown = null;
+            let readFailed = false;
+            try {
+              secretValue = await deps.secrets.read(target.credential.reference);
+            } catch {
+              readFailed = true;
+            }
+            if (!isStillAuthorized()) {
+              await settleRevocationAndDrop(kept, 0);
+              return { replayed: 0, acknowledged, dropped, expired };
+            }
+            if (readFailed || secretValue === null || typeof secretValue !== 'string') {
+              await dropRemainingEntries(kept, 0, 'credential-unavailable');
+              return { replayed: 0, acknowledged, dropped, expired };
+            }
+            if (!isHeaderValue(secretValue)) {
+              await dropRemainingEntries(kept, 0, 'credential-invalid');
+              return { replayed: 0, acknowledged, dropped, expired };
+            }
+            headers[target.credential.headerName] = secretValue;
+          }
+
+          for (let i = 0; i < kept.length; i += 1) {
+            const entry = kept[i]!;
+            if (!isStillAuthorized()) {
+              await settleRevocationAndDrop(kept, i);
+              break;
+            }
+            let body: Uint8Array | null = null;
+            try {
+              body = await spool.readSpooledPayload(entry);
+            } catch {
+              body = null;
+            }
+            if (!isStillAuthorized()) {
+              await settleRevocationAndDrop(kept, i);
+              break;
+            }
+            if (body === null) {
+              await dropRemainingEntries([entry], 0, 'rejected');
+              continue;
+            }
+            replayed += 1;
+            const controller = new AbortController();
+            activeReplayControllers.add(controller);
+            let result: TransportResult;
+            try {
+              const raw: unknown = await net.send({
+                url: targetUrl,
+                plaintextLoopback: target.plaintextLoopback,
+                headers,
+                body,
+                deadlineMs: TELEMETRY_EXPORT_BOUNDS.requestDeadlineMs,
+                signal: controller.signal
+              });
+              result = isTransportResult(raw) ? raw : CONNECTION_LOST;
+            } catch {
+              result = CONNECTION_LOST;
+            } finally {
+              activeReplayControllers.delete(controller);
+            }
+            if (!isStillAuthorized() || controller.signal.aborted) {
+              await settleRevocationAndDrop(kept, i);
+              break;
+            }
+            const verdict = classifyDelivery(result);
+            const errorClass: DeliveryErrorClass | null =
+              verdict.outcome === 'acknowledged'
+                ? verdict.anomaly
+                : verdict.outcome === 'redirect-refused'
+                  ? 'redirect-refused'
+                  : verdict.errorClass;
+            try {
+              ledger.recordReceipt({
+                batchId: entry.batchId,
+                attemptId: randomUUID(),
+                at: readHostNow(),
+                outcome: verdict.outcome,
+                statusCode: result.kind === 'response' ? result.statusCode : null,
+                rejectedDataPoints: verdict.outcome === 'acknowledged' ? verdict.rejectedDataPoints : 0,
+                errorClass
+              });
+            } catch {
+              // Guarded ledger receipt write.
+            }
+            if (verdict.outcome === 'acknowledged') {
+              try {
+                await spool.removeBatch(entry.batchId);
+              } catch {
+                // Guarded spool cleanup.
+              }
+              try {
+                ledger.recordDisposition(entry.batchId, 'acknowledged', null);
+              } catch {
+                // Guarded ledger disposition write.
+              }
+              acknowledged += 1;
+            } else if (verdict.outcome !== 'retry') {
+              await dropRemainingEntries([entry], 0, verdict.outcome);
+            }
+          }
+        } catch (err) {
+          deps.reportSideEffectFailure?.('telemetry-spool', err);
+        }
+
+        return { replayed, acknowledged, dropped, expired };
+      };
+
+      const run = (async () => {
+        try {
+          return await runReconcileAndReplaySpool();
+        } finally {
+          activeReplay = null;
+        }
+      })();
+      activeReplay = run;
+      return run;
     },
 
     flush() {
-      exporter?.flush();
+      try {
+        exporter?.flush();
+      } catch {
+        // Exporter never throws; defensive host boundary guard.
+      }
     },
 
     disable() {
@@ -770,37 +857,31 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
 
     async idle() {
       if (exporter !== null) await exporter.idle();
-      while (pendingSpoolWork.size > 0) await Promise.all([...pendingSpoolWork]);
+      await drainPendingSpoolWork();
     },
 
     async shutdown() {
+      shutDown = true;
+      abortActiveReplay();
+      lastFailedBody = null;
       if (exporter === null) return;
-      await exporter.shutdown();
+      try {
+        await exporter.shutdown();
+      } catch {
+        // Exporter shutdown is guarded to resolve cleanly within its budget.
+      }
     },
 
     getStatus(): TelemetryHostStatus {
-      const spoolStats = spool.stats();
+      const spoolStats = safeSpoolStats();
       const baseHealth =
         exporter === null
           ? emptyDisabledHealth(spoolDropCounts, spoolExpiryCounts)
           : exporter.health();
-      const preview: TelemetryExportPreview = Object.freeze({
-        requestedContentPolicy: lastPreviewPolicy,
-        effectiveStatus:
-          evaluation.kind === 'authorized'
-            ? 'authorized-metadata-only'
-            : evaluation.kind === 'refused'
-              ? 'refused'
-              : 'disabled',
-        refusalReason: evaluation.kind === 'refused' ? evaluation.reason : null,
-        contentExportSupported: false,
-        mappingRevision: TELEMETRY_MAPPING_REVISION,
-        protocolRevision: TELEMETRY_PROTOCOL_REVISION,
-        semanticConventionsRevision: TELEMETRY_SEMANTIC_CONVENTIONS,
-        allowlistedFields: ALLOWLISTED_FIELDS,
-        excludedCategories: EXCLUDED_CATEGORIES,
-        redactionLimitsDisclosure: REDACTION_LIMITS_DISCLOSURE
-      });
+      const preview: TelemetryExportPreview = formatTelemetryExportPreview(
+        lastPreviewPolicy,
+        evaluation
+      );
       return Object.freeze({
         evaluation,
         authorizationGeneration,

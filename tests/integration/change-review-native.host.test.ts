@@ -114,6 +114,37 @@ export async function run(): Promise<void> {
     console.log(`[change-review] multi-file review view in this host: ${native ? 'native' : 'fallback'}`);
     assert.deepEqual(shown, native ? { mode: 'native', opened: 3 } : { mode: 'fallback', opened: 1 });
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+    // Exercise the single-diff fallback (`vscode.diff`) explicitly on this real VS Code host by
+    // wrapping `createVscodeEditorPort()` with `hasCommand: async () => false` while keeping the
+    // real `openDiff` (`vscode.diff`) command execution.
+    const fallbackNotices: string[] = [];
+    const fallbackPicks: string[][] = [];
+    const fallbackPort: EditorPort = {
+      ...real,
+      hasCommand: async () => false,
+      showNotice: (text) => {
+        fallbackNotices.push(text);
+      },
+      pick: async (labels) => {
+        fallbackPicks.push([...labels]);
+        return 1; // `kept.txt` (modified): verifies real `vscode.diff` loads both committed sides
+      }
+    };
+    const fallbackShown = await openReviewInEditor(
+      fallbackPort,
+      opened,
+      reviews.entriesOf(opened.review.reviewId) ?? []
+    );
+    console.log('[change-review] single-diff fallback view (vscode.diff) verified on this host');
+    assert.deepEqual(fallbackShown, { mode: 'fallback', opened: 1 });
+    assert.equal(fallbackNotices.length, 1, 'fallback must emit one count-only disclosure notice');
+    assert.ok(
+      !fallbackNotices[0]?.includes('kept.txt') && !fallbackNotices[0]?.includes('new.txt'),
+      'fallback disclosure notice must not leak repository paths'
+    );
+    assert.equal(fallbackPicks[0]?.length, 3, 'fallback quick-pick must list all 3 changed entries');
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   } finally {
     for (const disposable of disposables) disposable.dispose();
     fs.rmSync(root, { recursive: true, force: true });

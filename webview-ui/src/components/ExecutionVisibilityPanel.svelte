@@ -7,7 +7,18 @@
     requestDecidePhaseHandoff,
     requestExecutionVisibility
   } from '../lib/execution-visibility-ipc';
+  import { snapshotStore } from '../lib/snapshot-store.svelte';
+  import {
+    acpStateLabel,
+    evidenceSummary,
+    latestRevisionState,
+    qualityLabel,
+    recoveryLabel,
+    streamLabel
+  } from '../lib/visibility-panel-labels';
   import ChangeReviewPanel from './ChangeReviewPanel.svelte';
+
+  type AttemptRow = ExecutionAttemptVisibility['hierarchy']['attempts'][number];
 
   interface Props {
     rootExecutionId: string;
@@ -18,57 +29,90 @@
 
   let loading = $state(false);
   let detail = $state<ExecutionAttemptVisibility | null>(null);
+  let knownAttempts = $state<readonly AttemptRow[]>([]);
+  let selectedAttemptId = $state<string | null>(null);
   let notice = $state('');
   let editingHandoffId = $state<string | null>(null);
   let editedNote = $state('');
 
+  let requestGen = 0;
+  let lastSeenResyncCount = snapshotStore.resyncCount;
+
   const wantedRootId = $derived(rootExecutionId);
+  const visibleAttempts = $derived(
+    knownAttempts.length > 0 ? knownAttempts : (detail?.hierarchy.attempts ?? [])
+  );
 
   $effect(() => {
     const targetRoot = wantedRootId;
     untrack(() => {
-      void loadVisibility(targetRoot);
+      selectedAttemptId = null;
+      knownAttempts = [];
+      detail = null;
+      notice = '';
+      editingHandoffId = null;
+      editedNote = '';
+      void loadVisibility(targetRoot, null);
+    });
+    return () => {
+      requestGen += 1;
+    };
+  });
+
+  // Hide/reveal resynchronisation: refresh when the panel becomes visible again, preserving the
+  // operator's selected attempt filter and keyboard focus.
+  $effect(() => {
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') {
+        void loadVisibility(wantedRootId, selectedAttemptId);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  });
+
+  $effect(() => {
+    void snapshotStore.snapshot;
+    const currentResync = snapshotStore.resyncCount;
+    if (currentResync === lastSeenResyncCount) return;
+    lastSeenResyncCount = currentResync;
+    if (!expanded && detail === null) return;
+    untrack(() => {
+      void loadVisibility(wantedRootId, selectedAttemptId);
     });
   });
 
-  async function loadVisibility(targetRoot = rootExecutionId): Promise<void> {
+  async function loadVisibility(
+    targetRoot = wantedRootId,
+    targetAttemptId: string | null = selectedAttemptId
+  ): Promise<void> {
+    const gen = ++requestGen;
     loading = true;
     const env = await requestExecutionVisibility({
       op: 'attemptDetail',
-      rootExecutionId: targetRoot
+      rootExecutionId: targetRoot,
+      ...(targetAttemptId !== null ? { attemptId: targetAttemptId } : {})
     });
+    if (gen !== requestGen) return;
     loading = false;
     if (env.boundaryRefusal !== null) {
       notice = env.boundaryRefusal;
       return;
     }
     if (env.response.op === 'attemptDetail') {
-      detail = env.response.detail;
+      const nextDetail = env.response.detail;
+      detail = nextDetail;
+      if (nextDetail.available && (targetAttemptId === null || knownAttempts.length === 0)) {
+        knownAttempts = nextDetail.hierarchy.attempts;
+      }
     }
   }
 
-  function qualityLabel(quality: ExecutionAttemptVisibility['hierarchy']['dataQuality']): string {
-    if (quality === 'authoritative') return 'Authoritative';
-    if (quality === 'partial') return availabilityPhrase('partial');
-    return availabilityPhrase('unknown');
-  }
-
-  function streamLabel(state: ExecutionAttemptVisibility['liveLog']['streamState']): string {
-    if (state === 'captured') return 'Captured';
-    if (state === 'not-captured') return 'Not captured (disabled)';
-    if (state === 'partial') return availabilityPhrase('partial');
-    return availabilityPhrase('unknown');
-  }
-
-  function recoveryLabel(posture: ExecutionAttemptVisibility['recovery']['posture']): string {
-    if (posture === 'verified') return 'Verified recovery handoff';
-    if (posture === 'degraded') return 'Degraded (unsupported or refused)';
-    if (posture === 'uncertain') return availabilityPhrase('uncertain');
-    return 'Not recorded';
-  }
-
-  function latestRevisionState(h: HandoffExplanation): string {
-    return h.revisions.find((r) => r.revision === h.revision)?.state ?? 'unknown';
+  function selectAttempt(attemptId: string | null): void {
+    selectedAttemptId = attemptId;
+    void loadVisibility(wantedRootId, attemptId);
   }
 
   // The redesign folds diagnostics under a quiet summary line. The disclosure opens itself when it
@@ -102,7 +146,7 @@
       notice = env.response.result.ok
         ? `Approved handoff ${h.handoffId} revision ${env.response.result.revision}.`
         : `Could not approve handoff: ${env.response.result.failure}.`;
-      await loadVisibility();
+      await loadVisibility(wantedRootId, selectedAttemptId);
     }
   }
 
@@ -136,7 +180,7 @@
       notice = env.response.result.ok
         ? `Saved edited handoff revision ${env.response.result.revision.revision}.`
         : `Could not edit handoff: ${env.response.result.failure}.`;
-      await loadVisibility();
+      await loadVisibility(wantedRootId, selectedAttemptId);
     }
   }
 </script>
@@ -147,6 +191,12 @@
   <summary>Diagnostics: execution evidence, handoffs and change review</summary>
 
   <div class="ev-body">
+    {#if !isPrimary}
+      <p class="ev-note" data-testid="execution-visibility-readonly-note">
+        Read-only secondary window: execution diagnostics are visible, while handoff approvals and change review actions require the primary window.
+      </p>
+    {/if}
+
     {#if notice !== ''}
       <p class="ev-notice" role="status" aria-live="polite" data-testid="execution-visibility-notice">{notice}</p>
     {/if}
@@ -172,19 +222,17 @@
           </div>
           <div>
             <dt>Evidence</dt>
-            <dd data-testid="ev-evidence">
-              {#if detail.evidence.length === 0}
-                {availabilityPhrase('missing')}
-              {:else}
-                {detail.evidence.filter((e) => e.availability === 'present').length} present / {detail.evidence.length} recorded
-              {/if}
-            </dd>
+            <dd data-testid="ev-evidence">{evidenceSummary(detail.evidence)}</dd>
           </div>
           <div>
             <dt>Live log</dt>
             <dd data-testid="ev-livelog">
               {streamLabel(detail.liveLog.streamState)}
-              <span class="muted">&middot; {detail.liveLog.segmentCount} seg, {detail.liveLog.gapCount} gap(s)</span>
+              {#if detail.liveLog.streamState === 'captured'}
+                <span class="muted">&middot; {detail.liveLog.segmentCount} segment(s)</span>
+              {:else if detail.liveLog.streamState === 'partial'}
+                <span class="muted">&middot; {detail.liveLog.segmentCount} segment(s), {detail.liveLog.gapCount} gap(s)</span>
+              {/if}
             </dd>
           </div>
           <div>
@@ -198,8 +246,8 @@
           </div>
           <div>
             <dt>ACP state</dt>
-            <dd data-testid="ev-acp">
-              {detail.acp.runtimeState}
+            <dd data-testid="ev-acp" data-acp-state={detail.acp.runtimeState}>
+              {acpStateLabel(detail.acp.runtimeState)}
               {#if detail.acp.profileId !== null || detail.acp.backendKind !== null}
                 <span class="muted">&middot; {detail.acp.profileId ?? detail.acp.backendKind}</span>
               {/if}
@@ -213,15 +261,51 @@
       <button
         type="button"
         class="btn btn-secondary btn-sm ev-refresh"
-        disabled={loading}
+        aria-disabled={loading ? 'true' : undefined}
         data-testid="execution-visibility-refresh"
-        onclick={() => void loadVisibility()}
+        onclick={() => {
+          if (loading) return;
+          void loadVisibility(wantedRootId, selectedAttemptId);
+        }}
       >
         {loading ? 'Refreshing…' : 'Refresh'}
       </button>
     </div>
 
     {#if detail !== null && detail.available}
+      {#if visibleAttempts.length > 0}
+        <section class="ev-subblock" aria-label="Execution attempts" data-testid="ev-attempts-section">
+          <h3>Attempts ({visibleAttempts.length})</h3>
+          <div class="ev-attempt-list" role="group" aria-label="Filter visibility by attempt">
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              class:ev-attempt-selected={selectedAttemptId === null}
+              aria-pressed={selectedAttemptId === null}
+              data-testid="ev-attempt-all"
+              onclick={() => selectAttempt(null)}
+            >
+              All attempts
+            </button>
+            {#each visibleAttempts as attempt (attempt.attemptId)}
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                class:ev-attempt-selected={selectedAttemptId === attempt.attemptId}
+                aria-pressed={selectedAttemptId === attempt.attemptId}
+                data-testid={`ev-attempt-${attempt.attemptId}`}
+                onclick={() => selectAttempt(attempt.attemptId)}
+              >
+                <span class="mono">{attempt.attemptId}</span>
+                <span class="muted">
+                  &middot; {attempt.phaseId ?? `step ${attempt.stepIndex}`} #{attempt.attemptNumber} ({attempt.status})
+                </span>
+              </button>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
       <ChangeReviewPanel lane={detail.lane} {isPrimary} />
 
       <section class="ev-subblock" aria-label="Phase context handoffs" data-testid="ev-handoffs-section">
@@ -239,29 +323,35 @@
                       >&middot; {h.sources.length} source(s), {h.omissions.length + h.omissionsUnlisted} omission(s)</span
                     >
                   </div>
-                  {#if isPrimary && latestRevisionState(h) === 'waiting-approval'}
-                    <div class="ev-actions">
-                      <button
-                        type="button"
-                        class="btn btn-secondary btn-sm"
-                        data-testid={`ev-handoff-approve-${h.handoffId}`}
-                        onclick={() => void approveHandoff(h)}
-                      >
-                        Approve handoff
-                      </button>
-                      <button
-                        type="button"
-                        class="btn btn-secondary btn-sm"
-                        data-testid={`ev-handoff-edit-${h.handoffId}`}
-                        onclick={() => {
-                          editingHandoffId = editingHandoffId === h.handoffId ? null : h.handoffId;
-                        }}
-                      >
-                        Edit summary
-                      </button>
-                    </div>
+                  {#if latestRevisionState(h) === 'waiting-approval'}
+                    {#if isPrimary}
+                      <div class="ev-actions">
+                        <button
+                          type="button"
+                          class="btn btn-secondary btn-sm"
+                          data-testid={`ev-handoff-approve-${h.handoffId}`}
+                          onclick={() => void approveHandoff(h)}
+                        >
+                          Approve handoff
+                        </button>
+                        <button
+                          type="button"
+                          class="btn btn-secondary btn-sm"
+                          data-testid={`ev-handoff-edit-${h.handoffId}`}
+                          onclick={() => {
+                            editingHandoffId = editingHandoffId === h.handoffId ? null : h.handoffId;
+                          }}
+                        >
+                          Edit summary
+                        </button>
+                      </div>
+                    {:else}
+                      <p class="ev-note" data-testid={`ev-handoff-readonly-${h.handoffId}`}>
+                        Read-only secondary window: open the primary window to approve or edit this handoff.
+                      </p>
+                    {/if}
                   {/if}
-                  {#if editingHandoffId === h.handoffId}
+                  {#if isPrimary && editingHandoffId === h.handoffId}
                     <form
                       class="ev-edit-form"
                       onsubmit={(e) => {
@@ -345,6 +435,15 @@
   /* The redesign's card heading. */
   .ev-subblock h3 {
     font-size: var(--schegent-text-body);
+    font-weight: 600;
+  }
+  .ev-attempt-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--schegent-space-1-5);
+  }
+  .ev-attempt-selected {
+    border-color: var(--schegent-focus-border);
     font-weight: 600;
   }
   .ev-list {

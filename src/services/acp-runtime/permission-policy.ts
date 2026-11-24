@@ -16,7 +16,7 @@ import {
   type AcpPermissionPolicy,
   type AcpPermissionRequest
 } from '../../contracts/acp-runtime';
-import { isAgentIdentifier } from './agent-identifier';
+import { isAgentIdentifier, sanitizeAgentDisplayTitle } from './agent-identifier';
 
 export type PermissionParams =
   | {
@@ -58,6 +58,20 @@ function parseOptions(value: unknown): AcpPermissionRequest['options'] | null {
   return options;
 }
 
+/**
+ * FR-R7-17 (`R7-17-05`) — sanitizes an untrusted permission tool title before display, logging,
+ * or policy evaluation (ANSI/Cc/Cf/Cs/Zl/Zp stripped, secrets redacted, bounded to 128 chars).
+ */
+export function formatPermissionTitleForDisplay(raw: unknown): string | null {
+  return sanitizeAgentDisplayTitle(raw);
+}
+
+/** Returns a permission request whose `toolTitle` is bounded and sanitized for any host boundary. */
+export function sanitizePermissionRequest(request: AcpPermissionRequest): AcpPermissionRequest {
+  const safeTitle = sanitizeAgentDisplayTitle(request.toolTitle);
+  return safeTitle === request.toolTitle ? request : { ...request, toolTitle: safeTitle };
+}
+
 /** Reads `session/request_permission` params; anything malformed is refused. */
 export function parsePermissionParams(params: unknown): PermissionParams {
   if (!isRecord(params) || !isAgentIdentifier(params['sessionId'])) return REFUSED;
@@ -65,7 +79,7 @@ export function parsePermissionParams(params: unknown): PermissionParams {
   if (options === null) return REFUSED;
   const toolCall = isRecord(params['toolCall']) ? params['toolCall'] : {};
   const toolCallId = isAgentIdentifier(toolCall['toolCallId']) ? toolCall['toolCallId'] : null;
-  const toolTitle = typeof toolCall['title'] === 'string' ? toolCall['title'] : null;
+  const toolTitle = sanitizeAgentDisplayTitle(toolCall['title']);
   return { ok: true, sessionId: params['sessionId'], toolCallId, toolTitle, options };
 }
 
@@ -100,12 +114,13 @@ export function decidePermission(
 ): PermissionAnswer {
   if (cancelling) return CANCELLED;
   if (policy === undefined) return answerFromChoice(request, null);
+  const safeRequest = sanitizePermissionRequest(request);
   try {
-    const raw = policy(request);
-    if (isPromiseLike(raw)) return answerFromChoice(request, null);
-    return answerFromChoice(request, extractOptionId(raw));
+    const raw = policy(safeRequest);
+    if (isPromiseLike(raw)) return answerFromChoice(safeRequest, null);
+    return answerFromChoice(safeRequest, extractOptionId(raw));
   } catch {
-    return answerFromChoice(request, null);
+    return answerFromChoice(safeRequest, null);
   }
 }
 
@@ -121,16 +136,17 @@ export function decidePermissionMaybeAsync(
 ): PermissionAnswer | Promise<PermissionAnswer> {
   if (cancelling) return CANCELLED;
   if (policy === undefined) return answerFromChoice(request, null);
+  const safeRequest = sanitizePermissionRequest(request);
   try {
-    const raw = policy(request);
+    const raw = policy(safeRequest);
     if (isPromiseLike<AcpPermissionDecision>(raw)) {
       return Promise.resolve(raw).then(
-        (decision) => answerFromChoice(request, extractOptionId(decision)),
-        () => answerFromChoice(request, null)
+        (decision) => answerFromChoice(safeRequest, extractOptionId(decision)),
+        () => answerFromChoice(safeRequest, null)
       );
     }
-    return answerFromChoice(request, extractOptionId(raw));
+    return answerFromChoice(safeRequest, extractOptionId(raw));
   } catch {
-    return answerFromChoice(request, null);
+    return answerFromChoice(safeRequest, null);
   }
 }

@@ -30,17 +30,19 @@ const SOURCES = filesUnder(resolve(REPO_ROOT, 'src'), { extensions: ['.ts'] })
 
 const MCP_PATTERN = /\bmodelcontextprotocol\b|@modelcontextprotocol|\bmcpServers\b|\bMcpServer\b/;
 
-// FR-R6-F13 -- one recorded allowance, and the freeze stays in force around it.
+// FR-R6-F13 & FR-R7-17 (`R7-17-05`) -- one recorded allowance, and the freeze stays in force around it.
 //
 // ACP v1 makes the server list a required parameter of `session/new` and `session/load`. The
 // host's ACP client sends the EMPTY list: a statement that it configures no MCP server, which
 // is what the freeze asks for. Leaving the field out would not keep the freeze any better, and
 // a conforming agent may reject the request.
 //
-// The allowance is the exact empty literal, in the ACP client module, and nothing else. A list
-// with an entry, a list built from a variable, the same literal in any other file, and every
-// other MCP spelling still fail below. The decision is recorded in
-// `docs/operations/acp-runtime.md` (Protocol) and in the feature's review audit.
+// The allowance is the exact empty literal (`mcpServers: []`), at exactly two sites (`session/new`
+// and `session/load`) in `src/services/acp-runtime/acp-client.ts`, and nothing else. Any third
+// site, non-empty list, padded/cast/dynamic list, shorthand, variable, or occurrence outside
+// `acp-client.ts`, and every other MCP spelling fail below. The dated `2026-11-23` maintainer
+// disposition is recorded in `docs/architecture/release-posture-engineering-preview.md` and
+// cross-linked from `repo/docs/operations/acp-runtime.md`.
 const ACP_CLIENT = 'src/services/acp-runtime/acp-client.ts';
 const EMPTY_SERVER_LIST = /\bmcpServers: \[\](?=\s*[,}])/g;
 /** `session/new` and `session/load`. A third site is a new decision, not this one. */
@@ -49,6 +51,26 @@ const EMPTY_SERVER_LIST_SITES = 2;
 /** The source as the freeze reads it: the ACP client's empty server list removed, nothing else. */
 function asFrozenScanReads(path: string, source: string): string {
   return path === ACP_CLIENT ? source.replace(EMPTY_SERVER_LIST, '') : source;
+}
+
+/**
+ * Evaluates a single `(path, source)` against the MCP expansion freeze including exact site-count
+ * enforcement inside `acp-client.ts`.
+ */
+function checkMcpExpansionFreeze(
+  path: string,
+  source: string
+): { readonly ok: true } | { readonly ok: false; readonly reason: 'site-count' | 'forbidden-mcp' } {
+  if (path === ACP_CLIENT) {
+    const sites = (source.match(EMPTY_SERVER_LIST) ?? []).length;
+    if (sites !== EMPTY_SERVER_LIST_SITES) {
+      return { ok: false, reason: 'site-count' };
+    }
+  }
+  if (MCP_PATTERN.test(asFrozenScanReads(path, source))) {
+    return { ok: false, reason: 'forbidden-mcp' };
+  }
+  return { ok: true };
 }
 
 /** Each frozen surface, with the reason it is frozen, inline. */
@@ -91,30 +113,73 @@ describe('FR-R3-086 §5 — the expansion freeze holds', () => {
     }
   );
 
-  it('FR-R6-F13: the ACP client sends the empty server list, and only that is allowed', () => {
+  it('FR-R6-F13 & FR-R7-17 (R7-17-05): the ACP client sends the empty server list at exactly two sites, and only that is ratified', () => {
     const [, source] = SOURCES.find(([path]) => path === ACP_CLIENT) ?? [ACP_CLIENT, ''];
-    // Non-vacuity: the allowance is in use at exactly the two request sites. At zero it is
-    // dead and should be deleted; at three something new is riding on it.
+    // Live source check: exact two sites (`session/new` and `session/load`) and zero other MCP text.
     expect((source.match(EMPTY_SERVER_LIST) ?? []).length).toBe(EMPTY_SERVER_LIST_SITES);
+    expect(checkMcpExpansionFreeze(ACP_CLIENT, source)).toEqual({ ok: true });
+
+    // Dated 2026-11-23 disposition explicitly ratifies these exact two literals.
+    const disposition = readFileSync(
+      resolve(REPO_ROOT, '..', 'docs', 'architecture', 'release-posture-engineering-preview.md'),
+      'utf8'
+    );
+    expect(disposition).toContain('2026-11-23');
+    expect(disposition).toContain('mcpServers: []');
+    expect(disposition).toContain('session/new');
+    expect(disposition).toContain('session/load');
+
+    // Positive 2-site synthetic probe passes.
+    const twoSiteAllowed = [
+      'const newParams = { cwd, mcpServers: [] };',
+      'const loadParams = { sessionId, cwd, mcpServers: [] };'
+    ].join('\n');
+    expect(checkMcpExpansionFreeze(ACP_CLIENT, twoSiteAllowed)).toEqual({ ok: true });
+
+    // Negative site-count probes inside `acp-client.ts`: 0, 1, or 3 sites are all refused.
+    expect(checkMcpExpansionFreeze(ACP_CLIENT, 'const params = { cwd };')).toEqual({
+      ok: false,
+      reason: 'site-count'
+    });
+    expect(checkMcpExpansionFreeze(ACP_CLIENT, 'const params = { cwd, mcpServers: [] };')).toEqual({
+      ok: false,
+      reason: 'site-count'
+    });
+    const threeSites = [
+      twoSiteAllowed,
+      'const extraParams = { cwd, mcpServers: [] };'
+    ].join('\n');
+    expect(checkMcpExpansionFreeze(ACP_CLIENT, threeSites)).toEqual({
+      ok: false,
+      reason: 'site-count'
+    });
 
     const allowed = 'const params = { cwd, mcpServers: [] };';
     expect(MCP_PATTERN.test(asFrozenScanReads(ACP_CLIENT, allowed))).toBe(false);
 
     const stillFrozen: ReadonlyArray<readonly [string, string]> = [
-      // A list with an entry is a configured MCP server.
-      [ACP_CLIENT, 'const params = { cwd, mcpServers: [server] };'],
-      // So is a list the literal does not show.
-      [ACP_CLIENT, 'const params = { cwd, mcpServers: servers };'],
-      [ACP_CLIENT, 'const params = { cwd, mcpServers: [].concat(servers) };'],
-      [ACP_CLIENT, 'const params = { cwd, mcpServers };'],
+      // Non-empty arrays, padded brackets, and type assertions stay frozen even alongside 2 valid sites.
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers: [server] };`],
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers: [{ name: 'x' }] };`],
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers: ['stdio'] };`],
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers: [ ] };`],
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers: [] as const };`],
+      // Variables, dynamic expressions, and shorthand stay frozen.
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers: servers };`],
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers: [].concat(servers) };`],
+      [ACP_CLIENT, `${twoSiteAllowed}\nconst extra = { cwd, mcpServers };`],
       // The SDK and the server type stay frozen in the ACP client too.
-      [ACP_CLIENT, "import { McpServer } from '@modelcontextprotocol/sdk';"],
-      // The same literal anywhere else is not covered.
+      [ACP_CLIENT, `${twoSiteAllowed}\nimport { McpServer } from '@modelcontextprotocol/sdk';`],
+      // The exact empty literal anywhere outside `acp-client.ts` is refused.
       ['src/services/acp-runtime/session-state.ts', allowed],
-      ['src/runner/claude-cli.ts', allowed]
+      ['src/runner/claude-cli.ts', allowed],
+      ['src/runner/acp-backed-runner.ts', twoSiteAllowed]
     ];
     for (const [path, probe] of stillFrozen) {
-      expect(MCP_PATTERN.test(asFrozenScanReads(path, probe)), `${path}: ${probe}`).toBe(true);
+      expect(checkMcpExpansionFreeze(path, probe), `${path}: ${probe}`).toEqual({
+        ok: false,
+        reason: 'forbidden-mcp'
+      });
     }
   });
 

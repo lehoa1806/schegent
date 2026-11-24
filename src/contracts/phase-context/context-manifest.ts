@@ -2,7 +2,7 @@
  * FR-R6-F15 (F15-A; FR-005, FR-007, FR-010, FR-011, FR-012, FR-015) — the accepted manifest of
  * a handoff, what was left out of it, the rendered context, and the record a store keeps.
  *
- * The only store in this delivery is in memory; the SQLite record is F15-B.
+ * Durable persistence uses SQLite (`phase_handoff_records`) alongside the in-memory store for tests.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
@@ -195,6 +195,21 @@ export interface HandoffExplanation {
   readonly omissionsUnlisted: number;
   readonly approvals: readonly ApprovalRecord[];
   readonly dispatches: readonly DispatchRecord[];
+}
+
+/** FR-012 / FR-019: strictly metadata-only diff between two persisted handoff revisions (zero prose). */
+export interface HandoffRevisionDiff {
+  readonly handoffId: string;
+  readonly fromRevision: number;
+  readonly toRevision: number;
+  readonly fromManifestDigest: string;
+  readonly toManifestDigest: string;
+  readonly addedSourceIds: readonly string[];
+  readonly removedSourceIds: readonly string[];
+  readonly addedArtifactIds: readonly string[];
+  readonly removedArtifactIds: readonly string[];
+  readonly omissionCountDelta: number;
+  readonly renderedBytesDelta: number;
 }
 
 /** The store behind acceptance. `save` stores only when the stored version is the expected one. */

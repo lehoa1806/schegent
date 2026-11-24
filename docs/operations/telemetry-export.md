@@ -11,6 +11,10 @@ profile turns it on, and it never changes what the host stores locally.
 Implemented in:
 - [`src/contracts/telemetry-export.ts`](../../src/contracts/telemetry-export.ts)
 - [`src/services/telemetry-export/`](../../src/services/telemetry-export/index.ts)
+- [`src/services/telemetry-host/telemetry-host-service.ts`](../../src/services/telemetry-host/telemetry-host-service.ts)
+- [`src/services/telemetry-host/telemetry-durable-store.ts`](../../src/services/telemetry-host/telemetry-durable-store.ts)
+- [`src/headless/telemetry-export-api.ts`](../../src/headless/telemetry-export-api.ts)
+- [`webview-ui/src/components/TelemetryRuntimeHealthPanel.svelte`](../../webview-ui/src/components/TelemetryRuntimeHealthPanel.svelte)
 
 ## Production status
 
@@ -159,14 +163,22 @@ coverage instrument in the same batch:
 | `excluded-dimension` | One label field failed the dimension rule and was left out. Counted once per field per record. |
 | `overflow` | The data point was folded into the overflow set. |
 
-## Overflow set
+## Overflow set and durable cardinality dictionary
 
-Each instrument keeps at most 1,000 attribute sets for the life of one exporter: the first 999
-distinct sets it sees, then one overflow set with the single attribute
-`otel.metric.overflow` = `true`. Every later new set is folded into the overflow set and counted
-`overflow`. A set admitted before the limit keeps its own data points afterwards.
+The exporter enforces the 1,000-attribute-set ceiling across two layers:
 
-The limit is held in memory. A new exporter (a restart) starts counting again.
+- **In-memory wire guard (`cardinality-guard.ts`)**: Each instrument keeps at most 1,000
+  attribute sets for the life of one exporter instance — the first 999 distinct sets it sees,
+  then one overflow set with the single attribute `otel.metric.overflow` = `true`. Every later
+  new set is folded into the overflow set and counted `overflow` on the wire. A set admitted
+  before the limit keeps its own data points afterwards. This wire guard is held in memory and
+  resets when a new exporter starts on restart.
+- **Durable SQLite cardinality dictionary (`telemetry_cardinality_sets`)**: `TelemetryHostService`
+  sanitizes every `backend` and `model` dimension through `sanitizeDimension` before admitting
+  distinct attribute-set keys into SQLite (`telemetry_cardinality_sets`, bounded at 999 distinct
+  sets per active profile, mapping revision, and instrument). Raw unsanitized strings never enter
+  SQLite, and the persisted dictionary tracks durable cardinality counts shown in runtime posture
+  across restarts without altering local authoritative F06 accounting.
 
 ## Delivery
 
@@ -232,7 +244,7 @@ the batch `credential-unavailable`; a value outside the rule drops it `credentia
 | Measures in one usage record | 16 |
 | Mapping and queueing one batch of 256 records | 5 ms at p95 (`tests/perf/budgets.json`) |
 
-The host service spools undelivered batches to a private directory under the storage root, bounded at 32 MiB (`diskSpoolBytes`), and replays them once when the extension next activates, after configuring the destination, while that destination and credential are still authorized.
+The host service spools retry-exhausted batches to a private directory (`0700` dir / `0600` files) under the storage root, bounded at 32 MiB (`diskSpoolBytes`), and persists a metadata-only destination fingerprint (`telemetry-authorization-fingerprint`, never secret values) alongside `authorization-generation` in SQLite. Restarting with the exact same authorized destination preserves the generation and replays eligible spooled batches once at next activation. Disabling export, losing workspace trust, switching to a refused content policy, or changing any destination metadata (endpoint, plaintext-loopback flag, credential secret key/header name, profile id, or profile revision) aborts any in-flight live or replay request, increments `authorizationGeneration`, and drops all spooled batches from prior generations.
 
 ## Health
 
@@ -251,10 +263,17 @@ rejected data points, ledger faults, the last error class and the coverage count
 The last error is one of `network`, `tls`, `deadline`, `http-retryable`, `http-rejected`,
 `redirect-refused`, `response-malformed`, `response-oversized`, `credential-unavailable` and
 `credential-invalid`. No endpoint, header, credential or response text can reach health. A new
-or cleared destination starts with no last error. No UI shows health yet.
+or cleared destination starts with no last error.
+
+The sidebar Runtime Health surface ([`TelemetryRuntimeHealthPanel.svelte`](../../webview-ui/src/components/TelemetryRuntimeHealthPanel.svelte))
+presents a read-only posture view (Refresh only — no flush or clear controls), visibly surfacing
+authorization refusals (including `content-export-unsupported` when `contentPolicy` is set to
+`content`), preview disclosures, spool usage, ledger counts, and durable series counts, and
+resynchronises on panel reveal and snapshot resync.
 
 Export failure never blocks or fails a Run. No exporter method throws to its caller; a throw
-from the transport, the secret store or the ledger is caught and counted.
+from the transport, the secret store, the ledger, the clock, timers, or random source is caught
+without unhandled Promise rejections or delivery wedging.
 
 ## Limits
 
@@ -266,28 +285,43 @@ from the transport, the secret store or the ledger is caught and counted.
   pattern and does not look like a credential is exported as given. The source adapter
   must not put a session or Run identifier in a backend or model field. The overflow set is the
   only limit on how many distinct values reach a destination.
-- **The exporter's own copy ledger is in memory.** It remembers 16,384 copy identities, oldest
-  forgotten first, and is empty after a restart. The host service keeps a SQLite-backed durable
-  ledger beside it; this guide does not describe that ledger's limits.
+- **In-memory vs durable copy ledger and cardinality tracking.** The standalone exporter's own
+  in-memory ledger remembers 16,384 copy identities (oldest forgotten first), and its wire
+  cardinality guard resets on restart. `TelemetryHostService` backs the exporter with a durable
+  SQLite ledger (`telemetry_export_ledger`, capped at 16,384 copy identities) and sanitized
+  SQLite cardinality dictionary (`telemetry_cardinality_sets`, capped at 999 distinct sets per
+  profile/revision/instrument).
 - **Certificate authorities are a process setting.** `NODE_EXTRA_CA_CERTS` and the platform
   trust store decide which certificates verify. The exporter cannot narrow them.
-- **Only spooled batches survive a restart.** Queued and open batches are dropped at shutdown. A
-  batch that exhausted its retries is spooled instead, and is replayed once at the next activation.
-- **The proxy environment is not read.** Every request goes straight to the destination, also
-  when Node is started with its environment-proxy option. A network that reaches the
-  destination only through a proxy cannot export. Proxy support is not provided.
+- **Only spooled batches survive a restart under identical authorization.** Queued and open
+  batches are dropped at shutdown. A batch that exhausted its retries is spooled and replayed
+  once at the next activation only while the persisted authorization fingerprint matches; any
+  disable, trust revocation, content-policy refusal, or destination/credential change drops it.
+- **Direct-only transport; proxy environment variables are ignored.** Every request goes straight
+  to the destination, bypassing `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`, including when Node
+  is started with environment-proxy options. A network that reaches the destination only through
+  a proxy cannot export. Proxy support is not provided in this release.
 - **A peer that does not speak TLS can be reported as `network`.** The failure class comes from
   the error code alone. A peer that closes the connection during the handshake gives a
   connection error code, so the last error in `health()` is `network`, not `tls`.
 
 ## What was not observed
 
-No live provider and no real collector was used. The request shape is checked against a
-committed fixture built from the published OTLP/HTTP JSON rules, and delivery is exercised
-against a local fixture collector on loopback. No claim is made that any named collector or
-vendor accepts these requests.
+No live provider and no real OpenTelemetry Collector was used. The request shape is checked
+against a committed fixture built from the published OTLP/HTTP JSON rules, and delivery is
+exercised against a local fixture collector on loopback. No claim is made that any named
+collector or vendor accepts these requests.
 
-## Deferred
+## Deferred and expansion gate
 
-- **Content export** with a preview. Refused in this release (`content-export-unsupported`).
-- **Traces and logs**, and the protobuf and gRPC protocols. Declared and refused.
+- **Content export payload support.** The `schegent.telemetry.export.contentPolicy` user setting
+  and the host preview (`buildTelemetryExportPreview` / `TelemetryHostStatus.preview`, always
+  reporting `contentExportSupported: false` and redaction limits) are shipped, and requesting
+  `content` is unconditionally refused (`content-export-unsupported`) across host evaluation and
+  the sidebar health panel. Exporting prompt/response/content payloads remains deferred.
+- **Traces, logs, and additional OTLP transports (`otlp-http-protobuf`, `otlp-grpc`).** Declared
+  and refused in this release.
+- **Architectural expansion gate:** Before expanding supported transports (`otlp-http-protobuf`,
+  `otlp-grpc`) or signals (`traces`, `logs`), maintainers must record an explicit disposition for
+  direct-only versus corporate-proxy delivery and complete real OpenTelemetry Collector
+  interoperability qualification beyond the loopback fixture.

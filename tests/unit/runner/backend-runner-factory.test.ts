@@ -16,7 +16,9 @@ import { BackendRunnerRegistry } from '../../../src/runner/backend-runner-regist
 import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 import { ClaudeCliRunner } from '../../../src/runner/claude-cli';
 import { CodexCliRunner } from '../../../src/runner/codex-cli';
+import { AcpBackedRunner } from '../../../src/runner/acp-backed-runner';
 import { SpawnGatedRunner } from '../../../src/runner/spawn-gated-runner';
+import type { DeliveryRepresentation } from '../../../src/contracts/phase-context/context-delivery';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
@@ -338,5 +340,57 @@ describe('createBackendRunner and the spawn gate (FR-R6-F09)', () => {
 
   it.each(SUPPORTED_BACKENDS)('%s is returned unwrapped without one', (kind) => {
     expect(createBackendRunner(kind, { uncontainedGranted: granted })).not.toBeInstanceOf(SpawnGatedRunner);
+  });
+});
+
+// CR-314-1 / SR-314-1 -- createBackendRunner forwards phase-handoff verification hooks to AcpBackedRunner.
+describe('createBackendRunner ACP phase-handoff hook forwarding (CR-314-1 / SR-314-1)', () => {
+  const granted = () => new Set<BackendRunnerKind>(['claude', 'agy']);
+
+  it('forwards resolveHandoffRepresentation and resolveHandoffContentDigest into AcpBackedRunner', () => {
+    const rep: DeliveryRepresentation = {
+      handoffId: 'handoff-1',
+      revision: 1,
+      targetAttemptId: 'run-1:att-1',
+      contentDigest: 'sha256:abc',
+      rendererVersion: 1,
+      renderedDigest: 'sha256:def',
+      capabilities: {
+        protocolVersion: 1,
+        loadSession: true,
+        image: false,
+        audio: false,
+        embeddedContext: true,
+        authMethodCount: 0
+      },
+      profileId: 'agy-acp-native',
+      profileRevision: 1,
+      session: 'fresh',
+      routes: [],
+      representationDigest: 'sha256:rep'
+    };
+    const resolveHandoffRepresentation = vi.fn(() => rep);
+    const resolveHandoffContentDigest = vi.fn(() => 'sha256:abc');
+
+    const runner = createBackendRunner('agy', {
+      uncontainedGranted: granted,
+      acpDispatch: {
+        enabled: true,
+        resolveHandoffRepresentation,
+        resolveHandoffContentDigest
+      }
+    });
+
+    expect(runner).toBeInstanceOf(AcpBackedRunner);
+    const forwarded = (runner as unknown as {
+      options: {
+        resolveHandoffRepresentation?: (attemptId: string) => DeliveryRepresentation | null;
+        resolveHandoffContentDigest?: (handoffId: string) => string | null;
+      };
+    }).options;
+    expect(forwarded.resolveHandoffRepresentation).toBe(resolveHandoffRepresentation);
+    expect(forwarded.resolveHandoffContentDigest).toBe(resolveHandoffContentDigest);
+    expect(forwarded.resolveHandoffRepresentation?.('run-1:att-1')).toBe(rep);
+    expect(forwarded.resolveHandoffContentDigest?.('handoff-1')).toBe('sha256:abc');
   });
 });

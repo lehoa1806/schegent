@@ -3,7 +3,19 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AcpPermissionRequest } from '../../../src/contracts/acp-runtime';
-import { decidePermission, parsePermissionParams } from '../../../src/services/acp-runtime/permission-policy';
+import {
+  decidePermission,
+  decidePermissionMaybeAsync,
+  formatPermissionTitleForDisplay,
+  parsePermissionParams,
+  sanitizePermissionRequest
+} from '../../../src/services/acp-runtime/permission-policy';
+import { AGENT_DISPLAY_TITLE_MAX_CHARS } from '../../../src/services/acp-runtime/agent-identifier';
+import {
+  AcpAuthorityGate,
+  summarizePermissionDecision,
+  type SanitizedPermissionDecisionSummary
+} from '../../../src/services/containment-qualification/acp-authority-gate';
 
 const BOTH: AcpPermissionRequest = {
   sessionId: 's',
@@ -93,5 +105,98 @@ describe('decidePermission', () => {
     };
     expect(decidePermission(BOTH, policy, true)).toEqual({ outcome: 'cancelled' });
     expect(asked).toBe(0);
+  });
+});
+
+describe('FR-R7-17 (R7-17-05) — hostile permission toolTitle sanitization across parser, policy, and authority gate', () => {
+  const FAKE_SECRET = ['sk', 'proj', 'A'.repeat(28)].join('-');
+  const HOSTILE_TITLE =
+    `\u001b[31mWrite\u001b[0m \u001b]0;spoof\u0007\u202efake\u202c ` +
+    `\u2066iso\u2069\u200e\u200f\u061c\r\nline2\u2028sep\u2029end ${FAKE_SECRET} ` +
+    'Z'.repeat(120_000);
+
+  it('sanitizes hostile toolCall.title on receive in parsePermissionParams and formatPermissionTitleForDisplay', () => {
+    const parsed = parsePermissionParams({
+      sessionId: 's',
+      toolCall: { toolCallId: 'call-hostile', title: HOSTILE_TITLE },
+      options: [{ optionId: 'reject', kind: 'reject_once' }]
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.toolTitle).not.toBeNull();
+    expect(parsed.toolTitle!.length).toBeLessThanOrEqual(AGENT_DISPLAY_TITLE_MAX_CHARS);
+    expect(parsed.toolTitle).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+    expect(parsed.toolTitle).not.toContain(FAKE_SECRET);
+    expect(parsed.toolTitle).not.toContain('\u001b');
+    expect(parsed.toolTitle).toContain('[REDACTED]');
+    expect(formatPermissionTitleForDisplay(HOSTILE_TITLE)).toBe(parsed.toolTitle);
+    expect(formatPermissionTitleForDisplay('\u001b[31m\u202e\u2066\u200f\r\n')).toBeNull();
+  });
+
+  it('sanitizes raw AcpPermissionRequest before policy evaluation and in AcpAuthorityGate summaries', async () => {
+    const seenTitles: (string | null)[] = [];
+    const hostileRequest: AcpPermissionRequest = {
+      ...BOTH,
+      toolTitle: HOSTILE_TITLE
+    };
+
+    expect(sanitizePermissionRequest(hostileRequest).toolTitle).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+
+    decidePermission(
+      hostileRequest,
+      (req) => {
+        seenTitles.push(req.toolTitle);
+        return 'undecided';
+      },
+      false
+    );
+    await decidePermissionMaybeAsync(
+      hostileRequest,
+      async (req) => {
+        seenTitles.push(req.toolTitle);
+        return 'undecided' as const;
+      },
+      false
+    );
+    expect(seenTitles).toHaveLength(2);
+    for (const title of seenTitles) {
+      expect(title).not.toBeNull();
+      expect(title!.length).toBeLessThanOrEqual(AGENT_DISPLAY_TITLE_MAX_CHARS);
+      expect(title).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+      expect(title).not.toContain(FAKE_SECRET);
+    }
+
+    const summaries: SanitizedPermissionDecisionSummary[] = [];
+    const gate = new AcpAuthorityGate({
+      isWorkspaceTrusted: () => true,
+      holdsPrimacy: () => true,
+      currentOwnershipGeneration: () => 1
+    });
+    gate.registerScope({
+      attemptId: 'attempt-1',
+      acpSessionId: 's',
+      connectionGeneration: 1,
+      ownershipGeneration: 1,
+      executionRoot: '/tmp/ws'
+    });
+    const gatePolicy = gate.createPermissionPolicy(1, {
+      allowAuthorizedOnce: false,
+      onPermissionDecision: (summary) => summaries.push(summary)
+    });
+    expect(gatePolicy(hostileRequest)).toBe('undecided');
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]!.toolTitle).not.toBeNull();
+    expect(summaries[0]!.toolTitle!.length).toBeLessThanOrEqual(AGENT_DISPLAY_TITLE_MAX_CHARS);
+    expect(summaries[0]!.toolTitle).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+    expect(summaries[0]!.toolTitle).not.toContain(FAKE_SECRET);
+
+    const directSummary = summarizePermissionDecision(hostileRequest, gate.authorize({
+      requestKind: 'permission',
+      acpSessionId: 's',
+      connectionGeneration: 1,
+      attemptId: 'attempt-1',
+      mutating: true
+    }));
+    expect(directSummary.toolTitle).toBe(summaries[0]!.toolTitle);
   });
 });

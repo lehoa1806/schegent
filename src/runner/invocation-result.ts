@@ -251,6 +251,10 @@ export interface InvocationRequest {
   authorizedUpstreamInputPaths?: readonly string[];
   /** FR-R6-F09 / F15 — explicit declared output paths authorized for write access. */
   authorizedOutputPaths?: readonly string[];
+  /** FR-R6-F15 (SR-B2 #1) — host-frozen phase handoff ID requiring fail-closed dispatch verification. */
+  readonly phaseHandoffId?: string;
+  /** FR-R6-F15 (SR-B2 #1) — host-frozen delivery representation digest bound to `phaseHandoffId`. */
+  readonly phaseHandoffRepresentationDigest?: string;
 }
 
 /**

@@ -114,11 +114,16 @@ export default defineConfig({
       // App.nav.test.ts, stabilized it, and verified 0.00 pp function
       // variance across 5 isolated runs (89.11% / 1,579 of 1,772 functions;
       // floors 86/75/83/86 stay within the 1-point headroom tolerance).
+      //
+      // Statements and lines raised 86 → 88 on FR-R7-17 (feature hardening
+      // 310–314), whose HistoricalReportsPanel and ChangeReviewPanel tests
+      // measured 93.05% statements / 93.05% lines (branches and functions
+      // stayed within the 1-point headroom tolerance).
       thresholds: {
-        statements: 86,
+        statements: 88,
         branches: 75,
         functions: 83,
-        lines: 86
+        lines: 88
       }
     }
   }

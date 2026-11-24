@@ -1,4 +1,8 @@
+import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { PHASE_CONTEXT_CONTRIBUTION_VERSION } from '../../../../src/contracts/phase-context/context-policy';
 import type { PhaseDefinition } from '../../../../src/contracts/process-definitions';
 import type { WorkflowDefinition } from '../../../../src/contracts/workflow-definitions';
 import {
@@ -7,6 +11,11 @@ import {
   upsertInvocationFrame,
   type ConnectedWorkflowRun
 } from '../../../../src/state/connected-workflow-run';
+import {
+  createPhaseHandoffCoordinator,
+  createSqliteHandoffStore
+} from '../../../../src/services/phase-context';
+import { SqliteApplicationStore } from '../../../../src/services/sqlite-store';
 import { createComposableWorkflowRunSnapshot } from '../../../../src/services/workflow-execution/connected-run-factory';
 import {
   completeComposableNodeAttempt,
@@ -14,6 +23,7 @@ import {
   type PhaseAttemptDispatchInput,
   type PhaseAttemptDispatchResult
 } from '../../../../src/services/workflow-execution/connected-run-coordinator';
+import { validateAndApproveContinueHandoff } from '../../../../src/services/workflow-execution/phase-handoff-execution-bridge';
 import {
   WorkflowControlService,
   type ActiveLeafAbortInput,
@@ -886,5 +896,159 @@ describe('WorkflowControlService — a re-dispatch the queue refuses is a refusa
     expect(childAfter.status).toBe('in-flight');
     expect(childAfter.attemptsByNodeId['c2']).toHaveLength(1);
     expect(childAfter.attemptsByNodeId['c2']![0]!.status).toBe('in-flight');
+  });
+
+  it('CR-B2 #2 / SR-B2 #4: validateAndApproveContinueHandoff re-reads live run revision AFTER await continueWaitingHandoff and leaves SQLite waiting-approval on concurrent revision bump', async () => {
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'wcs-crb2-2-'));
+    const sqlite = SqliteApplicationStore.openInMemory();
+    try {
+      const store = createInMemoryControlStore();
+      const handoffStore = createSqliteHandoffStore(sqlite.writerConnection, () => 1_700_000_000_000);
+      const coordinator = createPhaseHandoffCoordinator({
+        store: handoffStore,
+        primaryWorkspaceRoot: tempDir,
+        workspaceId: 'ws-crb2-2'
+      });
+
+      const manualPolicyWorkflow: WorkflowDefinition = {
+        workflowId: 'wf-manual-policy-crb2',
+        name: 'Manual Policy Handoff Workflow',
+        version: 1,
+        startNodeIds: ['first'],
+        nodes: [
+          { nodeId: 'first', kind: 'phase', phaseId: 'p-c1' },
+          { nodeId: 'second', kind: 'phase', phaseId: 'p-c2' }
+        ],
+        connections: [
+          {
+            from: { nodeId: 'first' },
+            to: { kind: 'node', nodeId: 'second' },
+            handoff: 'manual',
+            contextPolicy: {
+              version: 1,
+              approval: 'manual',
+              session: 'fresh',
+              selectors: [{ selectorId: 's1', sourceNodePath: 'first', required: true, priority: 0 }]
+            }
+          }
+        ]
+      };
+
+      const snap = createComposableWorkflowRunSnapshot({
+        connectedRunId: 'run-crb2-2',
+        workflow: manualPolicyWorkflow,
+        effectiveWorkflows: [manualPolicyWorkflow],
+        effectivePhases: phases,
+        startedAt: 1000,
+        queueId: 'q-main'
+      });
+      expect(snap.outcome).toBe('created');
+      if (snap.outcome !== 'created') return;
+      store.seed(snap.run);
+
+      const acceptingDispatch = async (): Promise<PhaseAttemptDispatchResult> => ({
+        outcome: 'dispatched',
+        queueItemId: 'qi-crb2-2'
+      });
+      await dispatchComposableNode(
+        { connectedRuns: store, dispatchPhase: acceptingDispatch, phaseHandoffCoordinator: coordinator },
+        {
+          run: store.get('run-crb2-2')!,
+          invocationId: snap.rootInvocationId,
+          nodeId: 'first',
+          startedAt: 1010
+        }
+      );
+      const frameBeforeComplete = store.get('run-crb2-2')!.invocations![snap.rootInvocationId]!;
+      const firstAttempts = Object.hasOwn(frameBeforeComplete.attemptsByNodeId, 'first')
+        ? frameBeforeComplete.attemptsByNodeId['first']
+        : undefined;
+      const firstAttempt = firstAttempts?.at(0);
+      expect(firstAttempt).toBeDefined();
+      if (firstAttempt === undefined) return;
+      const occId = snap.rootInvocationId.replace(/[^A-Za-z0-9._:-]/g, '-');
+      coordinator.registerExternalContribution({
+        runId: 'run-crb2-2',
+        contribution: {
+          schemaVersion: PHASE_CONTEXT_CONTRIBUTION_VERSION,
+          producer: {
+            nodePath: firstAttempt.nodePath.replace(/^\/+/, ''),
+            occurrenceId: occId,
+            attemptId: firstAttempt.attemptId
+          },
+          coverage: 'complete',
+          outcomes: ['Awaiting manual approval'],
+          decisions: [],
+          constraints: [],
+          unresolvedIssues: [],
+          summary: null,
+          artifacts: []
+        }
+      });
+
+      const reached = await completeComposableNodeAttempt(
+        { connectedRuns: store, dispatchPhase: acceptingDispatch, phaseHandoffCoordinator: coordinator },
+        {
+          run: store.get('run-crb2-2')!,
+          invocationId: snap.rootInvocationId,
+          nodeId: 'first',
+          status: 'completed',
+          completedAt: 1020
+        }
+      );
+      expect(reached.outcome).toBe('waiting-for-handoff');
+
+      const waitingRun = store.get('run-crb2-2')!;
+      const pendingHandoff = waitingRun.invocations![snap.rootInvocationId]!.pendingHandoff;
+      expect(pendingHandoff?.phaseHandoffId).toBeDefined();
+      if (pendingHandoff?.phaseHandoffId === undefined) return;
+      const handoffId = pendingHandoff.phaseHandoffId;
+      expect(coordinator.acceptance.inspect(handoffId)).toMatchObject({
+        ok: true,
+        record: { revisions: [{ revision: 1, state: 'waiting-approval' }] }
+      });
+
+      // Simulate a concurrent revision bump on `store` occurring DURING `await continueWaitingHandoff(...)`!
+      let stagedSnapshot = waitingRun;
+      const racingStagingWriter = {
+        async compareAndSetConnectedRun(nextRun: ConnectedWorkflowRun, expectedRevision: number) {
+          if (expectedRevision !== stagedSnapshot.revision) {
+            return { outcome: 'stale' as const, current: stagedSnapshot };
+          }
+          stagedSnapshot = nextRun;
+          // Concurrent writer bumps the live run's revision mid-await!
+          store.seed({ ...waitingRun, revision: waitingRun.revision + 1 });
+          return { outcome: 'written' as const, run: nextRun };
+        }
+      };
+
+      const res = await validateAndApproveContinueHandoff({
+        stagingWriter: racingStagingWriter,
+        stagedRun: waitingRun,
+        readLiveRun: () => store.get('run-crb2-2'),
+        coordinator,
+        run: waitingRun,
+        targetInvocationId: snap.rootInvocationId,
+        targetNodeId: 'second',
+        continuationRequest: undefined,
+        commandId: 'cmd-racing-continue',
+        now: 1100,
+        expectedHandoffRevision: 1
+      });
+
+      expect(res.accepted).toBe(false);
+      if (!res.accepted) {
+        expect(res.refusalCode).toBe('stale-revision');
+      }
+      // SQLite handoff revision MUST remain strictly in 'waiting-approval' (never approved on stale race!).
+      const afterInspect = coordinator.acceptance.inspect(handoffId);
+      expect(afterInspect.ok).toBe(true);
+      if (afterInspect.ok && afterInspect.record !== null) {
+        expect(afterInspect.record.revisions.at(-1)?.state).toBe('waiting-approval');
+      }
+    } finally {
+      sqlite.close();
+      await fsp.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });

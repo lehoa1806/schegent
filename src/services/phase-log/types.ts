@@ -60,6 +60,7 @@ export interface PhaseLogDisplayEntry {
   };
   readonly bodyTruncated: {
     readonly text?: { readonly originalLength: number };
+    readonly toolName?: { readonly originalLength: number };
     readonly toolInput?: { readonly originalLength: number };
     readonly toolArguments?: { readonly originalLength: number };
     readonly toolResult?: { readonly originalLength: number };

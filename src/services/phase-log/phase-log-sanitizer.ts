@@ -29,6 +29,10 @@
 // couple a size decision to a privacy one.
 
 import { REDACTION_SENTINEL, isSecretKeyName } from '../../lib/logger';
+import {
+  AGENT_DISPLAY_TITLE_MAX_CHARS,
+  sanitizeAgentDisplayTitle
+} from '../acp-runtime/agent-identifier';
 import type { PhaseLogDisplayEntry, ToolArgumentValue } from './types';
 
 /**
@@ -109,6 +113,10 @@ export function sanitizeToolArguments(
   return { value: mutated ? out : value, mutated };
 }
 
+function sanitizeToolNameField(raw: string, sanitize: (s: string) => string): string {
+  return sanitizeAgentDisplayTitle(raw, AGENT_DISPLAY_TITLE_MAX_CHARS, sanitize) ?? 'tool';
+}
+
 /**
  * Scrub every operator-content field of a display entry's body, flat and
  * nested. Returns the input entry unchanged when nothing matched.
@@ -125,7 +133,8 @@ export function sanitizeDisplayEntryBody(
   for (const field of SANITIZED_BODY_FIELDS) {
     const raw = (entry.body as Partial<Record<SanitizableBodyField, string>>)[field];
     if (typeof raw !== 'string' || raw.length === 0) continue;
-    const cleaned = sanitize(raw);
+    const cleaned =
+      field === 'toolName' ? sanitizeToolNameField(raw, sanitize) : sanitize(raw);
     if (cleaned !== raw) {
       next[field] = cleaned;
       mutated = true;

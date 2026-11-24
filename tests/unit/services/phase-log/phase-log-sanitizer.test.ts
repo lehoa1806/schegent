@@ -380,3 +380,119 @@ describe('sanitizeToolArguments prototype-pollution resilience (SR-A2)', () => {
     expect(Buffer.byteLength(JSON.stringify(fitted), 'utf8')).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
   });
 });
+
+describe('FR-R7-17 (R7-17-05) — hostile toolName sanitization at the phase-log boundary', () => {
+  it('strips ANSI CSI/OSC, bidi controls, newlines, redacts secrets, and bounds >100 KiB toolName', () => {
+    const hostileName =
+      `\u001b[31mExec\u001b[0m \u001b]0;spoof\u0007\u202eoverride\u202c ` +
+      `\u2066isolate\u2069\u200e\u200f\u061c\r\nline2\u2028sep\u2029end ${API_KEY} ` +
+      'Q'.repeat(120_000);
+    const entry: PhaseLogDisplayEntry = {
+      seq: 2,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: hostileName, toolInput: '{}' },
+      bodyTruncated: null
+    };
+    const out = sanitizeDisplayEntryBody(entry, sanitize);
+    const cleaned = out.body.toolName ?? '';
+    expect(cleaned.length).toBeGreaterThan(0);
+    expect(cleaned.length).toBeLessThanOrEqual(128);
+    expect(cleaned).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+    expect(cleaned).not.toContain('\u001b');
+    expect(cleaned).not.toContain(API_KEY);
+    expect(cleaned).toContain(REDACTION_SENTINEL);
+
+    const controlOnly: PhaseLogDisplayEntry = {
+      seq: 3,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: '\u001b[31m\u202e\u2066\u200f\r\n', toolInput: '{}' },
+      bodyTruncated: null
+    };
+    expect(sanitizeDisplayEntryBody(controlOnly, sanitize).body.toolName).toBe('tool');
+  });
+
+  it('redacts secrets straddling byte 128 and ANSI/bidi-padded secrets end-to-end across reader and live tail (SR-312-1)', async () => {
+    const ghToken = ['ghp', 'K'.repeat(36)].join('_');
+    const npmToken = ['npm', 'L'.repeat(36)].join('_');
+    const gcpKey = ['AIza', 'M'.repeat(35)].join('');
+    const sgKey = ['SG', 'N'.repeat(22), 'P'.repeat(43)].join('.');
+    const jwt = [
+      ['eyJ', 'hbGciOiJIUzI1NiJ9'].join(''),
+      'eyJzdWIiOiIxMjM0NTY3ODkwIn0',
+      'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    ].join('.');
+
+    const names = [
+      `${'x'.repeat(108)} ${ghToken}`,
+      `${'y'.repeat(108)} ${npmToken}`,
+      `${'z'.repeat(108)} ${gcpKey}`,
+      `${'w'.repeat(100)} ${sgKey}`,
+      `${'v'.repeat(105)} ${jwt}`,
+      `${'\u001b[31m'.repeat(25)}${ghToken}`,
+      `${'\u202e'.repeat(45)}${npmToken}`
+    ];
+
+    const lines = names.map((name) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name, input: { ok: true } }] }
+      })
+    );
+    await writeStream(lines);
+
+    const live = await tailEntries();
+    const reopened = await readerEntries();
+    expect(live).toHaveLength(names.length);
+    expect(reopened).toHaveLength(names.length);
+
+    for (let i = 0; i < names.length; i += 1) {
+      expect(live[i]!.body).toEqual(reopened[i]!.body);
+      const toolName = live[i]!.body.toolName ?? '';
+      expect(Buffer.byteLength(toolName, 'utf8')).toBeLessThanOrEqual(128);
+      expect(toolName).not.toContain('ghp_');
+      expect(toolName).not.toContain('npm_');
+      expect(toolName).not.toContain('AIza');
+      expect(toolName).not.toContain('SG.');
+      expect(toolName).not.toContain('eyJ');
+      expect(toolName).toContain(REDACTION_SENTINEL);
+    }
+
+    // Custom caller sanitizer also sees the full pre-cap cleaned toolName before 128-char bounding
+    const customToken = ['CUSTOM', 'SECRET', '1234567890ABCDEF'].join('_');
+    const customEntry: PhaseLogDisplayEntry = {
+      seq: 4,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: `${'q'.repeat(110)} ${customToken}`, toolInput: '{}' },
+      bodyTruncated: null
+    };
+    const customSanitize = (s: string): string => s.replaceAll(customToken, REDACTION_SENTINEL);
+    const customOut = sanitizeDisplayEntryBody(customEntry, customSanitize);
+    expect(customOut.body.toolName).toBe(`${'q'.repeat(110)} ${REDACTION_SENTINEL}`);
+    expect(customOut.body.toolName).not.toContain('CUSTOM_SECRET');
+  });
+
+  it('blocks custom-sanitize toolName secret-pull across the 4096 pre-cap boundary and single-blob cuts (SR-A3 #3)', () => {
+    const customSanitize = (s: string): string =>
+      logger.sanitize(s).replace(/CUSTOM_[A-Za-z0-9]{16,}/g, REDACTION_SENTINEL);
+    const customLeaked = ['CUSTOM', 'LEAKED12345678901234'].join('_');
+    const customTool = `${['CUSTOM', 'A'.repeat(4_075)].join('_')} ${customLeaked}`;
+    const singleBlobComma = `${['CUSTOM', 'A'.repeat(4_580)].join('_')},${customLeaked}`;
+    const singleBlobDot = `${['CUSTOM', 'A'.repeat(4_580)].join('_')}.${customLeaked}`;
+
+    for (const rawToolName of [customTool, singleBlobComma, singleBlobDot]) {
+      const entry: PhaseLogDisplayEntry = {
+        seq: 5,
+        kind: 'tool-use',
+        ts: null,
+        body: { toolName: rawToolName, toolInput: '{}' },
+        bodyTruncated: null
+      };
+      const out = sanitizeDisplayEntryBody(entry, customSanitize);
+      expect(out.body.toolName).toBe(REDACTION_SENTINEL);
+      expect(out.body.toolName).not.toContain('CUSTOM_LEAKED');
+    }
+  });
+});

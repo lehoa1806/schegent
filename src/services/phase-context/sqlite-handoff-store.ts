@@ -38,6 +38,14 @@ interface StoredHandoffEnvelope {
   readonly representations: Readonly<Record<string, DeliveryRepresentation>>;
   readonly observations: Readonly<Record<string, HandoffObservation>>;
   readonly laneId: string | null;
+  readonly artifactLocations?: Readonly<Record<string, string>>;
+}
+
+export interface TransitionedUncertainDispatch {
+  readonly handoffId: string;
+  readonly runId: string;
+  readonly revision: number;
+  readonly targetAttemptId: string;
 }
 
 interface RawHandoffRow {
@@ -73,6 +81,16 @@ interface StoredReviewLoopJson {
   readonly snapshot: FindingLedgerSnapshot;
 }
 
+export class HandoffStoreCorruptionError extends Error {
+  public readonly detail: string;
+
+  public constructor(detail: string) {
+    super(`corrupt phase-context store row: ${detail}`);
+    this.name = 'HandoffStoreCorruptionError';
+    this.detail = detail;
+  }
+}
+
 export interface DurableHandoffStore extends HandoffStorePort {
   bindRunMetadata(handoffId: string, metadata: HandoffRunMetadata): void;
   getRunMetadata(handoffId: string): HandoffRunMetadata | null;
@@ -82,6 +100,11 @@ export interface DurableHandoffStore extends HandoffStorePort {
     revision: number,
     targetAttemptId: string
   ): DeliveryRepresentation | null;
+  findRepresentationByAttemptId(targetAttemptId: string): DeliveryRepresentation | null;
+  saveArtifactLocations(handoffId: string, locations: Readonly<Record<string, string>>): void;
+  loadArtifactLocations(handoffId: string): Readonly<Record<string, string>>;
+  markUnsettledIntentsUncertain(runId?: string): readonly TransitionedUncertainDispatch[];
+  listUnsettledIntentHandoffs(runId?: string): readonly string[];
   recordObservation(observation: HandoffObservation): boolean;
   listObservations(handoffId: string): readonly HandoffObservation[];
   listHandoffIdsForRun(runId: string): readonly string[];
@@ -147,18 +170,44 @@ function representationKey(revision: number, targetAttemptId: string): string {
   return `${revision}:${targetAttemptId}`;
 }
 
+function sanitizeArtifactLocations(
+  raw: unknown
+): Readonly<Record<string, string>> | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const cleaned: Record<string, string> = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (key.length > 0 && typeof value === 'string' && value.length > 0) {
+      cleaned[key] = value;
+      count += 1;
+    }
+  }
+  return count > 0 ? Object.freeze(cleaned) : undefined;
+}
+
+function isRefusalOutcome(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'ok' in value &&
+    (value as { readonly ok?: unknown }).ok === false
+  );
+}
+
 function parseEnvelope(rawJson: string, rowVersion: number): StoredHandoffEnvelope | null {
   try {
     const parsed: unknown = JSON.parse(rawJson);
     if (parsed === null || typeof parsed !== 'object') return null;
     const candidate = parsed as Partial<StoredHandoffEnvelope>;
     if (candidate.record === undefined) return null;
+    const artifactLocations = sanitizeArtifactLocations(candidate.artifactLocations);
     return {
       schemaVersion: 1,
       record: freezeRecord(candidate.record, rowVersion),
       representations: candidate.representations ?? {},
       observations: candidate.observations ?? {},
-      laneId: typeof candidate.laneId === 'string' ? candidate.laneId : null
+      laneId: typeof candidate.laneId === 'string' ? candidate.laneId : null,
+      ...(artifactLocations !== undefined ? { artifactLocations } : {})
     };
   } catch {
     return null;
@@ -167,6 +216,10 @@ function parseEnvelope(rawJson: string, rowVersion: number): StoredHandoffEnvelo
 
 class SqliteHandoffStoreImpl implements DurableHandoffStore {
   private readonly pendingMetaByHandoffId = new Map<string, HandoffRunMetadata>();
+  private readonly pendingArtifactLocationsByHandoffId = new Map<
+    string,
+    Readonly<Record<string, string>>
+  >();
   private inImmediateTxDepth = 0;
 
   public constructor(
@@ -225,10 +278,31 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     if (this.inImmediateTxDepth > 0) {
       return work();
     }
+    const metaSnapshot = new Map(this.pendingMetaByHandoffId);
+    const locSnapshot = new Map(this.pendingArtifactLocationsByHandoffId);
+    const restorePending = (): void => {
+      this.pendingMetaByHandoffId.clear();
+      for (const [k, v] of metaSnapshot.entries()) {
+        this.pendingMetaByHandoffId.set(k, v);
+      }
+      this.pendingArtifactLocationsByHandoffId.clear();
+      for (const [k, v] of locSnapshot.entries()) {
+        this.pendingArtifactLocationsByHandoffId.set(k, v);
+      }
+    };
     this.conn.exec('BEGIN IMMEDIATE');
     this.inImmediateTxDepth += 1;
     try {
       const outcome = work();
+      if (isRefusalOutcome(outcome)) {
+        try {
+          this.conn.exec('ROLLBACK');
+        } catch {
+          // Ignore rollback error on already-aborted transaction.
+        }
+        restorePending();
+        return outcome;
+      }
       this.conn.exec('COMMIT');
       return outcome;
     } catch (err) {
@@ -237,6 +311,7 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
       } catch {
         // Ignore rollback error on already-aborted transaction.
       }
+      restorePending();
       throw err;
     } finally {
       this.inImmediateTxDepth -= 1;
@@ -247,7 +322,10 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     const row = this.readRawRow(handoffId);
     if (row === undefined) return null;
     const env = parseEnvelope(row.record_json, row.revision);
-    return env?.record ?? null;
+    if (env === null) {
+      throw new HandoffStoreCorruptionError('corrupt-phase-handoff-record');
+    }
+    return env.record;
   }
 
   public save(record: HandoffRecord, expectedVersion: number): boolean {
@@ -259,12 +337,14 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     if (expectedVersion === 0) {
       if (this.readRawRow(record.handoffId) !== undefined) return false;
       const cols = this.deriveRowColumns(frozen);
+      const pendingLocations = this.pendingArtifactLocationsByHandoffId.get(record.handoffId);
       const envelope: StoredHandoffEnvelope = {
         schemaVersion: 1,
         record: frozen,
         representations: {},
         observations: {},
-        laneId: cols.laneId
+        laneId: cols.laneId,
+        ...(pendingLocations !== undefined ? { artifactLocations: pendingLocations } : {})
       };
       const recordJson = JSON.stringify(envelope);
       const recordBytes = Buffer.byteLength(recordJson, 'utf8');
@@ -288,6 +368,7 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
         );
         if (res.changes === 1) {
           this.pendingMetaByHandoffId.delete(record.handoffId);
+          this.pendingArtifactLocationsByHandoffId.delete(record.handoffId);
           return true;
         }
         return false;
@@ -301,18 +382,27 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
       return false;
     }
     const prevEnv = parseEnvelope(existing.record_json, existing.revision);
+    if (prevEnv === null) {
+      return false;
+    }
     const cols = this.deriveRowColumns(frozen, {
       run_id: existing.run_id,
       source_attempt_id: existing.source_attempt_id,
       target_phase_id: existing.target_phase_id,
-      laneId: prevEnv?.laneId ?? null
+      laneId: prevEnv.laneId
+    });
+    const pendingLocations = this.pendingArtifactLocationsByHandoffId.get(record.handoffId);
+    const mergedLocations = sanitizeArtifactLocations({
+      ...(prevEnv.artifactLocations ?? {}),
+      ...(pendingLocations ?? {})
     });
     const envelope: StoredHandoffEnvelope = {
       schemaVersion: 1,
       record: frozen,
-      representations: prevEnv?.representations ?? {},
-      observations: prevEnv?.observations ?? {},
-      laneId: cols.laneId
+      representations: prevEnv.representations,
+      observations: prevEnv.observations,
+      laneId: cols.laneId,
+      ...(mergedLocations !== undefined ? { artifactLocations: mergedLocations } : {})
     };
     const recordJson = JSON.stringify(envelope);
     const recordBytes = Buffer.byteLength(recordJson, 'utf8');
@@ -334,6 +424,7 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     );
     if (res.changes === 1) {
       this.pendingMetaByHandoffId.delete(record.handoffId);
+      this.pendingArtifactLocationsByHandoffId.delete(record.handoffId);
       return true;
     }
     return false;
@@ -423,6 +514,191 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     return env.representations[representationKey(revision, targetAttemptId)] ?? null;
   }
 
+  public findRepresentationByAttemptId(targetAttemptId: string): DeliveryRepresentation | null {
+    const trimmed = targetAttemptId.trim();
+    if (trimmed.length === 0) return null;
+    const rows = this.conn.all<RawHandoffRow>(
+      `SELECT handoff_id, run_id, source_attempt_id, target_phase_id, revision, status,
+              record_json, created_at_ms, updated_at_ms
+         FROM phase_handoff_records
+        ORDER BY updated_at_ms DESC, rowid DESC`
+    );
+    for (const row of rows) {
+      const env = parseEnvelope(row.record_json, row.revision);
+      if (env === null) continue;
+      let matched: DeliveryRepresentation | null = null;
+      for (const rep of Object.values(env.representations)) {
+        if (rep.targetAttemptId === trimmed) {
+          if (matched === null || rep.revision > matched.revision) {
+            matched = rep;
+          }
+        }
+      }
+      if (matched !== null) return matched;
+    }
+    return null;
+  }
+
+  public saveArtifactLocations(
+    handoffId: string,
+    locations: Readonly<Record<string, string>>
+  ): void {
+    const cleaned = sanitizeArtifactLocations(locations);
+    if (cleaned === undefined) return;
+    const existing = this.readRawRow(handoffId);
+    if (existing === undefined) {
+      const prior = this.pendingArtifactLocationsByHandoffId.get(handoffId);
+      const merged = sanitizeArtifactLocations({ ...(prior ?? {}), ...cleaned });
+      if (merged !== undefined) {
+        this.pendingArtifactLocationsByHandoffId.set(handoffId, merged);
+      }
+      return;
+    }
+    const env = parseEnvelope(existing.record_json, existing.revision);
+    if (env === null) return;
+    const merged = sanitizeArtifactLocations({ ...(env.artifactLocations ?? {}), ...cleaned });
+    const updatedEnv: StoredHandoffEnvelope = {
+      ...env,
+      ...(merged !== undefined ? { artifactLocations: merged } : {})
+    };
+    const recordJson = JSON.stringify(updatedEnv);
+    this.conn.run(
+      `UPDATE phase_handoff_records
+          SET record_json = ?, record_bytes = ?, updated_at_ms = ?
+        WHERE handoff_id = ?`,
+      recordJson,
+      Buffer.byteLength(recordJson, 'utf8'),
+      this.nowMs(),
+      handoffId
+    );
+    this.pendingArtifactLocationsByHandoffId.delete(handoffId);
+  }
+
+  public loadArtifactLocations(handoffId: string): Readonly<Record<string, string>> {
+    const existing = this.readRawRow(handoffId);
+    if (existing === undefined) {
+      return this.pendingArtifactLocationsByHandoffId.get(handoffId) ?? Object.freeze({});
+    }
+    const env = parseEnvelope(existing.record_json, existing.revision);
+    return env?.artifactLocations ?? Object.freeze({});
+  }
+
+  public listUnsettledIntentHandoffs(runId?: string): readonly string[] {
+    const rows =
+      runId !== undefined
+        ? this.conn.all<RawHandoffRow>(
+            `SELECT handoff_id, run_id, source_attempt_id, target_phase_id, revision, status,
+                    record_json, created_at_ms, updated_at_ms
+               FROM phase_handoff_records
+              WHERE run_id = ?
+              ORDER BY updated_at_ms DESC, rowid DESC`,
+            runId
+          )
+        : this.conn.all<RawHandoffRow>(
+            `SELECT handoff_id, run_id, source_attempt_id, target_phase_id, revision, status,
+                    record_json, created_at_ms, updated_at_ms
+               FROM phase_handoff_records
+              ORDER BY updated_at_ms DESC, handoff_id ASC`
+          );
+    const out: string[] = [];
+    for (const row of rows) {
+      const env = parseEnvelope(row.record_json, row.revision);
+      if (env === null) {
+        if (row.status === 'intent') out.push(row.handoff_id);
+        continue;
+      }
+      if (env.record.dispatches.some((d) => d.state === 'intent')) {
+        out.push(row.handoff_id);
+      }
+    }
+    return Object.freeze(out);
+  }
+
+  public markUnsettledIntentsUncertain(runId?: string): readonly TransitionedUncertainDispatch[] {
+    return this.runInImmediateTransaction(() => {
+      const rows =
+        runId !== undefined
+          ? this.conn.all<RawHandoffRow>(
+              `SELECT handoff_id, run_id, source_attempt_id, target_phase_id, revision, status,
+                      record_json, created_at_ms, updated_at_ms
+                 FROM phase_handoff_records
+                WHERE run_id = ?
+                ORDER BY updated_at_ms ASC, rowid ASC`,
+              runId
+            )
+          : this.conn.all<RawHandoffRow>(
+              `SELECT handoff_id, run_id, source_attempt_id, target_phase_id, revision, status,
+                      record_json, created_at_ms, updated_at_ms
+                 FROM phase_handoff_records
+                ORDER BY updated_at_ms ASC, handoff_id ASC`
+            );
+      const transitioned: TransitionedUncertainDispatch[] = [];
+      const now = this.nowMs();
+      for (const row of rows) {
+        const env = parseEnvelope(row.record_json, row.revision);
+        if (env === null) {
+          if (row.status === 'intent') {
+            const nextVersion = row.revision + 1;
+            this.conn.run(
+              `UPDATE phase_handoff_records
+                  SET revision = ?, status = 'uncertain', updated_at_ms = ?
+                WHERE handoff_id = ? AND revision = ?`,
+              nextVersion,
+              now,
+              row.handoff_id,
+              row.revision
+            );
+            transitioned.push(
+              Object.freeze({
+                handoffId: row.handoff_id,
+                runId: row.run_id,
+                revision: nextVersion,
+                targetAttemptId: 'corrupt-intent'
+              })
+            );
+          }
+          continue;
+        }
+        if (!env.record.dispatches.some((d) => d.state === 'intent')) continue;
+
+        const updatedDispatches: DispatchRecord[] = env.record.dispatches.map((entry) => {
+          if (entry.state !== 'intent') return entry;
+          transitioned.push(
+            Object.freeze({
+              handoffId: row.handoff_id,
+              runId: row.run_id,
+              revision: entry.revision,
+              targetAttemptId: entry.targetAttemptId
+            })
+          );
+          return Object.freeze({ ...entry, state: 'uncertain' as const });
+        });
+        const nextVersion = row.revision + 1;
+        const updatedRecord = freezeRecord(
+          { ...env.record, dispatches: updatedDispatches },
+          nextVersion
+        );
+        const updatedEnv: StoredHandoffEnvelope = {
+          ...env,
+          record: updatedRecord
+        };
+        const recordJson = JSON.stringify(updatedEnv);
+        this.conn.run(
+          `UPDATE phase_handoff_records
+              SET revision = ?, status = 'uncertain', record_json = ?, record_bytes = ?, updated_at_ms = ?
+            WHERE handoff_id = ? AND revision = ?`,
+          nextVersion,
+          recordJson,
+          Buffer.byteLength(recordJson, 'utf8'),
+          now,
+          row.handoff_id,
+          row.revision
+        );
+      }
+      return Object.freeze(transitioned);
+    });
+  }
+
   public recordObservation(observation: HandoffObservation): boolean {
     const existing = this.readRawRow(observation.handoffId);
     if (existing === undefined) return false;
@@ -473,6 +749,7 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
 
   public clearPendingMetadata(): void {
     this.pendingMetaByHandoffId.clear();
+    this.pendingArtifactLocationsByHandoffId.clear();
   }
 
   public loadOrCreateReviewLoop(params: {
@@ -567,9 +844,48 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     if (row === undefined) return null;
     try {
       const rawParsed: unknown = JSON.parse(row.ledger_json);
-      if (rawParsed === null || typeof rawParsed !== 'object') return null;
+      if (rawParsed === null || typeof rawParsed !== 'object' || Array.isArray(rawParsed)) {
+        throw new HandoffStoreCorruptionError('corrupt-review-loop-ledger');
+      }
       const parsed = rawParsed as Partial<StoredReviewLoopJson>;
-      if (parsed.snapshot === undefined) return null;
+      const rawSnap: unknown = parsed.snapshot;
+      if (rawSnap === null || typeof rawSnap !== 'object' || Array.isArray(rawSnap)) {
+        throw new HandoffStoreCorruptionError('corrupt-review-loop-ledger');
+      }
+      const snap = rawSnap as Partial<FindingLedgerSnapshot>;
+      const rawOptions: unknown = snap.options;
+      if (
+        rawOptions === null ||
+        typeof rawOptions !== 'object' ||
+        Array.isArray(rawOptions) ||
+        !Array.isArray(snap.findings) ||
+        !Array.isArray(snap.passes)
+      ) {
+        throw new HandoffStoreCorruptionError('corrupt-review-loop-ledger');
+      }
+      const rawPasses: readonly unknown[] = snap.passes;
+      for (const passEntry of rawPasses) {
+        if (passEntry === null || typeof passEntry !== 'object' || Array.isArray(passEntry)) {
+          throw new HandoffStoreCorruptionError('corrupt-review-loop-ledger');
+        }
+        const rawOutcome: unknown = (passEntry as { readonly outcome?: unknown }).outcome;
+        if (
+          rawOutcome === null ||
+          typeof rawOutcome !== 'object' ||
+          Array.isArray(rawOutcome) ||
+          typeof (rawOutcome as { readonly verdict?: unknown }).verdict !== 'string'
+        ) {
+          throw new HandoffStoreCorruptionError('corrupt-review-loop-ledger');
+        }
+      }
+      // Verify snapshot rehydrates into a real Ledger (refusingLedger omits `.snapshot`) and matches row.loop_id.
+      const rehydrated = rehydrateFindingLedger(snap as FindingLedgerSnapshot);
+      if (
+        typeof rehydrated.snapshot !== 'function' ||
+        (rawOptions as { readonly loopId?: unknown }).loopId !== row.loop_id
+      ) {
+        throw new HandoffStoreCorruptionError('corrupt-review-loop-ledger');
+      }
       return {
         loopId: row.loop_id,
         runId: row.run_id,
@@ -579,11 +895,12 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
         candidateRef: parsed.candidateRef ?? null,
         scopeRevision: parsed.scopeRevision ?? null,
         criteriaRevision: parsed.criteriaRevision ?? null,
-        snapshot: parsed.snapshot,
+        snapshot: snap as FindingLedgerSnapshot,
         updatedAtMs: row.updated_at_ms
       };
-    } catch {
-      return null;
+    } catch (err) {
+      if (err instanceof HandoffStoreCorruptionError) throw err;
+      throw new HandoffStoreCorruptionError('corrupt-review-loop-ledger');
     }
   }
 
@@ -594,8 +911,12 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     );
     const result: StoredReviewLoopEntry[] = [];
     for (const row of rows) {
-      const entry = this.loadReviewLoop(row.loop_id);
-      if (entry !== null) result.push(entry);
+      try {
+        const entry = this.loadReviewLoop(row.loop_id);
+        if (entry !== null) result.push(entry);
+      } catch {
+        // Read-only run-wide inspection skips corrupt rows while gating paths fail closed.
+      }
     }
     return result;
   }

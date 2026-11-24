@@ -30,10 +30,18 @@
 // Zero `vscode` imports (docs/hard-rules.md rule 13).
 
 import { LIVE_LOG_ENTRY_MAX_BYTES, type LiveLogCoverageReason } from '../../contracts/phase-log-bounds';
+import {
+  AGENT_DISPLAY_TITLE_PRE_CAP_CHARS,
+  sanitizeAgentDisplayTitle
+} from '../acp-runtime/agent-identifier';
 import { cutToBytes, fitEntryToBudget } from './live-log-entry-budget';
 import { coverageGapEntry } from './live-log-snapshot';
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
-import { truncateDisplayEntryBody, type TruncateCaps } from './phase-log-truncator';
+import {
+  TRUNCATE_SANITIZE_LOOKAHEAD_BYTES,
+  truncateDisplayEntryBody,
+  type TruncateCaps
+} from './phase-log-truncator';
 import type { PhaseLogDisplayEntry, ToolArgumentValue } from './types';
 
 /** Longest connection generation, attempt id or source event id accepted. */
@@ -122,6 +130,13 @@ const LOW_SURROGATE_LAST = 0xdfff;
 /** Serialized UTF-8 byte length of `{"__elided":true}`. */
 const ELIDED_SENTINEL_BYTES = 17;
 
+/**
+ * Lookahead retained by `preBoundText` past `perFieldBytes` so `truncateDisplayEntryBody`
+ * sees the full `TRUNCATE_SANITIZE_LOOKAHEAD_BYTES` window plus the exact next character
+ * for mid-token cut detection before sanitizing and snapping to `perFieldBytes` (SR-A2 #2).
+ */
+const PRE_BOUND_LOOKAHEAD_BYTES = TRUNCATE_SANITIZE_LOOKAHEAD_BYTES + 64;
+
 type BodyTruncatedMap = NonNullable<PhaseLogDisplayEntry['bodyTruncated']>;
 
 interface BuiltBody {
@@ -189,22 +204,11 @@ function effectivePerFieldBytes(caps: TruncateCaps): number {
   return Math.min(Math.max(0, raw), LIVE_LOG_ENTRY_MAX_BYTES);
 }
 
-function boundCodeUnits(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text;
-  let end = maxLength;
-  if (end > 0) {
-    const last = text.charCodeAt(end - 1);
-    if (last >= HIGH_SURROGATE_FIRST && last <= HIGH_SURROGATE_LAST) {
-      end -= 1;
-    }
-  }
-  return text.slice(0, end);
-}
-
 /**
- * Pre-bounds untrusted text to at most `maxBytes` UTF-8 bytes without allocating
- * a multi-MiB Buffer via `Buffer.from`, while preserving exact `originalLength`
- * in UTF-8 bytes when truncated.
+ * Pre-bounds untrusted text without allocating a multi-MiB Buffer via `Buffer.from`, preserving
+ * exact `originalLength` in UTF-8 bytes when `text` exceeds `maxBytes` while retaining a bounded
+ * lookahead window so `truncateDisplayEntryBody` can run `options.sanitize` BEFORE snapping to
+ * `maxBytes` (SR-A2 #2 / CR-A2 #3).
  */
 function preBoundText(text: string, maxBytes: number): {
   readonly value: string;
@@ -213,18 +217,17 @@ function preBoundText(text: string, maxBytes: number): {
   if (text.length * 3 <= maxBytes) {
     return { value: text, originalLength: null };
   }
-  if (text.length <= maxBytes) {
-    const byteLength = Buffer.byteLength(text, 'utf8');
-    if (byteLength <= maxBytes) {
-      return { value: text, originalLength: null };
-    }
-    return { value: cutToBytes(text, maxBytes), originalLength: byteLength };
+  const byteLength = Buffer.byteLength(text, 'utf8');
+  if (byteLength <= maxBytes) {
+    return { value: text, originalLength: null };
   }
-  // Every UTF-16 code unit encodes to >= 1 UTF-8 byte, so `text.length > maxBytes`
-  // guarantees truncation. `cutToBytes` walks only the prefix up to `maxBytes`.
+  const lookaheadCap = maxBytes + PRE_BOUND_LOOKAHEAD_BYTES;
+  if (byteLength <= lookaheadCap) {
+    return { value: text, originalLength: byteLength };
+  }
   return {
-    value: cutToBytes(text, maxBytes),
-    originalLength: Buffer.byteLength(text, 'utf8')
+    value: cutToBytes(text, lookaheadCap),
+    originalLength: byteLength
   };
 }
 
@@ -401,9 +404,14 @@ function truncatedToolUseBody(toolName: string, originalBytes: number): BuiltBod
 function buildBoundedToolUseBody(
   rawToolName: string,
   rawToolArgs: unknown,
-  maxBytes: number
+  maxBytes: number,
+  sanitize: (text: string) => string
 ): BuiltBody {
-  const toolName = boundCodeUnits(rawToolName, ACP_TOOL_NAME_MAX_LENGTH);
+  // SR-A3 #3: apply caller `sanitize` inside `sanitizeAgentDisplayTitle` BEFORE the 4096 pre-cap
+  // slice while keeping up to the pre-cap title budget so `truncateDisplayEntryBody` and
+  // `sanitizeDisplayEntryBody` apply the 128-byte/char cap without secret-pull leakage.
+  const toolName =
+    sanitizeAgentDisplayTitle(rawToolName, AGENT_DISPLAY_TITLE_PRE_CAP_CHARS, sanitize) ?? 'tool';
   if (rawToolArgs === undefined) {
     return { kind: 'tool-use', body: { toolName, toolInput: '' }, preTruncated: null };
   }
@@ -493,9 +501,27 @@ function buildBoundedToolUseBody(
   };
 }
 
-function bodyOf(event: AcpNormalizedEvent, maxBytes: number): BuiltBody {
+function bodyOf(
+  event: AcpNormalizedEvent,
+  maxBytes: number,
+  sanitize: (text: string) => string
+): BuiltBody {
   if (event.kind === 'tool-call') {
-    return buildBoundedToolUseBody(event.toolName ?? '', event.toolArgs, maxBytes);
+    const rawToolName = event.toolName ?? '';
+    const built = buildBoundedToolUseBody(rawToolName, event.toolArgs, maxBytes, sanitize);
+    const toolNameCapBytes = Math.min(maxBytes, ACP_TOOL_NAME_MAX_LENGTH);
+    const rawToolNameBytes =
+      rawToolName.length * 3 > toolNameCapBytes ? Buffer.byteLength(rawToolName, 'utf8') : 0;
+    if (rawToolNameBytes > toolNameCapBytes) {
+      return {
+        ...built,
+        preTruncated: mergeBodyTruncated(
+          { toolName: { originalLength: rawToolNameBytes } },
+          built.preTruncated
+        )
+      };
+    }
+    return built;
   }
   const bounded = preBoundText(event.text ?? '', maxBytes);
   switch (event.kind) {
@@ -573,7 +599,7 @@ class Projection {
     }
     this.flushOmitted();
     this.openSegmentIfNeeded(event);
-    const { kind, body, preTruncated } = bodyOf(event, this.perFieldBytes);
+    const { kind, body, preTruncated } = bodyOf(event, this.perFieldBytes, this.options.sanitize);
     this.push(event, this.bounded({ seq: 0, kind, ts: null, body, bodyTruncated: null }, preTruncated));
     this.last = {
       connectionGeneration: event.connectionGeneration,
@@ -666,7 +692,10 @@ class Projection {
     entry: PhaseLogDisplayEntry,
     preTruncated: BodyTruncatedMap | null
   ): PhaseLogDisplayEntry {
-    const truncated = truncateDisplayEntryBody(entry, { perFieldBytes: this.perFieldBytes });
+    const truncated = truncateDisplayEntryBody(entry, {
+      perFieldBytes: this.perFieldBytes,
+      sanitize: this.options.sanitize
+    });
     const merged = mergeBodyTruncated(preTruncated, truncated.bodyTruncated);
     const withTruncated: PhaseLogDisplayEntry =
       merged === truncated.bodyTruncated ? truncated : { ...truncated, bodyTruncated: merged };

@@ -543,7 +543,10 @@ export class PhaseLogTailSession {
   }
 
   private prepare(entry: PhaseLogDisplayEntry): PhaseLogDisplayEntry {
-    const truncated = truncateDisplayEntryBody(entry, this.caps);
+    const truncated = truncateDisplayEntryBody(entry, {
+      perFieldBytes: this.caps.perFieldBytes,
+      sanitize: this.sanitize
+    });
     const sanitized = sanitizeDisplayEntryBody(truncated, this.sanitize);
     return fitEntryToBudget(sanitized, LIVE_LOG_ENTRY_MAX_BYTES);
   }

@@ -41,6 +41,8 @@ import {
   normalizeProtectedComparePath
 } from '../lib/protected-path-match';
 import { openAcpConnection } from '../services/acp-runtime/acp-client';
+import { isAgentIdentifier } from '../services/acp-runtime/agent-identifier';
+import { createRunnerObservationBridge } from '../services/acp-runtime/client-guards';
 import {
   createInMemoryAcpSessionBindingStore,
   isEphemeralBridgeSessionId,
@@ -67,6 +69,11 @@ import {
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
+import type { DeliveryRepresentation } from '../contracts/phase-context/context-delivery';
+import {
+  normalizeHandoffIdentifier,
+  verifyNegotiatedHandoffCapabilities
+} from '../services/phase-context/handoff-delivery-coordinator';
 import { AcpOpenWorkTracker } from './acp-open-work-tracker';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 import { AcpStreamEncoder } from './acp-stream-encoder';
@@ -137,6 +144,10 @@ export interface AcpBackedRunnerOptions {
    * so a qualified turn, or an unqualified refusal, is exercised whatever the host is.
    */
   readonly platform?: AcpProfilePlatform;
+  /** FR-035: optional persisted phase-handoff DeliveryRepresentation lookup verified against negotiated capabilities. */
+  readonly resolveHandoffRepresentation?: (attemptId: string) => DeliveryRepresentation | null;
+  /** FR-035: optional current handoff contentDigest lookup verified against the persisted representation. */
+  readonly resolveHandoffContentDigest?: (handoffId: string) => string | null;
   readonly launchTransport?: (
     profile: AgentProfile,
     request: InvocationRequest,
@@ -154,7 +165,7 @@ function sanitizeHostToken(raw: string | undefined, fallback: string): string {
 }
 
 function isValidAcpSessionToken(raw: string | undefined): raw is string {
-  return typeof raw === 'string' && raw.length >= 1 && raw.length <= 256 && !/[\r\n\0]/.test(raw);
+  return isAgentIdentifier(raw);
 }
 
 function resolveProtectedDatabasePaths(
@@ -672,6 +683,12 @@ export class AcpBackedRunner implements BackendRunner {
             : {})
         });
 
+        const obsBridge = createRunnerObservationBridge({
+          profileId: profile.profileId, generation, rootId, attemptId, getSessionId: () => activeSessionId,
+          deliver: (observation) => {
+            if (connection !== null) this.options.onAcpObservation?.({ backendKind: this.options.kind, runId, invocationId, attemptId, observation, projection: connection.describe() });
+          }
+        });
         const opened = await openAcpConnection({
           profile,
           generation,
@@ -694,20 +711,11 @@ export class AcpBackedRunner implements BackendRunner {
             });
             return created;
           },
-          ...(gate !== undefined ? { permissionPolicy: gate.createPermissionPolicy(generation) } : {}),
+          permissionPolicy: obsBridge.wrapPermissionPolicy(gate?.createPermissionPolicy(generation), this.options.logger),
           verifyResourceLink,
           onObservation: (observation) => {
             resetIdleTimer();
-            if (connection !== null) {
-              this.options.onAcpObservation?.({
-                backendKind: this.options.kind,
-                runId,
-                invocationId,
-                attemptId,
-                observation,
-                projection: connection.describe()
-              });
-            }
+            obsBridge.forward(observation);
             // F13-FR-07: history replay is historical observation only; never emit as live output or new usage.
             if (observation.origin !== 'live') {
               return;
@@ -728,45 +736,48 @@ export class AcpBackedRunner implements BackendRunner {
           exitCode = 1;
         } else {
           connection = opened.connection;
-          let sessionRes;
-          if (isBridgeProfile) {
-            sessionRes =
-              matchedBridgeBinding !== null
-                ? await connection.loadSession(matchedBridgeBinding.persistedSessionId, request.cwd, {
-                    mayLoad: true,
-                    providerSessionId: matchedBridgeBinding.providerSessionId
-                  })
-                : await connection.newSession(request.cwd);
+          const normalizedCwd = normalizeAcpWorkspaceRoot(request.cwd);
+          const resumeId = request.resumeSessionId;
+          const priorSessionRoot = !isBridgeProfile && isValidAcpSessionToken(resumeId) ? this.sessionRoots.get(resumeId) : undefined;
+          const rootMismatchOnResume = priorSessionRoot !== undefined && priorSessionRoot !== normalizedCwd;
+          if (rootMismatchOnResume) warnings.push('acp-session-rebind-fresh-root');
+          const canLoadNative = !isBridgeProfile && !rootMismatchOnResume && isResumeRequested && isValidAcpSessionToken(resumeId) && (request.resumeSessionOrigin === 'acp' || (request.resumeSessionOrigin === undefined && priorSessionRoot !== undefined));
+          const wantsLoadSession = isBridgeProfile ? matchedBridgeBinding !== null : canLoadNative;
+          const handoffRep = this.options.resolveHandoffRepresentation?.(normalizeHandoffIdentifier(request.attemptId ?? attemptId, attemptId)) ?? null;
+          const capCheck = verifyNegotiatedHandoffCapabilities({
+            negotiated: connection.describe().capabilities,
+            representation: handoffRep,
+            activeProfile: { profileId: profile.profileId, profileRevision: profile.revision },
+            ...(handoffRep !== null && this.options.resolveHandoffContentDigest !== undefined ? { expectedContentDigest: this.options.resolveHandoffContentDigest(handoffRep.handoffId) ?? '' } : {}),
+            ...(request.phaseHandoffId !== undefined ? { expectedHandoffId: request.phaseHandoffId } : {}),
+            ...(request.phaseHandoffRepresentationDigest !== undefined ? { expectedRepresentationDigest: request.phaseHandoffRepresentationDigest } : {}),
+            acpPromptBlocks: request.acpPromptBlocks,
+            wantsLoadSession,
+            isContinue: request.isContinue === true
+          });
+          let sessionRes: Awaited<ReturnType<AcpConnection['newSession']>> | null = null;
+          if (!capCheck.ok) {
+            warnings.push(capCheck.warning);
+            exitCode = 1;
           } else {
-            const normalizedCwd = normalizeAcpWorkspaceRoot(request.cwd);
-            const resumeId = request.resumeSessionId;
-            const priorSessionRoot = isValidAcpSessionToken(resumeId)
-              ? this.sessionRoots.get(resumeId)
-              : undefined;
-            const rootMismatchOnResume =
-              priorSessionRoot !== undefined && priorSessionRoot !== normalizedCwd;
-            if (rootMismatchOnResume) {
-              // F10-FR-19: session reuse/load cannot retain a prior lane's cwd or grants; open a fresh session.
-              warnings.push('acp-session-rebind-fresh-root');
-            }
-            // BUG-001 (FR-008): load ACP-owned sessions tracked in `sessionRoots` even when
-            // `resumeSessionOrigin` is omitted by standalone continuations, while still refusing
-            // `'legacy-cli'` and unknown pre-cutover IDs (`F13-FR-21`) and cross-lane roots (`F10-FR-19`).
-            const canLoadResumeSession =
-              !rootMismatchOnResume &&
-              isResumeRequested &&
-              (request.resumeSessionOrigin === 'acp' ||
-                (request.resumeSessionOrigin === undefined && priorSessionRoot !== undefined));
-            sessionRes =
-              canLoadResumeSession && isValidAcpSessionToken(resumeId)
+            if (capCheck.warning !== undefined) warnings.push(capCheck.warning);
+            const allowLoad = wantsLoadSession && !capCheck.forceFreshSession;
+            sessionRes = isBridgeProfile
+              ? allowLoad && matchedBridgeBinding !== null
+                ? await connection.loadSession(matchedBridgeBinding.persistedSessionId, request.cwd, { mayLoad: true, providerSessionId: matchedBridgeBinding.providerSessionId })
+                : await connection.newSession(request.cwd)
+              : allowLoad && isValidAcpSessionToken(resumeId)
                 ? await connection.loadSession(resumeId, request.cwd, { mayLoad: true })
                 : await connection.newSession(request.cwd);
           }
 
-          if (!sessionRes.ok) {
+          if (sessionRes !== null && !sessionRes.ok) {
+            if (sessionRes.reason === 'transport-closed') {
+              obsBridge.emitLifecycle({ kind: 'transport-disconnected', reason: 'transport-closed' });
+            }
             warnings.push(`acp-session-failed:${sessionRes.reason}`);
             exitCode = 1;
-          } else {
+          } else if (sessionRes !== null) {
             activeSessionId = sessionRes.sessionId;
             if (!isBridgeProfile) {
               const normalizedCwd = normalizeAcpWorkspaceRoot(request.cwd);
@@ -905,6 +916,7 @@ export class AcpBackedRunner implements BackendRunner {
                 persistedCliSessionId = activeSessionId;
               }
 
+              obsBridge.recordPromptOutcome(activeSessionId, outcome);
               if (outcome.kind === 'completed') {
                 emitChunk(
                   'stdout',

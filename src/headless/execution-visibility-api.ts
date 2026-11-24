@@ -28,6 +28,7 @@ import type {
   ReportEvidenceReference,
   RootReviewLoopSummary
 } from '../contracts/reporting/report-rows';
+import type { HandoffExplanation } from '../contracts/phase-context/context-manifest';
 import { TELEMETRY_EXPORT_BOUNDS } from '../contracts/telemetry-export';
 import { comparisonRevision } from '../services/change-review/comparison-revision';
 import type { SqliteApplicationStore } from '../services/sqlite-store';
@@ -64,6 +65,14 @@ function scrubOpt(value: string | null | undefined): string | null {
   return typeof value === 'string' && value.length > 0 ? scrub(value) : null;
 }
 
+type ClosedContentPolicyMode = 'metadata-only' | 'content' | 'invalid';
+
+function clampContentPolicyMode(raw: string | undefined): ClosedContentPolicyMode {
+  if (raw === undefined) return 'metadata-only';
+  if (raw === 'metadata-only' || raw === 'content') return raw;
+  return 'invalid';
+}
+
 interface SqlRunRow {
   readonly run_id: string;
   readonly workflow_id: string;
@@ -78,6 +87,7 @@ interface SqlRunRow {
 
 interface SqlAttemptRow {
   readonly attempt_id: string;
+  readonly step_id: string;
   readonly step_index: number;
   readonly phase_id: string | null;
   readonly attempt_number: number;
@@ -185,18 +195,34 @@ function parseReviewLoopCounts(ledgerJson: string): {
 
 function readLiveLogVisibility(
   store: SqliteApplicationStore,
-  rootExecutionId: string
+  rootExecutionId: string,
+  scopeTokens: ReadonlySet<string> | null
 ): ExecutionLiveLogVisibility {
   const conn = store.writerConnection;
-  const streams = conn.all<{ readonly stream_key: string; readonly capture_mode: string }>(
+  // Exact match or `:`-delimited prefix range (`:` = 0x3A, `;` = 0x3B) without SQL LIKE wildcards
+  // so `_`, `%`, or sibling root prefixes (e.g. `run-1` vs `run-10`) can never cross-match streams.
+  const prefixStart = `${rootExecutionId}:`;
+  const prefixEnd = `${rootExecutionId};`;
+  const candidateStreams = conn.all<{ readonly stream_key: string; readonly capture_mode: string }>(
     `SELECT stream_key, capture_mode FROM live_log_streams
-     WHERE stream_key LIKE ? OR stream_key LIKE ?
-     ORDER BY updated_at_ms DESC LIMIT 32`,
-    `${rootExecutionId}%`,
-    `%:${rootExecutionId}:%`
+     WHERE stream_key = ? OR (stream_key >= ? AND stream_key < ?)
+     ORDER BY updated_at_ms DESC LIMIT 64`,
+    rootExecutionId,
+    prefixStart,
+    prefixEnd
   );
+  const streams = candidateStreams.filter((s) => {
+    const isRootExact = s.stream_key === rootExecutionId;
+    const isPrefixed = s.stream_key.startsWith(prefixStart);
+    if (!isRootExact && !isPrefixed) return false;
+    if (scopeTokens === null) return true;
+    if (!isPrefixed) return false;
+    const suffix = s.stream_key.slice(prefixStart.length);
+    if (scopeTokens.has(suffix)) return true;
+    return suffix.split(':').some((segment) => scopeTokens.has(segment));
+  });
   if (streams.length === 0) {
-    return { streamState: 'not-recorded' as VisibilityStreamState, segmentCount: 0, gapCount: 0 };
+    return { streamState: 'unknown', segmentCount: 0, gapCount: 0 };
   }
   let segmentCount = 0;
   let gapCount = 0;
@@ -227,23 +253,57 @@ function readLiveLogVisibility(
   return { streamState, segmentCount, gapCount };
 }
 
+interface RecoveryRow {
+  readonly handoff_id: string;
+  readonly invocation_id: string;
+  readonly source_attempt_id: string;
+  readonly state: string;
+  readonly current_revision: number | null;
+}
+
 function readRecoveryVisibility(
   store: SqliteApplicationStore,
   scopeId: string,
-  rootExecutionId: string
+  rootExecutionId: string,
+  scope: {
+    readonly attemptId: string | undefined;
+    readonly invocationId: string | undefined;
+    readonly scopedAttemptIds: ReadonlySet<string> | null;
+  }
 ): ExecutionRecoveryVisibility {
   const conn = store.writerConnection;
-  const row = conn.get<{
-    readonly handoff_id: string;
-    readonly state: string;
-    readonly current_revision: number | null;
-  }>(
-    `SELECT handoff_id, state, current_revision FROM recovery_handoffs
-     WHERE workspace_id = ? AND root_execution_id = ?
-     ORDER BY updated_at_ms DESC LIMIT 1`,
-    scopeId,
-    rootExecutionId
-  );
+  let row: RecoveryRow | undefined;
+  if (scope.attemptId !== undefined || scope.invocationId !== undefined) {
+    const candidates = conn.all<RecoveryRow>(
+      `SELECT handoff_id, invocation_id, source_attempt_id, state, current_revision
+       FROM recovery_handoffs
+       WHERE workspace_id = ? AND root_execution_id = ?
+       ORDER BY updated_at_ms DESC LIMIT 32`,
+      scopeId,
+      rootExecutionId
+    );
+    row = candidates.find((candidate) => {
+      if (scope.attemptId !== undefined && candidate.source_attempt_id !== scope.attemptId) {
+        return false;
+      }
+      if (scope.invocationId !== undefined) {
+        const invDirect = candidate.invocation_id === scope.invocationId;
+        const invViaAttempt =
+          scope.scopedAttemptIds !== null && scope.scopedAttemptIds.has(candidate.source_attempt_id);
+        if (!invDirect && !invViaAttempt) return false;
+      }
+      return true;
+    });
+  } else {
+    row = conn.get<RecoveryRow>(
+      `SELECT handoff_id, invocation_id, source_attempt_id, state, current_revision
+       FROM recovery_handoffs
+       WHERE workspace_id = ? AND root_execution_id = ?
+       ORDER BY updated_at_ms DESC LIMIT 1`,
+      scopeId,
+      rootExecutionId
+    );
+  }
   if (row === undefined) {
     return { posture: 'not-recorded', reasonCode: null };
   }
@@ -287,76 +347,106 @@ function readAcpVisibility(
   store: SqliteApplicationStore,
   attempts: readonly AttemptVisibilityRow[],
   selectedAttemptId: string | undefined,
+  isScoped: boolean,
   runRow: SqlRunRow | undefined
 ): ExecutionAcpVisibility {
   const conn = store.writerConnection;
   const targetAttempt =
-    (selectedAttemptId !== undefined
+    selectedAttemptId !== undefined
       ? attempts.find((a) => a.attemptId === selectedAttemptId)
-      : undefined) ?? attempts.at(-1);
-  const attemptId = targetAttempt?.attemptId ?? null;
-  const profileId = targetAttempt?.profileId ?? scrubOpt(runRow?.profile_id);
-  const backendKind = targetAttempt?.backendKind ?? scrubOpt(runRow?.backend_kind);
-  const modelId = targetAttempt?.modelId ?? scrubOpt(runRow?.model_id);
+      : attempts.at(-1);
 
-  if (attemptId === null && profileId === null) {
+  if (isScoped && targetAttempt === undefined) {
     return {
       runtimeState: 'not-recorded',
       profileId: null,
-      backendKind,
-      modelId,
+      backendKind: null,
+      modelId: null,
       liveObservations: 0,
       pendingPermissions: 0
     };
   }
 
-  const obsRows =
-    attemptId === null
-      ? []
-      : conn.all<{ readonly kind: string }>(
-          `SELECT kind FROM acp_observation_ledger
-           WHERE attempt_id = ? AND origin = 'live'
-           ORDER BY observed_at_ms DESC, connection_generation DESC, host_receive_seq DESC LIMIT 64`,
-          attemptId
-        );
-  const authRows =
-    attemptId === null
-      ? []
-      : conn.all<{ readonly decision: string }>(
-          `SELECT decision FROM acp_authorization_receipts
-           WHERE attempt_id = ? AND request_kind = 'permission'
-           ORDER BY recorded_at_ms DESC LIMIT 32`,
-          attemptId
-        );
-
-  const liveObservations = obsRows.length;
-  const latestKind = obsRows.at(0)?.kind ?? null;
-  let pendingPermissions = 0;
-  for (const obs of obsRows) {
-    if (obs.kind === 'permission-requested') pendingPermissions += 1;
+  if (targetAttempt === undefined) {
+    return {
+      runtimeState: 'not-recorded',
+      profileId: isScoped ? null : scrubOpt(runRow?.profile_id),
+      backendKind: isScoped ? null : scrubOpt(runRow?.backend_kind),
+      modelId: isScoped ? null : scrubOpt(runRow?.model_id),
+      liveObservations: 0,
+      pendingPermissions: 0
+    };
   }
-  const decidedPermissions = authRows.length;
-  const unresolvedPermissions = Math.max(0, pendingPermissions - decidedPermissions);
+
+  const attemptId = targetAttempt.attemptId;
+  const profileId = targetAttempt.profileId ?? (isScoped ? null : scrubOpt(runRow?.profile_id));
+  const backendKind =
+    targetAttempt.backendKind ?? (isScoped ? null : scrubOpt(runRow?.backend_kind));
+  const modelId = targetAttempt.modelId ?? (isScoped ? null : scrubOpt(runRow?.model_id));
+
+  const summaryRow = conn.get<{
+    readonly total_live: number;
+    readonly perm_requested: number;
+    readonly perm_resolved: number;
+  }>(
+    `SELECT
+       COUNT(*) AS total_live,
+       COALESCE(SUM(CASE WHEN kind = 'permission-requested' THEN 1 ELSE 0 END), 0) AS perm_requested,
+       COALESCE(SUM(CASE WHEN kind = 'permission-resolved' THEN 1 ELSE 0 END), 0) AS perm_resolved
+     FROM acp_observation_ledger
+     WHERE attempt_id = ? AND origin = 'live'`,
+    attemptId
+  );
+  const latestRow = conn.get<{ readonly kind: string }>(
+    `SELECT kind FROM acp_observation_ledger
+     WHERE attempt_id = ? AND origin = 'live'
+     ORDER BY observed_at_ms DESC, connection_generation DESC, host_receive_seq DESC LIMIT 1`,
+    attemptId
+  );
+  const authCountRow = conn.get<{ readonly c: number }>(
+    `SELECT COUNT(*) AS c FROM acp_authorization_receipts
+     WHERE attempt_id = ? AND request_kind = 'permission'`,
+    attemptId
+  );
+
+  const liveObservations = summaryRow?.total_live ?? 0;
+  const latestKind = latestRow?.kind ?? null;
+  const requestedPermissions = summaryRow?.perm_requested ?? 0;
+  const resolvedPermissions = Math.max(summaryRow?.perm_resolved ?? 0, authCountRow?.c ?? 0);
+  const unresolvedPermissions = Math.max(0, requestedPermissions - resolvedPermissions);
 
   let runtimeState: NormalizedAcpActivityState = 'not-recorded';
-  if (unresolvedPermissions > 0) {
-    runtimeState = 'awaiting-permission';
-  } else if (latestKind !== null) {
-    if (latestKind.includes('cancel') || targetAttempt?.status === 'cancelled') {
+  let pendingPermissions = unresolvedPermissions;
+  if (latestKind !== null) {
+    if (
+      latestKind === 'turn-canceled' ||
+      latestKind.includes('cancel') ||
+      targetAttempt.status === 'cancelled'
+    ) {
       runtimeState = 'canceled';
-    } else if (latestKind.includes('uncertain') || latestKind.includes('timeout')) {
-      runtimeState = 'uncertain';
+      pendingPermissions = 0;
     } else if (
+      latestKind === 'turn-uncertain' ||
+      latestKind.includes('uncertain') ||
+      latestKind.includes('timeout')
+    ) {
+      runtimeState = 'uncertain';
+      pendingPermissions = 0;
+    } else if (
+      latestKind === 'transport-disconnected' ||
       latestKind.includes('disconnect') ||
       latestKind.includes('closed') ||
-      targetAttempt?.completedAtMs !== null
+      targetAttempt.completedAtMs !== null
     ) {
       runtimeState = 'disconnected';
+      pendingPermissions = 0;
+    } else if (unresolvedPermissions > 0) {
+      runtimeState = 'awaiting-permission';
     } else {
       runtimeState = 'connected';
     }
-  } else if (profileId !== null) {
-    runtimeState = targetAttempt?.completedAtMs === null ? 'connected' : 'disconnected';
+  } else {
+    pendingPermissions = 0;
   }
 
   return {
@@ -365,8 +455,43 @@ function readAcpVisibility(
     backendKind,
     modelId,
     liveObservations,
-    pendingPermissions: unresolvedPermissions
+    pendingPermissions
   };
+}
+
+function handoffInvolvesAttempt(handoff: HandoffExplanation, attemptId: string): boolean {
+  return (
+    handoff.identity.sourceAttempts.some((a) => a.attemptId === attemptId) ||
+    handoff.sources.some((s) => s.producer.attemptId === attemptId) ||
+    handoff.dispatches.some((d) => d.targetAttemptId === attemptId)
+  );
+}
+
+function handoffMatchesScope(
+  handoff: HandoffExplanation,
+  attemptId: string | undefined,
+  invocationId: string | undefined,
+  scopedAttemptIds: ReadonlySet<string> | null
+): boolean {
+  if (attemptId !== undefined) {
+    if (!handoffInvolvesAttempt(handoff, attemptId)) return false;
+    if (invocationId !== undefined) {
+      const invDirect = handoff.identity.sourceInvocationId === invocationId;
+      const invViaAttempt = scopedAttemptIds !== null && scopedAttemptIds.has(attemptId);
+      if (!invDirect && !invViaAttempt) return false;
+    }
+    return true;
+  }
+  if (invocationId !== undefined) {
+    if (handoff.identity.sourceInvocationId === invocationId) return true;
+    if (scopedAttemptIds !== null) {
+      for (const id of scopedAttemptIds) {
+        if (handoffInvolvesAttempt(handoff, id)) return true;
+      }
+    }
+    return false;
+  }
+  return true;
 }
 
 function readLaneVisibility(
@@ -461,8 +586,18 @@ export function createExecutionVisibilityApi(
           deps.scopeId,
           request.rootExecutionId
         );
-        const attemptRows = conn.all<SqlAttemptRow>(
-          `SELECT a.attempt_id, s.step_index, s.phase_id, a.attempt_number, a.status,
+        const requestedAttemptId =
+          typeof request.attemptId === 'string' && request.attemptId.length > 0
+            ? request.attemptId
+            : undefined;
+        const requestedInvocationId =
+          typeof request.invocationId === 'string' && request.invocationId.length > 0
+            ? request.invocationId
+            : undefined;
+        const isScoped = requestedAttemptId !== undefined || requestedInvocationId !== undefined;
+
+        const allAttemptRows = conn.all<SqlAttemptRow>(
+          `SELECT a.attempt_id, a.step_id, s.step_index, s.phase_id, a.attempt_number, a.status,
              a.exit_code, a.started_at_ms, a.completed_at_ms,
              COALESCE(a.backend_kind, r.backend_kind) AS backend_kind,
              COALESCE(a.model_id, r.model_id) AS model_id,
@@ -480,7 +615,47 @@ export function createExecutionVisibilityApi(
           MAX_ATTEMPTS_PER_ROOT
         );
 
-        const attempts: AttemptVisibilityRow[] = attemptRows.map((row) => ({
+        const allHandoffs = deps.getPhaseContextApi().listRunHandoffs(request.rootExecutionId);
+
+        let scopedAttemptRows = allAttemptRows;
+        if (requestedInvocationId !== undefined) {
+          const invocationAttemptIds = new Set<string>();
+          for (const row of allAttemptRows) {
+            if (row.step_id === requestedInvocationId) {
+              invocationAttemptIds.add(row.attempt_id);
+            }
+          }
+          const recRows = conn.all<{ readonly source_attempt_id: string }>(
+            `SELECT source_attempt_id FROM recovery_handoffs
+             WHERE workspace_id = ? AND root_execution_id = ? AND invocation_id = ?`,
+            deps.scopeId,
+            request.rootExecutionId,
+            requestedInvocationId
+          );
+          for (const r of recRows) {
+            invocationAttemptIds.add(r.source_attempt_id);
+          }
+          for (const h of allHandoffs) {
+            if (h.identity.sourceInvocationId === requestedInvocationId) {
+              for (const sa of h.identity.sourceAttempts) invocationAttemptIds.add(sa.attemptId);
+              for (const s of h.sources) invocationAttemptIds.add(s.producer.attemptId);
+            }
+          }
+          scopedAttemptRows = scopedAttemptRows.filter(
+            (row) => row.step_id === requestedInvocationId || invocationAttemptIds.has(row.attempt_id)
+          );
+        }
+        if (requestedAttemptId !== undefined) {
+          scopedAttemptRows = scopedAttemptRows.filter(
+            (row) => row.attempt_id === requestedAttemptId
+          );
+        }
+
+        const scopedAttemptIds = isScoped
+          ? new Set(scopedAttemptRows.map((row) => row.attempt_id))
+          : null;
+
+        const attempts: AttemptVisibilityRow[] = scopedAttemptRows.map((row) => ({
           attemptId: scrub(row.attempt_id),
           stepIndex: row.step_index,
           phaseId: scrubOpt(row.phase_id),
@@ -501,15 +676,44 @@ export function createExecutionVisibilityApi(
                 : null
         }));
 
-        const evidenceRows = conn.all<SqlEvidenceRow>(
-          `SELECT artifact_id, owner_run_id, owner_attempt_id, store_kind, availability,
-             byte_size, retention_class
-           FROM artifact_lifecycle
-           WHERE owner_run_id = ?
-           ORDER BY artifact_id ASC LIMIT ?`,
-          request.rootExecutionId,
-          MAX_EVIDENCE_REFS_PER_ROOT
-        );
+        let evidenceRows: readonly SqlEvidenceRow[];
+        if (!isScoped) {
+          evidenceRows = conn.all<SqlEvidenceRow>(
+            `SELECT artifact_id, owner_run_id, owner_attempt_id, store_kind, availability,
+               byte_size, retention_class
+             FROM artifact_lifecycle
+             WHERE owner_run_id = ?
+             ORDER BY artifact_id ASC LIMIT ?`,
+            request.rootExecutionId,
+            MAX_EVIDENCE_REFS_PER_ROOT
+          );
+        } else if (scopedAttemptIds === null || scopedAttemptIds.size === 0) {
+          evidenceRows = [];
+        } else if (requestedAttemptId !== undefined) {
+          evidenceRows = conn.all<SqlEvidenceRow>(
+            `SELECT artifact_id, owner_run_id, owner_attempt_id, store_kind, availability,
+               byte_size, retention_class
+             FROM artifact_lifecycle
+             WHERE owner_run_id = ? AND owner_attempt_id = ?
+             ORDER BY artifact_id ASC LIMIT ?`,
+            request.rootExecutionId,
+            requestedAttemptId,
+            MAX_EVIDENCE_REFS_PER_ROOT
+          );
+        } else {
+          const ids = [...scopedAttemptIds];
+          const placeholders = ids.map(() => '?').join(', ');
+          evidenceRows = conn.all<SqlEvidenceRow>(
+            `SELECT artifact_id, owner_run_id, owner_attempt_id, store_kind, availability,
+               byte_size, retention_class
+             FROM artifact_lifecycle
+             WHERE owner_run_id = ? AND owner_attempt_id IN (${placeholders})
+             ORDER BY artifact_id ASC LIMIT ?`,
+            request.rootExecutionId,
+            ...ids,
+            MAX_EVIDENCE_REFS_PER_ROOT
+          );
+        }
         const evidence: ReportEvidenceReference[] = evidenceRows.map((row) => ({
           artifactId: scrub(row.artifact_id),
           rootId: scrub(row.owner_run_id),
@@ -520,11 +724,35 @@ export function createExecutionVisibilityApi(
           retentionClass: scrub(row.retention_class)
         }));
 
-        const liveLog = readLiveLogVisibility(store, request.rootExecutionId);
-        const recovery = readRecoveryVisibility(store, deps.scopeId, request.rootExecutionId);
-        const acp = readAcpVisibility(store, attempts, request.attemptId, runRow);
+        let liveLogScopeTokens: ReadonlySet<string> | null = null;
+        if (isScoped) {
+          const tokens = new Set<string>();
+          if (requestedAttemptId !== undefined) {
+            if (scopedAttemptIds !== null && scopedAttemptIds.has(requestedAttemptId)) {
+              tokens.add(requestedAttemptId);
+            }
+          } else if (requestedInvocationId !== undefined) {
+            tokens.add(requestedInvocationId);
+            if (scopedAttemptIds !== null) {
+              for (const id of scopedAttemptIds) tokens.add(id);
+            }
+          }
+          liveLogScopeTokens = tokens;
+        }
+
+        const liveLog = readLiveLogVisibility(store, request.rootExecutionId, liveLogScopeTokens);
+        const recovery = readRecoveryVisibility(store, deps.scopeId, request.rootExecutionId, {
+          attemptId: requestedAttemptId,
+          invocationId: requestedInvocationId,
+          scopedAttemptIds
+        });
+        const acp = readAcpVisibility(store, attempts, requestedAttemptId, isScoped, runRow);
         const lane = readLaneVisibility(store, deps.scopeId, request.rootExecutionId);
-        const handoffs = deps.getPhaseContextApi().listRunHandoffs(request.rootExecutionId);
+        const handoffs = isScoped
+          ? allHandoffs.filter((h) =>
+              handoffMatchesScope(h, requestedAttemptId, requestedInvocationId, scopedAttemptIds)
+            )
+          : allHandoffs;
 
         const reviewRows = conn.all<SqlReviewRow>(
           `SELECT loop_id, run_id, node_id, iteration, verdict, ledger_json
@@ -548,13 +776,21 @@ export function createExecutionVisibilityApi(
           const hasDegradedEvidence = evidence.some(
             (item) => item.availability !== 'present' && item.availability !== 'pending'
           );
+          const hasDegradedRecovery =
+            recovery.posture === 'uncertain' || recovery.posture === 'degraded';
           dataQuality =
-            hasDegradedEvidence || liveLog.gapCount > 0 ? 'partial' : 'authoritative';
+            hasDegradedEvidence ||
+            liveLog.gapCount > 0 ||
+            liveLog.streamState === 'partial' ||
+            hasDegradedRecovery
+              ? 'partial'
+              : 'authoritative';
         }
 
-        const distinctSteps = new Set(attempts.map((a) => a.stepIndex)).size;
-        const invocationCount =
-          runRow !== undefined && runRow.invocation_count > 0
+        const distinctSteps = new Set(scopedAttemptRows.map((a) => a.step_id)).size;
+        const invocationCount = isScoped
+          ? distinctSteps
+          : runRow !== undefined && runRow.invocation_count > 0
             ? runRow.invocation_count
             : distinctSteps;
 
@@ -572,12 +808,7 @@ export function createExecutionVisibilityApi(
             attempts
           },
           evidence,
-          liveLog: {
-            streamState:
-              (liveLog.streamState as string) === 'not-recorded' ? 'unknown' : liveLog.streamState,
-            segmentCount: liveLog.segmentCount,
-            gapCount: liveLog.gapCount
-          },
+          liveLog,
           recovery,
           acp,
           lane,
@@ -662,10 +893,10 @@ export function createExecutionVisibilityApi(
         },
         telemetry: {
           enabled: evalKind === 'authorized',
-          stateKind: status?.health.state ?? evalKind,
+          stateKind: evalKind === 'refused' ? 'refused' : (status?.health.state ?? evalKind),
           reasonCode: evalReason,
           protocol: evalKind === 'authorized' ? 'otlp-http-json' : null,
-          contentPolicyMode: status?.preview.requestedContentPolicy ?? 'metadata-only',
+          contentPolicyMode: clampContentPolicyMode(status?.preview.requestedContentPolicy),
           pendingCopyCount,
           exportedCopyCount,
           droppedCopyCount,

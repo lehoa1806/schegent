@@ -47,6 +47,7 @@ import {
 import {
   completeComposableNodeAttempt,
   dispatchComposableNode,
+  type ComposableWorkflowCoordinatorDeps,
   type PhaseAttemptDispatchInput,
   type PhaseAttemptDispatchResult
 } from './connected-run-coordinator';
@@ -73,6 +74,7 @@ import {
 import type { ConnectedRunWriter } from './workflow-launcher';
 import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
 import {
+  buildAttemptHandoffDelivery,
   commitRecoveredRunAndReleaseTerminalPins,
   releaseTerminalHandoffPinsIfConfirmed
 } from './phase-handoff-execution-bridge';
@@ -255,6 +257,20 @@ function collectAncestorInvocationIds(
 export class WorkflowRecoveryService {
   constructor(private readonly deps: WorkflowRecoveryServiceDeps) {}
 
+  private recoveryCoordinatorDeps(writer: ConnectedRunWriter): ComposableWorkflowCoordinatorDeps {
+    return {
+      connectedRuns: writer,
+      dispatchPhase: this.deps.dispatchPhase,
+      deferTerminalPinRelease: true,
+      ...(this.deps.controlAdmission !== undefined ? { controlAdmission: this.deps.controlAdmission } : {}),
+      ...(this.deps.repeatExecutor !== undefined ? { repeatExecutor: this.deps.repeatExecutor } : {}),
+      ...(this.deps.forEachExecutor !== undefined ? { forEachExecutor: this.deps.forEachExecutor } : {}),
+      ...(this.deps.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: this.deps.phaseHandoffCoordinator } : {}),
+      ...(this.deps.workspaceRoot !== undefined ? { workspaceRoot: this.deps.workspaceRoot } : {}),
+      ...(this.deps.resolveRecoveryFence !== undefined ? { resolveExecutionFence: this.deps.resolveRecoveryFence } : {})
+    };
+  }
+
   /**
    * Reconcile a single persisted `ConnectedWorkflowRun` on host activation/restart.
    */
@@ -266,6 +282,10 @@ export class WorkflowRecoveryService {
     if (run === null) {
       return undefined;
     }
+
+    // R7-17-07 (Clarification Q3): transition unsettled `'intent'` handoff dispatches to `'uncertain'`
+    // BEFORE terminal pin release or any recovery dispatch so pins stay protected and duplicates refuse.
+    this.deps.phaseHandoffCoordinator?.reconcileInterruptedDispatches(run.connectedRunId);
 
     const queueId = resolveBoundQueueId(run);
     const rootId = resolveRootInvocationId(run);
@@ -421,10 +441,7 @@ export class WorkflowRecoveryService {
         staging.set(nextRun);
 
         const dispatched = await dispatchComposableNode(
-          {
-            connectedRuns: staging.writer,
-            dispatchPhase: this.deps.dispatchPhase
-          },
+          this.recoveryCoordinatorDeps(staging.writer),
           {
             run: staging.current(),
             invocationId: waitingFrame.invocationId,
@@ -556,25 +573,7 @@ export class WorkflowRecoveryService {
       if (evidence.completed) {
         // Durable completion evidence exists: settle attempt forward and advance graph.
         await completeComposableNodeAttempt(
-          {
-            connectedRuns: staging.writer,
-            dispatchPhase: this.deps.dispatchPhase,
-            ...(this.deps.controlAdmission !== undefined
-              ? { controlAdmission: this.deps.controlAdmission }
-              : {}),
-            ...(this.deps.repeatExecutor !== undefined
-              ? { repeatExecutor: this.deps.repeatExecutor }
-              : {}),
-            ...(this.deps.forEachExecutor !== undefined
-              ? { forEachExecutor: this.deps.forEachExecutor }
-              : {}),
-            ...(this.deps.workspaceRoot !== undefined
-              ? { workspaceRoot: this.deps.workspaceRoot }
-              : {}),
-            ...(this.deps.resolveRecoveryFence !== undefined
-              ? { resolveExecutionFence: this.deps.resolveRecoveryFence }
-              : {})
-          },
+          this.recoveryCoordinatorDeps(staging.writer),
           {
             run: staging.current(),
             invocationId: frame.invocationId,
@@ -633,20 +632,31 @@ export class WorkflowRecoveryService {
               version: 1,
               instruction: ''
             };
-            const phaseResult = await this.deps.dispatchPhase({
+            const deliveryRes = await buildAttemptHandoffDelivery({
+              coordinator: this.deps.phaseHandoffCoordinator,
               run,
               frame,
-              node: phaseNode,
+              nodeId: attempt.nodeId,
               phase: phaseDef,
-              boundInputs: attempt.inputEnvelope.inputsByPort,
-              inputEnvelope: attempt.inputEnvelope,
-              attemptId: attempt.attemptId,
-              attemptIndex: attempt.attemptIndex,
-              queueId,
-              startedAt: attempt.startedAt
+              pendingAttempt: attempt
             });
-            if (phaseResult.outcome === 'dispatched') {
-              resolvedQueueItemId = phaseResult.queueItemId;
+            if (deliveryRes.ok) {
+              const phaseResult = await this.deps.dispatchPhase({
+                run,
+                frame,
+                node: phaseNode,
+                phase: phaseDef,
+                boundInputs: attempt.inputEnvelope.inputsByPort,
+                inputEnvelope: attempt.inputEnvelope,
+                attemptId: attempt.attemptId,
+                attemptIndex: attempt.attemptIndex,
+                queueId,
+                startedAt: attempt.startedAt,
+                ...(deliveryRes.delivery !== undefined ? { phaseHandoff: deliveryRes.delivery } : {})
+              });
+              if (phaseResult.outcome === 'dispatched') {
+                resolvedQueueItemId = phaseResult.queueItemId;
+              }
             }
           }
         }
@@ -805,45 +815,50 @@ export class WorkflowRecoveryService {
         staging.set(repeatRes.run);
 
         if (repeatRes.kind === 'accepted') {
-          await completeComposableNodeAttempt(
-            {
-              connectedRuns: staging.writer,
-              dispatchPhase: this.deps.dispatchPhase,
-              ...(this.deps.controlAdmission !== undefined
-                ? { controlAdmission: this.deps.controlAdmission }
-                : {}),
-              ...(this.deps.repeatExecutor !== undefined
-                ? { repeatExecutor: this.deps.repeatExecutor }
-                : {}),
-              ...(this.deps.resolveRecoveryFence !== undefined
-                ? { resolveExecutionFence: this.deps.resolveRecoveryFence }
-                : {})
-            },
-            {
-              run: staging.current(),
-              invocationId: parentFrame.invocationId,
-              nodeId: parentNode.nodeId,
-              attemptIndex: latestParentAtt.attemptIndex,
-              status: 'completed',
-              completedAt: now,
-              declaredOutputs: repeatRes.exportedOutputs
-            }
-          );
+          const resolvedPort: { readonly value: string } | undefined = Object.hasOwn(
+            childFrame.resolvedOutputs,
+            'candidateRef'
+          )
+            ? childFrame.resolvedOutputs['candidateRef']
+            : undefined;
+          const currentCandidateRef = resolvedPort?.value;
+          const repeatCheck = this.deps.phaseHandoffCoordinator?.verifyRepeatExitAllowed({
+            runId: run.connectedRunId,
+            repeatNodeId: parentNode.nodeId,
+            ...(currentCandidateRef !== undefined && currentCandidateRef.length > 0
+              ? { currentCandidateRef }
+              : {})
+          });
+          if (repeatCheck !== undefined && !repeatCheck.ok) {
+            await completeComposableNodeAttempt(
+              this.recoveryCoordinatorDeps(staging.writer),
+              {
+                run: staging.current(),
+                invocationId: parentFrame.invocationId,
+                nodeId: parentNode.nodeId,
+                attemptIndex: latestParentAtt.attemptIndex,
+                status: 'failed',
+                completedAt: now,
+                failureCode: repeatCheck.failure
+              }
+            );
+          } else {
+            await completeComposableNodeAttempt(
+              this.recoveryCoordinatorDeps(staging.writer),
+              {
+                run: staging.current(),
+                invocationId: parentFrame.invocationId,
+                nodeId: parentNode.nodeId,
+                attemptIndex: latestParentAtt.attemptIndex,
+                status: 'completed',
+                completedAt: now,
+                declaredOutputs: repeatRes.exportedOutputs
+              }
+            );
+          }
         } else if (repeatRes.kind === 'advance') {
           await dispatchComposableNode(
-            {
-              connectedRuns: staging.writer,
-              dispatchPhase: this.deps.dispatchPhase,
-              ...(this.deps.controlAdmission !== undefined
-                ? { controlAdmission: this.deps.controlAdmission }
-                : {}),
-              ...(this.deps.repeatExecutor !== undefined
-                ? { repeatExecutor: this.deps.repeatExecutor }
-                : {}),
-              ...(this.deps.resolveRecoveryFence !== undefined
-                ? { resolveExecutionFence: this.deps.resolveRecoveryFence }
-                : {})
-            },
+            this.recoveryCoordinatorDeps(staging.writer),
             {
               run: staging.current(),
               invocationId: repeatRes.nextChildInvocationId,
@@ -938,19 +953,7 @@ export class WorkflowRecoveryService {
           if (prepared !== null) {
             staging.set(prepared.nextRun);
             await dispatchComposableNode(
-              {
-                connectedRuns: staging.writer,
-                dispatchPhase: this.deps.dispatchPhase,
-                ...(this.deps.controlAdmission !== undefined
-                  ? { controlAdmission: this.deps.controlAdmission }
-                  : {}),
-                ...(this.deps.forEachExecutor !== undefined
-                  ? { forEachExecutor: this.deps.forEachExecutor }
-                  : {}),
-                ...(this.deps.workspaceRoot !== undefined
-                  ? { workspaceRoot: this.deps.workspaceRoot }
-                  : {})
-              },
+              this.recoveryCoordinatorDeps(staging.writer),
               {
                 run: staging.current(),
                 invocationId: prepared.childFrame.invocationId,
@@ -1000,19 +1003,7 @@ export class WorkflowRecoveryService {
         ) {
           const staging = createStagingWriter(run);
           await dispatchComposableNode(
-            {
-              connectedRuns: staging.writer,
-              dispatchPhase: this.deps.dispatchPhase,
-              ...(this.deps.controlAdmission !== undefined
-                ? { controlAdmission: this.deps.controlAdmission }
-                : {}),
-              ...(this.deps.forEachExecutor !== undefined
-                ? { forEachExecutor: this.deps.forEachExecutor }
-                : {}),
-              ...(this.deps.workspaceRoot !== undefined
-                ? { workspaceRoot: this.deps.workspaceRoot }
-                : {})
-            },
+            this.recoveryCoordinatorDeps(staging.writer),
             {
               run: staging.current(),
               invocationId: childFrame.invocationId,
@@ -1065,19 +1056,7 @@ export class WorkflowRecoveryService {
         if (feRes.action === 'completed') {
           staging.set(feRes.nextRun);
           await completeComposableNodeAttempt(
-            {
-              connectedRuns: staging.writer,
-              dispatchPhase: this.deps.dispatchPhase,
-              ...(this.deps.controlAdmission !== undefined
-                ? { controlAdmission: this.deps.controlAdmission }
-                : {}),
-              ...(this.deps.forEachExecutor !== undefined
-                ? { forEachExecutor: this.deps.forEachExecutor }
-                : {}),
-              ...(this.deps.workspaceRoot !== undefined
-                ? { workspaceRoot: this.deps.workspaceRoot }
-                : {})
-            },
+            this.recoveryCoordinatorDeps(staging.writer),
             {
               run: staging.current(),
               invocationId: parentFrame.invocationId,
@@ -1091,19 +1070,7 @@ export class WorkflowRecoveryService {
         } else if (feRes.action === 'advance-item') {
           staging.set(feRes.nextRun);
           await dispatchComposableNode(
-            {
-              connectedRuns: staging.writer,
-              dispatchPhase: this.deps.dispatchPhase,
-              ...(this.deps.controlAdmission !== undefined
-                ? { controlAdmission: this.deps.controlAdmission }
-                : {}),
-              ...(this.deps.forEachExecutor !== undefined
-                ? { forEachExecutor: this.deps.forEachExecutor }
-                : {}),
-              ...(this.deps.workspaceRoot !== undefined
-                ? { workspaceRoot: this.deps.workspaceRoot }
-                : {})
-            },
+            this.recoveryCoordinatorDeps(staging.writer),
             {
               run: staging.current(),
               invocationId: feRes.childInvocationId,
@@ -1116,19 +1083,7 @@ export class WorkflowRecoveryService {
         } else {
           staging.set(feRes.nextRun);
           await completeComposableNodeAttempt(
-            {
-              connectedRuns: staging.writer,
-              dispatchPhase: this.deps.dispatchPhase,
-              ...(this.deps.controlAdmission !== undefined
-                ? { controlAdmission: this.deps.controlAdmission }
-                : {}),
-              ...(this.deps.forEachExecutor !== undefined
-                ? { forEachExecutor: this.deps.forEachExecutor }
-                : {}),
-              ...(this.deps.workspaceRoot !== undefined
-                ? { workspaceRoot: this.deps.workspaceRoot }
-                : {})
-            },
+            this.recoveryCoordinatorDeps(staging.writer),
             {
               run: staging.current(),
               invocationId: parentFrame.invocationId,

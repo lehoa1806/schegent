@@ -3,10 +3,13 @@
   import { availabilityPhrase } from '../../../src/contracts/change-review';
   import type { RuntimePostureVisibility } from '../lib/messages';
   import { requestExecutionVisibility } from '../lib/execution-visibility-ipc';
+  import { snapshotStore } from '../lib/snapshot-store.svelte';
 
   let loading = $state(false);
   let posture = $state<RuntimePostureVisibility | null>(null);
   let notice = $state('');
+  let requestGen = 0;
+  let lastResyncCount = snapshotStore.resyncCount;
 
   /** The `.sg` status tone of a delivery state other than healthy; any other state reads as active. */
   const DELIVERY_TONES: Partial<Record<string, string>> = {
@@ -20,9 +23,35 @@
     });
   });
 
+  $effect(() => {
+    if (typeof document === 'undefined') return;
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible') {
+        void refreshPosture();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  });
+
+  $effect(() => {
+    const currentResync = snapshotStore.resyncCount;
+    void snapshotStore.snapshot;
+    if (currentResync !== lastResyncCount) {
+      lastResyncCount = currentResync;
+      untrack(() => {
+        void refreshPosture();
+      });
+    }
+  });
+
   async function refreshPosture(): Promise<void> {
+    const gen = ++requestGen;
     loading = true;
     const env = await requestExecutionVisibility({ op: 'runtimePosture' });
+    if (gen !== requestGen) return;
     loading = false;
     if (env.boundaryRefusal !== null) {
       notice = env.boundaryRefusal;
@@ -30,7 +59,11 @@
     }
     if (env.response.op === 'runtimePosture') {
       posture = env.response.posture;
-      notice = `Updated runtime posture (${posture.telemetry.stateKind}).`;
+      const telemetry = posture.telemetry;
+      notice =
+        !telemetry.enabled && telemetry.reasonCode !== null
+          ? `Updated runtime posture (refused: ${telemetry.reasonCode}).`
+          : `Updated runtime posture (${telemetry.stateKind}).`;
     }
   }
 
@@ -46,6 +79,11 @@
 
   function stateWithReason(stateKind: string, reasonCode: string | null): string {
     return reasonCode === null ? stateKind : `${stateKind} (${reasonCode})`;
+  }
+
+  function safeContentPolicyMode(raw: string): 'metadata-only' | 'content' | 'invalid' {
+    if (raw === 'metadata-only' || raw === 'content') return raw;
+    return 'invalid';
   }
 </script>
 
@@ -76,7 +114,9 @@
       <section class="card" aria-label="OpenTelemetry export health" data-testid="otlp-health-card">
         <div class="titlerow">
           <h2>Telemetry export</h2>
-          {#if !posture.telemetry.enabled}
+          {#if !posture.telemetry.enabled && posture.telemetry.reasonCode !== null}
+            <span class="chip s-err"><span class="dot"></span>Refused</span>
+          {:else if !posture.telemetry.enabled}
             <span class="chip s-idle"><span class="dot"></span>Off</span>
           {:else if posture.telemetry.stateKind === 'healthy'}
             <span class="chip s-ok"><svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>Healthy</span>
@@ -84,10 +124,28 @@
             <span class="chip {deliveryTone(posture.telemetry.stateKind)}"><span class="dot"></span><span class="word">{posture.telemetry.stateKind}</span></span>
           {/if}
         </div>
+        {#if !posture.telemetry.enabled && posture.telemetry.reasonCode !== null}
+          <p class="refusal small s-err" role="status" data-testid="telemetry-refusal-notice">
+            {#if posture.telemetry.reasonCode === 'content-export-unsupported'}
+              Export refused (<span class="mono">{posture.telemetry.reasonCode}</span>): requested content policy
+              <span class="mono">{safeContentPolicyMode(posture.telemetry.contentPolicyMode)}</span> is unsupported; mapping revision 1 exports allowlisted metadata only.
+            {:else}
+              Export refused (<span class="mono">{posture.telemetry.reasonCode}</span>).
+            {/if}
+          </p>
+        {/if}
         <p class="small muted" data-testid="otlp-preview-disclosure">{posture.telemetry.previewSummary}</p>
         <dl class="kv">
           <dt>Authorization</dt>
-          <dd>{posture.telemetry.enabled ? 'Authorized' : 'Disabled / Refused'}</dd>
+          <dd>
+            {#if posture.telemetry.enabled}
+              Authorized
+            {:else if posture.telemetry.reasonCode !== null}
+              Refused ({posture.telemetry.reasonCode})
+            {:else}
+              Disabled
+            {/if}
+          </dd>
           <dt>Waiting to send</dt>
           <dd>{posture.telemetry.pendingCopyCount}</dd>
           <dt>Disk used</dt>
@@ -99,7 +157,7 @@
             <dt>State</dt>
             <dd class="mono">{stateWithReason(posture.telemetry.stateKind, posture.telemetry.reasonCode)}</dd>
             <dt>Protocol</dt>
-            <dd class="mono">{posture.telemetry.protocol ?? 'inactive'} &middot; {posture.telemetry.contentPolicyMode}</dd>
+            <dd class="mono">{posture.telemetry.protocol ?? 'inactive'} &middot; {safeContentPolicyMode(posture.telemetry.contentPolicyMode)}</dd>
             <dt>Ledger</dt>
             <dd class="mono">
               {posture.telemetry.exportedCopyCount} exported &middot; {posture.telemetry.pendingCopyCount} pending &middot;
@@ -163,6 +221,11 @@
 
   .card > p {
     margin: var(--schegent-space-3) 0;
+  }
+
+  .refusal {
+    color: var(--schegent-status-error-text);
+    font-weight: 500;
   }
 
   .word {

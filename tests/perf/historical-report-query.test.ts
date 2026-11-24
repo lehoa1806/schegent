@@ -43,6 +43,11 @@ const ATTEMPTS_PER_ROOT = 4;
 const PAGE_ROWS = 200;
 const FIRST_PAGE_WARMUP = 3;
 const FIRST_PAGE_MEASURED = 20;
+const FIRST_PAGE_SHOULD_P95_MS = 500;
+const LATER_PAGE_SHOULD_P95_MS = 500;
+const SLICED_GAP_SHOULD_P95_MS = 10;
+const CANCEL_ACK_MUST_MS = 1_000;
+const QUERY_DEADLINE_MS = 5_000;
 const FIRST_PAGE_P95_BUDGET_MS = 1_000;
 const LATER_PAGE_P95_BUDGET_MS = 50;
 const CANCEL_ACK_BUDGET_MS = 1_000;
@@ -96,22 +101,66 @@ function pageOf(result: ReportResult<ReportPage>): ReportPage {
   return result.value;
 }
 
+interface GapSample {
+  readonly startMs: number;
+  readonly endMs: number;
+  readonly durationMs: number;
+}
+
+interface CaptureWindow {
+  readonly startMs: number;
+  readonly endMs: number;
+}
+
+/** Excludes at most one gap: the single gap spanning the synchronous capture window. */
+function excludeSingleCaptureGap(
+  gapSamples: readonly GapSample[],
+  captureWindow: CaptureWindow,
+  captureMs: number
+): { readonly excludedIndex: number; readonly slicedGaps: readonly number[] } {
+  const overlappingIndex = gapSamples.findIndex(
+    (sample) => sample.startMs <= captureWindow.startMs && sample.endMs >= captureWindow.endMs
+  );
+  const excludedIndex =
+    overlappingIndex !== -1
+      ? overlappingIndex
+      : gapSamples.reduce(
+          (best, sample, idx) =>
+            sample.durationMs >= captureMs &&
+            (best === -1 || sample.durationMs > (gapSamples[best]?.durationMs ?? -1))
+              ? idx
+              : best,
+          -1
+        );
+  const slicedGaps = gapSamples
+    .filter((_, idx) => idx !== excludedIndex)
+    .map((sample) => sample.durationMs);
+  return { excludedIndex, slicedGaps };
+}
+
 /** Records the gap between back-to-back `setImmediate` callbacks until `stop` is called. */
-function probeGaps(): { readonly stop: () => readonly number[] } {
-  const gaps: number[] = [];
+function probeGaps(): { readonly stop: () => readonly GapSample[] } {
+  const gaps: GapSample[] = [];
   let last = performance.now();
   let running = true;
+  let timer: NodeJS.Immediate | null = null;
   const tick = (): void => {
+    timer = null;
+    if (!running) return;
     const now = performance.now();
-    gaps.push(now - last);
+    gaps.push({ startMs: last, endMs: now, durationMs: now - last });
     last = now;
-    if (running) setImmediate(tick);
+    timer = setImmediate(tick);
   };
-  setImmediate(tick);
+  timer = setImmediate(tick);
   return {
     stop: () => {
       running = false;
-      return gaps;
+      if (timer !== null) {
+        clearImmediate(timer);
+        timer = null;
+      }
+      return [...gaps];
     }
   };
 }
@@ -134,14 +183,20 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
       const seedMs = performance.now() - seedStarted;
       expect(Number(conn.scalar('SELECT count(*) FROM attempts'))).toBe(ROOT_COUNT * ATTEMPTS_PER_ROOT);
 
-      const captureMs: number[] = [];
+      let lastCaptureMs = Number.NaN;
+      let lastCaptureWindow: CaptureWindow = { startMs: Number.NaN, endMs: Number.NaN };
+      const measuredCaptureMs: number[] = [];
+      let recordCaptureSample = false;
       const readPool = {
         withReadConnection: <T>(fallback: NodeSqliteConnection, read: (source: NodeSqliteConnection) => T): T => {
           const started = performance.now();
           try {
             return read(fallback);
           } finally {
-            captureMs.push(performance.now() - started);
+            const ended = performance.now();
+            lastCaptureMs = ended - started;
+            lastCaptureWindow = { startMs: started, endMs: ended };
+            if (recordCaptureSample) measuredCaptureMs.push(lastCaptureMs);
           }
         }
       };
@@ -161,9 +216,11 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
 
       const firstPageMs: number[] = [];
       for (let sample = 0; sample < FIRST_PAGE_WARMUP + FIRST_PAGE_MEASURED; sample += 1) {
+        recordCaptureSample = sample >= FIRST_PAGE_WARMUP;
         const started = performance.now();
         const page = pageOf(await service.runReport(QUERY));
         const elapsed = performance.now() - started;
+        recordCaptureSample = false;
         if (sample >= FIRST_PAGE_WARMUP) firstPageMs.push(elapsed);
         expect(page.rowCount).toBe(ROOT_COUNT);
         expect(service.closeReport({ reportId: page.reportId }).ok).toBe(true);
@@ -171,8 +228,10 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
 
       const probe = probeGaps();
       const probed = pageOf(await service.runReport(QUERY));
-      const gaps = probe.stop();
-      const probedCaptureMs = captureMs.at(-1) ?? Number.NaN;
+      const gapSamples = probe.stop();
+      const gaps = gapSamples.map((sample) => sample.durationMs);
+      const probedCaptureMs = lastCaptureMs;
+      const probedCaptureWindow = lastCaptureWindow;
       const probedBytes = service.resources().reservedBytes;
       const firstCursor = probed.cursor;
       if (firstCursor === null) throw new Error('expected more than one page');
@@ -202,10 +261,31 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
       const deadlined = await serviceWith(1).runReport(QUERY);
       const attemptDetail = await service.runReport({ ...QUERY, view: 'attempt-detail' });
 
-      const slicedGaps = gaps.filter((gap) => gap < probedCaptureMs);
+      const { excludedIndex: captureGapIndex, slicedGaps } = excludeSingleCaptureGap(
+        gapSamples,
+        probedCaptureWindow,
+        probedCaptureMs
+      );
       const firstPageP50Ms = rounded(percentile(firstPageMs, 0.5));
       const firstPageP95Ms = rounded(percentile(firstPageMs, 0.95));
       const firstPageMaxMs = rounded(Math.max(...firstPageMs));
+      const captureP50Ms = rounded(percentile(measuredCaptureMs, 0.5));
+      const captureP95Ms = rounded(percentile(measuredCaptureMs, 0.95));
+      const captureMaxMs = rounded(Math.max(...measuredCaptureMs));
+      const slicedP95Ms = rounded(percentile(slicedGaps, 0.95));
+      const specTargets = {
+        firstPageShouldP95Ms: FIRST_PAGE_SHOULD_P95_MS,
+        laterPageShouldP95Ms: LATER_PAGE_SHOULD_P95_MS,
+        slicedGapShouldP95Ms: SLICED_GAP_SHOULD_P95_MS,
+        cancelAckMustMs: CANCEL_ACK_MUST_MS,
+        queryDeadlineMs: QUERY_DEADLINE_MS
+      };
+      const verdicts = {
+        firstPageShouldMet: firstPageP95Ms <= FIRST_PAGE_SHOULD_P95_MS,
+        laterPageShouldMet: later.p95Ms <= LATER_PAGE_SHOULD_P95_MS,
+        slicedGapShouldMet: slicedP95Ms <= SLICED_GAP_SHOULD_P95_MS,
+        cancelAckMustMet: cancelAckMs <= CANCEL_ACK_MUST_MS
+      };
       const cpus = os.cpus();
       const result = {
         hardware: {
@@ -231,6 +311,8 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
           laterPageWarmupIterations: SQLITE_BENCHMARK_WARMUP_SAMPLES,
           laterPageMeasuredIterations: SQLITE_BENCHMARK_MEASURED_SAMPLES
         },
+        specTargets,
+        verdicts,
         budgets: {
           firstPageP95BudgetMs: FIRST_PAGE_P95_BUDGET_MS,
           laterPageP95BudgetMs: LATER_PAGE_P95_BUDGET_MS,
@@ -239,14 +321,20 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
         seed: { ms: Number(seedMs.toFixed(0)) },
         firstPage: { p50Ms: firstPageP50Ms, p95Ms: firstPageP95Ms, maxMs: firstPageMaxMs },
         laterPage: { p50Ms: later.p50Ms, p95Ms: later.p95Ms, p99Ms: later.p99Ms, maxMs: later.maxMs, maxBytes: maxPageBytes },
-        capture: { p50Ms: rounded(percentile(captureMs, 0.5)), maxMs: rounded(Math.max(...captureMs)) },
+        capture: {
+          sampleCount: measuredCaptureMs.length,
+          p50Ms: captureP50Ms,
+          p95Ms: captureP95Ms,
+          maxMs: captureMaxMs,
+          probedCaptureMs: rounded(probedCaptureMs)
+        },
         workingData: { executionSummaryBytes: probedBytes },
         slices: {
           count: gaps.length,
           p95Ms: rounded(percentile(gaps, 0.95)),
           maxMs: rounded(Math.max(...gaps)),
           largestMs: [...gaps].sort((left, right) => right - left).slice(0, 4).map(rounded),
-          slicedP95Ms: rounded(percentile(slicedGaps, 0.95))
+          slicedP95Ms
         },
         cancel: { outcome: cancelled.ok ? 'complete' : cancelled.outcome, ackMs: rounded(cancelAckMs) },
         deadline: deadlined,
@@ -254,6 +342,10 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
       };
       console.info(JSON.stringify(result));
 
+      expect(measuredCaptureMs).toHaveLength(FIRST_PAGE_MEASURED);
+      expect(captureGapIndex).toBeGreaterThanOrEqual(0);
+      expect(slicedGaps).toHaveLength(gaps.length - 1);
+      expect(slicedGaps.length).toBeGreaterThan(0);
       expect(firstPageP95Ms).toBeLessThanOrEqual(FIRST_PAGE_P95_BUDGET_MS);
       expect(later.failureCount).toBe(0);
       expect(later.p95Ms).toBeLessThanOrEqual(LATER_PAGE_P95_BUDGET_MS);
@@ -267,4 +359,27 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
     },
     TEST_TIMEOUT_MS
   );
+
+  it('drops only the single capture-spanning gap and preserves additional long event-loop stalls in slicedP95Ms (CR-310-3)', () => {
+    const samples: readonly GapSample[] = [
+      { startMs: 0, endMs: 341.85, durationMs: 341.85 },
+      { startMs: 341.85, endMs: 663.85, durationMs: 322 },
+      { startMs: 663.85, endMs: 680.98, durationMs: 17.13 },
+      { startMs: 680.98, endMs: 691.8, durationMs: 10.82 },
+      ...Array.from({ length: 16 }, (_, idx) => ({
+        startMs: 700 + idx * 5,
+        endMs: 705 + idx * 5,
+        durationMs: 5
+      }))
+    ];
+    const { excludedIndex, slicedGaps } = excludeSingleCaptureGap(
+      samples,
+      { startMs: 10, endMs: 323.7 },
+      313.7
+    );
+    expect(excludedIndex).toBe(0);
+    expect(slicedGaps).toHaveLength(samples.length - 1);
+    expect(slicedGaps).toContain(322);
+    expect(rounded(percentile(slicedGaps, 0.95))).toBe(322);
+  });
 });

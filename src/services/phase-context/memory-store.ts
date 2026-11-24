@@ -1,8 +1,8 @@
 /**
- * FR-R6-F15 (F15-A; FR-011, FR-012, FR-015, NFR-004) — the in-memory handoff store: the one
- * implementation of `HandoffStorePort` this package ships. It keeps a copy of each record,
- * rebuilt field by field and frozen, so nothing outside the store can change what was saved.
- * The durable store is F15-B.
+ * FR-R6-F15 (F15-A; FR-011, FR-012, FR-015, NFR-004) — in-memory `HandoffStorePort`
+ * implementation for unit and acceptance testing. It keeps a copy of each record, rebuilt field
+ * by field and frozen, so nothing outside the store can change what was saved. Production
+ * persistence uses `createSqliteHandoffStore` (`sqlite-handoff-store.ts`).
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */

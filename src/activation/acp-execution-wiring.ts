@@ -261,6 +261,10 @@ export function buildHostAcpDispatchOptions(
       if (!canWriteDurableAcpState()) return;
       getSqliteCutoverCoordinator(deps.store)?.recordAcpObservation(event);
     },
+    resolveHandoffRepresentation: (attemptId) =>
+      getSqliteCutoverCoordinator(deps.store)?.resolveHandoffRepresentation(attemptId) ?? null,
+    resolveHandoffContentDigest: (handoffId) =>
+      getSqliteCutoverCoordinator(deps.store)?.resolveHandoffContentDigest(handoffId) ?? null,
     sessionBindingStore,
     allocateConnectionGeneration,
     hostLocality

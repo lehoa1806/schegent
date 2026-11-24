@@ -82,6 +82,12 @@
   );
 
   const inFlightRun = $derived(runtime?.inFlightRun ?? null);
+  // Active (including paused) Task runs are keyed in SQLite `runs.run_id` by `inFlightRun.runId`
+  // rather than `task.id`. Keep the non-borrowing rule so a sibling Task never borrows another
+  // executing Task's run ID.
+  const visibilityRootExecutionId = $derived(
+    inFlightRun !== null && inFlightRun.feature?.id === runId ? inFlightRun.runId : runId
+  );
   // The feed belongs to this Run only while this Run is the one executing. A
   // pending Task's detail view reports idle rather than borrowing the reading of
   // whichever Run the queue happens to be working.
@@ -310,6 +316,7 @@
       {onOpenTask}
       {returnFocusKey}
     />
+    <ExecutionVisibilityPanel rootExecutionId={connectedRun.connectedRunId} {isPrimary} />
   {:else if task !== null}
     {#if creditPolling !== null}
       <CreditPollingNotice {queueId} {creditPolling} />
@@ -406,7 +413,7 @@
               </dd>
             </dl>
             <p class="live-feed" data-testid="run-detail-live-feed">{feedText}</p>
-            <ExecutionVisibilityPanel rootExecutionId={runId} {isPrimary} />
+            <ExecutionVisibilityPanel rootExecutionId={visibilityRootExecutionId} {isPrimary} />
           {/if}
         </div>
       </div>

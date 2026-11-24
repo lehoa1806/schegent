@@ -1,5 +1,5 @@
 /**
- * FR-R6-F13 (F13-A; FR-001 to FR-020) — one host-owned ACP connection to one agent process.
+ * FR-R6-F13 (FR-001 to FR-020) — one host-owned ACP connection to one agent process.
  *
  * Open order: profile and generation validation, qualification (an unqualified profile is never
  * launched), launch, `initialize` within the handshake deadline, version and capability checks.
@@ -13,10 +13,11 @@
  *   of the same read sees the session, the end of the load, or the end of the turn.
  * - A written prompt that loses its transport is `uncertain` and is never re-sent (FR-020).
  * - `completed` and `cancelled` outcomes still need host validation (FR-012, FR-022).
- * - Permission requests are answered synchronously by the policy or the fail-closed fallback;
- *   every other agent request is refused `Method not found` (FR-009, FR-010).
+ * - Permission requests are answered by the host policy or the fail-closed fallback after
+ *   sanitizing untrusted tool titles; every other agent request is refused `Method not found`
+ *   (FR-009, FR-010).
  *
- * Zero `vscode` imports. No activation path constructs this in F13-A.
+ * Zero `vscode` imports. Constructed by host ACP dispatch (`AcpBackedRunner`).
  */
 import {
   ACP_RUNTIME_LIMITS,
@@ -479,9 +480,21 @@ class AcpClientConnection implements AcpConnection {
     }
     const { profileId } = this.profile;
     const { generation } = this;
+    const providerSessionId = this.sessions.providerSessionIdOf(sessionId);
     this.observer.emit(sessionId, attribution, (hostReceiveSeq, eventUtc) => ({
       kind: 'usage',
-      usage: buildUsageUpdate({ profileId, generation, sessionId, attribution, hostReceiveSeq, eventUtc }, mapped.usage)
+      usage: buildUsageUpdate(
+        {
+          profileId,
+          generation,
+          sessionId,
+          attribution,
+          hostReceiveSeq,
+          eventUtc,
+          ...(providerSessionId !== null ? { providerSessionId } : {})
+        },
+        mapped.usage
+      )
     }));
   }
 }

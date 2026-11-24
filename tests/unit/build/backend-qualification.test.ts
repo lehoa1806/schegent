@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, resolve } from 'node:path';
 
 /**
  * FR-R3-104 (FR-051..FR-058) — the qualification gate, exercised without a live turn.
@@ -467,5 +468,105 @@ describe('FR-R7-14 (14-10) — shipped-transport v2 qualification, fingerprintin
       now: NOW
     });
     expect(verdict.ok, verdict.message).toBe(true);
+  });
+});
+
+describe('FR-R7-17 (R7-17-05) — authority-gate/wiring fingerprint sensitivity, locality, and qualification checks', () => {
+  it('includes acp-authority-gate.ts and acp-execution-wiring.ts in QUALIFICATION_PATHS and sourceFingerprint', () => {
+    expect(q.QUALIFICATION_PATHS).toContain(
+      'src/services/containment-qualification/acp-authority-gate.ts'
+    );
+    expect(q.QUALIFICATION_PATHS).toContain('src/activation/acp-execution-wiring.ts');
+
+    const sandbox = mkdtempSync(resolve(tmpdir(), 'schegent-qual-fp-'));
+    try {
+      const write = (relPath: string, content: string): void => {
+        const target = resolve(sandbox, relPath);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, content, 'utf8');
+      };
+      write(['src', 'runner', 'dummy.ts'].join('/'), 'export const r = 1;\n');
+      write(['src', 'parser', 'dummy.ts'].join('/'), 'export const p = 1;\n');
+      write('src/contracts/backend-kinds.ts', 'export const k = 1;\n');
+      write('src/contracts/backend-descriptors.ts', 'export const d = 1;\n');
+      write('src/contracts/acp-runtime.ts', 'export const c = 1;\n');
+      write(['src', 'services', 'acp-runtime', 'dummy.ts'].join('/'), 'export const s = 1;\n');
+      write('src/services/containment-qualification/acp-authority-gate.ts', 'export const g = 1;\n');
+      write('src/activation/acp-execution-wiring.ts', 'export const w = 1;\n');
+      write('esbuild.config.mjs', 'export default {};\n');
+      write('dist/acp-stdio-bridge.js', '// bridge bundle\n');
+
+      const baseline = q.computeQualificationSourceFingerprint(sandbox);
+      expect(baseline).toMatch(/^[0-9a-f]{64}$/);
+
+      write('src/services/containment-qualification/acp-authority-gate.ts', 'export const g = 2;\n');
+      const afterGateEdit = q.computeQualificationSourceFingerprint(sandbox);
+      expect(afterGateEdit).not.toBe(baseline);
+
+      write('src/services/containment-qualification/acp-authority-gate.ts', 'export const g = 1;\n');
+      expect(q.computeQualificationSourceFingerprint(sandbox)).toBe(baseline);
+
+      write('src/activation/acp-execution-wiring.ts', 'export const w = 2;\n');
+      const afterWiringEdit = q.computeQualificationSourceFingerprint(sandbox);
+      expect(afterWiringEdit).not.toBe(baseline);
+      expect(afterWiringEdit).not.toBe(afterGateEdit);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('validates optional locality and live qualification checks without breaking existing v2 records', () => {
+    // Existing v2 records omitting `locality` and `checks` remain valid.
+    expect(decide().ok).toBe(true);
+
+    // Local live record with all checks true passes both default and strict enforcement.
+    const fullRecord = q.buildQualificationRecord({
+      versions: installed,
+      states: { claude: 'ok', codex: 'ok', agy: 'ok' },
+      commit: 'abc123',
+      platform: 'darwin arm64 node 24.19.0',
+      now: FRESH,
+      locality: 'local',
+      checks: {
+        resume: true,
+        policyDenial: true,
+        permissionTitleSanitized: true
+      }
+    });
+    expect(fullRecord.locality).toBe('local');
+    expect(fullRecord.checks).toEqual({
+      resume: true,
+      policyDenial: true,
+      permissionTitleSanitized: true
+    });
+    expect(
+      decide({ record: fullRecord, expectedLocality: 'local', requireChecks: true }).ok
+    ).toBe(true);
+
+    // Remote locality is refused for live qualification.
+    const remoteVerdict = decide({
+      record: record({ locality: 'remote' })
+    });
+    expect(remoteVerdict.ok).toBe(false);
+    expect(remoteVerdict.reason).toBe('unqualified-locality');
+
+    // Invalid locality token is refused.
+    expect(decide({ record: record({ locality: 'cloud' }) }).reason).toBe(
+      'invalid-qualification-locality'
+    );
+
+    // Explicitly false check flag is refused even when requireChecks is false.
+    const failedCheck = decide({
+      record: record({
+        locality: 'local',
+        checks: { resume: true, policyDenial: false, permissionTitleSanitized: true }
+      })
+    });
+    expect(failedCheck.ok).toBe(false);
+    expect(failedCheck.reason).toBe('incomplete-qualification-checks');
+    expect(failedCheck.message).toContain('policyDenial=false');
+
+    // Missing checks are refused when requireChecks is true.
+    expect(decide({ requireChecks: true }).reason).toBe('incomplete-qualification-checks');
   });
 });
