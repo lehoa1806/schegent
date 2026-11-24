@@ -44,7 +44,7 @@ describe('FR-R4-F07 W-T1 — createWriteChain (data-model §8)', () => {
     });
 
     // Let every microtask that can run, run: the second must still be waiting on the first.
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(order).toEqual(['first:start']);
 
     gate.resolve();
@@ -56,17 +56,34 @@ describe('FR-R4-F07 W-T1 — createWriteChain (data-model §8)', () => {
   it('runs many operations in the order they were issued', async () => {
     const chain = createWriteChain();
     const seen: number[] = [];
+    const started: number[] = [];
+    const entered = Array.from({ length: 8 }, () => deferred<void>());
+    const release = Array.from({ length: 8 }, () => deferred<void>());
 
-    const results = await Promise.all(
+    const resultsPromise = Promise.all(
       [0, 1, 2, 3, 4, 5, 6, 7].map((n) =>
         chain.run(async () => {
-          // Earlier operations take longer, so any overlap would reorder the finishes.
-          await new Promise((resolve) => setTimeout(resolve, 8 - n));
+          started.push(n);
+          entered[n]!.resolve();
+          await release[n]!.promise;
           seen.push(n);
           return n * 2;
         })
       )
     );
+
+    // Pre-release operations 1..7 before 0 finishes: any overlap would let a later operation
+    // finish ahead of an earlier one, while releasing step-by-step proves strict serialization.
+    await entered[0]!.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(started).toEqual([0]);
+    for (let n = 7; n >= 1; n -= 1) release[n]!.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(started).toEqual([0]);
+    expect(seen).toEqual([]);
+
+    release[0]!.resolve();
+    const results = await resultsPromise;
 
     expect(seen).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(results).toEqual([0, 2, 4, 6, 8, 10, 12, 14]);

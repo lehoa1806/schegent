@@ -126,6 +126,17 @@ unit tier on Linux and nothing more: no extension host, browser or real CLI runs
 does not move Linux out of the `unverified` tier. What it has observed is recorded in the
 [platform observation record](../operations/platform-observation-record.md#local-linux-leg-2026-11-12).
 
+## Run heavy tiers sequentially (avoid contention)
+
+Run heavy verification suites and tiers **one at a time on a quiet machine** — do not launch them in parallel terminals or alongside another heavy build or test run. The aggregate scripts (`verify:edit`, `verify:push`, `verify:release`, `ci`, `gate`) sequence steps automatically; run standalone heavy suites sequentially for the same reasons:
+
+- **`test:perf` and `test:soak`**: `vitest.perf.config.ts` sets `singleThread: true` and asserts wall-clock and event-loop delay budgets. Competing CPU or disk activity causes false timing failures unrelated to code regressions.
+- **`test:visual` and `a11y`**: Both `playwright.config.ts` and `playwright.a11y.config.ts` run Chromium serially (`workers: 1`), rebuild `webview-ui` first, and share the fixture server on `127.0.0.1:4173` (`tests/visual/serve-built-webviews.mjs`). Running them concurrently races the built webview assets and port `4173`.
+- **`test:host` and `test:coverage`**: `vitest.config.ts` executes 1,500+ host test files (including child-process and git-lane suites) across `maxWorkers: '50%'` worker threads. Running `test:coverage` (V8 instrumentation) alongside another heavy tier saturates CPU, disk, and Vitest's main-thread RPC.
+- **`test:e2e`**: Spawns real child processes against the deterministic fake CLI fixture (`vitest.e2e.config.ts`) and depends on clean process scheduling.
+- **`test:integration`**: Rebuilds both bundles (`dist/`), compiles `out/`, and launches a VS Code Electron Extension Development Host (`tests/integration/runTest.ts`), contending for build outputs and desktop/window resources.
+- **`verify:linux`**: Streams `git archive HEAD` into a Docker or OrbStack Linux container (`scripts/linux-leg/Dockerfile`) to run a full Linux install, build, SBOM, typecheck, lint, contract check, and `test:host`, heavily competing for host CPU and disk I/O.
+
 ## The successor to `verify:edit`, and what it needs
 
 Selecting tests by changed file is the better edit loop, and it is deliberately not what this is.

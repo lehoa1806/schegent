@@ -28,6 +28,7 @@ import type { WorkspaceLockManager } from '../../src/state/lock';
 import type { ExecutionLeasePort } from '../../src/services/auto-drain-coordinator';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { findQueue } from '../../src/queue/queue-registry';
+import { waitForCondition } from '../wait-for-condition';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -212,20 +213,13 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     // for it (see makeRefusingLease). Everything else keeps refusing.
     lease.grantNext();
     await controller.resumeActivePhase();
-    // Bounded by elapsed time rather than by a round count. Each round
-    // sleeps 10ms, so the old cap was ~2000ms of sleep plus however long the
-    // scheduler took to come back — which under load is the larger term.
-    // On exhaustion this used to `break` and fall through to an assertion
-    // that reported the wrong thing: the run's status, rather than the fact
-    // that nobody had waited long enough to see it.
-    const settleBy = Date.now() + 25_000;
-    while (Date.now() < settleBy) {
-      const r = store.getRun(DEFAULT_QUEUE_ID);
-      if (r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled')) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForCondition(
+      () => {
+        const r = store.getRun(DEFAULT_QUEUE_ID);
+        return Boolean(r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled'));
+      },
+      { timeoutMs: 25_000, label: 'resumed cascaded-pause run to reach terminal status' }
+    );
 
     // The host queue's cascade-pause is cleared as part of resumeActivePhase
     // (before resumeExisting fires), so the registry state flips back to

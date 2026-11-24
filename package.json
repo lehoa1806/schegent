@@ -209,6 +209,7 @@
           "type": "boolean",
           "default": true,
           "scope": "application",
+          "deprecationMessage": "Superseded by `schegent.cli.environmentMode` (`minimal`, `allowlist`, or `inherit`). Setting `schegent.cli.inheritEnvironment` to `false` still overrides `schegent.cli.environmentMode` to `minimal`.",
           "description": "When enabled, Schegent backend CLI processes inherit the VS Code extension-host environment before Schegent-controlled variables are overlaid. Disable to spawn the backend with only Schegent-controlled variables."
         },
         "schegent.cli.environmentMode": {

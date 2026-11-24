@@ -28,6 +28,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { AUDIT_SCHEMA_VERSION } from '../../src/contracts/audit-events';
+import { SIDEBAR_IPC_SCHEMA_VERSION } from '../../src/contracts/sidebar-ipc';
 import {
   SQLITE_MIN_READER_VERSION,
   SQLITE_SCHEMA_CURRENT_VERSION
@@ -36,7 +37,12 @@ import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
 // FR-R3-145 (T1572) — `DEFAULT_GLOBAL_CONCURRENCY_CAP` moved here from
 // `src/state/workspace-state.ts`, beside the ceiling it is bounded by.
 import { DEFAULT_GLOBAL_CONCURRENCY_CAP, MAX_QUEUES } from '../../src/contracts/queue-bounds';
-import { MAX_GLOBAL_CONCURRENCY_CAP } from '../../src/state/workspace-state';
+import { PHASE_YAML_API_VERSION } from '../../src/services/process-yaml/types';
+import {
+  MAX_GLOBAL_CONCURRENCY_CAP,
+  SCHEMA_VERSION as LEGACY_STATE_SCHEMA_VERSION
+} from '../../src/state/workspace-state';
+import { SCHEMA_VERSION as SNAPSHOT_SCHEMA_VERSION } from '../../src/ui/sidebar/snapshot';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ARCH_REL = 'ARCHITECTURE.md';
@@ -77,6 +83,35 @@ function disagreements(label: string, lines: readonly string[]): string[] {
       }
     });
   }
+  lines.forEach((line, index) => {
+    if (line.includes('PHASE_YAML_API_VERSION')) {
+      for (const match of line.matchAll(/`(schegent\/v[^`]+)`/g)) {
+        if (match[1] !== PHASE_YAML_API_VERSION) {
+          wrong.push(
+            `${label}:${index + 1} states \`${match[1]}\` on a line naming PHASE_YAML_API_VERSION, ` +
+              `which is \`${PHASE_YAML_API_VERSION}\``
+          );
+        }
+      }
+    }
+    for (const match of line.matchAll(/(?<![A-Z_])SCHEMA_VERSION\s*=\s*(\d+)/g)) {
+      const found = Number(match[1]);
+      if (found !== SNAPSHOT_SCHEMA_VERSION) {
+        wrong.push(
+          `${label}:${index + 1} states \`SCHEMA_VERSION = ${found}\`, ` +
+            `which disagrees with snapshot SCHEMA_VERSION \`${SNAPSHOT_SCHEMA_VERSION}\``
+        );
+      }
+    }
+    for (const match of line.matchAll(/(?<![A-Z_])SCHEMA_VERSION\s*=\s*['"]([^'"]+)['"]/g)) {
+      if (match[1] !== LEGACY_STATE_SCHEMA_VERSION) {
+        wrong.push(
+          `${label}:${index + 1} states \`SCHEMA_VERSION = '${match[1]}'\`, ` +
+            `which disagrees with legacy state SCHEMA_VERSION \`${LEGACY_STATE_SCHEMA_VERSION}\``
+        );
+      }
+    }
+  });
   return wrong;
 }
 
@@ -90,13 +125,71 @@ function disagreements(label: string, lines: readonly string[]): string[] {
  */
 const FLAT = ARCH.replace(/\s+/g, ' ');
 
-/** Every constant whose value the document may state, with its true value. */
+/** Every unambiguous numeric version constant whose value docs may state, with its true value. */
 const VERSION_CONSTANTS = [
+  ['SIDEBAR_IPC_SCHEMA_VERSION', SIDEBAR_IPC_SCHEMA_VERSION],
   ['STATE_SCHEMA_VERSION', STATE_SCHEMA_VERSION],
   ['SQLITE_SCHEMA_CURRENT_VERSION', SQLITE_SCHEMA_CURRENT_VERSION],
   ['SQLITE_MIN_READER_VERSION', SQLITE_MIN_READER_VERSION],
   ['AUDIT_SCHEMA_VERSION', AUDIT_SCHEMA_VERSION]
 ] as const;
+
+/** All six core version families (plus legacy string state & SQLite reader floor) pinned in Schema Versions. */
+const SCHEMA_TABLE_ROWS: ReadonlyArray<{
+  readonly label: string;
+  readonly storeMatch: string;
+  readonly constant: string;
+  readonly expected: string | number;
+}> = [
+  {
+    label: 'Sidebar IPC contract',
+    storeMatch: 'Sidebar IPC',
+    constant: 'SIDEBAR_IPC_SCHEMA_VERSION',
+    expected: SIDEBAR_IPC_SCHEMA_VERSION
+  },
+  {
+    label: 'Snapshot body',
+    storeMatch: 'src/ui/sidebar/snapshot.ts',
+    constant: 'SCHEMA_VERSION',
+    expected: SNAPSHOT_SCHEMA_VERSION
+  },
+  {
+    label: 'Workspace state numeric',
+    storeMatch: 'schegent.schemaVersionNumeric',
+    constant: 'STATE_SCHEMA_VERSION',
+    expected: STATE_SCHEMA_VERSION
+  },
+  {
+    label: 'Workspace state legacy string',
+    storeMatch: 'src/state/workspace-state.ts',
+    constant: 'SCHEMA_VERSION',
+    expected: LEGACY_STATE_SCHEMA_VERSION
+  },
+  {
+    label: 'SQLite operational store',
+    storeMatch: 'SQLite operational store',
+    constant: 'SQLITE_SCHEMA_CURRENT_VERSION',
+    expected: SQLITE_SCHEMA_CURRENT_VERSION
+  },
+  {
+    label: 'SQLite reader floor',
+    storeMatch: 'reader floor',
+    constant: 'SQLITE_MIN_READER_VERSION',
+    expected: SQLITE_MIN_READER_VERSION
+  },
+  {
+    label: 'Process-YAML exchange',
+    storeMatch: 'Process-YAML',
+    constant: 'PHASE_YAML_API_VERSION',
+    expected: PHASE_YAML_API_VERSION
+  },
+  {
+    label: 'Audit event envelope',
+    storeMatch: 'Audit event envelope',
+    constant: 'AUDIT_SCHEMA_VERSION',
+    expected: AUDIT_SCHEMA_VERSION
+  }
+];
 
 interface SettingContribution {
   readonly default?: unknown;
@@ -168,6 +261,20 @@ function schemaRow(constant: string): readonly string[] {
   return (row as string).split('|').map((cell) => cell.trim());
 }
 
+function schemaRowFor(storeMatch: string, constant: string): readonly string[] {
+  const row = schemaVersionsSection().find(
+    (line) =>
+      line.startsWith('|') &&
+      line.includes(storeMatch) &&
+      line.includes(`\`${constant}\``)
+  );
+  expect(
+    row,
+    `the Schema Versions table in ${ARCH_REL} has no row matching '${storeMatch}' and \`${constant}\``
+  ).toBeTruthy();
+  return (row as string).split('|').map((cell) => cell.trim());
+}
+
 const CURRENT_CELL = 3;
 const MIGRATORS_CELL = 4;
 
@@ -200,7 +307,17 @@ function pagesToCheck(): string[] {
 }
 
 describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
-  it('the Schema Versions table states each constant’s current value', () => {
+  it('the Schema Versions table states each constant’s current value across all six core version families', () => {
+    expect(SCHEMA_TABLE_ROWS).toHaveLength(8);
+    for (const rowSpec of SCHEMA_TABLE_ROWS) {
+      const cells = schemaRowFor(rowSpec.storeMatch, rowSpec.constant);
+      expect(
+        cells[CURRENT_CELL],
+        `${ARCH_REL}: the Schema Versions row for ${rowSpec.label} (\`${rowSpec.constant}\`) states ` +
+          `${cells[CURRENT_CELL]} in its Current column; the constant is \`${rowSpec.expected}\`. ` +
+          `Edit the table in ${ARCH_REL}.`
+      ).toBe(`\`${rowSpec.expected}\``);
+    }
     for (const [name, value] of VERSION_CONSTANTS) {
       expect(
         schemaRow(name)[CURRENT_CELL],

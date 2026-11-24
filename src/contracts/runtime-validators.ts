@@ -81,7 +81,8 @@ import {
   CMD_START,
   CMD_START_PHASE_LOG_TAIL,
   CMD_START_QUEUE,
-  CMD_STOP_PHASE_LOG_TAIL
+  CMD_STOP_PHASE_LOG_TAIL,
+  SIDEBAR_IPC_SCHEMA_VERSION
 } from './sidebar-ipc';
 import {
   validateMutateReport,
@@ -206,6 +207,13 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
   const correlationId = obj['correlationId'];
   if (typeof correlationId !== 'string' || correlationId.length === 0 || correlationId.length > CORRELATION_ID_MAX) {
     return fail('invalid-correlationId', { type });
+  }
+  if ('schemaVersion' in obj && obj['schemaVersion'] !== undefined && obj['schemaVersion'] !== SIDEBAR_IPC_SCHEMA_VERSION) {
+    return fail('unsupported-ipc-schema-version', {
+      code: 'unsupported-ipc-schema-version',
+      type,
+      correlationId
+    });
   }
 
   switch (type) {

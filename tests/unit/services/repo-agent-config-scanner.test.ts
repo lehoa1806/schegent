@@ -19,6 +19,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()!;
     await fsp.rm(dir, { recursive: true, force: true });
@@ -230,18 +231,27 @@ describe('scanRepoAgentConfig (FR-R7-04, SC-001, SC-003, SC-004)', () => {
     });
     const calls: string[] = [];
 
-    const result = await scanRepoAgentConfig(root, 'claude', {
-      timeoutMs: 25,
-      scanPath: async (_ws, relPath) => {
-        calls.push(relPath);
-        await delayed;
-        return { name: relPath, status: 'present', size: 1, digest: 'a'.repeat(64) };
-      }
-    });
+    vi.useFakeTimers();
+    let result: Awaited<ReturnType<typeof scanRepoAgentConfig>>;
+    try {
+      const resultPromise = scanRepoAgentConfig(root, 'claude', {
+        timeoutMs: 25,
+        scanPath: async (_ws, relPath) => {
+          calls.push(relPath);
+          await delayed;
+          return { name: relPath, status: 'present', size: 1, digest: 'a'.repeat(64) };
+        }
+      });
+      await vi.advanceTimersByTimeAsync(25);
+      result = await resultPromise;
+    } finally {
+      vi.useRealTimers();
+    }
 
-    // Release delayed promise after timeout to confirm late completion does not mutate result.entries.
+    // Release delayed promise after timeout and flush microtasks + one immediate turn
+    // to confirm late completion does not mutate result.entries.
     resolveDelayed?.();
-    await new Promise((r) => setTimeout(r, 15));
+    await new Promise<void>((r) => setImmediate(r));
 
     expect(result.scanError).toBe(true);
     expect(result.scanErrorReason).toBe('timeout');
@@ -387,13 +397,21 @@ describe('scanRepoAgentConfig (FR-R7-04, SC-001, SC-003, SC-004)', () => {
       })
     } as unknown as fsp.FileHandle;
 
-    const result = await scanRepoAgentConfig(root, 'claude', {
-      timeoutMs: 25,
-      scanPath: (_ws, relPath, maxBytes, signal) => {
-        observedSignal = signal;
-        return scanOpenedHandle(relPath, stalledHandle, maxBytes, signal);
-      }
-    });
+    vi.useFakeTimers();
+    let result: Awaited<ReturnType<typeof scanRepoAgentConfig>>;
+    try {
+      const resultPromise = scanRepoAgentConfig(root, 'claude', {
+        timeoutMs: 25,
+        scanPath: (_ws, relPath, maxBytes, signal) => {
+          observedSignal = signal;
+          return scanOpenedHandle(relPath, stalledHandle, maxBytes, signal);
+        }
+      });
+      await vi.advanceTimersByTimeAsync(25);
+      result = await resultPromise;
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(result.scanError).toBe(true);
     expect(result.scanErrorReason).toBe('timeout');

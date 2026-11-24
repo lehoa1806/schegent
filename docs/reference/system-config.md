@@ -17,6 +17,9 @@ The default policy is `allowlist` with an empty operator list. It copies the boo
 | `PATHEXT` | string or absent | Extension-host value, if defined | Windows executable suffix lookup. |
 | `HOME` | string or absent | Extension-host value, if defined | POSIX home and tool configuration discovery. |
 | `USERPROFILE` | string or absent | Extension-host value, if defined | Windows home discovery. |
+| `USER` | string or absent | Extension-host value, if defined | POSIX account identity (required by OS credential stores such as macOS login Keychain lookup). |
+| `LOGNAME` | string or absent | Extension-host value, if defined | POSIX login-name fallback for account identity. |
+| `USERNAME` | string or absent | Extension-host value, if defined | Windows account identity. |
 | `APPDATA` | string or absent | Extension-host value, if defined | Windows roaming application data discovery. |
 | `LOCALAPPDATA` | string or absent | Extension-host value, if defined | Windows local application data discovery. |
 | `TMPDIR` | string or absent | Extension-host value, if defined | POSIX temporary-file root. |
@@ -36,17 +39,39 @@ The default policy is `allowlist` with an empty operator list. It copies the boo
 <!-- Source: src/runner/spawn-env.ts -->
 <!-- Source: package.json -->
 
-The forwarding settings resolve to these effective policies:
+The forwarding settings resolve to these effective policies (evaluated by `readProcessEnvironmentPolicy` in `src/activation/uncached-settings-accessors.ts` and `resolveProcessEnvironmentPolicy` in `src/contracts/process-environment-policy.ts`):
 
 | Setting state | Effective input environment |
 |---|---|
-| `schegent.cli.inheritEnvironment: false` | `minimal`, regardless of `schegent.cli.environmentMode`. |
-| `schegent.cli.environmentMode: minimal` | Only Schegent-controlled overlays. |
-| `schegent.cli.environmentMode: allowlist` | Bootstrap variables, every `LC_*` variable, configured names, then Schegent-controlled overlays. This is the manifest default. |
+| `schegent.cli.inheritEnvironment: false` (deprecated) or any defined non-boolean value (such as `"false"`, `1`, `null`, or `{}`) | `minimal` (fail-closed), regardless of `schegent.cli.environmentMode`; `schegent.cli.environmentAllowlist` is dropped. |
+| `schegent.cli.environmentMode: minimal` | Only Schegent-controlled overlays for backend runners, ACP transports, and probes. Isolated-lane verification checks (`src/services/execution-lanes/verification-runner.ts`) still retain the `REQUIRED_PROCESS_ENV_NAMES` bootstrap variables and `LC_*` so build tools resolve on `PATH`, while excluding non-allowlisted ambient secrets and dropping operator allowlist entries. |
+| `schegent.cli.environmentMode: allowlist` | Bootstrap variables (`REQUIRED_PROCESS_ENV_NAMES`, including `USER`, `LOGNAME`, and `USERNAME`), every `LC_*` variable, configured allowlist names, then Schegent-controlled overlays. This is the manifest default. |
 | `schegent.cli.environmentMode: inherit` | The entire extension-host environment, then Schegent-controlled overlays. Activation logs a warning because ambient secrets can be exposed. |
 | `schegent.cli.environmentMode`: absent, `null`, not a string, an unknown string, or a near miss such as `Inherit`, `INHERIT`, `inherits` or ` inherit` | Treated as `allowlist`, the same as the manifest default. Only the exact string `inherit` inherits. |
 
+<!-- executable-example: env-policy-precedence -->
+
+```
+| inheritEnvironment | environmentMode | environmentAllowlist | effectiveMode | inheritProcessEnv | forwardedAllowlist |
+|--------------------|-----------------|----------------------|---------------|-------------------|--------------------|
+| (unset)            | (unset)         | (unset)              | allowlist     | no                | (empty)            |
+| true               | allowlist       | HTTPS_PROXY          | allowlist     | no                | HTTPS_PROXY        |
+| true               | inherit         | HTTPS_PROXY          | inherit       | yes               | (omitted)          |
+| true               | minimal         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| false              | inherit         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| false              | allowlist       | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| "false"            | inherit         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| 1                  | inherit         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| true               | Inherit         | HTTPS_PROXY          | allowlist     | no                | HTTPS_PROXY        |
+| true               | unexpected      | HTTPS_PROXY          | allowlist     | no                | HTTPS_PROXY        |
+```
+
+These rows are read by `tests/lint/documented-defaults-are-executable.test.ts` and fed through `readProcessEnvironmentPolicy` in `src/activation/uncached-settings-accessors.ts`.
+
+<!-- Source: src/activation/uncached-settings-accessors.ts -->
+<!-- Source: src/contracts/process-environment-policy.ts -->
 <!-- Source: src/runner/spawn-env.ts -->
+<!-- Source: src/services/execution-lanes/verification-runner.ts -->
 <!-- Source: src/activation/backend-wiring.ts -->
 <!-- Source: package.json -->
 

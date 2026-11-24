@@ -317,6 +317,10 @@ describe('the failure-record pass inside the sweep (FR-R4-F15, K2, K6.7)', () =>
 
   it('starts the second sweep\'s session pass only after the first sweep\'s record pass has ended', async () => {
     const events: string[] = [];
+    let markFirstEnteredRecords: () => void = () => undefined;
+    const firstEnteredRecords = new Promise<void>((resolve) => {
+      markFirstEnteredRecords = resolve;
+    });
     let releaseFirst: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -325,15 +329,20 @@ describe('the failure-record pass inside the sweep (FR-R4-F15, K2, K6.7)', () =>
     const sweep = vi.fn(async () => {
       passes += 1;
       events.push(`records:start:${passes}`);
-      if (passes === 1) await gate;
+      if (passes === 1) {
+        markFirstEnteredRecords();
+        await gate;
+      }
       events.push(`records:end:${passes}`);
     });
     const { service } = build({ failureRecords: { sweep }, events });
 
     const first = service.sweep();
     const second = service.sweep();
-    // Let every microtask that can run, run: the second sweep must still be waiting behind the first.
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    // Wait deterministically until the first sweep is blocked in its record pass, then flush
+    // microtasks/immediates to prove the second sweep has not started its session pass.
+    await firstEnteredRecords;
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(events).toEqual(['session:start', 'records:start:1']);
 
     releaseFirst();

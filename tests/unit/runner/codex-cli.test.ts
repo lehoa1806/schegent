@@ -198,24 +198,36 @@ describe('CodexCliRunner.invoke', () => {
   });
 
   it('flags timedOut and terminates the child when the timeout fires', async () => {
-    const child = makeFakeChild();
-    const spawnFn: SpawnFn = () => {
-      // After the timeout terminates the child, simulate the resulting
-      // signalled exit so the invoke() promise can settle.
-      setTimeout(() => { child.emit('exit', null, 'SIGTERM'); child.emit('close', null, 'SIGTERM'); }, 100);
-      return child as unknown as ChildProcess;
-    };
-    const runner = new CodexCliRunner(spawnFn);
-    const result = await runner.invoke({
-      phase: 'speckit-implement',
-      iteration: 1,
-      prompt: 'hangs',
-      timeoutMs: 50,
-      cliPath: 'codex',
-      cwd: '/repo'
-    });
-    expect(result.timedOut).toBe(true);
-    expect(child.kill).toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      const child = makeFakeChild();
+      child.kill = vi.fn((_sig?: NodeJS.Signals | number) => {
+        child.killed = true;
+        // Once the timeout terminates the child, simulate the resulting signalled exit
+        // immediately on a microtask so invoke() settles deterministically.
+        queueMicrotask(() => {
+          child.emit('exit', null, 'SIGTERM');
+          child.emit('close', null, 'SIGTERM');
+        });
+        return true;
+      });
+      const spawnFn: SpawnFn = () => child as unknown as ChildProcess;
+      const runner = new CodexCliRunner(spawnFn);
+      const resultPromise = runner.invoke({
+        phase: 'speckit-implement',
+        iteration: 1,
+        prompt: 'hangs',
+        timeoutMs: 50,
+        cliPath: 'codex',
+        cwd: '/repo'
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      const result = await resultPromise;
+      expect(result.timedOut).toBe(true);
+      expect(child.kill).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('observes the cancellation signal and reports killed=true', async () => {

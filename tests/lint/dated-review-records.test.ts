@@ -55,15 +55,15 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
     // The control. Every assertion below is a per-record loop; an emptied
     // registry would make all of them vacuous and report green.
     // Raised 4 -> 5 by FR-R3-169 (FR-014), then 5 -> 6 by FR-R3-170 (FR-009),
-    // then 6 -> 7 by FR-R3-185. A floor that does not move when the set does is a
-    // floor the new member is not standing on.
-    expect(RECORDS.length).toBeGreaterThanOrEqual(7);
+    // then 6 -> 7 by FR-R3-185, then 7 -> 8 by FR-R7-18 (N04). A floor that does
+    // not move when the set does is a floor the new member is not standing on.
+    expect(RECORDS.length).toBeGreaterThanOrEqual(8);
     expect(new Set(RECORDS.map((entry) => entry.marker)).size, 'markers must be distinct').toBe(
       RECORDS.length
     );
   });
 
-  it.each(RECORDS)('$document carries the marker this gate reads', (record) => {
+  it.each(RECORDS)('$document ($marker) carries the marker this gate reads', (record) => {
     expect(
       readReviewDate(read(record.document), record.marker),
       `${record.document} carries no '<!-- ${record.marker}: YYYY-MM-DD -->' marker. Without it ` +
@@ -72,7 +72,7 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
     ).not.toBeNull();
   });
 
-  it.each(RECORDS)('$document has not passed its review date', (record) => {
+  it.each(RECORDS)('$document ($marker) has not passed its review date', (record) => {
     const date = readReviewDate(read(record.document), record.marker);
     expect(
       reviewIsDue(date ?? '9999-12-31', new Date()),
@@ -83,7 +83,7 @@ describe('FR-R3-134 — every dated deferral is watched, and the registry is com
     ).toBe(false);
   });
 
-  it.each(RECORDS)('$document still names the conditions no gate can see', (record) => {
+  it.each(RECORDS)('$document ($marker) still names the conditions no gate can see', (record) => {
     const body = read(record.document);
     for (const phrase of record.mustMention) {
       expect(
@@ -152,7 +152,7 @@ describe('FR-R5-F21 (FR-008): a review marker whose date is not a real day is ma
     expect(readReviewMarker('no marker here', MARKER)).toEqual({ state: 'absent' });
   });
 
-  it.each(RECORDS)('$document carries a marker dated on a real day', (record) => {
+  it.each(RECORDS)('$document ($marker) carries a marker dated on a real day', (record) => {
     expect(readReviewMarker(read(record.document), record.marker).state).toBe('dated');
   });
 });

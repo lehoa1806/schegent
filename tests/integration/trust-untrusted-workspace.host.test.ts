@@ -9,7 +9,7 @@ import {
   ownershipRecords,
   readSyslog,
   refusalLines,
-  waitUntil
+  waitUntilWithStats
 } from './trust-leg-support';
 
 /**
@@ -73,18 +73,20 @@ export async function run(): Promise<void> {
   // Wait for the refusals to land rather than reading once: `RuntimeLogSink`
   // appends through a per-path promise chain, so `executeCommand` resolving does
   // not mean the line is on disk.
-  const landed = await waitUntil(
+  const landed = await waitUntilWithStats(
     () => mutating.every((id) => refusalLines(readSyslog(context.workspaceRoot), id).length > 0),
     SYSLOG_BUDGET_MS
   );
   const syslog = readSyslog(context.workspaceRoot);
-  if (!landed) {
+  if (!landed.ok) {
     const missing = mutating.filter((id) => refusalLines(syslog, id).length === 0);
     assert.fail(
       `${missing.length} of ${mutating.length} mutating command(s) logged no refusal within ` +
-        `${SYSLOG_BUDGET_MS}ms: ${missing.join(', ')}. Either the id is registered unwrapped — ` +
-        `which means it RAN in an untrusted workspace — or it is not registered at all and this ` +
-        `leg drove a command nothing listens to. The syslog held ${syslog.length} byte(s).`
+        `${SYSLOG_BUDGET_MS}ms (elapsed=${landed.elapsedMs}ms, rounds=${landed.rounds}; ` +
+        `${landed.diagnosis?.text ?? 'no diagnosis'}): ${missing.join(', ')}. Either the id is ` +
+        `registered unwrapped — which means it RAN in an untrusted workspace — or it is not ` +
+        `registered at all and this leg drove a command nothing listens to. The syslog held ` +
+        `${syslog.length} byte(s).`
     );
   }
 
@@ -115,6 +117,11 @@ export async function run(): Promise<void> {
     );
   }
 
+  // Irreducible negative-observation grace window (FR-R7-18 N06): after activation and all
+  // command-refusal disk flushes have settled, hold a bounded 3,000 ms window so any delayed
+  // background Stage 2 election or backend capability probe spawn in this real VS Code host
+  // would surface before the absence assertions below. There is no positive completion event
+  // for a background producer that must never run.
   await new Promise((resolve) => setTimeout(resolve, SPAWN_GRACE_MS));
 
   // C2 — electing is itself a write, so the election is observable as one. This

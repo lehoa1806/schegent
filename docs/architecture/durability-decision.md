@@ -2,7 +2,8 @@
 
 **Decided**: 2026-08-26 · **Item**: [`FR-R3-111`](../../../docs/features/round_3/DONE_111_FR-R3-111_durability_and_lifecycle_floors.md)
 **Extended**: 2026-10-31 · **Item**: `FR-R4-F07` (the catalog store, section 4)
-**Scope**: the three writes that constitute evidence, and the catalog store as a fourth decision.
+**Extended**: 2026-11-24 · **Item**: `FR-R7-18` / `N12` (post-cutover terminal-transition journal and SQLite operational store, sections 3 and 6)
+**Scope**: the three writes that constitute evidence, the catalog store, the ownership registry, and the SQLite operational store.
 Everything else is explicitly out.
 
 ## The finding
@@ -62,20 +63,20 @@ current file rather than to the whole history. That is a small change with a rea
 not taken here, because `FR-R3-111` names the per-append question and answering a different one
 would be answering an easier question.
 
-### 3. The terminal-transition journal — **a barrier is not available**
+### 3. The terminal-transition journal — **SQLite `operational_kv_documents` post-cutover (Memento pre-cutover only)**
 
-This one is not a decision. `KEYS.terminalTransitionIntent` is a **VS Code `Memento` key**, not a
-file this extension opens. The extension has no descriptor to sync and no control over when the host
-flushes its own storage. So:
+Before SQLite operational store cutover completes, `KEYS.terminalTransitionIntent` is stored on VS Code's
+`Memento`, where the extension has no file descriptor to sync and no control over host flush timing
+(barrier **unavailable**, process-crash durable only via VS Code workspace storage).
 
-**The disclosure**: the terminal-transition journal is as durable as VS Code's workspace storage, and
-this product cannot make it more so. Its purpose — surviving a *process* crash between a Run's
-terminal decision and its persistence — is unaffected, because that is exactly what the Memento does
-survive. Power loss between the host's write and its flush is outside anything the extension can
-reach.
-
-Recorded as *unavailable* rather than *declined*, because those are different facts and a reader
-deciding whether to trust this journal needs the right one.
+**Post-cutover (current production state after `publish-authority`):** `KEYS.terminalTransitionIntent` is
+**not** in `PASSTHROUGH_OWNERSHIP_KEYS` (`src/state/sqlite-operational-backing.ts` retains only `KEYS.lock`,
+`KEYS.executionLeases`, and `KEYS.operatorPseudonym` on Memento). On cutover, `KEYS.terminalTransitionIntent`
+is imported into and persisted in SQLite `operational_kv_documents` via `SqliteOperationalBacking.updateBatch()`
+inside a serialized `BEGIN IMMEDIATE ... COMMIT` transaction. Its durability is therefore governed by the
+SQLite operational store profile in section 6 (`journal_mode = WAL`, `synchronous = FULL`, `PRAGMA fullfsync`
+unset / `0`): committed intents survive process and OS crashes on local filesystems, while a macOS power cut
+or forced shutdown can still lose the most recent commits because macOS `fsync` does not issue `F_FULLFSYNC`.
 
 ### 4. The catalog store — **barrier applied on local POSIX filesystems**
 
@@ -205,6 +206,37 @@ seconds of silence.
      `<g>.json` files with `g < generation` **and** sweeps any leftover `.<g>.json.<pid>.<n>.tmp` temp
      files whose target generation `g < generation` (`TEMP_GENERATION_FILE` in `ownership-registry.ts`).
      Any `.tmp` file from a failed `writeAtomic` itself is also unlinked in `writeAtomic`'s `catch` block.
+
+### 6. The SQLite operational store — **`synchronous = FULL` without `fullfsync` (decided)**
+
+Added by `FR-R6-F04` / `FR-R7-10` and codified by `FR-R7-18` (`N12`, Hard Rule 70). Post-cutover structured
+operational state — including schema-9 per-entity queue/Task and Run rows (`operational_queue_meta`,
+`operational_tasks`, `operational_runs`), relational `runs` and `containment_acceptance_bindings`,
+`operational_kv_documents` (including `KEYS.terminalTransitionIntent` and `KEYS.connectedRuns`), catalog
+definitions, and Round 6 domain ledgers — persists in `<globalStorageUri>/sqlite/<scope>/schegent-state.db`
+outside the workspace (`src/activation/sqlite-cutover-wiring.ts`, `src/services/sqlite-store/sqlite-driver.ts`).
+
+**Applied pragma profile and verification.** Every writable `NodeSqliteConnection` sets and verifies via
+read-back `journal_mode = WAL` and `synchronous = FULL` (`2`), aborting with `SqlitePragmaVerificationError`
+on any mismatch. `PRAGMA fullfsync` is deliberately left unset (`0`), verified directly by
+`tests/unit/sqlite-store/engine-and-location.test.ts`. Opening WAL mode on network filesystems (`nfs`, `smb`,
+`cifs`, `afp`, `webdav`, `fuse.sshfs`, `smbfs`, `ncpfs`) is refused fail-closed by
+`resolveTrustedSqliteLocation` (`src/services/sqlite-store/storage-location-resolver.ts`) and
+`detectFilesystemType` (`src/services/sqlite-store/filesystem-type-detector.ts`).
+
+**Process-crash vs. macOS power-loss durability.** `synchronous = FULL` issues `fsync` on WAL commits, so
+committed transactions survive process crashes (including `SIGKILL`, verified by
+`tests/integration/sqlite-fault-matrix.test.ts` and `tests/unit/sqlite-store/migration-9-crash-boundaries.test.ts`)
+and OS crashes on local filesystems. On Linux `fsync` flushes to stable storage; on macOS `fsync` stops at
+the drive write cache and only `F_FULLFSYNC` (requested by SQLite only when `PRAGMA fullfsync = ON`) flushes
+to platter/NAND. A power cut or forced shutdown on macOS can therefore lose the most recent commits.
+
+**Why `PRAGMA fullfsync` is not enabled (measured).** As recorded in
+[`../operations/sqlite-application-store.md`](../operations/sqlite-application-store.md), on 2026-11-12
+500 single-row WAL commits under `node:sqlite` on APFS took **63 µs** each without `fullfsync` and
+**4,818 µs** each with `fullfsync` (`76×` slower). Because `node:sqlite` `DatabaseSync` commits synchronously
+on the VS Code extension-host thread, enabling `PRAGMA fullfsync` would stall the host on every operational
+commit. No power-loss claim beyond `synchronous = FULL` without `fullfsync` is made for macOS.
 
 ## What is explicitly out of scope
 

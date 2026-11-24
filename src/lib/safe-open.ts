@@ -2,7 +2,13 @@ import * as fsp from 'node:fs/promises';
 import { constants as fsConstants, openSync } from 'node:fs';
 import * as path from 'node:path';
 
-import { NON_OWNER_BITS, narrowMode, noticeFor, type NarrowingNotice } from './narrow-mode';
+import {
+  NON_OWNER_BITS,
+  narrowMode,
+  narrowOpenFileHandle,
+  noticeFor,
+  type NarrowingNotice
+} from './narrow-mode';
 
 /**
  * FR-R3-053 (H-02) — open a file under a trusted root without ever letting a
@@ -186,9 +192,15 @@ function refuse(reason: SafeOpenRefusal, errno = 'none'): SafeOpenResult {
  * tag-level distinction is a PERMANENT stated limit.
  */
 // Typed as `Partial` because the ambient types claim `number` unconditionally
-// while Windows Node does not define this constant at all. Asserting the type
+// while Windows Node does not define these constants at all. Asserting the type
 // lie is what makes the `??` necessary rather than dead defensive code.
 const NOFOLLOW: number = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0;
+/**
+ * `O_NONBLOCK` is POSIX-only. For regular files it is a no-op; for a pre-planted
+ * POSIX FIFO (named pipe) it prevents `open(O_RDONLY)` and `open(O_WRONLY)` from
+ * blocking indefinitely before `handle.stat()` or `ENXIO` rejects the non-regular target.
+ */
+const NONBLOCK: number = (fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0;
 
 /**
  * Whether this platform's `open` can refuse a link-like leaf atomically.
@@ -481,7 +493,7 @@ export async function openWithinRoot(
   // unsupported `flags` value or a missing mode would be caught and reported as
   // `io-failed` -- a programming error disguised as a filesystem one, which is the
   // opposite of what this function promises.
-  const flagBits = NOFOLLOW | toFlagBits(flags);
+  const flagBits = NOFOLLOW | NONBLOCK | toFlagBits(flags);
   requireOpenModes({ flags, createDirs, dirMode, fileMode });
 
   const walked = await walkDirectories(root, parts.slice(0, -1), { createDirs, dirMode });
@@ -546,6 +558,9 @@ export async function openWithinRoot(
     // act on, where a bare errno is not.
     const errno = errnoOf(error);
     if (errno === 'ELOOP') return refuse('symlink-leaf', errno);
+    // On POSIX, `open(fifo, O_WRONLY | O_NONBLOCK)` with no reader fails immediately with ENXIO;
+    // regular files never return ENXIO on open(2).
+    if (errno === 'ENXIO') return refuse('not-a-regular-file', errno);
     return refuse('io-failed', errno);
   }
 
@@ -565,26 +580,32 @@ export async function openWithinRoot(
   // A read narrows nothing: narrowing is for what an open creates or writes, and a
   // read does neither.
   const narrowing =
-    flags === 'r' ? [] : await narrowAfterOpen(walked.widened, leaf, leafMode, { dirMode, fileMode });
+    flags === 'r'
+      ? []
+      : await narrowAfterOpen(walked.widened, handle, leaf, leafMode, { dirMode, fileMode });
   return { outcome: 'opened', handle, narrowing };
 }
 
 /**
- * Feature 217 (FR-002, FR-006, FR-009) — narrow what a successful writing open
- * walked through and opened, in place: no recreate, no truncate, so a
- * hash-chained log stays the same file.
+ * Feature 217 (FR-002, FR-006, FR-009) & FR-R7-18 (`N11`, FR-013) — narrow what
+ * a successful writing open walked through and opened, in place: no recreate,
+ * no truncate, so a hash-chained log stays the same file.
  *
  * Only after the open succeeded, so a refusal narrows nothing. Only the
  * directories the walk passed through, never `root`: the root is the caller's
  * (a workspace, VS Code's global storage, a configured log root) and its mode
  * is not this helper's to decide. Only to the modes the caller declared, and
- * `narrowMode` only ever clears bits of the mode it read and never sets a group
- * or other bit, so no other account ends with access it lacked. Never called for
- * a read, and given the modes `openWithinRoot` read and checked, not its options.
+ * `narrowMode` / `narrowOpenFileHandle` only ever clear bits of the mode they
+ * read and never set a group or other bit, so no other account ends with access
+ * it lacked. Never called for a read, and given the modes `openWithinRoot` read
+ * and checked, not its options.
  *
  * The leaf is judged from the `fstat` already made, so a leaf that is owner-only
- * costs no syscall. A `refused-symlink` or `unsupported` outcome does not fail
- * the open: the descriptor is already proven, and the caller is told instead.
+ * costs no syscall, and when narrowed it uses descriptor-based `handle.chmod`
+ * (`narrowOpenFileHandle`) so a symlink swap on `leaf` after `open` cannot
+ * redirect the mode change. A `refused-symlink` or `unsupported` outcome does
+ * not fail the open: the descriptor is already proven, and the caller is told
+ * instead.
  *
  * A directory found to be a link stops the narrowing there. The walk proved
  * every component, so a link now means one was swapped in since, and each path
@@ -592,6 +613,7 @@ export async function openWithinRoot(
  */
 async function narrowAfterOpen(
   widened: readonly string[],
+  handle: fsp.FileHandle,
   leaf: string,
   leafMode: number,
   modes: { readonly dirMode: number | undefined; readonly fileMode: number }
@@ -606,7 +628,7 @@ async function narrowAfterOpen(
     }
   }
   if ((leafMode & NON_OWNER_BITS) !== 0) {
-    const notice = noticeFor('file', await narrowMode(leaf, modes.fileMode));
+    const notice = noticeFor('file', await narrowOpenFileHandle(handle, leaf, modes.fileMode));
     if (notice !== null) notices.push(notice);
   }
   return notices;
@@ -737,5 +759,5 @@ export function segmentsUnderRoot(root: string, absolutePath: string): readonly 
  */
 export function openReadOnlyNoFollowSync(absolutePath: string, fileMode?: number): number {
   const noFollow = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0;
-  return openSync(absolutePath, fsConstants.O_RDONLY | noFollow, fileMode);
+  return openSync(absolutePath, fsConstants.O_RDONLY | noFollow | NONBLOCK, fileMode);
 }

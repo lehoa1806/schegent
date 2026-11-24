@@ -80,6 +80,7 @@ describe('loss detection over real history (SC-006, SC-007)', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(storage, { recursive: true, force: true });
   });
@@ -251,15 +252,25 @@ describe('loss detection over real history (SC-006, SC-007)', () => {
   it.skipIf(typeof process.getuid === 'function' && process.getuid() === 0)(
     'never advances the checkpoint ahead of the log: a rejected append leaves it at the last landed row',
     async () => {
-      const w = writer();
+      const real = store();
+      const writeSpy = vi.fn((next: Parameters<AuditCheckpointPort['write']>[0]) => real.write(next));
+      const recording: AuditCheckpointPort = {
+        key: real.key,
+        read: () => real.read(),
+        write: writeSpy
+      };
+      const w = writer(recording);
       await appendRows(w, 2);
       await checkpointAt(2);
+      expect(writeSpy).toHaveBeenCalledTimes(2);
 
       await fs.chmod(logFile(), 0o400);
       await expect(w.append(ONE_ROW('rejected'))).rejects.toThrow();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Drain the write-chain rejection branch; `afterLanding` must never be invoked.
+      await new Promise<void>((resolve) => setImmediate(resolve));
       await fs.chmod(logFile(), 0o600);
 
+      expect(writeSpy).toHaveBeenCalledTimes(2);
       expect(await store().read(), 'the checkpoint names only a row that landed').toMatchObject({
         status: 'active',
         checkpoint: { position: 2 }
@@ -274,9 +285,19 @@ describe('loss detection over real history (SC-006, SC-007)', () => {
     await checkpointAt(2);
 
     const rotating = writer(null, { rotationSizeBytes: 1, retentionMaxArchives: 1 });
-    for (let n = 0; n < 6; n += 1) {
-      await rotating.append(ONE_ROW(`rotated-${n}`));
-      await new Promise((resolve) => setTimeout(resolve, 8));
+    const baseTimeMs = 1_750_000_000_000;
+    const seedStamp = new Date(baseTimeMs - 1_000);
+    await fs.utimes(logFile(), seedStamp, seedStamp);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      for (let n = 0; n < 6; n += 1) {
+        const stamp = new Date(baseTimeMs + n * 1_000);
+        vi.setSystemTime(stamp);
+        await rotating.append(ONE_ROW(`rotated-${n}`));
+        await fs.utimes(logFile(), stamp, stamp);
+      }
+    } finally {
+      vi.useRealTimers();
     }
 
     const message = await verify();
@@ -347,11 +368,20 @@ describe('loss detection over real history (SC-006, SC-007)', () => {
     await removeLastRow();
 
     // A writer's own tail check finds the loss, before any verification has run.
-    await appendRows(writer(), 1, 'after-truncation');
+    const real = store();
+    const writeSpy = vi.fn((next: Parameters<AuditCheckpointPort['write']>[0]) => real.write(next));
+    const recording: AuditCheckpointPort = {
+      key: real.key,
+      read: () => real.read(),
+      write: writeSpy
+    };
+    await appendRows(writer(recording), 1, 'after-truncation');
     expect(monitor.getSnapshot().audit.cause, 'set by the writer, not by a command').toBe('history-shorter');
     expect(monitor.getSnapshot().audit.status).toBe('unavailable');
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Drain the queued afterLanding microtask; in loss mode advanceCheckpoint must return without writing.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(writeSpy).not.toHaveBeenCalled();
     expect(await store().read(), 'the checkpoint is not advanced over the loss').toMatchObject({
       status: 'active',
       checkpoint: { position: 5 }

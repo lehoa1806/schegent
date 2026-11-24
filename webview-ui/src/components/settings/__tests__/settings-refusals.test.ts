@@ -6,6 +6,7 @@
 // revealed, its section shown and its group opened, and every time the page scrolls only as far as
 // it must to bring the refusal into view.
 import { afterEach, describe, expect, it } from 'vitest';
+import { tick } from 'svelte';
 
 import { Refusals } from '../settings-refusals';
 
@@ -31,11 +32,10 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-/** Waits until the list has done all it does after a refusal is drawn. */
-function settled(): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
+/** Waits until the list has done all it does after a refusal is drawn (Refusals chains two Svelte ticks). */
+async function settled(): Promise<void> {
+  await tick();
+  await tick();
 }
 
 function element(tag: string, parent: HTMLElement = document.body): HTMLElement {

@@ -15,6 +15,7 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import SettingsSurface from '../SettingsSurface.svelte';
 import { SettingsPage, type SettingsPart } from '../settings/settings-page.svelte';
 import { disposeIntentLedger } from '../../lib/intent-ledger';
@@ -772,11 +773,11 @@ describe('Settings redesign — a refused save comes into sight', () => {
     for (const answer of unanswered.splice(0)) answer({ status: 'rejected', reason: 'out-of-range' });
   }
 
-  /** Waits until the page has done all it does after a refusal is drawn. */
-  function settled(): Promise<void> {
-    return new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    });
+  /** Waits until the page has done all it does after a refusal is drawn (Refusals chains two Svelte ticks). */
+  async function settled(): Promise<void> {
+    await tick();
+    await tick();
+    await tick();
   }
 
   it('shows a refused setting the search hides, ending the search', async () => {
@@ -905,7 +906,7 @@ async function captureUnhandledRejections(action: () => Promise<void>): Promise<
     await action();
     await Promise.resolve();
     await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
+      setImmediate(resolve);
     });
   } finally {
     process.off('unhandledRejection', onNodeRejection);
@@ -1194,10 +1195,10 @@ describe('SettingsSurface — failure-policy refusal announcements and focus rec
     };
   }
 
-  function settled(): Promise<void> {
-    return new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    });
+  async function settled(): Promise<void> {
+    await tick();
+    await tick();
+    await tick();
   }
 
   it('announces a visible failure-policy refusal via one alert live region and keeps keyboard focus for recovery', async () => {

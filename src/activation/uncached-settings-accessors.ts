@@ -160,13 +160,25 @@ export function readSessionRetentionMaxAgeDays(workspaceRoot: string): number {
  * agent's spawns (`workspace-settings.ts`); lane verification checks read it per check (review gap
  * GC-15). The fallbacks mirror the manifest: an absent contribution must not restore full
  * ambient-environment forwarding (Feature 098, PRIV-02).
+ *
+ * `cli.inheritEnvironment` is read strictly (FR-R7-18 / N07): an absent (`undefined`) setting
+ * defaults to `true`, an explicit boolean is honored as-is, and any defined non-boolean value
+ * (such as `"false"`, `1`, `null`, or `{}`) fails closed to `false` (`minimal`) so malformed
+ * overrides never coerce truthily.
  */
 export function readProcessEnvironmentPolicy(
   workspaceRoot: string,
   config: vscode.WorkspaceConfiguration = section(workspaceRoot)
 ): ProcessEnvironmentPolicy {
+  const rawInherit = config.get<unknown>('cli.inheritEnvironment');
+  const inheritEnvironment =
+    rawInherit === undefined
+      ? true
+      : typeof rawInherit === 'boolean'
+        ? rawInherit
+        : false;
   return resolveProcessEnvironmentPolicy({
-    inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
+    inheritEnvironment,
     mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
     allowlist: config.get<unknown>('cli.environmentAllowlist', [])
   });

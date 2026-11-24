@@ -657,12 +657,19 @@ export interface DecidePhaseHandoffCommand extends GeneratedCommandBase<'CMD_DEC
 /**
  * Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision; routine mode reconstructs omittedSlices from baseRevision.
  */
-export interface SnapshotSyncMeta {
-  readonly mode: 'full' | 'routine';
-  readonly revision: number;
-  readonly baseRevision?: number;
-  readonly omittedSlices?: readonly ('history' | 'phaseCatalog' | 'pipelineCatalog' | 'workflowCatalog' | 'availablePhases' | 'availablePipelines' | 'auditTail' | 'debugLogTail')[];
-}
+export type SnapshotSyncMeta =
+  | {
+      readonly mode: 'full';
+      readonly revision: number;
+      readonly baseRevision?: never;
+      readonly omittedSlices?: never;
+    }
+  | {
+      readonly mode: 'routine';
+      readonly revision: number;
+      readonly baseRevision: number;
+      readonly omittedSlices: readonly ('history' | 'phaseCatalog' | 'pipelineCatalog' | 'workflowCatalog' | 'availablePhases' | 'availablePipelines' | 'auditTail' | 'debugLogTail')[];
+    };
 
 /** A display entry as it crosses the boundary: sanitized and budgeted. */
 export interface PhaseLogWireEntry {

@@ -16,8 +16,10 @@ import { join } from 'node:path';
 import type { AuditAppendListener, AuditDisposable } from '../../src/audit/audit-log-writer';
 import type { AuditEntry } from '../../src/audit/audit-entry';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
+import { AuditTailState } from '../../src/ui/sidebar/audit-tail-state';
 import type { WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 import { AUDIT_TAIL_MAX } from '../../src/ui/sidebar/snapshot';
+import { waitForCondition } from '../wait-for-condition';
 
 function entryLine(overrides: Partial<AuditEntry> = {}): string {
   const base: AuditEntry = {
@@ -59,7 +61,6 @@ function buildAuditDep(workspaceRoot: string): {
 function buildProjector(workspaceRoot: string): {
   projector: StateProjector;
   emitLiveEvent: (entry: AuditEntry) => void;
-  flush: () => Promise<void>;
 } {
   const { audit, emitLiveEvent } = buildAuditDep(workspaceRoot);
   const logger = {
@@ -77,38 +78,8 @@ function buildProjector(workspaceRoot: string): {
   });
   return {
     projector,
-    emitLiveEvent,
-    flush: () => new Promise((r) => setTimeout(r, 25))
+    emitLiveEvent
   };
-}
-
-/**
- * Wait until `predicate` holds, polling the macrotask queue.
- *
- * The cold-start tail read is real async disk I/O, so waiting a fixed 25ms
- * for it encodes an assumption about how fast the host is. Under full-suite
- * parallelism that assumption broke: the read had not finished, no populated
- * snapshot had been pushed, and the assertion failed on `undefined`
- * (observed 2026-08-17, once in 8 full-suite runs).
- *
- * Polling returns as soon as the condition holds — normally sooner than the
- * old sleep — and only spends the whole budget when something is genuinely
- * stuck, where it fails with the condition's name rather than a bare
- * `expected undefined to be defined`.
- */
-async function waitUntil(
-  predicate: () => boolean,
-  label: string,
-  timeoutMs = 2000
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (predicate()) return;
-    if (Date.now() > deadline) {
-      throw new Error(`waitUntil timed out after ${timeoutMs}ms waiting for: ${label}`);
-    }
-    await new Promise((r) => setTimeout(r, 5));
-  }
 }
 
 const hasPopulatedTail = (snaps: readonly WorkflowSnapshot[]): boolean =>
@@ -143,7 +114,10 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
     const sub = projector.subscribe((s) => {
       received.push(s);
     });
-    await waitUntil(() => hasPopulatedTail(received), 'cold-start populated snapshot push');
+    await waitForCondition(() => hasPopulatedTail(received), {
+      timeoutMs: 2_000,
+      label: 'cold-start populated snapshot push'
+    });
     sub.dispose();
     projector.dispose();
 
@@ -170,7 +144,10 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
     const { projector } = buildProjector(workspaceRoot);
     const received: WorkflowSnapshot[] = [];
     const sub = projector.subscribe((s) => received.push(s));
-    await waitUntil(() => hasPopulatedTail(received), 'cold-start populated snapshot push');
+    await waitForCondition(() => hasPopulatedTail(received), {
+      timeoutMs: 2_000,
+      label: 'cold-start populated snapshot push'
+    });
     sub.dispose();
     projector.dispose();
 
@@ -182,16 +159,25 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
 
   it('keeps auditTail empty across all pushes when no audit log on disk', async () => {
     // .schegent/ deliberately absent
-    const { projector, flush } = buildProjector(workspaceRoot);
+    const mergeSpy = vi.spyOn(AuditTailState.prototype, 'mergeColdStart');
+    const { projector } = buildProjector(workspaceRoot);
     const received: WorkflowSnapshot[] = [];
     const sub = projector.subscribe((s) => received.push(s));
-    // No log on disk, so no snapshot will ever become populated: wait for the
-    // first push, then settle so a late cold-start push would still be caught
-    // by the all-empty assertion below rather than land after dispose.
-    await waitUntil(() => received.length > 0, 'first snapshot push');
-    await flush();
-    sub.dispose();
-    projector.dispose();
+    try {
+      // No log on disk, so no snapshot will ever become populated: wait for both
+      // the initial push and the real cold-start disk read -> mergeColdStart completion
+      // so any stray cold-start push would be observed before dispose.
+      await waitForCondition(
+        () => received.length > 0 && mergeSpy.mock.calls.length > 0,
+        { timeoutMs: 2_000, label: 'initial snapshot push and cold-start hydration completion' }
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mergeSpy).toHaveReturnedWith(false);
+    } finally {
+      mergeSpy.mockRestore();
+      sub.dispose();
+      projector.dispose();
+    }
 
     expect(received.length).toBeGreaterThan(0);
     for (const snap of received) {
@@ -225,7 +211,10 @@ describe('Feature 068 (T023) — audit-tail cold-start integration', () => {
       outcome: 'info'
     });
 
-    await waitUntil(() => hasPopulatedTail(received), 'populated snapshot push after live event');
+    await waitForCondition(() => hasPopulatedTail(received), {
+      timeoutMs: 2_000,
+      label: 'populated snapshot push after live event'
+    });
     sub.dispose();
     projector.dispose();
 

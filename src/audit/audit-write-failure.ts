@@ -41,7 +41,7 @@ export class AuditPartialWriteError extends Error {
   }
 }
 
-/** The shape of an `AuditPathRefusedError`, read without importing the writer (which imports this). */
+/** The shape of an `AuditPathRefusedError` or `AuditChainPathRefusedError`, read without importing their owners. */
 interface PathRefusalShape {
   readonly name: string;
   readonly reason: string;
@@ -52,7 +52,7 @@ function isPathRefusal(err: unknown): err is PathRefusalShape {
   if (typeof err !== 'object' || err === null) return false;
   const candidate = err as Partial<PathRefusalShape>;
   return (
-    candidate.name === 'AuditPathRefusedError'
+    (candidate.name === 'AuditPathRefusedError' || candidate.name === 'AuditChainPathRefusedError')
     && typeof candidate.reason === 'string'
     && typeof candidate.errno === 'string'
   );

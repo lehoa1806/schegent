@@ -313,6 +313,13 @@ export function readGeneralSettings(
   for (const key of Object.keys(KEY_SPECS) as AllowedKey[]) {
     const spec = KEY_SPECS[key];
     let value = config.get(key, spec.defaultValue);
+    if (spec.type === 'boolean') {
+      if (typeof value !== 'boolean') {
+        // FR-R7-18 (`N07`) — fail closed on malformed `cli.inheritEnvironment`
+        // so the Settings UI agrees with `readProcessEnvironmentPolicy` (`minimal`).
+        value = key === 'cli.inheritEnvironment' ? false : spec.defaultValue;
+      }
+    }
     if (spec.type === 'array-of-string') {
       // FR-R3-143 (T019) — a hand-edited settings.json can hold an element the
       // write path refuses. Drop it here too, so the tab never shows a value it

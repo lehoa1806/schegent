@@ -108,7 +108,7 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
     return fence;
   }
 
-  it('fairly arbitrates 20 contending queues on a shared quota, skips paused lowest-sequence waiter without losing its sequence, and lets independent quotas proceed without starvation (AC-33, AC-26, AC-28)', async () => {
+  async function setupTwentyContendingQueues() {
     const fencesByRoot = new Map<string, ExecutionFence>();
     for (let i = 1; i <= 20; i += 1) {
       const rootId = `root-${i}`;
@@ -138,6 +138,7 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
 
     // Register 19 waiters on 'quota-shared' and the 20th on 'quota-independent'
     const waiterIdsByRoot = new Map<string, string>();
+    const sequencesByRoot = new Map<string, number>();
     for (let i = 1; i <= 20; i += 1) {
       const rootId = `root-${i}`;
       const quotaId = i === 20 ? 'quota-independent' : 'quota-shared';
@@ -152,12 +153,81 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
       });
       expect(reg.ok).toBe(true);
       if (reg.ok) {
-        expect(reg.waiter.sequence).toBe(i);
         waiterIdsByRoot.set(rootId, reg.waiter.waiterId);
+        sequencesByRoot.set(rootId, reg.waiter.sequence);
       }
     }
 
-    // Pause the lowest-sequence waiter (root-1, sequence 1)
+    return { fencesByRoot, waiterIdsByRoot, sequencesByRoot };
+  }
+
+  async function commitGrantedWaiterAttempt(params: {
+    readonly rootId: string;
+    readonly queueId: string;
+    readonly attemptId: string;
+    readonly fence: ExecutionFence;
+    readonly waiterId: string | undefined;
+  }): Promise<void> {
+    const grant = arbiter.preparePermitGrant({
+      waiterId: params.waiterId,
+      attemptId: params.attemptId
+    });
+    expect(grant.ok).toBe(true);
+    if (!grant.ok) return;
+
+    const prep = await admission.prepareAttempt({
+      ledgerRunId: params.rootId,
+      connectedRunId: `conn:${params.rootId}`,
+      queueId: params.queueId,
+      frameKey: 'root',
+      workflowId: 'wf-test',
+      invocationId: `conn:${params.rootId}:root`,
+      nodeId: 'node-1',
+      attemptId: params.attemptId,
+      backend: 'claude',
+      fence: params.fence,
+      quotaKeys: grant.proposal.sortedQuotaIds,
+      observationIds: grant.proposal.observationIds,
+      requireFreshReady: grant.proposal.requireFreshReady,
+      hostEpoch: grant.proposal.hostEpoch,
+      capacitiesByQuotaId: grant.proposal.capacitiesByQuotaId,
+      satisfiedWaiterId: grant.proposal.waiter.waiterId,
+      expectedWaiterSequence: grant.proposal.waiter.sequence,
+      expectedWaiterGeneration: grant.proposal.waiter.generation
+    });
+    expect(prep.ok).toBe(true);
+    if (!prep.ok) return;
+
+    const commit = await admission.commitAttempt(prep.token);
+    expect(commit.ok).toBe(true);
+  }
+
+  it('assigns monotonic wait sequences 1..20 across 20 contending queues and grants shared quota strictly to sequence 1 (AC-33)', async () => {
+    const { waiterIdsByRoot, sequencesByRoot } = await setupTwentyContendingQueues();
+
+    for (let i = 1; i <= 20; i += 1) {
+      expect(sequencesByRoot.get(`root-${i}`)).toBe(i);
+    }
+
+    const grantW2Preempted = arbiter.preparePermitGrant({
+      waiterId: waiterIdsByRoot.get('root-2'),
+      attemptId: 'att-root-2'
+    });
+    expect(grantW2Preempted.ok).toBe(false);
+    if (!grantW2Preempted.ok) {
+      expect(grantW2Preempted.reason).toBe('preempted-by-older-waiter');
+    }
+
+    const grantW1 = arbiter.preparePermitGrant({
+      waiterId: waiterIdsByRoot.get('root-1'),
+      attemptId: 'att-root-1'
+    });
+    expect(grantW1.ok).toBe(true);
+  });
+
+  it('skips a paused lowest-sequence waiter across 20 queues without losing its sequence so sequence 2 can acquire shared quota (AC-26, AC-33)', async () => {
+    const { waiterIdsByRoot } = await setupTwentyContendingQueues();
+
     const pausedW1 = await arbiter.setWaiterPaused({
       rootRunId: 'root-1',
       invocationId: 'conn:root-1:root',
@@ -166,49 +236,46 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
     expect(pausedW1?.sequence).toBe(1);
     expect(pausedW1?.paused).toBe(true);
 
-    // Waiter 2 (sequence 2) can now acquire 'quota-shared' because Waiter 1 is paused and skipped without losing sequence 1
     const grantW2 = arbiter.preparePermitGrant({
       waiterId: waiterIdsByRoot.get('root-2'),
       attemptId: 'att-root-2'
     });
     expect(grantW2.ok).toBe(true);
-    if (!grantW2.ok) return;
+  });
 
-    // Waiter 20 (sequence 20, on 'quota-independent') is NOT blocked by 18 earlier waiters on 'quota-shared'
+  it('allows an independent-quota waiter at sequence 20 to proceed without starvation behind 19 shared-quota queues (AC-28, AC-33)', async () => {
+    const { waiterIdsByRoot } = await setupTwentyContendingQueues();
+
+    await arbiter.setWaiterPaused({
+      rootRunId: 'root-1',
+      invocationId: 'conn:root-1:root',
+      paused: true
+    });
+
     const grantW20 = arbiter.preparePermitGrant({
       waiterId: waiterIdsByRoot.get('root-20'),
       attemptId: 'att-root-20'
     });
     expect(grantW20.ok).toBe(true);
+  });
 
-    // Commit Waiter 2's attempt atomically via ControlAttemptAdmissionService
-    const prep2 = await admission.prepareAttempt({
-      ledgerRunId: 'root-2',
-      connectedRunId: 'conn:root-2',
-      queueId: 'queue-2',
-      frameKey: 'root',
-      workflowId: 'wf-test',
-      invocationId: 'conn:root-2:root',
-      nodeId: 'node-1',
-      attemptId: 'att-root-2',
-      backend: 'claude',
-      fence: fencesByRoot.get('root-2')!,
-      quotaKeys: grantW2.proposal.sortedQuotaIds,
-      observationIds: grantW2.proposal.observationIds,
-      requireFreshReady: grantW2.proposal.requireFreshReady,
-      hostEpoch: grantW2.proposal.hostEpoch,
-      capacitiesByQuotaId: grantW2.proposal.capacitiesByQuotaId,
-      satisfiedWaiterId: grantW2.proposal.waiter.waiterId,
-      expectedWaiterSequence: grantW2.proposal.waiter.sequence,
-      expectedWaiterGeneration: grantW2.proposal.waiter.generation
+  it('atomically commits waiter 2 via ControlAttemptAdmissionService and blocks waiter 3 with quota-capacity-exhausted while held (AC-33)', async () => {
+    const { fencesByRoot, waiterIdsByRoot } = await setupTwentyContendingQueues();
+
+    await arbiter.setWaiterPaused({
+      rootRunId: 'root-1',
+      invocationId: 'conn:root-1:root',
+      paused: true
     });
-    expect(prep2.ok).toBe(true);
-    if (!prep2.ok) return;
 
-    const commit2 = await admission.commitAttempt(prep2.token);
-    expect(commit2.ok).toBe(true);
+    await commitGrantedWaiterAttempt({
+      rootId: 'root-2',
+      queueId: 'queue-2',
+      attemptId: 'att-root-2',
+      fence: fencesByRoot.get('root-2')!,
+      waiterId: waiterIdsByRoot.get('root-2')
+    });
 
-    // While root-2 holds 'quota-shared', root-3 is blocked by quota-capacity-exhausted
     const grantW3WhileHeld = arbiter.preparePermitGrant({
       waiterId: waiterIdsByRoot.get('root-3'),
       attemptId: 'att-root-3'
@@ -217,8 +284,26 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
     if (!grantW3WhileHeld.ok) {
       expect(grantW3WhileHeld.reason).toBe('quota-capacity-exhausted');
     }
+  });
 
-    // Resume Waiter 1 (still has sequence 1!) before root-2 finishes
+  it('reclaims shared-quota priority for resumed sequence-1 waiter ahead of sequence 3 once waiter 2 settles (AC-26, AC-33)', async () => {
+    const { fencesByRoot, waiterIdsByRoot } = await setupTwentyContendingQueues();
+
+    await arbiter.setWaiterPaused({
+      rootRunId: 'root-1',
+      invocationId: 'conn:root-1:root',
+      paused: true
+    });
+
+    await commitGrantedWaiterAttempt({
+      rootId: 'root-2',
+      queueId: 'queue-2',
+      attemptId: 'att-root-2',
+      fence: fencesByRoot.get('root-2')!,
+      waiterId: waiterIdsByRoot.get('root-2')
+    });
+
+    // Resume Waiter 1 (still has sequence 1) before root-2 finishes
     const resumedW1 = await arbiter.setWaiterPaused({
       rootRunId: 'root-1',
       invocationId: 'conn:root-1:root',
@@ -236,7 +321,7 @@ describe('Control quota contention and crash recovery integration tests (FR-R5-F
     });
     expect(settled2.ok).toBe(true);
 
-    // Now that Waiter 1 is resumed with sequence 1, Waiter 1 reclaims priority ahead of Waiter 3 (sequence 3)!
+    // Resumed Waiter 1 reclaims priority ahead of Waiter 3 (sequence 3)
     const grantW3AfterResume = arbiter.preparePermitGrant({
       waiterId: waiterIdsByRoot.get('root-3'),
       attemptId: 'att-root-3'

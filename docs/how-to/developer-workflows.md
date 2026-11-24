@@ -75,7 +75,18 @@ Despite its name, `dev:webview` is `vite build --watch`; the repository does not
 | Visual regression | `npm run test:visual` | Browser preflight, webview build, then serial Chromium Playwright specs in `tests/visual/`. **Prerequisite:** `npx playwright install chromium`, re-run after a Playwright version bump — the preflight fails with one setup message if the build is absent or stale. A local run reuses a server already on port 4173 only when it is this checkout's fixture server; any other stops the run with one message naming the port |
 | VS Code host integration | `npm run test:integration` | Full build, integration TypeScript emit, then a downloaded VS Code Extension Development Host |
 
-The root coverage floors are 80% statements, 75% branches, 80% functions, and 80% lines. The webview floors are 79%, 74%, 76%, and 79%, respectively; its command also checks that those floors retain the configured headroom.
+The root coverage floors in `vitest.config.ts` are 84% statements, 81% branches, 88% functions, and 84% lines (`npm run coverage:headroom` checks host headroom). The webview floors in `webview-ui/vitest.config.ts` are 88% statements, 75% branches, 83% functions, and 88% lines; `npm run test:webview:coverage` also checks that those floors retain the configured headroom.
+
+To run or debug a single test file without running a full suite:
+
+```bash
+npm run test:host -- tests/unit/<area>/<file>.test.ts          # single host test (or: npx vitest run <path>)
+npm --prefix webview-ui run test -- src/<area>/<file>.test.ts  # single webview test
+```
+
+For interactive F5 host-test debugging, use **Debug Current Host Test File** in `.vscode/launch.json` — in a nested workspace, open `repo/` itself as a VS Code workspace folder so VS Code discovers `repo/.vscode/launch.json`.
+
+**Run heavy suites and tiers sequentially.** Do not run `test:host`, `test:coverage`, `test:perf`, `test:soak`, `test:visual`, `a11y`, `test:e2e`, `test:integration`, or `verify:linux` concurrently in parallel terminals; contention across worker pools, single-threaded perf budgets, shared fixture port `4173`, and VS Code Electron launches causes false failures. See [Verification tiers](../development/verification-tiers.md#run-heavy-tiers-sequentially-avoid-contention).
 <!-- Source: package.json -->
 <!-- Source: vitest.config.ts -->
 <!-- Source: vitest.e2e.config.ts -->
@@ -160,11 +171,25 @@ npm run security:secrets:staged
 git config core.hooksPath scripts/hooks
 ```
 
-The hook is local and opt-in, and `git commit --no-verify` bypasses it. To check whether it is active,
+The hook is local and opt-in, and `git commit --no-verify` bypasses it. To check whether both repositories' hooks are active,
 run `bash scripts/hooks-preflight.sh` from the planning workspace root, not from `repo/`. It is a
-workspace script that reads both repositories, writes nothing, and exits 1 while this hook is inactive. Git does not run it for a
+workspace script that reads both repositories, writes nothing, and exits 1 while any expected hook is inactive. Git does not run the pre-commit hook for a
 conflict-free merge, and there is no server-side check, so the tree-mode gate above remains the check that
 covers what was merged. [The security notes](../../SECURITY.md) list what the scan detects and what it does not.
+
+In a nested planning workspace, the parent repository also tracks opt-in `scripts/hooks/prepare-commit-msg` and `scripts/hooks/pre-push` (activate from the workspace root with `git config core.hooksPath scripts/hooks`). Bypassing them with `--no-verify` has concrete effects:
+
+- `git commit --no-verify` in the workspace root skips `prepare-commit-msg`, omitting the `Repo-head:` trailer and breaking nested-sync verification until repaired.
+- `git push --no-verify` in the workspace root skips `pre-push`, bypassing `scripts/sync-status.sh --verify` (nested-repo sync invariant), `scripts/merge-record-status.sh` (archived gate-record check for `repo/` `develop` merges), and the other workspace push gates.
+
+Run these manual verification/recovery commands from the workspace root after any bypass:
+
+```bash
+bash scripts/hooks-preflight.sh
+scripts/sync-status.sh --verify
+scripts/sync-status.sh --pr-block
+scripts/merge-record-status.sh --verify <remote_sha> <local_sha>
+```
 <!-- Source: package.json -->
 <!-- Source: scripts/check-docs.mjs -->
 <!-- Source: scripts/check-doc-links.mjs -->
@@ -212,10 +237,13 @@ Neither command publishes an extension.
 
 ## Workflows that do not exist
 
-- There is no database or ORM dependency, database schema directory, migration directory, or migration npm script. Schegent persists state through VS Code workspace state and purpose-built files under `.schegent/`; there is no database migration workflow to run. The extension does have forward-only VS Code state migrations through schema version `13`, but activation invokes them automatically and no developer migration command is exposed.
-- There is no `format` npm script or checked-in formatter command. Prettier is installed as a development dependency, but contributors should not invent a repository-wide write command from that dependency alone.
-- There is no Dockerfile or Makefile. Use the npm targets above.
+- **No external database server, ORM, or developer migration CLI**: Schegent persists operational state in an embedded local `node:sqlite` database at `<globalStorageUri>/sqlite/<scope>/schegent-state.db` (SQLite schema `9`, `min_reader_version = 9`) and purpose-built files under `.schegent/`.
+  VS Code workspace state uses forward-only migrations through `STATE_SCHEMA_VERSION = 15`. There is no ORM dependency, external database service, or standalone developer migration npm script — activation runs forward-only SQLite and workspace-state migrations automatically. For operator store backups and rollback procedures, see [SQLite application store](../operations/sqlite-application-store.md) and [SQLite rollback runbook](../operations/sqlite-rollback-runbook.md).
+- **No `format` npm script or checked-in Prettier configuration**: `prettier` is installed in `devDependencies` for tooling only (no `.prettierrc*` config and no `format` script); contributors should not run an ad-hoc repository-wide formatting write pass from that dependency alone.
+- **No application dev container or `Makefile`**: There is no Docker Compose file, `Makefile`, or application development container; normal local development uses the npm targets above. (`scripts/linux-leg/Dockerfile` exists solely for the optional release-tier local Linux container unit leg, `npm run verify:linux`.)
 
 <!-- Source: package.json -->
 <!-- Source: src/contracts/state-schema.ts -->
+<!-- Source: src/contracts/sqlite-store/schema-types.ts -->
 <!-- Source: src/state/workspace-state.ts -->
+<!-- Source: scripts/linux-leg/Dockerfile -->

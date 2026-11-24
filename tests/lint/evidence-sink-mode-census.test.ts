@@ -321,6 +321,58 @@ interface ModuleBindings {
   readonly namespaces: ReadonlySet<string>;
   /** Local names bound to one entry, mapped to the entry's own name. */
   readonly entries: ReadonlyMap<string, string>;
+  /** All non-import locally declared value binding names anywhere in the file (prevents shadowing). */
+  readonly shadowed: ReadonlySet<string>;
+}
+
+function collectBindingNames(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    out.add(name.text);
+    return;
+  }
+  for (const element of name.elements) {
+    if (ts.isBindingElement(element)) collectBindingNames(element.name, out);
+  }
+}
+
+function collectShadowedValueNames(
+  source: ts.SourceFile,
+  modules: ReadonlySet<string>
+): ReadonlySet<string> {
+  // Pre-seed `arguments`, which JS binds implicitly inside every non-arrow function without an AST node.
+  const shadowed = new Set<string>(['arguments']);
+  const walk = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) || ts.isParameter(node)) {
+      collectBindingNames(node.name, shadowed);
+    } else if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isClassExpression(node) ||
+        ts.isEnumDeclaration(node)) &&
+      node.name !== undefined
+    ) {
+      shadowed.add(node.name.text);
+    } else if (ts.isEnumMember(node)) {
+      const memberName = spelledKey(node.name);
+      if (memberName !== null) shadowed.add(memberName);
+    } else if (ts.isModuleDeclaration(node) && ts.isIdentifier(node.name)) {
+      shadowed.add(node.name.text);
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      !(
+        node.parent === source &&
+        ts.isExternalModuleReference(node.moduleReference) &&
+        ts.isStringLiteral(node.moduleReference.expression) &&
+        modules.has(node.moduleReference.expression.text)
+      )
+    ) {
+      shadowed.add(node.name.text);
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(source);
+  return shadowed;
 }
 
 /** Which names in this file reach one of `modules`, read from its imports. Types reach nothing. */
@@ -359,7 +411,7 @@ function importBindings(source: ts.SourceFile, modules: ReadonlySet<string>): Mo
       else entries.set(element.name.text, imported);
     }
   }
-  return { namespaces, entries };
+  return { namespaces, entries, shadowed: collectShadowedValueNames(source, modules) };
 }
 
 /** Whether this qualified name is, or begins, the module reference of an import alias. */
@@ -474,9 +526,82 @@ function namesIn(node: ts.Node): string[] {
   return names;
 }
 
+const READ_ONLY_FS_CONSTANT_FLAGS = new Set(['O_RDONLY', 'O_NOFOLLOW', 'O_NONBLOCK']);
+
+/** Whether an expression accesses `node:fs`'s bound `constants` object (named or via namespace). */
+function isBoundFsConstants(node: ts.Expression, bindings: ModuleBindings): boolean {
+  let inner = node;
+  while (
+    ts.isParenthesizedExpression(inner) ||
+    ts.isAsExpression(inner) ||
+    ts.isTypeAssertionExpression(inner)
+  ) {
+    inner = inner.expression;
+  }
+  if (ts.isIdentifier(inner)) {
+    return bindings.entries.get(inner.text) === 'constants' && !bindings.shadowed.has(inner.text);
+  }
+  if (ts.isPropertyAccessExpression(inner) && inner.name.text === 'constants') {
+    return (
+      ts.isIdentifier(inner.expression) &&
+      bindings.namespaces.has(inner.expression.text) &&
+      !bindings.shadowed.has(inner.expression.text)
+    );
+  }
+  return false;
+}
+
+/**
+ * Recognizes strictly read-only POSIX numeric flag masks built exclusively from `node:fs`
+ * `constants.O_RDONLY`, `constants.O_NOFOLLOW`, and `constants.O_NONBLOCK` (with optional `?? 0`
+ * fallbacks for Windows). Any write/create flag (`O_CREAT`, `O_WRONLY`, `O_RDWR`, `O_APPEND`,
+ * `O_TRUNC`) or unbound identifier returns `{ ok: false }` so the census fails closed.
+ */
+function judgeReadOnlyNumericFlag(
+  node: ts.Expression,
+  bindings: ModuleBindings
+): { readonly ok: boolean; readonly hasRdonly: boolean } {
+  if (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isTypeAssertionExpression(node)
+  ) {
+    return judgeReadOnlyNumericFlag(node.expression, bindings);
+  }
+  if (ts.isNumericLiteral(node) && Number(node.text) === 0) {
+    return { ok: true, hasRdonly: false };
+  }
+  if (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+    ts.isNumericLiteral(node.right) &&
+    Number(node.right.text) === 0
+  ) {
+    return judgeReadOnlyNumericFlag(node.left, bindings);
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.BarToken) {
+    const left = judgeReadOnlyNumericFlag(node.left, bindings);
+    const right = judgeReadOnlyNumericFlag(node.right, bindings);
+    return { ok: left.ok && right.ok, hasRdonly: left.hasRdonly || right.hasRdonly };
+  }
+  if (
+    ts.isPropertyAccessExpression(node) &&
+    READ_ONLY_FS_CONSTANT_FLAGS.has(node.name.text) &&
+    isBoundFsConstants(node.expression, bindings)
+  ) {
+    return { ok: true, hasRdonly: node.name.text === 'O_RDONLY' };
+  }
+  return { ok: false, hasRdonly: false };
+}
+
 /** A flag that opens for writing. One the scan cannot read is assumed to. */
-function writesFlag(flag: ts.Node): boolean {
-  return !ts.isStringLiteralLike(flag) || /[wa+]/.test(flag.text);
+function writesFlag(flag: ts.Node, fsBindings?: ModuleBindings): boolean {
+  if (ts.isStringLiteralLike(flag)) return /[wa+]/.test(flag.text);
+  if (fsBindings !== undefined && ts.isExpression(flag)) {
+    const judged = judgeReadOnlyNumericFlag(flag, fsBindings);
+    if (judged.ok && judged.hasRdonly) return false;
+  }
+  return true;
 }
 
 /**
@@ -560,16 +685,20 @@ function portMembers(escape: ts.Expression, source: ts.SourceFile): readonly str
   return members.length === port.members.length ? members : null;
 }
 
-function rawShape(site: ts.Expression, entry: string): Shape {
+function rawShape(site: ts.Expression, entry: string, fsBindings?: ModuleBindings): Shape {
   const call = callOf(site);
   const form = call === null ? 'reference' : 'call';
   const unjudged = { entry, form, declared: null, needs: [] } as const;
   if (entryKind(entry) !== 'writes') return { ...unjudged, kind: entryKind(entry) };
   if (call === null) return { ...unjudged, kind: 'writes' };
-  const flag = call.arguments.at(1);
-  // An `open` with no flag, or a read-only one, creates nothing.
-  const reads = entry.startsWith('open') && (flag === undefined || !writesFlag(flag));
-  const mode = modeExpression(entry, call.arguments);
+  const hasSpread = call.arguments.some(ts.isSpreadElement);
+  const flag = hasSpread ? undefined : call.arguments.at(1);
+  // An `open` with no spread and either no flag or a read-only flag creates nothing.
+  const reads =
+    entry.startsWith('open') &&
+    !hasSpread &&
+    (flag === undefined || !writesFlag(flag, fsBindings));
+  const mode = hasSpread ? null : modeExpression(entry, call.arguments);
   return {
     ...unjudged,
     kind: reads ? 'other' : 'writes',
@@ -578,7 +707,8 @@ function rawShape(site: ts.Expression, entry: string): Shape {
 }
 
 function helperShape(entry: string, call: ts.CallExpression): Shape {
-  const argument = call.arguments.at(2);
+  const hasSpread = call.arguments.some(ts.isSpreadElement);
+  const argument = hasSpread ? undefined : call.arguments.at(2);
   if (HELPER_WALKS.has(entry)) {
     return {
       entry,
@@ -798,7 +928,7 @@ function scanSource(file: string, text: string): Occurrence[] {
   const reachThrough = (id: ts.Identifier): void => {
     const entry = bindings.entries.get(id.text);
     if (entry !== undefined) {
-      record(id, rawShape(id, entry));
+      record(id, rawShape(id, entry, bindings));
       return;
     }
     if (!bindings.namespaces.has(id.text)) return;
@@ -831,7 +961,7 @@ function scanSource(file: string, text: string): Occurrence[] {
       return;
     }
     const site = receiver.parent as ts.PropertyAccessExpression;
-    record(site, rawShape(site, member));
+    record(site, rawShape(site, member, bindings));
   };
 
   const visit = (node: ts.Node): void => {
@@ -1386,6 +1516,182 @@ describe('the census fires on a site that does not conform (T1804a)', () => {
         '}'
       ])
     ).toEqual([expect.stringContaining(`src/synthetic/reasonless.ts:4 — open creates a path without ${HELPER_FILE}`)]);
+  });
+
+  it('permits strictly read-only bound fs.constants numeric flags while still failing O_CREAT or spoofed objects', () => {
+    expect(
+      judgedWith(syntheticPath('readonly-numeric-ok'), [
+        "import { constants as fsConstants, openSync } from 'node:fs';",
+        '',
+        'export function openLog(target: string) {',
+        '  return openSync(target, fsConstants.O_RDONLY | ((fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0) | ((fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0));',
+        '}'
+      ])
+    ).toEqual([]);
+
+    expect(
+      judgedWith(syntheticPath('creat-numeric-bad'), [
+        "import { constants as fsConstants, openSync } from 'node:fs';",
+        '',
+        'export function openLog(target: string) {',
+        '  return openSync(target, fsConstants.O_RDONLY | fsConstants.O_CREAT);',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/creat-numeric-bad.ts:4 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/creat-numeric-bad.ts:4 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('spoofed-constants-bad'), [
+        "import { openSync } from 'node:fs';",
+        'const fake = { O_RDONLY: 0 };',
+        'export function openLog(target: string) {',
+        '  return openSync(target, fake.O_RDONLY);',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/spoofed-constants-bad.ts:4 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/spoofed-constants-bad.ts:4 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('shadowed-constants-bad'), [
+        "import { constants as fsConstants, openSync } from 'node:fs';",
+        'export function openLog(target: string) {',
+        '  const fsConstants = { O_RDONLY: 577 };',
+        '  return openSync(target, fsConstants.O_RDONLY);',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/shadowed-constants-bad.ts:4 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/shadowed-constants-bad.ts:4 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('shadowed-namespace-bad'), [
+        "import * as fs from 'node:fs';",
+        "import { openSync } from 'node:fs';",
+        'export function openLog(target: string, fs = { constants: { O_RDONLY: 577 } }) {',
+        '  return openSync(target, fs.constants.O_RDONLY);',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/shadowed-namespace-bad.ts:4 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/shadowed-namespace-bad.ts:4 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('namespace-import-equals-named-bad'), [
+        "import { constants as fsConstants, openSync } from 'node:fs';",
+        'export namespace Evil {',
+        '  export const fake = { O_RDONLY: 577 };',
+        '  import fsConstants = Evil.fake;',
+        '  export function openLog(target: string) {',
+        '    return openSync(target, fsConstants.O_RDONLY);',
+        '  }',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/namespace-import-equals-named-bad.ts:6 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/namespace-import-equals-named-bad.ts:6 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('namespace-import-equals-ns-bad'), [
+        "import * as fs from 'node:fs';",
+        "import { openSync } from 'node:fs';",
+        'export namespace Evil {',
+        '  export const fake = { constants: { O_RDONLY: 577 } };',
+        '  import fs = Evil.fake;',
+        '  export function openLog(target: string) {',
+        '    return openSync(target, fs.constants.O_RDONLY);',
+        '  }',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/namespace-import-equals-ns-bad.ts:7 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/namespace-import-equals-ns-bad.ts:7 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('arguments-alias-bad'), [
+        "import { constants as arguments, openSync } from 'node:fs';",
+        'export function openLog(target: string) {',
+        '  return openSync(target, (arguments as unknown as { O_RDONLY: number }).O_RDONLY);',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/arguments-alias-bad.ts:3 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/arguments-alias-bad.ts:3 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('spread-open-bad'), [
+        "import { openSync } from 'node:fs';",
+        'export function openLog(target: string) {',
+        "  const args = [target, 'w'] as const;",
+        '  return openSync(...args);',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/spread-open-bad.ts:4 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/spread-open-bad.ts:4 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('enum-member-shadow-bad'), [
+        "import { constants as fsConstants, openSync } from 'node:fs';",
+        'export enum Evil {',
+        '  fsConstants = ({ O_RDONLY: 577 } as unknown as number),',
+        "  X = openSync('/tmp/pwn', (fsConstants as unknown as { O_RDONLY: number }).O_RDONLY)",
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/enum-member-shadow-bad.ts:4 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/enum-member-shadow-bad.ts:4 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('enum-quoted-member-shadow-bad'), [
+        "import { constants as fsConstants, openSync } from 'node:fs';",
+        'export enum EvilQuoted {',
+        "  'fsConstants' = ({ O_RDONLY: 577 } as unknown as number),",
+        "  X = openSync('/tmp/pwn2', (fsConstants as unknown as { O_RDONLY: number }).O_RDONLY)",
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/enum-quoted-member-shadow-bad.ts:4 — openSync creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/enum-quoted-member-shadow-bad.ts:4 — openSync creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('spread-shifted-mode-bad'), [
+        "import * as fsp from 'node:fs/promises';",
+        'export async function makeDir(dir: string) {',
+        '  const args = [dir, { recursive: true }] as unknown as [string];',
+        '  return fsp.mkdir(...args, { mode: 0o700 });',
+        '}'
+      ])
+    ).toEqual([
+      'src/synthetic/spread-shifted-mode-bad.ts:4 — mkdir creates a path and declares no mode',
+      expect.stringContaining(`src/synthetic/spread-shifted-mode-bad.ts:4 — mkdir creates a path without ${HELPER_FILE}`)
+    ]);
+
+    expect(
+      judgedWith(syntheticPath('spread-helper-bad'), [
+        "import { openWithinRoot, ensureDirWithinRoot } from '../lib/safe-open';",
+        'export async function openViaSpread(root: string) {',
+        "  const a = [root, ['x.log'], { flags: 'a' }] as unknown as [string];",
+        "  await openWithinRoot(...a, ['ignored'], { flags: 'r' });",
+        "  const b = [root, ['d'], undefined] as unknown as [string];",
+        "  await ensureDirWithinRoot(...b, ['ignored'], 0o700);",
+        '}'
+      ])
+    ).toEqual([
+      expect.stringContaining('src/synthetic/spread-helper-bad.ts:4 — openWithinRoot is passed options this census cannot read'),
+      'src/synthetic/spread-helper-bad.ts:6 — ensureDirWithinRoot creates directories and declares no dirMode'
+    ]);
   });
 
   it('fails a second narrowing mechanism outside narrow-mode.ts', () => {
