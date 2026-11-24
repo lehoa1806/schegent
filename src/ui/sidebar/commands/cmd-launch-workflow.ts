@@ -144,6 +144,12 @@ export const handler: CommandHandler<LaunchWorkflowCommand> = async (ctx, comman
     {
       ...ctx.deps,
       connectedRuns,
+      ...(ctx.deps.getProductionComposition !== undefined
+        ? { productionComposition: ctx.deps.getProductionComposition() }
+        : {}),
+      ...(ctx.deps.workflowControlHooks !== undefined
+        ? { cancelOrphanedQueueItem: ctx.deps.workflowControlHooks.cancelOrphanedQueueItem }
+        : {}),
       // The launcher's FR-044 gate asks one question — has this child stopped —
       // and derives it from the single child-state oracle rather than from a
       // second port, so the gate and the action set the view renders cannot

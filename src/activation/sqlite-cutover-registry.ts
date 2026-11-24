@@ -37,7 +37,7 @@ export const EXPECTED_CUTOVER_REGISTRATION_ORDER: readonly CutoverRegistrationSl
 ]);
 
 export interface RegisteredWorkspaceLock {
-  readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'>;
+  readonly lock: Pick<WorkspaceLockManager, 'hasPrimacy'> & Partial<Pick<WorkspaceLockManager, 'onFenceLost'>>;
   readonly disposables: vscode.Disposable[];
 }
 

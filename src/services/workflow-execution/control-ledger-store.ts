@@ -38,6 +38,7 @@ import {
   type QuotaWaiterRecord,
   type RootControlState
 } from '../../contracts/control-ledger';
+import { setOwnProp } from '../../lib/operational-value-helpers';
 import { KEYS, type Memento, type WorkspaceStateStore } from '../../state/workspace-state';
 
 export type ControlLedgerBackingStore =
@@ -129,7 +130,7 @@ function deepClone<T>(value: T): T {
   const copy: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
     if (nested !== undefined) {
-      copy[key] = deepClone(nested);
+      setOwnProp(copy, key, deepClone(nested));
     }
   }
   return copy as T;
@@ -217,7 +218,7 @@ function parseRawControlLedger(raw: unknown): ControlLedgerReadResult {
     }
     const rootVersion = rootValue.version;
     if (typeof rootVersion === 'number' && rootVersion !== CONTROL_LEDGER_VERSION) {
-      preservedUnknownRoots[rootId] = deepFreeze(deepClone(rootValue));
+      setOwnProp(preservedUnknownRoots, rootId, deepFreeze(deepClone(rootValue)));
       continue;
     }
     if (
@@ -246,11 +247,15 @@ function parseRawControlLedger(raw: unknown): ControlLedgerReadResult {
         raw
       };
     }
-    validRoots[rootId] = deepFreeze(
-      deepClone({
-        ...(rootValue as unknown as RootControlState),
-        version: CONTROL_LEDGER_VERSION
-      })
+    setOwnProp(
+      validRoots,
+      rootId,
+      deepFreeze(
+        deepClone({
+          ...(rootValue as unknown as RootControlState),
+          version: CONTROL_LEDGER_VERSION
+        })
+      )
     );
   }
 
@@ -393,7 +398,7 @@ function enforceBoundsAndEvict(
       permit.status === 'active' ||
       permit.status === 'held-uncertain'
     ) {
-      permits[permitId] = permit;
+      setOwnProp(permits, permitId, permit);
     }
   }
 
@@ -457,7 +462,7 @@ export class ControlLedgerStore {
 
       if (
         options.targetRootId !== undefined &&
-        options.targetRootId in preservedUnknownRoots
+        Object.hasOwn(preservedUnknownRoots, options.targetRootId)
       ) {
         return {
           ok: false,
@@ -554,7 +559,24 @@ export class ControlLedgerStore {
           ...bounded.bounded.roots
         }
       };
-      await write(persistedPayload);
+      try {
+        await write(persistedPayload);
+      } catch (err) {
+        const reason = (err as { readonly reason?: unknown } | null)?.reason;
+        if (
+          reason === 'ownership-lost' ||
+          reason === 'fence-superseded' ||
+          reason === 'fence-unverifiable'
+        ) {
+          return {
+            ok: false,
+            code: 'stale-execution-fence',
+            message: err instanceof Error ? err.message : 'Control ledger write refused by ownership fence.',
+            currentLedger: ledger
+          };
+        }
+        throw err;
+      }
 
       return {
         ok: true,

@@ -36,6 +36,7 @@ import { createHistoryRecorder } from '../../src/services/history-recorder';
 import { validateRunRequest } from '../../src/services/run-request/run-request-validator';
 import { TerminalTransitionCoordinator } from '../../src/services/terminal-transition-coordinator';
 import { continueConnectedRun } from '../../src/services/workflow-execution/continuation-service';
+import { getOrCreateProductionWorkflowComposition } from '../../src/services/workflow-execution/production-workflow-composition';
 import { launchComposableWorkflow } from '../../src/services/workflow-execution/workflow-launcher';
 import {
   createWorkflowLeafControlHooks,
@@ -379,6 +380,9 @@ async function makeWorkspace(
         guardedRun,
         logger,
         readPriorRunOutputs,
+        productionComposition: getOrCreateProductionWorkflowComposition(store, {
+          workspaceRoot: tmpRoot
+        }),
         connectedRuns: {
           get: (id: string) => store.getConnectedRun(id),
           compareAndSetConnectedRun: (next: ConnectedWorkflowRun, expected: number) =>
@@ -494,6 +498,7 @@ async function makeWorkspace(
     auditPayloads,
     guardedRun,
     controller,
+    hooks,
     leaseManager,
     released,
     cliSteps,
@@ -1097,6 +1102,35 @@ describe('a queue lost to a rival', () => {
     expect(w.queue.findById(taskId)?.status).toBe('pending');
     expect(w.connectedRun('crun-a').revision).toBe(before);
     expect(w.rootFrame('crun-a').status).not.toBe('canceled');
+    expect(w.leafWarnings()).toEqual([]);
+  });
+});
+
+describe('FR-R8-01 (01-04) — named WorkflowLeafTarget orphan cancellation and queue-membership guard', () => {
+  it('cancels only the named orphan task in its bound queue, survives distinct IDs, preserves unrelated tasks, and is idempotent', async () => {
+    const w = await makeWorkspace(tmpRoot);
+    await w.launch('crun-a', QUEUE_A);
+    await w.launch('crun-b', QUEUE_B);
+    const taskA = w.leafTask('crun-a');
+    const taskB = w.leafTask('crun-b');
+    const unrelatedA = await w.queue.enqueue('unrelated sibling task on A', { queueId: QUEUE_A });
+
+    // Mismatched queue/task target MUST be a safe no-op (never cancel a task belonging to another queue).
+    await w.hooks.cancelOrphanedQueueItem!({ queueId: QUEUE_B, taskId: taskA });
+    expect(w.queue.findById(taskA)?.status).toBe('pending');
+    expect(w.queue.findById(taskB)?.status).toBe('pending');
+
+    // Exact named target cancels only taskA; sibling taskB and unrelatedA stay untouched.
+    await w.hooks.cancelOrphanedQueueItem!({ queueId: QUEUE_A, taskId: taskA });
+    expect(w.queue.findById(taskA)?.status).toBe('canceled');
+    expect(w.queue.findById(taskB)?.status).toBe('pending');
+    expect(w.queue.findById(unrelatedA.id)?.status).toBe('pending');
+
+    // Second call is idempotent with zero warnings.
+    await w.hooks.cancelOrphanedQueueItem!({ queueId: QUEUE_A, taskId: taskA });
+    expect(w.queue.findById(taskA)?.status).toBe('canceled');
+    expect(w.queue.findById(taskB)?.status).toBe('pending');
+    expect(w.queue.findById(unrelatedA.id)?.status).toBe('pending');
     expect(w.leafWarnings()).toEqual([]);
   });
 });

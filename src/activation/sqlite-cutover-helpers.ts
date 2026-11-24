@@ -226,7 +226,7 @@ export function buildOwnerResolver(
         return isTerminalRunStatus(live.status) ? 'settled' : 'live';
       }
       const connectedRuns: Readonly<Record<string, unknown>> = store.getConnectedRuns();
-      if (connectedRuns[ownerId] !== undefined) return 'live';
+      if (Object.hasOwn(connectedRuns, ownerId) && connectedRuns[ownerId] !== undefined) return 'live';
       return 'settled';
     }
     return 'live';

@@ -23,6 +23,8 @@
 
 import { errorMessage } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
+import type { WorkflowLeafTarget } from '../contracts/workflow-leaf-target';
 import { isTerminalRequestStatus, type FeatureRequest } from '../queue/feature-request';
 import type { MutationResult, QueueManager } from '../queue/queue-manager';
 import {
@@ -35,8 +37,9 @@ import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-s
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
 import {
-  isQueueClaimLostToRival,
-  releaseExecutionLeaseForTerminalRun
+  isQueueOwnershipLostOnDisk,
+  releaseExecutionLeaseForTerminalRun,
+  type AuthoritativeOwnershipStorePort
 } from '../services/execution-lease-release';
 import type { TerminalTransitionCoordinator } from '../services/terminal-transition-coordinator';
 import { WorkflowLifecycleAuditor } from './workflow-lifecycle-auditor';
@@ -48,17 +51,13 @@ export interface WorkflowLeafEndDeps {
   readonly cancelActive: (queueId: string) => void;
   readonly isDriving: (queueId: string) => boolean;
   readonly cancelPendingRetry: (queueId: string) => void;
-  readonly isClaimLostToRival: (queueId: string) => boolean;
+  readonly isClaimLostToRival: (queueId: string) => boolean | Promise<boolean>;
   readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   readonly completeTerminalRun: (run: WorkflowRun, description: string) => Promise<void>;
   readonly auditLeafCanceled: (row: FeatureRequest, run: WorkflowRun | null) => Promise<void>;
 }
 
-export interface WorkflowLeafTarget {
-  readonly queueId: string;
-  /** The attempt's `queueItemId`: the row, and the `featureId` of any Run it started. */
-  readonly taskId: string;
-}
+export type { WorkflowLeafTarget } from '../contracts/workflow-leaf-target';
 
 /**
  * End the leaf. Never throws: the control service awaits this before it commits, with no catch,
@@ -80,15 +79,21 @@ async function endLeaf(
   { queueId, taskId }: WorkflowLeafTarget
 ): Promise<void> {
   const row = deps.queue.findById(taskId);
-  // Already over. Its terminal, queued behind this command, reads the settled attempt and goes quiet.
-  if (row === null || isTerminalRequestStatus(row.status)) return;
+  // Already over, absent, or belongs to another queue (FR-R8-01 01-04).
+  if (
+    row === null ||
+    isTerminalRequestStatus(row.status) ||
+    (row.queueId ?? DEFAULT_QUEUE_ID) !== queueId
+  ) {
+    return;
+  }
 
   // A queue has one Run slot and it may hold a sibling, which is never this control's to touch.
   const current = deps.store.getRun(queueId);
   const run =
     current?.featureId === taskId && !isTerminalRunStatus(current.status) ? current : null;
 
-  if (deps.isClaimLostToRival(queueId)) {
+  if (await deps.isClaimLostToRival(queueId)) {
     // Stop this window's child, and write nothing: the Run and the row belong to the winner now.
     if (run !== null) deps.cancelActive(queueId);
     return;
@@ -151,7 +156,8 @@ function warnIfRefused(deps: WorkflowLeafEndDeps, action: string, result: Mutati
 export interface WorkflowLeafEndWiring {
   readonly logger: SanitizedLogger;
   readonly queue: Pick<QueueManager, 'findById' | 'queueIdForTask' | 'finish' | 'removeTask'>;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'updateRun' | 'runCommitClaim'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'updateRun' | 'runCommitClaim'> &
+    AuthoritativeOwnershipStorePort;
   readonly controller: {
     cancelActive(queueId: string): void;
     isDriving(queueId: string): boolean;
@@ -168,7 +174,7 @@ export interface WorkflowLeafEndWiring {
  */
 export function createWorkflowLeafEnd(
   wiring: WorkflowLeafEndWiring
-): (queueId: string, taskId: string) => Promise<void> {
+): (target: WorkflowLeafTarget) => Promise<void> {
   const { logger, queue, store, controller, executionLease, terminalTransitions, audit } = wiring;
   const auditor = new WorkflowLifecycleAuditor(audit, logger);
   const deps: WorkflowLeafEndDeps = {
@@ -178,11 +184,11 @@ export function createWorkflowLeafEnd(
     cancelActive: (queueId) => controller.cancelActive(queueId),
     isDriving: (queueId) => controller.isDriving(queueId),
     cancelPendingRetry: (queueId) => controller.cancelPendingRetry(queueId),
-    isClaimLostToRival: (queueId) => isQueueClaimLostToRival(executionLease, queueId),
+    isClaimLostToRival: (queueId) => isQueueOwnershipLostOnDisk({ executionLease, store }, queueId),
     releaseExecutionLeaseForRun: (run) =>
       releaseExecutionLeaseForTerminalRun({ queue, executionLease, logger }, run),
     completeTerminalRun: (run, description) => terminalTransitions.complete(run, description),
     auditLeafCanceled: (row, run) => auditor.emitWorkflowLeafCanceled(row, run)
   };
-  return (queueId, taskId) => endWorkflowLeaf(deps, { queueId, taskId });
+  return (target) => endWorkflowLeaf(deps, target);
 }

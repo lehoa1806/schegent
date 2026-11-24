@@ -12,7 +12,13 @@ import {
   STATE_SCHEMA_VERSION_V15
 } from '../../../src/contracts/state-schema';
 import { createComposableWorkflowRunSnapshot } from '../../../src/services/workflow-execution/connected-run-factory';
-import { migrateConnectedRuns } from '../../../src/state/connected-run-migrator';
+import {
+  connectedRunRefusalWarning,
+  migrateConnectedRuns
+} from '../../../src/state/connected-run-migrator';
+import { sanitizeConnectedRun } from '../../../src/ui/sidebar/connected-run-text';
+import { SanitizedLogger } from '../../../src/lib/logger';
+import type { ConnectedRunProjection } from '../../../src/contracts/sidebar-ipc/workflow-run';
 import {
   appendAttempt,
   appendInputEnvelope,
@@ -574,5 +580,354 @@ describe('connected-run compare-and-set', () => {
 
     const rawAfterWrite = m.store.get(KEYS.connectedRuns) as Record<string, unknown>;
     expect(rawAfterWrite['cr-ctrl-v2']).toEqual(futureControlRecord);
+  });
+
+  it('isolates malformed nested shapes, primitives, future versions, and throwing/cyclic entries without aborting healthy siblings or leaking payloads (FR-R8-01 / 01-08)', () => {
+    const healthy = JSON.parse(JSON.stringify(sample('cr-healthy'))) as Record<string, unknown>;
+    // Older-supported Feature 088 (v9) shape: no queueId, no invocations, no controlState.
+    const olderV9 = JSON.parse(JSON.stringify(sample('cr-older-v9'))) as Record<string, unknown>;
+    delete olderV9.queueId;
+
+    const badGraph = { ...JSON.parse(JSON.stringify(healthy)), connectedRunId: 'cr-bad-graph', graph: null };
+    const badNodes = { ...JSON.parse(JSON.stringify(healthy)), connectedRunId: 'cr-bad-nodes', nodes: null };
+    const badDecisions = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-bad-decisions',
+      decisions: [null]
+    };
+    const badInvocations = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-bad-inv',
+      invocations: { root: null }
+    };
+    const badClosure = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-bad-closure',
+      frozenClosure: { workflowsById: null, phasesById: {} }
+    };
+    const badControl = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-bad-ctrl',
+      controlState: null
+    };
+    const futureControlNum = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-future-ctrl-num',
+      controlState: { version: 2, ledgerRunId: 'SECRET_FUTURE_NUM' }
+    };
+    const futureControlStr = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-future-ctrl-str',
+      controlState: { version: '2', ledgerRunId: 'SECRET_FUTURE_STR' }
+    };
+    const futureSchema = {
+      schemaVersion: 99,
+      connectedRunId: 'cr-future-schema',
+      secretPayload: 'SECRET_SCHEMA_PAYLOAD'
+    };
+    const futureTopVersion = {
+      version: 2,
+      connectedRunId: 'cr-future-version',
+      secretPayload: 'SECRET_VERSION_PAYLOAD'
+    };
+    const cyclic: Record<string, unknown> = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-cyclic'
+    };
+    cyclic.nodes = { 'n-a': cyclic };
+
+    const raw: Record<string, unknown> = {
+      'cr-healthy': healthy,
+      'cr-older-v9': olderV9,
+      'cr-bad-graph': badGraph,
+      'cr-bad-nodes': badNodes,
+      'cr-bad-decisions': badDecisions,
+      'cr-bad-inv': badInvocations,
+      'cr-bad-closure': badClosure,
+      'cr-bad-ctrl': badControl,
+      'cr-null': null,
+      'cr-num': 42,
+      'cr-str': 'SECRET_RAW_PRIMITIVE',
+      'cr-bool': true,
+      'cr-arr': ['SECRET_RAW_ARRAY'],
+      'cr-future-ctrl-num': futureControlNum,
+      'cr-future-ctrl-str': futureControlStr,
+      'cr-future-schema': futureSchema,
+      'cr-future-version': futureTopVersion,
+      'cr-cyclic': cyclic
+    };
+    Object.defineProperty(raw, 'cr-throwing-getter', {
+      enumerable: true,
+      get() {
+        throw new Error('SECRET_GETTER_EXPLOSION');
+      }
+    });
+
+    const migrated = migrateConnectedRuns(raw);
+
+    expect(Object.keys(migrated.runs).sort()).toEqual(['cr-healthy', 'cr-older-v9']);
+    expect(Object.isFrozen(migrated.runs['cr-healthy']!.graph)).toBe(true);
+    expect(Object.isFrozen(migrated.runs['cr-older-v9']!.graph)).toBe(true);
+
+    // Every refused record retains its exact original value untouched (not frozen/mutated)
+    expect(migrated.refused['cr-bad-graph']).toBe(badGraph);
+    expect(Object.isFrozen(badGraph)).toBe(false);
+    expect(migrated.refused['cr-null']).toBeNull();
+    expect(migrated.refused['cr-num']).toBe(42);
+    expect(migrated.refused['cr-str']).toBe('SECRET_RAW_PRIMITIVE');
+    expect(migrated.refused['cr-bool']).toBe(true);
+    expect(migrated.refused['cr-arr']).toEqual(['SECRET_RAW_ARRAY']);
+    expect(migrated.refused['cr-future-ctrl-num']).toBe(futureControlNum);
+    expect(migrated.refused['cr-future-ctrl-str']).toBe(futureControlStr);
+    expect(migrated.refused['cr-future-schema']).toBe(futureSchema);
+    expect(migrated.refused['cr-future-version']).toBe(futureTopVersion);
+    expect(migrated.refused['cr-cyclic']).toBe(cyclic);
+    expect(Object.hasOwn(migrated.refused, 'cr-throwing-getter')).toBe(true);
+
+    const reasonsById = new Map(migrated.diagnostics.map((d) => [d.connectedRunId, d.reason]));
+    expect(reasonsById.get('cr-bad-graph')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-bad-nodes')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-bad-decisions')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-bad-inv')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-bad-closure')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-bad-ctrl')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-null')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-num')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-str')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-bool')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-arr')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-cyclic')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-throwing-getter')).toBe('invariant-violation');
+    expect(reasonsById.get('cr-future-ctrl-num')).toBe('unsupported-run-schema-version');
+    expect(reasonsById.get('cr-future-ctrl-str')).toBe('unsupported-run-schema-version');
+    expect(reasonsById.get('cr-future-schema')).toBe('unsupported-run-schema-version');
+    expect(reasonsById.get('cr-future-version')).toBe('unsupported-run-schema-version');
+
+    // Bounded diagnostics & warning string must never leak any raw payload bytes
+    const warning = connectedRunRefusalWarning(migrated);
+    for (const secret of [
+      'SECRET_FUTURE_NUM',
+      'SECRET_FUTURE_STR',
+      'SECRET_SCHEMA_PAYLOAD',
+      'SECRET_VERSION_PAYLOAD',
+      'SECRET_RAW_PRIMITIVE',
+      'SECRET_RAW_ARRAY',
+      'SECRET_GETTER_EXPLOSION'
+    ]) {
+      expect(warning).not.toContain(secret);
+      expect(JSON.stringify(migrated.diagnostics)).not.toContain(secret);
+    }
+  });
+
+  it('refuses dangerous prototype keys and structurally malformed graph, handoff, and invocation frames cleanly (FR-R8-01)', () => {
+    const healthy = JSON.parse(JSON.stringify(sample('cr-healthy'))) as Record<string, unknown>;
+    const validFrame = {
+      invocationId: 'inv-root',
+      rootRunId: 'cr-base',
+      parentInvocationId: null,
+      parentCallNodeId: null,
+      parentAttemptId: null,
+      workflowId: 'wf-1',
+      depth: 0,
+      nodePath: '/n-a',
+      entryNodeId: 'n-a',
+      activeNodeId: 'n-a',
+      status: 'in-flight',
+      boundInputs: {},
+      resolvedOutputs: {},
+      attemptsByNodeId: {},
+      decisions: [],
+      pendingHandoff: null,
+      startedAt: 10
+    };
+
+    const withProtoPipeline = JSON.parse(JSON.stringify(healthy)) as Record<string, unknown>;
+    withProtoPipeline.connectedRunId = 'cr-proto-pipeline';
+    withProtoPipeline.pipelines = JSON.parse('{"__proto__":{"id":"__proto__","phases":[]}}') as unknown;
+
+    const withProtoAttempts = JSON.parse(JSON.stringify(healthy)) as Record<string, unknown>;
+    withProtoAttempts.connectedRunId = 'cr-proto-attempts';
+    withProtoAttempts.invocations = {
+      'inv-root': {
+        ...validFrame,
+        rootRunId: 'cr-proto-attempts',
+        attemptsByNodeId: JSON.parse('{"__proto__":[]}') as unknown
+      }
+    };
+
+    const raw = JSON.parse('{"__proto__":{"connectedRunId":"__proto__"}}') as Record<string, unknown>;
+    raw['cr-healthy'] = healthy;
+    raw.constructor = { ...JSON.parse(JSON.stringify(healthy)), connectedRunId: 'constructor' };
+    raw.prototype = { ...JSON.parse(JSON.stringify(healthy)), connectedRunId: 'prototype' };
+    raw['cr-bad-wf-id'] = { ...JSON.parse(JSON.stringify(healthy)), connectedRunId: 'cr-bad-wf-id', workflowId: 'constructor' };
+    raw['cr-proto-pipeline'] = withProtoPipeline;
+    raw['cr-proto-attempts'] = withProtoAttempts;
+    raw['cr-bad-resolved-key'] = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-bad-resolved-key',
+      invocations: {
+        'inv-root': {
+          ...validFrame,
+          rootRunId: 'cr-bad-resolved-key',
+          resolvedOutputs: { constructor: { portId: 'constructor', type: 'text', value: 'x' } }
+        }
+      }
+    };
+    raw['cr-missing-start-nodes'] = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-missing-start-nodes',
+      graph: { workflowId: 'wf-1', name: 'Triage', version: 1, nodes: [{ nodeId: 'n-a', pipelineId: 'p-a' }], connections: [] }
+    };
+    raw['cr-bad-conn'] = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-bad-conn',
+      graph: { ...GRAPH, connections: [{}] }
+    };
+    raw['cr-empty-handoff'] = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-empty-handoff',
+      pendingHandoff: {}
+    };
+    raw['cr-frame-empty-handoff'] = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-frame-empty-handoff',
+      invocations: {
+        'inv-root': { ...validFrame, rootRunId: 'cr-frame-empty-handoff', pendingHandoff: {} }
+      }
+    };
+    raw['cr-missing-resolved-outputs'] = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-missing-resolved-outputs',
+      invocations: {
+        'inv-root': {
+          invocationId: 'inv-root',
+          rootRunId: 'cr-missing-resolved-outputs',
+          parentInvocationId: null,
+          workflowId: 'wf-1',
+          depth: 0,
+          nodePath: '/n-a',
+          entryNodeId: 'n-a',
+          status: 'in-flight',
+          attemptsByNodeId: {},
+          startedAt: 10
+        }
+      }
+    };
+    raw['cr-cyclic-parent'] = {
+      ...JSON.parse(JSON.stringify(healthy)),
+      connectedRunId: 'cr-cyclic-parent',
+      invocations: {
+        'inv-root': { ...validFrame, rootRunId: 'cr-cyclic-parent' },
+        'inv-a': { ...validFrame, invocationId: 'inv-a', rootRunId: 'cr-cyclic-parent', parentInvocationId: 'inv-b', depth: 1 },
+        'inv-b': { ...validFrame, invocationId: 'inv-b', rootRunId: 'cr-cyclic-parent', parentInvocationId: 'inv-a', depth: 2 }
+      }
+    };
+
+    const migrated = migrateConnectedRuns(raw);
+
+    expect(Object.keys(migrated.runs)).toEqual(['cr-healthy']);
+    const refusedIds = [
+      '__proto__',
+      'constructor',
+      'prototype',
+      'cr-bad-wf-id',
+      'cr-proto-pipeline',
+      'cr-proto-attempts',
+      'cr-bad-resolved-key',
+      'cr-missing-start-nodes',
+      'cr-bad-conn',
+      'cr-empty-handoff',
+      'cr-frame-empty-handoff',
+      'cr-missing-resolved-outputs',
+      'cr-cyclic-parent'
+    ];
+    for (const id of refusedIds) {
+      expect(migrated.dropped, `${id} must be refused`).toContain(id);
+      const diag = migrated.diagnostics.find((d) => d.connectedRunId === id);
+      expect(diag?.reason, `${id} reason`).toBe('invariant-violation');
+    }
+  });
+
+  it('sanitizes controlProjection text fields on both root run and nested invocations before IPC (Hard Rules 2 & 23)', () => {
+    const logger = new SanitizedLogger();
+    const apiSecret = ['sk', 'ant', 'abcdefghij1234567890ABCDEFGH'].join('-');
+    const bearerSecret = ['Bearer', 'abcdef1234567890XYZW'].join(' ');
+    const controlProjection = {
+      version: 1 as const,
+      rootRunId: 'cr-1',
+      queueId: 'default',
+      invocationId: 'cr-1:root',
+      workflowId: 'wf-1',
+      generation: 1,
+      frameKind: 'candidate-block' as const,
+      state: 'failed',
+      attemptsUsed: 1,
+      maxDispatches: 5,
+      rootDispatchesUsed: 1,
+      rootMaxDispatches: 10,
+      resultStatus: 'failed',
+      resultReason: `failed with ${apiSecret}`,
+      spendMode: 'count-only' as const,
+      spendEnforcementQuality: 'count-only' as const,
+      legalActions: [],
+      evidenceRefs: [`ref ${bearerSecret}`],
+      candidates: [
+        {
+          candidateId: 'cand-1',
+          nodeId: 'n-a',
+          backend: 'claude',
+          priority: 1,
+          authoredOrder: 0,
+          attemptsUsed: 1,
+          maxAttempts: 2,
+          eligibility: 'eligible' as const,
+          policyExcluded: false,
+          phaseName: `Phase ${apiSecret}`,
+          instructionSummary: `Use ${bearerSecret} carefully`
+        }
+      ]
+    };
+
+    const input: ConnectedRunProjection = {
+      connectedRunId: 'cr-1',
+      workflowId: 'wf-1',
+      revision: 1,
+      hydrating: false,
+      nodes: [],
+      controlProjection,
+      invocations: [
+        {
+          invocationId: 'cr-1:root',
+          parentInvocationId: null,
+          workflowId: 'wf-1',
+          depth: 0,
+          nodePath: '/n-a',
+          status: 'failed',
+          currentNodeId: null,
+          activeAttemptId: null,
+          activeAttemptIndex: null,
+          allowedActions: [],
+          waitingReason: null,
+          pauseCause: null,
+          failureReason: null,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          outputPortIds: [],
+          attempts: [],
+          controlProjection
+        }
+      ]
+    };
+
+    const sanitized = sanitizeConnectedRun(input, (value) => logger.sanitize(value));
+    const serialized = JSON.stringify(sanitized);
+    expect(serialized).not.toContain(apiSecret);
+    expect(serialized).not.toContain(bearerSecret);
+    expect(sanitized.controlProjection?.resultReason).toContain('[REDACTED]');
+    expect(sanitized.controlProjection?.evidenceRefs.at(0)).toContain('[REDACTED]');
+    expect(sanitized.controlProjection?.candidates?.at(0)?.phaseName).toContain('[REDACTED]');
+    expect(sanitized.controlProjection?.candidates?.at(0)?.instructionSummary).toContain('[REDACTED]');
+    expect(sanitized.invocations?.at(0)?.controlProjection?.resultReason).toContain('[REDACTED]');
+    expect(sanitized.invocations?.at(0)?.controlProjection?.candidates?.at(0)?.phaseName).toContain('[REDACTED]');
   });
 });

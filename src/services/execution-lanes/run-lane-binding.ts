@@ -25,6 +25,7 @@ import {
   type LaneState,
   type LaneView
 } from '../../contracts/execution-lanes';
+import { LaneGitError } from './git-runner';
 import type { LaneService } from './lane-service';
 
 /**
@@ -147,6 +148,31 @@ const MAX_CACHED_LANE_ROOTS = 256;
 
 function rootRefOf(lane: Pick<LaneView, 'workspaceId' | 'laneId'>): string {
   return `lanes/${lane.workspaceId}/${lane.laneId}`;
+}
+
+/**
+ * Maps a thrown Git or storage error from `freezeCandidate` to a bounded code without reading
+ * error messages (which may contain paths or stderr; docs/hard-rules.md rule 22).
+ */
+function classifyFreezeThrownError(error: unknown): string {
+  if (error instanceof LaneGitError) {
+    return `git-${error.operation}-${error.code}`;
+  }
+  if (typeof error === 'object' && error !== null) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) {
+      return `storage-${code}`;
+    }
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === 'string' && name.length > 0) {
+      const lower = name.toLowerCase();
+      if (lower.includes('sqlite') || lower.includes('store') || lower.includes('storage')) {
+        return `storage-${name}`;
+      }
+      return `error-${name}`;
+    }
+  }
+  return 'unexpected-error';
 }
 
 export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneCoordinator {
@@ -327,10 +353,23 @@ export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneC
       if (lane === null) return;
       if (params.status === 'completed') {
         if (lane.state === 'active') {
+          let freezeFailureCode: string | null = null;
           try {
-            await service.freezeCandidate({ laneId: lane.laneId });
-          } catch {
-            // Candidate freeze is best-effort on auto-completion; operator can freeze explicitly.
+            const frozen = await service.freezeCandidate({ laneId: lane.laneId });
+            if (!frozen.ok && frozen.refusal.reason !== 'candidate-empty') {
+              freezeFailureCode = frozen.refusal.reason;
+            }
+          } catch (error) {
+            freezeFailureCode = classifyFreezeThrownError(error);
+          }
+          if (freezeFailureCode !== null) {
+            try {
+              service.recordFreezeFailure({ laneId: lane.laneId, reason: freezeFailureCode });
+            } catch {
+              // Storage also failed while persisting state_reason; keep the lane active so its
+              // worktree remains live and retryable rather than closing to completed.
+            }
+            return;
           }
         }
         if (lane.state === 'active' || lane.state === 'paused') {

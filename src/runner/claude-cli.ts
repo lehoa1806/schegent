@@ -362,6 +362,7 @@ export class ClaudeCliRunner implements BackendRunner {
 
   /** Set by `close()` at host teardown; no spawn follows it. */
   private closed = false;
+  private isClosed(): boolean { return this.closed; }
 
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
@@ -474,6 +475,13 @@ export class ClaudeCliRunner implements BackendRunner {
       iteration: request.iteration
     };
     try {
+      if (request.onBeforeSpawn !== undefined) {
+        await request.onBeforeSpawn({ helperInvocation: request.helperInvocation === true });
+      }
+      if (this.isClosed()) throw new SpawnRefusedAfterCloseError('claude-cli');
+      if (isAborted()) {
+        return cancelledInvocationOutput(command, start);
+      }
       const child = safeSpawn(this.spawnFn, request.cliPath, args, {
         stdio,
         shell: false,
@@ -785,8 +793,31 @@ export class ClaudeCliRunner implements BackendRunner {
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
 
-      // FR-R3-047 (M-01) — no second argument; see child-completion.ts.
-      const completion = await waitForChildCompletion(child);
+      // FR-R3-047 (M-01) — attach completion listeners synchronously BEFORE awaiting
+      // `onAfterSpawn` so fast exits and async spawn `'error'` events are never lost.
+      const completionPromise = waitForChildCompletion(child);
+      if (request.helperInvocation !== true && request.onAfterSpawn !== undefined && child.pid !== undefined) {
+        try {
+          await request.onAfterSpawn(child.pid);
+        } catch (err) {
+          idleTimerActive = false;
+          clearTimeout(timer);
+          if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+          clearTimeout(holdCeiling);
+          if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+          killed = true;
+          this.terminate(child, attribution);
+          const abortedComp = await completionPromise.catch(() => null);
+          this.emitHook({
+            kind: 'exited', runId: request.runId ?? null, invocationId,
+            exitCode: abortedComp?.exitCode ?? null,
+            signal: abortedComp?.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null,
+            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {})
+          });
+          throw err;
+        }
+      }
+      const completion = await completionPromise;
       // Disarm the idle timer BEFORE reading the delivery result. The child has
       // completed, so from here the timer can only mislabel: a delivery result
       // that settles slowly used to be awaited inside the still-armed window,

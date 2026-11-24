@@ -1,6 +1,14 @@
 import type { QueueManager } from '../queue/queue-manager';
 import type { SanitizedLogger } from '../lib/logger';
+import { STALENESS_THRESHOLD_MS, systemScheduler } from '../state/lock';
+import {
+  checkCommitFence,
+  OWNERSHIP_VERIFY_DEADLINE_MS,
+  readOwnershipStatusWithinDeadline
+} from '../state/ownership-claim';
+import { queueResource } from '../state/ownership-registry';
 import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
+import type { WorkspaceStateStore } from '../state/workspace-state';
 import type { ExecutionLeasePort } from './auto-drain-coordinator';
 
 export interface ExecutionLeaseReleaseDeps {
@@ -73,4 +81,69 @@ export function isQueueClaimLostToRival(
     executionLease.tenureOf?.(queueId).state === 'lost' ||
     executionLease.isForeignLeaseHeld?.(queueId) === true
   );
+}
+
+export type AuthoritativeOwnershipStorePort = Partial<
+  Pick<
+    WorkspaceStateStore,
+    'canCommitConnectedRun' | 'primacyClaim' | 'runClaimFor' | 'markRunClaimLost' | 'ownership'
+  >
+>;
+
+/**
+ * FR-R8-01 — Authoritative async ownership verification combining local lease
+ * tenure with workspace primacy and on-disk `.schegent/ownership/` records.
+ * Fails closed (`true` = lost / not owned) on storage error or foreign holder.
+ */
+export async function isQueueOwnershipLostOnDisk(
+  deps: {
+    readonly executionLease: Pick<ExecutionLeasePort, 'tenureOf' | 'isForeignLeaseHeld'>;
+    readonly store: AuthoritativeOwnershipStorePort;
+  },
+  queueId: string
+): Promise<boolean> {
+  if (isQueueClaimLostToRival(deps.executionLease, queueId)) return true;
+  if (
+    typeof deps.store.canCommitConnectedRun === 'function' &&
+    !(await deps.store.canCommitConnectedRun())
+  ) {
+    return true;
+  }
+  const ownership = deps.store.ownership;
+  if (ownership !== undefined) {
+    const heldClaim = deps.store.runClaimFor?.(queueId) ?? null;
+    if (heldClaim !== null) {
+      const failure = await checkCommitFence(
+        ownership,
+        heldClaim,
+        queueId,
+        'Run',
+        systemScheduler
+      );
+      if (failure !== null) {
+        if (failure.reason === 'fence-superseded') {
+          deps.store.markRunClaimLost?.(queueId, 'superseded');
+        }
+        return true;
+      }
+    } else if (typeof ownership.readStatus === 'function') {
+      const localOwnerId = deps.store.primacyClaim?.()?.ownerId ?? null;
+      const status = await readOwnershipStatusWithinDeadline(
+        ownership,
+        queueResource(queueId),
+        OWNERSHIP_VERIFY_DEADLINE_MS,
+        systemScheduler
+      );
+      if (status.outcome === 'unavailable') return true;
+      const holder = status.outcome === 'present' ? status.record.holder : null;
+      if (
+        holder !== null &&
+        (localOwnerId === null || holder.ownerId !== localOwnerId) &&
+        Date.now() - holder.heartbeatAt <= STALENESS_THRESHOLD_MS
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

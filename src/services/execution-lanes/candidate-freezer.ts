@@ -86,7 +86,35 @@ export async function freezeCandidate(
   // failed after moving HEAD left no record, and must be repeatable (review R3).
   const recorded = ctx.lanes.currentCandidate(lane.laneId)?.commit ?? lane.sourceCommit;
   const recordedTree = await stdoutOf(ctx, root, ['rev-parse', '--verify', `${recorded}^{tree}`]);
-  if (tree === recordedTree) return laneRefused('candidate-empty');
+  if (tree === recordedTree) {
+    // FR-R8-01 (01-06): if an earlier freeze failure left a `freeze-failed:*` state reason and a
+    // retry now sees an unmodified tree matching the recorded candidate/source commit, clear the
+    // stale failure reason atomically before reporting `candidate-empty`.
+    const current = ctx.lanes.getLane(ctx.workspaceId, lane.laneId);
+    if (
+      current !== null &&
+      current.state === 'active' &&
+      current.stateReason !== null &&
+      current.stateReason.startsWith('freeze-failed:')
+    ) {
+      const now = new Date(ctx.clock()).toISOString();
+      const cleared = ctx.lanes.fenced<void>(ctx.workspaceId, ctx.generation, () => {
+        const latest = ctx.lanes.getLane(ctx.workspaceId, lane.laneId);
+        if (latest === null || latest.state !== 'active') return laneOk(undefined);
+        if (latest.stateReason !== null && latest.stateReason.startsWith('freeze-failed:')) {
+          const moved = ctx.lanes.transitionLane(ctx.workspaceId, lane.laneId, ['active'], 'active', {
+            reason: null,
+            now,
+            generation: ctx.generation
+          });
+          if (!moved.ok) return laneRefused<void>(moved.refusal.reason);
+        }
+        return laneOk(undefined);
+      });
+      if (!cleared.ok) return laneRefused(cleared.refusal.reason);
+    }
+    return laneRefused('candidate-empty');
+  }
 
   const preCommitFence = ctx.lanes.assertGeneration(ctx.workspaceId, ctx.generation);
   if (!preCommitFence.ok) return laneRefused(preCommitFence.refusal.reason);
@@ -104,6 +132,17 @@ export async function freezeCandidate(
   const now = new Date(ctx.clock()).toISOString();
   const candidateId = ctx.random(ID_BYTES).toString('hex');
   return ctx.lanes.fenced(ctx.workspaceId, ctx.generation, () => {
+    const latest = ctx.lanes.getLane(ctx.workspaceId, lane.laneId);
+    if (latest === null) return laneRefused('lane-not-found');
+    if (latest.state !== 'active') return laneRefused('lane-state-invalid');
+    if (latest.stateReason !== null) {
+      const cleared = ctx.lanes.transitionLane(ctx.workspaceId, lane.laneId, ['active'], 'active', {
+        reason: null,
+        now,
+        generation: ctx.generation
+      });
+      if (!cleared.ok) return laneRefused(cleared.refusal.reason);
+    }
     ctx.integrations.blockOpenRequestsForLane(lane.laneId, {
       now,
       generation: ctx.generation,

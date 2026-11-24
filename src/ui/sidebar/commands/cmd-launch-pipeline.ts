@@ -87,6 +87,12 @@ export const handler: CommandHandler<LaunchPipelineCommand> = async (ctx, comman
     ctx,
     started.outcome === 'enqueued'
       ? { outcome: 'enqueued', requestId: started.queueItemId }
-      : started
+      : started.outcome === 'rejected-foreign-lock'
+        ? {
+            outcome: 'rejected-queue',
+            reason: 'queue-refused',
+            ...(started.detail !== undefined ? { detail: started.detail } : {})
+          }
+        : started
   );
 };

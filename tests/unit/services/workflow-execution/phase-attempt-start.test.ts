@@ -352,7 +352,14 @@ describe('buildPhaseAttemptRequest: where a target goes', () => {
       startedAt: 1700
     });
     const looped = { ...childA, parentInvocationId: childB.invocationId, parentCallNodeId: 'inner-call' };
-    const run = upsertInvocationFrame(upsertInvocationFrame(fixture.run, looped), childB);
+    const run: ConnectedWorkflowRun = {
+      ...fixture.run,
+      invocations: {
+        ...fixture.run.invocations,
+        [looped.invocationId]: looped,
+        [childB.invocationId]: childB
+      }
+    };
 
     expect(outputsOf(dispatchInput({ run }, childB, 'deep'))).toEqual([]);
   });

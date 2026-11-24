@@ -8,6 +8,7 @@
  */
 
 import { STATE_SCHEMA_VERSION } from '../contracts/state-schema';
+import type { FeatureRequest, QueueState } from '../queue/feature-request';
 import {
   connectedRunRefusalWarning,
   connectedRunsWithout,
@@ -17,7 +18,13 @@ import {
   assertConnectedRunInvariants,
   type ConnectedWorkflowRun
 } from './connected-workflow-run';
-import { checkCommitFence } from './ownership-claim';
+import { STALENESS_THRESHOLD_MS } from './lock';
+import {
+  checkCommitFence,
+  OWNERSHIP_VERIFY_DEADLINE_MS,
+  readOwnershipStatusWithinDeadline
+} from './ownership-claim';
+import { queueResource } from './ownership-registry';
 import {
   isResetInterrupted,
   isResetMarker,
@@ -26,6 +33,7 @@ import {
 } from './reset-transaction';
 import {
   KEYS,
+  QueueMutationRejected,
   RESET_CLEARED_KEYS,
   type ConnectedRunWriteResult,
   type WorkspaceStateFamilyContext
@@ -68,7 +76,51 @@ export function getConnectedRun(
   warned: ConnectedRunsWarningState,
   connectedRunId: string
 ): ConnectedWorkflowRun | null {
-  return getConnectedRuns(ctx, warned)[connectedRunId] ?? null;
+  const runs = getConnectedRuns(ctx, warned);
+  return Object.hasOwn(runs, connectedRunId) ? runs[connectedRunId]! : null;
+}
+
+function violatesCrossRevisionImmutability(
+  current: ConnectedWorkflowRun,
+  next: ConnectedWorkflowRun
+): boolean {
+  if (next.workflowId !== current.workflowId) return true;
+  if (next.startedAt !== current.startedAt) return true;
+  if (current.queueId !== undefined && next.queueId !== current.queueId) return true;
+  if (
+    current.controlState !== undefined &&
+    next.controlState?.ledgerRunId !== current.controlState.ledgerRunId
+  ) {
+    return true;
+  }
+  const curReceipts = current.commandReceipts ?? [];
+  const nextReceipts = next.commandReceipts ?? [];
+  if (curReceipts.length > 0) {
+    if (curReceipts.length < 64 && nextReceipts.length < curReceipts.length) return true;
+    // Every retained receipt id must preserve its operation and target.
+    const nextById = new Map(nextReceipts.map((r) => [r.commandId, r]));
+    const retainedStart = Math.max(0, curReceipts.length - nextReceipts.length);
+    for (let i = retainedStart; i < curReceipts.length; i += 1) {
+      const prev = curReceipts.at(i);
+      if (prev === undefined) continue;
+      const match = nextById.get(prev.commandId);
+      if (match === undefined || match.operation !== prev.operation) return true;
+    }
+  }
+  if (current.invocations !== undefined) {
+    if (next.invocations === undefined) return true;
+    for (const [invId, curFrame] of Object.entries(current.invocations)) {
+      if (!Object.hasOwn(next.invocations, invId)) return true;
+      const nextFrame = next.invocations[invId]!;
+      if (
+        nextFrame.parentInvocationId !== curFrame.parentInvocationId ||
+        nextFrame.rootRunId !== curFrame.rootRunId
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export async function compareAndSetConnectedRun(
@@ -88,7 +140,11 @@ export async function compareAndSetConnectedRun(
       result = staleConnectedRunWrite(current);
       return;
     }
-    const boundQueueId = next.queueId;
+    if (current !== null && violatesCrossRevisionImmutability(current, next)) {
+      result = staleConnectedRunWrite(current);
+      return;
+    }
+    const boundQueueId = current?.queueId ?? next.queueId;
     const claimSource = ctx.getRunClaimSource();
     if (
       boundQueueId !== undefined &&
@@ -114,6 +170,12 @@ export async function compareAndSetConnectedRun(
               claimSource.markLost?.(boundQueueId, 'superseded');
             }
           }
+          result = staleConnectedRunWrite(current);
+          return;
+        }
+      } else {
+        const foreignHeld = await isFreshForeignQueueOwner(ctx, boundQueueId);
+        if (foreignHeld) {
           result = staleConnectedRunWrite(current);
           return;
         }
@@ -159,6 +221,336 @@ export function getRawControlLedger(ctx: WorkspaceStateFamilyContext): unknown {
   return ctx.memento.get<unknown>(KEYS.controlLedger);
 }
 
+async function isFreshForeignQueueOwner(
+  ctx: WorkspaceStateFamilyContext,
+  queueId: string
+): Promise<boolean> {
+  const primacy = ctx.getPrimacyClaimSource()?.primacyClaim?.() ?? null;
+  if (primacy === null) return false;
+  const status = await readOwnershipStatusWithinDeadline(
+    ctx.getOwnershipRegistry(),
+    queueResource(queueId),
+    OWNERSHIP_VERIFY_DEADLINE_MS,
+    ctx.scheduler
+  );
+  if (status.outcome === 'unavailable') return true;
+  const holder = status.outcome === 'present' ? status.record.holder : null;
+  return (
+    holder !== null &&
+    holder.ownerId !== primacy.ownerId &&
+    Date.now() - holder.heartbeatAt <= STALENESS_THRESHOLD_MS
+  );
+}
+
+function hasAnyDispatchedOrStartedAttempt(run: ConnectedWorkflowRun): boolean {
+  if (findFirstQueueItemId(run) !== null) return true;
+  for (const frame of Object.values(run.invocations ?? {})) {
+    for (const attempts of Object.values(frame.attemptsByNodeId)) {
+      if (
+        attempts.some(
+          (a) =>
+            a.queueItemId !== undefined ||
+            a.status === 'in-flight' ||
+            a.status === 'completed'
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export async function deleteUnstartedConnectedRun(
+  ctx: WorkspaceStateFamilyContext,
+  warned: ConnectedRunsWarningState,
+  connectedRunId: string,
+  expectedRevision: number
+): Promise<boolean> {
+  const delState = { removed: false };
+  await ctx.serialize(KEYS.connectedRuns, async () => {
+    const collection = readConnectedRunCollection(ctx, warned);
+    const current = Object.hasOwn(collection.runs, connectedRunId)
+      ? collection.runs[connectedRunId]
+      : undefined;
+    if (current === undefined || current.revision !== expectedRevision) return;
+    if (hasAnyDispatchedOrStartedAttempt(current)) return;
+
+    const primacySource = ctx.getPrimacyClaimSource();
+    if (primacySource !== null && !(await primacySource.canCommitConnectedRun())) {
+      return;
+    }
+    const boundQueueId = current.queueId;
+    const claimSource = ctx.getRunClaimSource();
+    if (
+      boundQueueId !== undefined &&
+      claimSource?.tenureOf?.(boundQueueId).state === 'lost'
+    ) {
+      return;
+    }
+    if (boundQueueId !== undefined && claimSource !== null) {
+      const queueClaim = claimSource.claimFor(boundQueueId);
+      if (queueClaim !== null) {
+        const failure = await checkCommitFence(
+          ctx.getOwnershipRegistry(),
+          queueClaim,
+          boundQueueId,
+          'Run',
+          ctx.scheduler
+        );
+        if (failure !== null) return;
+      } else if (await isFreshForeignQueueOwner(ctx, boundQueueId)) {
+        return;
+      }
+    }
+
+    const after = connectedRunsWithout(collection, [connectedRunId]);
+    if (after.removed === 0) return;
+    await ctx.memento.update(KEYS.connectedRuns, after.stored);
+    delState.removed = true;
+  });
+  if (delState.removed) ctx.notify(KEYS.connectedRuns);
+  return delState.removed;
+}
+
+export interface AtomicComposableLaunchInput {
+  readonly queueId: string;
+  readonly connectedRun: ConnectedWorkflowRun;
+  readonly mutateControlLedger: (
+    rawLedger: unknown
+  ) => Promise<
+    | { readonly ok: true; readonly nextLedger: unknown }
+    | { readonly ok: false; readonly code: string; readonly message: string }
+  >;
+  readonly mutateQueue: (
+    queue: QueueState
+  ) => { readonly queue: QueueState; readonly request: FeatureRequest };
+}
+
+export type AtomicComposableLaunchOutcome =
+  | {
+      readonly outcome: 'committed';
+      readonly run: ConnectedWorkflowRun;
+      readonly queueItemId: string;
+      readonly idempotent: boolean;
+    }
+  | {
+      readonly outcome: 'rejected';
+      readonly code: string;
+      readonly message: string;
+    };
+
+/**
+ * FR-R8-01 (01-02, 01-03) — Commit `KEYS.controlLedger`, `KEYS.connectedRuns`,
+ * and `KEYS.queue` in one serialized SQLite `BEGIN IMMEDIATE` batch transaction,
+ * verifying live primacy & queue ownership and enforcing duplicate-delivery
+ * idempotency on `connectedRunId` and `workflowOccurrence`.
+ */
+export async function admitComposableWorkflowLaunchAtomically(
+  ctx: WorkspaceStateFamilyContext,
+  warned: ConnectedRunsWarningState,
+  input: AtomicComposableLaunchInput
+): Promise<AtomicComposableLaunchOutcome> {
+  let result: AtomicComposableLaunchOutcome = {
+    outcome: 'rejected',
+    code: 'durable-store-unavailable',
+    message: 'Atomic composable launch did not commit.'
+  };
+  const txState = { didCommit: false };
+
+  await ctx.serializeAcrossKeys(
+    [KEYS.connectedRuns, KEYS.controlLedger, KEYS.queue],
+    async () => {
+      const registry = ctx.getQueueRegistry();
+      if (!registry.entries.some((entry) => entry.id === input.queueId)) {
+        result = {
+          outcome: 'rejected',
+          code: 'unknown-queue-id',
+          message: `Unknown queue id: ${input.queueId}`
+        };
+        return;
+      }
+
+      const primacySource = ctx.getPrimacyClaimSource();
+      if (primacySource !== null && !(await primacySource.canCommitConnectedRun())) {
+        result = {
+          outcome: 'rejected',
+          code: 'stale-execution-fence',
+          message: 'Launch refused: this window does not hold workspace primacy.'
+        };
+        return;
+      }
+      const claimSource = ctx.getRunClaimSource();
+      if (claimSource?.tenureOf?.(input.queueId).state === 'lost') {
+        result = {
+          outcome: 'rejected',
+          code: 'stale-execution-fence',
+          message: `Launch refused: this window lost its ownership claim on queue '${input.queueId}'.`
+        };
+        return;
+      }
+      if (claimSource !== null) {
+        const queueClaim = claimSource.claimFor(input.queueId);
+        if (queueClaim !== null) {
+          const failure = await checkCommitFence(
+            ctx.getOwnershipRegistry(),
+            queueClaim,
+            input.queueId,
+            'Run',
+            ctx.scheduler
+          );
+          if (failure !== null) {
+            if (failure.reason === 'fence-superseded') {
+              const currentClaim = claimSource.claimFor(input.queueId);
+              if (currentClaim?.ownerId === queueClaim.ownerId && currentClaim.fence === queueClaim.fence) {
+                claimSource.markLost?.(input.queueId, 'superseded');
+              }
+            }
+            result = {
+              outcome: 'rejected',
+              code: 'stale-execution-fence',
+              message: `Launch refused: queue ownership fence check failed (${failure.reason}).`
+            };
+            return;
+          }
+        } else if (await isFreshForeignQueueOwner(ctx, input.queueId)) {
+          result = {
+            outcome: 'rejected',
+            code: 'stale-execution-fence',
+            message: `Launch refused: queue '${input.queueId}' is held by another active window.`
+          };
+          return;
+        }
+      }
+
+      const { runs, refused } = readConnectedRunCollection(ctx, warned);
+      if (Object.hasOwn(refused, input.connectedRun.connectedRunId)) {
+        result = {
+          outcome: 'rejected',
+          code: 'unsupported-run-schema-version',
+          message: `Connected run '${input.connectedRun.connectedRunId}' is refused/unreadable.`
+        };
+        return;
+      }
+
+      // Idempotent duplicate delivery by `connectedRunId`
+      const existingRun = Object.hasOwn(runs, input.connectedRun.connectedRunId)
+        ? runs[input.connectedRun.connectedRunId]
+        : undefined;
+      if (existingRun !== undefined) {
+        const existingQueueItemId = findFirstQueueItemId(existingRun);
+        if (existingQueueItemId !== null) {
+          result = {
+            outcome: 'committed',
+            run: existingRun,
+            queueItemId: existingQueueItemId,
+            idempotent: true
+          };
+          return;
+        }
+        result = {
+          outcome: 'rejected',
+          code: 'connected-run-already-exists',
+          message: `Connected run '${input.connectedRun.connectedRunId}' already exists without a bound queue item.`
+        };
+        return;
+      }
+
+      const currentQueue = ctx.getQueue(input.queueId);
+      const queueMutation = input.mutateQueue(currentQueue);
+      const nextQueue = ctx.ensureExtendedQueueShape({
+        ...queueMutation.queue,
+        requests: ctx.compactRequestPositions(queueMutation.queue.requests),
+        updatedAt: Date.now()
+      });
+
+      const rawLedger = ctx.memento.get<unknown>(KEYS.controlLedger);
+      const ledgerMutation = await input.mutateControlLedger(rawLedger);
+      if (!ledgerMutation.ok) {
+        result = {
+          outcome: 'rejected',
+          code: ledgerMutation.code,
+          message: ledgerMutation.message
+        };
+        return;
+      }
+
+      assertConnectedRunInvariants(input.connectedRun, {
+        knownQueueIds: new Set(registry.entries.map((entry) => entry.id))
+      });
+
+      const nextConnectedRuns = {
+        ...refused,
+        ...runs,
+        [input.connectedRun.connectedRunId]: input.connectedRun
+      };
+      const nextQueueMap = {
+        ...ctx.readQueueMap(),
+        [input.queueId]: nextQueue
+      };
+
+      if (ctx.supportsBatchWrite) {
+        await ctx.writeGate.writeBatch([
+          { key: KEYS.controlLedger, value: ledgerMutation.nextLedger },
+          { key: KEYS.connectedRuns, value: nextConnectedRuns },
+          { key: KEYS.queue, value: nextQueueMap }
+        ]);
+      } else {
+        const prevLedger = rawLedger;
+        const prevConnected = ctx.memento.get<unknown>(KEYS.connectedRuns);
+        await ctx.memento.update(KEYS.controlLedger, ledgerMutation.nextLedger);
+        try {
+          await ctx.memento.update(KEYS.connectedRuns, nextConnectedRuns);
+          try {
+            await ctx.memento.update(KEYS.queue, nextQueueMap);
+          } catch (queueErr) {
+            try {
+              await ctx.memento.update(KEYS.connectedRuns, prevConnected);
+              await ctx.memento.update(KEYS.controlLedger, prevLedger);
+            } catch {
+              // Best-effort rollback on non-batch Memento.
+            }
+            throw queueErr;
+          }
+        } catch (connErr) {
+          try {
+            await ctx.memento.update(KEYS.controlLedger, prevLedger);
+          } catch {
+            // Best-effort rollback on non-batch Memento.
+          }
+          throw connErr;
+        }
+      }
+
+      txState.didCommit = true;
+      result = {
+        outcome: 'committed',
+        run: input.connectedRun,
+        queueItemId: queueMutation.request.id,
+        idempotent: false
+      };
+    }
+  );
+
+  if (txState.didCommit) {
+    ctx.notify(KEYS.controlLedger);
+    ctx.notify(KEYS.connectedRuns);
+    ctx.notify(KEYS.queue);
+  }
+  return result;
+}
+
+function findFirstQueueItemId(run: ConnectedWorkflowRun): string | null {
+  for (const frame of Object.values(run.invocations ?? {})) {
+    for (const attempts of Object.values(frame.attemptsByNodeId)) {
+      for (const attempt of attempts) {
+        if (attempt.queueItemId !== undefined) return attempt.queueItemId;
+      }
+    }
+  }
+  return null;
+}
+
 export async function transactControlLedger<T>(
   ctx: WorkspaceStateFamilyContext,
   op: (raw: unknown, write: (next: unknown) => Promise<void>) => Promise<T>
@@ -168,6 +560,13 @@ export async function transactControlLedger<T>(
   await ctx.serialize(KEYS.controlLedger, async () => {
     const current = ctx.memento.get<unknown>(KEYS.controlLedger);
     outcome = await op(current, async (next: unknown) => {
+      const primacySource = ctx.getPrimacyClaimSource();
+      if (primacySource !== null && !(await primacySource.canCommitConnectedRun())) {
+        throw new QueueMutationRejected(
+          'ownership-lost',
+          'Control ledger write refused: this window does not hold workspace primacy'
+        );
+      }
       await ctx.memento.update(KEYS.controlLedger, next);
       state.didWrite = true;
     });

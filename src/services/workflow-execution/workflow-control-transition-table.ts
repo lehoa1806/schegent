@@ -199,7 +199,9 @@ export function evaluateControlTransition(
   const rootInvocationId = resolveRootInvocationId(run);
   const targetInvocationId = input.targetInvocationId ?? rootInvocationId;
   const invocations = run.invocations ?? {};
-  const frame = invocations[targetInvocationId];
+  const frame = Object.hasOwn(invocations, targetInvocationId)
+    ? invocations[targetInvocationId]
+    : undefined;
 
   if (frame === undefined) {
     return {
@@ -210,7 +212,9 @@ export function evaluateControlTransition(
     };
   }
 
-  const rootFrame = invocations[rootInvocationId] ?? frame;
+  const rootFrame = Object.hasOwn(invocations, rootInvocationId)
+    ? (invocations[rootInvocationId] ?? frame)
+    : frame;
   const isRootTarget = targetInvocationId === rootInvocationId;
   const subtreeIds = collectSubtreeInvocationIds(run, targetInvocationId);
 
@@ -310,6 +314,14 @@ export function evaluateControlTransition(
     }
 
     case 'retry-phase': {
+      if (rootFrame.status === 'completed') {
+        return {
+          allowed: false,
+          refusalCode: 'terminal-run',
+          reason: `Cannot retry phase on completed root invocation '${rootInvocationId}'.`,
+          targetInvocationId
+        };
+      }
       if (isSpendBoundExceeded(run, frame)) {
         return {
           allowed: false,
@@ -356,6 +368,14 @@ export function evaluateControlTransition(
     }
 
     case 'retry-invocation': {
+      if (rootFrame.status === 'completed' || frame.status === 'completed') {
+        return {
+          allowed: false,
+          refusalCode: rootFrame.status === 'completed' ? 'terminal-run' : 'invalid-state-for-operation',
+          reason: `Cannot retry completed invocation '${targetInvocationId}'.`,
+          targetInvocationId
+        };
+      }
       if (isSpendBoundExceeded(run, frame)) {
         return {
           allowed: false,

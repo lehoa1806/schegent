@@ -689,6 +689,11 @@ export class AcpBackedRunner implements BackendRunner {
             if (connection !== null) this.options.onAcpObservation?.({ backendKind: this.options.kind, runId, invocationId, attemptId, observation, projection: connection.describe() });
           }
         });
+        const isSignalAborted = (): boolean => request.cancellationSignal?.aborted === true;
+        if (request.onBeforeSpawn !== undefined) await request.onBeforeSpawn({ helperInvocation: request.helperInvocation === true });
+        if (this.isClosed()) throw new SpawnRefusedAfterCloseError(label);
+        if (killed || isSignalAborted()) { killed = true; exitCode = 130; } else {
+        let spawnedPid: number | undefined;
         const opened = await openAcpConnection({
           profile,
           generation,
@@ -697,18 +702,9 @@ export class AcpBackedRunner implements BackendRunner {
               ? this.options.launchTransport(validatedProfile, request, generation)
               : spawnStdioTransport(launchSpec);
             transport = created;
-            created.onStderr((chunk) => {
-              resetIdleTimer();
-              emitChunk('stderr', Buffer.from(chunk).toString('utf8'));
-            });
-            this.options.monitorHook?.({
-              kind: 'started',
-              runId,
-              invocationId,
-              helperInvocation: request.helperInvocation === true,
-              maxDurationMs,
-              pid: created.pid ?? null
-            });
+            spawnedPid = created.pid;
+            created.onStderr((chunk) => { resetIdleTimer(); emitChunk('stderr', Buffer.from(chunk).toString('utf8')); });
+            this.options.monitorHook?.({ kind: 'started', runId, invocationId, helperInvocation: request.helperInvocation === true, maxDurationMs, pid: created.pid ?? null });
             return created;
           },
           permissionPolicy: obsBridge.wrapPermissionPolicy(gate?.createPermissionPolicy(generation), this.options.logger),
@@ -717,25 +713,16 @@ export class AcpBackedRunner implements BackendRunner {
             resetIdleTimer();
             obsBridge.forward(observation);
             // F13-FR-07: history replay is historical observation only; never emit as live output or new usage.
-            if (observation.origin !== 'live') {
-              return;
-            }
+            if (observation.origin !== 'live') return;
             if (observation.kind === 'display') {
               openWorkTracker.observe(observation.event);
-              for (const encodedLine of streamEncoder.push(observation.event)) {
-                emitChunk('stdout', encodedLine);
-              }
-            } else if (observation.kind === 'usage') {
-              latestUsage = observation.usage;
-            }
+              for (const encodedLine of streamEncoder.push(observation.event)) emitChunk('stdout', encodedLine);
+            } else if (observation.kind === 'usage') latestUsage = observation.usage;
           }
         });
-
-        if (!opened.ok) {
-          warnings.push(`acp-open-refused:${opened.refusal}${opened.detail ? `:${opened.detail}` : ''}`);
-          exitCode = 1;
-        } else {
+        if (!opened.ok) { warnings.push(`acp-open-refused:${opened.refusal}${opened.detail ? `:${opened.detail}` : ''}`); exitCode = 1; } else {
           connection = opened.connection;
+          if (request.helperInvocation !== true && request.onAfterSpawn !== undefined) await request.onAfterSpawn(spawnedPid);
           const normalizedCwd = normalizeAcpWorkspaceRoot(request.cwd);
           const resumeId = request.resumeSessionId;
           const priorSessionRoot = !isBridgeProfile && isValidAcpSessionToken(resumeId) ? this.sessionRoots.get(resumeId) : undefined;
@@ -804,22 +791,22 @@ export class AcpBackedRunner implements BackendRunner {
               warnings.push('acp-upstream-artifact-inaccessible');
               exitCode = 1;
             } else {
-              // FR-R7-16 (16-17): re-verify workspace trust, primacy, and ownership generation
-              // immediately before registering scope or dispatching the prompt.
+              // FR-R7-16 (16-17): re-verify trust, primacy, and ownership generation before prompt dispatch.
+              const isKilled = (): boolean => killed;
               const prePromptGenOk =
                 turnOwnershipGeneration === undefined ||
                 this.options.currentOwnershipGeneration?.() === turnOwnershipGeneration;
               const prePromptAuthorityOk =
                 !this.isClosed() &&
-                !killed &&
-                request.cancellationSignal?.aborted !== true &&
+                !isKilled() &&
+                !isSignalAborted() &&
                 prePromptGenOk &&
                 (this.options.primeAuthority === undefined || (await this.options.primeAuthority())) &&
                 (turnOwnershipGeneration === undefined ||
                   this.options.currentOwnershipGeneration?.() === turnOwnershipGeneration);
               if (this.isClosed()) {
                 throw new SpawnRefusedAfterCloseError(label);
-              } else if (killed || request.cancellationSignal?.aborted === true) {
+              } else if (isKilled() || isSignalAborted()) {
                 killed = true;
                 exitCode = 130;
               } else if (!prePromptAuthorityOk) {
@@ -946,6 +933,7 @@ export class AcpBackedRunner implements BackendRunner {
               }
             }
           }
+        }
         }
         }
         }

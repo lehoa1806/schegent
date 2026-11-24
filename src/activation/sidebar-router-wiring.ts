@@ -58,6 +58,11 @@ import {
   createWorkflowLeafControlHooks,
   createWorkflowQueueWake
 } from '../services/workflow-execution/workflow-leaf-control';
+import {
+  getOrCreateProductionWorkflowComposition,
+  getRegisteredProductionWorkflowComposition
+} from '../services/workflow-execution/production-workflow-composition';
+import { createDesktopOwnershipFenceForStore } from './workflow-ownership-fence';
 import { resumePausedQueueExecution } from '../commands/resume-queue-execution';
 
 /**
@@ -267,6 +272,14 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
     // collapsing it.
     readPriorRunOutputs: (runId) => historyStore.outputsFor(runId),
     connectedRuns,
+    getProductionComposition: () =>
+      getRegisteredProductionWorkflowComposition(store) ??
+      getOrCreateProductionWorkflowComposition(store, {
+        workspaceRoot,
+        isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+        ...createDesktopOwnershipFenceForStore(store),
+        requireLiveFenceVerifier: true
+      }),
     workflowControlHooks: createWorkflowLeafControlHooks({
       controller,
       logger,

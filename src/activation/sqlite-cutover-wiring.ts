@@ -29,6 +29,7 @@ import {
   type ArtifactLifecycleService
 } from '../services/artifact-lifecycle';
 import { SqliteCutoverStoreRegistry, type CutoverRegistrationSlot } from './sqlite-cutover-registry';
+import { createDesktopOwnershipFenceForStore } from './workflow-ownership-fence';
 import {
   buildContainedProbeAndReader,
   buildDurableHandoffSeam,
@@ -231,6 +232,7 @@ export interface CreateSqliteCutoverCoordinatorDeps {
   readonly logger: SanitizedLogger;
   readonly isWorkspaceTrusted: () => boolean;
   readonly hasPrimacy: () => Promise<boolean>;
+  readonly subscribePrimacyLost?: (listener: () => void) => vscode.Disposable;
   readonly disposables: vscode.Disposable[];
   /** Optional operator notice callback (defaults to `vscode.window.showWarningMessage`). */
   readonly notifyOperator?: ((message: string) => void | Promise<void>) | undefined;
@@ -567,25 +569,15 @@ async function openPrimarySqliteServices(
     workflowComposition = getOrCreateProductionWorkflowComposition(deps.store, {
       workspaceRoot: deps.workspaceRoot,
       isWorkspaceTrusted: deps.isWorkspaceTrusted,
+      ...createDesktopOwnershipFenceForStore(deps.store),
+      requireLiveFenceVerifier: true,
       durableHandoffSeam,
       phaseHandoffCoordinator,
-      cutoverAuthorityGuard: createCutoverAuthorityGuard({
-        mode: 'post-cutover-strict',
-        storeAuthority: 'sqlite-f04',
-        runtimeAuthority: 'acp-f13'
-      }),
-      assessBackendCapability: (backendId, capability) => {
-        if (capability === 'durable-handoff') {
-          return Object.freeze({
-            backendId,
-            capability,
-            status: 'verified' as const,
-            source: 'fixture-adapter' as const,
-            reasonCode: `capability-verified:${backendId}:durable-handoff`
-          });
-        }
-        return defaultCapabilityAssessment(backendId, capability);
-      }
+      cutoverAuthorityGuard: createCutoverAuthorityGuard({ mode: 'post-cutover-strict', storeAuthority: 'sqlite-f04', runtimeAuthority: 'acp-f13' }),
+      assessBackendCapability: (backendId, capability) =>
+        capability === 'durable-handoff'
+          ? Object.freeze({ backendId, capability, status: 'verified' as const, source: 'fixture-adapter' as const, reasonCode: `capability-verified:${backendId}:durable-handoff` })
+          : defaultCapabilityAssessment(backendId, capability)
     });
     registerProductionWorkflowComposition(deps.store, workflowComposition);
 
@@ -795,16 +787,18 @@ export function createSqliteCutoverCoordinator(
     });
   };
 
+  const demoteOnPrimacyLoss = (): void => {
+    if (activeServices === null) return;
+    const current = activeServices; activeServices = null;
+    disposeServices(current, cutoverRegistry.getCoordinator(deps.store) === coordinator);
+    unregisterProductionWorkflowComposition(deps.store, current.workflowComposition);
+  };
   const close = (): void => {
     if (closed) return;
     closed = true;
     const ownsRegistration = cutoverRegistry.getCoordinator(deps.store) === coordinator;
-    if (activeServices !== null) {
-      const current = activeServices;
-      activeServices = null;
-      disposeServices(current, ownsRegistration);
-      unregisterProductionWorkflowComposition(deps.store, current.workflowComposition);
-    } else if (ownsRegistration) {
+    if (activeServices !== null) demoteOnPrimacyLoss();
+    else if (ownsRegistration) {
       operationalMemento?.configureDetachedTrustedSqliteWriter(null);
       operationalMemento?.detachSqlite();
       catalogFs?.detachSqlite();
@@ -1042,6 +1036,7 @@ export function createSqliteCutoverCoordinator(
   cutoverRegistry.registerCoordinator(deps.store, coordinator, {
     allowMissingCatalogFs: catalogFs === undefined && !deps.isWorkspaceTrusted()
   });
+  if (deps.subscribePrimacyLost !== undefined) deps.disposables.push(deps.subscribePrimacyLost(demoteOnPrimacyLoss));
   deps.disposables.push({ dispose: close });
   return coordinator;
 }

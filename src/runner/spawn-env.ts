@@ -87,19 +87,55 @@ export const REQUIRED_PROCESS_ENV_NAMES: readonly string[] = Object.freeze([
  * the defect, and it is what lets a test assert the mapping by calling the same
  * code production calls instead of restating it and drifting.
  */
+export interface RunSpawnCheckpointHooks {
+  readonly onBeforeSpawn?: (ctx?: { readonly helperInvocation?: boolean }) => Promise<void> | void;
+  readonly onAfterSpawn?: (pid: number | undefined) => Promise<void> | void;
+}
+
+const activeRunSpawnHooks = new Map<string, RunSpawnCheckpointHooks>();
+
+/**
+ * FR-R8-01 (01-09) — Register per-run spawn checkpoint hooks (`recordSpawnIntent`
+ * / `recordAttemptStarted`) so `policyRequestFields` forwards them to backend
+ * runners without widening `PhaseRunner`. Cleared in a `finally` block by the
+ * caller (`attempt-spawn-checkpoints.ts`).
+ */
+export function registerRunSpawnHooks(
+  runId: string,
+  hooks: RunSpawnCheckpointHooks
+): () => void {
+  activeRunSpawnHooks.set(runId, hooks);
+  return () => {
+    if (activeRunSpawnHooks.get(runId) === hooks) {
+      activeRunSpawnHooks.delete(runId);
+    }
+  };
+}
+
 export function policyRequestFields(
   // Anything that carries a policy: a resolved `ProcessEnvironmentPolicy`, or the
   // controller inputs that already hold the same two fields. Normalising both
   // into request fields is the point -- otherwise a caller holding inputs has to
   // synthesise a policy object to hand to a helper that immediately takes it
   // apart again, which is how the awkward first version of this read.
-  source: { readonly inheritProcessEnv?: boolean; readonly processEnvAllowlist?: readonly string[] }
-): Pick<InvocationRequest, 'inheritProcessEnv' | 'processEnvAllowlist'> {
+  source: {
+    readonly inheritProcessEnv?: boolean;
+    readonly processEnvAllowlist?: readonly string[];
+    readonly runId?: string;
+  }
+): Pick<
+  InvocationRequest,
+  'inheritProcessEnv' | 'processEnvAllowlist' | 'onBeforeSpawn' | 'onAfterSpawn'
+> {
+  const hooks =
+    source.runId !== undefined ? activeRunSpawnHooks.get(source.runId) : undefined;
   return {
     ...(source.inheritProcessEnv === false ? { inheritProcessEnv: false } : {}),
     ...(source.processEnvAllowlist !== undefined
       ? { processEnvAllowlist: source.processEnvAllowlist }
-      : {})
+      : {}),
+    ...(hooks?.onBeforeSpawn !== undefined ? { onBeforeSpawn: hooks.onBeforeSpawn } : {}),
+    ...(hooks?.onAfterSpawn !== undefined ? { onAfterSpawn: hooks.onAfterSpawn } : {})
   };
 }
 

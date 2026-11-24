@@ -16,10 +16,19 @@
 // Forward-only, like every migration here. There is no down-path.
 
 import {
-  ConnectedRunInvariantError,
-  assertConnectedRunInvariants,
-  type ConnectedWorkflowRun
-} from './connected-workflow-run';
+  MAX_OPERATIONAL_JSON_DEPTH,
+  deepFreezeValue,
+  isDeepFrozenSnapshot,
+  isPlainRecord,
+  setOwnProp,
+  toSafeIntOrDefault
+} from '../lib/operational-value-helpers';
+import { assertConnectedRunStructure } from './connected-run-invariants';
+import { MAX_COMMAND_RECEIPTS, type ConnectedWorkflowRun } from './connected-workflow-run';
+
+/** Dedicated upper bounds for preserved refused connected-run records (FR-R8-01). */
+export const CONNECTED_RUNS_REFUSED_MAX_COUNT = 256;
+export const CONNECTED_RUNS_REFUSED_MAX_BYTES = 16 * 1024 * 1024;
 
 export type ConnectedRunRefusalReason =
   | 'unsupported-run-schema-version'
@@ -102,36 +111,295 @@ export function connectedRunsWithout(
   return { stored: { ...collection.refused, ...runs }, removed };
 }
 
+export type ConnectedRunEntryClassification =
+  | { readonly ok: true; readonly run: ConnectedWorkflowRun }
+  | { readonly ok: false; readonly reason: ConnectedRunRefusalReason };
+
 /**
- * Deep-freeze on the way out. The aggregate's helpers freeze what they produce,
- * but a record that has been through the memento is a fresh JSON object graph
- * with no freezing left on it — and `assertConnectedRunInvariants` requires the
- * snapshot to be frozen, because "frozen means frozen" has to survive a restart
- * to mean anything (FR-005, FR-006).
+ * Cache of deeply immutable snapshots (`DEEP_FROZEN_SNAPSHOTS`) that already passed
+ * `classifyConnectedRunEntry`, keyed to their validated `connectedRunId`.
  */
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
-  Object.freeze(value);
-  for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
-  return value;
+const VALIDATED_FROZEN_RUN_ID = new WeakMap<object, string>();
+
+function sanitizeDiagnosticId(key: string): string {
+  let cleaned = '';
+  const limit = Math.min(key.length, DIAGNOSTIC_ID_MAX);
+  for (let i = 0; i < limit; i += 1) {
+    const code = key.charCodeAt(i);
+    cleaned += code <= 0x1f || code === 0x7f ? '?' : key.charAt(i);
+  }
+  return key.length > DIAGNOSTIC_ID_MAX ? `${cleaned}...` : cleaned;
 }
 
 function isLegacyOrUnsupportedSchemaShape(value: Record<string, unknown>): boolean {
-  if ('schemaVersion' in value) return true;
-  if ('featureId' in value && !('connectedRunId' in value)) return true;
-  if ('phases' in value && !('graph' in value)) return true;
-  const controlState = value.controlState;
+  if (Object.hasOwn(value, 'schemaVersion') && value.schemaVersion !== undefined) return true;
+  if (Object.hasOwn(value, 'version') && value.version !== undefined) return true;
+  if (Object.hasOwn(value, 'featureId') && !Object.hasOwn(value, 'connectedRunId')) return true;
+  if (Object.hasOwn(value, 'phases') && !Object.hasOwn(value, 'graph')) return true;
+  const controlState = Object.hasOwn(value, 'controlState') ? value.controlState : undefined;
   if (
-    typeof controlState === 'object' &&
-    controlState !== null &&
-    !Array.isArray(controlState) &&
-    'version' in controlState &&
-    typeof (controlState as { version?: unknown }).version === 'number' &&
-    (controlState as { version?: unknown }).version !== 1
+    isPlainRecord(controlState) &&
+    Object.hasOwn(controlState, 'version') &&
+    controlState.version !== 1
   ) {
     return true;
   }
   return false;
+}
+
+/**
+ * Single source of truth for classifying one persisted `KEYS.connectedRuns` entry into
+ * either a valid deeply-frozen `ConnectedWorkflowRun` or an isolated refusal reason.
+ *
+ * Refused entries are never mutated or frozen; unexpected per-entry errors are caught and
+ * isolated as `'invariant-violation'` so one malformed record can never abort sibling work.
+ */
+export function classifyConnectedRunEntry(
+  key: string,
+  value: unknown
+): ConnectedRunEntryClassification {
+  if (isDeepFrozenSnapshot(value) && VALIDATED_FROZEN_RUN_ID.get(value as object) === key) {
+    return { ok: true, run: value as ConnectedWorkflowRun };
+  }
+  try {
+    if (!isPlainRecord(value)) {
+      return { ok: false, reason: 'invariant-violation' };
+    }
+    if (isLegacyOrUnsupportedSchemaShape(value)) {
+      return { ok: false, reason: 'unsupported-run-schema-version' };
+    }
+    assertConnectedRunStructure(value, {
+      requireFrozen: false,
+      maxCommandReceipts: MAX_COMMAND_RECEIPTS
+    });
+    if (value.connectedRunId !== key) {
+      return { ok: false, reason: 'invariant-violation' };
+    }
+    const candidate = deepFreezeValue(value) as ConnectedWorkflowRun;
+    if (isDeepFrozenSnapshot(candidate)) {
+      VALIDATED_FROZEN_RUN_ID.set(candidate, key);
+    }
+    return { ok: true, run: candidate };
+  } catch {
+    return { ok: false, reason: 'invariant-violation' };
+  }
+}
+
+export function sanitizeConnectedRunDiagnosticId(key: string): string {
+  return sanitizeDiagnosticId(key);
+}
+
+function isOperationalJsonTreeSafe(
+  value: unknown,
+  depth: number,
+  seen: WeakSet<object>
+): boolean {
+  if (value === null || typeof value !== 'object') {
+    return typeof value !== 'bigint' && typeof value !== 'symbol' && typeof value !== 'function';
+  }
+  if (depth > MAX_OPERATIONAL_JSON_DEPTH) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) {
+        if (!isOperationalJsonTreeSafe(value[i], depth + 1, seen)) return false;
+      }
+      return true;
+    }
+    if (!isPlainRecord(value)) return false;
+    for (const key of Object.keys(value)) {
+      if (!isOperationalJsonTreeSafe(value[key], depth + 1, seen)) return false;
+    }
+    return true;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+/**
+ * Verifies a preserved refused connected-run entry is JSON-serializable, acyclic,
+ * plain-structured, and safe to freeze within `MAX_OPERATIONAL_JSON_DEPTH` as a child of
+ * the top-level `KEYS.connectedRuns` map, without mutating `value`.
+ */
+export function measureSafeRefusedEntry(
+  value: unknown
+): { readonly ok: true; readonly bytes: number } | { readonly ok: false } {
+  try {
+    if (!isOperationalJsonTreeSafe(value, 1, new WeakSet<object>())) {
+      return { ok: false };
+    }
+    const serialized: unknown = JSON.stringify(value);
+    if (typeof serialized !== 'string') return { ok: false };
+    return { ok: true, bytes: Buffer.byteLength(serialized, 'utf8') };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export interface PreservedRefusedSelection {
+  readonly entries: readonly (readonly [string, unknown])[];
+  readonly totalBytes: number;
+  readonly quarantinedUnsafeCount: number;
+  readonly quarantinedBudgetCount: number;
+  readonly quarantinedKeys: readonly string[];
+}
+
+/**
+ * Selects serializable, depth-safe refused connected-run entries within explicit count and byte
+ * budgets so cyclic, unserializable, over-depth, or unbounded refused entries can never wedge
+ * writes to healthy sibling runs or bypass the operational total byte cap.
+ */
+export function selectPreservedRefusedEntries(
+  refused: Readonly<Record<string, unknown>>,
+  remainingTotalBytes: number
+): PreservedRefusedSelection {
+  const entries: Array<readonly [string, unknown]> = [];
+  const quarantinedKeys: string[] = [];
+  let refusedBytes = 0;
+  let quarantinedUnsafeCount = 0;
+  let quarantinedBudgetCount = 0;
+  const noteKey = (key: string): void => {
+    if (quarantinedKeys.length < CONNECTED_RUN_DIAGNOSTIC_CAP) {
+      quarantinedKeys.push(sanitizeDiagnosticId(key));
+    }
+  };
+  for (const [id, rawRefused] of Object.entries(refused)) {
+    const measured = measureSafeRefusedEntry(rawRefused);
+    if (!measured.ok) {
+      quarantinedUnsafeCount += 1;
+      noteKey(id);
+      continue;
+    }
+    if (
+      entries.length >= CONNECTED_RUNS_REFUSED_MAX_COUNT ||
+      refusedBytes + measured.bytes > CONNECTED_RUNS_REFUSED_MAX_BYTES ||
+      refusedBytes + measured.bytes > remainingTotalBytes
+    ) {
+      quarantinedBudgetCount += 1;
+      noteKey(id);
+      continue;
+    }
+    entries.push([id, rawRefused]);
+    refusedBytes += measured.bytes;
+  }
+  return {
+    entries,
+    totalBytes: refusedBytes,
+    quarantinedUnsafeCount,
+    quarantinedBudgetCount,
+    quarantinedKeys
+  };
+}
+
+const FROZEN_CONNECTED_RUN_BYTES = new WeakMap<object, number>();
+
+export function serializedConnectedRunBytes(run: ConnectedWorkflowRun): number {
+  if (isDeepFrozenSnapshot(run)) {
+    const cached = FROZEN_CONNECTED_RUN_BYTES.get(run);
+    if (cached !== undefined) return cached;
+    const bytes = Buffer.byteLength(JSON.stringify(run), 'utf8');
+    FROZEN_CONNECTED_RUN_BYTES.set(run, bytes);
+    return bytes;
+  }
+  return Buffer.byteLength(JSON.stringify(run), 'utf8');
+}
+
+export function isConnectedRunTerminal(
+  run: ConnectedWorkflowRun,
+  activeFeatureIds: ReadonlySet<string>
+): boolean {
+  if (!isPlainRecord(run)) return false;
+  if (run.pendingHandoff !== undefined && run.pendingHandoff !== null) return false;
+  if (isPlainRecord(run.invocations)) {
+    const frames = Object.values(run.invocations);
+    if (frames.length > 0) {
+      return frames.every(
+        (frame) =>
+          isPlainRecord(frame) &&
+          (frame.status === 'completed' || frame.status === 'failed' || frame.status === 'canceled')
+      );
+    }
+  }
+  if (!isPlainRecord(run.nodes)) return false;
+  for (const node of Object.values(run.nodes)) {
+    if (!isPlainRecord(node) || !Array.isArray(node.attempts)) return false;
+    for (const attempt of node.attempts) {
+      if (
+        isPlainRecord(attempt) &&
+        typeof attempt.queueItemId === 'string' &&
+        activeFeatureIds.has(attempt.queueItemId)
+      ) {
+        return false;
+      }
+    }
+  }
+  return Object.keys(run.nodes).length > 0;
+}
+
+export function connectedRunLastUpdatedMs(run: ConnectedWorkflowRun): number {
+  if (!isPlainRecord(run)) return 0;
+  let latest = toSafeIntOrDefault(run.startedAt, 0);
+  if (isPlainRecord(run.invocations)) {
+    for (const frame of Object.values(run.invocations)) {
+      if (!isPlainRecord(frame)) continue;
+      const completed = toSafeIntOrDefault(frame.completedAt, -1);
+      const started = toSafeIntOrDefault(frame.startedAt, -1);
+      if (completed > latest) latest = completed;
+      else if (started > latest) latest = started;
+    }
+  }
+  if (Array.isArray(run.decisions)) {
+    for (const decision of run.decisions) {
+      if (!isPlainRecord(decision)) continue;
+      const decided = toSafeIntOrDefault(decision.decidedAt, -1);
+      if (decided > latest) latest = decided;
+    }
+  }
+  return latest;
+}
+
+export interface ConnectedRunsFreezeResult {
+  readonly value: unknown;
+  readonly quarantinedCount: number;
+  readonly quarantinedKeys: readonly string[];
+}
+
+/**
+ * Deeply freezes a parsed `KEYS.connectedRuns` document with per-entry isolation: if whole-map
+ * freezing fails (for example, one entry exceeds `MAX_OPERATIONAL_JSON_DEPTH`), falls back to
+ * freezing each top-level own entry individually so healthy sibling runs remain readable while
+ * only offending entries are quarantined with bounded metadata-only diagnostics.
+ */
+export function deepFreezeConnectedRunsDocument(parsed: unknown): ConnectedRunsFreezeResult {
+  try {
+    return {
+      value: deepFreezeValue(parsed),
+      quarantinedCount: 0,
+      quarantinedKeys: Object.freeze([])
+    };
+  } catch (wholeDocError) {
+    if (!isPlainRecord(parsed)) throw wholeDocError;
+  }
+  const isolated: Record<string, unknown> = {};
+  const quarantinedKeys: string[] = [];
+  let quarantinedCount = 0;
+  for (const key of Object.keys(parsed)) {
+    try {
+      const frozenEntry = deepFreezeValue(parsed[key], 1);
+      setOwnProp(isolated, key, frozenEntry);
+    } catch {
+      quarantinedCount += 1;
+      if (quarantinedKeys.length < CONNECTED_RUN_DIAGNOSTIC_CAP) {
+        quarantinedKeys.push(sanitizeDiagnosticId(key));
+      }
+    }
+  }
+  return {
+    value: deepFreezeValue(isolated),
+    quarantinedCount,
+    quarantinedKeys: Object.freeze(quarantinedKeys)
+  };
 }
 
 /**
@@ -142,53 +410,40 @@ function isLegacyOrUnsupportedSchemaShape(value: Record<string, unknown>): boole
  * extension from opening.
  */
 export function migrateConnectedRuns(raw: unknown): ConnectedRunsMigrationResult {
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return EMPTY;
+  if (!isPlainRecord(raw)) return EMPTY;
 
   const runs: Record<string, ConnectedWorkflowRun> = {};
   const dropped: string[] = [];
-  // Entries rather than a record: `Object.fromEntries` defines each key, so a
-  // stored `__proto__` stays a key to preserve instead of reaching the setter.
-  const refused: [string, unknown][] = [];
+  const refused: Record<string, unknown> = {};
   const diagnostics: ConnectedRunRefusalDiagnostic[] = [];
   const refuse = (key: string, value: unknown, reason: ConnectedRunRefusalReason): void => {
     dropped.push(key);
-    refused.push([key, value]);
+    setOwnProp(refused, key, value);
     if (diagnostics.length < CONNECTED_RUN_DIAGNOSTIC_CAP) {
-      const connectedRunId =
-        key.length > DIAGNOSTIC_ID_MAX ? `${key.slice(0, DIAGNOSTIC_ID_MAX)}...` : key;
-      diagnostics.push(Object.freeze({ connectedRunId, reason }));
+      diagnostics.push(Object.freeze({ connectedRunId: sanitizeDiagnosticId(key), reason }));
     }
   };
 
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-      refuse(key, value, 'invariant-violation');
-      continue;
-    }
-    const record = value as Record<string, unknown>;
-    if (isLegacyOrUnsupportedSchemaShape(record)) {
-      refuse(key, value, 'unsupported-run-schema-version');
-      continue;
-    }
-    const candidate = deepFreeze(value) as ConnectedWorkflowRun;
+  for (const key of Object.keys(raw)) {
+    let value: unknown;
     try {
-      assertConnectedRunInvariants(candidate);
-    } catch (err) {
-      if (!(err instanceof ConnectedRunInvariantError)) throw err;
-      refuse(key, value, 'invariant-violation');
+      value = raw[key];
+    } catch {
+      refuse(key, null, 'invariant-violation');
       continue;
     }
-    if (candidate.connectedRunId !== key) {
-      refuse(key, value, 'invariant-violation');
+    const classified = classifyConnectedRunEntry(key, value);
+    if (!classified.ok) {
+      refuse(key, value, classified.reason);
       continue;
     }
-    runs[key] = candidate;
+    setOwnProp(runs, key, classified.run);
   }
 
   return Object.freeze({
     runs: Object.freeze(runs),
     dropped: Object.freeze(dropped),
-    refused: Object.freeze(Object.fromEntries(refused)),
+    refused: Object.freeze(refused),
     diagnostics: Object.freeze(diagnostics)
   });
 }
