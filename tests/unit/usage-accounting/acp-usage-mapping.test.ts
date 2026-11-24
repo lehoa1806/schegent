@@ -4,11 +4,16 @@
  * session cost needs a qualified baseline and a currency, credits stay credits, and replay
  * without a stable identity is never counted twice.
  */
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NodeSqliteConnection, SchemaBootstrapService } from '../../../src/services/sqlite-store';
 import { buildUsageUpdate } from '../../../src/services/acp-runtime/client-guards';
 import { ObservationEmitter } from '../../../src/services/acp-runtime/observation-emitter';
-import { acpUsageObservation } from '../../../src/services/usage-accounting/acp-usage-mapping';
+import { mapSessionUpdate } from '../../../src/services/acp-runtime/session-update-mapper';
+import {
+  acpUsageObservation,
+  sourceIdentityOf
+} from '../../../src/services/usage-accounting/acp-usage-mapping';
 import type { AccountingMeasureInput } from '../../../src/services/usage-accounting/observation-normalizer';
 import { createUsageAccountingService } from '../../../src/services/usage-accounting/usage-accounting-service';
 import { ACP_ATTEMPT, ACP_ROOT, acpBinding, acpUpdate } from '../../fixtures/usage-accounting/acp-usage-updates';
@@ -123,9 +128,99 @@ describe('acpUsageObservation (T038)', () => {
     expect(JSON.stringify(first)).not.toContain('hostReceiveSeq');
   });
 
-  it('drops a malformed identity field rather than storing it', () => {
-    const input = acpUsageObservation(acpUpdate({ producerEventId: 'evt 1/../x' }), acpBinding(), NOW);
-    expect(input.sourceIdentity).toBeNull();
+  it('encodes all valid (profileId, acpSessionId, producerEventId) tuples as uniform 71-byte acp-v1:<sha256> identities across valid ACP shapes', () => {
+    const cases: ReadonlyArray<readonly [string, string, string]> = [
+      ['profile-a', 'acp-session-1', 'evt-1'],
+      ['profile-a', 'session with spaces', 'evt 1/a:b@c'],
+      ['profile-a', 'ns:team/session@host:42', 'event:sub/id@9'],
+      ['profile-a', 's'.repeat(129), 'e'.repeat(256)],
+      ['profile-a', '세션-識別子:αβγ/42', 'イベント-🚀:ok']
+    ];
+    for (const [profileId, acpSessionId, producerEventId] of cases) {
+      const update = acpUpdate({ profileId, acpSessionId, producerEventId });
+      const expected = `acp-v1:${createHash('sha256')
+        .update(JSON.stringify(['acp-usage-source/1', profileId, acpSessionId, producerEventId]), 'utf8')
+        .digest('hex')}`;
+      const derived = sourceIdentityOf(update);
+      expect(derived).toBe(expected);
+      expect(derived).toMatch(/^acp-v1:[0-9a-f]{64}$/);
+      expect(Buffer.byteLength(derived!, 'utf8')).toBe(71);
+      expect(acpUsageObservation(update, acpBinding({ profileId, acpSessionId }), NOW).sourceIdentity).toBe(expected);
+    }
+  });
+
+  it('keeps shifted-colon tuples strictly distinct with zero concatenation collisions', () => {
+    const left = sourceIdentityOf(acpUpdate({ profileId: 'p', acpSessionId: 'a:b', producerEventId: 'c' }));
+    const right = sourceIdentityOf(acpUpdate({ profileId: 'p', acpSessionId: 'a', producerEventId: 'b:c' }));
+    expect(left).not.toBeNull();
+    expect(right).not.toBeNull();
+    expect(left).not.toBe(right);
+  });
+
+  it('rejects Cc, Cf, Cs, Zl, Zp, >256-char agent IDs, and invalid profileIds as null sourceIdentity', () => {
+    const invalidAgentIds = [
+      '',
+      'a'.repeat(257),
+      'bad\nline',
+      'bad\u001b[31m',
+      'bad\u0000nul',
+      'bad\u202ebidi',
+      'bad\u2066isolate',
+      'bad\u200emark',
+      'bad\ud800surrogate',
+      'bad\u2028linesep',
+      'bad\u2029parasep'
+    ];
+    for (const bad of invalidAgentIds) {
+      expect(sourceIdentityOf(acpUpdate({ acpSessionId: bad }))).toBeNull();
+      expect(sourceIdentityOf(acpUpdate({ producerEventId: bad }))).toBeNull();
+    }
+    expect(sourceIdentityOf(acpUpdate({ profileId: 'bad profile' }))).toBeNull();
+    expect(sourceIdentityOf(acpUpdate({ profileId: '-leading-dash' }))).toBeNull();
+    expect(sourceIdentityOf(acpUpdate({ profileId: 'p'.repeat(129) }))).toBeNull();
+  });
+
+  it('extracts optional producerEventId and providerSessionId through mapSessionUpdate and buildUsageUpdate', () => {
+    const mapped = mapSessionUpdate({
+      sessionUpdate: 'usage_update',
+      used: 600,
+      size: 200_000,
+      eventId: 'evt:alpha/1 @ok',
+      cost: { amount: 0.05, currency: 'USD' }
+    });
+    expect(mapped).toEqual({
+      kind: 'usage',
+      usage: {
+        used: 600,
+        size: 200_000,
+        cost: { amount: '0.05', currency: 'USD' },
+        producerEventId: 'evt:alpha/1 @ok'
+      }
+    });
+    if (mapped.kind !== 'usage') throw new Error('expected usage');
+    const built = buildUsageUpdate(
+      {
+        profileId: 'claude-acp-bridge',
+        generation: 2,
+        sessionId: 'sess:space 1',
+        attribution: { origin: 'live', turnId: 'turn-2-1', attemptId: ACP_ATTEMPT, binding: acpBinding() },
+        hostReceiveSeq: 4,
+        eventUtc: NOW,
+        providerSessionId: 'prov-sess-99'
+      },
+      mapped.usage
+    );
+    expect(built.producerEventId).toBe('evt:alpha/1 @ok');
+    expect(built.providerSessionId).toBe('prov-sess-99');
+
+    // Invalid producerEventId in usage_update is dropped cleanly rather than breaking usage mapping.
+    const withBadId = mapSessionUpdate({
+      sessionUpdate: 'usage_update',
+      used: 100,
+      size: 1000,
+      eventId: 'bad\u202eoverride'
+    });
+    expect(withBadId).toEqual({ kind: 'usage', usage: { used: 100, size: 1000 } });
   });
 });
 
@@ -236,7 +331,11 @@ describe('ingestAcpUsageUpdate (T039)', () => {
       svc.ingestAcpUsageUpdate(acpUpdate(LATE), acpBinding());
       expect(contextUsed(svc)).toMatchObject({ total: '2500', completeness: 'known' });
       expect(count("SELECT count(*) FROM accounting_observations WHERE disposition = 'conflicting'")).toBe(0);
-      expect(conn.scalar("SELECT disposition FROM accounting_observations WHERE source_identity LIKE '%:evt-1'")).toBe('superseded');
+      const earlySourceId = sourceIdentityOf(acpUpdate(EARLY));
+      expect(earlySourceId).not.toBeNull();
+      expect(
+        conn.scalar('SELECT disposition FROM accounting_observations WHERE source_identity = ?', earlySourceId!)
+      ).toBe('superseded');
     });
 
     it('keeps the later event when it is ingested first', () => {
@@ -324,6 +423,50 @@ describe('ingestAcpUsageUpdate (T039)', () => {
         })
       );
       expect(emitted).toEqual([{ eventUtc: hostClockUtc, hasQualifiedSessionBaseline: false }]);
+    });
+
+    it('deduplicates replays across spaces, colons, >128-char, and non-ASCII session IDs while keeping shifted-colon pairs distinct in SQLite (R7-17-04)', () => {
+      const svc = service();
+      const nonAscii256 = '한'.repeat(256); // 256 UTF-16 units = 768 UTF-8 bytes; hashed identity stays 71 bytes!
+      const shapes: ReadonlyArray<readonly [string, string, number]> = [
+        ['session with spaces', 'evt 1', 1000],
+        ['ns:colon/session@1', 'evt:sub/2', 1100],
+        ['long-'.padEnd(200, 'x'), 'evt-long-'.padEnd(200, 'y'), 1200],
+        [nonAscii256, 'イベント:αβγ', 1300]
+      ];
+      shapes.forEach(([acpSessionId, producerEventId, used], index) => {
+        const turnId = `turn-shape-${index}`;
+        const binding = acpBinding({ acpSessionId, turnId, attemptId: `att-shape-${index}` });
+        const update = acpUpdate({
+          acpSessionId,
+          producerEventId,
+          turnId,
+          hostReceiveSeq: 1,
+          used
+        });
+        const first = svc.ingestAcpUsageUpdate(update, binding);
+        const replay = svc.ingestAcpUsageUpdate(
+          { ...update, hostReceiveSeq: 42, connectionGeneration: 9, replayed: true },
+          acpBinding({ acpSessionId, turnId, connectionGeneration: 9, attemptId: `att-shape-${index}` })
+        );
+        expect(first, acpSessionId).toMatchObject({ ok: true, value: { disposition: 'accepted' } });
+        expect(replay, acpSessionId).toMatchObject({ ok: true, value: { disposition: 'duplicate' } });
+      });
+
+      // Shifted-colon pair: ('profile-a', 'a:b', 'c') vs ('profile-a', 'a', 'b:c') must both accept as distinct rows.
+      const shiftedA = svc.ingestAcpUsageUpdate(
+        acpUpdate({ acpSessionId: 'a:b', producerEventId: 'c', turnId: 'turn-shift-a' }),
+        acpBinding({ acpSessionId: 'a:b', turnId: 'turn-shift-a', attemptId: 'att-shift-a' })
+      );
+      const shiftedB = svc.ingestAcpUsageUpdate(
+        acpUpdate({ acpSessionId: 'a', producerEventId: 'b:c', turnId: 'turn-shift-b' }),
+        acpBinding({ acpSessionId: 'a', turnId: 'turn-shift-b', attemptId: 'att-shift-b' })
+      );
+      expect(shiftedA).toMatchObject({ ok: true, value: { disposition: 'accepted' } });
+      expect(shiftedB).toMatchObject({ ok: true, value: { disposition: 'accepted' } });
+      expect(count("SELECT count(*) FROM accounting_observations WHERE disposition = 'accepted'")).toBe(
+        shapes.length + 2
+      );
     });
   });
 });

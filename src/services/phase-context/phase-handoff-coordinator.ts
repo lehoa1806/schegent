@@ -6,13 +6,16 @@
  * Zero `vscode` or `node:fs` imports (docs/hard-rules.md rules 13, 69).
  */
 import { ACP_PROTOCOL_VERSION } from '../../contracts/acp-runtime';
-import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
+import { getBackendDescriptor } from '../../contracts/backend-descriptors';
+import { DEFAULT_BACKEND, isBackendRunnerKind } from '../../contracts/backend-kinds';
+import type { DeliveryRepresentation } from '../../contracts/phase-context/context-delivery';
 import type {
   AcceptedRevision,
   HandoffExplanation,
   HandoffManifest,
   HandoffObservation,
-  HandoffRecord
+  HandoffRecord,
+  HandoffRevisionDiff
 } from '../../contracts/phase-context/context-manifest';
 import {
   PHASE_CONTEXT_CONTRIBUTION_VERSION,
@@ -38,14 +41,26 @@ import { createAcceptanceService, storedManifest, type AcceptanceService } from 
 import {
   allocateAttemptStagingPaths,
   captureAttemptPublications,
-  type AttemptStagingPaths
+  type AttemptStagingPaths,
+  type LegacySidecarScope
 } from './attempt-result-publisher';
-import { explainHandoff, observationOf, observePrepared } from './explanation';
+import {
+  compareHandoffRevisions,
+  explainHandoff,
+  observationOf,
+  observePrepared
+} from './explanation';
 import {
   artifactLocationKey,
+  buildBoundedAdmissionOwner,
+  canonicalNodePathInFrame,
+  clipUtf8Safe,
+  ensureHandoffArtifactsPinned,
   executePlanAttemptDelivery,
   inspectDeclaredOutputFiles,
+  inspectForEachResultIndexArtifact,
   normalizeHandoffIdentifier,
+  normalizeNodePathForHandoff,
   splitSafeRelativePath,
   type PlanAttemptDeliveryInput,
   type PlanAttemptDeliveryResult,
@@ -53,20 +68,30 @@ import {
   type TargetProfileResolution
 } from './handoff-delivery-coordinator';
 import { handoffIdOf, parseHandoffIdentity } from './identity';
+import { AdmissionWaiterQueue } from './phase-context-helpers';
 import { prepareHandoff } from './preparation';
 import { createPreparationAdmission, type PreparationAdmission } from './preparation-admission';
 import { refuse } from './primitives';
 import {
   applyStagedReviewPublications,
+  buildForEachSourceContribution,
   inspectStoredReviewLoop,
   invalidateStoredReviewLoopCandidate,
+  releaseCleanHandoffAttemptReferences,
   releasePhaseContextOwnerReferences,
+  resolveNodeReviewRole,
+  resolveReviewLoopTarget,
+  scopeRunCandidatesToFrame,
   verifyStoredRepeatExitAllowed,
   type ReviewLoopInspection
 } from './review-loop-coordinator';
 import { parseSourceContribution } from './source-contribution';
-import type { DurableHandoffStore } from './sqlite-handoff-store';
+import type {
+  DurableHandoffStore,
+  TransitionedUncertainDispatch
+} from './sqlite-handoff-store';
 
+export { normalizeNodePathForHandoff } from './handoff-delivery-coordinator';
 export type {
   PlanAttemptDeliveryInput,
   PlanAttemptDeliveryResult,
@@ -98,11 +123,17 @@ export interface RecordSettledAttemptInput {
   readonly frame: WorkflowInvocationFrame;
   readonly attempt: NodeAttemptRecord;
   readonly reviewLoopNodeId?: string;
+  readonly allowReviewReport?: boolean;
   readonly candidateSnapshotDigest?: string;
+  readonly fallbackCandidateRef?: string;
   readonly scopeRevision?: string;
+  readonly fallbackScopeRevision?: string;
   readonly criteriaRevision?: string;
+  readonly fallbackCriteriaRevision?: string;
   readonly blockingSeverities?: readonly Severity[];
   readonly maxReviewPasses?: number;
+  readonly legacySidecarScope?: LegacySidecarScope;
+  readonly legacySidecarSegments?: readonly string[];
 }
 
 export interface PrepareTransitionHandoffInput {
@@ -116,6 +147,8 @@ export interface PrepareTransitionHandoffInput {
   readonly targetNodeId: string;
   readonly targetInstructions: string;
   readonly targetBackendId: string;
+  /** Optional explicit working-set byte estimate (never clamped below `workingSetBytesMax`). */
+  readonly estimatedWorkingSetBytes?: number;
 }
 
 export type PrepareTransitionHandoffResult =
@@ -133,18 +166,13 @@ export type PrepareTransitionHandoffResult =
       readonly detail: string;
     };
 
-export function normalizeNodePathForHandoff(raw: string): string {
-  const stripped = raw.trim().replace(/^\/+/, '').replace(/[^A-Za-z0-9._:/#-]/g, '-');
-  const ensured = stripped.replace(/^[^A-Za-z0-9]+/, '').slice(0, 256);
-  return ensured.length > 0 ? ensured : 'root';
-}
-
 function defaultTargetProfile(backendId: string): TargetProfileResolution {
   const normalized = normalizeHandoffIdentifier(backendId || DEFAULT_BACKEND, DEFAULT_BACKEND);
+  const descriptor = isBackendRunnerKind(normalized) ? getBackendDescriptor(normalized) : null;
   return {
     profile: {
-      profileId: `${normalized}-acp`,
-      profileRevision: 1,
+      profileId: descriptor !== null ? descriptor.acpProfile.profileId : `${normalized}-acp`,
+      profileRevision: descriptor !== null ? descriptor.acpProfile.revision : 1,
       qualifiedContextBytes: PHASE_CONTEXT_LIMITS.renderedContextBytesMax
     },
     capabilities: {
@@ -194,18 +222,26 @@ export interface PhaseHandoffCoordinator {
   planAndAuthorizeAttemptDelivery(
     input: PlanAttemptDeliveryInput
   ): Promise<PlanAttemptDeliveryResult>;
+  resolveHandoffRepresentation(attemptId: string): DeliveryRepresentation | null;
+  resolveHandoffContentDigest(handoffId: string): string | null;
   settleAttemptDispatch(params: {
     readonly handoffId: string;
     readonly revision: number;
     readonly targetAttemptId: string;
     readonly delivered: boolean;
   }): { readonly ok: true } | Refusal;
+  reconcileInterruptedDispatches(runId?: string): readonly TransitionedUncertainDispatch[];
   releaseTerminalRunPins(runId: string): void;
   reloadFromStore(): void;
   inspectHandoff(
     handoffId: string,
     revision?: number
   ): { readonly ok: true; readonly explanation: HandoffExplanation } | Refusal;
+  compareHandoffRevisions(
+    handoffId: string,
+    fromRevision: number,
+    toRevision: number
+  ): { readonly ok: true; readonly diff: HandoffRevisionDiff } | Refusal;
   inspectReviewLoop(loopId: string): ReviewLoopInspection | null;
   listRunHandoffs(runId: string): readonly HandoffExplanation[];
   listRunReviewLoops(runId: string): readonly ReviewLoopInspection[];
@@ -225,18 +261,21 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
   public readonly store: DurableHandoffStore;
   public readonly acceptance: AcceptanceService;
   private readonly admission: PreparationAdmission;
+  private readonly admissionQueue: AdmissionWaiterQueue;
   private readonly clock: () => number;
   private readonly resolveExecutionRoot: (runId: string) => string;
   private readonly resolveLaneId: (runId: string) => string | null;
   private readonly resolveProfile: (backendId: string) => TargetProfileResolution;
   private readonly sequenceByRunId = new Map<string, number>();
   private readonly candidatesByRunId = new Map<string, RecordedAttemptCandidate[]>();
+  private admissionNonce = 0;
 
   public constructor(private readonly deps: PhaseHandoffCoordinatorDeps) {
     this.store = deps.store;
     this.acceptance = createAcceptanceService(deps.store);
     this.clock = deps.nowMs ?? (() => Date.now());
     this.admission = deps.admission ?? createPreparationAdmission({ now: this.clock });
+    this.admissionQueue = new AdmissionWaiterQueue(this.admission, this.clock);
     this.resolveExecutionRoot =
       deps.resolveExecutionRoot ?? (() => deps.primaryWorkspaceRoot);
     this.resolveLaneId = deps.resolveLaneId ?? (() => null);
@@ -249,14 +288,14 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     return next;
   }
 
-  private targetKey(runId: string, invocationId: string, targetNodeId: string): string {
-    return `${runId}::${invocationId}::${targetNodeId}`;
-  }
-
   private emitObservation(obs: HandoffObservation | null): void {
     if (obs === null) return;
     if (this.store.recordObservation(obs)) {
-      this.deps.onObservation?.(obs);
+      try {
+        this.deps.onObservation?.(obs);
+      } catch {
+        // Non-authoritative telemetry sink errors must never abort or roll back authoritative SQLite writes.
+      }
     }
   }
 
@@ -340,46 +379,58 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     input: RecordSettledAttemptInput,
     producer: ProducerRef,
     executionRoot: string
-  ): Promise<void> {
+  ): Promise<{ readonly ok: true } | Refusal> {
     const wf = input.run.frozenClosure?.workflowsById[input.frame.workflowId];
     const node = wf?.nodes.find((n) => n.nodeId === input.attempt.nodeId);
-    if (node?.control?.kind !== 'for-each') return;
+    if (node?.control?.kind !== 'for-each') return { ok: true };
 
-    const outputs = Object.entries(input.attempt.declaredOutputs);
-    const outcomes = outputs
-      .slice(0, PHASE_CONTEXT_LIMITS.collectionEntriesMax)
-      .map(([portId, val]) =>
-        Buffer.from(`foreach-result-index:${portId}=${val.value}`, 'utf8')
-          .subarray(0, PHASE_CONTEXT_LIMITS.textEntryBytesMax)
-          .toString('utf8')
-      );
-    const { refs, locations } = await inspectDeclaredOutputFiles(
+    const runId = input.run.connectedRunId;
+    const forEachIdx = await inspectForEachResultIndexArtifact({
       executionRoot,
-      input.attempt.declaredOutputs
-    );
-    const synthetic: SourceContribution = {
-      schemaVersion: PHASE_CONTEXT_CONTRIBUTION_VERSION,
-      producer,
-      coverage: input.attempt.status === 'completed' ? 'complete' : 'unavailable',
-      outcomes: outcomes.length > 0 ? outcomes : ['foreach-ordered-result-index:empty'],
-      decisions: [],
-      constraints: [],
-      unresolvedIssues: [],
-      summary: null,
-      artifacts: refs
-    };
-    const checked = parseSourceContribution(synthetic, producer);
-    if (checked.ok) {
-      const runId = input.run.connectedRunId;
-      this.appendCandidate(runId, {
-        candidate: {
-          acceptedFrom: producer,
-          acceptedSequence: this.nextSequence(runId),
-          contribution: checked.contribution
-        },
-        artifactsByKey: locations
-      });
+      primaryWorkspaceRoot: this.deps.primaryWorkspaceRoot,
+      runId,
+      attemptId: producer.attemptId,
+      declaredOutputs: input.attempt.declaredOutputs,
+      lifecycle: this.deps.lifecycle ?? null
+    });
+    if (!forEachIdx.ok) return forEachIdx;
+
+    const nonIndexOutputs: Record<string, typeof input.attempt.declaredOutputs[string]> = {};
+    for (const [portId, portVal] of Object.entries(input.attempt.declaredOutputs)) {
+      if (portId === 'resultIndexArtifact') continue;
+      nonIndexOutputs[portId] = portVal;
     }
+    const extraFiles = await inspectDeclaredOutputFiles({
+      executionRoot,
+      primaryWorkspaceRoot: this.deps.primaryWorkspaceRoot,
+      runId,
+      attemptId: producer.attemptId,
+      declaredOutputs: nonIndexOutputs,
+      lifecycle: this.deps.lifecycle ?? null
+    });
+    if (!extraFiles.ok) return extraFiles;
+
+    const locations = new Map<string, StoredArtifactLocation>(extraFiles.locations);
+    if (forEachIdx.ref !== null && forEachIdx.location !== null) {
+      locations.set(
+        artifactLocationKey(forEachIdx.ref.artifactId, forEachIdx.ref.immutableVersion),
+        forEachIdx.location
+      );
+    }
+    const checked = buildForEachSourceContribution({
+      producer,
+      completed: input.attempt.status === 'completed',
+      summaryLine: forEachIdx.summaryLine,
+      indexRef: forEachIdx.ref,
+      extraRefs: extraFiles.refs
+    });
+    if (!checked.ok) return checked;
+
+    this.appendCandidate(runId, {
+      candidate: { acceptedFrom: producer, acceptedSequence: this.nextSequence(runId), contribution: checked.contribution },
+      artifactsByKey: locations
+    });
+    return { ok: true };
   }
 
   public async recordSettledAttempt(
@@ -394,17 +445,30 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     });
 
     if (input.attempt.nodeKind === 'workflow') {
-      await this.recordForEachWorkflowAttempt(input, producer, executionRoot);
-      return { ok: true };
+      return this.recordForEachWorkflowAttempt(input, producer, executionRoot);
     }
+
+    const allowReviewReport =
+      input.allowReviewReport ??
+      (input.reviewLoopNodeId !== undefined &&
+      resolveReviewLoopTarget(input.run, input.frame, input.attempt.nodeId) === null
+        ? true
+        : resolveNodeReviewRole(input.run, input.frame, input.attempt.nodeId) === 'reviewer');
 
     const captured = await captureAttemptPublications({
       runId,
       executionRoot,
       primaryWorkspaceRoot: this.deps.primaryWorkspaceRoot,
       producer,
+      allowReviewReport,
       ...(this.deps.legacySidecarOptIn !== undefined
         ? { legacySidecarOptIn: this.deps.legacySidecarOptIn }
+        : {}),
+      ...(input.legacySidecarScope !== undefined
+        ? { legacySidecarScope: input.legacySidecarScope }
+        : {}),
+      ...(input.legacySidecarSegments !== undefined
+        ? { legacySidecarSegments: input.legacySidecarSegments }
         : {}),
       lifecycle: this.deps.lifecycle ?? null
     });
@@ -419,10 +483,15 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
       return { ok: false, failure: captured.fixClaims.failure, detail: captured.fixClaims.detail };
     }
 
-    const declaredFiles = await inspectDeclaredOutputFiles(
+    const declaredFiles = await inspectDeclaredOutputFiles({
       executionRoot,
-      input.attempt.declaredOutputs
-    );
+      primaryWorkspaceRoot: this.deps.primaryWorkspaceRoot,
+      runId,
+      attemptId: producer.attemptId,
+      declaredOutputs: input.attempt.declaredOutputs,
+      lifecycle: this.deps.lifecycle ?? null
+    });
+    if (!declaredFiles.ok) return declaredFiles;
     const locations = new Map<string, StoredArtifactLocation>(declaredFiles.locations);
 
     if (captured.contribution.kind === 'accepted') {
@@ -465,11 +534,7 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     } else {
       const outcomeLines = Object.entries(input.attempt.declaredOutputs)
         .slice(0, PHASE_CONTEXT_LIMITS.collectionEntriesMax)
-        .map(([k, v]) =>
-          Buffer.from(`${k}:${v.value}`, 'utf8')
-            .subarray(0, PHASE_CONTEXT_LIMITS.textEntryBytesMax)
-            .toString('utf8')
-        );
+        .map(([k, v]) => clipUtf8Safe(`${k}:${v.value}`, PHASE_CONTEXT_LIMITS.textEntryBytesMax));
       const fallbackContribution: SourceContribution = {
         schemaVersion: PHASE_CONTEXT_CONTRIBUTION_VERSION,
         producer,
@@ -494,7 +559,11 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
       }
     }
 
-    return applyStagedReviewPublications(this.store, input, captured);
+    return applyStagedReviewPublications(
+      this.store,
+      { ...input, allowReviewReport },
+      captured
+    );
   }
 
   public invalidateReviewLoopCandidate(params: {
@@ -521,14 +590,25 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     }
 
     const runId = input.run.connectedRunId;
-    const runCandidates = (this.candidatesByRunId.get(runId) ?? []).map((c) => c.candidate);
+    const runCandidates = scopeRunCandidatesToFrame(
+      input.run,
+      input.frame,
+      (this.candidatesByRunId.get(runId) ?? []).map((c) => c.candidate),
+      normalizeHandoffIdentifier
+    );
     const cutoffSequence = this.sequenceByRunId.get(runId) ?? 0;
 
-    const estimatedBytes = Math.min(
-      PHASE_CONTEXT_LIMITS.workingSetBytesMax,
-      Math.max(4096, JSON.stringify(runCandidates).length * 2)
-    );
-    const admissionOwner = this.targetKey(runId, input.frame.invocationId, input.targetNodeId);
+    // NFR-003: do NOT clamp `estimatedBytes` to `workingSetBytesMax` so oversized single
+    // preparations genuinely fail closed with `working-set-exceeded`.
+    const estimatedBytes =
+      input.estimatedWorkingSetBytes ??
+      Math.max(4096, Buffer.byteLength(JSON.stringify(runCandidates), 'utf8') * 2);
+    const admissionOwner = buildBoundedAdmissionOwner('prep', [
+      runId,
+      input.frame.invocationId,
+      input.targetNodeId,
+      String(++this.admissionNonce)
+    ]);
     this.admission.expire();
     const admitted = this.admission.request(admissionOwner, estimatedBytes);
     if (!admitted.ok) {
@@ -536,8 +616,15 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     }
 
     try {
+      if (admitted.state === 'queued') {
+        const waited = await this.admissionQueue.waitForActivation(admissionOwner, estimatedBytes);
+        if (!waited.ok) {
+          return { kind: 'refused', failure: waited.failure, detail: waited.detail };
+        }
+      }
+
       const framePath = normalizeNodePathForHandoff(input.frame.nodePath);
-      const targetNodePath = normalizeNodePathForHandoff(`${framePath}/${input.targetNodeId}`);
+      const targetNodePath = canonicalNodePathInFrame(input.frame, input.targetNodeId);
       const resolveSiblingNodePath = (nodeId: string): string => {
         const attemptsForNode = input.frame.attemptsByNodeId[nodeId] as
           | readonly { readonly nodePath: string }[]
@@ -602,7 +689,12 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
         return { kind: 'refused', failure: parsedIdentity.failure, detail: parsedIdentity.detail };
       }
       const computedHandoffId = handoffIdOf(parsedIdentity.identity);
-      const existingRecord = this.store.load(computedHandoffId);
+      let existingRecord: HandoffRecord | null;
+      try {
+        existingRecord = this.store.load(computedHandoffId);
+      } catch {
+        return { kind: 'refused', failure: 'storage-unavailable', detail: 'store-failure' };
+      }
       const nextRevNumber =
         existingRecord === null ? 1 : (existingRecord.revisions.at(-1)?.revision ?? 0) + 1;
 
@@ -622,45 +714,77 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
         return prep;
       }
 
-      const txOutcome = this.store.runInImmediateTransaction(() => {
-        this.store.bindRunMetadata(prep.manifest.handoffId, {
-          runId,
-          sourceAttemptId: input.fromAttempt.attemptId,
-          targetPhaseId: input.targetNodeId,
-          laneId: this.resolveLaneId(runId)
-        });
-        this.emitObservation(observePrepared(prep));
-        const accepted = this.acceptance.accept(prep);
-        if (!accepted.ok) return accepted;
-
-        const stored = this.store.load(prep.manifest.handoffId);
-        if (stored !== null) {
-          this.emitRecordObservations(stored, accepted.revision.revision, ['accepted']);
-          if (accepted.revision.revision > 1) {
-            this.emitRecordObservations(stored, accepted.revision.revision - 1, ['superseded']);
-          }
-        }
-        return accepted;
-      });
-
-      if (!txOutcome.ok) {
-        return { kind: 'refused', failure: txOutcome.failure, detail: txOutcome.detail };
+      // Check active preparation deadline before committing external pins or SQLite rows.
+      if (this.admission.expire().includes(admissionOwner)) {
+        return { kind: 'refused', failure: 'capacity-exceeded', detail: 'preparation-deadline' };
       }
 
-      // Pin referenced artifacts after the handoff transaction commits so `lifecycle.addReference`
-      // can open its own `BEGIN IMMEDIATE` transaction on the shared writer connection.
-      if (this.deps.lifecycle) {
-        for (const src of prep.manifest.sources) {
-          for (const art of src.artifacts) {
-            this.deps.lifecycle.addReference({
-              artifactId: art.artifactId,
-              ownerType: 'handoff',
-              ownerId: prep.manifest.handoffId,
-              purpose: 'phase-context',
-              protective: true
-            });
+      // Acquire checked protective F05 pins and durable workspace-relative artifact locators BEFORE
+      // opening the SQLite handoff transaction (so F05 `BEGIN IMMEDIATE` never nests and pin quota
+      // refusals leave zero unpinned handoff rows).
+      const pinnedRes = await ensureHandoffArtifactsPinned({
+        primaryWorkspaceRoot: this.deps.primaryWorkspaceRoot,
+        runId,
+        handoffId: prep.manifest.handoffId,
+        manifest: prep.manifest,
+        runLocations: this.lookupRunArtifactLocations(runId),
+        lifecycle: this.deps.lifecycle ?? null
+      });
+      if (!pinnedRes.ok) {
+        return { kind: 'refused', failure: pinnedRes.failure, detail: pinnedRes.detail };
+      }
+
+      let txOutcome:
+        | { readonly ok: true; readonly revision: AcceptedRevision; readonly created: boolean }
+        | Refusal;
+      try {
+        txOutcome = this.store.runInImmediateTransaction(() => {
+          this.store.bindRunMetadata(prep.manifest.handoffId, {
+            runId,
+            sourceAttemptId: input.fromAttempt.attemptId,
+            targetPhaseId: input.targetNodeId,
+            laneId: this.resolveLaneId(runId)
+          });
+          if (Object.keys(pinnedRes.persistedLocations).length > 0) {
+            this.store.saveArtifactLocations(prep.manifest.handoffId, pinnedRes.persistedLocations);
+          }
+          const accepted = this.acceptance.accept(prep);
+          if (!accepted.ok) return accepted;
+
+          // FR-022: emit `'prepared'` AFTER `acceptance.accept` creates/updates the SQLite row so
+          // revision-1 `'prepared'` is durably persisted in `store.listObservations`.
+          this.emitObservation(observePrepared(prep));
+          const stored = this.store.load(prep.manifest.handoffId);
+          if (stored !== null) {
+            this.emitRecordObservations(stored, accepted.revision.revision, ['accepted']);
+            if (accepted.revision.revision > 1) {
+              this.emitRecordObservations(stored, accepted.revision.revision - 1, ['superseded']);
+            }
+          }
+          return accepted;
+        });
+      } catch {
+        // CR-314-8: convert SQLite/transaction exceptions to typed refusal so F05 pin rollback executes.
+        txOutcome = refuse('storage-unavailable', 'store-failure');
+      }
+
+      if (!txOutcome.ok) {
+        if (this.deps.lifecycle) {
+          for (const artifactId of pinnedRes.newlyPinnedArtifactIds) {
+            try {
+              this.deps.lifecycle.releaseReference({
+                artifactId,
+                ownerType: 'handoff',
+                ownerId: prep.manifest.handoffId,
+                purpose: 'phase-context',
+                reason: 'owner-durable'
+              });
+            } catch {
+              // Best-effort cleanup of newly acquired handoff pins after acceptance refusal.
+            }
           }
         }
+        return { kind: 'refused', failure: txOutcome.failure, detail: txOutcome.detail };
       }
 
       return {
@@ -671,7 +795,7 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
         waitingApproval: txOutcome.revision.state === 'waiting-approval'
       };
     } finally {
-      this.admission.release(admissionOwner);
+      this.admissionQueue.release(admissionOwner);
     }
   }
 
@@ -682,14 +806,16 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
   ): string | null {
     const normalizedOcc = normalizeHandoffIdentifier(invocationId, 'occ-1');
     const normalizedInv = normalizeHandoffIdentifier(invocationId, 'inv-1');
-    let fallbackMatch: string | null = null;
     for (const id of this.store.listHandoffIdsForRun(runId)) {
       const meta = this.store.getRunMetadata(id);
       if (meta?.targetPhaseId !== targetNodeId) continue;
-      if (fallbackMatch === null) {
-        fallbackMatch = id;
+      let record: HandoffRecord | null;
+      try {
+        record = this.store.load(id);
+      } catch {
+        // Corrupt handoff row for this target phase: return its id so delivery fails closed.
+        return id;
       }
-      const record = this.store.load(id);
       const latestRev = record?.revisions.at(-1);
       const manifest = latestRev !== undefined ? storedManifest(latestRev) : null;
       if (
@@ -700,7 +826,30 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
         return id;
       }
     }
-    return fallbackMatch;
+    return null;
+  }
+
+  public resolveHandoffRepresentation(attemptId: string): DeliveryRepresentation | null {
+    const normalized = normalizeHandoffIdentifier(attemptId, 'attempt-1');
+    try {
+      return (
+        this.store.findRepresentationByAttemptId(normalized) ??
+        (attemptId !== normalized ? this.store.findRepresentationByAttemptId(attemptId) : null)
+      );
+    } catch {
+      // Unreadable representation lookup fails closed at caller.
+      return null;
+    }
+  }
+
+  public resolveHandoffContentDigest(handoffId: string): string | null {
+    try {
+      const record = this.store.load(handoffId);
+      return record?.revisions.at(-1)?.manifestDigest ?? null;
+    } catch {
+      // Corrupt handoff row returns null so checkDispatch refuses content-changed.
+      return null;
+    }
   }
 
   public async planAndAuthorizeAttemptDelivery(
@@ -710,10 +859,12 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
       input,
       store: this.store,
       acceptance: this.acceptance,
+      primaryWorkspaceRoot: this.deps.primaryWorkspaceRoot,
       resolveExecutionRoot: this.resolveExecutionRoot,
       resolveProfile: this.resolveProfile,
       lookupRunArtifactLocations: (runId) => this.lookupRunArtifactLocations(runId),
       lifecycle: this.deps.lifecycle ?? null,
+      admission: this.admission,
       clock: this.clock,
       onDispatchIntentRecorded: (record, revision, attemptId) => {
         this.emitRecordObservations(record, revision, ['dispatch-intent'], attemptId);
@@ -729,38 +880,77 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
   }): { readonly ok: true } | Refusal {
     const normalizedAttemptId = normalizeHandoffIdentifier(params.targetAttemptId, 'attempt-1');
     const outcome = params.delivered ? ('delivered' as const) : ('uncertain' as const);
-    const txOutcome = this.store.runInImmediateTransaction(() => {
-      const settled = this.acceptance.settleDispatch(
-        params.handoffId,
-        params.revision,
-        normalizedAttemptId,
-        outcome
-      );
-      if (!settled.ok) return settled;
-      const record = this.store.load(params.handoffId);
-      if (record !== null) {
-        this.emitRecordObservations(record, params.revision, [outcome], normalizedAttemptId);
-      }
-      return { ok: true as const };
-    });
+    let txOutcome: { readonly ok: true } | Refusal;
+    try {
+      txOutcome = this.store.runInImmediateTransaction(() => {
+        const settled = this.acceptance.settleDispatch(
+          params.handoffId,
+          params.revision,
+          normalizedAttemptId,
+          outcome
+        );
+        if (!settled.ok) return settled;
+        const record = this.store.load(params.handoffId);
+        if (record !== null) {
+          this.emitRecordObservations(record, params.revision, [outcome], normalizedAttemptId);
+        }
+        return { ok: true as const };
+      });
+    } catch {
+      // Fail closed on SQLite/corruption failures during dispatch settlement.
+      return refuse('storage-unavailable', 'store-failure');
+    }
     if (txOutcome.ok && params.delivered && this.deps.lifecycle) {
       releasePhaseContextOwnerReferences(
         this.deps.lifecycle,
         this.store,
         params.handoffId,
         'attempt',
-        params.targetAttemptId
+        normalizedAttemptId
       );
+      if (params.targetAttemptId !== normalizedAttemptId) {
+        releasePhaseContextOwnerReferences(
+          this.deps.lifecycle,
+          this.store,
+          params.handoffId,
+          'attempt',
+          params.targetAttemptId
+        );
+      }
     }
     return txOutcome;
+  }
+
+  public reconcileInterruptedDispatches(runId?: string): readonly TransitionedUncertainDispatch[] {
+    const transitioned = this.store.markUnsettledIntentsUncertain(runId);
+    for (const item of transitioned) {
+      try {
+        const record = this.store.load(item.handoffId);
+        if (record !== null) {
+          this.emitRecordObservations(record, item.revision, ['uncertain'], item.targetAttemptId);
+        }
+      } catch {
+        // Corrupt handoff row already marked status='uncertain' in SQLite; skip observation emission.
+      }
+    }
+    return transitioned;
   }
 
   public releaseTerminalRunPins(runId: string): void {
     if (this.deps.lifecycle) {
       for (const handoffId of this.store.listHandoffIdsForRun(runId)) {
-        const record = this.store.load(handoffId);
-        const hasUncertain = record?.dispatches.some((d) => d.state === 'uncertain') ?? false;
-        if (!hasUncertain) {
+        let hasUncertainOrIntent = true;
+        try {
+          const record = this.store.load(handoffId);
+          // R7-17-07 (Clarification Q3): preserve BOTH `handoff` and `attempt` protective pins
+          // whenever ANY dispatch on this handoff is `'uncertain'` or unsettled `'intent'`.
+          hasUncertainOrIntent =
+            record?.dispatches.some((d) => d.state === 'uncertain' || d.state === 'intent') ?? false;
+        } catch {
+          // Fail closed: keep protective pins intact when stored handoff JSON is corrupt.
+          hasUncertainOrIntent = true;
+        }
+        if (!hasUncertainOrIntent) {
           releasePhaseContextOwnerReferences(
             this.deps.lifecycle,
             this.store,
@@ -768,6 +958,7 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
             'handoff',
             handoffId
           );
+          releaseCleanHandoffAttemptReferences(this.deps.lifecycle, this.store, handoffId);
         }
       }
     }
@@ -779,6 +970,7 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     this.candidatesByRunId.clear();
     this.sequenceByRunId.clear();
     this.store.clearPendingMetadata?.();
+    this.reconcileInterruptedDispatches();
   }
 
   public inspectHandoff(
@@ -789,6 +981,17 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     if (!inspected.ok) return inspected;
     if (inspected.record === null) return refuse('stale-revision', 'unknown-handoff');
     return explainHandoff(inspected.record, revision);
+  }
+
+  public compareHandoffRevisions(
+    handoffId: string,
+    fromRevision: number,
+    toRevision: number
+  ): { readonly ok: true; readonly diff: HandoffRevisionDiff } | Refusal {
+    const inspected = this.acceptance.inspect(handoffId);
+    if (!inspected.ok) return inspected;
+    if (inspected.record === null) return refuse('stale-revision', 'unknown-handoff');
+    return compareHandoffRevisions(inspected.record, fromRevision, toRevision);
   }
 
   public inspectReviewLoop(loopId: string): ReviewLoopInspection | null {
@@ -818,17 +1021,22 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     baseRevision: number,
     replacementSources: unknown
   ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal {
-    return this.store.runInImmediateTransaction(() => {
-      const edited = this.acceptance.edit(handoffId, baseRevision, replacementSources);
-      if (!edited.ok) return edited;
-      this.emitObservation(observePrepared(edited.prepared));
-      const record = this.store.load(handoffId);
-      if (record !== null) {
-        this.emitRecordObservations(record, edited.revision.revision, ['accepted']);
-        this.emitRecordObservations(record, baseRevision, ['superseded']);
-      }
-      return { ok: true as const, revision: edited.revision };
-    });
+    try {
+      return this.store.runInImmediateTransaction(() => {
+        const edited = this.acceptance.edit(handoffId, baseRevision, replacementSources);
+        if (!edited.ok) return edited;
+        this.emitObservation(observePrepared(edited.prepared));
+        const record = this.store.load(handoffId);
+        if (record !== null) {
+          this.emitRecordObservations(record, edited.revision.revision, ['accepted']);
+          this.emitRecordObservations(record, baseRevision, ['superseded']);
+        }
+        return { ok: true as const, revision: edited.revision };
+      });
+    } catch {
+      // Fail closed on SQLite/corruption failures during handoff edit.
+      return refuse('storage-unavailable', 'store-failure');
+    }
   }
 
   public approveHandoff(
@@ -837,15 +1045,20 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     decisionId: string
   ): { readonly ok: true; readonly revision: number } | Refusal {
     const normalizedDecision = normalizeHandoffIdentifier(decisionId, 'decision-approve');
-    return this.store.runInImmediateTransaction(() => {
-      const approved = this.acceptance.approve(handoffId, revision, normalizedDecision);
-      if (!approved.ok) return approved;
-      const record = this.store.load(handoffId);
-      if (record !== null) {
-        this.emitRecordObservations(record, revision, ['approved']);
-      }
-      return { ok: true as const, revision: approved.approval.revision };
-    });
+    try {
+      return this.store.runInImmediateTransaction(() => {
+        const approved = this.acceptance.approve(handoffId, revision, normalizedDecision);
+        if (!approved.ok) return approved;
+        const record = this.store.load(handoffId);
+        if (record !== null) {
+          this.emitRecordObservations(record, revision, ['approved']);
+        }
+        return { ok: true as const, revision: approved.approval.revision };
+      });
+    } catch {
+      // Fail closed on SQLite/corruption failures during handoff approval.
+      return refuse('storage-unavailable', 'store-failure');
+    }
   }
 }
 

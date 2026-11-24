@@ -2482,4 +2482,65 @@ describe('Feature 074 — Multi-Backend Runner Resolution & Session Reset', () =
       expect(registry.getOrCreate).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('SR-314-7: handoff sessionReusePermitted === false enforces fresh session and skips compaction', () => {
+    it('strips isContinue, sessionReuse, and resumeSessionId and skips compactSession when phaseHandoff forbids reuse', async () => {
+      const seenRequests: InvocationRequest[] = [];
+      cliRunner = makeFakeRunner(async (req) => {
+        seenRequests.push(req);
+        return makeRawOutput();
+      });
+      runner = new PhaseRunner(
+        cliRunner,
+        new PromptBuilder(),
+        auditWriter,
+        new SanitizedLogger(),
+        makeFakeRawTranscript()
+      );
+
+      const out = await runner.run({
+        ...baseInputs,
+        isContinue: true,
+        sessionReuse: true,
+        resumeSessionId: 'prior-sess-id',
+        envelope: {
+          pipeline: {
+            id: 'pipe-1',
+            name: 'Pipe 1',
+            phases: [{ id: 'speckit-specify', name: 'Specify', instruction: 'Specify.' }],
+            inputs: [],
+            outputs: []
+          },
+          inputs: [],
+          supplemental: [],
+          outputs: [],
+          frozenAt: 1_000,
+          phaseHandoff: {
+            handoffId: 'handoff-1',
+            revision: 1,
+            attemptId: 'run-1:att-2',
+            representationDigest: 'sha256:rep',
+            sessionReusePermitted: false
+          }
+        }
+      });
+
+      expect(out.outcome).toBe('clean');
+      // Only the main phase invocation runs; compactSession is never spawned.
+      expect(seenRequests).toHaveLength(1);
+      expect(seenRequests[0]?.helperInvocation).not.toBe(true);
+      expect(seenRequests[0]?.isContinue).toBe(false);
+      expect(seenRequests[0]?.sessionReuse).toBe(false);
+      expect(seenRequests[0]?.resumeSessionId).toBeUndefined();
+
+      const entries = (auditWriter.append as ReturnType<typeof vi.fn>).mock.calls.map(
+        (call) => call[0] as Omit<AuditEntry, 'id' | 'timestamp'>
+      );
+      const phaseStart = entries.find((e) => e.eventType === 'phase-start');
+      expect(phaseStart?.payload).toMatchObject({
+        isContinue: false,
+        sessionReuse: false
+      });
+    });
+  });
 });

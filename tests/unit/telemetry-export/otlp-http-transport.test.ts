@@ -132,6 +132,37 @@ describe('OTLP/HTTP transport: the request', () => {
     expect(target.requests.map((received) => received.path)).toEqual(['/v1/metrics?tenant=a', '/v1/metrics']);
     expect(target.connections()).toBe(2);
   });
+
+  it('connects directly to the collector and ignores HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY (R7-17-06)', async () => {
+    const trapProxy = await plainListener();
+    const target = await collector();
+    const proxyUrl = `http://127.0.0.1:${String(trapProxy.port)}`;
+    const saved = {
+      HTTP_PROXY: process.env.HTTP_PROXY,
+      HTTPS_PROXY: process.env.HTTPS_PROXY,
+      ALL_PROXY: process.env.ALL_PROXY,
+      http_proxy: process.env.http_proxy,
+      https_proxy: process.env.https_proxy,
+      all_proxy: process.env.all_proxy
+    };
+    process.env.HTTP_PROXY = proxyUrl;
+    process.env.HTTPS_PROXY = proxyUrl;
+    process.env.ALL_PROXY = proxyUrl;
+    process.env.http_proxy = proxyUrl;
+    process.env.https_proxy = proxyUrl;
+    process.env.all_proxy = proxyUrl;
+    try {
+      const result = await createOtlpHttpTransport().send(request(target.url));
+      expect(result).toMatchObject({ kind: 'response', statusCode: 200, bodyTruncated: false });
+      expect(target.requests).toHaveLength(1);
+      expect(trapProxy.connections()).toBe(0);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 });
 
 describe('OTLP/HTTP transport: the response', () => {

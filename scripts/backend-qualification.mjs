@@ -50,10 +50,12 @@ export const EXPECTED_BACKEND_PROFILES = Object.freeze({
 });
 
 /**
- * The paths whose change invalidates an older qualification (FR-053 + FR-R7-14 14-10).
+ * The paths whose change invalidates an older qualification (FR-053 + FR-R7-14 14-10 +
+ * FR-R7-17 R7-17-05).
  *
  * Covers legacy/runner adapters, output parsers, backend descriptors, ACP runtime contracts,
- * the ACP client/profiles/stdio bridge implementation, and esbuild bundling configuration.
+ * the ACP client/profiles/stdio bridge implementation, ACP authority gate, host ACP execution
+ * wiring, and esbuild bundling configuration.
  */
 export const QUALIFICATION_PATHS = Object.freeze([
   'src/runner/',
@@ -62,7 +64,19 @@ export const QUALIFICATION_PATHS = Object.freeze([
   'src/contracts/backend-descriptors.ts',
   'src/contracts/acp-runtime.ts',
   'src/services/acp-runtime/',
+  'src/services/containment-qualification/acp-authority-gate.ts',
+  'src/activation/acp-execution-wiring.ts',
   'esbuild.config.mjs'
+]);
+
+/** Valid host locality tags recorded on v2 qualification records. */
+export const QUALIFICATION_LOCALITIES = Object.freeze(['local', 'remote']);
+
+/** Optional live-qualification check flags recorded on v2 records (`R7-17-05`). */
+export const QUALIFICATION_CHECK_KEYS = Object.freeze([
+  'resume',
+  'policyDenial',
+  'permissionTitleSanitized'
 ]);
 
 /** Built bridge output hashed into the qualification source/build fingerprint when present. */
@@ -193,7 +207,9 @@ export function decideQualification({
   maxAgeMs = QUALIFICATION_MAX_AGE_MS,
   expectedFingerprint,
   requireLive = true,
-  requiredBackends = ADVERTISED_BACKENDS
+  requiredBackends = ADVERTISED_BACKENDS,
+  expectedLocality,
+  requireChecks = false
 }) {
   const override = (verdict) =>
     overrideRequested
@@ -275,6 +291,77 @@ export function decideQualification({
       message:
         'the backend qualification record was produced in deterministic fixture mode (`--fixture`), ' +
         'not from live provider turns. Run `npm run canary` for live release qualification.'
+    });
+  }
+
+  // FR-R7-17 (R7-17-05): Validate optional locality and live-qualification check flags without
+  // breaking existing v2 records that omit them.
+  if (record.locality !== undefined) {
+    if (typeof record.locality !== 'string' || !QUALIFICATION_LOCALITIES.includes(record.locality)) {
+      return override({
+        ok: false,
+        reason: 'invalid-qualification-locality',
+        message: `the backend qualification record carries unsupported locality ${JSON.stringify(record.locality)}.`
+      });
+    }
+    if (requireLive && record.locality !== 'local') {
+      return override({
+        ok: false,
+        reason: 'unqualified-locality',
+        message:
+          `the backend qualification record was captured on locality '${record.locality}'; ` +
+          "only local host ('local') qualification is valid for release."
+      });
+    }
+    if (expectedLocality !== undefined && record.locality !== expectedLocality) {
+      return override({
+        ok: false,
+        reason: 'locality-mismatch',
+        message:
+          `the backend qualification record was captured on locality '${record.locality}', ` +
+          `expected '${expectedLocality}'.`
+      });
+    }
+  } else if (expectedLocality !== undefined) {
+    return override({
+      ok: false,
+      reason: 'locality-mismatch',
+      message: `the backend qualification record omits locality; expected '${expectedLocality}'.`
+    });
+  }
+
+  if (record.checks !== undefined) {
+    if (typeof record.checks !== 'object' || record.checks === null || Array.isArray(record.checks)) {
+      return override({
+        ok: false,
+        reason: 'incomplete-qualification-checks',
+        message: 'the backend qualification record carries a malformed checks object.'
+      });
+    }
+    const failedChecks = [];
+    for (const key of QUALIFICATION_CHECK_KEYS) {
+      const value = record.checks[key];
+      if (value !== undefined && value !== true) {
+        failedChecks.push(`${key}=${String(value)}`);
+      } else if (requireChecks && value !== true) {
+        failedChecks.push(`${key}=missing`);
+      }
+    }
+    if (failedChecks.length > 0) {
+      return override({
+        ok: false,
+        reason: 'incomplete-qualification-checks',
+        message:
+          `backend qualification checks are incomplete or failed — ${failedChecks.join('; ')}. ` +
+          'Re-run qualification covering resume, permission policy denial, and sanitized permission titles.'
+      });
+    }
+  } else if (requireChecks) {
+    return override({
+      ok: false,
+      reason: 'incomplete-qualification-checks',
+      message:
+        `the backend qualification record omits required qualification checks (${QUALIFICATION_CHECK_KEYS.join(', ')}).`
     });
   }
 
@@ -420,7 +507,7 @@ function describeVersions(versions) {
  */
 export function recordFromCanaryResults(
   results,
-  { commit, platform, now, mode = 'live', sourceFingerprint = null }
+  { commit, platform, now, mode = 'live', sourceFingerprint = null, locality, checks }
 ) {
   return buildQualificationRecord({
     versions: Object.fromEntries(
@@ -446,7 +533,9 @@ export function recordFromCanaryResults(
     platform,
     now,
     mode,
-    sourceFingerprint
+    sourceFingerprint,
+    ...(locality !== undefined ? { locality } : {}),
+    ...(checks !== undefined ? { checks } : {})
   });
 }
 
@@ -461,7 +550,9 @@ export function buildQualificationRecord({
   sourceFingerprint = null,
   transports = { ...EXPECTED_BACKEND_TRANSPORTS },
   profiles = { ...EXPECTED_BACKEND_PROFILES },
-  executables
+  executables,
+  locality,
+  checks
 }) {
   return {
     version: 2,
@@ -469,12 +560,14 @@ export function buildQualificationRecord({
     qualifiedAt: now,
     commit,
     platform,
+    ...(locality !== undefined ? { locality } : {}),
     sourceFingerprint,
     versions,
     states,
     transports,
     profiles,
-    ...(executables !== undefined ? { executables } : {})
+    ...(executables !== undefined ? { executables } : {}),
+    ...(checks !== undefined ? { checks } : {})
   };
 }
 

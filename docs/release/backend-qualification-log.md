@@ -38,7 +38,8 @@ evidence (`state !== 'ok'`) or version evidence for any advertised backend (`cla
 installed one, carrying a mismatched source/build fingerprint, or taken before a change under
 `src/runner/`, `src/parser/`, `src/contracts/backend-kinds.ts`,
 `src/contracts/backend-descriptors.ts`, `src/contracts/acp-runtime.ts`,
-`src/services/acp-runtime/`, or `esbuild.config.mjs`. It
+`src/services/acp-runtime/`, `src/services/containment-qualification/acp-authority-gate.ts`,
+`src/activation/acp-execution-wiring.ts`, or `esbuild.config.mjs`. It
 does **not** run on `npm run gate` or `npm run ci`: a live turn costs the operator's own
 subscription quota, and a gate that charges a turn per run is a gate people disable.
 Deterministic credential-free transport checks can be run at any time with

@@ -29,7 +29,12 @@ const MESSAGE_KINDS: Readonly<Record<AcpObservation['kind'], AcpEventEnvelope['m
   'turn-started': 'turn-started',
   'turn-completed': 'turn-completed',
   display: 'session-update',
-  usage: 'usage-update'
+  usage: 'usage-update',
+  'permission-requested': 'session-update',
+  'permission-resolved': 'session-update',
+  'turn-canceled': 'session-update',
+  'turn-uncertain': 'session-update',
+  'transport-disconnected': 'session-update'
 });
 
 function turnFields(observation: AcpObservation): Pick<AcpEventEnvelope, 'turnId' | 'jsonRpcRequestId'> {

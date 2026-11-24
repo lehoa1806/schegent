@@ -6,7 +6,7 @@
  *
  * Zero `vscode` imports.
  */
-import type { AcpClock, AcpObservation, AcpStopReason } from '../../contracts/acp-runtime';
+import type { AcpClock, AcpFailureReason, AcpObservation, AcpStopReason } from '../../contracts/acp-runtime';
 import type { AcpNormalizedEvent } from '../phase-log/acp-live-projection';
 import type { AcpUsageUpdate } from '../usage-accounting/acp-usage-mapping';
 import type { Attribution } from './session-state';
@@ -15,7 +15,12 @@ export type ObservationBody =
   | { readonly kind: 'turn-started'; readonly requestId: number }
   | { readonly kind: 'turn-completed'; readonly requestId: number; readonly stopReason: AcpStopReason }
   | { readonly kind: 'display'; readonly event: AcpNormalizedEvent }
-  | { readonly kind: 'usage'; readonly usage: AcpUsageUpdate };
+  | { readonly kind: 'usage'; readonly usage: AcpUsageUpdate }
+  | { readonly kind: 'permission-requested'; readonly permissionRequestId: string }
+  | { readonly kind: 'permission-resolved'; readonly permissionRequestId: string; readonly granted: boolean }
+  | { readonly kind: 'turn-canceled'; readonly reason?: AcpFailureReason | 'cancelled' }
+  | { readonly kind: 'turn-uncertain'; readonly reason: AcpFailureReason }
+  | { readonly kind: 'transport-disconnected'; readonly reason: AcpFailureReason };
 
 export class ObservationEmitter {
   private receiveSeq = 0;

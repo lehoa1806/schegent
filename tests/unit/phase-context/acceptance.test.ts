@@ -21,6 +21,9 @@ import {
 } from '../../../src/services/phase-context/manifest';
 import { createMemoryHandoffStore } from '../../../src/services/phase-context/memory-store';
 import { renderContext } from '../../../src/services/phase-context/renderer';
+import { createSqliteHandoffStore } from '../../../src/services/phase-context/sqlite-handoff-store';
+import { SqliteApplicationStore } from '../../../src/services/sqlite-store';
+import { ACP_PROTOCOL_VERSION } from '../../../src/contracts/acp-runtime';
 import { digestOf, manifestInput, manifestSource, omission } from '../../fixtures/phase-context/builders';
 
 const TARGET = 'att-implement-1';
@@ -771,5 +774,140 @@ describe('a store that fails', () => {
 
     expect(service.accept(prepared())).toEqual(refusal('stale-revision', 'revision-conflict'));
     expect(watched.inner.load(HANDOFF_ID)?.revisions).toHaveLength(1);
+  });
+});
+
+describe('FR-R7-17 — revision-wide uncertain-delivery refusal, future manifestVersion & SQLite store durability', () => {
+  it('refuses both the same and any newly minted targetAttemptId on a revision with an uncertain dispatch', () => {
+    const { service } = setup();
+    passed(service.accept(prepared()));
+    passed(service.recordDispatchIntent(HANDOFF_ID, 1, TARGET, REPRESENTATION));
+    passed(service.settleDispatch(HANDOFF_ID, 1, TARGET, 'uncertain'));
+
+    expect(service.recordDispatchIntent(HANDOFF_ID, 1, TARGET, REPRESENTATION)).toEqual(
+      refusal('uncertain-delivery', 'dispatch-uncertain')
+    );
+    expect(service.recordDispatchIntent(HANDOFF_ID, 1, 'att-newly-minted-99', REPRESENTATION)).toEqual(
+      refusal('uncertain-delivery', 'dispatch-uncertain')
+    );
+
+    // Explicit progression to revision 2 allows a fresh attempt while still blocking the uncertain attempt.
+    passed(service.accept(later(2)));
+    expect(service.recordDispatchIntent(HANDOFF_ID, 2, TARGET, REPRESENTATION)).toEqual(
+      refusal('uncertain-delivery', 'dispatch-uncertain')
+    );
+    expect(passed(service.recordDispatchIntent(HANDOFF_ID, 2, 'att-newly-minted-99', REPRESENTATION)).created).toBe(true);
+  });
+
+  it('refuses a second dispatch when blockUnsettledIntent is enabled while an intent is unsettled on that revision', () => {
+    const { service } = setup();
+    passed(service.accept(prepared()));
+    passed(service.recordDispatchIntent(HANDOFF_ID, 1, TARGET, REPRESENTATION));
+
+    expect(
+      service.recordDispatchIntent(HANDOFF_ID, 1, 'att-other', REPRESENTATION, { blockUnsettledIntent: true })
+    ).toEqual(refusal('uncertain-delivery', 'dispatch-uncertain'));
+    expect(
+      service.recordDispatchIntent(HANDOFF_ID, 1, TARGET, REPRESENTATION, { blockUnsettledIntent: true })
+    ).toEqual(refusal('uncertain-delivery', 'dispatch-uncertain'));
+  });
+
+  it('surfaces unsupported-version / manifest-version for future stored manifestVersion in edit, approve, and successor accept', () => {
+    const store = createMemoryHandoffStore();
+    const base = prepared({ approval: 'manual' });
+    const acceptedRev = passed(setup().service.accept(base)).revision;
+    const futureText = JSON.stringify({ ...JSON.parse(base.serialized), manifestVersion: 2 });
+    store.save(
+      {
+        handoffId: HANDOFF_ID,
+        version: 0,
+        revisions: [
+          {
+            ...acceptedRev,
+            serializedManifest: futureText,
+            manifestDigest: manifestDigestOf(futureText)
+          }
+        ],
+        approvals: [],
+        dispatches: []
+      },
+      0
+    );
+
+    const svc = setup(store).service;
+    expect(svc.edit(HANDOFF_ID, 1, [manifestSource()])).toEqual(refusal('unsupported-version', 'manifest-version'));
+    expect(svc.approve(HANDOFF_ID, 1, 'dec-1')).toEqual(refusal('unsupported-version', 'manifest-version'));
+    expect(svc.accept(later(2, { approval: 'manual' }))).toEqual(refusal('unsupported-version', 'manifest-version'));
+  });
+
+  it('persists artifactLocations, rolls back SQLite immediate tx on typed refusal, and transitions unsettled intents to uncertain on restart', () => {
+    const sqlite = SqliteApplicationStore.openInMemory();
+    try {
+      const store = createSqliteHandoffStore(sqlite.writerConnection, () => 1_700_000_000_000);
+      const service = createAcceptanceService(store);
+      const first = prepared();
+
+      store.bindRunMetadata(HANDOFF_ID, { runId: 'run-tx', sourceAttemptId: 'att-src', targetPhaseId: 'n2' });
+      store.saveArtifactLocations(HANDOFF_ID, { 'art-1': '.schegent/immutable-results/att-src/a.json' });
+      passed(service.accept(first));
+      expect(store.loadArtifactLocations(HANDOFF_ID)).toEqual({
+        'art-1': '.schegent/immutable-results/att-src/a.json'
+      });
+
+      // Additive update to artifactLocations persists across fresh store handle.
+      store.saveArtifactLocations(HANDOFF_ID, { 'art-2': '.schegent/immutable-results/att-src/b.json' });
+      const reopened = createSqliteHandoffStore(sqlite.writerConnection, () => 1_700_000_001_000);
+      expect(reopened.loadArtifactLocations(HANDOFF_ID)).toEqual({
+        'art-1': '.schegent/immutable-results/att-src/a.json',
+        'art-2': '.schegent/immutable-results/att-src/b.json'
+      });
+
+      // Record an unsettled 'intent' dispatch (simulating host crash before settlement).
+      passed(service.recordDispatchIntent(HANDOFF_ID, 1, TARGET, REPRESENTATION));
+      expect(reopened.listUnsettledIntentHandoffs('run-tx')).toEqual([HANDOFF_ID]);
+
+      // Restart recovery transitions unsettled 'intent' to 'uncertain' atomically.
+      const transitioned = reopened.markUnsettledIntentsUncertain('run-tx');
+      expect(transitioned).toEqual([
+        { handoffId: HANDOFF_ID, runId: 'run-tx', revision: 1, targetAttemptId: TARGET }
+      ]);
+      expect(reopened.listUnsettledIntentHandoffs('run-tx')).toEqual([]);
+
+      // After restart transition, BOTH same and newly minted targetAttemptId are refused, AND
+      // `runInImmediateTransaction` rolls back `saveRepresentation` when work returns `{ ok: false }`!
+      const restartedService = createAcceptanceService(reopened);
+      const txResult = reopened.runInImmediateTransaction(() => {
+        reopened.saveRepresentation({
+          handoffId: HANDOFF_ID,
+          revision: 1,
+          targetAttemptId: 'att-new-after-restart',
+          contentDigest: first.manifestDigest,
+          rendererVersion: 1,
+          renderedDigest: first.rendered.digestHex,
+          capabilities: {
+            protocolVersion: ACP_PROTOCOL_VERSION,
+            loadSession: true,
+            image: false,
+            audio: false,
+            embeddedContext: true,
+            authMethodCount: 0
+          },
+          profileId: 'profile-1',
+          profileRevision: 1,
+          session: 'fresh',
+          routes: [],
+          representationDigest: REPRESENTATION
+        });
+        return restartedService.recordDispatchIntent(HANDOFF_ID, 1, 'att-new-after-restart', REPRESENTATION);
+      });
+      expect(txResult).toEqual(refusal('uncertain-delivery', 'dispatch-uncertain'));
+      // Rolled back! Representation was NOT persisted!
+      expect(reopened.loadRepresentation(HANDOFF_ID, 1, 'att-new-after-restart')).toBeNull();
+      expect(restartedService.recordDispatchIntent(HANDOFF_ID, 1, TARGET, REPRESENTATION)).toEqual(
+        refusal('uncertain-delivery', 'dispatch-uncertain')
+      );
+    } finally {
+      sqlite.close();
+    }
   });
 });

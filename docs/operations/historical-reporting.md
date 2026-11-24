@@ -1,72 +1,97 @@
 # Historical Reports and Exports (`FR-R6-F11`)
 
-**Declared**: 2026-11-10 (`specs/310-historical-reporting-exports/spec.md`)
+**Declared**: 2026-11-10 (`specs/310-historical-reporting-exports/spec.md`) · **Reconciled**: 2026-11-23 (`FR-R7-17`, `R7-17-01` / `R7-17-02`)
 
 This guide is for an operator who reads historical execution reports, exports them to a file, or
-saves them to compare later. A report reads the run store and, for usage, the accounting service.
-It never starts, resumes or changes an execution. The only rows it writes are the reporting
-tables' own: saved reports and export records.
+saves them to compare later. A report reads the workspace's per-folder SQLite application store
+and, for usage, the usage accounting service. It never starts, resumes, or changes an execution.
+The only rows it writes are the reporting tables' own: saved reports and export records.
 
 Implemented in:
-- [`src/contracts/reporting/report-query.ts`](../../src/contracts/reporting/report-query.ts)
-- [`src/contracts/reporting/report-outcomes.ts`](../../src/contracts/reporting/report-outcomes.ts)
-- [`src/contracts/reporting/report-manifest.ts`](../../src/contracts/reporting/report-manifest.ts)
-- [`src/services/reporting/index.ts`](../../src/services/reporting/index.ts)
-- [`src/services/reporting/report-engine.ts`](../../src/services/reporting/report-engine.ts)
-- [`src/services/reporting/report-snapshots.ts`](../../src/services/reporting/report-snapshots.ts)
-- [`src/services/reporting/snapshot-capture.ts`](../../src/services/reporting/snapshot-capture.ts)
-- [`src/services/reporting/csv-profile.ts`](../../src/services/reporting/csv-profile.ts)
-- [`src/services/reporting/export-service.ts`](../../src/services/reporting/export-service.ts)
-- [`src/services/reporting/export-reconciler.ts`](../../src/services/reporting/export-reconciler.ts)
-- [`src/services/reporting/saved-reports.ts`](../../src/services/reporting/saved-reports.ts)
-- [`src/headless/reporting-api.ts`](../../src/headless/reporting-api.ts)
+- Contracts & validators:
+  - [`src/contracts/reporting/report-query.ts`](../../src/contracts/reporting/report-query.ts)
+  - [`src/contracts/reporting/report-outcomes.ts`](../../src/contracts/reporting/report-outcomes.ts)
+  - [`src/contracts/reporting/report-manifest.ts`](../../src/contracts/reporting/report-manifest.ts)
+  - [`src/contracts/reporting/report-rows.ts`](../../src/contracts/reporting/report-rows.ts)
+  - [`src/contracts/validators/reporting-ipc.ts`](../../src/contracts/validators/reporting-ipc.ts)
+- Reporting service:
+  - [`src/services/reporting/index.ts`](../../src/services/reporting/index.ts)
+  - [`src/services/reporting/report-engine.ts`](../../src/services/reporting/report-engine.ts)
+  - [`src/services/reporting/report-snapshots.ts`](../../src/services/reporting/report-snapshots.ts)
+  - [`src/services/reporting/snapshot-capture.ts`](../../src/services/reporting/snapshot-capture.ts)
+  - [`src/services/reporting/report-drill-down.ts`](../../src/services/reporting/report-drill-down.ts)
+  - [`src/services/reporting/csv-profile.ts`](../../src/services/reporting/csv-profile.ts)
+  - [`src/services/reporting/export-service.ts`](../../src/services/reporting/export-service.ts)
+  - [`src/services/reporting/export-reconciler.ts`](../../src/services/reporting/export-reconciler.ts)
+  - [`src/services/reporting/saved-reports.ts`](../../src/services/reporting/saved-reports.ts)
+- Headless port, extension host wiring & sidebar IPC:
+  - [`src/headless/reporting-api.ts`](../../src/headless/reporting-api.ts)
+  - [`src/activation/sqlite-cutover-wiring.ts`](../../src/activation/sqlite-cutover-wiring.ts)
+  - [`src/activation/round6-visibility-wiring.ts`](../../src/activation/round6-visibility-wiring.ts)
+  - [`src/ui/sidebar/commands/cmd-read-report.ts`](../../src/ui/sidebar/commands/cmd-read-report.ts)
+  - [`src/ui/sidebar/commands/cmd-mutate-report.ts`](../../src/ui/sidebar/commands/cmd-mutate-report.ts)
+- Sidebar webview UI:
+  - [`webview-ui/src/lib/reporting-ipc.ts`](../../webview-ui/src/lib/reporting-ipc.ts)
+  - [`webview-ui/src/components/MetricsDashboard/HistoricalReportsPanel.svelte`](../../webview-ui/src/components/MetricsDashboard/HistoricalReportsPanel.svelte)
+  - [`webview-ui/src/components/MetricsDashboard/ReportRowsTable.svelte`](../../webview-ui/src/components/MetricsDashboard/ReportRowsTable.svelte)
+  - [`webview-ui/src/components/MetricsDashboard/ReportDrillDownPanel.svelte`](../../webview-ui/src/components/MetricsDashboard/ReportDrillDownPanel.svelte)
+  - [`webview-ui/src/components/MetricsDashboard/SavedReportsSection.svelte`](../../webview-ui/src/components/MetricsDashboard/SavedReportsSection.svelte)
 
-For the accounting figures the usage view reads, see
-[Usage and metrics accounting](usage-accounting.md).
+Related guides:
+- [Usage and metrics accounting](usage-accounting.md) — accounting figures read by the `usage` view and root drill-down.
+- [SQLite application store](sqlite-application-store.md) — per-folder database layout (`<globalStorage>/sqlite/<scope>/schegent-state.db`, schema v9).
+- [What Schegent keeps on this machine](evidence-retention-disclosure.md) — retention boundaries, external-file ownership, and in-flight export pinning.
+- [Historical reporting 100,000-attempt performance measurement](historical-reporting-measurement.md) — benchmark results and verdicts against `NFR-002`, `NFR-004`, and `NFR-005`.
 
 ## Production status
 
-The reporting service, its schema and the headless port ship in this release. Production does
-not construct a reporting service yet: it needs the application store opened in the extension
-host (the F01-B cutover), as the accounting service does. There is no report UI in this release;
-it is deferred to `FR-R6-F12`, which owns the execution visibility surfaces. The headless port is
-the single entry the UI will call, so the two cannot disagree.
+Historical reporting is wired end to end in production:
 
-## Views
+1. **Per-folder SQLite store & service**: `sqlite-cutover-wiring.ts` opens each workspace folder's isolated SQLite database (`<globalStorage>/sqlite/<scope>/schegent-state.db`, schema version 9), constructs `ReportingService` bound to that folder's `workspaceId`, `workspaceRoot`, bounded read pool, and per-folder `UsageAccountingService`, and feeds `ReportingService.activeExportRootIds()` into `querySqliteProtectedRunIds` so active exports pin their referenced roots against session retention sweeps.
+2. **Single headless port & sidebar IPC**: `round6-visibility-wiring.ts` wraps `ReportingService` with `createReportingApi(...)` and provides `exportReportWithDialog` using VS Code's native save dialog (`vscode.window.showSaveDialog`) so zero filesystem paths cross the webview IPC boundary. `MessageRouter` routes read operations through read-only `CMD_READ_REPORT` (`cmd-read-report.ts`, with per-router `WeakMap` active-query abort isolation) and mutating operations (`save`, `export`, `deleteSaved`) through gated concurrent `CMD_MUTATE_REPORT` (`cmd-mutate-report.ts`).
+3. **Sidebar Historical Reports UI**: The Metrics dashboard's Reports view renders `HistoricalReportsPanel.svelte` (with `ReportRowsTable.svelte`, `ReportDrillDownPanel.svelte`, and `SavedReportsSection.svelte`), calling the same `ReportingApi` contract via `reporting-ipc.ts`.
 
-Every report covers one absolute range: 30 days by default, 90 days at most. The run views read
-it as root creation times; the `usage` view reads it as accounting event times, and its manifest
-names that basis (`accounting-event`). Roots and attempts are counted separately, and each
-duration states its basis.
+## Views, filters, and UI scope
 
-| View | What a row is | Notes |
-|---|---|---|
-| `execution-summary` | One root, or one group of roots | Groups by workflow, frozen definition or outcome; up to 3 group dimensions. |
-| `attempt-detail` | One attempt | No grouping. |
-| `failure-cause` | One failure cause | Causes are classified; a cause that names a path is reported as `other`, never with the path. |
-| `workflow-revision` | One workflow and frozen definition | Duration distributions include an `unavailable` count for open or unrecorded durations. |
-| `time-series` | One local day | Days are cut in the query's time zone; the manifest names it. |
-| `usage` | One backend and model | Read from the accounting service, unchanged. Filters on root, backend and model only; others are refused `unsupported-dimension`. |
+Every report covers one absolute range: 30 days by default, 90 days at most. The five run-derived views read it as root creation times (`root-created`); the `usage` view reads it as accounting event times (`accounting-event`), and its manifest names that basis. Roots, attempts, and invocations are kept distinct, and each duration distribution states its basis (`root-wall-clock` or `attempt-own`).
 
-A report is captured once, under a bounded snapshot, and frozen for its lease. Pages, drill-down,
-export and save all read that one snapshot, so a page read later cannot see a newer run. Drill-down
-returns the root, its attempts, the frozen definition identity, outcome lineage and the root's
-usage. It returns no evidence references: the artifact catalogue is not keyed by root. Drill-down
-reads usage at the report's accounting revision, but the accounting service keeps an attempt's
-outcome, backend and model as current values, not per revision; an outcome recorded after the
-report was captured can therefore appear in its lineage and usage grouping.
+| View | Row shape | Supported filters (headless / IPC) | Grouping (`groupBy`) | Refused (`unsupported-dimension`) |
+|---|---|---|---|---|
+| `execution-summary` | `root` (ungrouped) or `group` | `rootId`, `workflowId`, `frozenDefinitionId`, `outcome` | Optional up to 3: `workflowId`, `frozenDefinitionId`, `outcome` | `backend`, `model`, or any other dimension |
+| `attempt-detail` | `attempt` | `rootId`, `workflowId`, `frozenDefinitionId`, `outcome` | None | `backend`, `model`, any `groupBy` |
+| `failure-cause` | `group` (fixed `failureCause`) | `rootId`, `workflowId`, `frozenDefinitionId`, `outcome` | Optional up to 2: `workflowId`, `frozenDefinitionId` | `backend`, `model`, `outcome`, `localDay`, `utcDay` |
+| `workflow-revision` | `group` (fixed `workflowId`, `frozenDefinitionId`) | `rootId`, `workflowId`, `frozenDefinitionId`, `outcome` | Fixed only (no optional `groupBy`) | `backend`, `model`, any `groupBy` |
+| `time-series` | `group` (fixed `localDay` in query timezone) | `rootId`, `workflowId`, `frozenDefinitionId`, `outcome` | Optional up to 2: `workflowId`, `outcome` | `backend`, `model`, `frozenDefinitionId`, `failureCause`, `utcDay`, `localDay` |
+| `usage` | `usage` (default `backend`, `model`) | `rootId`, `backend`, `model` | Optional up to 3: `backend`, `model`, `utcDay` | `workflowId`, `frozenDefinitionId`, `outcome`, `failureCause`, `localDay` |
 
-Invocations are reported as not recorded. Neither execution records nor accounting rows carry an
-invocation count a report may read.
+**Sidebar UI filter subset vs full headless/IPC contract.** Both `ReportingApi` and `CMD_READ_REPORT` enforce the complete 6-view filter, `groupBy`, `sort`, arbitrary `startMs`/`endMs` range (up to 90 days), IANA `timezone`, and `pageSize` (`1..200`) contract above. The sidebar toolbar in `HistoricalReportsPanel.svelte` intentionally presents a focused subset of controls:
+- View selector (all 6 views), preset window (`7` / `30` / `90` days), and view-valid `sort` selector;
+- `Workflow ID` and `Outcome` filters on the five run-derived views, and `Backend` filter on `usage`;
+- Paging (`Load next page`), root drill-down, active-query `Cancel`, `Save report`, `Export CSV…` / `Export JSON…`, and saved-report `Run now`, `Check it still matches` (`reproduceSaved`), and two-step `Delete…`.
+- Filters omitted from the toolbar (`rootId`, `frozenDefinitionId`, `model`, custom `groupBy`, custom `timezone`, and custom `pageSize`) remain available through `ReportingApi` and `CMD_READ_REPORT`.
 
-The usage view's unattributed count, gap counts and legacy summary cover the whole accounting
-store: the accounting service reports them as current, store-wide counts, so the report's range,
-filters and roots do not narrow them. The accounting store a reporting service is given must
-belong to its workspace. The accounting query does not filter by workspace, so a store shared
-between workspaces would report other workspaces' usage. The change that opens the accounting
-store in the host must keep one store per workspace, or scope the query by workspace.
+**Unknowns, unavailables, and counts.**
+- Open or unrecorded durations remain `null` (rendered as `"Unknown: not measured"`, never `0`) and are counted in `coverage.unknownDurations`.
+- Percentile distributions with zero known samples return `'unavailable'` (rendered as `"Unavailable: cannot be shown"`, never `'n/a'` or `0`).
+- `usage` rows report `invocations: 'not-recorded'` (rendered as `"Not recorded"`), preserve F06 `completeness` and `coverage`, render unknown cost without substituting `0`, and distinguish `reportedTotal` from `estimatedTotal` when present.
+- The `usage` view's unattributed count, gap counts, and legacy pre-cutover summary remain store-wide for that folder's isolated SQLite database and sit beside the rows rather than being merged into them.
 
-## Bounds
+## Snapshot pinning and root drill-down joins
+
+A report is captured once in one synchronous read transaction under a pinned cutoff (`min(range.endMs, cutoffMs)`) and frozen for its lease. Paging, drill-down, export, and save all read that snapshot so concurrent writes cannot distort pages.
+
+Root drill-down (`drillDown`, `ReportDrillDownPanel.svelte`) returns:
+- The pinned root row, its attempts, its `frozenDefinitionId` (`string | null` — runs without a frozen definition are valid and pass egress validation), outcome lineage, and root-scoped F06 usage at the report's pinned accounting revision;
+- **Path-free evidence references (`evidenceRefs`)**: metadata-only rows from `artifact_lifecycle` with `al.created_at_ms < cutoff` covering `present`, `missing`, `deleted`, and `expired` states; path separators (`/` and `\`) in identifiers are scrubbed to `:` and no filesystem path or URI crosses the contract;
+- **Cutoff-pinned live ACP attributions (`acpAttributions`)**: per-attempt backend/model/profile/lane metadata plus the count of `origin = 'live'` observations in `acp_observation_ledger` with `obs.observed_at_ms < cutoff` (history replays and post-cutoff observations are excluded);
+- **Accepted phase handoffs (`handoffSummaries`)**: rows from `phase_handoff_records` filtered by `phr.status IN ('accepted', 'ready', 'intent', 'delivered', 'uncertain')` and `phr.created_at_ms < cutoff` — matching the real `SqliteHandoffStore` persisted statuses for approved/ready and dispatched handoffs (`ready`, `intent`, `delivered`, `uncertain`) plus legacy `'accepted'`, while excluding `waiting-approval`, `superseded`, `empty`, synthetic `rejected`, and post-cutoff handoffs;
+- **Review-loop summaries (`reviewSummaries`)**: cutoff-pinned open/resolved/total finding counts and scrubbed `candidateRef` from `phase_review_loop_ledgers` (`prl.updated_at_ms < cutoff`), without review prose or paths.
+
+Drill-down reads usage at the report's accounting revision, while F06 stores an attempt's current outcome, backend, and model rather than per-revision dimension history; an outcome recorded after capture can therefore appear in the accounting portion of lineage.
+
+**Keeping the last complete report on screen.** In `HistoricalReportsPanel.svelte`, running a new query or re-running a saved report does **not** clear the current drill-down or send `{ op: 'close' }` for the displayed report until the replacement returns `ok: true`. If a replacement query is cancelled, hits a limit (`working-data`, `deadline-exceeded`, `snapshot-rows`), is refused, or fails, the last complete report and its live host lease remain intact for paging, drill-down, saving, and export.
+
+## Bounds and performance
 
 Every bound ends in a typed outcome. A capped report is never returned as a shorter success.
 
@@ -79,123 +104,47 @@ Every bound ends in a typed outcome. A capped report is never returned as a shor
 | Working data, shared by live reports | 32 MiB | `limited` `working-data` |
 | Query deadline | 5 s | `limited` `deadline-exceeded` |
 | Live reports | 4 | `refused` `report-lease-limit` |
-| Report lease | 5 minutes | `expired`, with the instruction `restart-report-query` |
-| Page size | 50 by default, 200 at most | `refused` `invalid-query` |
-| Page bytes | 1 MiB; a page always holds at least one row | The page ends early and gives a cursor. |
-| Range | 90 days | `refused` `invalid-query` |
+| Report lease | 5 minutes | `expired`, with instruction `restart-report-query` |
+| Page size | 50 default, 200 max | `refused` `invalid-query` |
+| Page bytes | 1 MiB (at least one row per page) | Page ends early with a cursor. |
+| Range | 30 days default, 90 days max | `refused` `invalid-query` |
 
-Working data is estimated as two bytes per UTF-16 code unit of every string value, plus 64 bytes
-per row. A run view holds its captured roots and attempts plus its built rows; a `usage` view holds
-its rows once, since they are the captured population. On the 100,000-attempt fixture, `attempt-detail` over 30 days needs more than 32 MiB and
-ends `limited` with `working-data`. Narrow the range or filter by workflow.
+Working data is estimated as two bytes per UTF-16 code unit of every string value plus 64 bytes per row. On the 100,000-attempt fixture, full-range `attempt-detail` exceeds the shared 32 MiB budget and returns `limited` / `working-data` (narrow the range or filter by workflow/root).
 
-The work yields to the host every 8 ms. A cancelled query answers `cancelled` and releases its
-slot and its working data. Measured values are recorded in the feature's `research.md` (R1).
+Aggregation yields to the event loop every 8 ms; cancelling an active query via `CMD_READ_REPORT { op: 'cancelActive' }` or `AbortSignal` aborts only that router/caller's query and releases its slot and working data. Full 100,000-attempt latency measurements — including isolated warm snapshot capture latency, preserved `500 ms` (`NFR-002`) and `10 ms` (`NFR-005`) `SHOULD` target verdicts, later-page cursor `p95`, and cancellation acknowledgement — are published in [Historical reporting 100,000-attempt performance measurement](historical-reporting-measurement.md).
 
-## Exports
+## Exports, active pinning, and external-file retention
 
-An export writes a live report to a file the operator names, as JSON or CSV, with a manifest
-beside it named `<file>.manifest.json`. Exports contain metadata only: no prompt, output, log or
-artifact content.
+An export writes a live report to an operator-chosen local file as JSON or CSV, with a manifest beside it named `<file>.manifest.json` (both created `0600` owner-only). Exports contain metadata only (`privacyProfile: "metadata-only"`): no prompt, output, log, or artifact content.
 
-**Destination.** The destination must be a local file outside the workspace's `.schegent/` store.
-The workspace root is fixed when the reporting service is constructed; a request cannot name it.
-It is checked before anything is created: a remote scheme is refused `destination-not-local-file`,
-a path into the store (through a link, a `..` or a case variant too) is refused
-`destination-in-evidence-store`, and a path that cannot be resolved is refused
-`destination-unresolvable`. No directory is ever created. Without overwrite, an existing data or
-manifest file is refused `destination-exists`. The final path is checked again, against the
-directory as resolved, just before the partials are opened, so a directory swapped for a link into
-the store after the first check is refused `destination-in-evidence-store`. A swap in the short
-window between that second check and the publish is not detected; the destination's parent
-directory is the operator's to protect.
-
-**Caps.** 100,000 data rows, 64 MiB of output and 60 seconds, ending `limited` with `export-rows`,
-`export-bytes` or `export-time`. Writes go through an 8 MiB buffer. One export runs per workspace
-at a time; a second is refused `export-busy`.
-
-**Publication.** Both files are written as hidden partials named `.<file>.<exportId>.data.partial`
-and `.<file>.<exportId>.manifest.partial`, hashed as they are written and synced. The data file is
-published first, then the manifest. A file at the final name is therefore always complete. If the
-manifest cannot be published, the data file stays and the export ends `failed`
-`manifest-publish-failed`: a data file with no manifest beside it is incomplete. With overwrite,
-an earlier export's manifest may still sit beside the new data file in that case; its SHA-256 and
-length then do not match the data, so check them, and treat the pair as incomplete. Every outcome
-removes only that export's own partials.
-
-Without overwrite, each file is published with a hard link, so a file that appears at the final name
-while the export runs is never replaced (for the data file, `destination-exists`). A volume that
-does not support hard links (FAT or exFAT media, some network and FUSE mounts) therefore fails every
-export without overwrite (`publish-failed`); export with overwrite there, or to a local volume.
-
-**Reconciliation.** A host that stops mid-export leaves a `pending` export record. The next export,
-or the host's start-up call to `reconcileExports`, ends every pending record older than 2 minutes
-as `failed` `host-stopped` and removes its partials: only names equal to that export's own two
-partial names, and only when each is proven a direct entry of the staging directory. A record
-younger than 2 minutes is left alone, so for up to 2 minutes after a crash a new export can still
-be refused `export-busy`; after that, the crash never holds the workspace busy.
-
-**Store failures.** If the export records cannot be read or written (the database is locked,
-damaged or full), the export, or `reconcileExports`, ends `failed` `write-failed`. The log line
-carries the operation and that reason only. If the records fail after both files are published,
-the pair on disk is complete, but the export still answers `write-failed`. Its record stays
-`pending` until reconciliation ends it.
-
-**JSON is the exact format.** The data file is one object,
-`{schema: "schegent.report-data", schemaVersion, reportId, view, calculationVersion, columns, rows}`,
-with one object per row and every value as stored.
-
-**CSV is for viewing.** CSV profile version 1:
-
-- Every field is quoted, an embedded `"` is doubled, records end with CRLF, and the file is UTF-8
-  with no byte-order mark.
-- A text cell is `text:` plus the value, so no cell starts a spreadsheet formula.
-- Invisible, control and bidirectional characters, every Unicode default-ignorable code point
-  (variation selectors, tag characters, Hangul fillers), and lone surrogates are written as
-  `\u{XXXX}` escapes; a backslash is written as `\\`. So an emoji's presentation selector or
-  joiner appears as an escape in CSV; the JSON export keeps the text exact.
-- Text longer than 4,096 code points is cut and ends `\u{2026}[truncated]`.
-- An integer beyond ±(2^53 − 1), or a decimal with more than 15 significant digits, is `number:`
-  plus its exact digits.
-- An unknown value is the empty field `""`, never zero.
-
-The CSV manifest counts each transformation (`text-prefix`, `control-escaped`, `truncated`,
-`number-prefixed`) and carries the statement that JSON is the exact format.
-
-**Manifest.** Every manifest names the report and export identities, the canonical query and its
-digest, the source cutoff, the time zone and time basis, the source, schema and calculation
-versions, the accounting revision, coverage (roots, attempts, unknown durations, unattributed
-usage and gaps), omissions, units, the population digest, and the data file's name, length and
-SHA-256. It states the privacy profile `metadata-only` and the retention statement
-`outside-managed-retention`: an exported file is outside managed retention, and no retention
-sweep removes it.
+- **Destination containment**: The destination must be a local file outside the workspace's `.schegent/` store (`destination-not-local-file`, `destination-in-evidence-store`, `destination-unresolvable`, or `destination-exists` without overwrite). In the sidebar UI, the destination comes exclusively from the host's native `showSaveDialog` (`exportReportWithDialog`); the webview never sends or receives filesystem paths.
+- **Caps & staging**: `100,000` rows, `64 MiB` output, `60 s` time limit (`export-rows`, `export-bytes`, `export-time`), `8 MiB` write buffer, one active export per workspace (`export-busy`). Data and manifest write to hidden sibling partials (`<file>.<exportId>.{data,manifest}.partial`), hash while streaming, sync, publish data before manifest, and remove only their own partials. Stale pending records older than 2 minutes are finalized `failed` / `host-stopped` by `reconcileExports`.
+- **In-flight export root pinning**: While `exportReport` runs, `ReportingService.activeExportRootIds()` holds the live report's root IDs and exposes them through `querySqliteProtectedRunIds`, sparing those roots' session evidence from retention sweeps until the export finishes, cancels, or fails (`finally` release).
+- **External-file retention boundary (`outside-managed-retention`)**: Once written, exported report files and manifests live **outside managed retention**. No retention sweep, privacy-profile change, `Schegent: Delete Run Evidence`, or deleting a saved report ever removes or edits an exported file on disk. Both the export manifest (`retention: "outside-managed-retention"`) and `HistoricalReportsPanel.svelte` / `SavedReportsSection.svelte` disclose this explicitly; see [What Schegent keeps on this machine](evidence-retention-disclosure.md).
+- **JSON vs CSV profile v1**: JSON (`schegent.report-data`, version 1) is the exact format. CSV is for viewing: every field quoted, CRLF records, UTF-8 without BOM, `text:` prefix on text cells so no spreadsheet formula executes, `\u{XXXX}` escapes for control/invisible/bidi/default-ignorable/surrogate characters, `\\` for backslash, 4,096-code-point truncation with `\u{2026}[truncated]`, `number:` prefix for imprecise numbers, empty field `""` for unknown (never `0`), and transformation counts in the manifest.
 
 ## Saved reports
 
-`saveReport` stores a live report's canonical query and an immutable manifest. Saving the same
-report again answers the stored record.
+- `saveReport` stores a live report's canonical query and immutable manifest in SQLite (`saved_reports`).
+- `rerunSavedReport` executes the saved absolute range at a new cutoff under a new `reportId` linked via `rerunOf`.
+- `reproduceSavedReport` re-reads the saved cutoff and accounting revision, answering `reproduced` only when the recomputed population digest matches, or `source-no-longer-reproducible` (`calculation-version-changed`, `population-changed`, `accounting-revision-unavailable`).
+- `deleteSavedReport` removes only the saved definition and manifest row in SQLite; it never touches previously exported files on disk.
 
-- `rerunSavedReport` runs the saved absolute range at a new cutoff, under a new report identity
-  linked to the saved one. It stores nothing until it is saved.
-- `reproduceSavedReport` re-reads the population at the saved cutoff and accounting revision. It
-  answers `reproduced` only when the recomputed population digest equals the saved one. Otherwise
-  it answers `source-no-longer-reproducible` with the reason `calculation-version-changed`,
-  `population-changed` or `accounting-revision-unavailable` (the revision was compacted away).
-- `deleteSavedReport` removes the record only. It never touches an exported file. A re-run's link
-  to a deleted parent becomes empty; the re-run's own manifest keeps the identity it was saved with.
+## Trust, primacy, and host vs headless boundaries
 
-## Trust
+| Surface | Untrusted workspace | Secondary window (non-primary) | Notes |
+|---|---|---|---|
+| Headless `ReportingApi` | Reads, `rerunSavedReport`, and `reproduceSavedReport` allowed; `exportReport`, `saveReport`, `deleteSavedReport`, and `reconcileExports` refused `workspace-untrusted`. | Caller-owned (no VS Code window lock). | Exact key/type check runs first (`invalid-query`), then trust check on every call. |
+| Sidebar `CMD_READ_REPORT` (`read-only`) | Permitted by router; if the trusted SQLite store has not been opened yet for an untrusted folder, answers typed `accounting-unavailable`. | Permitted (read-only). | Never writes files, state, or audit rows; active-query abort is scoped per router (`WeakMap`). |
+| Sidebar `CMD_MUTATE_REPORT` (`gatedConcurrent`) | Rejected before handler (`untrusted-workspace`). | Rejected before handler (`secondary-window-readonly`). | Covers `save`, `export` (host dialog), and `deleteSaved`. |
 
-The headless port checks each request's exact key set and types first and refuses
-`invalid-query` otherwise. It then reads workspace trust at each call: in an untrusted workspace,
-export, save, delete and export reconciliation (which removes files) are refused
-`workspace-untrusted`. Reads, re-runs and reproduction still answer, because they write nothing.
+## Accessibility posture
 
-## Not in this release
+Automated accessibility checks (`axe-core`, keyboard navigation, `aria-disabled` focus preservation during loading/saving/paging, active-column `aria-sort`, polite `role="status"` announcements, and drill-down focus restoration) verify the Historical Reports UI components. **Human screen-reader assistive-technology verification (VoiceOver, NVDA, JAWS) remains `UNTESTED` / `not observed`** and is tracked honestly in [the accessibility AT matrix](../release/accessibility-at-matrix.md) and [the interactive verification register](interactive-verification-register.md).
 
-- The report UI, its accessibility and keeping the last complete report on screen
-  (`FR-R6-F12`).
-- Backend and model filters on the run-derived views: execution and attempt records carry no
-  backend or model.
-- Evidence references in drill-down.
-- ACP attribution joins (`FR-R6-F13`) and phase-handoff and review metadata joins (`FR-R6-F15`).
+## Current limits
+
+- **No backend/model filters on run-derived views**: Execution-summary, attempt-detail, failure-cause, workflow-revision, and time-series filter on run-table columns and refuse `backend`/`model` as `unsupported-dimension`; use the `usage` view to filter by backend or model.
+- **Invocations not recorded**: Backends do not record an invocation count in reporting rows (`invocations: 'not-recorded'`).
+- **First-page and sliced-gap `SHOULD` targets**: On the 100,000-attempt `darwin-arm64` fixture, first-page `execution-summary` `p95` (`522.09 ms`) and sliced event-loop gap `p95` (`16.22 ms`) currently exceed the `500 ms` (`NFR-002`) and `10 ms` (`NFR-005`) `SHOULD` targets due to the single synchronous snapshot capture (`p50: 294.29 ms`) and sliced aggregation work, while later-page `p95` (`0.1299 ms`) and cancellation (`8.29 ms`) pass comfortably; see [historical-reporting-measurement.md](historical-reporting-measurement.md).
+- **Human AT verification**: Screen-reader observation remains `UNTESTED` (automated checks provide risk reduction, not human AT conformance).

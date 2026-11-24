@@ -24,14 +24,15 @@ import {
   type HandoffManifest,
   type HandoffObservation,
   type HandoffRecord,
+  type HandoffRevisionDiff,
   type ManifestSource,
   type PreparedHandoff
 } from '../../contracts/phase-context/context-manifest';
 import { IDENTIFIER_PATTERN, PHASE_CONTEXT_LIMITS, type Refusal } from '../../contracts/phase-context/context-policy';
 import type { ExplainedFinding, Finding, ReviewLoopExplanation } from '../../contracts/phase-context/review-loop';
-import { soundRecord, storedManifest } from './acceptance';
+import { readStoredManifest, soundRecord } from './acceptance';
 import type { FindingLedger } from './finding-ledger';
-import { isOneOf, matchesPattern, refuse, taggedDigest } from './primitives';
+import { compareText, isOneOf, isWholeNumber, matchesPattern, refuse, taggedDigest } from './primitives';
 import { utf8Bytes } from './text-bounds';
 
 /** Names the layout of the values an observation key is derived from. */
@@ -40,12 +41,27 @@ const OBSERVATION_KEY_TAG = 'pco1';
 const NO_ATTEMPT = '';
 
 export type ExplainResult = { readonly ok: true; readonly explanation: HandoffExplanation } | Refusal;
+export type RevisionDiffResult = { readonly ok: true; readonly diff: HandoffRevisionDiff } | Refusal;
+
+/** Reads and verifies a stored revision manifest, distinguishing unsupported versions from corrupt records. */
+function readManifestForRevision(
+  record: HandoffRecord,
+  stored: AcceptedRevision
+): { readonly ok: true; readonly manifest: HandoffManifest } | Refusal {
+  const read = readStoredManifest(stored);
+  if (read.kind === 'unsupported-version') return refuse('unsupported-version', 'manifest-version');
+  if (read.kind !== 'valid') return refuse('storage-unavailable', 'stored-manifest');
+  const { manifest } = read;
+  if (manifest.handoffId !== record.handoffId || manifest.revision !== stored.revision) {
+    return refuse('storage-unavailable', 'stored-manifest');
+  }
+  return { ok: true, manifest };
+}
 
 /** The manifest of a stored revision, when its text is the manifest of that handoff and revision. */
 function manifestOf(record: HandoffRecord, stored: AcceptedRevision): HandoffManifest | null {
-  const manifest = storedManifest(stored);
-  if (manifest === null) return null;
-  return manifest.handoffId === record.handoffId && manifest.revision === stored.revision ? manifest : null;
+  const read = readManifestForRevision(record, stored);
+  return read.ok ? read.manifest : null;
 }
 
 function explainedRevision(entry: AcceptedRevision): ExplainedRevision {
@@ -111,13 +127,83 @@ export function explainHandoff(record: HandoffRecord, revision?: number): Explai
   if (!soundRecord(record)) return refuse('storage-unavailable', 'stored-record');
   const stored = revision === undefined ? record.revisions.at(-1) : record.revisions.find((entry) => entry.revision === revision);
   if (stored === undefined) return refuse('stale-revision', 'unknown-revision');
-  const manifest = manifestOf(record, stored);
-  if (manifest === null) return refuse('storage-unavailable', 'stored-manifest');
-  const explanation = explanationOf(record, manifest);
+  const read = readManifestForRevision(record, stored);
+  if (!read.ok) return read;
+  const explanation = explanationOf(record, read.manifest);
   if (utf8Bytes(JSON.stringify(explanation)) > PHASE_CONTEXT_LIMITS.explanationBytesMax) {
     return refuse('capacity-exceeded', 'explanation-bytes');
   }
   return { ok: true, explanation };
+}
+
+function sourceMetadataId(source: ManifestSource): string {
+  return `${source.producer.nodePath}#${source.producer.occurrenceId}:${source.producer.attemptId}`;
+}
+
+function artifactIdsOf(manifest: HandoffManifest): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const source of manifest.sources) {
+    for (const artifact of source.artifacts) {
+      ids.add(`${artifact.artifactId}@${artifact.immutableVersion}`);
+    }
+  }
+  return ids;
+}
+
+/**
+ * FR-012 / FR-019: strictly metadata-only diff between two persisted revisions of a handoff.
+ * Returns added/removed source and artifact identities, manifest digests, and omission/rendered
+ * byte deltas — zero source text or prose ever enters the diff.
+ */
+export function compareHandoffRevisions(
+  record: HandoffRecord,
+  fromRevision: number,
+  toRevision: number
+): RevisionDiffResult {
+  if (!soundRecord(record)) return refuse('storage-unavailable', 'stored-record');
+  if (!isWholeNumber(fromRevision, 1) || !isWholeNumber(toRevision, 1)) {
+    return refuse('stale-revision', 'unknown-revision');
+  }
+  const fromStored = record.revisions.find((entry) => entry.revision === fromRevision);
+  const toStored = record.revisions.find((entry) => entry.revision === toRevision);
+  if (fromStored === undefined || toStored === undefined) {
+    return refuse('stale-revision', 'unknown-revision');
+  }
+  const fromRead = readManifestForRevision(record, fromStored);
+  if (!fromRead.ok) return fromRead;
+  const toRead = readManifestForRevision(record, toStored);
+  if (!toRead.ok) return toRead;
+
+  const fromSources = new Set(fromRead.manifest.sources.map(sourceMetadataId));
+  const toSources = new Set(toRead.manifest.sources.map(sourceMetadataId));
+  const addedSourceIds = [...toSources].filter((id) => !fromSources.has(id)).sort(compareText);
+  const removedSourceIds = [...fromSources].filter((id) => !toSources.has(id)).sort(compareText);
+
+  const fromArtifacts = artifactIdsOf(fromRead.manifest);
+  const toArtifacts = artifactIdsOf(toRead.manifest);
+  const addedArtifactIds = [...toArtifacts].filter((id) => !fromArtifacts.has(id)).sort(compareText);
+  const removedArtifactIds = [...fromArtifacts].filter((id) => !toArtifacts.has(id)).sort(compareText);
+
+  const fromOmissions = fromRead.manifest.omissions.length + fromRead.manifest.omissionsUnlisted;
+  const toOmissions = toRead.manifest.omissions.length + toRead.manifest.omissionsUnlisted;
+
+  const diff: HandoffRevisionDiff = {
+    handoffId: record.handoffId,
+    fromRevision: fromStored.revision,
+    toRevision: toStored.revision,
+    fromManifestDigest: fromStored.manifestDigest,
+    toManifestDigest: toStored.manifestDigest,
+    addedSourceIds,
+    removedSourceIds,
+    addedArtifactIds,
+    removedArtifactIds,
+    omissionCountDelta: toOmissions - fromOmissions,
+    renderedBytesDelta: toStored.renderedBytes - fromStored.renderedBytes
+  };
+  if (utf8Bytes(JSON.stringify(diff)) > PHASE_CONTEXT_LIMITS.explanationBytesMax) {
+    return refuse('capacity-exceeded', 'explanation-bytes');
+  }
+  return { ok: true, diff };
 }
 
 function observation(event: HandoffEvent, manifest: HandoffManifest, renderedBytes: number, attempt: string): HandoffObservation {

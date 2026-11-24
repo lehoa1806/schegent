@@ -16,7 +16,7 @@ import type { PhaseLogDisplayEntry, ToolArgumentValue } from './types';
 
 const MAX_SHRINKS = 8;
 const CUT_MARGIN_BYTES = 64;
-const STRING_FIELDS = ['text', 'toolInput', 'toolResult', 'systemSummary', 'resultSummary'] as const;
+const STRING_FIELDS = ['text', 'toolName', 'toolInput', 'toolResult', 'systemSummary', 'resultSummary'] as const;
 type ShrinkableField = (typeof STRING_FIELDS)[number] | 'toolArguments';
 
 type MutableBody = { -readonly [K in keyof PhaseLogDisplayEntry['body']]: PhaseLogDisplayEntry['body'][K] };

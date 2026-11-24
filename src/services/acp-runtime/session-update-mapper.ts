@@ -23,6 +23,7 @@ export interface UsageReading {
   readonly used: number;
   readonly size: number;
   readonly cost?: { readonly amount: string; readonly currency?: string };
+  readonly producerEventId?: string;
 }
 
 export type IgnoreReason = 'unknown-kind' | 'non-terminal-tool-update' | 'invalid-update';
@@ -122,12 +123,24 @@ function costOf(value: unknown): UsageReading['cost'] {
   return typeof currency === 'string' ? { amount, currency } : { amount };
 }
 
+function producerEventIdOf(update: Fields): string | undefined {
+  const candidate = update['eventId'] ?? update['producerEventId'] ?? update['id'];
+  return isAgentIdentifier(candidate) ? candidate : undefined;
+}
+
 function mapUsage(update: Fields): MappedUpdate {
   const used = update['used'];
   const size = update['size'];
   if (!isCount(used) || !isCount(size)) return INVALID;
   const cost = costOf(update['cost']);
-  return { kind: 'usage', usage: cost === undefined ? { used, size } : { used, size, cost } };
+  const producerEventId = producerEventIdOf(update);
+  const usage: UsageReading = {
+    used,
+    size,
+    ...(cost !== undefined ? { cost } : {}),
+    ...(producerEventId !== undefined ? { producerEventId } : {})
+  };
+  return { kind: 'usage', usage };
 }
 
 /** Maps one `update` object from a `session/update` notification. */

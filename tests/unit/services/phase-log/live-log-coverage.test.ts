@@ -207,19 +207,16 @@ describe('FR-R6-F07 T034 — one fixture, gap and counter per coverage reason', 
   });
 
   it('display-truncation: an entry no shrink can fit is one gap', async () => {
-    // A tool name is not a shrinkable field, so this entry cannot be cut to fit.
-    const name = 'n'.repeat(LIVE_LOG_ENTRY_MAX_BYTES);
-    const toolUse = JSON.stringify({
-      type: 'assistant',
-      message: { content: [{ type: 'tool_use', id: 'tu-1', name, input: {} }] }
-    });
-    await writeFile(lines(INIT, toolUse, RESULT));
+    // `systemSubtype` is not a shrinkable field, so this entry cannot be cut to fit.
+    const subtype = 's'.repeat(LIVE_LOG_ENTRY_MAX_BYTES);
+    const hugeSystem = JSON.stringify({ type: 'system', subtype });
+    await writeFile(lines(INIT, hugeSystem, RESULT));
     const harness = makeHarness({ perFieldBytes: UNBOUNDED_FIELD_BYTES });
     await startReady(harness);
     await resight(harness);
     expect(reasonsOf(harness.batches)).toEqual(['display-truncation']);
     expect(harness.session.counters()).toMatchObject({ omittedRecords: 1, deliveryGaps: 0 });
-    expect(JSON.stringify(harness.batches)).not.toContain(name);
+    expect(JSON.stringify(harness.batches)).not.toContain(subtype);
     expectNoText(harness);
     await harness.session.dispose('webview-stop');
   });

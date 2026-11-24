@@ -157,7 +157,12 @@ export function createSidebarRouter(deps: SidebarRouterWiringDeps): MessageRoute
   // FR-R5-F19 (contract decision-record-open.md) — "Open decision record", read-only, over this window's state.
   const decisionRecord = createDecisionRecordWiring({ workspaceRoot, store, logger });
   registerDisposable(decisionRecord.disposable);
-  const round6Visibility = createRound6VisibilityWiring({ workspaceRoot, store });
+  const round6Visibility = createRound6VisibilityWiring({
+    workspaceRoot,
+    store,
+    hasPrimacy: () => lock.hasPrimacy(),
+    onTrustOrPrimacyLost: (listener) => lock.onFenceLost(listener)
+  });
   registerDisposable(round6Visibility.disposable);
   // FR-R4-F15 (contract Q4) — the "Show last error" read, over THIS window's queue state and history,
   // so a queue id and task id taken from another workspace's snapshot name no row here. The age is the

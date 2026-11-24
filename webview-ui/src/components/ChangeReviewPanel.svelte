@@ -7,6 +7,8 @@
   } from '../../../src/contracts/change-review';
   import type { ExecutionLaneCandidateVisibility } from '../lib/messages';
   import { requestChangeReview } from '../lib/execution-visibility-ipc';
+  import { snapshotStore } from '../lib/snapshot-store.svelte';
+  import { laneStateLabel, reviewStateLabel as stateLabel, sanitizeReviewDisplayPath as safePath } from '../lib/visibility-panel-labels';
 
   interface Props {
     lane: ExecutionLaneCandidateVisibility;
@@ -22,12 +24,23 @@
   let nextCursor = $state<string | null>(null);
   let unavailableReason = $state<string | null>(null);
 
+  let requestGen = 0;
+  let openInFlight = false;
+  let lastSeenResyncCount = snapshotStore.resyncCount;
+
   const requestId = $derived(lane.integrationRequestId);
 
   function releaseCurrentReview(): void {
-    void requestChangeReview({ op: 'cancelOpen' });
-    if (descriptor !== null) {
-      void requestChangeReview({ op: 'close', reviewId: descriptor.reviewId });
+    const shouldCancel = isPrimary && openInFlight;
+    const reviewIdToClose = isPrimary && descriptor !== null ? descriptor.reviewId : null;
+    requestGen += 1;
+    loading = false;
+    openInFlight = false;
+    if (shouldCancel) {
+      void requestChangeReview({ op: 'cancelOpen' });
+    }
+    if (reviewIdToClose !== null) {
+      void requestChangeReview({ op: 'close', reviewId: reviewIdToClose });
     }
   }
 
@@ -46,52 +59,116 @@
     return () => untrack(() => releaseCurrentReview());
   });
 
-  async function openReview(openInEditor: boolean): Promise<void> {
-    if (lane.integrationRequestId === null) return;
+  // Hide/reveal resynchronisation: refresh freshness of an open review when the panel reappears
+  // or after a host snapshot resync, preserving current selection and keyboard focus.
+  $effect(() => {
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === 'visible' && isPrimary && descriptor !== null && !loading) {
+        void recheckFreshness();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  });
+
+  $effect(() => {
+    void snapshotStore.snapshot;
+    const currentResync = snapshotStore.resyncCount;
+    if (currentResync === lastSeenResyncCount || loading) return;
+    lastSeenResyncCount = currentResync;
+    if (isPrimary && descriptor !== null) {
+      untrack(() => {
+        void recheckFreshness();
+      });
+    }
+  });
+
+  async function applyOpenOrRefresh(mode: 'open' | 'refresh', openInEditor: boolean): Promise<void> {
+    const oldReviewId = descriptor?.reviewId ?? null;
+    if (mode === 'open' && lane.integrationRequestId === null) return;
+    if (mode === 'refresh' && oldReviewId === null) return;
+    const gen = ++requestGen;
     loading = true;
+    openInFlight = true;
     unavailableReason = null;
-    statusNotice = openInEditor
-      ? 'Opening immutable candidate diff in VS Code…'
-      : 'Loading pinned candidate file inventory…';
-    const env = await requestChangeReview({
-      op: 'open',
-      requestId: lane.integrationRequestId,
-      ...(lane.comparisonRevision !== null ? { expectedRevision: lane.comparisonRevision } : {}),
-      openInEditor
-    });
+    statusNotice =
+      mode === 'refresh'
+        ? 'Refreshing candidate change review against current target…'
+        : openInEditor
+          ? 'Opening immutable candidate diff in VS Code…'
+          : 'Loading pinned candidate file inventory…';
+    const env = await requestChangeReview(
+      mode === 'refresh'
+        ? { op: 'refresh', reviewId: oldReviewId!, openInEditor }
+        : {
+            op: 'open',
+            requestId: lane.integrationRequestId!,
+            ...(lane.comparisonRevision !== null ? { expectedRevision: lane.comparisonRevision } : {}),
+            openInEditor
+          }
+    );
+    if (gen !== requestGen) {
+      if (
+        (env.response.op === 'open' || env.response.op === 'refresh') &&
+        env.response.result.ok &&
+        env.response.result.value.state !== 'unavailable'
+      ) {
+        void requestChangeReview({ op: 'close', reviewId: env.response.result.value.review.reviewId });
+      }
+      return;
+    }
+    lastSeenResyncCount = snapshotStore.resyncCount;
     loading = false;
+    openInFlight = false;
     if (env.boundaryRefusal !== null) {
       statusNotice = env.boundaryRefusal;
       return;
     }
-    if (env.response.op === 'open') {
-      if (!env.response.result.ok) {
-        statusNotice = `Change review refused: ${env.response.result.reason}.`;
-        return;
-      }
-      const opened = env.response.result.value;
-      if (opened.state === 'unavailable') {
-        descriptor = null;
-        entries = [];
-        nextCursor = null;
-        unavailableReason = opened.reason;
-        statusNotice = `${availabilityPhrase('unavailable')} (${opened.reason}).`;
-        return;
-      }
-      descriptor = opened.review;
-      entries = opened.firstPage.entries;
-      nextCursor = opened.firstPage.nextCursor;
-      const editorNote =
-        env.response.editor.mode === 'none'
-          ? ''
-          : ` Opened ${env.response.editor.opened} file diff(s) via ${env.response.editor.mode} editor.`;
-      statusNotice = `Loaded ${entries.length} of ${opened.review.total} changed file(s) at revision ${opened.review.comparisonRevision.slice(0, 12)}.${editorNote}`;
+    if (env.response.op !== mode) return;
+    if (!env.response.result.ok) {
+      statusNotice =
+        mode === 'refresh'
+          ? `Change review refresh refused: ${env.response.result.reason}.`
+          : `Change review refused: ${env.response.result.reason}.`;
+      return;
     }
+    const opened = env.response.result.value;
+    if (opened.state === 'unavailable') {
+      descriptor = null;
+      entries = [];
+      nextCursor = null;
+      unavailableReason = opened.reason;
+      if (oldReviewId !== null) {
+        void requestChangeReview({ op: 'close', reviewId: oldReviewId });
+      }
+      statusNotice = `${availabilityPhrase('unavailable')} (${opened.reason}).`;
+      return;
+    }
+    descriptor = opened.review;
+    entries = opened.firstPage.entries;
+    nextCursor = opened.firstPage.nextCursor;
+    if (oldReviewId !== null && oldReviewId !== opened.review.reviewId) {
+      void requestChangeReview({ op: 'close', reviewId: oldReviewId });
+    }
+    const editorNote =
+      env.response.editor.mode === 'none'
+        ? ''
+        : ` Opened ${env.response.editor.opened} file diff(s) via ${env.response.editor.mode} editor.`;
+    const verb = mode === 'refresh' ? 'Refreshed' : 'Loaded';
+    statusNotice = `${verb} ${entries.length} of ${opened.review.total} changed file(s) at revision ${opened.review.comparisonRevision.slice(0, 12)}.${editorNote}`;
   }
 
+  const openReview = (openInEditor: boolean): Promise<void> => applyOpenOrRefresh('open', openInEditor);
+  const refreshReview = (openInEditor = false): Promise<void> => applyOpenOrRefresh('refresh', openInEditor);
+
   async function cancelOpen(): Promise<void> {
-    const env = await requestChangeReview({ op: 'cancelOpen' });
+    const gen = ++requestGen;
     loading = false;
+    openInFlight = false;
+    const env = await requestChangeReview({ op: 'cancelOpen' });
+    if (gen !== requestGen) return;
     statusNotice =
       env.response.op === 'cancelOpen' && env.response.canceled
         ? 'Canceled in-flight change review open.'
@@ -99,26 +176,43 @@
   }
 
   async function recheckFreshness(): Promise<void> {
-    if (descriptor === null) return;
+    if (descriptor === null || loading) return;
+    const currentReviewId = descriptor.reviewId;
+    const gen = ++requestGen;
     loading = true;
-    const env = await requestChangeReview({ op: 'classify', reviewId: descriptor.reviewId });
+    const env = await requestChangeReview({ op: 'classify', reviewId: currentReviewId });
+    if (gen !== requestGen) return;
     loading = false;
     if (env.boundaryRefusal !== null) {
       statusNotice = env.boundaryRefusal;
       return;
     }
-    if (env.response.op === 'classify' && env.response.result.ok) {
+    if (env.response.op === 'classify') {
+      if (!env.response.result.ok) {
+        statusNotice = `Could not re-check freshness: ${env.response.result.reason}.`;
+        return;
+      }
       descriptor = env.response.result.value;
-      statusNotice = `Comparison state: ${descriptor.state}${descriptor.reason ? ` (${descriptor.reason})` : ''}.`;
+      statusNotice = `Comparison state: ${stateLabel(descriptor)}.`;
     }
   }
 
   async function loadNextPage(): Promise<void> {
     if (nextCursor === null) return;
+    const gen = ++requestGen;
     loading = true;
     const env = await requestChangeReview({ op: 'page', cursor: nextCursor });
+    if (gen !== requestGen) return;
     loading = false;
-    if (env.response.op === 'page' && env.response.result.ok) {
+    if (env.boundaryRefusal !== null) {
+      statusNotice = env.boundaryRefusal;
+      return;
+    }
+    if (env.response.op === 'page') {
+      if (!env.response.result.ok) {
+        statusNotice = `Could not load more files: ${env.response.result.reason}.`;
+        return;
+      }
       entries = [...entries, ...env.response.result.value.entries];
       nextCursor = env.response.result.value.nextCursor;
       statusNotice = `Showing ${entries.length} of ${descriptor?.total ?? entries.length} changed file(s).`;
@@ -127,18 +221,16 @@
 
   async function closeActiveReview(): Promise<void> {
     if (descriptor === null) return;
+    const gen = ++requestGen;
+    loading = false;
+    openInFlight = false;
     const id = descriptor.reviewId;
     descriptor = null;
     entries = [];
     nextCursor = null;
     await requestChangeReview({ op: 'close', reviewId: id });
+    if (gen !== requestGen) return;
     statusNotice = 'Closed candidate change review.';
-  }
-
-  function stateLabel(d: ReviewDescriptor): string {
-    if (d.state === 'current') return 'Current: matches frozen target commit';
-    if (d.state === 'stale') return `Stale: target or candidate moved (${d.reason ?? 'stale'})`;
-    return `${availabilityPhrase('uncertain')} (${d.reason ?? 'uncertain'})`;
   }
 </script>
 
@@ -161,7 +253,7 @@
     <dl class="kv cr-rows">
       <div>
         <dt>Lane</dt>
-        <dd>{lane.laneId ?? 'Not recorded'} ({lane.laneState ?? 'unknown'})</dd>
+        <dd data-testid="lane-state-value">{lane.laneId ?? 'Not recorded'} ({laneStateLabel(lane.laneState)})</dd>
       </div>
       <div>
         <dt>Candidate</dt>
@@ -169,7 +261,7 @@
       </div>
       <div>
         <dt>Integration</dt>
-        <dd>{lane.integrationState ?? 'Not queued'} {lane.targetRef ? `→ ${lane.targetRef}` : ''}</dd>
+        <dd>{lane.integrationState ?? 'Not queued'} {lane.targetRef ? `→ ${safePath(lane.targetRef)}` : ''}</dd>
       </div>
       <div>
         <dt>Comparison revision</dt>
@@ -182,18 +274,24 @@
         <button
           type="button"
           class="btn btn-secondary btn-sm"
-          disabled={loading}
+          aria-disabled={loading ? 'true' : undefined}
           data-testid="change-review-inspect-btn"
-          onclick={() => void openReview(false)}
+          onclick={() => {
+            if (loading) return;
+            void openReview(false);
+          }}
         >
           Inspect changed files
         </button>
         <button
           type="button"
           class="btn btn-secondary btn-sm"
-          disabled={loading}
+          aria-disabled={loading ? 'true' : undefined}
           data-testid="change-review-open-editor-btn"
-          onclick={() => void openReview(true)}
+          onclick={() => {
+            if (loading) return;
+            void openReview(true);
+          }}
         >
           Open diff in editor
         </button>
@@ -211,23 +309,45 @@
           <button
             type="button"
             class="btn btn-secondary btn-sm"
-            disabled={loading}
+            aria-disabled={loading ? 'true' : undefined}
             data-testid="change-review-recheck-btn"
-            onclick={() => void recheckFreshness()}
+            onclick={() => {
+              if (loading) return;
+              void recheckFreshness();
+            }}
           >
             Re-check freshness
           </button>
           <button
             type="button"
             class="btn btn-secondary btn-sm"
-            disabled={loading}
+            aria-disabled={loading ? 'true' : undefined}
+            data-testid="change-review-refresh-btn"
+            onclick={() => {
+              if (loading) return;
+              void refreshReview(false);
+            }}
+          >
+            Refresh review
+          </button>
+          <button
+            type="button"
+            class="btn btn-secondary btn-sm"
+            aria-disabled={loading ? 'true' : undefined}
             data-testid="change-review-close-btn"
-            onclick={() => void closeActiveReview()}
+            onclick={() => {
+              if (loading) return;
+              void closeActiveReview();
+            }}
           >
             Close review
           </button>
         {/if}
       </div>
+    {:else if lane.integrationRequestId !== null && !isPrimary}
+      <p class="cr-note" data-testid="change-review-readonly-note">
+        Read-only secondary window: open the primary window to inspect candidate diffs or open a change review in the editor.
+      </p>
     {/if}
 
     {#if statusNotice !== ''}
@@ -265,14 +385,21 @@
       </dl>
 
       {#if entries.length > 0}
-        <ul class="cr-files" data-testid="change-review-file-list">
+        <!-- WCAG 2.2 AA scrollable-region-focusable: keyboard users need tab access to scroll -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <ul
+          class="cr-files"
+          tabindex="0"
+          aria-label={`Changed files (${entries.length} of ${descriptor.total})`}
+          data-testid="change-review-file-list"
+        >
           {#each entries as entry (entry.index)}
             <li class="cr-file-item">
               <span class="tag">{entry.kind}</span>
               <!-- FR-013: repository filenames rendered strictly as inert text -->
-              <span class="cr-path">{entry.newPath ?? entry.oldPath ?? '(unnamed)'}</span>
+              <span class="cr-path">{safePath(entry.newPath ?? entry.oldPath ?? '(unnamed)')}</span>
               {#if entry.kind === 'renamed' && entry.oldPath !== null}
-                <span class="muted">(from {entry.oldPath}, {entry.similarity ?? 0}% match)</span>
+                <span class="muted">(from {safePath(entry.oldPath)}, {entry.similarity ?? 0}% match)</span>
               {/if}
               {#if entry.binary}
                 <span class="muted">[binary]</span>
@@ -286,9 +413,12 @@
         <button
           type="button"
           class="btn btn-secondary btn-sm cr-load-more"
-          disabled={loading}
+          aria-disabled={loading ? 'true' : undefined}
           data-testid="change-review-load-more"
-          onclick={() => void loadNextPage()}
+          onclick={() => {
+            if (loading) return;
+            void loadNextPage();
+          }}
         >
           Load more files
         </button>
@@ -344,6 +474,10 @@
     overflow-y: auto;
     list-style: none;
     font-size: var(--schegent-text-secondary);
+  }
+  .cr-files:focus-visible {
+    outline: 2px solid var(--schegent-focus-border);
+    outline-offset: 2px;
   }
   .cr-file-item {
     display: flex;
