@@ -166,6 +166,7 @@ export async function invokeNativeReviewer(
       permissionMode,
       executableTarget,
       ...(decision !== undefined ? { containmentPosture: decision.containmentPosture } : {}),
+      ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
       continued: false,
       sessionReused: false,
       ...(request.model !== undefined ? { modelId: request.model } : {}),

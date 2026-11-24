@@ -181,6 +181,14 @@ export type MonitorSidecarEvent =
       readonly timedOut: boolean;
       /** FR-R3-075 — the absolute deadline fired; distinct from the idle stall. */
       readonly deadlineExceeded?: boolean;
+      /** FR-R8-03 (03-02) — optional phase-start attempt UUID for metadata-only correlation. */
+      readonly attemptId?: string;
+      /** FR-R8-03 (03-02) — peak retained bytes across bounded stdout/stderr buffers. */
+      readonly streamHighWaterBytes?: number;
+      /** FR-R8-03 (03-02) — total raw stream bytes observed across stdout/stderr buffers. */
+      readonly streamObservedBytes?: number;
+      /** FR-R8-03 (03-02) — whether either bounded stream buffer truncated output. */
+      readonly streamTruncated?: boolean;
     }
   /**
    * FR-R3-208 — the runner's settle hold, reported so the silence it causes is

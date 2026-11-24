@@ -307,10 +307,20 @@ without unhandled Promise rejections or delivery wedging.
 
 ## What was not observed
 
-No live provider and no real OpenTelemetry Collector was used. The request shape is checked
+No live provider and no real external OpenTelemetry Collector was used. The request shape is checked
 against a committed fixture built from the published OTLP/HTTP JSON rules, and delivery is
-exercised against a local fixture collector on loopback. No claim is made that any named
-collector or vendor accepts these requests.
+exercised against local loopback HTTP fixture servers — including the `FR-R8-03` (`03-02`)
+lifecycle drill (`repo/tests/integration/correlated-diagnostics-and-otlp.test.ts`, verified
+2026-11-24) covering:
+
+- **Disabled posture**: zero network calls and zero `telemetry-spool/` directory creation;
+- **Unapproved destinations**: pre-network refusal of non-loopback plaintext endpoints (`plaintext-not-loopback`), `content` policy (`content-export-unsupported`), and workspace-scoped profiles (`scope-not-authorized`);
+- **HTTP `3xx` redirect refusal**: redirected trap target receives zero metric payloads and zero credentials (`dropReasons['redirect-refused'] >= 1`);
+- **Collector unreachable → bounded redacted spool → recovery replay**: `503` + `Retry-After` exceeding the `30 s` retry budget spools one `0600` metadata-only batch (`<= 32 MiB`) with filesystem paths, source IDs, and bearer credentials absent on disk, and replays/acknowledges cleanly once the collector returns `200 OK`.
+
+External OpenTelemetry Collector interoperability remains **unqualified / unobserved**: no claim is
+made that any named external collector or vendor endpoint accepts these requests until qualified
+against a real collector deployment.
 
 ## Deferred and expansion gate
 

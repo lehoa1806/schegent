@@ -1,5 +1,5 @@
 import type { ReadUsageAccountingCommand, ReadUsageAccountingResponse } from '../messages';
-import { queryUsageAccounting } from '../../../headless/usage-accounting-api';
+import { queryUsageAccountingAsync } from '../../../headless/usage-accounting-api';
 import { historyErrorCode } from '../../../services/history/error-code';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
@@ -25,7 +25,7 @@ export const handler: CommandHandler<ReadUsageAccountingCommand> = async (ctx, c
 
   let answer: ReadUsageAccountingResponse;
   try {
-    answer = queryUsageAccounting(reader, command.payload.query);
+    answer = await queryUsageAccountingAsync(reader, command.payload.query);
   } catch (err) {
     // The code, never the caught message: a store error can quote the database path it addressed.
     ctx.deps.logger.warn(`sidebar router: usage accounting read failed: ${historyErrorCode(err)}`);

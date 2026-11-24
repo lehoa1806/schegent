@@ -82,6 +82,14 @@ These are not holds: no one decided to keep them, and this record does not decid
 becomes its own change or a row above. `esbuild` (`^0.28.2`) and similar `0.x` packages have
 no major to hold — a `0.x` bump is a minor by semver's own rules and is not a hold.
 
+### Advisory-driven major-upgrade review (2026-11-24, `FR-R8-03` / `03-05`)
+
+Live dual-tree npm audit captures at `repo/` `4732e3df` (2026-11-24) recorded **7 normalized findings in `root`** (`5 moderate`, `2 critical`) and **7 normalized findings in `webview-ui`** (`5 moderate`, `2 critical`), all 14 classified **`build-only`** (0 `shipped` runtime packages):
+
+- **`vitest@3.2.7` → `5.x`** (carries the two Critical `tinypool@1.1.1` advisories `GHSA-5gmw-xhrv-c9v3` and `GHSA-85c8-ppgw-ccpr`, plus `@vitest/mocker`, `vitest`, and coverage transitive `glob`/`minimatch`): remains a separate dedicated migration because moving across two Vitest majors (3 → 5) touches both host and webview test runners, coverage v8 instrumentation, and config across ~900 test files. Until that dedicated change lands, the builder-only dispositions in `docs/release/advisory-dispositions.json` (expiring `2027-02-22`) record exposure, mitigation (`ignore-scripts=true`, never bundled), and upgrade trigger; any runtime-reachable (`shipped`) finding is now unconditionally blocked by `advisory-shipped` in `scripts/release-advisory.mjs`.
+- **`@vscode/vsce@3.9.2` → `4.x`** (carries transitive `glob`/`minimatch` dev-tooling advisories): deferred to its own dedicated packaging-tooling migration and still constrained by the `@secretlint/node` `10.x` family hold above.
+- The five held majors in the table above were reviewed on 2026-11-06 (18 days old against the 90-day cadence, due by 2027-02-04) and are not bumped in this change.
+
 ## Intentional dependency change
 
 Moving a declared range on purpose, a held major included, updates these files in the same change,

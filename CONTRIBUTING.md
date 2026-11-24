@@ -147,7 +147,7 @@ npx playwright install chromium
 
 Without it, `npm run test:visual` — and therefore `npm run ci:fast` — fails its preflight with one message naming this command. **Re-run it after any Playwright version bump**: the browser is pinned to a revision the installed Playwright resolves, so a bump moves the target and a cache that worked yesterday stops satisfying it. That is a stale cache, not a broken test, and the preflight says which. The recorded fail/install/pass sequence and what the preflight does not cover are in [Visual gate preflight observations](docs/operations/visual-gate-preflight-observations.md).
 
-See [Developer setup](docs/tutorials/developer-setup.md) for the complete build and Extension Development Host check.
+See [Developer setup](docs/tutorials/developer-setup.md) for the complete build and Extension Development Host check, and [Contributor setup rehearsal](docs/development/contributor-setup-rehearsal.md) for the rehearsed paired-workspace vs. standalone-clone setup record and missing-webview diagnostic.
 
 ### Activate local Git hooks
 

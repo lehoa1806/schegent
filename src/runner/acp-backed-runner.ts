@@ -914,13 +914,11 @@ export class AcpBackedRunner implements BackendRunner {
       );
       if (transport !== null) {
         this.options.monitorHook?.({
-          kind: 'exited',
-          runId,
-          invocationId,
-          exitCode,
-          signal: killed ? 'SIGTERM' : null,
-          killed,
-          timedOut: timedOut || deadlineExceeded
+          kind: 'exited', runId, invocationId, exitCode, signal: killed ? 'SIGTERM' : null, killed, timedOut: timedOut || deadlineExceeded,
+          ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+          streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+          streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+          streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
         });
       }
       this.activeExecutions.delete(invocationId);

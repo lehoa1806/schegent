@@ -35,7 +35,7 @@ export const RELEASE_ADVISORY_BUDGET_DAYS = 7;
 /** The tracked disposition list, relative to the repository root (data-model section 7). */
 export const DISPOSITIONS_PATH = 'docs/release/advisory-dispositions.json';
 
-/** The refusal reasons, in the order they are checked (data-model section 6 + FR-R7-14 14-12). */
+/** The refusal reasons, in the order they are checked (data-model section 6 + FR-R7-14 14-12 + FR-R8-03 03-05). */
 export const RELEASE_ADVISORY_REASONS = Object.freeze([
   'advisory-capture-missing',
   'advisory-incomplete',
@@ -44,6 +44,7 @@ export const RELEASE_ADVISORY_REASONS = Object.freeze([
   'advisory-observed-after-now',
   'advisory-stale',
   'dispositions-unusable',
+  'advisory-shipped',
   'advisory-uncovered'
 ]);
 
@@ -315,6 +316,33 @@ export function evaluateReleaseAdvisory({ captures, lockBlobs, dispositionsText,
     (a, b) =>
       byCodeUnit(a.tree, b.tree) || byCodeUnit(a.package, b.package) || byCodeUnit(a.advisory, b.advisory)
   );
+
+  // FR-R8-03 (03-05) — when module graphs are supplied (`bundledByTree !== null`), fail closed
+  // on any finding whose runtime reachability is not proven `build-only` (both `shipped` and
+  // `unknown`, such as unmapped virtual modules or a missing tree graph). Checked BEFORE
+  // `advisory-uncovered` so an uncovered runtime-reachable finding is never misdirected to a
+  // disposition entry that cannot waive shipped code.
+  if (!refusal && bundledByTree !== null) {
+    const blockingRuntime = findings.filter((item) => item.usage !== 'build-only');
+    if (blockingRuntime.length > 0) {
+      const first = blockingRuntime.at(0);
+      const sample = `${escapeForTerminal(first.tree)} ${escapeForTerminal(first.package)} ${escapeForTerminal(first.advisory)} (severity=${escapeForTerminal(first.severity)}, usage=${first.usage})`;
+      const verb = blockingRuntime.length === 1 ? 'reaches' : 'reach';
+      const unknownNote =
+        first.usage === 'unknown'
+          ? ' (unmapped module or missing graph fails closed)'
+          : '';
+      refusal = {
+        reason: 'advisory-shipped',
+        message:
+          `${plural(blockingRuntime.length, 'advisory finding')} ${verb} shipped or unverified runtime code ` +
+          `(usage=${first.usage})${unknownNote}; first blocking: ${sample}. ` +
+          `Upgrade or patch the bundled dependency before preparing a release candidate`,
+        tree: first.tree,
+        detail: `${blockingRuntime.length}-${first.usage}`
+      };
+    }
+  }
 
   if (!refusal) {
     const actionableKeys = new Set(

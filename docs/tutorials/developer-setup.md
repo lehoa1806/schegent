@@ -62,9 +62,10 @@ npm --prefix webview-ui ci
 **Two commands, and the second one is the point.** Both installs use the checked-in lockfiles.
 `.npmrc` sets `ignore-scripts=true` in both trees (`FR-R3-090`), a deliberate hardening, so the
 root `postinstall` that used to install the private `webview-ui` package **does not run** — a
-separate webview install is required, not optional. This paragraph previously said the opposite;
-the hardening is not reverted to make a document true. See `CONTRIBUTING.md`, which is the
-authority for the sequence.
+separate webview install is required, not optional. Without the second command, `npm run build`
+stops immediately at `scripts/check-webview-install.mjs` with a message naming `npm --prefix webview-ui ci`
+(rehearsed in [Contributor setup rehearsal](../development/contributor-setup-rehearsal.md)). See
+`CONTRIBUTING.md`, which is the authority for the sequence.
 
 Neither install fetches the Chromium build the visual regression suite launches. Install it once:
 

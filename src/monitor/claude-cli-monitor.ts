@@ -614,7 +614,7 @@ export class ClaudeCliMonitor {
    */
   public onExit(
     runId: string | null,
-    args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean },
+    args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean; attemptId?: string; streamHighWaterBytes?: number; streamObservedBytes?: number; streamTruncated?: boolean },
     invocationId?: string | null
   ): void {
     const state = this.resolve(runId);
@@ -680,22 +680,14 @@ export class ClaudeCliMonitor {
       },
       nextStatus === 'completed' ? 'success' : 'failure'
     );
-    this.appendAudit(
-      state.runId,
-      'monitor-invocation-summary',
-      {
-        status: nextStatus,
-        durationMs,
-        exitCode: args.exitCode,
-        signal: args.signal,
-        // Feature FR-R3-007 (T353) — the same aggregate the UI reads. With the
-        // per-line events gone this is the audit's only record of the CLI's
-        // output volume, so it is built by one function rather than restated.
-        ...projectTransportAggregate(state),
-        detectedIssues: state.detectedIssues.slice()
-      },
-      nextStatus === 'completed' ? 'success' : 'info'
-    );
+    this.appendAudit(state.runId, 'monitor-invocation-summary', {
+      status: nextStatus, durationMs, exitCode: args.exitCode, signal: args.signal,
+      ...projectTransportAggregate(state), detectedIssues: state.detectedIssues.slice(),
+      ...(args.attemptId !== undefined ? { attemptId: args.attemptId } : {}),
+      ...(args.streamHighWaterBytes !== undefined ? { streamHighWaterBytes: args.streamHighWaterBytes } : {}),
+      ...(args.streamObservedBytes !== undefined ? { streamObservedBytes: args.streamObservedBytes } : {}),
+      ...(args.streamTruncated !== undefined ? { streamTruncated: args.streamTruncated } : {})
+    }, nextStatus === 'completed' ? 'success' : 'info');
     this.evictSettledStates();
     this.notify();
   }

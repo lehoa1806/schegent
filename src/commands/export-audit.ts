@@ -132,12 +132,17 @@ function guardedPayloadValue(eventType: string, key: string, value: unknown): un
     const ok = eventType === 'phase-end' && (value === 'received' || value === 'absent');
     return ok ? value : null;
   }
-  // Feature 212 (FR-002) — the shape the writer mints, shared with the
-  // projection rather than restated here; two copies of a shape are two shapes
-  // as soon as one is edited.
+  // Feature 212 (FR-002) & FR-R8-03 (03-02) — the shape the writer mints,
+  // shared with the projection rather than restated here. Scoped to the three
+  // event families whose bespoke projectors emit `attemptId`; any other event
+  // family (e.g. `monitor-rate-limited`) still rejects as `null`.
   if (key === 'attemptId') {
     const ok =
-      eventType === 'phase-end' && typeof value === 'string' && ATTEMPT_ID_RE.test(value);
+      (eventType === 'phase-end' ||
+        eventType === 'cli-invocation' ||
+        eventType === 'monitor-invocation-summary') &&
+      typeof value === 'string' &&
+      ATTEMPT_ID_RE.test(value);
     return ok ? value : null;
   }
   // Feature 242 (FR-R4-F14, contract E4) — scoped by event type, like the two arms above: the code belongs to

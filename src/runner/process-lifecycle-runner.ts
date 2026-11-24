@@ -287,7 +287,11 @@ export class ProcessLifecycleRunner {
             kind: 'exited', runId: request.runId ?? null, invocationId,
             exitCode: abortedComp?.exitCode ?? null,
             signal: abortedComp?.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null,
-            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {})
+            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+            ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+            streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+            streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+            streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
           });
           throw err;
         }
@@ -340,7 +344,11 @@ export class ProcessLifecycleRunner {
       this.emit({
         kind: 'exited', runId: request.runId ?? null, invocationId,
         exitCode: completion.exitCode, signal, killed, timedOut,
-        ...(deadlineFired() ? { deadlineExceeded: true } : {})
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+        ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+        streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+        streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+        streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
       });
       stdoutBuffer.finalize(); stderrBuffer.finalize();
       stdoutScanner?.finalize(); stderrScanner?.finalize();

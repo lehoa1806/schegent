@@ -302,7 +302,9 @@ function readMeasureAggregates(
      ${from} GROUP BY ${groupColumns}c.measure, c.unit`,
     ...params
   );
+  let hasOccupancy = false;
   for (const row of sums) {
+    if (OCCUPANCY_MEASURES.has(row.measure)) hasOccupancy = true;
     const groupKey = groupKeyOf(row, dimensions);
     aggregates.set(`${groupKey}\0${row.measure}\0${row.unit}`, {
       groupKey,
@@ -314,6 +316,7 @@ function readMeasureAggregates(
       hasConflicting: Number(row.has_conflicting) > 0
     });
   }
+  if (!hasOccupancy) return aggregates;
   const partition = `${groupColumns}c.measure, c.unit`;
   const latest = conn.all<RawLatest>(
     `SELECT * FROM (
