@@ -10,7 +10,17 @@
 // one a reader cannot rely on. Each list is frozen, and its type is derived from it, so the list and
 // the type cannot drift.
 
+import type { AuditPermissionMode } from './backend-descriptors';
 import type { BackendRunnerKind } from './backend-kinds';
+
+/** Standalone native-review scanner executables qualified separately from core backends (FR-R8-02 02-02). */
+export const REVIEW_SCANNERS = Object.freeze(['codex-security'] as const);
+export type ReviewScannerId = (typeof REVIEW_SCANNERS)[number];
+/** Logical executable identity audited on `cli-invocation` (never a filesystem path). */
+export type ExecutableTargetId = BackendRunnerKind | ReviewScannerId;
+export type ContainmentPosture = 'contained' | 'accepted-uncontained' | 'accepted-unqualified';
+/** Workspace memento key storing explicit scanner fingerprint acceptance bindings. */
+export const SCANNER_ACCEPTANCE_BINDINGS_KEY = 'schegent.scanner.acceptanceBindings.v1';
 
 /** The six effects a record qualifies separately (FR-005). Also the record's order. */
 export const CONTAINMENT_EFFECTS = Object.freeze([
@@ -253,10 +263,26 @@ export interface TeardownQualification {
   readonly residuals: readonly TeardownResidual[];
 }
 
+/** Authoritative single-resolution decision handed from spawn admission to launch and metadata-only audit. */
+export interface SpawnAdmissionDecision {
+  readonly kind: BackendRunnerKind;
+  readonly executableTarget: ExecutableTargetId;
+  readonly resolvedExecutablePath: string;
+  /** Optional SHA-256 hex digest of the admitted standalone scanner binary (FR-R8-02 02-02). */
+  readonly resolvedExecutableSha256?: string;
+  readonly containmentPosture: ContainmentPosture;
+  readonly permissionMode: AuditPermissionMode;
+  readonly fingerprint: FingerprintRecord;
+}
+
 /** What the spawn gate is told about one spawn. `runId` is absent for a spawn outside a Run. */
 export interface SpawnAdmissionRequest {
   readonly runId: string | undefined;
   readonly cliPath: string;
+  /** Optional native-review context so scanner executables are resolved and qualified independently (FR-R8-02 02-02). */
+  readonly review?: { readonly kind: 'code' | 'security' };
+  /** Optional filtered child environment overrides used to resolve the exact spawn target once. */
+  readonly env?: Readonly<Record<string, string>>;
   /** Optional abort signal triggered when the caller cancels or closes while admission is pending. */
   readonly cancellationSignal?: AbortSignal;
 }
@@ -267,4 +293,6 @@ export interface SpawnAdmissionRequest {
  */
 export interface SpawnGate {
   admit(kind: BackendRunnerKind, request: SpawnAdmissionRequest): Promise<void>;
+  /** Optional extended admission returning the authoritative target/posture/path decision (FR-R8-02 02-02). */
+  admitWithDecision?(kind: BackendRunnerKind, request: SpawnAdmissionRequest): Promise<SpawnAdmissionDecision>;
 }

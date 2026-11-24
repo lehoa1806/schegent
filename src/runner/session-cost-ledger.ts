@@ -31,8 +31,9 @@ export class SessionCostLedger {
     return cumulativeUsd;
   }
 
-  /** Records the session's cumulative total as of its latest invocation. */
+  /** Records the session's cumulative total as of its latest invocation (ignores non-finite or negative values). */
   public record(sessionId: string, cumulativeUsd: number): void {
+    if (!Number.isFinite(cumulativeUsd) || cumulativeUsd < 0) return;
     this.costs.delete(sessionId);
     this.costs.set(sessionId, cumulativeUsd);
     if (this.costs.size <= MAX_TRACKED_SESSIONS) return;
@@ -42,6 +43,7 @@ export class SessionCostLedger {
 
   /** Records the figure only when the ledger holds none for the session; eviction is `record`'s. */
   public recordIfAbsent(sessionId: string, cumulativeUsd: number): void {
+    if (!Number.isFinite(cumulativeUsd) || cumulativeUsd < 0) return;
     if (!this.costs.has(sessionId)) this.record(sessionId, cumulativeUsd);
   }
 }

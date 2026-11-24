@@ -36,6 +36,7 @@ import {
   trackGroupAtExit
 } from './process-tree';
 import { buildSpawnEnv, policyRequestFields } from './spawn-env';
+import { buildCodexSecurityEnv } from './native-review-launch';
 import { spawnCommandFor } from '../lib/spawn-command';
 
 /** How long an observed version stands before it is probed again. */
@@ -69,6 +70,17 @@ const SIGKILL_ESCALATION_MS = 500;
 export interface CliVersionProbe {
   /** The observed version, or `null` when it could not be observed. Never throws. */
   observe: (cliPath: string) => Promise<string | null>;
+  /**
+   * FR-R8-02 (02-02 / SEC-01): observes `--version` for an already-consented, digest-verified
+   * standalone scanner executable under `buildCodexSecurityEnv`, keyed by `(cliPath, binaryDigest,
+   * policyFingerprint)` and abortable via `signal`. Never throws.
+   */
+  observeScanner?: (
+    cliPath: string,
+    binaryDigest: string,
+    extraEnv?: Readonly<Record<string, string>>,
+    signal?: AbortSignal
+  ) => Promise<string | null>;
 }
 
 export interface CliVersionProbeDeps {
@@ -141,6 +153,7 @@ interface RunProbeOptions {
   readonly timeoutMs: number;
   readonly maxBytes: number;
   readonly env: NodeJS.ProcessEnv;
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -154,6 +167,10 @@ function run(
   options: RunProbeOptions
 ): Promise<{ readonly stdout: string }> {
   return new Promise<{ readonly stdout: string }>((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(new Error('cli version probe aborted'));
+      return;
+    }
     let command: string;
     try {
       // FR-R7-16 (16-16): resolve against the child's exact environment, never host process.env.
@@ -201,7 +218,13 @@ function run(
       return !isReusedPid(child);
     };
 
+    const onAbort = (): void => {
+      finishError(new Error('cli version probe aborted'), true);
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+
     const clearSettleTimers = (): void => {
+      options.signal?.removeEventListener('abort', onAbort);
       if (deadlineTimer !== null) {
         clearTimeout(deadlineTimer);
         deadlineTimer = null;
@@ -444,7 +467,61 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
     return pending;
   };
 
-  return { observe };
+  const observeScanner = async (
+    cliPath: string,
+    binaryDigest: string,
+    extraEnv?: Readonly<Record<string, string>>,
+    signal?: AbortSignal
+  ): Promise<string | null> => {
+    if (deps.isTrusted?.() === false || signal?.aborted) return null;
+    const policy = currentPolicy();
+    const key = `${cliVersionCacheKey(cliPath, policy)}\u0000${binaryDigest}`;
+    const cached = cache.get(key);
+    if (cached !== undefined && now() - cached.observedAtMs < CLI_VERSION_TTL_MS) {
+      return cached.version;
+    }
+    // Never share a single-caller AbortSignal across concurrent callers: signal-bearing probes
+    // run isolated so aborting one caller cannot cancel or fail an independent sibling caller.
+    if (signal === undefined) {
+      const existing = inFlight.get(key);
+      if (existing !== undefined) return existing;
+    }
+    const pending = Promise.resolve()
+      .then(async () => {
+        if (injectedProbe !== undefined) {
+          return injectedProbe(cliPath);
+        }
+        const { stdout } = await run(cliPath, ['--version'], {
+          timeoutMs,
+          maxBytes: CLI_VERSION_MAX_OUTPUT_BYTES,
+          env: buildCodexSecurityEnv(
+            buildSpawnEnv({
+              ...policyRequestFields(policy),
+              ...(extraEnv !== undefined ? { env: { ...extraEnv } } : {})
+            })
+          ),
+          ...(signal !== undefined ? { signal } : {})
+        });
+        return stdout;
+      })
+      .then((stdout) => normalizeCliVersion(stdout))
+      .catch(() => null)
+      .then((version) => {
+        if (!signal?.aborted) {
+          cache.set(key, { version, observedAtMs: now() });
+        }
+        if (signal === undefined) {
+          inFlight.delete(key);
+        }
+        return version;
+      });
+    if (signal === undefined) {
+      inFlight.set(key, pending);
+    }
+    return pending;
+  };
+
+  return { observe, observeScanner };
 }
 
 /**

@@ -26,10 +26,22 @@ function bootBridgeProcess(): void {
       process.stdin.once('close', listener);
     },
     writeStdout(line) {
-      process.stdout.write(line, 'utf8');
+      return process.stdout.write(line, 'utf8');
+    },
+    onStdoutDrain(listener) {
+      process.stdout.once('drain', listener);
+    },
+    stdoutWritableLength() {
+      return process.stdout.writableLength;
     },
     writeStderr(text) {
-      process.stderr.write(text, 'utf8');
+      return process.stderr.write(text, 'utf8');
+    },
+    onStderrDrain(listener) {
+      process.stderr.once('drain', listener);
+    },
+    stderrWritableLength() {
+      return process.stderr.writableLength;
     }
   });
 

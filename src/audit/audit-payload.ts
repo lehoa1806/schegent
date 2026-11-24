@@ -1,5 +1,10 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
 import { AuditPayloadValidationError } from './audit-payload-error';
+import {
+  ACP_RECORDABLE_PHASE_END_WARNINGS,
+  projectExecutableTargetAndPosture,
+  projectRecordableWarnings
+} from './audit-payload-acp-vocab';
 import { projectEvidenceExported } from './evidence-lifecycle-payload';
 import { projectAgentConfigAckPayload } from './agent-config-ack-payload';
 import { projectStoreBackupRestorePayload } from './store-backup-restore-payload';
@@ -9,6 +14,7 @@ import {
   findBackendDescriptor,
   type AuditPermissionMode
 } from '../contracts/backend-descriptors';
+import type { ContainmentPosture, ExecutableTargetId } from '../contracts/containment-qualification';
 
 export type { AuditPermissionMode };
 import { isCompletionProvenance } from '../contracts/completion-provenance';
@@ -75,6 +81,10 @@ export interface CliInvocationPayloadV3 {
   readonly runner: BackendRunnerKind;
   readonly operation: 'phase' | 'native-review' | 'session-compaction' | 'probe';
   readonly permissionMode: AuditPermissionMode;
+  /** FR-R8-02 (02-02): closed logical executable identity (e.g. `'codex-security'`), never a path. */
+  readonly executableTarget?: ExecutableTargetId;
+  /** FR-R8-02 (02-02): closed containment posture decided by spawn admission. */
+  readonly containmentPosture?: ContainmentPosture;
   readonly continued: boolean;
   readonly sessionReused: boolean;
   readonly modelId?: string;
@@ -473,10 +483,12 @@ function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPa
   if (!['read-only', 'workspace-write', 'unrestricted'].includes(permissionMode)) {
     throw new AuditPayloadValidationError('invalid-permission-mode');
   }
+  const targetPosture = projectExecutableTargetAndPosture(payload, descriptor.kind, permissionMode);
   return Object.freeze({
     runner: descriptor.kind,
     operation: operation as CliInvocationPayloadV3['operation'],
     permissionMode: permissionMode as AuditPermissionMode,
+    ...targetPosture,
     continued: booleanValue(payload.continued ?? payload.isContinue),
     sessionReused: booleanValue(payload.sessionReused ?? payload.sessionReuse),
     ...(typeof (payload.modelId ?? payload.model) === 'string'
@@ -559,27 +571,12 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   'evidence-path-refused:historyPointer',
   'evidence-path-refused:auditCheckpoint',
   'evidence-path-refused:transport',
-  'evidence-path-refused:verboseDiagnostics'
+  'evidence-path-refused:verboseDiagnostics',
+  ...ACP_RECORDABLE_PHASE_END_WARNINGS
 ]);
 
-interface ProjectedWarnings {
-  readonly recorded: ReadonlyArray<string>;
-  readonly omitted: number;
-}
-
-function projectPhaseEndWarnings(value: unknown): ProjectedWarnings {
-  if (!Array.isArray(value)) return { recorded: [], omitted: 0 };
-  const recorded: string[] = [];
-  let omitted = 0;
-  for (const entry of value) {
-    if (typeof entry === 'string' && RECORDABLE_PHASE_END_WARNINGS.has(entry)) {
-      if (!recorded.includes(entry)) recorded.push(entry);
-      continue;
-    }
-    omitted += 1;
-  }
-  return { recorded: Object.freeze(recorded), omitted };
-}
+const projectPhaseEndWarnings = (value: unknown) =>
+  projectRecordableWarnings(value, RECORDABLE_PHASE_END_WARNINGS);
 
 /**
  * The attempt identifier in the only shape anything mints one: the

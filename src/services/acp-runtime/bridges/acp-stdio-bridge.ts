@@ -13,14 +13,35 @@
  */
 import * as path from 'node:path';
 
-import { ACP_PROTOCOL_VERSION, ACP_RUNTIME_LIMITS } from '../../../contracts/acp-runtime';
+import {
+  ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES,
+  ACP_MAX_CLI_LINE_BYTES,
+  ACP_PROTOCOL_VERSION,
+  ACP_RUNTIME_LIMITS
+} from '../../../contracts/acp-runtime';
 import { getBackendDescriptor } from '../../../contracts/backend-descriptors';
 import { isNativeReviewKind, type NativeReviewKind } from '../../../contracts/process-definitions';
 import {
   codexSecurityLaunch, isReviewCommit, isReviewExclusion, summarizeSecurityScan, type NativeReviewInvocation
 } from '../../../runner/native-review-launch';
-import { canonicalizePathWithTailSync } from '../../../lib/protected-path-match';
 import { isAgentIdentifier, isSafeProviderSessionId } from '../agent-identifier';
+import { BridgeByteFramer } from '../bridge-byte-framer';
+import {
+  MAX_TRACKED_TERMINAL_EVENTS,
+  SHA256_HEX_RE,
+  boundRawInputForFrame,
+  canonicalizeBridgeCwd,
+  chunkTextForFrame,
+  formatBridgeCostAmount,
+  isNonEmptyString,
+  isRecord,
+  isValidBridgeProviderSessionId,
+  parseStrictBillableTokens,
+  renderPromptBlocks,
+  safeUsedTokens,
+  truncateErrorMessage,
+  truncateTextForJsonFrame
+} from './acp-stdio-bridge-helpers';
 import {
   JSON_RPC_INVALID_PARAMS,
   JSON_RPC_METHOD_NOT_FOUND,
@@ -35,6 +56,13 @@ import {
   type ManagedCliChild,
   type StdioLaunch
 } from '../stdio-transport';
+import {
+  formatBridgeErrorMessage,
+  reconcileBridgeTurnOutcome,
+  rpcCodeForBridgeErrorStatus,
+  type BridgeStopReason,
+  type BridgeTerminalEvent
+} from '../terminal-reconciliation';
 
 export type BridgedBackendKind = 'claude' | 'codex';
 
@@ -54,8 +82,12 @@ export interface AcpBridgeLaunchConfig {
 export interface BridgeIoStreams {
   onStdin(listener: (chunk: Uint8Array) => void): void;
   onStdinClose(listener: () => void): void;
-  writeStdout(line: string): void;
-  writeStderr(text: string): void;
+  writeStdout(line: string): boolean | void;
+  onStdoutDrain?(listener: () => void): void;
+  stdoutWritableLength?(): number;
+  writeStderr(text: string): boolean | void;
+  onStderrDrain?(listener: () => void): void;
+  stderrWritableLength?(): number;
 }
 
 export interface BridgeServerHandle {
@@ -77,59 +109,7 @@ interface ActiveBridgeTurn {
 
 const RPC_INTERNAL_ERROR = -32000;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
-const MAX_CLI_LINE_BYTES = 2 * 1024 * 1024;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-const EPHEMERAL_BRIDGE_SESSION_PREFIX_RE = /^acp-(?:claude|codex|agy)-session-/;
-
-function canonicalizeBridgeCwd(rawCwd: string): string | null {
-  if (rawCwd.includes('\0')) return null;
-  const resolved = path.resolve(rawCwd);
-  const canonical = canonicalizePathWithTailSync(resolved);
-  return canonical.ok ? canonical.canonical : null;
-}
-
-function isValidBridgeProviderSessionId(backend: BridgedBackendKind, value: unknown): value is string {
-  return (
-    isSafeProviderSessionId(value) &&
-    !value.startsWith(`acp-${backend}-session-`) &&
-    !EPHEMERAL_BRIDGE_SESSION_PREFIX_RE.test(value)
-  );
-}
-
-function renderPromptBlocks(blocks: unknown): string | null {
-  if (!Array.isArray(blocks) || blocks.length === 0) return null;
-  const parts: string[] = [];
-  for (const raw of blocks as readonly unknown[]) {
-    if (!isRecord(raw) || typeof raw['type'] !== 'string') return null;
-    if (raw['type'] === 'text') {
-      if (typeof raw['text'] !== 'string') return null;
-      parts.push(raw['text']);
-    } else if (raw['type'] === 'resource_link') {
-      if (!isNonEmptyString(raw['uri']) || !isNonEmptyString(raw['name'])) return null;
-      parts.push(`[Resource Link: ${raw['name']} (${raw['uri']})]`);
-    } else if (raw['type'] === 'resource') {
-      const resource = raw['resource'];
-      if (!isRecord(resource) || !isNonEmptyString(resource['uri']) || typeof resource['text'] !== 'string') {
-        return null;
-      }
-      const mime = typeof resource['mimeType'] === 'string' ? ` (${resource['mimeType']})` : '';
-      parts.push(`<embedded-resource uri="${resource['uri']}"${mime}>\n${resource['text']}\n</embedded-resource>`);
-    } else {
-      return null;
-    }
-  }
-  const combined = parts.join('\n\n');
-  if (Buffer.byteLength(combined, 'utf8') > ACP_RUNTIME_LIMITS.maxMessageBytes) return null;
-  return combined;
-}
+const MAX_CLI_LINE_BYTES = ACP_MAX_CLI_LINE_BYTES;
 
 function buildCliArgs(config: AcpBridgeLaunchConfig, providerSessionId: string | null): string[] {
   if (providerSessionId !== null && !isSafeProviderSessionId(providerSessionId)) {
@@ -168,6 +148,8 @@ export function parseBridgeCliArgv(
   let effort: string | undefined;
   let nativeReview: NativeReviewKind | undefined;
   let mergeBase: string | undefined;
+  let scannerCliPath: string | undefined;
+  let scannerSha256: string | undefined;
   const excludedPaths: string[] = [];
   const permissionFlags: string[] = [];
 
@@ -195,6 +177,23 @@ export function parseBridgeCliArgv(
     } else if (flag === '--review-base' && mergeBase === undefined && isReviewCommit(next)) {
       mergeBase = next;
       idx += 1;
+    } else if (
+      flag === '--scanner-cli' &&
+      scannerCliPath === undefined &&
+      isNonEmptyString(next) &&
+      path.isAbsolute(next) &&
+      !next.includes('\0')
+    ) {
+      scannerCliPath = next;
+      idx += 1;
+    } else if (
+      flag === '--scanner-sha256' &&
+      scannerSha256 === undefined &&
+      typeof next === 'string' &&
+      SHA256_HEX_RE.test(next)
+    ) {
+      scannerSha256 = next;
+      idx += 1;
     } else if (flag === '--review-exclude' && next !== undefined && isReviewExclusion(next)) {
       excludedPaths.push(next);
       idx += 1;
@@ -205,6 +204,19 @@ export function parseBridgeCliArgv(
   if (backend === null || cliPath === null) return null;
   if ((nativeReview === undefined) !== (mergeBase === undefined)) return null;
   if (excludedPaths.length > 0 && (backend !== 'codex' || nativeReview !== 'security')) return null;
+  if (
+    (scannerCliPath !== undefined || scannerSha256 !== undefined) &&
+    (backend !== 'codex' || nativeReview !== 'security')
+  ) {
+    return null;
+  }
+  if (
+    backend === 'codex' &&
+    nativeReview === 'security' &&
+    (scannerCliPath === undefined || scannerSha256 === undefined)
+  ) {
+    return null;
+  }
   return {
     backend,
     cliPath,
@@ -212,7 +224,15 @@ export function parseBridgeCliArgv(
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(nativeReview !== undefined && mergeBase !== undefined
-      ? { nativeReview: { kind: nativeReview, mergeBase, ...(excludedPaths.length > 0 ? { excludedPaths } : {}) } }
+      ? {
+          nativeReview: {
+            kind: nativeReview,
+            mergeBase,
+            ...(scannerCliPath !== undefined ? { resolvedScannerPath: scannerCliPath } : {}),
+            ...(scannerSha256 !== undefined ? { resolvedScannerSha256: scannerSha256 } : {}),
+            ...(excludedPaths.length > 0 ? { excludedPaths } : {})
+          }
+        }
       : {}),
     env
   };
@@ -231,20 +251,115 @@ export function startAcpStdioBridgeServer(
   let nextSessionSeq = 1;
   let toolFallbackSeq = 1;
 
-  const sendFramedLine = (line: string): void => {
-    if (closing) return;
-    io.writeStdout(line);
+  let stdoutBackpressured = false;
+  let drainRegistered = false;
+  let estimatedPendingStdoutBytes = 0;
+  const pausedChildren = new Set<ManagedCliChild>();
+
+  let stderrDrainRegistered = false;
+  let estimatedPendingStderrBytes = 0;
+  const pausedStderrChildren = new Set<ManagedCliChild>();
+
+  const resumePausedChildren = (): void => {
+    stdoutBackpressured = false;
+    drainRegistered = false;
+    estimatedPendingStdoutBytes = 0;
+    for (const child of pausedChildren) {
+      child.resumeStdout?.();
+    }
+    pausedChildren.clear();
   };
 
-  const emitSessionUpdate = (sessionId: string, update: Record<string, unknown>): void => {
+  const resumePausedStderrChildren = (): void => {
+    stderrDrainRegistered = false;
+    estimatedPendingStderrBytes = 0;
+    for (const child of pausedStderrChildren) {
+      child.resumeStderr?.();
+    }
+    pausedStderrChildren.clear();
+  };
+
+  const writeBridgeStderr = (text: string, activeChild?: ManagedCliChild): void => {
+    if (closing || text.length === 0) return;
+    const textBytes = Buffer.byteLength(text, 'utf8');
+    const currentPending = io.stderrWritableLength?.() ?? estimatedPendingStderrBytes;
+    if (currentPending + textBytes > ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES) {
+      if (activeChild !== undefined) {
+        activeChild.pauseStderr?.();
+        pausedStderrChildren.add(activeChild);
+      }
+      if (!stderrDrainRegistered && io.onStderrDrain !== undefined) {
+        stderrDrainRegistered = true;
+        io.onStderrDrain(() => resumePausedStderrChildren());
+      }
+      return;
+    }
+    const accepted = io.writeStderr(text);
+    if (accepted === false) {
+      estimatedPendingStderrBytes += textBytes;
+      if (activeChild !== undefined) {
+        activeChild.pauseStderr?.();
+        pausedStderrChildren.add(activeChild);
+      }
+      if (!stderrDrainRegistered && io.onStderrDrain !== undefined) {
+        stderrDrainRegistered = true;
+        io.onStderrDrain(() => resumePausedStderrChildren());
+      }
+    }
+  };
+
+  const sendFramedLine = (line: string, activeChild?: ManagedCliChild): boolean => {
+    if (closing) return true;
+    const lineBytes = Buffer.byteLength(line, 'utf8');
+    const accepted = io.writeStdout(line);
+    if (accepted === false) {
+      stdoutBackpressured = true;
+      estimatedPendingStdoutBytes += lineBytes;
+      if (activeChild !== undefined) {
+        activeChild.pauseStdout?.();
+        pausedChildren.add(activeChild);
+      }
+      if (!drainRegistered && io.onStdoutDrain !== undefined) {
+        drainRegistered = true;
+        io.onStdoutDrain(() => resumePausedChildren());
+      }
+      const pending = io.stdoutWritableLength?.() ?? estimatedPendingStdoutBytes;
+      if (pending > ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const emitSessionUpdate = (
+    sessionId: string,
+    update: Record<string, unknown>,
+    activeChild?: ManagedCliChild
+  ): boolean => {
     const providerSessionId = sessions.get(sessionId)?.providerSessionId ?? null;
-    sendFramedLine(
+    return sendFramedLine(
       notificationLine('session/update', {
         sessionId,
         update,
         ...(providerSessionId !== null ? { _meta: { providerSessionId } } : {})
-      })
+      }),
+      activeChild
     );
+  };
+
+  const emitChunkedTextUpdate = (
+    sessionId: string,
+    sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk',
+    text: string,
+    activeChild: ManagedCliChild,
+    overflowState: { overflowed: boolean }
+  ): void => {
+    for (const part of chunkTextForFrame(text)) {
+      if (!emitSessionUpdate(sessionId, { sessionUpdate, content: { type: 'text', text: part } }, activeChild)) {
+        overflowState.overflowed = true;
+        return;
+      }
+    }
   };
 
   const safeToolId = (raw: unknown): string => {
@@ -258,88 +373,138 @@ export function startAcpStdioBridgeServer(
 
   const handleClaudeJsonLine = (
     session: BridgeSession,
-    record: Record<string, unknown>
-  ): { completedStopReason?: 'end_turn' | 'max_tokens' | 'refusal'; errorText?: string } => {
+    record: Record<string, unknown>,
+    activeChild: ManagedCliChild
+  ): { readonly terminalEvent?: BridgeTerminalEvent; readonly backpressureOverflow?: boolean } => {
     if (isValidBridgeProviderSessionId(config.backend, record['session_id'])) {
       session.providerSessionId = record['session_id'];
     }
+    const overflowState = { overflowed: false };
+    const emit = (update: Record<string, unknown>): void => {
+      if (overflowState.overflowed) return;
+      if (!emitSessionUpdate(session.acpSessionId, update, activeChild)) {
+        overflowState.overflowed = true;
+      }
+    };
     const rowType = record['type'];
     if (rowType === 'assistant' && isRecord(record['message']) && Array.isArray(record['message']['content'])) {
       for (const block of record['message']['content'] as readonly unknown[]) {
+        if (overflowState.overflowed) break;
         if (!isRecord(block)) continue;
         if (block['type'] === 'text' && typeof block['text'] === 'string') {
-          emitSessionUpdate(session.acpSessionId, {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: block['text'] }
-          });
+          emitChunkedTextUpdate(session.acpSessionId, 'agent_message_chunk', block['text'], activeChild, overflowState);
         } else if (block['type'] === 'thinking' && typeof block['thinking'] === 'string') {
-          emitSessionUpdate(session.acpSessionId, {
-            sessionUpdate: 'agent_thought_chunk',
-            content: { type: 'text', text: block['thinking'] }
-          });
+          emitChunkedTextUpdate(session.acpSessionId, 'agent_thought_chunk', block['thinking'], activeChild, overflowState);
         } else if (block['type'] === 'tool_use') {
-          emitSessionUpdate(session.acpSessionId, {
+          const boundedInput = boundRawInputForFrame(block['input']);
+          const title =
+            typeof block['name'] === 'string' && block['name'].length > 0
+              ? truncateTextForJsonFrame(block['name'], 1024)
+              : 'tool';
+          emit({
             sessionUpdate: 'tool_call',
             toolCallId: safeToolId(block['id']),
-            title: typeof block['name'] === 'string' && block['name'].length > 0 ? block['name'] : 'tool',
-            ...(block['input'] !== undefined ? { rawInput: block['input'] } : {})
+            title,
+            ...(boundedInput !== undefined ? { rawInput: boundedInput } : {})
           });
         }
       }
-      return {};
+      return overflowState.overflowed ? { backpressureOverflow: true } : {};
     }
     if (rowType === 'user' && isRecord(record['message']) && Array.isArray(record['message']['content'])) {
       for (const block of record['message']['content'] as readonly unknown[]) {
+        if (overflowState.overflowed) break;
         if (!isRecord(block) || block['type'] !== 'tool_result') continue;
         const isErr = block['is_error'] === true;
         const rawContent = block['content'];
-        const text = typeof rawContent === 'string' ? rawContent : isErr ? 'failed' : 'completed';
-        emitSessionUpdate(session.acpSessionId, {
+        const fullText = typeof rawContent === 'string' ? rawContent : isErr ? 'failed' : 'completed';
+        const text = truncateTextForJsonFrame(fullText);
+        emit({
           sessionUpdate: 'tool_call_update',
           toolCallId: safeToolId(block['tool_use_id']),
           status: isErr ? 'failed' : 'completed',
           content: [{ type: 'content', content: { type: 'text', text } }]
         });
       }
-      return {};
+      return overflowState.overflowed ? { backpressureOverflow: true } : {};
     }
     if (rowType === 'result') {
       const usage = isRecord(record['usage']) ? record['usage'] : null;
-      if (usage !== null) {
-        const inputTokens = typeof usage['input_tokens'] === 'number' ? Math.max(0, Math.trunc(usage['input_tokens'])) : 0;
-        const outputTokens = typeof usage['output_tokens'] === 'number' ? Math.max(0, Math.trunc(usage['output_tokens'])) : 0;
-        const costUsd = record['total_cost_usd'];
-        const cost =
-          typeof costUsd === 'number' && Number.isFinite(costUsd) && costUsd >= 0
-            ? { amount: costUsd.toFixed(6), currency: 'USD' }
-            : undefined;
-        emitSessionUpdate(session.acpSessionId, {
+      const billableTokens =
+        usage !== null
+          ? parseStrictBillableTokens({
+              inputTokens: usage['input_tokens'],
+              outputTokens: usage['output_tokens'],
+              cacheCreationInputTokens: usage['cache_creation_input_tokens'],
+              cacheReadInputTokens: usage['cache_read_input_tokens']
+            })
+          : undefined;
+      const formattedCost = formatBridgeCostAmount(record['total_cost_usd']);
+      const cost = formattedCost !== undefined ? { amount: formattedCost, currency: 'USD' } : undefined;
+      if (billableTokens !== undefined || cost !== undefined) {
+        emit({
           sessionUpdate: 'usage_update',
-          used: inputTokens + outputTokens,
+          used: safeUsedTokens(billableTokens),
           size: DEFAULT_CONTEXT_WINDOW_TOKENS,
-          ...(cost !== undefined ? { cost } : {})
+          ...(cost !== undefined ? { cost } : {}),
+          ...(billableTokens !== undefined ? { _meta: { billableTokens } } : {})
         });
       }
-      if (record['is_error'] === true) {
-        return { errorText: typeof record['result'] === 'string' ? record['result'] : 'claude result reported error' };
+      const subtype = record['subtype'];
+      const hasErrorSubtype = subtype !== undefined && subtype !== 'success';
+      if (record['is_error'] === true || hasErrorSubtype) {
+        const msg =
+          typeof record['result'] === 'string' && record['result'].length > 0
+            ? record['result']
+            : typeof subtype === 'string' && subtype.length > 0
+              ? `claude result reported ${subtype}`
+              : 'claude result reported error';
+        return {
+          terminalEvent: { kind: 'error', message: truncateErrorMessage(msg) },
+          ...(overflowState.overflowed ? { backpressureOverflow: true } : {})
+        };
       }
-      if (typeof record['result'] === 'string' && record['result'].length > 0) {
+      const rawStopReason = record['stop_reason'];
+      let stopReason: BridgeStopReason;
+      if (rawStopReason === undefined || rawStopReason === null || rawStopReason === 'end_turn') {
+        stopReason = 'end_turn';
+      } else if (rawStopReason === 'max_tokens') {
+        stopReason = 'max_tokens';
+      } else if (rawStopReason === 'refusal') {
+        stopReason = 'refusal';
+      } else {
+        return {
+          terminalEvent: {
+            kind: 'error',
+            message: truncateErrorMessage(`claude reported unsupported stop_reason: ${String(rawStopReason)}`)
+          },
+          ...(overflowState.overflowed ? { backpressureOverflow: true } : {})
+        };
+      }
+      if (!overflowState.overflowed && typeof record['result'] === 'string' && record['result'].length > 0) {
         // Ensure single-line result streams with no prior assistant block still surface text.
-        emitSessionUpdate(session.acpSessionId, {
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: record['result'] }
-        });
+        emitChunkedTextUpdate(session.acpSessionId, 'agent_message_chunk', record['result'], activeChild, overflowState);
       }
-      const stopReason = record['stop_reason'] === 'max_tokens' ? 'max_tokens' : 'end_turn';
-      return { completedStopReason: stopReason };
+      return {
+        terminalEvent: { kind: 'success', stopReason },
+        ...(overflowState.overflowed ? { backpressureOverflow: true } : {})
+      };
     }
     return {};
   };
 
   const handleCodexJsonLine = (
     session: BridgeSession,
-    record: Record<string, unknown>
-  ): { completedStopReason?: 'end_turn'; errorText?: string } => {
+    record: Record<string, unknown>,
+    activeChild: ManagedCliChild
+  ): { readonly terminalEvent?: BridgeTerminalEvent; readonly backpressureOverflow?: boolean } => {
+    const overflowState = { overflowed: false };
+    const emit = (update: Record<string, unknown>): void => {
+      if (overflowState.overflowed) return;
+      if (!emitSessionUpdate(session.acpSessionId, update, activeChild)) {
+        overflowState.overflowed = true;
+      }
+    };
     const rowType = record['type'];
     if (rowType === 'thread.started' && isValidBridgeProviderSessionId(config.backend, record['thread_id'])) {
       session.providerSessionId = record['thread_id'];
@@ -349,33 +514,32 @@ export function startAcpStdioBridgeServer(
       const item = record['item'];
       const itemType = item['type'];
       if (rowType === 'item.completed' && itemType === 'agent_message' && typeof item['text'] === 'string') {
-        emitSessionUpdate(session.acpSessionId, {
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: item['text'] }
-        });
+        emitChunkedTextUpdate(session.acpSessionId, 'agent_message_chunk', item['text'], activeChild, overflowState);
       } else if (rowType === 'item.completed' && itemType === 'reasoning' && typeof item['text'] === 'string') {
-        emitSessionUpdate(session.acpSessionId, {
-          sessionUpdate: 'agent_thought_chunk',
-          content: { type: 'text', text: item['text'] }
-        });
+        emitChunkedTextUpdate(session.acpSessionId, 'agent_thought_chunk', item['text'], activeChild, overflowState);
       } else if (itemType === 'command_execution' || itemType === 'file_change') {
         const toolCallId = safeToolId(item['id']);
         if (rowType === 'item.started') {
-          emitSessionUpdate(session.acpSessionId, {
+          const boundedInput =
+            typeof item['command'] === 'string'
+              ? boundRawInputForFrame({ command: item['command'] })
+              : undefined;
+          emit({
             sessionUpdate: 'tool_call',
             toolCallId,
             title: String(itemType),
-            ...(typeof item['command'] === 'string' ? { rawInput: { command: item['command'] } } : {})
+            ...(boundedInput !== undefined ? { rawInput: boundedInput } : {})
           });
         } else {
           const failed = typeof item['exit_code'] === 'number' && item['exit_code'] !== 0;
-          const outputText =
+          const rawOutputText =
             typeof item['aggregated_output'] === 'string' && item['aggregated_output'].length > 0
               ? item['aggregated_output']
               : failed
                 ? 'failed'
                 : 'completed';
-          emitSessionUpdate(session.acpSessionId, {
+          const outputText = truncateTextForJsonFrame(rawOutputText);
+          emit({
             sessionUpdate: 'tool_call_update',
             toolCallId,
             status: failed ? 'failed' : 'completed',
@@ -383,20 +547,31 @@ export function startAcpStdioBridgeServer(
           });
         }
       }
-      return {};
+      return overflowState.overflowed ? { backpressureOverflow: true } : {};
     }
     if (rowType === 'turn.completed') {
       const usage = isRecord(record['usage']) ? record['usage'] : null;
-      if (usage !== null) {
-        const inputTokens = typeof usage['input_tokens'] === 'number' ? Math.max(0, Math.trunc(usage['input_tokens'])) : 0;
-        const outputTokens = typeof usage['output_tokens'] === 'number' ? Math.max(0, Math.trunc(usage['output_tokens'])) : 0;
-        emitSessionUpdate(session.acpSessionId, {
+      const billableTokens =
+        usage !== null
+          ? parseStrictBillableTokens({
+              inputTokens: usage['input_tokens'],
+              outputTokens: usage['output_tokens'],
+              cacheCreationInputTokens: usage['cache_write_input_tokens'],
+              cacheReadInputTokens: usage['cached_input_tokens']
+            })
+          : undefined;
+      if (billableTokens !== undefined) {
+        emit({
           sessionUpdate: 'usage_update',
-          used: inputTokens + outputTokens,
-          size: DEFAULT_CONTEXT_WINDOW_TOKENS
+          used: safeUsedTokens(billableTokens),
+          size: DEFAULT_CONTEXT_WINDOW_TOKENS,
+          _meta: { billableTokens }
         });
       }
-      return { completedStopReason: 'end_turn' };
+      return {
+        terminalEvent: { kind: 'success', stopReason: 'end_turn' },
+        ...(overflowState.overflowed ? { backpressureOverflow: true } : {})
+      };
     }
     if (rowType === 'turn.failed' || rowType === 'error') {
       const msg =
@@ -405,7 +580,9 @@ export function startAcpStdioBridgeServer(
           : typeof record['message'] === 'string'
             ? record['message']
             : 'codex turn failed';
-      return { errorText: msg };
+      return {
+        terminalEvent: { kind: 'error', message: truncateErrorMessage(msg) }
+      };
     }
     return {};
   };
@@ -427,7 +604,14 @@ export function startAcpStdioBridgeServer(
     let child: ManagedCliChild;
     try {
       if (securityReview !== undefined) {
-        security = codexSecurityLaunch(securityReview, config.env, config.model, config.effort);
+        security = codexSecurityLaunch(
+          securityReview,
+          config.env,
+          config.model,
+          config.effort,
+          securityReview.resolvedScannerPath,
+          securityReview.resolvedScannerSha256
+        );
       }
       const cli: Omit<StdioLaunch, 'cwd'> = security ?? {
         command: config.cliPath,
@@ -437,27 +621,50 @@ export function startAcpStdioBridgeServer(
       child = spawnChild({ ...cli, cwd: session.cwd });
     } catch {
       void security?.cleanup().catch(() => undefined);
-      sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, securityReview === undefined
-        ? 'Backend executable failed to launch'
-        : 'Codex Security executable failed to launch'));
+      sendFramedLine(
+        errorLine(
+          rpcId,
+          RPC_INTERNAL_ERROR,
+          formatBridgeErrorMessage(
+            'rejected',
+            securityReview === undefined
+              ? 'Backend executable failed to launch'
+              : 'Codex Security executable failed to launch'
+          )
+        )
+      );
       return;
     }
     const turn: ActiveBridgeTurn = { rpcId, child, cancelled: false };
     session.activeTurn = turn;
+    const isTurnCancelled = (): boolean => turn.cancelled;
 
-    const childDecoder = new TextDecoder('utf-8', { fatal: false });
-    let lineRemainder = '';
-    let completedStopReason: 'end_turn' | 'max_tokens' | 'refusal' | null = null;
-    let streamErrorText: string | null = null;
+    const framer = new BridgeByteFramer(MAX_CLI_LINE_BYTES);
+    const securityDecoder = new TextDecoder('utf-8', { fatal: false });
+    const stderrDecoder = new TextDecoder('utf-8', { fatal: false });
+    let securityBody = '';
     let securityBytes = 0;
+    const terminalEvents: BridgeTerminalEvent[] = [];
+    let streamErrorText: string | null = null;
+    let lineOverflowed = false;
+    let pendingBacklogOverflowed = false;
+    const isStreamOverflowed = (): boolean => pendingBacklogOverflowed || lineOverflowed;
+
+    const recordTerminalEvent = (event: BridgeTerminalEvent): void => {
+      if (terminalEvents.length < MAX_TRACKED_TERMINAL_EVENTS) {
+        terminalEvents.push(event);
+        return;
+      }
+      // Bounded terminal-event tracking: an excessive flood of terminal/error events fails closed.
+      if (streamErrorText === null) {
+        streamErrorText = 'Backend emitted excessive terminal events';
+      }
+      void child.terminate();
+    };
 
     const processStdoutLine = (rawLine: string): void => {
       const trimmed = rawLine.trim();
       if (trimmed.length === 0) return;
-      if (Buffer.byteLength(trimmed, 'utf8') > MAX_CLI_LINE_BYTES) {
-        if (config.nativeReview !== undefined) streamErrorText = 'Native reviewer output exceeded the line limit';
-        return;
-      }
       let parsed: unknown;
       try {
         parsed = JSON.parse(trimmed);
@@ -466,45 +673,62 @@ export function startAcpStdioBridgeServer(
           streamErrorText = 'Native reviewer emitted malformed JSONL';
           return;
         }
-        // Non-JSON stdout text from a bridged CLI is surfaced as a message chunk rather than raw stdout.
-        emitSessionUpdate(session.acpSessionId, {
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: trimmed }
-        });
+        // Non-JSON stdout text from a bridged CLI is surfaced as a chunked message rather than raw stdout.
+        const nonJsonOverflow = { overflowed: false };
+        emitChunkedTextUpdate(session.acpSessionId, 'agent_message_chunk', trimmed, child, nonJsonOverflow);
+        if (nonJsonOverflow.overflowed) {
+          pendingBacklogOverflowed = true;
+          void child.terminate();
+        }
         return;
       }
       if (!isRecord(parsed)) return;
       const outcome =
         config.backend === 'claude'
-          ? handleClaudeJsonLine(session, parsed)
-          : handleCodexJsonLine(session, parsed);
-      if (outcome.completedStopReason !== undefined) completedStopReason = outcome.completedStopReason;
-      if (outcome.errorText !== undefined) streamErrorText = outcome.errorText;
+          ? handleClaudeJsonLine(session, parsed, child)
+          : handleCodexJsonLine(session, parsed, child);
+      if (outcome.terminalEvent !== undefined) recordTerminalEvent(outcome.terminalEvent);
+      if (outcome.backpressureOverflow === true) {
+        pendingBacklogOverflowed = true;
+        void child.terminate();
+      }
     };
 
     child.onStdout((chunk) => {
+      if (isTurnCancelled() || lineOverflowed || pendingBacklogOverflowed) return;
       if (securityReview !== undefined) {
         securityBytes += chunk.byteLength;
-        if (securityBytes <= MAX_CLI_LINE_BYTES) lineRemainder += childDecoder.decode(chunk, { stream: true });
+        if (securityBytes <= MAX_CLI_LINE_BYTES) {
+          securityBody += securityDecoder.decode(chunk, { stream: true });
+        } else {
+          lineOverflowed = true;
+          securityBody = '';
+          streamErrorText = 'Native reviewer output exceeded the line limit';
+          void child.terminate();
+        }
         return;
       }
-      lineRemainder += childDecoder.decode(chunk, { stream: true });
-      let newlineIdx = lineRemainder.indexOf('\n');
-      while (newlineIdx !== -1) {
-        const line = lineRemainder.slice(0, newlineIdx);
-        lineRemainder = lineRemainder.slice(newlineIdx + 1);
-        processStdoutLine(line);
-        newlineIdx = lineRemainder.indexOf('\n');
+      for (const event of framer.push(chunk)) {
+        if (event.kind === 'overflow') {
+          lineOverflowed = true;
+          writeBridgeStderr(`[acp-bridge] cli stdout line exceeded ${event.limitBytes} byte bound\n`, child);
+          if (config.nativeReview !== undefined) {
+            streamErrorText = 'Native reviewer output exceeded the line limit';
+          }
+          void child.terminate();
+          return;
+        }
+        processStdoutLine(event.text);
+        if (isStreamOverflowed() || isTurnCancelled()) return;
       }
-      if (config.nativeReview !== undefined && Buffer.byteLength(lineRemainder, 'utf8') > MAX_CLI_LINE_BYTES) {
-        lineRemainder = '';
-        streamErrorText = 'Native reviewer output exceeded the line limit';
-        void child.terminate();
+      if (stdoutBackpressured) {
+        child.pauseStdout?.();
+        pausedChildren.add(child);
       }
     });
 
     child.onStderr((chunk) => {
-      io.writeStderr(Buffer.from(chunk).toString('utf8'));
+      writeBridgeStderr(stderrDecoder.decode(chunk, { stream: true }), child);
     });
 
     const wrote = securityReview !== undefined ||
@@ -515,22 +739,34 @@ export function startAcpStdioBridgeServer(
     }
 
     void child.exited.then(async (exit) => {
-      const tail = lineRemainder + childDecoder.decode();
+      pausedChildren.delete(child);
+      pausedStderrChildren.delete(child);
+      const stderrTail = stderrDecoder.decode();
+      if (stderrTail.length > 0) writeBridgeStderr(stderrTail);
       if (securityReview === undefined) {
-        if (tail.trim().length > 0) processStdoutLine(tail);
+        if (!turn.cancelled && !pendingBacklogOverflowed && !lineOverflowed) {
+          for (const event of framer.flush()) {
+            if (event.kind === 'line') processStdoutLine(event.text);
+          }
+        }
       } else {
         await security?.cleanup().catch(() => undefined);
-        const report = securityBytes <= MAX_CLI_LINE_BYTES && exit.code === 0
+        const tail = securityBody + securityDecoder.decode();
+        const report = !lineOverflowed && securityBytes <= MAX_CLI_LINE_BYTES && exit.code === 0
           ? summarizeSecurityScan(tail, securityReview.mergeBase)
           : null;
         if (report === null) {
-          streamErrorText = 'Codex Security did not return a complete scan report';
+          streamErrorText = lineOverflowed
+            ? 'Native reviewer output exceeded the line limit'
+            : 'Codex Security did not return a complete scan report';
         } else {
-          emitSessionUpdate(session.acpSessionId, {
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: report }
-          });
-          completedStopReason = 'end_turn';
+          const reportOverflow = { overflowed: false };
+          emitChunkedTextUpdate(session.acpSessionId, 'agent_message_chunk', report, child, reportOverflow);
+          if (reportOverflow.overflowed) {
+            pendingBacklogOverflowed = true;
+          } else {
+            recordTerminalEvent({ kind: 'success', stopReason: 'end_turn' });
+          }
         }
       }
       if (session.activeTurn === turn) session.activeTurn = null;
@@ -540,35 +776,31 @@ export function startAcpStdioBridgeServer(
           ? { _meta: { providerSessionId: session.providerSessionId } }
           : {};
 
-      if (turn.cancelled) {
+      const decision = reconcileBridgeTurnOutcome({
+        backend: config.backend,
+        rejectDuplicateSuccessRecords: config.backend === 'codex',
+        isNativeReview: config.nativeReview !== undefined,
+        isSecurityReview: securityReview !== undefined,
+        cancelled: turn.cancelled,
+        exit,
+        terminalEvents,
+        streamErrorText,
+        lineOverflowed,
+        pendingBacklogOverflowed
+      });
+
+      if (decision.outcome === 'cancelled') {
         if (!child.isProcessTreeGone()) {
-          io.writeStderr('[acp-bridge] warning: child process group survived after cancellation\n');
+          writeBridgeStderr('[acp-bridge] warning: child process group survived after cancellation\n');
         }
         sendFramedLine(resultLine(rpcId, { stopReason: 'cancelled', ...resultMeta }));
         return;
       }
-      if (exit.launchFailed) {
-        const message = securityReview === undefined
-          ? 'Backend executable failed to launch'
-          : 'Codex Security executable failed to launch';
-        sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, message));
+      if (decision.outcome === 'error') {
+        sendFramedLine(errorLine(rpcId, rpcCodeForBridgeErrorStatus(decision.status), decision.message));
         return;
       }
-      if (config.nativeReview !== undefined && (exit.code !== 0 || completedStopReason !== 'end_turn')) {
-        sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, streamErrorText ?? 'Native review did not finish'));
-        return;
-      }
-      if (streamErrorText !== null || (exit.code !== 0 && completedStopReason === null)) {
-        sendFramedLine(
-          errorLine(
-            rpcId,
-            RPC_INTERNAL_ERROR,
-            streamErrorText ?? `Backend exited with code ${String(exit.code ?? 'signal')}`
-          )
-        );
-        return;
-      }
-      sendFramedLine(resultLine(rpcId, { stopReason: completedStopReason ?? 'end_turn', ...resultMeta }));
+      sendFramedLine(resultLine(rpcId, { stopReason: decision.stopReason, ...resultMeta }));
     });
   };
 
@@ -698,6 +930,10 @@ export function startAcpStdioBridgeServer(
     const session = sessions.get(params['sessionId']);
     if (session?.activeTurn === null || session === undefined) return;
     session.activeTurn.cancelled = true;
+    pausedChildren.delete(session.activeTurn.child);
+    pausedStderrChildren.delete(session.activeTurn.child);
+    session.activeTurn.child.resumeStdout?.();
+    session.activeTurn.child.resumeStderr?.();
     void session.activeTurn.child.terminate();
   };
 

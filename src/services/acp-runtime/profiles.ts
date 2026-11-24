@@ -150,12 +150,44 @@ export function resolveAcpProfileLaunch(input: ResolveAcpProfileLaunchInput): St
   }
   if (input.nativeReview !== undefined) {
     args.push('--native-review', input.nativeReview.kind, '--review-base', input.nativeReview.mergeBase);
-    for (const path of input.nativeReview.excludedPaths ?? []) args.push('--review-exclude', path);
+    if (input.kind === 'codex' && input.nativeReview.kind === 'security') {
+      const scannerPath = input.nativeReview.resolvedScannerPath;
+      const scannerSha256 = input.nativeReview.resolvedScannerSha256;
+      if (typeof scannerPath !== 'string' || !path.isAbsolute(scannerPath)) {
+        throw new Error('Codex Security launch requires a host-resolved absolute scanner executable path.');
+      }
+      if (typeof scannerSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(scannerSha256)) {
+        throw new Error('Codex Security launch requires a host-admitted SHA-256 scanner executable digest.');
+      }
+      args.push('--scanner-cli', scannerPath, '--scanner-sha256', scannerSha256);
+    }
+    for (const excludedPath of input.nativeReview.excludedPaths ?? []) args.push('--review-exclude', excludedPath);
+  }
+  // Strip ambient loader-injection variables from the host-owned bridge Node process launch so
+  // dynamic linkers and Node preload hooks cannot hijack the bridge before child admission/hashing.
+  const bridgeEnv: NodeJS.ProcessEnv = { ...input.env };
+  const isSecurityScanner = input.kind === 'codex' && input.nativeReview?.kind === 'security';
+  for (const key of Object.keys(bridgeEnv)) {
+    const upper = key.toUpperCase();
+    if (
+      upper === 'NODE_OPTIONS' ||
+      upper === 'NODE_COMPILE_CACHE' ||
+      upper === 'LD_PRELOAD' ||
+      upper === 'LD_LIBRARY_PATH' ||
+      upper === 'LD_AUDIT' ||
+      upper === 'OPENSSL_CONF' ||
+      upper === 'OPENSSL_MODULES' ||
+      upper === 'OPENSSL_ENGINES' ||
+      upper.startsWith('DYLD_') ||
+      (isSecurityScanner && upper === 'CODEX_SECURITY_PROJECT_CONFIG')
+    ) {
+      delete bridgeEnv[key];
+    }
   }
   return {
     command: nodeExec,
     args,
     cwd: input.cwd,
-    env: input.env
+    env: bridgeEnv
   };
 }

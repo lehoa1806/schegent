@@ -14,7 +14,8 @@
 import { getBackendDescriptor } from '../contracts/backend-descriptors';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type { BackendRunner, TreeTeardownOutcome } from '../contracts/backend-runner';
-import type { SpawnGate } from '../contracts/containment-qualification';
+import type { SpawnAdmissionDecision, SpawnGate } from '../contracts/containment-qualification';
+import { ContainmentAdmissionRefusedError } from '../services/containment-qualification/admission-refusal';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
@@ -70,6 +71,28 @@ export class SpawnGatedRunner implements BackendRunner {
     if (isAborted()) {
       return cancelledBeforeSpawn(request.cliPath, startedAtMs);
     }
+    // FR-R8-02 (02-02 / SEC-03): strip any caller-supplied scanner path/digest before admission so
+    // only the authoritative host admission decision can authorize `codex-security`.
+    if (
+      request.review !== undefined &&
+      (request.review.resolvedScannerPath !== undefined ||
+        request.review.resolvedScannerSha256 !== undefined)
+    ) {
+      const { resolvedScannerPath: _p, resolvedScannerSha256: _d, ...cleanReview } = request.review;
+      request = { ...request, review: cleanReview };
+    }
+    if (
+      this.kind === 'codex' &&
+      request.review?.kind === 'security' &&
+      this.gate.admitWithDecision === undefined
+    ) {
+      throw new ContainmentAdmissionRefusedError({
+        kind: 'codex',
+        scannerTarget: 'codex-security',
+        reason: 'containment-unqualified-for-tuple',
+        consentable: false
+      });
+    }
 
     const admitController = new AbortController();
     const entry: PendingAdmission = {
@@ -86,7 +109,7 @@ export class SpawnGatedRunner implements BackendRunner {
     request.cancellationSignal?.addEventListener('abort', onAbort);
 
     let outcome:
-      | { readonly kind: 'admitted' }
+      | { readonly kind: 'admitted'; readonly decision?: SpawnAdmissionDecision }
       | { readonly kind: 'rejected'; readonly error: unknown }
       | { readonly kind: 'interrupted' };
     try {
@@ -94,7 +117,7 @@ export class SpawnGatedRunner implements BackendRunner {
         let settled = false;
         const finish = (
           result:
-            | { readonly kind: 'admitted' }
+            | { readonly kind: 'admitted'; readonly decision?: SpawnAdmissionDecision }
             | { readonly kind: 'rejected'; readonly error: unknown }
             | { readonly kind: 'interrupted' }
         ): void => {
@@ -108,19 +131,25 @@ export class SpawnGatedRunner implements BackendRunner {
           finish({ kind: 'interrupted' });
           return;
         }
-        let admitPromise: Promise<void>;
+        const admissionReq = {
+          runId: request.runId,
+          cliPath: request.cliPath,
+          ...(request.review !== undefined ? { review: { kind: request.review.kind } } : {}),
+          ...(request.env !== undefined ? { env: request.env } : {}),
+          cancellationSignal: admitController.signal
+        };
+        let admitPromise: Promise<SpawnAdmissionDecision | undefined>;
         try {
-          admitPromise = this.gate.admit(this.kind, {
-            runId: request.runId,
-            cliPath: request.cliPath,
-            cancellationSignal: admitController.signal
-          });
+          admitPromise =
+            this.gate.admitWithDecision !== undefined
+              ? this.gate.admitWithDecision(this.kind, admissionReq)
+              : this.gate.admit(this.kind, admissionReq).then(() => undefined);
         } catch (error) {
           finish({ kind: 'rejected', error });
           return;
         }
         admitPromise.then(
-          () => finish({ kind: 'admitted' }),
+          (decision) => finish(decision === undefined ? { kind: 'admitted' } : { kind: 'admitted', decision }),
           (error: unknown) => finish({ kind: 'rejected', error })
         );
       });
@@ -138,7 +167,25 @@ export class SpawnGatedRunner implements BackendRunner {
     if (outcome.kind === 'rejected') {
       throw outcome.error;
     }
-    return this.inner.invoke(request, outputSink);
+    const decision = outcome.kind === 'admitted' ? outcome.decision : undefined;
+    if (
+      decision !== undefined &&
+      decision.executableTarget === 'codex-security' &&
+      request.review !== undefined
+    ) {
+      request = {
+        ...request,
+        review: {
+          ...request.review,
+          resolvedScannerPath: decision.resolvedExecutablePath,
+          ...(decision.resolvedExecutableSha256 !== undefined
+            ? { resolvedScannerSha256: decision.resolvedExecutableSha256 }
+            : {})
+        }
+      };
+    }
+    const raw = await this.inner.invoke(request, outputSink);
+    return decision !== undefined ? { ...raw, admissionDecision: decision } : raw;
   }
 
   public cancelActive(): boolean {

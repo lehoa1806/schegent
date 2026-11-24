@@ -16,16 +16,15 @@
 import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import type {
-  AcpConnection,
-  AcpConnectionProjection,
-  AcpObservation,
-  AcpPromptBlock,
-  AgentProfile
+import {
+  type AcpBillableTokens,
+  type AcpConnection,
+  type AcpConnectionProjection,
+  type AcpObservation,
+  type AcpPromptBlock,
+  type AgentProfile
 } from '../contracts/acp-runtime';
-import type { AcpUsageUpdate } from '../services/usage-accounting/acp-usage-mapping';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { getBackendDescriptor } from '../contracts/backend-descriptors';
 import type {
@@ -33,16 +32,11 @@ import type {
   MonitorSidecarHook,
   TreeTeardownOutcome
 } from '../contracts/backend-runner';
-import { classifyFatal } from '../lib/fatal-signature-registry';
-import {
-  canonicalizePathWithTailSync,
-  isTargetProtectedPathSync,
-  isWorkspaceProtectedPattern,
-  normalizeProtectedComparePath
-} from '../lib/protected-path-match';
+import { combineStreamScans, IncrementalFatalScanner } from '../lib/incremental-fatal-scanner';
 import { openAcpConnection } from '../services/acp-runtime/acp-client';
 import { isAgentIdentifier } from '../services/acp-runtime/agent-identifier';
 import { createRunnerObservationBridge } from '../services/acp-runtime/client-guards';
+import type { AcpTerminalReconciliation } from '../services/acp-runtime/terminal-reconciliation';
 import {
   createInMemoryAcpSessionBindingStore,
   isEphemeralBridgeSessionId,
@@ -87,6 +81,17 @@ import {
 import { buildSpawnEnv } from './spawn-env';
 import { resolveExecutableCommand } from '../lib/spawn-command';
 import { buildLaneGitEnv } from '../services/execution-lanes/git-runner';
+import {
+  ACP_MIN_SINK_STALL_WATCHDOG_MS,
+  ACP_VERBOSE_TEE_CANCEL_DRAIN_MS,
+  AcpStreamBackpressureController,
+  SCANNER_SHA256_HEX_RE,
+  encodeUsageResultLine,
+  mergeLiveUsageObservation,
+  reconcileAcpPromptOutcome,
+  verifyAcpResourceLink
+} from './acp-runner-stream-helpers';
+import { SessionCostLedger } from './session-cost-ledger';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 
 export class AcpProfileMismatchError extends Error {
@@ -175,49 +180,6 @@ function resolveProtectedDatabasePaths(
   return typeof source === 'function' ? source() : source;
 }
 
-function encodeUsageResultLine(
-  kind: BackendRunnerKind,
-  sessionId: string | undefined,
-  durationMs: number,
-  usage: AcpUsageUpdate | null
-): string {
-  // F06-FR-23: ACP `used`/`size` are context occupancy, never billable tokens; authoritative ACP
-  // accounting ingests `AcpUsageUpdate` directly via `onAcpObservation`.
-  if (kind === 'codex') {
-    return `${JSON.stringify({
-      type: 'turn.completed',
-      ...(sessionId !== undefined ? { session_id: sessionId } : {}),
-      usage: { input_tokens: 0, output_tokens: 0 }
-    })}\n`;
-  }
-  if (kind === 'agy') {
-    return `${JSON.stringify({
-      event: 'result',
-      ...(sessionId !== undefined ? { session_id: sessionId } : {}),
-      result: {
-        duration_seconds: Math.max(0, durationMs / 1_000),
-        num_turns: 1,
-        usage: { input_tokens: 0, output_tokens: 0 }
-      }
-    })}\n`;
-  }
-  const row: Record<string, unknown> = {
-    type: 'result',
-    subtype: 'success',
-    ...(sessionId !== undefined ? { session_id: sessionId } : {}),
-    duration_ms: Math.max(0, Math.round(durationMs)),
-    num_turns: 1,
-    usage: { input_tokens: 0, output_tokens: 0 }
-  };
-  if (usage?.hasQualifiedSessionBaseline && usage.cost?.currency === 'USD') {
-    const parsedCost = Number(usage.cost.amount);
-    if (Number.isFinite(parsedCost) && parsedCost >= 0) {
-      row.total_cost_usd = parsedCost;
-    }
-  }
-  return `${JSON.stringify(row)}\n`;
-}
-
 interface ActiveAcpExecution {
   readonly invocationId: string;
   readonly getConnection: () => AcpConnection | null;
@@ -231,6 +193,7 @@ export class AcpBackedRunner implements BackendRunner {
   private readonly activeExecutions = new Map<string, ActiveAcpExecution>();
   private readonly sessionRoots = new Map<string, string>();
   private readonly fallbackSessionBindingStore = createInMemoryAcpSessionBindingStore();
+  private readonly sessionCosts = new SessionCostLedger();
   private closed = false;
 
   public constructor(private readonly options: AcpBackedRunnerOptions) {
@@ -318,60 +281,76 @@ export class AcpBackedRunner implements BackendRunner {
           )
         }
       : null;
-    let teeChain: Promise<void> = Promise.resolve();
 
     let transport: AcpStdioTransport | null = null as AcpStdioTransport | null;
     let connection: AcpConnection | null = null;
     let activeSessionId: string | null = null;
-    let latestUsage: AcpUsageUpdate | null = null;
+    let latestBillableTokens: AcpBillableTokens | null = null;
+    let latestClaudeCostUsd: number | undefined;
+    let sessionLoaded = false;
     let sawTerminalResult = false;
     let acpTurnSettled = false;
     let backgroundWorkOpenAtResult = false;
     let killed: boolean = false as boolean;
     let timedOut: boolean = false as boolean;
     let deadlineExceeded: boolean = false as boolean;
+    let settled = false;
+    let promptDispatched = false;
+    let emittedUsageLine = false;
     let teardownOutcome: TreeTeardownOutcome | null = null;
-    let liveStreamText = '';
-
-    const emitChunk = (stream: 'stdout' | 'stderr', chunk: string): void => {
-      if (chunk.length === 0) return;
-      if (stream === 'stdout') {
-        stdoutBuffer.append(chunk);
-        liveStreamText += chunk;
-        if (tee !== null) {
-          const append = (): Promise<void> => tee.writer.teeStream(tee.target, chunk);
-          teeChain = teeChain.then(append, append);
-        }
-        this.options.monitorHook?.({
-          kind: 'stdout-chunk',
-          runId,
-          invocationId,
-          chunk
-        });
-      } else {
-        stderrBuffer.append(chunk);
-        this.options.monitorHook?.({
-          kind: 'stderr-chunk',
-          runId,
-          invocationId,
-          chunk
-        });
-      }
-      try {
-        outputSink?.write(stream, chunk);
-      } catch {
-        // OutputSink contract forbids throws; ignore defensive failures.
-      }
-    };
+    let terminalReconciliation: AcpTerminalReconciliation | undefined;
+    const stderrDecoder = new TextDecoder('utf-8', { fatal: false });
+    const stdoutFatalScanner = request.effectiveFatalSignatures
+      ? new IncrementalFatalScanner('stdout', request.effectiveFatalSignatures)
+      : null;
+    const stderrFatalScanner = request.effectiveFatalSignatures
+      ? new IncrementalFatalScanner('stderr', request.effectiveFatalSignatures)
+      : null;
 
     let idleTimer: ReturnType<typeof setTimeout> | null = null as ReturnType<typeof setTimeout> | null;
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
 
+    const suspendIdleTimer = (): void => {
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+
+    const clearDeadlineTimer = (): void => {
+      if (deadlineTimer !== null) {
+        clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
+    };
+
+    const backpressure = new AcpStreamBackpressureController(
+      outputSink,
+      tee,
+      () => transport,
+      (warning) => warnings.push(warning),
+      suspendIdleTimer,
+      () => resetIdleTimer(),
+      () => settled || killed || deadlineExceeded || timedOut,
+      maxDurationMs === null
+        ? {
+            timeoutMs: Math.max(request.timeoutMs, ACP_MIN_SINK_STALL_WATCHDOG_MS),
+            onStall: () => {
+              if (!settled && !deadlineExceeded && !killed) {
+                timedOut = true;
+                cancelExecution();
+              }
+            }
+          }
+        : undefined
+    );
+
     const resetIdleTimer = (): void => {
-      if (idleTimer !== null) clearTimeout(idleTimer);
+      suspendIdleTimer();
+      if (settled || killed || deadlineExceeded || timedOut || backpressure.isBackpressured) return;
       if (request.timeoutMs > 0) {
         idleTimer = setTimeout(() => {
-          if (!deadlineExceeded && !killed) {
+          if (!settled && !deadlineExceeded && !killed) {
             timedOut = true;
             cancelExecution();
           }
@@ -380,8 +359,25 @@ export class AcpBackedRunner implements BackendRunner {
       }
     };
 
+    const emitChunk = (stream: 'stdout' | 'stderr', chunk: string): void => {
+      if (chunk.length === 0) return;
+      const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+      if (stream === 'stdout') {
+        stdoutBuffer.append(chunk);
+        stdoutFatalScanner?.append(chunk);
+        backpressure.enqueueVerboseTee(chunk, chunkBytes);
+        this.options.monitorHook?.({ kind: 'stdout-chunk', runId, invocationId, chunk });
+      } else {
+        stderrBuffer.append(chunk);
+        stderrFatalScanner?.append(chunk);
+        this.options.monitorHook?.({ kind: 'stderr-chunk', runId, invocationId, chunk });
+      }
+      backpressure.writeToSink(stream, chunk, chunkBytes);
+    };
+
     const cancelExecution = (): void => {
-      if (connection !== null && activeSessionId !== null) {
+      backpressure.releaseAll();
+      if (promptDispatched && connection !== null && activeSessionId !== null) {
         connection.cancel(activeSessionId);
       } else if (transport !== null) {
         void transport.close();
@@ -393,113 +389,17 @@ export class AcpBackedRunner implements BackendRunner {
       cancelExecution();
     };
 
-    const hasSafeCanonicalFileUriShape = (uri: string): boolean => {
-      // Require empty authority (`file:///...`) so remote hosts (`file://host/share` -> SMB UNC)
-      // and non-canonical `file://localhost/...` URIs never reach `fileURLToPath` or `lstatSync`.
-      if (!uri.startsWith('file:///')) return false;
-      // Reject ASCII C0 controls (including \t, \r, \n stripped by WHATWG URL), raw space, DEL,
-      // query (`?`), fragment (`#`), and backslashes (`\`).
-      for (let i = 0; i < uri.length; i += 1) {
-        const code = uri.charCodeAt(i);
-        if (code <= 0x20 || code === 0x7f) return false;
-      }
-      if (uri.includes('?') || uri.includes('#') || uri.includes('\\')) return false;
-      if (/%00|%2f|%5c/i.test(uri)) return false;
-      const rawPathPart = uri.slice('file:///'.length);
-      const rawSegments = rawPathPart.split('/');
-      for (let i = 0; i < rawSegments.length; i += 1) {
-        const seg = rawSegments[i]!;
-        if (seg === '.' || seg === '..') return false;
-        let decoded: string;
-        try {
-          decoded = decodeURIComponent(seg);
-        } catch {
-          return false;
-        }
-        if (
-          decoded === '.' ||
-          decoded === '..' ||
-          decoded.includes('/') ||
-          decoded.includes('\\') ||
-          decoded.includes('\0')
-        ) {
-          return false;
-        }
-        if (process.platform === 'win32') {
-          if (decoded.includes(':') && (i !== 0 || !/^[A-Za-z]:$/.test(decoded))) {
-            return false;
-          }
-          if (/[. ]$/.test(decoded)) {
-            return false;
-          }
-        }
-      }
-      return true;
-    };
-
     const gate = this.options.authorityGate;
-    const verifyResourceLink = (uri: string): boolean | Promise<boolean> => {
-      if (!hasSafeCanonicalFileUriShape(uri)) return false;
-      let filePath: string;
-      try {
-        filePath = fileURLToPath(uri);
-      } catch {
-        return false;
-      }
-      const liveProtectedPaths = resolveProtectedDatabasePaths(this.options.protectedDatabasePaths);
-      if (gate && activeSessionId !== null) {
-        // Authorize via gate FIRST using the raw `filePath` so workspace trust, awaited live
-        // primacy (14-07), generation, raw + canonical protected-path rules, and execution-root
-        // containment are all enforced before any extra filesystem checks.
-        return gate
-          .authorizeAsync({
-            requestKind: 'filesystem',
-            acpSessionId: activeSessionId,
-            connectionGeneration: generation,
-            attemptId,
-            mutating: false,
-            targetPath: filePath
-          })
-          .then(
-            (decision) => {
-              if (!decision.allowed) return false;
-              if (liveProtectedPaths.length > 0 && isTargetProtectedPathSync(filePath, liveProtectedPaths)) {
-                return false;
-              }
-              return true;
-            },
-            () => false
-          );
-      }
-      const canon = canonicalizePathWithTailSync(filePath);
-      if (!canon.ok) return false;
-      if (
-        isWorkspaceProtectedPattern(filePath) ||
-        isWorkspaceProtectedPattern(canon.canonical)
-      ) {
-        return false;
-      }
-      if (
-        liveProtectedPaths.length > 0 &&
-        (isTargetProtectedPathSync(filePath, liveProtectedPaths) ||
-          isTargetProtectedPathSync(canon.canonical, liveProtectedPaths))
-      ) {
-        return false;
-      }
-      const cwdCanon = canonicalizePathWithTailSync(request.cwd);
-      if (!cwdCanon.ok) return false;
-      const isUnder = (root: string, target: string): boolean => {
-        const rel = path.relative(
-          normalizeProtectedComparePath(root),
-          normalizeProtectedComparePath(target)
-        );
-        return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
-      };
-      const lexicalPath = path.resolve(filePath);
-      const lexicalWithinCwd =
-        isUnder(request.cwd, lexicalPath) || isUnder(cwdCanon.canonical, lexicalPath);
-      return lexicalWithinCwd && isUnder(cwdCanon.canonical, canon.canonical);
-    };
+    const verifyResourceLink = (uri: string): boolean | Promise<boolean> =>
+      verifyAcpResourceLink({
+        uri,
+        cwd: request.cwd,
+        gate,
+        activeSessionId,
+        generation,
+        attemptId,
+        liveProtectedPaths: resolveProtectedDatabasePaths(this.options.protectedDatabasePaths)
+      });
 
     const settleTeardown = async (): Promise<TreeTeardownOutcome | null> => {
       if (teardownOutcome !== null) return teardownOutcome;
@@ -565,8 +465,10 @@ export class AcpBackedRunner implements BackendRunner {
           diagnosticsCaptured: false,
           commandDisplay: `acp:${profile.profileId}`,
           cliSessionId: undefined,
-          effectiveFatalSignatures: request.effectiveFatalSignatures,
-          liveStreamText
+          stdoutFatalScanner,
+          stderrFatalScanner,
+          terminalReconciliation: { status: 'cancelled', stopReason: 'cancelled' },
+          streamPendingHighWaterBytes: backpressure.streamPendingHighWaterBytes
         });
       }
 
@@ -631,8 +533,20 @@ export class AcpBackedRunner implements BackendRunner {
         if (abortedDuringSetup) {
           killed = true;
           exitCode = 130;
+          terminalReconciliation = { status: 'cancelled', stopReason: 'cancelled' };
         } else if (ownershipShifted) {
           warnings.push('acp-ownership-unverified');
+          exitCode = 1;
+        } else if (
+          this.options.kind === 'codex' &&
+          request.review?.kind === 'security' &&
+          (typeof request.review.resolvedScannerPath !== 'string' ||
+            request.review.resolvedScannerPath.trim().length === 0 ||
+            !path.isAbsolute(request.review.resolvedScannerPath) ||
+            typeof request.review.resolvedScannerSha256 !== 'string' ||
+            !SCANNER_SHA256_HEX_RE.test(request.review.resolvedScannerSha256))
+        ) {
+          warnings.push('acp-open-refused:scanner-unresolved');
           exitCode = 1;
         } else {
         const allocatedGeneration = this.options.allocateConnectionGeneration?.();
@@ -646,9 +560,11 @@ export class AcpBackedRunner implements BackendRunner {
         resetIdleTimer();
         if (maxDurationMs !== null) {
           deadlineTimer = setTimeout(() => {
-            deadlineExceeded = true;
-            timedOut = false;
-            cancelExecution();
+            if (!settled && !killed) {
+              deadlineExceeded = true;
+              timedOut = false;
+              cancelExecution();
+            }
           }, maxDurationMs);
           deadlineTimer.unref();
         }
@@ -689,10 +605,16 @@ export class AcpBackedRunner implements BackendRunner {
             if (connection !== null) this.options.onAcpObservation?.({ backendKind: this.options.kind, runId, invocationId, attemptId, observation, projection: connection.describe() });
           }
         });
+        const isKilled = (): boolean => killed;
+        const isTimedOutOrDeadline = (): boolean => timedOut || deadlineExceeded;
         const isSignalAborted = (): boolean => request.cancellationSignal?.aborted === true;
         if (request.onBeforeSpawn !== undefined) await request.onBeforeSpawn({ helperInvocation: request.helperInvocation === true });
         if (this.isClosed()) throw new SpawnRefusedAfterCloseError(label);
-        if (killed || isSignalAborted()) { killed = true; exitCode = 130; } else {
+        if (isKilled() || isSignalAborted()) {
+          killed = true; exitCode = 130; terminalReconciliation = { status: 'cancelled', stopReason: 'cancelled' };
+        } else if (isTimedOutOrDeadline()) {
+          exitCode = 130; terminalReconciliation = { status: 'missing-terminal-record', warningCode: 'acp-missing-terminal-record' };
+        } else {
         let spawnedPid: number | undefined;
         const opened = await openAcpConnection({
           profile,
@@ -703,7 +625,7 @@ export class AcpBackedRunner implements BackendRunner {
               : spawnStdioTransport(launchSpec);
             transport = created;
             spawnedPid = created.pid;
-            created.onStderr((chunk) => { resetIdleTimer(); emitChunk('stderr', Buffer.from(chunk).toString('utf8')); });
+            created.onStderr((chunk) => { resetIdleTimer(); emitChunk('stderr', stderrDecoder.decode(chunk, { stream: true })); });
             this.options.monitorHook?.({ kind: 'started', runId, invocationId, helperInvocation: request.helperInvocation === true, maxDurationMs, pid: created.pid ?? null });
             return created;
           },
@@ -717,10 +639,27 @@ export class AcpBackedRunner implements BackendRunner {
             if (observation.kind === 'display') {
               openWorkTracker.observe(observation.event);
               for (const encodedLine of streamEncoder.push(observation.event)) emitChunk('stdout', encodedLine);
-            } else if (observation.kind === 'usage') latestUsage = observation.usage;
+            } else if (observation.kind === 'usage') {
+              const merged = mergeLiveUsageObservation({
+                kind: this.options.kind,
+                currentTokens: latestBillableTokens,
+                currentClaudeCostUsd: latestClaudeCostUsd,
+                observedTokens: observation.usage.billableTokens,
+                observedCost: observation.usage.cost
+              });
+              latestBillableTokens = merged.billableTokens;
+              latestClaudeCostUsd = merged.claudeCostUsd;
+            }
           }
         });
-        if (!opened.ok) { warnings.push(`acp-open-refused:${opened.refusal}${opened.detail ? `:${opened.detail}` : ''}`); exitCode = 1; } else {
+        if (!opened.ok) {
+          if (isKilled() || isSignalAborted()) {
+            killed = true; exitCode = 130; terminalReconciliation = { status: 'cancelled', stopReason: 'cancelled' };
+          } else {
+            warnings.push(`acp-open-refused:${opened.refusal}${opened.detail ? `:${opened.detail}` : ''}`);
+            exitCode = 1;
+          }
+        } else {
           connection = opened.connection;
           if (request.helperInvocation !== true && request.onAfterSpawn !== undefined) await request.onAfterSpawn(spawnedPid);
           const normalizedCwd = normalizeAcpWorkspaceRoot(request.cwd);
@@ -749,6 +688,7 @@ export class AcpBackedRunner implements BackendRunner {
           } else {
             if (capCheck.warning !== undefined) warnings.push(capCheck.warning);
             const allowLoad = wantsLoadSession && !capCheck.forceFreshSession;
+            sessionLoaded = allowLoad && (isBridgeProfile ? matchedBridgeBinding !== null : isValidAcpSessionToken(resumeId));
             sessionRes = isBridgeProfile
               ? allowLoad && matchedBridgeBinding !== null
                 ? await connection.loadSession(matchedBridgeBinding.persistedSessionId, request.cwd, { mayLoad: true, providerSessionId: matchedBridgeBinding.providerSessionId })
@@ -759,11 +699,15 @@ export class AcpBackedRunner implements BackendRunner {
           }
 
           if (sessionRes !== null && !sessionRes.ok) {
-            if (sessionRes.reason === 'transport-closed') {
-              obsBridge.emitLifecycle({ kind: 'transport-disconnected', reason: 'transport-closed' });
+            if (isKilled() || isSignalAborted()) {
+              killed = true; exitCode = 130; terminalReconciliation = { status: 'cancelled', stopReason: 'cancelled' };
+            } else {
+              if (sessionRes.reason === 'transport-closed') {
+                obsBridge.emitLifecycle({ kind: 'transport-disconnected', reason: 'transport-closed' });
+              }
+              warnings.push(`acp-session-failed:${sessionRes.reason}`);
+              exitCode = 1;
             }
-            warnings.push(`acp-session-failed:${sessionRes.reason}`);
-            exitCode = 1;
           } else if (sessionRes !== null) {
             activeSessionId = sessionRes.sessionId;
             if (!isBridgeProfile) {
@@ -792,7 +736,6 @@ export class AcpBackedRunner implements BackendRunner {
               exitCode = 1;
             } else {
               // FR-R7-16 (16-17): re-verify trust, primacy, and ownership generation before prompt dispatch.
-              const isKilled = (): boolean => killed;
               const prePromptGenOk =
                 turnOwnershipGeneration === undefined ||
                 this.options.currentOwnershipGeneration?.() === turnOwnershipGeneration;
@@ -809,6 +752,10 @@ export class AcpBackedRunner implements BackendRunner {
               } else if (isKilled() || isSignalAborted()) {
                 killed = true;
                 exitCode = 130;
+                terminalReconciliation = { status: 'cancelled', stopReason: 'cancelled' };
+              } else if (isTimedOutOrDeadline()) {
+                exitCode = 130;
+                terminalReconciliation = { status: 'missing-terminal-record', warningCode: 'acp-missing-terminal-record' };
               } else if (!prePromptAuthorityOk) {
                 warnings.push('acp-ownership-unverified');
                 exitCode = 1;
@@ -838,12 +785,18 @@ export class AcpBackedRunner implements BackendRunner {
                   ? request.acpPromptBlocks
                   : [{ type: 'text', text: request.prompt }];
 
+              promptDispatched = true;
               const outcome = await connection.prompt({
                 sessionId: activeSessionId,
                 attemptId,
                 rootId,
                 blocks
               });
+              promptDispatched = false;
+              settled = true;
+              suspendIdleTimer();
+              clearDeadlineTimer();
+              backpressure.releaseAll();
 
               const elapsedMs = Date.now() - startedAtMs;
               for (const encodedLine of streamEncoder.flush()) {
@@ -904,32 +857,35 @@ export class AcpBackedRunner implements BackendRunner {
               }
 
               obsBridge.recordPromptOutcome(activeSessionId, outcome);
-              if (outcome.kind === 'completed') {
+              const rec = reconcileAcpPromptOutcome({
+                outcome,
+                isNativeReview: request.review !== undefined,
+                isBridgeProfile,
+                hasOpenWork: openWorkTracker.hasOpenWork,
+                killed,
+                timedOut,
+                deadlineExceeded
+              });
+              if (rec.emitUsageLine) {
+                emittedUsageLine = true;
                 emitChunk(
                   'stdout',
-                  encodeUsageResultLine(this.options.kind, persistedCliSessionId, elapsedMs, latestUsage)
+                  encodeUsageResultLine(
+                    this.options.kind,
+                    persistedCliSessionId,
+                    elapsedMs,
+                    latestBillableTokens,
+                    latestClaudeCostUsd
+                  )
                 );
-                sawTerminalResult = true;
-                acpTurnSettled = request.review === undefined
-                  ? outcome.stopReason !== 'refusal'
-                  : outcome.stopReason === 'end_turn';
-                backgroundWorkOpenAtResult = acpTurnSettled && openWorkTracker.hasOpenWork;
-                exitCode = request.review === undefined || acpTurnSettled ? 0 : 1;
-              } else if (outcome.kind === 'cancelled') {
-                exitCode = 130;
-              } else if (outcome.kind === 'uncertain') {
-                warnings.push(`acp-turn-uncertain:${outcome.reason}`);
-                exitCode = 1;
-              } else if (outcome.kind === 'refused') {
-                warnings.push(`acp-prompt-refused:${outcome.reason}${outcome.detail ? `:${outcome.detail}` : ''}`);
-                exitCode = 1;
-              } else if (outcome.kind === 'rejected') {
-                warnings.push(`acp-prompt-rejected:${outcome.code}`);
-                exitCode = 1;
-              } else {
-                warnings.push(`acp-prompt-not-dispatched:${outcome.reason}`);
-                exitCode = 1;
               }
+              sawTerminalResult = rec.sawTerminalResult;
+              acpTurnSettled = rec.acpTurnSettled;
+              backgroundWorkOpenAtResult = rec.backgroundWorkOpenAtResult;
+              if (rec.markKilled) killed = true;
+              exitCode = rec.exitCode;
+              if (rec.warnings.length > 0) warnings.push(...rec.warnings);
+              terminalReconciliation = rec.terminalReconciliation;
               }
             }
           }
@@ -939,19 +895,23 @@ export class AcpBackedRunner implements BackendRunner {
         }
       }
     } finally {
-      if (idleTimer !== null) clearTimeout(idleTimer);
-      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      settled = true;
+      suspendIdleTimer();
+      clearDeadlineTimer();
       request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      const stderrTail = stderrDecoder.decode();
+      if (stderrTail.length > 0) emitChunk('stderr', stderrTail);
       for (const encodedLine of streamEncoder.flush()) {
         emitChunk('stdout', encodedLine);
       }
+      backpressure.releaseAll();
       if (activeSessionId !== null) {
         gate?.revokeSession(activeSessionId, generation);
       }
       await settleTeardown();
-      if (tee !== null) {
-        await Promise.allSettled([teeChain]);
-      }
+      await backpressure.drainVerboseTee(
+        killed || timedOut || deadlineExceeded ? ACP_VERBOSE_TEE_CANCEL_DRAIN_MS : undefined
+      );
       if (transport !== null) {
         this.options.monitorHook?.({
           kind: 'exited',
@@ -968,6 +928,33 @@ export class AcpBackedRunner implements BackendRunner {
 
     const teeResult = tee?.writer.result();
     const mergedWarnings = [...(teeResult ? teeResult.warnings : []), ...warnings];
+    const effectiveSessionId = isBridgeProfile ? persistedCliSessionId : (activeSessionId ?? undefined);
+    let sessionCostBaselineUsd: number | undefined;
+    let cliSessionCostUsd: number | undefined;
+    if (this.options.kind === 'claude') {
+      if (
+        effectiveSessionId !== undefined &&
+        effectiveSessionId === request.resumeSessionId &&
+        request.resumeSessionCostUsd !== undefined &&
+        Number.isFinite(request.resumeSessionCostUsd) &&
+        request.resumeSessionCostUsd >= 0
+      ) {
+        this.sessionCosts.recordIfAbsent(effectiveSessionId, request.resumeSessionCostUsd);
+      }
+      sessionCostBaselineUsd =
+        (effectiveSessionId === undefined ? undefined : this.sessionCosts.get(effectiveSessionId)) ??
+        (!sessionLoaded ? 0 : undefined);
+      if (
+        emittedUsageLine &&
+        effectiveSessionId !== undefined &&
+        latestClaudeCostUsd !== undefined &&
+        request.helperInvocation !== true
+      ) {
+        this.sessionCosts.record(effectiveSessionId, latestClaudeCostUsd);
+      }
+      cliSessionCostUsd =
+        effectiveSessionId === undefined ? undefined : this.sessionCosts.get(effectiveSessionId);
+    }
 
     return this.finalizeOutput({
       stdoutBuffer,
@@ -983,9 +970,13 @@ export class AcpBackedRunner implements BackendRunner {
       warnings: mergedWarnings,
       diagnosticsCaptured: teeResult?.streamCaptured === true,
       commandDisplay: `acp:${profile.profileId}`,
-      cliSessionId: isBridgeProfile ? persistedCliSessionId : (activeSessionId ?? undefined),
-      effectiveFatalSignatures: request.effectiveFatalSignatures,
-      liveStreamText
+      cliSessionId: effectiveSessionId,
+      ...(sessionCostBaselineUsd !== undefined ? { sessionCostBaselineUsd } : {}),
+      ...(cliSessionCostUsd !== undefined ? { cliSessionCostUsd } : {}),
+      stdoutFatalScanner,
+      stderrFatalScanner,
+      ...(terminalReconciliation !== undefined ? { terminalReconciliation } : {}),
+      streamPendingHighWaterBytes: backpressure.streamPendingHighWaterBytes
     });
   }
 
@@ -1045,14 +1036,21 @@ export class AcpBackedRunner implements BackendRunner {
     readonly diagnosticsCaptured: boolean;
     readonly commandDisplay: string;
     readonly cliSessionId: string | undefined;
-    readonly effectiveFatalSignatures: InvocationRequest['effectiveFatalSignatures'];
-    readonly liveStreamText: string;
+    readonly sessionCostBaselineUsd?: number;
+    readonly cliSessionCostUsd?: number;
+    readonly stdoutFatalScanner: IncrementalFatalScanner | null;
+    readonly stderrFatalScanner: IncrementalFatalScanner | null;
+    readonly terminalReconciliation?: AcpTerminalReconciliation;
+    readonly streamPendingHighWaterBytes: number;
   }): RawInvocationOutput {
     params.stdoutBuffer.finalize();
     params.stderrBuffer.finalize();
-    const streamFatalMatch = params.effectiveFatalSignatures
-      ? classifyFatal(params.liveStreamText, params.stderrBuffer.getTrailingLines(200), params.effectiveFatalSignatures)
-      : undefined;
+    params.stdoutFatalScanner?.finalize();
+    params.stderrFatalScanner?.finalize();
+    const streamFatalMatch =
+      params.stdoutFatalScanner !== null && params.stderrFatalScanner !== null
+        ? combineStreamScans(params.stdoutFatalScanner, params.stderrFatalScanner)
+        : undefined;
 
     return {
       stdoutBuffer: params.stdoutBuffer,
@@ -1069,7 +1067,19 @@ export class AcpBackedRunner implements BackendRunner {
       ...(params.diagnosticsCaptured ? { diagnosticsCaptured: true } : {}),
       command: params.commandDisplay,
       ...(params.cliSessionId ? { cliSessionId: params.cliSessionId } : {}),
-      ...(streamFatalMatch ? { streamFatalMatch } : {})
+      ...(params.sessionCostBaselineUsd !== undefined
+        ? { sessionCostBaselineUsd: params.sessionCostBaselineUsd }
+        : {}),
+      ...(params.cliSessionCostUsd !== undefined
+        ? { cliSessionCostUsd: params.cliSessionCostUsd }
+        : {}),
+      ...(streamFatalMatch ? { streamFatalMatch } : {}),
+      ...(params.terminalReconciliation !== undefined
+        ? { terminalReconciliation: params.terminalReconciliation }
+        : {}),
+      ...(params.streamPendingHighWaterBytes > 0
+        ? { streamPendingHighWaterBytes: params.streamPendingHighWaterBytes }
+        : {})
     };
   }
 }

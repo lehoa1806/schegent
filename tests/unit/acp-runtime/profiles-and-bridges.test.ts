@@ -3,6 +3,7 @@
  * built-in ACP profiles (`agy-acp-native`, `claude-acp-bridge`, `codex-acp-bridge`), maintained
  * stdio bridges, and credential-free local binary handshake qualification on `darwin/arm64`.
  */
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -24,6 +25,11 @@ import {
 } from '../../../src/services/acp-runtime';
 import { classifyHostLocality } from '../../../src/services/acp-runtime/profiles';
 import type { NativeReviewInvocation } from '../../../src/runner/native-review-launch';
+import {
+  boundRawInputForFrame,
+  chunkTextForFrame,
+  formatBridgeCostAmount
+} from '../../../src/services/acp-runtime/bridges/acp-stdio-bridge-helpers';
 
 const tempDirs: string[] = [];
 
@@ -155,7 +161,20 @@ describe('FR-R6-F13 (F13-B) — built-in ACP profiles and platform qualification
   });
 
   it('parses bridge CLI argv strictly and keeps secrets out of argv on resolveAcpProfileLaunch', () => {
-    const env = { ANTHROPIC_API_KEY: 'sk-ant-fake-secret', PATH: '/usr/bin' };
+    const env = {
+      ANTHROPIC_API_KEY: 'sk-ant-fake-secret',
+      PATH: '/usr/bin',
+      NODE_OPTIONS: '--require=/tmp/evil.js',
+      NODE_COMPILE_CACHE: '/tmp/evil-cache',
+      LD_PRELOAD: '/tmp/evil.so',
+      LD_LIBRARY_PATH: '/tmp/evil-lib',
+      LD_AUDIT: '/tmp/evil-audit.so',
+      OPENSSL_CONF: '/tmp/evil-openssl.cnf',
+      OPENSSL_MODULES: '/tmp/evil-modules',
+      OPENSSL_ENGINES: '/tmp/evil-engines',
+      DYLD_INSERT_LIBRARIES: '/tmp/evil.dylib',
+      NODE_EXTRA_CA_CERTS: '/etc/ssl/corporate-ca.pem'
+    };
     const claudeLaunch = resolveAcpProfileLaunch({
       kind: 'claude',
       resolvedCliPath: '/opt/bin/claude',
@@ -166,6 +185,31 @@ describe('FR-R6-F13 (F13-B) — built-in ACP profiles and platform qualification
       bridgeScriptPath: '/opt/schegent/dist/acp-stdio-bridge.js'
     });
     expect(claudeLaunch.args).not.toContain('sk-ant-fake-secret');
+    expect(claudeLaunch.env['NODE_OPTIONS']).toBeUndefined();
+    expect(claudeLaunch.env['NODE_COMPILE_CACHE']).toBeUndefined();
+    expect(claudeLaunch.env['LD_PRELOAD']).toBeUndefined();
+    expect(claudeLaunch.env['LD_LIBRARY_PATH']).toBeUndefined();
+    expect(claudeLaunch.env['LD_AUDIT']).toBeUndefined();
+    expect(claudeLaunch.env['OPENSSL_CONF']).toBeUndefined();
+    expect(claudeLaunch.env['OPENSSL_MODULES']).toBeUndefined();
+    expect(claudeLaunch.env['OPENSSL_ENGINES']).toBeUndefined();
+    expect(claudeLaunch.env['DYLD_INSERT_LIBRARIES']).toBeUndefined();
+    expect(claudeLaunch.env['NODE_EXTRA_CA_CERTS']).toBe('/etc/ssl/corporate-ca.pem');
+
+    // Byte-aware outbound framing: 350 KiB of ASCII control escapes (6x JSON expansion -> ~2.1 MiB)
+    // splits into <= 1 MiB JSON-encoded chunks; oversized rawInput is bounded; sub-microdollar
+    // positive costs preserve precision or fail closed instead of collapsing to '0'.
+    const escapedFlood = '\u001b'.repeat(350_000);
+    const chunks = chunkTextForFrame(escapedFlood);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const part of chunks) {
+      expect(Buffer.byteLength(JSON.stringify(part), 'utf8')).toBeLessThanOrEqual(1024 * 1024);
+    }
+    expect(chunks.join('')).toBe(escapedFlood);
+    expect(boundRawInputForFrame({ blob: 'a'.repeat(600 * 1024) })).toMatchObject({ _truncated: true });
+    expect(formatBridgeCostAmount(0)).toBe('0');
+    expect(formatBridgeCostAmount(1e-7)).toBe('0.0000001');
+    expect(formatBridgeCostAmount(1e-20)).toBeUndefined();
     const parsed = parseBridgeCliArgv(claudeLaunch.args.slice(1), env);
     expect(parsed?.backend).toBe('claude');
     expect(parsed?.cliPath).toBe('/opt/bin/claude');
@@ -665,12 +709,27 @@ describe('native review subprocess dispatch', () => {
     });
   }
 
-  it('runs the scanner in the target and returns only the report fields used for repair', async () => {
-    const result = await reviewTurn('codex', { kind: 'security', mergeBase, excludedPaths: ['vendor/private'] },
-      'This prompt must stay out of the scanner argv.', scanOutput('completed', mergeBase));
+  function createFakeScannerExecutable(): { readonly resolvedScannerPath: string; readonly resolvedScannerSha256: string } {
+    const dir = makeTempDir('schegent-fake-scanner-');
+    const file = path.join(dir, 'codex-security');
+    const body = '#!/usr/bin/env node\nprocess.exit(0);\n';
+    fs.writeFileSync(file, body, { mode: 0o755 });
+    const resolvedScannerPath = fs.realpathSync(file);
+    const resolvedScannerSha256 = createHash('sha256').update(body).digest('hex');
+    return { resolvedScannerPath, resolvedScannerSha256 };
+  }
+
+  it('runs the scanner in the target via exact host-resolved path + SHA-256 and returns only the report fields used for repair', async () => {
+    const scanner = createFakeScannerExecutable();
+    const result = await reviewTurn(
+      'codex',
+      { kind: 'security', mergeBase, excludedPaths: ['vendor/private'], ...scanner },
+      'This prompt must stay out of the scanner argv.',
+      scanOutput('completed', mergeBase)
+    );
     expect(result.outcome).toMatchObject({ kind: 'completed', stopReason: 'end_turn' });
     const { launch, stdin } = result.invocation;
-    expect(launch.command).toBe('codex-security');
+    expect(launch.command).toBe(scanner.resolvedScannerPath);
     expect(launch.cwd).toBe('/workspace/target');
     expect(launch.args.slice(0, 5)).toEqual(['scan', '.', '--working-tree', '--base', mergeBase]);
     expect(launch.args).toEqual(expect.arrayContaining([
@@ -691,22 +750,25 @@ describe('native review subprocess dispatch', () => {
     ['failed process', scanOutput('completed', mergeBase), 2],
     ['malformed output', '{"ok":true}', 0]
   ] as const)('refuses %s before it can become repair input', async (_label, report, exitCode) => {
-    const result = await reviewTurn('codex', { kind: 'security', mergeBase }, 'Scan.', report, exitCode);
+    const scanner = createFakeScannerExecutable();
+    const result = await reviewTurn('codex', { kind: 'security', mergeBase, ...scanner }, 'Scan.', report, exitCode);
     expect(result.outcome.kind).not.toBe('completed');
     expect(JSON.stringify(result.observations)).not.toContain('Missing input bound');
   });
 
-  it('keeps the scan recipe closed across the bridge CLI argv boundary', () => {
+  it('keeps the scan recipe closed across the bridge CLI argv boundary and requires scanner path + SHA-256', () => {
+    const scanner = createFakeScannerExecutable();
     const launch = resolveAcpProfileLaunch({
       kind: 'codex', resolvedCliPath: 'codex', cwd: '/workspace', env: {},
-      nativeReview: { kind: 'security', mergeBase, excludedPaths: ['vendor/lib'] }
+      nativeReview: { kind: 'security', mergeBase, excludedPaths: ['vendor/lib'], ...scanner }
     });
     const argv = launch.args.slice(1);
     expect(parseBridgeCliArgv(argv, {})?.nativeReview).toEqual({
-      kind: 'security', mergeBase, excludedPaths: ['vendor/lib']
+      kind: 'security', mergeBase, excludedPaths: ['vendor/lib'], ...scanner
     });
     expect(parseBridgeCliArgv([...argv, '--review-exclude', '../outside'], {})).toBeNull();
     expect(parseBridgeCliArgv([...argv, '--native-review', 'exec'], {})).toBeNull();
     expect(parseBridgeCliArgv([...argv, '--review-base', '--arbitrary'], {})).toBeNull();
+    expect(parseBridgeCliArgv(argv.filter((a) => a !== '--scanner-sha256' && a !== scanner.resolvedScannerSha256), {})).toBeNull();
   });
 });
