@@ -85,6 +85,7 @@ export async function resumePausedQueueExecution(
             compareAndSetConnectedRun: (next, rev) =>
               deps.store.compareAndSetConnectedRun!(next, rev)
           },
+          ledgerStoreOwner: deps.store,
           taskId: run.featureId,
           logger: deps.logger
         });
@@ -126,6 +127,7 @@ export async function resumePausedQueueExecution(
         if (request.status === 'pending') {
           await reactivateRecoveryPausedConnectedRunForTask({
             store: reactivationStore,
+            ledgerStoreOwner: deps.store,
             taskId: request.id,
             logger: deps.logger
           });
