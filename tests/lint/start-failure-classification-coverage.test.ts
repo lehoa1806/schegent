@@ -5,6 +5,7 @@ import {
   UNEXPECTED_MESSAGE_MAX,
   classifyStartFailure
 } from '../../src/controller/start-failure-classification';
+import { AuditChainPathRefusedError } from '../../src/audit/audit-chain';
 import { AuditPathRefusedError } from '../../src/audit/audit-log-writer';
 import { CapabilityNotEnforceableError } from '../../src/services/capability-refusal';
 import { OutputTargetRefusedAtDispatch } from '../../src/services/dispatch-output-guard';
@@ -75,6 +76,15 @@ const REFUSALS: ReadonlyArray<{ readonly name: string; readonly make: () => Erro
   {
     name: 'OutputTargetRefusedAtDispatch',
     make: () => new OutputTargetRefusedAtDispatch('a-long-output-port-id', 'symlink-component')
+  },
+  {
+    name: 'AuditChainPathRefusedError',
+    make: () =>
+      new AuditChainPathRefusedError(
+        'symlink-leaf',
+        'ELOOP',
+        'Refused non-regular or symlink audit file: audit.log.20261124-000000-000-00000000'
+      )
   },
   {
     name: 'AuditPathRefusedError',
