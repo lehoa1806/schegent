@@ -279,6 +279,9 @@ Start at [Operations documentation](operations/README.md) for the bounded 5-item
   what the gate that produces the register does not read (FR-R3-167)
 - [Contract descriptors](development/contract-descriptors.md) — single-source IPC and snapshot
   descriptors, generation commands, and parity-test retirement record (FR-R7-05)
+- [Contributor setup rehearsal](development/contributor-setup-rehearsal.md) — clean paired-checkout and
+  standalone setup rehearsal, missing-webview diagnostic, focused regression command, and envelope-only
+  governance checks (FR-R8-03 / 03-06)
 - [Coverage measurements](development/coverage-measurements.md)
 - [Gate integrity measurements](development/gate-integrity-measurements.md) — the vacuity detector's
   false-negative rate, the zero-offender enumeration, the product-versus-suite coverage split, and the
@@ -329,6 +332,9 @@ Start at [Operations documentation](operations/README.md) for the bounded 5-item
 - [Qualification matrix](release/qualification-matrix.md) — Node 22 and 24 on macOS, Linux and Windows:
   each cell is either observed, with the five facts of an observation, or `unobserved` with its
   prerequisite. Never a bare "passed" (FR-R4-F09).
+- [Preview release-candidate evidence](release/preview-rc-evidence.md) — Round 8 engineering preview
+  candidate host tuple, VSIX smoke package metrics and digest, advisory posture, feature verification
+  summary, and explicitly unqualified release prerequisites (FR-R8-03 / 03-08)
 - [Node 22 floor record](release/node-floor-record.md) — the last run of the plain-Node toolchain on
   the declared Node 22 floor, its failures, and what that run does not show. It is not a
   qualification cell (FR-R5-F21).

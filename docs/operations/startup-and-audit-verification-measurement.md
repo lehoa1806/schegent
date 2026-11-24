@@ -160,3 +160,11 @@ Chunked yielding adds only `~1.2–2.5 ms` (`~3.6%`) of total wall-clock time wh
 - **Scope boundaries and re-measurement triggers**:
   - Stage 2 figures isolate host-side wiring, SQLite primary cutover, replay, retention sweep, catalog refresh, archive maintenance, recovery producers, and `SidebarViewProvider.setProjector` `postMessage` delivery; they exclude VS Code renderer HTML paint time and unawaited fire-and-forget CLI `--help` probes.
   - Re-run this harness if new awaited work is added to `wireStage2` or `createStage2Producers`, if `AUDIT_ROTATION_DEFAULT_SIZE_BYTES` / `AUDIT_ARCHIVE_DEFAULT_MAX_COUNT` increase, or when qualifying Linux or Windows desktop hosts.
+
+### Repeated verification capture (`FR-R8-03` / `03-04`, 2026-11-24)
+
+Re-run standalone on 2026-11-24 (`darwin/arm64`, Apple M4 Max, Node `v24.22.2`, `loadAvg1m 3.25`, `SCHEGENT_PRINT_N05_REPORT=1 npx vitest run --config vitest.perf.config.ts tests/perf/startup-and-audit-verification.test.ts --reporter=verbose`, 2 warm-up + 7 measured):
+
+- **Stage 2 total to live sidebar snapshot**: `p50 35.587 ms`, `p95 37.077 ms`, `max 37.077 ms` (`monitorEventLoopDelay` max `p50 4.264 ms` / `p95 4.760 ms`, `setImmediate` max gap `p50 3.915 ms` / `p95 4.365 ms`; `DEFER` verdict stands with >13× headroom under `500 ms`).
+- **On-demand `runVerifyAuditChain` (`single-5mib-live`, `5.00 MiB`, `11,676` entries)**: wall `p50 16.304 ms` / `p95 16.885 ms`, `monitorEventLoopDelay` max `p50 1.580 ms` / `p95 1.836 ms`, `setImmediate` max gap `p50 0.695 ms` / `p95 0.829 ms`, `89` interleaved ticks (p50).
+- **On-demand `runVerifyAuditChain` (`multi-archive-20mib-4files`, `20.00 MiB`, `46,629` entries)**: wall `p50 74.196 ms` / `p95 74.407 ms`, `monitorEventLoopDelay` max `p50 5.304 ms` / `p95 5.853 ms`, `setImmediate` max gap `p50 5.028 ms` / `p95 5.866 ms`, `339` interleaved ticks (p50; >8× headroom under `50 ms`).

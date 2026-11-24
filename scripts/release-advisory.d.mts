@@ -17,9 +17,10 @@ export type ReleaseAdvisoryReason =
   | 'advisory-observed-after-now'
   | 'advisory-stale'
   | 'dispositions-unusable'
+  | 'advisory-shipped'
   | 'advisory-uncovered';
 
-/** The eight refusal reasons, in the order they are checked. */
+/** The nine refusal reasons, in the order they are checked. */
 export declare const RELEASE_ADVISORY_REASONS: readonly ReleaseAdvisoryReason[];
 
 export type AdvisoryCompleteness = 'complete' | 'unavailable' | 'incomplete';

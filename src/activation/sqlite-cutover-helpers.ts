@@ -8,6 +8,11 @@ import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 
 import type { SanitizedLogger } from '../lib/logger';
+import type { SideEffectFailureReport } from '../lib/side-effect-failure-reporter';
+import type { StorageDetailsReader } from '../contracts/sidebar-ipc/storage-details';
+import type { UsageAccountingReader } from '../contracts/sidebar-ipc/usage-accounting';
+import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
+import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import { resolveContainedLink } from '../lib/path-containment';
 import { isTargetProtectedPathSync } from '../lib/protected-path-match';
 import { openWithinRoot } from '../lib/safe-open';
@@ -35,6 +40,7 @@ import type {
 } from '../services/sqlite-store';
 import type { TelemetrySecretPort } from '../contracts/telemetry-export';
 import type { TelemetryHostService } from '../services/telemetry-host/telemetry-host-service';
+import type { UsageAccountingService } from '../services/usage-accounting/usage-accounting-service';
 import type { UsageAccountingWiring } from '../services/usage-accounting/usage-accounting-wiring';
 import {
   createWorkflowRefusalOutcome,
@@ -394,6 +400,7 @@ export function disposeSqliteRuntimeResources(resources: {
   readonly catalogFs?: SwitchableCatalogFsAdapter | undefined;
   readonly clearDetachedWriter?: boolean | undefined;
   readonly disposeTelemetryConfig?: (() => void) | undefined;
+  readonly usageAccounting?: UsageAccountingService | null | undefined;
   readonly usageWiring?: UsageAccountingWiring | null | undefined;
   readonly workflowComposition?: ProductionWorkflowComposition | null | undefined;
   readonly telemetryHost?: TelemetryHostService | null | undefined;
@@ -406,6 +413,9 @@ export function disposeSqliteRuntimeResources(resources: {
   runBestEffortDispose(() => resources.catalogFs?.detachSqlite(resources.sqliteStore));
   runBestEffortDispose(resources.disposeTelemetryConfig);
   runBestEffortDispose(() => resources.usageWiring?.dispose());
+  runBestEffortDispose(() => {
+    void resources.usageAccounting?.close().catch(() => undefined);
+  });
   runBestEffortDispose(() => resources.workflowComposition?.dispose());
 
   const closeStore = (): void => {
@@ -448,5 +458,69 @@ export function disposeSqliteRuntimeResources(resources: {
   } else {
     closeStore();
   }
+}
+
+/** The SQLite half of the protected-run set could not be read, so no sweep may act on the rest. */
+export class ProtectedRunIdsUnavailableError extends Error {
+  public constructor() {
+    super('the protected run set could not be read');
+    this.name = 'ProtectedRunIdsUnavailableError';
+  }
+}
+
+/**
+ * Review gap GC-05 follow-up (2026-11-12) — runs `sweep` only on a protected set that was read
+ * whole. When the set is unavailable the query has already reported why, and the sweep is skipped.
+ */
+export async function sweepWithReadableProtection(
+  readProtected: () => ReadonlySet<string>,
+  sweep: (protectedIds: ReadonlySet<string>) => Promise<unknown>
+): Promise<'swept' | 'skipped'> {
+  let protectedIds: ReadonlySet<string>;
+  try {
+    protectedIds = readProtected();
+  } catch (err) {
+    if (err instanceof ProtectedRunIdsUnavailableError) return 'skipped';
+    throw err;
+  }
+  await sweep(protectedIds);
+  return 'swept';
+}
+
+/** Re-sends the batches a previous host spooled once, after destination setup settles. */
+export async function replayTelemetrySpoolAfterSettling(
+  host: Pick<TelemetryHostService, 'idle' | 'reconcileAndReplaySpool'>,
+  reportFailure: SideEffectFailureReport
+): Promise<void> {
+  try {
+    await host.idle();
+    await host.reconcileAndReplaySpool();
+  } catch (err) {
+    reportFailure('telemetry-spool', err);
+  }
+}
+
+export function createDynamicStorageDetailsReader(
+  getService: () => ArtifactLifecycleService | null
+): StorageDetailsReader {
+  return {
+    read(cursor) {
+      return createStorageDetailsReader(getService()).read(cursor);
+    }
+  };
+}
+
+export function createDynamicUsageAccountingReader(
+  getService: () => UsageAccountingService | null
+): UsageAccountingReader {
+  return {
+    query: (req, signal) => createUsageAccountingReader(getService()).query(req, signal),
+    queryAsync: (req, signal) => {
+      const reader = createUsageAccountingReader(getService());
+      return reader.queryAsync !== undefined ? reader.queryAsync(req, signal) : Promise.resolve(reader.query(req, signal));
+    },
+    readGaps: (req) => createUsageAccountingReader(getService()).readGaps(req),
+    readQualifications: () => createUsageAccountingReader(getService()).readQualifications()
+  };
 }
 

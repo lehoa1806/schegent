@@ -812,7 +812,11 @@ export class ClaudeCliRunner implements BackendRunner {
             kind: 'exited', runId: request.runId ?? null, invocationId,
             exitCode: abortedComp?.exitCode ?? null,
             signal: abortedComp?.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null,
-            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {})
+            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+            ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+            streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+            streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+            streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
           });
           throw err;
         }
@@ -885,7 +889,11 @@ export class ClaudeCliRunner implements BackendRunner {
         signal: exitSignal,
         killed,
         timedOut,
-        ...(deadlineFired() ? { deadlineExceeded: true } : {})
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+        ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+        streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+        streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+        streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
       });
 
       let diagnosticWarnings: ReadonlyArray<string> | undefined;

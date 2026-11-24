@@ -23,6 +23,12 @@ import { validateAccountingQueryRequest, validateReadGapsRequest } from '../../c
 import { historyErrorCode } from '../history/error-code';
 import type { NodeSqliteConnection } from '../sqlite-store';
 import { readGapsPage, runAccountingQuery } from './accounting-query';
+import {
+  createAccountingQueryWorkerClient,
+  isFileBackedSqlitePath,
+  type AccountingQueryWorkerClient,
+  type AccountingWorkerQueryOptions
+} from './accounting-query-worker';
 import { type PruneResult, isNearRetentionBound, pruneExpired } from './accounting-retention';
 import { inImmediateTransaction } from './accounting-transaction';
 import { type AcpAttemptBinding, type AcpUsageUpdate, acpUsageObservation } from './acp-usage-mapping';
@@ -110,6 +116,18 @@ export interface UsageAccountingService {
   importLegacyEpoch(source: LegacyRollupSource): Promise<AccountingResult<LegacyEpochResult>>;
   /** Validates `request` (the shared validator) and reads one revision-pinned page. */
   query(request: unknown, signal?: AbortSignal): AccountingResult<AccountingQueryResponse>;
+  /**
+   * FR-R8-03 (03-03) — validates `request` and executes the read off the host event loop on a
+   * read-only `node:worker_threads` worker for file-backed WAL SQLite stores (with `:memory:`
+   * synchronous fallback) and real mid-read `AbortSignal` termination.
+   */
+  queryAsync(
+    request: unknown,
+    signal?: AbortSignal,
+    options?: Pick<AccountingWorkerQueryOptions, 'onMetrics'>
+  ): Promise<AccountingResult<AccountingQueryResponse>>;
+  /** Terminates any idle or active read-only query worker cleanly. */
+  close(): Promise<void>;
   readGaps(request?: unknown): AccountingResult<ReadGapsResponse>;
   /** The static qualification registry (FR-020), never mixed into observed data. */
   readQualifications(): AccountingResult<readonly ProviderQualification[]>;
@@ -152,6 +170,18 @@ export function createUsageAccountingService(deps: UsageAccountingServiceDeps): 
       return storeError(operation, error);
     }
   }
+
+  const workerClient: AccountingQueryWorkerClient | null = isFileBackedSqlitePath(deps.conn.databasePath)
+    ? createAccountingQueryWorkerClient(deps.conn.databasePath, {
+        onErrorCode: (errorCode) => {
+          try {
+            deps.logger?.warn(LOG_MESSAGE, { operation: 'queryAsync', errorCode });
+          } catch {
+            // A failing sink must not turn a sanitized refusal into a throw.
+          }
+        }
+      })
+    : null;
 
   const service: UsageAccountingService = {
     ingestObservation(input) {
@@ -228,6 +258,26 @@ export function createUsageAccountingService(deps: UsageAccountingServiceDeps): 
         if (!validated.ok) return validated;
         return runAccountingQuery(deps.conn, validated.value, { bounds, monotonicMs: deps.monotonicMs, signal });
       });
+    },
+
+    queryAsync(request, signal, options) {
+      return guardedAsync('queryAsync', async () => {
+        const validated = validateAccountingQueryRequest(request);
+        if (!validated.ok) return validated;
+        if (workerClient === null) {
+          return runAccountingQuery(deps.conn, validated.value, { bounds, monotonicMs: deps.monotonicMs, signal });
+        }
+        return workerClient.query(validated.value, bounds, {
+          ...(signal !== undefined ? { signal } : {}),
+          ...(options?.onMetrics !== undefined ? { onMetrics: options.onMetrics } : {})
+        });
+      });
+    },
+
+    async close() {
+      if (workerClient !== null) {
+        await workerClient.close();
+      }
     },
 
     readGaps(request) {

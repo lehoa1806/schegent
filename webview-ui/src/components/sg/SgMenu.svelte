@@ -79,7 +79,7 @@
     return menu === undefined ? [] : [...menu.querySelectorAll<HTMLElement>(REACHABLE_ITEM_SELECTOR)];
   }
 
-  /** Below the button and right-aligned to it; above when there is no room below. */
+  /** Below the button and right-aligned to it; above when there is no room below, clamped to the viewport. */
   function place(): void {
     if (trigger === undefined || menu === undefined) return;
     const anchor = trigger.getBoundingClientRect();
@@ -87,7 +87,9 @@
     const below = anchor.bottom + GAP_PX;
     const above = anchor.top - GAP_PX - size.height;
     const fitsBelow = below + size.height <= window.innerHeight - EDGE_PX;
-    top = fitsBelow || above < EDGE_PX ? below : above;
+    const preferredTop = fitsBelow ? below : above >= EDGE_PX ? above : below;
+    const maxTop = Math.max(EDGE_PX, window.innerHeight - size.height - EDGE_PX);
+    top = Math.max(EDGE_PX, Math.min(preferredTop, maxTop));
     const furthestLeft = window.innerWidth - size.width - EDGE_PX;
     left = Math.max(EDGE_PX, Math.min(anchor.right - size.width, furthestLeft));
   }
@@ -114,7 +116,7 @@
     open = true;
     await tick();
     place();
-    reachableItems().at(0)?.focus();
+    reachableItems().at(0)?.focus({ preventScroll: true });
   }
 
   function toggle(): void {

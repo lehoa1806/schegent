@@ -257,10 +257,25 @@ jq -r 'select(.eventType == "phase-end" and (.payload.attemptId | not))
 
 `cap-exhausted` counts are expected at any age. Anything else here is either a
 pre-212 archive or the gap worth chasing.
+
+### Correlating all six diagnostic classes by `(runId, attemptId, reason)` (`FR-R8-03` / `03-02`)
+
+Using installed metadata-only audit and runtime diagnostics alone (without enabling raw transcripts or CLI transport capture), an operator can join a single `(runId, attemptId)` across:
+
+1. **Admission / pre-spawn refusal** — `phase-end` row carrying `payload.attemptId`, `terminationReason: "pre_spawn_refusal"`, and `cause: "pre_spawn_refusal"` (or admission refusal reason in the runtime log).
+2. **Qualified child identity and permission posture** — `cli-invocation` row carrying optional `payload.attemptId` alongside `runner`, `operation`, `executableTarget`, `permissionMode`, and `containmentPosture`.
+3. **Stream high-water marks** — `monitor-invocation-summary` row carrying optional `payload.attemptId`, `streamHighWaterBytes` (peak bytes retained in `ZippedStreamBuffer`), `streamObservedBytes` (total stream bytes observed), and `streamTruncated` (`boolean`), alongside `phase-end` `metrics`.
+4. **Missing usage / unverifiable spend** — absence of cost/token metrics on `phase-end` (`metrics.totalCostUsd` omitted rather than coerced to `0`) and `strict-usd` refusal reason (`spend-unverifiable`).
+5. **Contradictory exit** — `phase-end` `verdictBasis: "exit-code"`, non-zero `exitCode`, `resultEnvelope: "received"`, and `warnings` naming `acp-contradictory-exit` / `host-verification-failed`.
+6. **Recovery decision** — runtime log / diagnostics bundle `run-status` carrying `runId`, `attemptId`, `reason` (e.g., `recovery-uncertain-effect`), and explicit operator next step (`inspect-and-resume-or-cancel`).
+
+All new fields are additive on `AUDIT_SCHEMA_VERSION = 3` and verified end-to-end in `repo/tests/integration/correlated-diagnostics-and-otlp.test.ts` (including clean, mid-chain tampered `broken-link`, and simulated mid-write power-loss torn-tail `malformed` verification on disposable logs). Remember the same-user and power-loss boundaries stated below: the hash chain makes single-row edits and unrecorded truncations evident, but does not prevent the same OS user from recomputing both the log and the external checkpoint, nor does it guarantee durability of an un-flushed final line across sudden power loss.
 <!-- Source: src/controller/phase-attempt-recorder.ts -->
 <!-- Source: src/controller/phase-runner.ts -->
 <!-- Source: src/services/run-driver.ts -->
 <!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/runner/zipped-stream-buffer.ts -->
+<!-- Source: tests/integration/correlated-diagnostics-and-otlp.test.ts -->
 
 ## Count terminations that produced no verdict
 

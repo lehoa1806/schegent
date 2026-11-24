@@ -477,6 +477,65 @@ describe('findings: usage and disposition verdicts (AR5, AR6, research R13, R14)
     expect(covered.verdicts.covers).toBe(1);
   });
 
+  it('refuses runtime-reachable (shipped) findings even when covered by an accepted disposition (FR-R8-03 03-05)', async () => {
+    const shippedEntry = entry({
+      package: 'svelte',
+      tree: 'webview-ui',
+      range: '5.0.0'
+    });
+    const shippedAccepted = await evaluate({
+      ...withFinding('webview-ui', svelteFinding),
+      dispositionsText: listOf(shippedEntry),
+      bundledByTree: bundled(['node_modules/svelte'])
+    });
+    expect(shippedAccepted.findings.at(0)?.usage).toBe('shipped');
+    expect(shippedAccepted.verdicts.covers).toBe(1);
+    expect(shippedAccepted.refusal?.reason).toBe('advisory-shipped');
+    expect(shippedAccepted.refusal?.tree).toBe('webview-ui');
+    expect(shippedAccepted.refusal?.message).toContain('svelte');
+    expect(shippedAccepted.refusal?.message).toContain('usage=shipped');
+
+    // Control: the identical accepted finding as build-only is allowed.
+    const buildOnlyAccepted = await evaluate({
+      ...withFinding('webview-ui', svelteFinding),
+      dispositionsText: listOf(shippedEntry),
+      bundledByTree: bundled(['node_modules/esm-env'])
+    });
+    expect(buildOnlyAccepted.findings.at(0)?.usage).toBe('build-only');
+    expect(buildOnlyAccepted.refusal).toBeNull();
+
+    // Uncovered shipped finding with module graphs must fail with `advisory-shipped` (not `advisory-uncovered`).
+    const shippedUncovered = await evaluate({
+      ...withFinding('webview-ui', svelteFinding),
+      bundledByTree: bundled(['node_modules/svelte'])
+    });
+    expect(shippedUncovered.refusal?.reason).toBe('advisory-shipped');
+
+    // Accepted finding matching an unmapped virtual module (`usage === 'unknown'`) fails closed when graphs are supplied.
+    const viteFinding = finding({
+      package: 'vite',
+      locations: [{ location: 'node_modules/vite', version: '7.0.0', direct: true, production: false }]
+    });
+    const viteEntry = entry({ package: 'vite', tree: 'webview-ui', range: '7.0.0' });
+    const unmappedAccepted = await evaluate({
+      ...withFinding('webview-ui', viteFinding),
+      dispositionsText: listOf(viteEntry),
+      bundledByTree: bundled([], ['vite/preload-helper.js'])
+    });
+    expect(unmappedAccepted.findings.at(0)?.usage).toBe('unknown');
+    expect(unmappedAccepted.refusal?.reason).toBe('advisory-shipped');
+    expect(unmappedAccepted.refusal?.message).toContain('usage=unknown');
+
+    // Missing tree inside a non-null bundledByTree also fails closed under `advisory-shipped`.
+    const missingTreeGraph = await evaluate({
+      ...withFinding('webview-ui', svelteFinding),
+      dispositionsText: listOf(shippedEntry),
+      bundledByTree: { root: { installPaths: [], unmapped: [] } }
+    });
+    expect(missingTreeGraph.findings.at(0)?.usage).toBe('unknown');
+    expect(missingTreeGraph.refusal?.reason).toBe('advisory-shipped');
+  });
+
   it('shows covers, expired and does-not-cover from the list, evaluated at now', async () => {
     const verdictFor = async (over: Record<string, unknown>) =>
       (

@@ -114,7 +114,9 @@ const ADVISORY_REMEDY = Object.freeze({
     'Repair docs/release/advisory-dispositions.json in a reviewed commit (see docs/release/advisory-dispositions.md).',
   'advisory-uncovered':
     'Patch the dependency or record a dated disposition (with owner, rationale, and expiry) in ' +
-    'docs/release/advisory-dispositions.json in a reviewed commit (see docs/release/advisory-dispositions.md).'
+    'docs/release/advisory-dispositions.json in a reviewed commit (see docs/release/advisory-dispositions.md).',
+  'advisory-shipped':
+    'Patch or upgrade the runtime-reachable dependency so no advisory reaches the shipped host or webview bundle.'
 });
 
 /**
@@ -427,7 +429,10 @@ export function releaseCandidate(deps) {
     now: evaluatedMs
   });
   if (advisory.refusal) {
-    return refuse(advisory.refusal.reason, advisory.refusal.message);
+    return refuse(
+      advisory.refusal.reason,
+      `${advisory.refusal.message}\n${ADVISORY_REMEDY[advisory.refusal.reason] ?? ''}`.trimEnd()
+    );
   }
 
   // Step 10 -- accept: the digest of the inspected buffer, the rename, the record.

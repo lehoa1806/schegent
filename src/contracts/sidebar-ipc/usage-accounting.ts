@@ -23,6 +23,8 @@ export type ReadUsageAccountingResponse = AccountingResult<AccountingQueryRespon
  */
 export interface UsageAccountingReader {
   query(request: unknown, signal?: AbortSignal): AccountingResult<AccountingQueryResponse>;
+  /** FR-R8-03 (03-03) — non-blocking read-only worker execution on file-backed SQLite stores. */
+  queryAsync?(request: unknown, signal?: AbortSignal): Promise<AccountingResult<AccountingQueryResponse>>;
   readGaps(request?: unknown): AccountingResult<ReadGapsResponse>;
   readQualifications(): AccountingResult<readonly ProviderQualification[]>;
 }

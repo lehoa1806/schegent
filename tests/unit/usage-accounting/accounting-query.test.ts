@@ -285,15 +285,37 @@ describe('accounting query: bounds and paging', () => {
 
   it('looks up an attempt\'s contributions by attempt, not by a revision range scan (NFR-003)', () => {
     const accounting = service();
-    ingest(accounting, { attemptId: 'a-1', phaseId: 'plan', measures: [...tokens(1, 1), cost('0.10')] });
-    ingest(accounting, { attemptId: 'a-2', phaseId: 'implement', measures: [...tokens(2, 1), cost('0.20')] });
+    ingest(accounting, {
+      attemptId: 'a-1',
+      phaseId: 'plan',
+      measures: [
+        ...tokens(1, 1),
+        cost('0.10'),
+        { measure: 'context_used', quantity: 128, unit: 'count', provenance: 'provider-reported' }
+      ]
+    });
+    ingest(accounting, {
+      attemptId: 'a-2',
+      phaseId: 'implement',
+      measures: [
+        ...tokens(2, 1),
+        cost('0.20'),
+        { measure: 'context_used', quantity: 256, unit: 'count', provenance: 'provider-reported' }
+      ]
+    });
     const all = vi.spyOn(conn, 'all');
     const get = vi.spyOn(conn, 'get');
     okValue(accounting.query({ groupBy: ['phaseId'], filters: { backend: 'claude' }, limit: 1 }));
     const reads = [...all.mock.calls, ...get.mock.calls].filter((call) => String(call.at(0)).includes('accounting_contributions c'));
+    all.mockClear();
+    get.mockClear();
+    // Non-occupancy queries skip the redundant occupancy `latest` scan (FR-R8-03 03-03).
+    okValue(accounting.query({ groupBy: ['phaseId'], filters: { backend: 'claude' }, measures: ['input_tokens', 'cost'], limit: 1 }));
+    const nonOccupancyReads = [...all.mock.calls, ...get.mock.calls].filter((call) => String(call.at(0)).includes('accounting_contributions c'));
     all.mockRestore();
     get.mockRestore();
     expect(reads.length).toBeGreaterThanOrEqual(3);
+    expect(nonOccupancyReads.length).toBe(2);
     for (const [sql, ...params] of reads) {
       const details = conn.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${String(sql)}`, ...(params as never[])).map((row) => row.detail);
       const firstAttemptStep = details.findIndex((detail) => / a( |$)/u.test(detail));
