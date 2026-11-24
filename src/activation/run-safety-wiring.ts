@@ -54,8 +54,11 @@ import {
 } from '../services/workflow-execution/phase-attempt-start';
 import {
   getOrCreateProductionWorkflowComposition,
+  getRegisteredProductionWorkflowComposition,
   type ProductionWorkflowComposition
 } from '../services/workflow-execution/production-workflow-composition';
+import { createDesktopOwnershipFenceForStore } from './workflow-ownership-fence';
+import type { WorkflowLeafTarget } from '../contracts/workflow-leaf-target';
 import {
   createStoreProcessEvidencePort,
   isAttemptPendingInQueue,
@@ -175,12 +178,15 @@ export async function createRunSafetyWiring(input: {
   // a loser's outcome over the winner's Run.
   let boundGuardedRun: NodeRunStartDeps['guardedRun'] | undefined;
   let boundDefaultRunnerKind: BackendRunnerKind | undefined;
+  let boundCancelOrphanedQueueItem: ((target: WorkflowLeafTarget) => Promise<void> | void) | undefined;
   const bindGuardedRun = (
     guardedRun: NodeRunStartDeps['guardedRun'],
-    defaultRunnerKind?: BackendRunnerKind
+    defaultRunnerKind?: BackendRunnerKind,
+    cancelOrphanedQueueItem?: (target: WorkflowLeafTarget) => Promise<void> | void
   ): void => {
     boundGuardedRun = guardedRun;
     boundDefaultRunnerKind = defaultRunnerKind;
+    boundCancelOrphanedQueueItem = cancelOrphanedQueueItem;
   };
   const runComposableWorkflowRecovery = async (): Promise<void> => {
     await sqliteCutover?.activatePrimary();
@@ -366,6 +372,9 @@ export async function createRunSafetyWiring(input: {
         logger: input.logger,
         isWorkspaceTrusted: () => vscode.workspace.isTrusted,
         hasPrimacy: () => lockRegistration.lock.hasPrimacy(),
+        ...(lockRegistration.lock.onFenceLost !== undefined
+          ? { subscribePrimacyLost: (listener: () => void) => lockRegistration.lock.onFenceLost!(listener) }
+          : {}),
         disposables: lockRegistration.disposables
       })
     : undefined;
@@ -478,7 +487,10 @@ export async function createRunSafetyWiring(input: {
         {
           ...input,
           getGuardedRun: () => boundGuardedRun,
-          getDefaultRunnerKind: () => boundDefaultRunnerKind
+          getDefaultRunnerKind: () => boundDefaultRunnerKind,
+          ...(boundCancelOrphanedQueueItem !== undefined
+            ? { cancelOrphanedQueueItem: boundCancelOrphanedQueueItem }
+            : {})
         },
         run
       );
@@ -575,6 +587,7 @@ export async function reconcileComposableWorkflowRuns(input: {
       expectedRevision: number
     ): Promise<ConnectedRunWriteResult>;
     canCommitConnectedRun?(): Promise<boolean>;
+    getRawControlLedger?(): unknown;
     getQueueRegistry?(): { readonly entries: readonly { readonly id: string }[] };
     getQueue?(queueId: string): {
       readonly queueLifecycle?: string;
@@ -603,7 +616,15 @@ export async function reconcileComposableWorkflowRuns(input: {
     const allRuns = Object.values(input.store.getConnectedRuns()).filter(
       (run) => run.invocations !== undefined
     );
-    if (allRuns.length === 0) return;
+    const rawLedger = input.store.getRawControlLedger?.();
+    const hasLedgerRoots =
+      typeof rawLedger === 'object' &&
+      rawLedger !== null &&
+      'roots' in rawLedger &&
+      typeof (rawLedger as { roots?: unknown }).roots === 'object' &&
+      (rawLedger as { roots?: unknown }).roots !== null &&
+      Object.keys((rawLedger as { roots: Record<string, unknown> }).roots).length > 0;
+    if (allRuns.length === 0 && !hasLedgerRoots) return;
     if (input.capabilities !== undefined && 'getRawControlLedger' in input.store) {
       const availabilityWiring = createBackendAvailabilityWiring({
         store: input.store as WorkspaceStateStore,
@@ -612,15 +633,42 @@ export async function reconcileComposableWorkflowRuns(input: {
       });
       availabilityWiring.dispose();
     }
+    const isProcessAlive = (pid: number): boolean => {
+      if (!Number.isSafeInteger(pid) || pid <= 1) return false;
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code === 'EPERM';
+      }
+    };
+    const isDesktopStore = (candidate: object): candidate is WorkspaceStateStore =>
+      'ownership' in candidate &&
+      'primacyClaim' in candidate &&
+      'runClaimFor' in candidate &&
+      'runTenureOf' in candidate &&
+      'markRunClaimLost' in candidate &&
+      'getRawControlLedger' in candidate;
     const composition =
       input.productionComposition ??
+      getRegisteredProductionWorkflowComposition(input.store) ??
       getOrCreateProductionWorkflowComposition(input.store, {
-        workspaceRoot: input.workspaceRoot
+        workspaceRoot: input.workspaceRoot,
+        ...(isDesktopStore(input.store)
+          ? {
+              isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+              ...createDesktopOwnershipFenceForStore(input.store),
+              requireLiveFenceVerifier: true
+            }
+          : {})
       });
     const recovery = composition.createRecoveryService({
       workspaceRoot: input.workspaceRoot,
       connectedRuns: {
-        get: (id) => input.store.getConnectedRuns()[id] ?? null,
+        get: (id) => {
+          const runs = input.store.getConnectedRuns();
+          return Object.hasOwn(runs, id) ? runs[id]! : null;
+        },
         list: () =>
           Object.values(input.store.getConnectedRuns()).filter(
             (run) => run.invocations !== undefined
@@ -660,7 +708,8 @@ export async function reconcileComposableWorkflowRuns(input: {
         }),
       processEvidencePort: createStoreProcessEvidencePort({
         store: input.store,
-        historyStore: input.historyStore
+        historyStore: input.historyStore,
+        isProcessAlive
       }),
       ...(input.store.getQueue !== undefined
         ? {
@@ -674,16 +723,49 @@ export async function reconcileComposableWorkflowRuns(input: {
                 )?.id
           }
         : {}),
-      checkDurableAttemptEvidence: (_workflowRun, _frame, attempt): DurableAttemptEvidenceResult => {
+      checkDurableAttemptEvidence: async (
+        workflowRun,
+        _frame,
+        attempt
+      ): Promise<DurableAttemptEvidenceResult> => {
         if (attempt.queueItemId === undefined) return { completed: false };
+        const phase = workflowRun.frozenClosure?.phasesById[attempt.targetDefinitionId];
         const liveMatch = Object.values(input.store.getRunMap()).find(
           (candidate) => candidate !== undefined && candidate.featureId === attempt.queueItemId
         );
         if (liveMatch !== undefined && isWorkflowNodeTerminalStatus(liveMatch.status)) {
+          const cutover =
+            'getRawControlLedger' in input.store
+              ? getSqliteCutoverCoordinator(input.store as WorkspaceStateStore)
+              : undefined;
+          const execRoot =
+            (await cutover?.getRunLaneCoordinator()?.resolveExecutionRoot({
+              runId: liveMatch.id,
+              laneId: liveMatch.laneId,
+              laneRootRef: liveMatch.laneRootRef
+            })) ?? input.workspaceRoot;
+          const evaluated = await composition.evaluateSettlementOutcome({
+            attemptId: attempt.attemptId,
+            workspaceRoot: execRoot,
+            status: liveMatch.status,
+            phase,
+            declaredOutputs: buildDeclaredOutputsFromRun(liveMatch.runOutputs),
+            evaluatedAt: liveMatch.lastTransitionAt,
+            ...(liveMatch.lastError?.code !== undefined
+              ? { failureCode: liveMatch.lastError.code }
+              : {})
+          });
           return {
             completed: true,
-            status: liveMatch.status,
-            declaredOutputs: buildDeclaredOutputsFromRun(liveMatch.runOutputs),
+            status: evaluated.status,
+            declaredOutputs: evaluated.declaredOutputs,
+            ...(evaluated.decisionResults !== undefined
+              ? { decisionResults: evaluated.decisionResults }
+              : {}),
+            ...(evaluated.verdict !== undefined ? { verdict: evaluated.verdict } : {}),
+            ...(evaluated.failureCode !== undefined
+              ? { failureCode: evaluated.failureCode }
+              : {}),
             completedAt: liveMatch.lastTransitionAt
           };
         }
@@ -695,11 +777,27 @@ export async function reconcileComposableWorkflowRuns(input: {
           isWorkflowNodeTerminalStatus(historyMatch.terminalStatus)
         ) {
           const parsedCompletedAt = Date.parse(historyMatch.completedAt);
+          const completedAt = Number.isFinite(parsedCompletedAt) ? parsedCompletedAt : Date.now();
+          const evaluated = await composition.evaluateSettlementOutcome({
+            attemptId: attempt.attemptId,
+            workspaceRoot: input.workspaceRoot,
+            status: historyMatch.terminalStatus,
+            phase,
+            declaredOutputs: buildDeclaredOutputsFromRun(historyMatch.runOutputs),
+            evaluatedAt: completedAt
+          });
           return {
             completed: true,
-            status: historyMatch.terminalStatus,
-            declaredOutputs: buildDeclaredOutputsFromRun(historyMatch.runOutputs),
-            completedAt: Number.isFinite(parsedCompletedAt) ? parsedCompletedAt : Date.now()
+            status: evaluated.status,
+            declaredOutputs: evaluated.declaredOutputs,
+            ...(evaluated.decisionResults !== undefined
+              ? { decisionResults: evaluated.decisionResults }
+              : {}),
+            ...(evaluated.verdict !== undefined ? { verdict: evaluated.verdict } : {}),
+            ...(evaluated.failureCode !== undefined
+              ? { failureCode: evaluated.failureCode }
+              : {}),
+            completedAt
           };
         }
         return { completed: false };
@@ -731,6 +829,7 @@ export async function recordConnectedWorkflowTransition(
     readonly logger: SanitizedLogger;
     readonly getGuardedRun?: () => NodeRunStartDeps['guardedRun'] | undefined;
     readonly getDefaultRunnerKind?: () => BackendRunnerKind | undefined;
+    readonly cancelOrphanedQueueItem?: (target: WorkflowLeafTarget) => Promise<void> | void;
     readonly productionComposition?: ProductionWorkflowComposition;
   },
   run: import('../state/workflow-run').WorkflowRun
@@ -791,11 +890,26 @@ export async function recordConnectedWorkflowTransition(
               );
               return;
             }
+            const isDesktopStore = (candidate: object): candidate is WorkspaceStateStore =>
+              'ownership' in candidate &&
+              'primacyClaim' in candidate &&
+              'runClaimFor' in candidate &&
+              'runTenureOf' in candidate &&
+              'markRunClaimLost' in candidate &&
+              'getRawControlLedger' in candidate;
             const composition =
               input.productionComposition ??
+              getRegisteredProductionWorkflowComposition(input.store) ??
               getOrCreateProductionWorkflowComposition(input.store, {
                 ...(input.workspaceRoot !== undefined
                   ? { workspaceRoot: input.workspaceRoot }
+                  : {}),
+                ...(isDesktopStore(input.store)
+                  ? {
+                      isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+                      ...createDesktopOwnershipFenceForStore(input.store),
+                      requireLiveFenceVerifier: true
+                    }
                   : {})
               });
             const cutover =
@@ -818,18 +932,25 @@ export async function recordConnectedWorkflowTransition(
               status: run.status,
               phase,
               declaredOutputs: buildDeclaredOutputsFromRun(run.runOutputs),
-              evaluatedAt: run.lastTransitionAt
+              evaluatedAt: run.lastTransitionAt,
+              ...(run.lastError?.code !== undefined ? { failureCode: run.lastError.code } : {})
             });
             const controlService = composition.createControlService({
               ...(input.workspaceRoot !== undefined
                 ? { workspaceRoot: input.workspaceRoot }
                 : {}),
               connectedRuns: {
-                get: (id) => input.store.getConnectedRuns()[id] ?? null,
+                get: (id) => {
+                  const runs = input.store.getConnectedRuns();
+                  return Object.hasOwn(runs, id) ? runs[id]! : null;
+                },
                 compareAndSetConnectedRun: (next, rev) =>
                   input.store.compareAndSetConnectedRun(next, rev)
               },
-              dispatchPhase: makePhaseDispatcher(input)
+              dispatchPhase: makePhaseDispatcher(input),
+              ...(input.cancelOrphanedQueueItem !== undefined
+                ? { cancelOrphanedQueueItem: input.cancelOrphanedQueueItem }
+                : {})
             });
             const stepResult = await controlService.completeNodeAttemptSerialized({
               runId: workflowRun.connectedRunId,

@@ -115,7 +115,12 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
   // replace authoritative SQLite tables and append a sanitized audit row, so both are mutating and
   // owner-only (refused in untrusted or secondary windows).
   'schegent.backupStore': 'SQLite store backup, recorded in the audit log',
-  'schegent.restoreStoreBackup': 'SQLite store full-authority restore, recorded in the audit log'
+  'schegent.restoreStoreBackup': 'SQLite store full-authority restore, recorded in the audit log',
+
+  // FR-R8-01 (01-07) — guarded execution lane recovery (freeze retry, uncertain request
+  // acknowledgment, complete/retain/pin, safe cleanup, reconcile). Mutates SQLite lane state
+  // and/or Git worktrees and refs, so it is mutating and owner-only.
+  'schegent.recoverExecutionLane': 'execution lane recovery'
 } as const);
 
 /**
@@ -159,7 +164,12 @@ export const READ_ONLY_COMMAND_IDS = Object.freeze({
   // FR-R7-03 (FR-004) — lists and verifies SQLite backup images in read-only isolation (file digest,
   // quick_check, foreign_key_check, schema compatibility, bounded external dependencies). Writes no
   // file and no audit row, so it remains usable in untrusted or non-owner windows like verifyAuditChain.
-  'schegent.verifyStoreBackup': 'SQLite store backup read-only verification'
+  'schegent.verifyStoreBackup': 'SQLite store backup read-only verification',
+
+  // FR-R8-01 (01-07) — read-only inspection of persisted execution lanes, integration requests/journals,
+  // and (when trusted) live Git worktree/ref state, opening an unsaved Markdown report. Writes nothing
+  // and spawns zero Git subprocesses in Restricted Mode.
+  'schegent.inspectExecutionLanes': 'execution lane read-only inspection'
 } as const);
 
 export type MutatingCommandId = keyof typeof MUTATING_COMMAND_IDS;
@@ -199,7 +209,8 @@ export const OWNER_ONLY_COMMAND_IDS = Object.freeze({
   'schegent.resetOperatorPseudonym': 'records the reset',
   'schegent.createDiagnosticsBundle': 'records the export',
   'schegent.backupStore': 'writes a backup and records the audit entry',
-  'schegent.restoreStoreBackup': 'replaces authoritative store state and records the audit entry'
+  'schegent.restoreStoreBackup': 'replaces authoritative store state and records the audit entry',
+  'schegent.recoverExecutionLane': 'mutates execution lane state and Git worktrees'
 } as const satisfies Partial<Record<ExtensionCommandId, string>>);
 
 export type OwnerOnlyCommandId = keyof typeof OWNER_ONLY_COMMAND_IDS;

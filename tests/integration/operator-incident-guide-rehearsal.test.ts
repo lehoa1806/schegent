@@ -31,12 +31,17 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { verifyAuditChainAt } from '../../src/audit/audit-chain';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
+import {
+  readLaneSnapshotFromService,
+  runInspectExecutionLanes,
+  runRecoverExecutionLane,
+  type LaneRecoveryCommandUi
+} from '../../src/commands/execution-lane-recovery';
 import { appendResetAuditEvent } from '../../src/commands/reset';
 import type { VerificationProfile } from '../../src/contracts/execution-lanes';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { createWorkspaceExternalDependencyInspector } from '../../src/headless/backup-restore-api';
 import {
-  cancelRequest as apiCancelRequest,
   cleanupLanes as apiCleanupLanes,
   completeLane as apiCompleteLane,
   freezeCandidate as apiFreezeCandidate,
@@ -45,7 +50,6 @@ import {
   reconcile as apiReconcile,
   releaseLane as apiReleaseLane,
   requestIntegration as apiRequestIntegration,
-  setLanePinned as apiSetLanePinned,
   verifyRequest as apiVerifyRequest
 } from '../../src/headless/execution-lanes-api';
 import { SanitizedLogger } from '../../src/lib/logger';
@@ -60,6 +64,7 @@ import { createExecFileGitRunner, type LaneGitRunner } from '../../src/services/
 import { IntegrationStore } from '../../src/services/execution-lanes/integration-store';
 import { LaneService, type LaneServiceDeps } from '../../src/services/execution-lanes/lane-service';
 import { LaneStore } from '../../src/services/execution-lanes/lane-store';
+import { createRunLaneCoordinator } from '../../src/services/execution-lanes/run-lane-binding';
 import {
   BackupRestoreService,
   BUILTIN_SCHEMA_MIGRATIONS,
@@ -1221,11 +1226,34 @@ describe('FR-R7-18 (N03) Operator Incident Recovery Guide Rehearsals', () => {
         now: new Date(Date.UTC(2026, 10, 24, 12, 2, 0)).toISOString()
       });
 
-      // Reopen as primary host (simulating reload) and run `reconcile`.
+      // Reopen as primary host (simulating reload) and run installed-editor recovery `reconcile`.
       const host2 = h.reopen({ liveLaneCap: 8 });
-      const rec = await apiReconcile(host2);
-      expect(rec.ok).toBe(true);
-      if (!rec.ok) throw new Error('reconcile failed');
+      const openedReports: string[] = [];
+      const capturedModals: { summary: string; detail: string; confirmLabel: string }[] = [];
+      const commandLogger = { info: () => undefined, warn: () => undefined };
+      const createApprovingUi = (): LaneRecoveryCommandUi => ({
+        pickItem: async () => undefined,
+        confirmModal: async (summary, detail, confirmLabel) => {
+          capturedModals.push({ summary, detail, confirmLabel });
+          return true;
+        },
+        openMarkdownReport: async (markdown) => {
+          openedReports.push(markdown);
+        },
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined
+      });
+
+      const recCmd = await runRecoverExecutionLane(
+        { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+        { action: 'reconcile' }
+      );
+      expect(recCmd.status).toBe('completed');
+      if (recCmd.status !== 'completed' || recCmd.reconcileReport === undefined) {
+        throw new Error('reconcile command failed');
+      }
+      const rec = { ok: true as const, value: recCmd.reconcileReport };
 
       expect(rec.value.unknownWorktrees).toBe(1);
       expect(rec.value.requests).toEqual([
@@ -1262,23 +1290,75 @@ describe('FR-R7-18 (N03) Operator Incident Recovery Guide Rehearsals', () => {
         outcome: 'uncertain'
       });
 
-      // Settle `uncertain` and `blocked` requests via explicit headless `cancelRequest`.
-      const canceledUncertain = apiCancelRequest(host2, { requestId: uncertainCase.request.requestId });
-      expect(canceledUncertain.ok && canceledUncertain.value.state).toBe('canceled');
+      // Step 1: Inspect lanes via `Schegent: Inspect Execution Lanes` (read-only Markdown report).
+      const inspected = await runInspectExecutionLanes({
+        isWorkspaceTrusted: () => true,
+        readSnapshot: ({ allowLiveGit }) => readLaneSnapshotFromService(host2, { allowLiveGit }),
+        ui: createApprovingUi(),
+        logger: commandLogger
+      });
+      expect(inspected.status).toBe('opened');
+      expect(openedReports[0]).toContain(uncertainCase.request.requestId);
+      expect(openedReports[0]).toContain(orphanCommit.slice(0, 12));
+      expect(openedReports[0]).not.toContain(h.fixture.root);
+      expect(openedReports[0]).not.toContain(h.storageDir);
+
+      // Step 4: Settle `uncertain` and `blocked` requests via installed-editor `Schegent: Recover Execution Lane`.
+      capturedModals.length = 0;
+      const ackUncertain = await runRecoverExecutionLane(
+        { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+        { action: 'acknowledge-uncertain', requestId: uncertainCase.request.requestId }
+      );
+      expect(ackUncertain.status).toBe('completed');
+      expect(ackUncertain.status === 'completed' && ackUncertain.request?.state).toBe('canceled');
+      expect(capturedModals[0]?.detail).toContain(orphanCommit.slice(0, 12));
+      expect(h.fixture.git(['rev-parse', 'refs/heads/target-uncertain']).trim()).toBe(orphanCommit);
       expect(h.integrations.listJournal(uncertainCase.request.requestId).at(-1)).toMatchObject({
         kind: 'cancel',
         outcome: 'canceled',
         reason: 'acknowledged-uncertain'
       });
-      expect(apiCancelRequest(host2, { requestId: blockedCase.request.requestId }).ok).toBe(true);
 
-      // Exercise cleanup keep guards: lane-pinned, lane-dirty, worktree-locked.
-      expect(apiCompleteLane(host2, { laneId: blockedCase.lane.laneId }).ok).toBe(true);
-      expect(apiReleaseLane(host2, { laneId: blockedCase.lane.laneId, disposition: 'eligible' }).ok).toBe(true);
-      expect(apiSetLanePinned(host2, { laneId: blockedCase.lane.laneId, pinned: true }).ok).toBe(true);
+      const canceledBlocked = await runRecoverExecutionLane(
+        { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+        { action: 'cancel-request', requestId: blockedCase.request.requestId }
+      );
+      expect(canceledBlocked.status).toBe('completed');
 
-      expect(apiCompleteLane(host2, { laneId: uncertainCase.lane.laneId }).ok).toBe(true);
-      expect(apiReleaseLane(host2, { laneId: uncertainCase.lane.laneId, disposition: 'eligible' }).ok).toBe(true);
+      // Step 5: Exercise installed-editor retain/pin, cleanup-eligible, and cleanup keep guards.
+      expect(
+        (
+          await runRecoverExecutionLane(
+            { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+            { action: 'complete-and-retain', laneId: blockedCase.lane.laneId, pin: true }
+          )
+        ).status
+      ).toBe('completed');
+      expect(
+        (
+          await runRecoverExecutionLane(
+            { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+            { action: 'mark-cleanup-eligible', laneId: blockedCase.lane.laneId }
+          )
+        ).status
+      ).toBe('completed');
+
+      expect(
+        (
+          await runRecoverExecutionLane(
+            { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+            { action: 'complete-and-retain', laneId: uncertainCase.lane.laneId }
+          )
+        ).status
+      ).toBe('completed');
+      expect(
+        (
+          await runRecoverExecutionLane(
+            { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+            { action: 'mark-cleanup-eligible', laneId: uncertainCase.lane.laneId }
+          )
+        ).status
+      ).toBe('completed');
       fsSync.writeFileSync(path.join(uncertainCase.root, 'dirty-untracked.txt'), 'keep-me\n');
 
       const lockedLaneRoot = (await host2.resolveLaneRoot(
@@ -1286,20 +1366,76 @@ describe('FR-R7-18 (N03) Operator Incident Recovery Guide Rehearsals', () => {
       ))!;
       h.fixture.git(['worktree', 'lock', lockedLaneRoot]);
 
-      // Clean lane teardown: completeLane -> releaseLane('eligible') -> cleanupLanes.
-      expect(apiCompleteLane(host2, { laneId: landedCase.lane.laneId }).ok).toBe(true);
-      expect(apiReleaseLane(host2, { laneId: landedCase.lane.laneId, disposition: 'eligible' }).ok).toBe(true);
+      // Clean lane teardown through installed-editor commands: complete-and-retain -> mark-cleanup-eligible -> cleanup.
+      expect(
+        (
+          await runRecoverExecutionLane(
+            { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+            { action: 'complete-and-retain', laneId: landedCase.lane.laneId }
+          )
+        ).status
+      ).toBe('completed');
+      expect(
+        (
+          await runRecoverExecutionLane(
+            { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+            { action: 'mark-cleanup-eligible', laneId: landedCase.lane.laneId }
+          )
+        ).status
+      ).toBe('completed');
 
-      const cleanup = await apiCleanupLanes(host2, {});
-      expect(cleanup.ok).toBe(true);
-      if (!cleanup.ok) throw new Error('cleanup failed');
-      expect(cleanup.value.removed).toEqual([landedCase.lane.laneId]);
-      expect(cleanup.value.kept).toEqual(
+      const cleanupCmd = await runRecoverExecutionLane(
+        { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+        { action: 'cleanup' }
+      );
+      expect(cleanupCmd.status).toBe('completed');
+      if (cleanupCmd.status !== 'completed' || cleanupCmd.cleanupReport === undefined) {
+        throw new Error('cleanup command failed');
+      }
+      expect(cleanupCmd.cleanupReport.removed).toEqual([landedCase.lane.laneId]);
+      expect(cleanupCmd.cleanupReport.kept).toEqual(
         expect.arrayContaining([
           { laneId: blockedCase.lane.laneId, observation: 'lane-pinned' },
           { laneId: uncertainCase.lane.laneId, observation: 'lane-dirty' },
           { laneId: interruptedCleanupLane.value.laneId, observation: 'worktree-locked' }
         ])
+      );
+
+      // Step 3 (FR-R8-01 01-06 / 01-07): Freeze failure at run terminal -> stays active -> inspect -> retry-freeze -> complete!
+      const coord = createRunLaneCoordinator({
+        getLaneService: () => host2,
+        isLanesEnabled: () => true,
+        primaryWorkspaceRoot: h.fixture.root
+      });
+      const failedFreezeBinding = await coord.provisionForRun('exec-freeze-fail-rehearsal');
+      if (failedFreezeBinding === null) throw new Error('expected lane binding');
+      const failedFreezeRoot = await coord.resolveExecutionRoot({
+        runId: 'exec-freeze-fail-rehearsal',
+        laneId: failedFreezeBinding.laneId
+      });
+      fsSync.writeFileSync(path.join(failedFreezeRoot, 'src', 'rehearsal.txt'), 'retry-after-freeze-fail\n');
+      h.fixture.git(['config', '--unset', 'user.email']);
+      await coord.onRunTerminal({
+        runId: 'exec-freeze-fail-rehearsal',
+        laneId: failedFreezeBinding.laneId,
+        status: 'completed'
+      });
+      expect(h.lanes.getLane('ws-inc', failedFreezeBinding.laneId)).toMatchObject({
+        state: 'active',
+        stateReason: 'freeze-failed:git-identity-missing'
+      });
+
+      h.fixture.git(['config', 'user.email', 'rehearsal@example.invalid']);
+      const retriedFreeze = await runRecoverExecutionLane(
+        { getLaneService: () => host2, ui: createApprovingUi(), logger: commandLogger },
+        { action: 'retry-freeze', laneId: failedFreezeBinding.laneId, completeAfterFreeze: true }
+      );
+      expect(retriedFreeze.status).toBe('completed');
+      if (retriedFreeze.status !== 'completed') throw new Error('expected retry-freeze completed');
+      expect(retriedFreeze.lane?.state).toBe('completed');
+      expect(retriedFreeze.lane?.stateReason).toBeNull();
+      expect(h.fixture.git(['show', `${retriedFreeze.candidate!.commit}:src/rehearsal.txt`])).toBe(
+        'retry-after-freeze-fail\n'
       );
 
       // Verify surviving files after cleanup:
@@ -1358,7 +1494,12 @@ describe('FR-R7-18 (N03) Operator Incident Recovery Guide Rehearsals', () => {
         'workspace state write settled after its deadline; state writer resumed',
         'schegent.reset',
         'workspace-state-reset',
-        // Symptom 3
+        // Symptom 3 (installed-editor lane recovery surface + freeze-failed preservation)
+        'Schegent: Inspect Execution Lanes',
+        'schegent.inspectExecutionLanes',
+        'Schegent: Recover Execution Lane',
+        'schegent.recoverExecutionLane',
+        'freeze-failed:',
         'lane-bound-reached',
         'integration-busy',
         'lane-busy',

@@ -1,12 +1,69 @@
-import { dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, context } from 'esbuild';
+import ts from 'typescript';
 import { readBuildIdentity } from './scripts/build-identity.mjs';
 import { writeHostGraph } from './scripts/module-graph.mjs';
 
 const isWatch = process.argv.includes('--watch');
 const isProduction = process.env.NODE_ENV === 'production';
 const root = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Strip first-party source comments while preserving exact line counts (newlines)
+ * so unminified dev/CI bundles stay human-readable with 1:1 sourcemap line accuracy
+ * without shipping ~480 KB of internal design-history comments in the VSIX.
+ */
+function stripFirstPartyComments(filePath, source) {
+  const sf = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const ranges = [];
+  const seen = new Set();
+  const collect = (list) => {
+    if (!list) return;
+    for (const r of list) {
+      const key = `${r.pos}:${r.end}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const text = source.slice(r.pos, r.end);
+      if (text.startsWith('/*!') || text.startsWith('///') || text.includes('@__PURE__')) continue;
+      ranges.push(r);
+    }
+  };
+  const visit = (node) => {
+    collect(ts.getLeadingCommentRanges(source, node.pos));
+    collect(ts.getTrailingCommentRanges(source, node.end));
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  collect(ts.getLeadingCommentRanges(source, sf.endOfFileToken.pos));
+  if (ranges.length === 0) return source;
+  ranges.sort((a, b) => a.pos - b.pos);
+  let out = '';
+  let cursor = 0;
+  for (const r of ranges) {
+    if (r.pos < cursor) continue;
+    out += source.slice(cursor, r.pos);
+    const body = source.slice(r.pos, r.end);
+    // Preserve newline count so sourcemaps remain 1:1 line-aligned.
+    out += body.replace(/[^\n]/g, '');
+    cursor = r.end;
+  }
+  out += source.slice(cursor);
+  return out;
+}
+
+const stripCommentsPlugin = {
+  name: 'schegent-strip-first-party-comments',
+  setup(buildContext) {
+    buildContext.onLoad({ filter: /\.ts$/ }, (args) => {
+      const rel = relative(root, args.path).replace(/\\/g, '/');
+      if (!rel.startsWith('src/')) return null;
+      const source = readFileSync(args.path, 'utf8');
+      return { contents: stripFirstPartyComments(args.path, source), loader: 'ts' };
+    });
+  }
+};
 
 // FR-R4-F09 (FR-032; contracts BI2, MG1) -- read once per invocation, so a watch build keeps the
 // identity it started with and the host graph records the same object the bundle was stamped
@@ -86,14 +143,14 @@ const extensionConfig = {
   ...sharedHostOptions,
   entryPoints: ['src/extension.ts'],
   outfile: 'dist/extension.js',
-  plugins: [extensionGraphPlugin]
+  plugins: [stripCommentsPlugin, extensionGraphPlugin]
 };
 
 const bridgeConfig = {
   ...sharedHostOptions,
   entryPoints: ['src/services/acp-runtime/bridges/acp-stdio-bridge-main.ts'],
   outfile: 'dist/acp-stdio-bridge.js',
-  plugins: [bridgeGraphPlugin]
+  plugins: [stripCommentsPlugin, bridgeGraphPlugin]
 };
 
 if (isWatch) {

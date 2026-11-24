@@ -16,6 +16,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CandidateView } from '../../../src/contracts/execution-lanes';
+import { sanitizeFreezeFailureReason } from '../../../src/services/execution-lanes/lane-service';
 import {
   createLaneHarness,
   disposeLaneHarnesses,
@@ -198,5 +199,80 @@ describe('FR-R6-F10 candidate freezer: refusals', () => {
       ok: false,
       refusal: { reason: 'lane-state-invalid' }
     });
+  });
+});
+
+describe('FR-R8-01 (01-06) candidate freezer: clearing freeze-failed state_reason on retry', () => {
+  it('atomically clears freeze-failed state_reason when retry freeze succeeds', async () => {
+    const h = createLaneHarness({ label: 'freeze-clear-on-success' });
+    const { laneId } = await editedLane(h);
+    expect(h.service.recordFreezeFailure({ laneId, reason: 'git-identity-missing' }).ok).toBe(true);
+    expect(h.lanes.getLane(HARNESS_WS, laneId)?.stateReason).toBe('freeze-failed:git-identity-missing');
+
+    const candidate = await frozen(h, laneId);
+
+    expect(candidate.seq).toBe(1);
+    const updated = h.lanes.getLane(HARNESS_WS, laneId);
+    expect(updated?.state).toBe('active');
+    expect(updated?.stateReason).toBeNull();
+  });
+
+  it('atomically clears freeze-failed state_reason when retry observes candidate-empty', async () => {
+    const h = createLaneHarness({ label: 'freeze-clear-on-empty' });
+    const lane = await h.provision();
+    expect(h.service.recordFreezeFailure({ laneId: lane.laneId, reason: 'git-identity-missing' }).ok).toBe(true);
+    expect(h.lanes.getLane(HARNESS_WS, lane.laneId)?.stateReason).toBe('freeze-failed:git-identity-missing');
+
+    expect(await h.service.freezeCandidate({ laneId: lane.laneId })).toEqual({
+      ok: false,
+      refusal: { reason: 'candidate-empty' }
+    });
+    const updated = h.lanes.getLane(HARNESS_WS, lane.laneId);
+    expect(updated?.state).toBe('active');
+    expect(updated?.stateReason).toBeNull();
+  });
+
+  it('bounds and sanitizes freeze failure reasons to schema-v9 length <= 64 with zero paths or secrets', () => {
+    const posixPath = sanitizeFreezeFailureReason('git-error:/Users/operator/private/repo/stderr/fail');
+    expect(posixPath).toBe('freeze-failed:git-error');
+    expect(posixPath).not.toContain('operator');
+    expect(posixPath).not.toContain('private');
+
+    const oversizedPath = sanitizeFreezeFailureReason(
+      'git-error:/Users/operator/private/repo/stderr/' + 'x'.repeat(120)
+    );
+    expect(oversizedPath).toBe('freeze-failed:git-error');
+    expect(oversizedPath).not.toContain('operator');
+    expect(oversizedPath).not.toContain('private');
+    expect(oversizedPath).not.toContain('/');
+
+    for (const raw of [
+      'git-error:C:\\Users\\operator\\private\\repo\\fail',
+      'git-error:C:/Users/operator/private/repo/fail',
+      'git-error:\\\\server\\operator\\private\\share'
+    ]) {
+      const sanitized = sanitizeFreezeFailureReason(raw);
+      expect(sanitized).toBe('freeze-failed:git-error');
+      expect(sanitized).not.toContain('operator');
+      expect(sanitized).not.toContain('private');
+      expect(sanitized).not.toContain('/');
+      expect(sanitized).not.toContain('\\');
+    }
+
+    const oversizedSlug = sanitizeFreezeFailureReason('x'.repeat(120));
+    expect(oversizedSlug.startsWith('freeze-failed:')).toBe(true);
+    expect(oversizedSlug.length).toBeLessThanOrEqual(64);
+    expect(oversizedSlug).toMatch(/^freeze-failed:[a-z0-9._-]+$/);
+
+    const fakeGhToken = ['ghp', '_', '1234567890'.repeat(3), '123456'].join('');
+    const withSecret = sanitizeFreezeFailureReason(`auth-failed ${fakeGhToken}`);
+    expect(withSecret).not.toContain('ghp_');
+    expect(withSecret).toMatch(/^freeze-failed:[a-z0-9._-]+$/);
+
+    expect(sanitizeFreezeFailureReason('/Users/operator/private/repo')).toBe('freeze-failed:unknown');
+    expect(sanitizeFreezeFailureReason('   ')).toBe('freeze-failed:unknown');
+    expect(sanitizeFreezeFailureReason('freeze-failed:git-identity-missing')).toBe(
+      'freeze-failed:git-identity-missing'
+    );
   });
 });

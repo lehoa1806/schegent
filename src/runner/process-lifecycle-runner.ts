@@ -99,6 +99,7 @@ export class ProcessLifecycleRunner {
 
   /** Set by `close()` at host teardown; no spawn follows it. */
   private closed = false;
+  private isClosed(): boolean { return this.closed; }
 
   constructor(
     private readonly spawnFn: ProcessSpawnFn = spawn as unknown as ProcessSpawnFn,
@@ -161,6 +162,13 @@ export class ProcessLifecycleRunner {
       this.spawnFn === (spawn as unknown as ProcessSpawnFn) || isInvalidExecutablePath(request.cliPath)
         ? spawnCommandFor(request.cliPath, input.env)
         : request.cliPath;
+    if (request.onBeforeSpawn !== undefined) {
+      await request.onBeforeSpawn({ helperInvocation: request.helperInvocation === true });
+    }
+    if (this.isClosed()) throw new SpawnRefusedAfterCloseError(this.label);
+    if (isAborted()) {
+      return cancelledInvocationOutput(input.commandDisplay, start);
+    }
     const child = this.spawnFn(resolvedCommand, input.args, {
       stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
       // FR-R3-054 (H-05) — its own process group, so the ladder below can reach
@@ -175,11 +183,11 @@ export class ProcessLifecycleRunner {
       phase: request.phase,
       iteration: request.iteration
     };
-    this.active.set(invocationId, { child, ...attribution });
     // Feature 093 (T046a) — `finally`, not a trailing statement. A single slot
     // self-healed on a throw because the next spawn overwrote it; a map entry
     // would leak, and a leaked entry makes `hasActiveProcess` permanently true.
     try {
+      this.active.set(invocationId, { child, ...attribution });
       this.emit({
         kind: 'started', runId: request.runId ?? null, invocationId,
         helperInvocation: request.helperInvocation === true,
@@ -262,12 +270,29 @@ export class ProcessLifecycleRunner {
         if (isAborted()) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
-      // FR-R3-047 (M-01) — no second argument. It used to be
-      // `outputSink !== undefined`, which let the transcript MODE select the
-      // completion SEMANTICS: with capture off the runner stopped at `exit` and
-      // lost anything buffered before `close`, including the terminal result
-      // line and the session id. A privacy setting must not decide correctness.
-      const completion = await waitForChildCompletion(child);
+      // FR-R3-047 (M-01) — attach completion listeners synchronously BEFORE awaiting
+      // `onAfterSpawn` so fast exits and async ENOENT/EACCES `'error'` events are never lost.
+      const completionPromise = waitForChildCompletion(child);
+      if (request.helperInvocation !== true && request.onAfterSpawn !== undefined && child.pid !== undefined) {
+        try {
+          await request.onAfterSpawn(child.pid);
+        } catch (err) {
+          idleTimerActive = false; clearTimeout(timer);
+          if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+          if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+          killed = true;
+          this.terminate(child, attribution);
+          const abortedComp = await completionPromise.catch(() => null);
+          this.emit({
+            kind: 'exited', runId: request.runId ?? null, invocationId,
+            exitCode: abortedComp?.exitCode ?? null,
+            signal: abortedComp?.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null,
+            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {})
+          });
+          throw err;
+        }
+      }
+      const completion = await completionPromise;
       // Disarm the idle timer BEFORE reading the delivery result. The child has
       // completed, so from here the timer can only mislabel: a delivery result
       // that settles slowly used to be awaited inside the still-armed window,

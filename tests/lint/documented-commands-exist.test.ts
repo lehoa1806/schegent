@@ -211,6 +211,9 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
     //
     // FR-R7-03 — `sqlite-backup-commands-wiring.ts` joins it, the fifth, registering backup, verify,
     // and restore for the SQLite application store out of `registerStage2Ui()`.
+    //
+    // FR-R8-01 (01-07) — `lane-recovery-commands-wiring.ts` joins it, the sixth, registering
+    // read-only lane inspection and owner-only lane recovery out of `registerStage2Ui()`.
     const stage2 =
       guardedIn('src/activation/ui-wiring.ts') +
       guardedIn('src/activation/queue-failure-policy-wiring.ts') +
@@ -218,7 +221,8 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
       guardedIn('src/activation/audit-commands-wiring.ts') +
       guardedIn('src/activation/evidence-commands-wiring.ts') +
       guardedIn('src/activation/agent-config-commands-wiring.ts') +
-      guardedIn('src/activation/sqlite-backup-commands-wiring.ts');
+      guardedIn('src/activation/sqlite-backup-commands-wiring.ts') +
+      guardedIn('src/activation/lane-recovery-commands-wiring.ts');
     const stage1 = guardedIn('src/extension.ts');
     expect(stage1, 'Stage 1 registers no command through the guard helper').toBeGreaterThan(0);
     expect(stage2, 'Stage 2 registers no command through the guard helper').toBeGreaterThan(15);

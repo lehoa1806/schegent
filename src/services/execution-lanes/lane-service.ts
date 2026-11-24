@@ -29,12 +29,19 @@ import {
   type ReconcileReport,
   type VerificationCheckView
 } from '../../contracts/execution-lanes';
+import { SanitizedLogger } from '../../lib/logger';
 import { resolveContainedTarget } from '../../lib/path-containment';
 import type { NodeSqliteConnection } from '../sqlite-store';
+import {
+  allDirtyCountDetailed,
+  canonicalPath,
+  listWorktreesDetailed,
+  resolveCommit
+} from './git-observe';
 import type { LaneGitRunner } from './git-runner';
 import { freezeCandidate } from './candidate-freezer';
 import { createIntegrationRequest, type RequestIntegrationInput } from './integration-requests';
-import { IntegrationStore, type RequestRecord } from './integration-store';
+import { IntegrationStore, type JournalRecord, type RequestRecord } from './integration-store';
 import { checkViewOf, receiptViewOf, requestViewOf } from './integration-views';
 import { landRequest, type LandingContext } from './landing';
 import { cleanupLanes, type LaneRootLocation } from './lane-cleanup';
@@ -67,6 +74,65 @@ const LANE_CAP_MIN = 1;
 /** Research R1: the workspace segment of a lane root; never `.`, `..` or a separator. */
 export const WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const ROOT_REF_PATTERN = /^lanes\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[0-9a-f]{32}$/;
+/** Prefix persisted in `execution_lanes.state_reason` when candidate freezing fails (FR-R8-01 01-06). */
+export const FREEZE_FAILURE_REASON_PREFIX = 'freeze-failed:';
+const STATE_REASON_MAX_CHARS = 64;
+const INSPECT_GIT_TIMEOUT_MS = 15_000;
+
+const REASON_REDACTOR = new SanitizedLogger();
+const PATH_SEG_CHAR = "(?:(?:\\[REDACTED\\])|[^\\s)'\"\\]`,;])+";
+const UNC_PATH_RE = new RegExp(`\\\\\\\\${PATH_SEG_CHAR}`, 'g');
+const WIN_DRIVE_PATH_RE = new RegExp(`\\b[A-Za-z]:[\\\\/]${PATH_SEG_CHAR}`, 'g');
+const POSIX_PATH_RE = new RegExp(`(^|[\\s(=:[\`,'"])/${PATH_SEG_CHAR}`, 'g');
+
+/**
+ * Normalizes a freeze failure code into a bounded `freeze-failed:<slug>` token (`1..64` ASCII chars,
+ * zero paths, secrets, or stderr) compatible with schema v9's `execution_lanes.state_reason` CHECK constraint.
+ */
+export function sanitizeFreezeFailureReason(rawCode: string): string {
+  const withoutPrefix = rawCode.startsWith(FREEZE_FAILURE_REASON_PREFIX)
+    ? rawCode.slice(FREEZE_FAILURE_REASON_PREFIX.length)
+    : rawCode;
+  const redacted = REASON_REDACTOR.sanitize(withoutPrefix)
+    .replace(UNC_PATH_RE, ' ')
+    .replace(WIN_DRIVE_PATH_RE, ' ')
+    .replace(POSIX_PATH_RE, '$1 ');
+  const normalized = redacted
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '');
+  const maxSuffix = STATE_REASON_MAX_CHARS - FREEZE_FAILURE_REASON_PREFIX.length;
+  const bounded = normalized.slice(0, maxSuffix).replace(/[._-]+$/g, '');
+  return `${FREEZE_FAILURE_REASON_PREFIX}${bounded.length > 0 ? bounded : 'unknown'}`;
+}
+
+export interface LaneJournalEntryView {
+  readonly entryId: string;
+  readonly seq: number;
+  readonly kind: JournalRecord['kind'];
+  readonly method: JournalRecord['method'];
+  readonly candidateCommit: string;
+  readonly expectedCommit: string;
+  readonly observedTip: string | null;
+  readonly outcome: JournalRecord['outcome'];
+  readonly reason: string | null;
+  readonly recordedAt: string;
+}
+
+export interface LaneGitObservation {
+  readonly rootStatus: 'contained' | 'absent' | 'not-contained';
+  readonly worktreeRegistered: boolean | null;
+  readonly worktreeLocked: boolean | null;
+  readonly worktreePrunable: boolean | null;
+  readonly worktreeBranch: string | null;
+  readonly worktreeDetached: boolean | null;
+  readonly dirtyCount: number | null;
+  readonly statusProbe: 'ok' | 'timeout' | 'buffer-exceeded' | 'unavailable';
+  readonly headCommit: string | null;
+  readonly headMatchesRecorded: boolean | null;
+  readonly targetTips: Readonly<Record<string, string | null>>;
+}
 
 export interface LaneServiceDeps {
   /** The shared connection, already migrated. */
@@ -389,6 +455,147 @@ export class LaneService {
     if (request === null) return laneRefused('request-not-found');
     const result = await this.exclusively(request.laneId, () => landRequest(this.landingContext(), request));
     return result.ok ? laneOk(this.requestView(result.value)) : result;
+  }
+
+  /**
+   * FR-R8-01 (01-06): records a bounded actionable freeze-failure reason on an `active` lane so
+   * the worktree remains live and retryable instead of transitioning to `completed`.
+   */
+  public recordFreezeFailure(input: { readonly laneId: string; readonly reason: string }): LaneResult<LaneView> {
+    const sanitized = sanitizeFreezeFailureReason(input.reason);
+    return this.viewResult(
+      this.lanes.fenced(this.deps.workspaceId, this.generation, () =>
+        this.lanes.transitionLane(this.deps.workspaceId, input.laneId, ['active'], 'active', {
+          reason: sanitized,
+          now: this.nowIso(),
+          generation: this.generation
+        })
+      )
+    );
+  }
+
+  /**
+   * FR-R8-01 (01-07): read-only journal entries for one integration request of this workspace.
+   */
+  public listRequestJournal(input: { readonly requestId: string }): LaneResult<readonly LaneJournalEntryView[]> {
+    const request = this.integrations.getRequest(this.deps.workspaceId, input.requestId);
+    if (request === null) return laneRefused('request-not-found');
+    const entries = this.integrations.listJournal(request.requestId).map((entry): LaneJournalEntryView => ({
+      entryId: entry.entryId,
+      seq: entry.seq,
+      kind: entry.kind,
+      method: entry.method,
+      candidateCommit: entry.candidateCommit,
+      expectedCommit: entry.expectedCommit,
+      observedTip: entry.observedTip,
+      outcome: entry.outcome,
+      reason: entry.reason,
+      recordedAt: entry.recordedAt
+    }));
+    return laneOk(entries);
+  }
+
+  /**
+   * FR-R8-01 (01-07): read-only resolution of target Git refs in the primary repository.
+   */
+  public async resolveTargetRefTips(targetRefs: readonly string[]): Promise<Readonly<Record<string, string | null>>> {
+    const unique = [...new Set(targetRefs)].filter((ref) => ref.length > 0);
+    const out: Record<string, string | null> = {};
+    const gitCtx = { git: this.deps.git, cwd: this.deps.workspaceRoot, timeoutMs: INSPECT_GIT_TIMEOUT_MS };
+    for (const ref of unique) {
+      out[ref] = await resolveCommit(gitCtx, ref);
+    }
+    return out;
+  }
+
+  /**
+   * FR-R8-01 (01-07): read-only Git worktree and ref observation for one lane; returns only
+   * sanitized booleans, counts, and SHAs (never absolute paths or Git stderr).
+   */
+  public async inspectLaneGitState(input: {
+    readonly laneId: string;
+    readonly targetRefs?: readonly string[];
+  }): Promise<LaneResult<LaneGitObservation>> {
+    const lane = this.lanes.getLane(this.deps.workspaceId, input.laneId);
+    if (lane === null) return laneRefused('lane-not-found');
+
+    const targetTips = await this.resolveTargetRefTips(input.targetRefs ?? []);
+    const located = await this.locateLaneRoot(lane.rootRef);
+
+    let worktreeRegistered: boolean | null = null;
+    let worktreeLocked: boolean | null = null;
+    let worktreePrunable: boolean | null = null;
+    let worktreeBranch: string | null = null;
+    let worktreeDetached: boolean | null = null;
+
+    if (located.kind !== 'not-contained') {
+      const listed = await listWorktreesDetailed({
+        git: this.deps.git,
+        cwd: this.deps.workspaceRoot,
+        timeoutMs: INSPECT_GIT_TIMEOUT_MS
+      });
+      if (listed.ok) {
+        const targetPath = await canonicalPath(
+          located.kind === 'contained' ? located.root : path.join(this.deps.storageDir, lane.rootRef)
+        );
+        const linked = listed.value.slice(1).filter((entry) => !entry.bare);
+        const canonicalPaths = await Promise.all(linked.map((entry) => canonicalPath(entry.path)));
+        const index = canonicalPaths.indexOf(targetPath);
+        if (index === -1) {
+          worktreeRegistered = false;
+          worktreeLocked = false;
+          worktreePrunable = false;
+        } else {
+          const entry = linked.at(index);
+          worktreeRegistered = entry !== undefined;
+          worktreeLocked = entry?.locked ?? null;
+          worktreePrunable = entry?.prunable ?? null;
+          worktreeBranch = entry?.branch ?? null;
+          worktreeDetached = entry?.detached ?? null;
+        }
+      }
+    }
+
+    let dirtyCount: number | null = null;
+    let statusProbe: LaneGitObservation['statusProbe'] = 'unavailable';
+    let headCommit: string | null = null;
+    let headMatchesRecorded: boolean | null = null;
+
+    if (located.kind === 'contained') {
+      const laneGitCtx = { git: this.deps.git, cwd: located.root, timeoutMs: INSPECT_GIT_TIMEOUT_MS };
+      const dirty = await allDirtyCountDetailed(laneGitCtx);
+      if (dirty.ok) {
+        dirtyCount = dirty.value;
+        statusProbe = 'ok';
+      } else if (dirty.failure.code === 'timeout') {
+        statusProbe = 'timeout';
+      } else if (dirty.failure.code === 'buffer') {
+        statusProbe = 'buffer-exceeded';
+      } else {
+        statusProbe = 'unavailable';
+      }
+      headCommit = await resolveCommit(laneGitCtx, 'HEAD');
+      if (headCommit !== null) {
+        const currentCandidate = this.lanes.currentCandidate(lane.laneId);
+        headMatchesRecorded =
+          headCommit === lane.sourceCommit ||
+          (currentCandidate !== null && headCommit === currentCandidate.commit);
+      }
+    }
+
+    return laneOk({
+      rootStatus: located.kind,
+      worktreeRegistered,
+      worktreeLocked,
+      worktreePrunable,
+      worktreeBranch,
+      worktreeDetached,
+      dirtyCount,
+      statusProbe,
+      headCommit,
+      headMatchesRecorded,
+      targetTips
+    });
   }
 
   /** Contract §5 lifecycle (data-model, lane lifecycle): `active` to `paused`. */

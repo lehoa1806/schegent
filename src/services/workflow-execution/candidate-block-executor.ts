@@ -34,6 +34,7 @@ import {
   type ControlDecisionSummaryRecord,
   type ControlFrame,
   type ControlLedger,
+  type ControlLedgerErrorCode,
   type ControlUsageRecord,
   type ExecutionFence,
   type RootControlState
@@ -196,6 +197,7 @@ export interface SettleCandidateAttemptInput {
 
 export interface SettleCandidateAttemptResult {
   readonly ok: boolean;
+  readonly code?: ControlLedgerErrorCode | undefined;
   readonly frame?: ControlFrame | undefined;
   readonly root?: RootControlState | undefined;
   readonly returnCommitted: boolean;
@@ -214,6 +216,7 @@ export interface StepCandidateBlockInput {
 
 export interface StepCandidateBlockResult {
   readonly ok: boolean;
+  readonly code?: ControlLedgerErrorCode | undefined;
   readonly action: CandidateReducerAction;
   readonly frame?: ControlFrame | undefined;
   readonly root?: RootControlState | undefined;
@@ -629,6 +632,10 @@ export class CandidateBlockExecutor {
     this.onReleaseProcessCapacitySlot = deps.onReleaseProcessCapacitySlot;
   }
 
+  public getLedgerStore(): ControlLedgerStore {
+    return this.store;
+  }
+
   /**
    * Initialize a `CandidateFrame` in `ControlLedgerStore` with per-candidate
    * `candidateOccurrenceId` UUIDs and bounded attempt budgets.
@@ -637,6 +644,7 @@ export class CandidateBlockExecutor {
     input: InitializeCandidateBlockInput
   ): Promise<{
     readonly ok: boolean;
+    readonly code?: ControlLedgerErrorCode | undefined;
     readonly frame?: ControlFrame | undefined;
     readonly root?: RootControlState | undefined;
     readonly ledger?: ControlLedger | undefined;
@@ -748,6 +756,7 @@ export class CandidateBlockExecutor {
     if (!mutated.ok) {
       return {
         ok: false,
+        code: mutated.code,
         message: mutated.message
       };
     }
@@ -905,32 +914,20 @@ export class CandidateBlockExecutor {
           liveHostCapMicrousd: input.liveHostCapMicrousd
         });
         if (!spendAdmission.allowed) {
+          const pauseAction = { kind: 'pause-intervention' as const, pauseCause: spendAdmission.pauseReason, candidateId: slot.candidateId };
           const pausedRes = await this.transitionFrameToPause({
-            rootRunId: input.rootRunId,
-            frameKey: input.frameKey,
-            fence: input.fence,
-            status: 'intervention-required',
-            pauseCause: spendAdmission.pauseReason
+            rootRunId: input.rootRunId, frameKey: input.frameKey, fence: input.fence,
+            status: 'intervention-required', pauseCause: spendAdmission.pauseReason
           });
+          if (!pausedRes.ok) {
+            return { ok: false, code: pausedRes.code, action: pauseAction, frame, root, message: pausedRes.message };
+          }
           await this.notificationService.recordNotification({
-            rootRunId: input.rootRunId,
-            invocationId: frame.invocationId,
-            frameKey: input.frameKey,
+            rootRunId: input.rootRunId, invocationId: frame.invocationId, frameKey: input.frameKey,
             generation: frame.frameGeneration ?? input.fence.rootGeneration,
-            reason: spendAdmission.pauseReason,
-            summary: spendAdmission.message
+            reason: spendAdmission.pauseReason, summary: spendAdmission.message
           });
-          return {
-            ok: false,
-            action: {
-              kind: 'pause-intervention',
-              pauseCause: spendAdmission.pauseReason,
-              candidateId: slot.candidateId
-            },
-            frame: pausedRes.frame,
-            root: pausedRes.root,
-            message: spendAdmission.message
-          };
+          return { ok: false, action: pauseAction, frame: pausedRes.frame, root: pausedRes.root, message: spendAdmission.message };
         }
       }
 
@@ -961,26 +958,12 @@ export class CandidateBlockExecutor {
       });
 
       if (!prepareOutcome.ok) {
-        return {
-          ok: false,
-          action,
-          frame,
-          root,
-          message: prepareOutcome.message
-        };
+        return { ok: false, code: prepareOutcome.code, action, frame, root, message: prepareOutcome.message };
       }
 
-      const commitOutcome = await this.admissionService.commitAttempt(
-        prepareOutcome.token
-      );
+      const commitOutcome = await this.admissionService.commitAttempt(prepareOutcome.token);
       if (!commitOutcome.ok) {
-        return {
-          ok: false,
-          action,
-          frame,
-          root,
-          message: commitOutcome.message
-        };
+        return { ok: false, code: commitOutcome.code, action, frame, root, message: commitOutcome.message };
       }
 
       // Record candidate switch notification + decision summary if switched
@@ -1050,137 +1033,74 @@ export class CandidateBlockExecutor {
 
     if (action.kind === 'wait-backoff') {
       const waitRes = await this.transitionFrameToWait({
-        rootRunId: input.rootRunId,
-        frameKey: input.frameKey,
-        fence: input.fence,
-        status: 'retry-delayed',
-        hostEpoch
+        rootRunId: input.rootRunId, frameKey: input.frameKey, fence: input.fence, status: 'retry-delayed', hostEpoch
       });
-      return {
-        ok: true,
-        action,
-        frame: waitRes.frame,
-        root: waitRes.root
-      };
+      if (!waitRes.ok) return { ok: false, code: waitRes.code, action, frame, root, message: waitRes.message };
+      return { ok: true, action, frame: waitRes.frame, root: waitRes.root };
     }
 
     if (action.kind === 'wait-availability') {
+      const waitRes = await this.transitionFrameToWait({
+        rootRunId: input.rootRunId, frameKey: input.frameKey, fence: input.fence,
+        status: 'waiting-availability', monitoringExpiresAt: action.monitoringExpiresAt, hostEpoch
+      });
+      if (!waitRes.ok) return { ok: false, code: waitRes.code, action, frame, root, message: waitRes.message };
+
       if (this.permitArbiter !== undefined) {
-        const firstId = action.candidateIds[0];
-        const firstSlot = frame.candidateSlots?.find(
-          (s) => s.candidateId === firstId
-        );
-        if (
-          firstSlot !== undefined &&
-          firstSlot.quotaIds !== undefined &&
-          firstSlot.quotaIds.length > 0
-        ) {
+        const firstSlot = frame.candidateSlots?.find((s) => s.candidateId === action.candidateIds[0]);
+        if (firstSlot !== undefined && firstSlot.quotaIds !== undefined && firstSlot.quotaIds.length > 0) {
           await this.permitArbiter.registerWaiter({
-            rootRunId: input.rootRunId,
-            queueId: root.queueId,
-            frameKey: input.frameKey,
-            invocationId: frame.invocationId,
-            generation: frame.frameGeneration ?? input.fence.rootGeneration,
-            nodeId: firstSlot.nodeId,
-            candidateId: firstSlot.candidateId,
-            ...(firstSlot.candidateOccurrenceId !== undefined
-              ? { candidateOccurrenceId: firstSlot.candidateOccurrenceId }
-              : {}),
-            quotaIds: firstSlot.quotaIds,
-            ...(firstSlot.observationIds !== undefined
-              ? { observationIds: firstSlot.observationIds }
-              : {})
+            rootRunId: input.rootRunId, queueId: root.queueId, frameKey: input.frameKey,
+            invocationId: frame.invocationId, generation: frame.frameGeneration ?? input.fence.rootGeneration,
+            nodeId: firstSlot.nodeId, candidateId: firstSlot.candidateId, quotaIds: firstSlot.quotaIds,
+            ...(firstSlot.candidateOccurrenceId !== undefined ? { candidateOccurrenceId: firstSlot.candidateOccurrenceId } : {}),
+            ...(firstSlot.observationIds !== undefined ? { observationIds: firstSlot.observationIds } : {})
           });
         }
       }
 
-      const waitRes = await this.transitionFrameToWait({
-        rootRunId: input.rootRunId,
-        frameKey: input.frameKey,
-        fence: input.fence,
-        status: 'waiting-availability',
-        monitoringExpiresAt: action.monitoringExpiresAt,
-        hostEpoch
-      });
-
       await this.notificationService.recordNotification({
-        rootRunId: input.rootRunId,
-        invocationId: frame.invocationId,
-        frameKey: input.frameKey,
-        generation: frame.frameGeneration ?? input.fence.rootGeneration,
-        reason: 'waiting-availability',
+        rootRunId: input.rootRunId, invocationId: frame.invocationId, frameKey: input.frameKey,
+        generation: frame.frameGeneration ?? input.fence.rootGeneration, reason: 'waiting-availability',
         summary: `Waiting for backend quota availability (${action.candidateIds.join(', ')}).`
       });
-
-      return {
-        ok: true,
-        action,
-        frame: waitRes.frame,
-        root: waitRes.root
-      };
+      return { ok: true, action, frame: waitRes.frame, root: waitRes.root };
     }
 
     if (action.kind === 'pause-monitoring-expired') {
       const pausedRes = await this.transitionFrameToPause({
-        rootRunId: input.rootRunId,
-        frameKey: input.frameKey,
-        fence: input.fence,
-        status: 'monitoring-expired',
-        pauseCause: action.pauseCause
+        rootRunId: input.rootRunId, frameKey: input.frameKey, fence: input.fence,
+        status: 'monitoring-expired', pauseCause: action.pauseCause
       });
+      if (!pausedRes.ok) return { ok: false, code: pausedRes.code, action, frame, root, message: pausedRes.message };
       await this.notificationService.recordNotification({
-        rootRunId: input.rootRunId,
-        invocationId: frame.invocationId,
-        frameKey: input.frameKey,
-        generation: frame.frameGeneration ?? input.fence.rootGeneration,
-        reason: 'monitoring-expired',
+        rootRunId: input.rootRunId, invocationId: frame.invocationId, frameKey: input.frameKey,
+        generation: frame.frameGeneration ?? input.fence.rootGeneration, reason: 'monitoring-expired',
         summary: `Candidate availability monitoring window expired (${action.pauseCause}).`
       });
-      return {
-        ok: true,
-        action,
-        frame: pausedRes.frame,
-        root: pausedRes.root
-      };
+      return { ok: true, action, frame: pausedRes.frame, root: pausedRes.root };
     }
 
     if (action.kind === 'pause-intervention') {
       const pausedRes = await this.transitionFrameToPause({
-        rootRunId: input.rootRunId,
-        frameKey: input.frameKey,
-        fence: input.fence,
-        status: 'intervention-required',
-        pauseCause: action.pauseCause
+        rootRunId: input.rootRunId, frameKey: input.frameKey, fence: input.fence,
+        status: 'intervention-required', pauseCause: action.pauseCause
       });
+      if (!pausedRes.ok) return { ok: false, code: pausedRes.code, action, frame, root, message: pausedRes.message };
       await this.notificationService.recordNotification({
-        rootRunId: input.rootRunId,
-        invocationId: frame.invocationId,
-        frameKey: input.frameKey,
-        generation: frame.frameGeneration ?? input.fence.rootGeneration,
-        reason: 'intervention-required',
+        rootRunId: input.rootRunId, invocationId: frame.invocationId, frameKey: input.frameKey,
+        generation: frame.frameGeneration ?? input.fence.rootGeneration, reason: 'intervention-required',
         summary: `Candidate block paused for intervention (${action.pauseCause}).`
       });
-      return {
-        ok: true,
-        action,
-        frame: pausedRes.frame,
-        root: pausedRes.root
-      };
+      return { ok: true, action, frame: pausedRes.frame, root: pausedRes.root };
     }
 
     // action.kind === 'fail-exhausted'
     const failedRes = await this.transitionFrameToFailed({
-      rootRunId: input.rootRunId,
-      frameKey: input.frameKey,
-      fence: input.fence,
-      failureCode: action.failureCode
+      rootRunId: input.rootRunId, frameKey: input.frameKey, fence: input.fence, failureCode: action.failureCode
     });
-    return {
-      ok: true,
-      action,
-      frame: failedRes.frame,
-      root: failedRes.root
-    };
+    if (!failedRes.ok) return { ok: false, code: failedRes.code, action, frame, root, message: failedRes.message };
+    return { ok: true, action, frame: failedRes.frame, root: failedRes.root };
   }
 
   /**
@@ -1255,6 +1175,7 @@ export class CandidateBlockExecutor {
     if (!settledAttemptRes.ok) {
       return {
         ok: false,
+        code: settledAttemptRes.code,
         returnCommitted: false,
         message: settledAttemptRes.message
       };
@@ -1555,6 +1476,7 @@ export class CandidateBlockExecutor {
     if (!mutated.ok) {
       return {
         ok: false,
+        code: mutated.code,
         returnCommitted: false,
         message: mutated.message
       };
@@ -1671,8 +1593,11 @@ export class CandidateBlockExecutor {
     readonly monitoringExpiresAt?: number | undefined;
     readonly hostEpoch: string;
   }): Promise<{
+    readonly ok: boolean;
+    readonly code?: ControlLedgerErrorCode | undefined;
     readonly frame?: ControlFrame | undefined;
     readonly root?: RootControlState | undefined;
+    readonly message?: string | undefined;
   }> {
     const nowWallMs = this.clock.nowWallMs();
     const nowMonoMs = this.clock.nowMonotonicMs();
@@ -1754,9 +1679,9 @@ export class CandidateBlockExecutor {
         input.rootRunId,
         mutated.result.frame.invocationId
       );
-      return mutated.result;
+      return { ok: true, ...mutated.result };
     }
-    return {};
+    return { ok: false, code: mutated.code, message: mutated.message };
   }
 
   private async transitionFrameToPause(input: {
@@ -1766,8 +1691,11 @@ export class CandidateBlockExecutor {
     readonly status: 'intervention-required' | 'monitoring-expired';
     readonly pauseCause: string;
   }): Promise<{
+    readonly ok: boolean;
+    readonly code?: ControlLedgerErrorCode | undefined;
     readonly frame?: ControlFrame | undefined;
     readonly root?: RootControlState | undefined;
+    readonly message?: string | undefined;
   }> {
     const nowWallMs = this.clock.nowWallMs();
     const mutated = await this.store.mutate<{
@@ -1838,9 +1766,9 @@ export class CandidateBlockExecutor {
         input.rootRunId,
         mutated.result.frame.invocationId
       );
-      return mutated.result;
+      return { ok: true, ...mutated.result };
     }
-    return {};
+    return { ok: false, code: mutated.code, message: mutated.message };
   }
 
   private async transitionFrameToFailed(input: {
@@ -1849,8 +1777,11 @@ export class CandidateBlockExecutor {
     readonly fence: ExecutionFence;
     readonly failureCode: string;
   }): Promise<{
+    readonly ok: boolean;
+    readonly code?: ControlLedgerErrorCode | undefined;
     readonly frame?: ControlFrame | undefined;
     readonly root?: RootControlState | undefined;
+    readonly message?: string | undefined;
   }> {
     const nowWallMs = this.clock.nowWallMs();
     const mutated = await this.store.mutate<{
@@ -1915,6 +1846,8 @@ export class CandidateBlockExecutor {
       }
     );
 
-    return mutated.ok ? mutated.result : {};
+    return mutated.ok
+      ? { ok: true, ...mutated.result }
+      : { ok: false, code: mutated.code, message: mutated.message };
   }
 }

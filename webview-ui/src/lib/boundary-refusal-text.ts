@@ -41,6 +41,14 @@ const BOUNDARY_TEXT: ReadonlyMap<string, string> = new Map([
     'queue-state-unavailable',
     'The queue could not be read or saved. Nothing may have changed; check the queue before trying again.'
   ],
+  [
+    'control-root-limit-exceeded',
+    'The active Workflow root limit has been reached. Finish or cancel an existing Workflow run before starting another.'
+  ],
+  [
+    'stale-execution-fence',
+    'Window primacy or queue ownership changed before this Workflow step could commit. Refresh and try again in the primary window.'
+  ],
   // The ledger's `unknown`, as the adopting helpers report it. Not a refusal: the host may
   // still run the command, so a surface without its own sentence says the outcome is not yet
   // known rather than "The host refused this action (timeout)".

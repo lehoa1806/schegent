@@ -76,6 +76,14 @@ export interface InvocationRequest {
    * that is what every construction site but one is.
    */
   helperInvocation?: boolean;
+  /**
+   * FR-R8-01 (01-09) — optional pre-spawn and post-spawn control-ledger
+   * checkpoint hooks for workflow-owned Phase attempts (`onBeforeSpawn` runs
+   * for main and helper invocations; `onAfterSpawn` runs for main invocations
+   * with a valid child PID).
+   */
+  onBeforeSpawn?: (ctx?: { readonly helperInvocation?: boolean }) => Promise<void> | void;
+  onAfterSpawn?: (pid: number | undefined) => Promise<void> | void;
   prompt: string;
   review?: NativeReviewInvocation;
   timeoutMs: number;
