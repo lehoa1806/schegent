@@ -52,38 +52,184 @@ export const ACTING_LAYERS = [
 // whoever takes it rather than taken in passing.
 
 /**
- * FR-R7-07 (FR-006) — Declarative per-layer value-import policy enforced by
- * `tests/lint/layer-dependency-direction.test.ts` (complementing the leaf-layer
- * gate in `dependency-direction.test.ts`).
+ * FR-R7-07 (FR-006) & FR-R8-04 (04-03) — Declarative per-layer value-import policy
+ * enforced by `tests/lint/layer-dependency-direction.test.ts` (complementing the
+ * leaf-layer gate in `dependency-direction.test.ts`).
  *
  * Each governed layer maps to the exact set of first-party layers it may
  * value-import. Non-acting layers (`config`, `audit`) remain outside
- * `ACTING_LAYERS` per the FR-R3-128 note above and FR-R7-07's open scope.
- * Additional acting layers join this map in their own successor filings.
+ * `ACTING_LAYERS` per the FR-R3-128 note above.
+ *
+ * `services` joins this map in FR-R8-04 (`04-03`) to prevent any new reverse
+ * runtime value edge into `controller/`, `commands/`, `ui/`, `activation/`,
+ * `headless/`, or top-level `root`, while holding all 11 reconciled
+ * `services/ -> controller/` edges (plus 2 existing `commands`/`ui` projection
+ * edges) under an exact-target, owner-attributed shrink-only allowlist below.
  */
 export const LAYER_ALLOWED_VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
-  state: ['state', 'contracts', 'lib', 'config', 'audit']
+  state: ['state', 'contracts', 'lib', 'config', 'audit'],
+  services: [
+    'services',
+    'contracts',
+    'lib',
+    'config',
+    'audit',
+    'state',
+    'queue',
+    'catalog',
+    'parser',
+    'runner',
+    'monitor',
+    'metrics',
+    'telemetry',
+    'watchdog',
+    'host-services'
+  ]
 };
 
 /**
- * A dated, filing-attributed exception to `LAYER_ALLOWED_VALUE_IMPORTS`.
- * Shrink-only: every entry must match a live value import and cite the
- * successor filing that removes it; stale entries fail the gate.
+ * A dated, owner- and filing-attributed exception to `LAYER_ALLOWED_VALUE_IMPORTS`.
+ * Shrink-only: every entry must match a live value import (exact target when
+ * `target` is declared) and cite the filing and owner responsible for retiring
+ * or keeping it; stale entries fail the gate.
  */
 export interface LayerImportAllowlistEntry {
   readonly from: string;
   readonly fromLayer: string;
   readonly intoLayer: string;
+  readonly target?: string;
+  readonly owner: string;
   readonly filing: string;
   readonly reason: string;
 }
 
 /**
- * FR-R7-07 (SC-001) — Starts empty: all 8 baseline `state/ -> ACTING_LAYERS`
- * value edges (`queue`, `parser`, `services`) were relocated or port-inverted
- * before the gate landed.
+ * FR-R7-07 (`state/`: 0 entries) & FR-R8-04 `04-03` (`services/`: exact-target
+ * shrink-only registry of the 11 audited `services/ -> controller/` runtime
+ * edges plus 2 existing `services/ -> commands|ui` edges). Any new reverse
+ * value import from `services/` fails `layer-dependency-direction.test.ts`.
  */
-export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [];
+export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
+  // ---- 11 reconciled `services/ -> controller/` runtime edges (high-coupling-ownership-and-facades.md §2.1)
+  {
+    from: 'src/services/run-driver.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/phase-runner.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'RunDriver was extracted from WorkflowController while PhaseRunner remains in controller/; invert via PhaseExecutionPort on next RunDriver refactor.'
+  },
+  {
+    from: 'src/services/run-driver.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/phase-sequencer.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'RunDriver advances phase order through PhaseSequencer in controller/; relocate pure sequencer logic or pass port on next touch.'
+  },
+  {
+    from: 'src/services/run-driver.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/incomplete-turn-resume.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'RunDriver uses incomplete-turn resume helper owned by controller/; move pure classification helper into contracts/ or lib/ on next touch.'
+  },
+  {
+    from: 'src/services/retry-coordinator.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/retry-handler.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'RetryCoordinator delegates retry timing computation to controller/retry-handler.ts; move pure backoff decision down to lib/ on next touch.'
+  },
+  {
+    from: 'src/services/resume-admission-guard.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/run-admission.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'ResumeAdmissionGuard shares pure run-admission predicate currently hosted in controller/run-admission.ts; relocate to contracts/ on next touch.'
+  },
+  {
+    from: 'src/services/backend-availability-service.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/rate-limit-backoff.ts',
+    owner: 'quota-and-availability',
+    filing: 'FR-R8-04',
+    reason: 'BackendAvailabilityService reuses pure rate-limit backoff helper in controller/rate-limit-backoff.ts; relocate pure math to lib/ on next touch.'
+  },
+  {
+    from: 'src/services/effective-limits.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/effective-phase-timeout.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'Effective limits helper reads pure timeout resolver in controller/effective-phase-timeout.ts; relocate pure resolver to config/ or contracts/ on next touch.'
+  },
+  {
+    from: 'src/services/failure-record/failed-phase-notice.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/phase-control-decision.ts',
+    owner: 'operator-evidence',
+    filing: 'FR-R8-04',
+    reason: 'Failed-phase notice reads pure decidePhaseControl classifier in controller/phase-control-decision.ts to ensure one eligibility oracle; relocate pure classifier to contracts/ on next touch.'
+  },
+  {
+    from: 'src/services/phase-context/attempt-result-publisher.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/phase-sidecar-reader.ts',
+    owner: 'phase-handoff',
+    filing: 'FR-R8-04',
+    reason: 'AttemptResultPublisher reads phase sidecar files via controller/phase-sidecar-reader.ts; extract shared pure reader into services/phase-log/ or lib/ on next touch.'
+  },
+  {
+    from: 'src/services/run-planned-total.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/phase.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'Planned phase count helper reads canonical phase ordering constants in controller/phase.ts; move pure ordering constants to contracts/ on next touch.'
+  },
+  {
+    from: 'src/services/runtime-resource-budgets/resource-inventory.ts',
+    fromLayer: 'services',
+    intoLayer: 'controller',
+    target: 'src/controller/backend-posture-recorder.ts',
+    owner: 'resource-budgets',
+    filing: 'FR-R8-04',
+    reason: 'Resource inventory reads posture cache bound constant from controller/backend-posture-recorder.ts; relocate constant to contracts/ on next touch.'
+  },
+  // ---- 2 reconciled non-controller upper-layer service edges discovered by FR-R8-04 AST census
+  {
+    from: 'src/services/diagnostics-bundle/bundle-collect.ts',
+    fromLayer: 'services',
+    intoLayer: 'commands',
+    target: 'src/commands/export-audit.ts',
+    owner: 'operator-evidence',
+    filing: 'FR-R8-04',
+    reason: 'Diagnostics bundle shares single counts-only audit export sanitizer currently declared in commands/export-audit.ts; extract sanitizer into audit/ on next touch.'
+  },
+  {
+    from: 'src/services/workflow-execution/workflow-control-projector.ts',
+    fromLayer: 'services',
+    intoLayer: 'ui',
+    target: 'src/ui/sidebar/phase-projector.ts',
+    owner: 'workflow-runtime',
+    filing: 'FR-R8-04',
+    reason: 'WorkflowControlProjector shares pure phase-tile helper in ui/sidebar/phase-projector.ts to keep host/headless and UI projections identical; relocate pure helper to contracts/ on next touch.'
+  }
+];
 
 /**
  * FR-R7-07 (SC-005) — Acting layers that no `src/state/` module may reach

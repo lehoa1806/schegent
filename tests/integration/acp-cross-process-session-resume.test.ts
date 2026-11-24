@@ -710,11 +710,19 @@ describe('FR-R7-14 (14-04) — cross-process ACP bridge session continuity and f
 
 describe('FR-R7-17 (R7-17-04 & R7-17-05) — production ACP accounting ingestion, lifecycle observations, advertised-profile resume & permission denial', () => {
   function makeMinimalStore(): WorkspaceStateStore {
+    let controlLedger: unknown;
     return {
       getRunMap: () => ({}),
       getConnectedRuns: () => ({}),
       getQueueMap: () => ({}),
-      getQueueRegistry: () => ({ activeQueueId: 'default', queues: [] })
+      getQueueRegistry: () => ({ activeQueueId: 'default', queues: [] }),
+      getRawControlLedger: () => controlLedger,
+      transactControlLedger: async <T>(
+        op: (raw: unknown, write: (next: unknown) => Promise<void>) => Promise<T>
+      ): Promise<T> =>
+        op(controlLedger, async (next) => {
+          controlLedger = next;
+        })
     } as unknown as WorkspaceStateStore;
   }
 

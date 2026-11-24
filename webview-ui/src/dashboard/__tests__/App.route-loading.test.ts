@@ -41,6 +41,9 @@ import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import App from '../App.svelte';
+import RouteOutlet from '../RouteOutlet.svelte';
+import { createRouteLoader, type LazyRouteComponent, type RouteLoader } from '../route-loader';
+import LedgerBuilderSurface from './fixtures/LedgerBuilderSurface.svelte';
 import { ledger } from './fixtures/route-mount-ledger';
 import { snapshotStore } from '../../lib/snapshot-store.svelte';
 import type { WorkflowSnapshot } from '../../lib/snapshot-types';
@@ -524,5 +527,83 @@ describe('Feature 105 — the bound is a constant, not a setting (FR-008)', () =
     );
     expect(snapshotTypes).not.toContain('ROUTE_LOAD_TIMEOUT');
     expect(snapshotTypes.toLowerCase()).not.toContain('routeloadtimeout');
+  });
+});
+
+describe('FR-R8-04 (04-06) — clean lazy-route teardown without dangling work', () => {
+  it('clears pending expiry timers on App unmount and ignores post-unmount chunk settlement without mounting or throwing', async () => {
+    ledger.closeGate('system');
+    // 1. App shell unmount while gated `system` route is pending cancels BOTH the 10s
+    // RouteOutlet expiry timeout and App.svelte's pending heading-focus requestAnimationFrame.
+    vi.useFakeTimers();
+    const stSpy = vi.spyOn(globalThis, 'setTimeout');
+    const ctSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame');
+    const crafSpy = vi.spyOn(globalThis, 'cancelAnimationFrame');
+    try {
+      const { container, getByTestId, unmount } = mountApp();
+      await fireEvent.pointerEnter(getByTestId('dashboard-route-system'));
+      await fireEvent.click(getByTestId('dashboard-route-system'));
+      expect(container.querySelector('[data-testid="dashboard-route-loading"]')).not.toBeNull();
+
+      const expiryCallIndex = stSpy.mock.calls.findIndex((call) => call[1] === 10_000);
+      expect(expiryCallIndex).toBeGreaterThanOrEqual(0);
+      const expiryHandle = stSpy.mock.results[expiryCallIndex]?.value;
+      expect(rafSpy).toHaveBeenCalledTimes(1);
+      const rafHandle = rafSpy.mock.results[0]?.value;
+
+      unmount();
+
+      expect(ctSpy).toHaveBeenCalledWith(expiryHandle);
+      expect(crafSpy).toHaveBeenCalledWith(rafHandle);
+      // Advancing past the 10s expiry window after unmount must not trigger any late mount or error
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(rafSpy).toHaveBeenCalledTimes(1);
+      expect(ledger.mountCount('system')).toBe(0);
+    } finally {
+      stSpy.mockRestore();
+      ctSpy.mockRestore();
+      rafSpy.mockRestore();
+      crafSpy.mockRestore();
+      vi.useRealTimers();
+    }
+
+    // 2. Direct RouteOutlet + deferred RouteLoader: resolving after unmount never mounts
+    let resolveDeferred: (component: LazyRouteComponent) => void = () => {};
+    const deferredPromise = new Promise<LazyRouteComponent>((resolve) => {
+      resolveDeferred = resolve;
+    });
+    const deferredLoader: RouteLoader = {
+      load: () => deferredPromise,
+      preload: () => {},
+      evict: () => {},
+      whenSettled: async () => {
+        await deferredPromise.then(() => undefined, () => undefined);
+      },
+      dispose: () => {}
+    };
+
+    const outlet = render(RouteOutlet, {
+      props: {
+        route: 'builder',
+        snapshot: buildSnapshot(),
+        loader: deferredLoader
+      }
+    });
+    expect(outlet.container.querySelector('[data-testid="dashboard-route-loading"]')).not.toBeNull();
+
+    outlet.unmount();
+    resolveDeferred(LedgerBuilderSurface as unknown as LazyRouteComponent);
+    await deferredLoader.whenSettled();
+    await flushTasks();
+
+    expect(ledger.mountCount('builder')).toBe(0);
+    expect(consoleErrors.lines).toEqual([]);
+
+    // 3. Real createRouteLoader().dispose() rejects subsequent loads cleanly and settles
+    const realLoader = createRouteLoader();
+    realLoader.dispose();
+    await expect(realLoader.load('history')).rejects.toThrow(/disposed/i);
+    await expect(realLoader.whenSettled()).resolves.toBeUndefined();
   });
 });

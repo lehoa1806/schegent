@@ -146,7 +146,7 @@ function resolveRelativeTarget(
   const fromAbs = resolve(REPO_ROOT, fromRelPath);
   const base = resolve(dirname(fromAbs), specifier);
   const extension = extname(base);
-  const stem = base.slice(0, -extension.length);
+  const stem = extension.length > 0 ? base.slice(0, -extension.length) : base;
   const emittedTargets: Readonly<Record<string, readonly string[]>> = {
     '.js': [`${stem}.ts`, `${stem}.tsx`],
     '.jsx': [`${stem}.tsx`],
@@ -288,12 +288,23 @@ describe('FR-R7-07 — layer-level value-import direction gate', () => {
   });
 
   it('SC-001: every governed layer value-imports only its allowed layers or a filing-attributed allowlist entry', () => {
-    const allowedExceptions = new Set(
-      LAYER_IMPORT_ALLOWLIST.map((e) => `${e.from}|${e.fromLayer}->${e.intoLayer}`)
+    const exactAllowed = new Set(
+      LAYER_IMPORT_ALLOWLIST.filter((e) => e.target !== undefined).map(
+        (e) => `${e.from}|${e.fromLayer}->${e.intoLayer}:${e.target}`
+      )
+    );
+    const layerAllowed = new Set(
+      LAYER_IMPORT_ALLOWLIST.filter((e) => e.target === undefined).map(
+        (e) => `${e.from}|${e.fromLayer}->${e.intoLayer}`
+      )
     );
     const violations = findLayerViolations(sources, LAYER_ALLOWED_VALUE_IMPORTS);
     const offenders = violations
-      .filter((v) => !allowedExceptions.has(`${v.from}|${v.fromLayer}->${v.intoLayer}`))
+      .filter(
+        (v) =>
+          !exactAllowed.has(`${v.from}|${v.fromLayer}->${v.intoLayer}:${v.target}`) &&
+          !layerAllowed.has(`${v.from}|${v.fromLayer}->${v.intoLayer}`)
+      )
       .map((v) => `${v.from}:${v.line} (${v.fromLayer} -> ${v.intoLayer}: ${v.target})`);
 
     expect(
@@ -302,21 +313,64 @@ describe('FR-R7-07 — layer-level value-import direction gate', () => {
         'or invert the dependency through a port owned by the lower layer.'
     ).toEqual([]);
 
+    // FR-R7-07: state/ must remain zero-exception.
+    expect(
+      LAYER_IMPORT_ALLOWLIST.filter((e) => e.fromLayer === 'state'),
+      'src/state/ must stay zero-exception'
+    ).toEqual([]);
+
+    // FR-R8-04 (04-03): every reconciled services/ reverse edge carries an owner, exact target, filing, and rationale.
     for (const entry of LAYER_IMPORT_ALLOWLIST) {
-      expect(entry.filing, `${entry.from} allowlist entry must name a successor filing`).toMatch(
+      expect(entry.owner.trim().length, `${entry.from} allowlist entry must name an owner`).toBeGreaterThan(2);
+      expect(entry.filing, `${entry.from} allowlist entry must name a filing`).toMatch(
         /^FR-(?:R\d+-)?\d+/
       );
       expect(entry.reason.length, `${entry.from} allowlist entry needs a real explanation`).toBeGreaterThan(20);
+      if (entry.fromLayer === 'services') {
+        expect(entry.target, `${entry.from} services allowlist entry must pin an exact target`).toBeDefined();
+      }
     }
 
     // Truthfulness: reject any stale allowlist entry that no longer corresponds to a real edge.
-    const liveViolationKeys = new Set(
+    const liveExactKeys = new Set(
+      violations.map((v) => `${v.from}|${v.fromLayer}->${v.intoLayer}:${v.target}`)
+    );
+    const liveLayerKeys = new Set(
       violations.map((v) => `${v.from}|${v.fromLayer}->${v.intoLayer}`)
     );
-    const stale = LAYER_IMPORT_ALLOWLIST.filter(
-      (e) => !liveViolationKeys.has(`${e.from}|${e.fromLayer}->${e.intoLayer}`)
-    ).map((e) => `${e.from} (${e.fromLayer} -> ${e.intoLayer})`);
+    const stale = LAYER_IMPORT_ALLOWLIST.filter((e) =>
+      e.target !== undefined
+        ? !liveExactKeys.has(`${e.from}|${e.fromLayer}->${e.intoLayer}:${e.target}`)
+        : !liveLayerKeys.has(`${e.from}|${e.fromLayer}->${e.intoLayer}`)
+    ).map((e) => `${e.from} (${e.fromLayer} -> ${e.intoLayer}${e.target !== undefined ? `: ${e.target}` : ''})`);
     expect(stale, 'remove stale LAYER_IMPORT_ALLOWLIST entries').toEqual([]);
+  });
+
+  it('FR-R8-04 (04-03) NON-VACUITY: a fixture introducing a new unowned services/ -> controller/ reverse edge fails the gate', () => {
+    const synthetic = new Map<string, string>([
+      [
+        'fixture/services/new-orchestrator.ts',
+        [
+          "import { unownedControllerFn } from '../controller/workflow-controller';",
+          "import type { AllowedControllerType } from '../controller/workflow-controller';",
+          "import { allowedQueueFn } from '../queue/queue-manager';",
+          'export type Keep = AllowedControllerType;',
+          'export const run = () => [unownedControllerFn, allowedQueueFn];'
+        ].join('\n')
+      ],
+      ['fixture/controller/workflow-controller.ts', 'export const unownedControllerFn = 1; export type AllowedControllerType = number;'],
+      ['fixture/queue/queue-manager.ts', 'export const allowedQueueFn = 1;']
+    ]);
+    const found = findLayerViolations(synthetic, LAYER_ALLOWED_VALUE_IMPORTS);
+    expect(found).toEqual([
+      {
+        from: 'fixture/services/new-orchestrator.ts',
+        fromLayer: 'services',
+        intoLayer: 'controller',
+        line: 1,
+        target: 'fixture/controller/workflow-controller.ts'
+      }
+    ]);
   });
 
   it('SC-005: no src/state/ module transitively value-imports queue/, parser/, services/, controller/, or ui/', () => {

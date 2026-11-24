@@ -97,8 +97,8 @@ import {
 } from '../services/usage-accounting/usage-accounting-wiring';
 import {
   createCutoverAuthorityGuard,
+  createDesktopWorkflowComposition,
   defaultCapabilityAssessment,
-  getOrCreateProductionWorkflowComposition,
   registerProductionWorkflowComposition,
   unregisterProductionWorkflowComposition,
   type ProductionWorkflowComposition
@@ -570,11 +570,11 @@ async function openPrimarySqliteServices(
 
     const durableHandoffSeam = buildDurableHandoffSeam(artifactLifecycle, sqliteStore.writerConnection);
 
-    workflowComposition = getOrCreateProductionWorkflowComposition(deps.store, {
+    workflowComposition = createDesktopWorkflowComposition({
+      store: deps.store,
       workspaceRoot: deps.workspaceRoot,
       isWorkspaceTrusted: deps.isWorkspaceTrusted,
       ...createDesktopOwnershipFenceForStore(deps.store),
-      requireLiveFenceVerifier: true,
       durableHandoffSeam,
       phaseHandoffCoordinator,
       cutoverAuthorityGuard: createCutoverAuthorityGuard({ mode: 'post-cutover-strict', storeAuthority: 'sqlite-f04', runtimeAuthority: 'acp-f13' }),

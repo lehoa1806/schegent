@@ -35,28 +35,37 @@ Measured on `2026-11-24` using `tests/lint/code-lines.ts` (`countFileCodeLines`)
 | `src/queue/queue-manager.ts` | `queue/` | 2,469 / 1,477 | Waived (`highWaterMark` ratchet, `2026-05-22` decision) | Per-queue task lifecycle, pause/resume (`operator`/`cascade`/`retry-cap`), reorder/modify/remove, multi-queue CRUD, `clearCompleted`/`clearFailed`/`clearQueue`/`clearAll`, and drain/admission helpers (`peekNextPending`, `markInFlight`, `admitRun`, `finish`). Delegates pure rules to `task-transition-decision.ts`, `queue-lifecycle-refresh.ts`, `queue-reset-settle.ts`, `queue-registry.ts`, and persistence to `WorkspaceStateStore` (`state/`). | Owned by `FR-R7-14` (`14-21`) change-driven rule: extract only the single affected scheduling, retry, clearing, or Run responsibility when modifying it, and test through `QueueManager`'s existing public entry point. |
 | `src/controller/phase-runner.ts` | `controller/` | 1,446 / 871 | Waived (`highWaterMark` ratchet, `2026-10-01` decision) | Single-phase CLI/ACP invocation lifecycle: pre-spawn runner policy, capability/consent/agent-config-ack gates, stdout/stream-json parsing, audit & raw-transcript evidence recording, session compaction, and native review collection. Already delegates leaf recorders (`phase-attempt-recorder.ts`, `backend-posture-recorder.ts`, `phase-sidecar-reader.ts`, `phase-retry-evaluator.ts`, `phase-outcome-mapper.ts`, `session-compactor.ts`, `native-review.ts`). | Keep evidence/policy decisions in single-purpose leaves; pass read-only ports from `services/` (`capability-refusal`, `backend-containment-policy`, `agent-config-ack-refusal`) rather than pulling store or UI state into `PhaseRunner`. |
 | `src/services/run-driver.ts` | `services/` | 1,318 / 942 | Plain ceiling (`maxLines: 990` code lines) | Per-Run phase execution loop, cancellation `AbortController`, fence-loss abort, `PhaseSequencer` advancement, retry scheduling, checkpoint & mutation-ledger bracketing, and terminal transition funnel. | Keep terminal outcome handlers (`completed`, `failed`, probe-failure) as extraction targets when touched; avoid adding new `services/ → controller/` value imports (see Section 2.1). |
-| `src/activation/sqlite-cutover-wiring.ts` | `activation/` | 1,153 / 1,048 | Plain ceiling (`maxLines: 1,075` code lines) | Composition root for SQLite cutover: folder-scoped DB path resolution, passive read-only snapshot attachment, relocation, primary service graph construction (`SqliteCutoverServices`), explicit store lifecycle via `SqliteCutoverStoreRegistry` (`14-21`), and store-keyed `ProductionWorkflowComposition` registration/eviction (`N08`). | Pure activation wiring only; keep policy, containment helpers, and resource disposal in `sqlite-cutover-helpers.ts` and `sqlite-cutover-registry.ts`. |
+| `src/activation/sqlite-cutover-wiring.ts` | `activation/` | 1,095 / 1,006 | Plain ceiling (`maxLines: 1,075` code lines) | Composition root for SQLite cutover: folder-scoped DB path resolution, passive read-only snapshot attachment, relocation, primary service graph construction (`SqliteCutoverServices`), explicit store lifecycle via `SqliteCutoverStoreRegistry` (`14-21`), and store-keyed `ProductionWorkflowComposition` registration/eviction (`N08`). | Pure activation wiring only; keep policy, containment helpers, and resource disposal in `sqlite-cutover-helpers.ts` and `sqlite-cutover-registry.ts`. |
 
-### 2.1 The `controller/` ↔ `services/` Bidirectional Boundary
+### 2.1 The `controller/` ↔ `services/` Bidirectional Boundary & Candidate Graph Counts (`FR-R8-04` `04-03`)
 
-The whole-tree file import graph is strictly acyclic (enforced by `tests/lint/import-graph-acyclic.test.ts`). At the directory-layer level, however, an AST scan of static relative value imports on `2026-11-24` measures a bidirectional boundary between `controller/` and `services/`:
+The whole-tree first-party import graph (`src/` + `webview-ui/src/`, AST-parsed across `.ts`, `.tsx`, `.cts`, `.mts`, and `.svelte` `<script>` blocks with `.js`/`.jsx`/`.cjs`/`.mjs` → TypeScript specifier resolution in `tests/lint/import-graph-acyclic.test.ts`) measures on `2026-11-25`:
 
-- **`controller/ → services/` (36 static value edges)**:
-  - `workflow-controller.ts` orchestrates 13 service modules (`auto-drain-coordinator`, `blocker-notice`, `execution-lease-release`, `failure-record/failure-record-service`, `history-recorder`, `mutation-plan`, `resume-admission-guard`, `retry-coordinator`, `run-driver`, `session-cleanup/session-cleanup-service`, `terminal-transition-coordinator`, `unattended-resume`, `workflow-run-factory`).
-  - `phase-runner.ts`, `agent-config-ack-gate.ts`, `backend-posture-recorder.ts`, `capability-decision-recorder.ts`, `host-teardown-recorder.ts`, `start-failure-classification.ts`, and `uncontained-consent-gate.ts` import policy/refusal helpers from `services/`.
-  - `incomplete-turn-resume.ts`, `native-review.ts`, `phase-control-service.ts`, `resume-pause-fields.ts`, `retry-handler.ts`, `workflow-leaf-end.ts`, and `workflow-lifecycle-auditor.ts` import focused service leaves.
-- **`services/ → controller/` (11 static value edges)**:
-  - `src/services/run-driver.ts` → `controller/phase-runner`, `controller/phase-sequencer`, `controller/incomplete-turn-resume` (3 edges — `RunDriver` was extracted from `WorkflowController` while keeping `PhaseRunner` and `PhaseSequencer` in `controller/`).
-  - `src/services/retry-coordinator.ts` → `controller/retry-handler`.
-  - `src/services/resume-admission-guard.ts` → `controller/run-admission`.
-  - `src/services/backend-availability-service.ts` → `controller/rate-limit-backoff`.
-  - `src/services/effective-limits.ts` → `controller/effective-phase-timeout`.
-  - `src/services/failure-record/failed-phase-notice.ts` → `controller/phase-control-decision`.
-  - `src/services/phase-context/attempt-result-publisher.ts` → `controller/phase-sidecar-reader`.
-  - `src/services/run-planned-total.ts` → `controller/phase`.
-  - `src/services/runtime-resource-budgets/resource-inventory.ts` → `controller/backend-posture-recorder`.
+- **1,358** production modules (`src/` + `webview-ui/src/`, excluding tests and `.d.ts`)
+- **3,822** resolved static runtime value edges (**0 cycles**, including **28** emitted `.js` → `.ts` value edges)
+- **2,641** distinguished type-only edges (excluded from runtime cycle checks)
+- **7** distinguished dynamic lazy `import()` edges (deferred route chunks, excluded from static cycle checks)
 
-**Boundary decision**: Because `workflow-controller.ts` (`controller/`) owns top-level command orchestration and `run-driver.ts` (`services/`) drives `PhaseRunner`/`PhaseSequencer` (`controller/`), adding `controller` or `services` to `LAYER_ALLOWED_VALUE_IMPORTS` before resolving those 11 reverse edges would require an 11-entry allowlist. Rather than speculatively moving files in `N08`, future changes that touch any of those 11 modules should relocate pure decision/timeout/backoff helpers (`rate-limit-backoff`, `effective-phase-timeout`, `phase-control-decision`, `phase`, `run-admission`) down to `contracts/` or `lib/`, or invert execution callbacks through ports, before onboarding `controller/` and `services/` into `LAYER_ALLOWED_VALUE_IMPORTS`.
+At the directory-layer level, `FR-R8-04` (`04-03`) enrolled `services/` into `LAYER_ALLOWED_VALUE_IMPORTS` (`tests/lint/architecture-layers.ts`, enforced by `tests/lint/layer-dependency-direction.test.ts`) so **any new unowned reverse value import from `services/` into `controller/`, `commands/`, `ui/`, `activation/`, `headless/`, or `root` fails the gate immediately**. The existing **11** `services/ → controller/` edges plus **2** `services/ → commands|ui` edges are reconciled under an exact-target, owner-attributed, shrink-only allowlist (`LAYER_IMPORT_ALLOWLIST`):
+
+- **`controller/ → services/` (37 static value edges)**: allowed top-down orchestration (`workflow-controller.ts`, `phase-runner.ts`, gates, and recorders delegating to application services).
+- **`services/ → controller/` (11 reconciled shrink-only edges, each owned in `LAYER_IMPORT_ALLOWLIST`)**:
+  1. `src/services/run-driver.ts` → `src/controller/phase-runner.ts` (owner: `workflow-runtime`; invert via `PhaseExecutionPort` on next touch).
+  2. `src/services/run-driver.ts` → `src/controller/phase-sequencer.ts` (owner: `workflow-runtime`; relocate pure sequencer or pass port).
+  3. `src/services/run-driver.ts` → `src/controller/incomplete-turn-resume.ts` (owner: `workflow-runtime`; move pure classification helper to `contracts/` or `lib/`).
+  4. `src/services/retry-coordinator.ts` → `src/controller/retry-handler.ts` (owner: `workflow-runtime`; move pure backoff math to `lib/`).
+  5. `src/services/resume-admission-guard.ts` → `src/controller/run-admission.ts` (owner: `workflow-runtime`; relocate pure admission predicate to `contracts/`).
+  6. `src/services/backend-availability-service.ts` → `src/controller/rate-limit-backoff.ts` (owner: `quota-and-availability`; relocate pure backoff math to `lib/`).
+  7. `src/services/effective-limits.ts` → `src/controller/effective-phase-timeout.ts` (owner: `workflow-runtime`; relocate pure timeout resolver to `config/` or `contracts/`).
+  8. `src/services/failure-record/failed-phase-notice.ts` → `src/controller/phase-control-decision.ts` (owner: `operator-evidence`; relocate pure `decidePhaseControl` to `contracts/`).
+  9. `src/services/phase-context/attempt-result-publisher.ts` → `src/controller/phase-sidecar-reader.ts` (owner: `phase-handoff`; move pure sidecar reader to `services/phase-log/` or `lib/`).
+  10. `src/services/run-planned-total.ts` → `src/controller/phase.ts` (owner: `workflow-runtime`; move pure phase ordering constants to `contracts/`).
+  11. `src/services/runtime-resource-budgets/resource-inventory.ts` → `src/controller/backend-posture-recorder.ts` (owner: `resource-budgets`; move posture cache bound constant to `contracts/`).
+- **`services/ → commands|ui` (2 reconciled shrink-only edges, owned in `LAYER_IMPORT_ALLOWLIST`)**:
+  12. `src/services/diagnostics-bundle/bundle-collect.ts` → `src/commands/export-audit.ts` (owner: `operator-evidence`; extract shared counts-only audit sanitizer into `audit/`).
+  13. `src/services/workflow-execution/workflow-control-projector.ts` → `src/ui/sidebar/phase-projector.ts` (owner: `workflow-runtime`; relocate pure phase-tile helper to `contracts/`).
+
+**Boundary decision**: Every existing reverse edge is pinned by exact `(from, fromLayer, intoLayer, target)` in `LAYER_IMPORT_ALLOWLIST`, stale entries fail automatically as edges are retired, and any new unowned `services/` reverse import fails `tests/lint/layer-dependency-direction.test.ts` (verified by a seeded synthetic fixture). `src/state/` remains zero-exception (`0` allowlist entries) with transitive isolation from `queue/`, `parser/`, `services/`, `controller/`, and `ui/`.
 
 ### 2.2 Large `src/services/workflow-execution/` Modules (10 Modules ≥ 990 Raw Lines)
 
@@ -73,7 +82,7 @@ Every module in `src/services/workflow-execution/` lives in the `services/` laye
 | `workflow-control-service.ts` | 1,230 | 1,066 | 1,125 | Evidence-aware resume, leaf-phase control orchestration, and invocation-frame transitions |
 | `control-usage-accounting.ts` | 1,167 | 1,019 | 1,075 | Composable workflow usage ledger rollups and control-ledger spend accounting |
 | `workflow-recovery-service.ts` | 1,151 | 1,060 | 1,160 | Restart reconciliation, orphan cancellation, and recovery fence validation for connected runs |
-| `production-workflow-composition.ts` | 1,031 | 940 | `< 1,000` entry condition | Composition factory wiring workflow-execution collaborators and the store-keyed `compositionCacheByStore` registry (`registerProductionWorkflowComposition`, `unregisterProductionWorkflowComposition`, `hasRegisteredProductionWorkflowComposition`, `getOrCreateProductionWorkflowComposition`) |
+| `production-workflow-composition.ts` | 1,084 | 986 | `< 1,000` entry condition | Composition factory wiring workflow-execution collaborators and the store-keyed `compositionCacheByStore` registry (`registerProductionWorkflowComposition`, `unregisterProductionWorkflowComposition`, `hasRegisteredProductionWorkflowComposition`, `getOrCreateProductionWorkflowComposition`, `createDesktopWorkflowComposition`) |
 
 Three sibling modules sit near 990 raw lines (`foreach-executor.ts` at 995 raw / 941 code, `repeat-executor.ts` at 989 raw / 916 code, `foreach-collection-reader.ts` at 976 raw / 930 code) and remain below the 1,000-code-line entry condition. Any growth above `1,000` code lines automatically triggers the entry-condition gate in `tests/lint/source-loc-budget.test.ts`.
 
@@ -120,28 +129,29 @@ Every module under `repo/src/headless/` is governed by `docs/hard-rules.md` rule
 |---|---:|---|---|---:|---|
 | `process-api-validators.ts` | 148 | *(none outside `src/headless/`)* | `pipeline-run-api.ts`, `process-definition-api.ts`, `process-yaml-api.ts`, `workflow-run-api.ts` | 1 | Shared boundary argument validation delegating value bounds to `src/contracts/runtime-validators.ts` |
 
-### 4.3 Test-Only & Compatibility Facades (7 Files)
+### 4.3 Test-Only & Compatibility Facades (7 Files) + `COMMAND_GUARDS` (`FR-R8-04` `04-04`)
 
-All 7 files below have **0** production value imports, **0** production type-only imports, **0** `webview-ui/src/` imports, and **0** `scripts/` imports as of `2026-11-24`:
+All 7 source-only headless facades below and the discriminator-only `COMMAND_GUARDS` registry (`src/contracts/sidebar-ipc.ts`) have **0** production runtime imports across `src/`, `webview-ui/src/`, and `scripts/` as of `2026-11-25`. None of them is an installed VSIX action (see [API and command reference](../reference/api-and-cli.md#source-only-headless-adapters-and-test-only-registries-fr-r8-04-04-04) for the installed-vs-source distinction):
 
-| Module (`src/headless/`) | Raw Lines | Prod Callers | Test Files | Compatibility / Qualification Role & Non-Import References |
-|---|---:|---:|---:|---|
-| `backend-qualification-api.ts` | 145 | 0 | 3 | Pure read-only headless inspection of backend bound qualification and spawn admission (`FR-R6-F09`). |
-| `execution-lanes-api.ts` | 377 | 0 | 4 | Editor-independent execution-lanes port (`FR-R6-F10`) wrapping `LaneService` with input freezing and validation. |
-| `pipeline-run-api.ts` | 79 | 0 | 4 | Legacy `Pipeline` headless run launcher delegating to `startPipelineRun()` (Feature 089); cross-listed as a path-named legacy `Pipeline` module in [legacy-pipeline-caller-inventory.md](../operations/legacy-pipeline-caller-inventory.md). |
-| `process-definition-api.ts` | 173 | 0 | 2 | Headless definition validation adapter for `Phase`, `Pipeline`, and `Workflow` definitions (Feature 089). |
-| `process-yaml-api.ts` | 458 | 0 | 5 | Headless byte-in/byte-out portable process-YAML preview/import/export facade (`docs/hard-rules.md` rule 48). Referenced only in comments in `src/services/process-yaml/types.ts` and `webview-ui/src/components/ProcessImport/process-import-state.ts` (zero runtime imports). |
-| `telemetry-export-api.ts` | 30 | 0 | 1 | Editor-independent OpenTelemetry export entry point (`FR-R6-F14`) sharing host normalization, policy, and SQLite spool logic. |
-| `workflow-run-api.ts` | 383 | 0 | 10 | Headless composable workflow launch, continuation, control-command, and recovery facade (Feature 089 / Round 5–6). Referenced as a string `modulePath` entry in `src/services/workflow-execution/entry-point-wiring-census.ts` (zero runtime imports). |
+| Module / Surface | Raw Lines | Supported Audience | Owner | Callers (Prod / Tests) | Verification or Retirement Condition |
+|---|---:|---|---|---|---|
+| `src/headless/backend-qualification-api.ts` | 145 | Source-level containment & qualification parity tests | Containment & qualification | 0 prod / 3 test files | Verified by qualification suites (`FR-R6-F09`); retire only if qualification inspection moves exclusively to installed commands/snapshots. |
+| `src/headless/execution-lanes-api.ts` | 378 | Source-level execution-lane port parity tests (operator recovery uses installed `schegent.inspectExecutionLanes` / `schegent.recoverExecutionLane`) | Execution lanes | 0 prod / 4 test files | Verified by lane integration suites (`FR-R6-F10`); runbooks no longer require it (`01-07`). Retire after one release cycle if no external embedder adopts it. |
+| `src/headless/pipeline-run-api.ts` | 79 | Legacy `Pipeline` launch compatibility tests | Legacy compatibility & migration | 0 prod / 4 test files | Cross-listed in [legacy-pipeline-caller-inventory.md](../operations/legacy-pipeline-caller-inventory.md); retire only after persisted Run/history deserializers no longer require `startPipelineRun` parity. |
+| `src/headless/process-definition-api.ts` | 173 | Source-level definition validation parity tests | Catalog & process definitions | 0 prod / 2 test files | Verified against `Phase`/`Workflow` validators; retain while Feature 089 headless validation parity holds. |
+| `src/headless/process-yaml-api.ts` | 458 | Source-level portable YAML byte-in/byte-out parity tests (installed UI uses `CMD_PREFLIGHT_PROCESS_YAML` / `CMD_EXPORT_PROCESS_YAML`) | Process-YAML exchange | 0 prod / 5 test files | Governed by `docs/hard-rules.md` portable YAML rules; retain as zero-`vscode` parity harness unless replaced by direct service tests. |
+| `src/headless/telemetry-export-api.ts` | 30 | Source-level OTLP exporter parity tests | Telemetry & observability | 0 prod / 1 test file | Verified by telemetry unit suite (`FR-R6-F14`); retire if non-editor OTLP embedding is explicitly declined. |
+| `src/headless/workflow-run-api.ts` | 385 | Source-level composable workflow parity & acceptance tests (installed UI uses `CMD_LAUNCH_WORKFLOW` / `CMD_CONTINUE_WORKFLOW`) | Workflow runtime | 0 prod runtime (`entry-point-wiring-census.ts` string metadata only) / 11 test files | Continuously verified by `production-workflow-integration.test.ts` and `workflow-capability-effects.test.ts`; retain as zero-`vscode` workflow parity seam. |
+| `COMMAND_GUARDS` (`src/contracts/sidebar-ipc.ts`) | — | Host IPC contract exhaustiveness tests (production ingress is `validateInboundMessage`) | Sidebar IPC & contracts | 0 prod / 3 test files (`sidebar-ipc-drift.test.ts`, `catalog-version-not-accepted.test.ts`, `command-authority-routing.test.ts`) | Compile-time exhaustiveness witness over all 71 `COMMAND_TYPES`; retire only when descriptor-generated `validateInboundMessage` replaces every discriminator test without losing coverage. |
 
 ### 4.4 Cross-Reference to Legacy `Pipeline` Callers
 
-Legacy `Pipeline` compatibility callers across the full host (`121` code-bearing files, `13` path-named files including `src/headless/pipeline-run-api.ts`) and webview (`35` code-bearing files, `44` path-named files including `PipelineBuilder.svelte` and `PipelineBuilderEditors/`) are cataloged separately in [legacy-pipeline-caller-inventory.md](../operations/legacy-pipeline-caller-inventory.md). Before retiring or relocating any of the 7 test-only headless facades above or any legacy `Pipeline` compatibility surface, confirm whether external headless parity contracts (Feature 089 / `entry-point-wiring-census.ts`) and persisted Run/history deserializers still depend on them.
+Legacy `Pipeline` compatibility callers across the full host (`123` code-bearing files, `13` path-named files including `src/headless/pipeline-run-api.ts`) and webview (`35` code-bearing files, `44` path-named files including `PipelineBuilder.svelte` and `PipelineBuilderEditors/`) are cataloged separately in [legacy-pipeline-caller-inventory.md](../operations/legacy-pipeline-caller-inventory.md) (refreshed `2026-11-25`) and exercised against persisted records in `tests/integration/boundary-compatibility-matrix.test.ts`. Before retiring or relocating any of the 7 test-only headless facades above or any legacy `Pipeline` compatibility surface, confirm whether external headless parity contracts (Feature 089 / `entry-point-wiring-census.ts`) and persisted Run/history deserializers still depend on them.
 
 ---
 
 ## 5. Related Architecture & Operations Records
 
 - [Composition Root Extraction (`FR-R3-119`)](composition-root-extraction.md) — records the shrink-only extraction history of `wireStage2()` and `src/extension.ts`.
-- [Legacy `Pipeline` Compatibility Caller Inventory (`FR-R7-14` / `14-21`)](../operations/legacy-pipeline-caller-inventory.md) — dated inventory of all 156 host + webview legacy `Pipeline` callers and retirement prerequisites.
+- [Legacy `Pipeline` Compatibility Caller Inventory (`FR-R7-14` / `14-21`)](../operations/legacy-pipeline-caller-inventory.md) — dated inventory of all 158 host + webview legacy `Pipeline` callers and retirement prerequisites.
 - [Durability Decision](durability-decision.md) and [Workspace Ownership Fencing](workspace-ownership-fencing.md) — storage, primacy, and commit-fencing boundaries that sit beneath the hotspots above.

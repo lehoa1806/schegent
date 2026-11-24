@@ -756,8 +756,26 @@ export interface CutoverAuthorityGuard {
   };
 }
 
+export function createCutoverAuthorityGuard(): CutoverAuthorityGuard & {
+  readonly mode: 'pre-cutover-compatible';
+};
+export function createCutoverAuthorityGuard<TMode extends CutoverAuthorityGuard['mode']>(options: {
+  readonly mode: TMode;
+  readonly storeAuthority?: 'memento-bridged' | 'sqlite-f04' | 'unavailable' | undefined;
+  readonly runtimeAuthority?: 'cli-runner' | 'acp-f13' | 'disconnected' | undefined;
+}): CutoverAuthorityGuard & { readonly mode: TMode };
+export function createCutoverAuthorityGuard(options: {
+  readonly mode?: undefined;
+  readonly storeAuthority?: 'memento-bridged' | 'sqlite-f04' | 'unavailable' | undefined;
+  readonly runtimeAuthority?: 'cli-runner' | 'acp-f13' | 'disconnected' | undefined;
+}): CutoverAuthorityGuard & { readonly mode: 'pre-cutover-compatible' };
 export function createCutoverAuthorityGuard(options?: {
-  readonly mode?: 'pre-cutover-compatible' | 'post-cutover-strict' | undefined;
+  readonly mode?: CutoverAuthorityGuard['mode'] | undefined;
+  readonly storeAuthority?: 'memento-bridged' | 'sqlite-f04' | 'unavailable' | undefined;
+  readonly runtimeAuthority?: 'cli-runner' | 'acp-f13' | 'disconnected' | undefined;
+}): CutoverAuthorityGuard;
+export function createCutoverAuthorityGuard(options?: {
+  readonly mode?: CutoverAuthorityGuard['mode'] | undefined;
   readonly storeAuthority?: 'memento-bridged' | 'sqlite-f04' | 'unavailable' | undefined;
   readonly runtimeAuthority?: 'cli-runner' | 'acp-f13' | 'disconnected' | undefined;
 }): CutoverAuthorityGuard {
