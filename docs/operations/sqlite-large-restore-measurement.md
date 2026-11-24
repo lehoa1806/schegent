@@ -113,7 +113,19 @@ Verified automatically in `repo/tests/integration/sqlite-large-restore-fencing.t
 
 ---
 
-## 6. Re-Measurement Triggers
+## 6. Re-Measurement Triggers & `FR-R8-03` (`03-04`) Degraded Operation Rehearsal (2026-11-24)
+
+**Repeated measurement and six-mode degraded-operation rehearsal (`2026-11-24`, `darwin/arm64`, Apple M4 Max, Node `v24.22.2`):**
+
+- `npx vitest run tests/integration/sqlite-large-restore-fencing.test.ts` — **4/4 passed** (`~16 MiB` SQLite-native `ATTACH` restore completed in `307 ms` with row fidelity, trigger preservation, bounded heap, and continuous heartbeat/logger responsiveness; two-window ownership loss during validation and immediately pre-commit refused with `RESTORE_OWNERSHIP_LOST` and zero live changes; `committed_refresh_failed` distinguished from pre-commit refusal; over-ceiling `512 MiB` bound refused pre-mutation).
+- `npx vitest run tests/integration/degraded-operation-and-restore-drill.test.ts` — **6/6 passed**, rehearsing all six operator failure modes on disposable WAL SQLite stores and Git repositories:
+  1. **Disk-full (`ENOSPC`) write failure**: `EvidenceHealthMonitor` surfaces fail-closed `audit.status = 'unavailable'`, `cause = 'disk-full'`, while SQLite records reopen intact (`PRAGMA quick_check = ok`).
+  2. **Provider disconnect after external effect**: control reconciliation marks the in-flight `spawn-intent` attempt `paused-uncertain-effect` (`recovery-uncertain-effect`) without replaying the external receipt; operator cancel succeeds and preserves unrelated records.
+  3. **Stale ownership handoff**: Window B reclaims stale ownership after `STALENESS_THRESHOLD_MS`; stale Window A restore (`NOT_WORKSPACE_OWNER`, `refused_pre_commit`) and workflow admission (`stale-fence`) both refuse before mutating disk.
+  4. **Newer-reader schema version (`min_reader_version > 9`)**: refuses open while leaving database bytes SHA-256 identical.
+  5. **Dirty Git state**: provisioning an isolated lane, freezing a candidate, approving integration onto `main`, and attempting `LaneService.landRequest` while the checked-out `main` worktree carries uncommitted tracked edits and untracked operator files refuses with `target-worktree-dirty`, keeping `main` at its prior commit, preserving the lane candidate and operator files byte-identically, and leaving the blocked request inspectable/cancelable.
+  6. **Restore commit followed by failed refresh**: returns `{ status: 'committed_refresh_failed', outcome: 'committed_refresh_failed', errorCode: 'POST_COMMIT_REFRESH_FAILED' }` truthfully while reopened SQLite contains the restored state.
+- **Slower / contended local storage responsiveness (`512 MiB` ceiling & lease continuity)**: Under concurrent async `fsync` local-storage contention (`256 KiB` continuous write+sync loop during the 1M-observation WAL worker benchmark in `tests/perf/usage-accounting-query.test.ts`), warm read `p95` shifted from `522.46 ms` to `534.33 ms` while host event-loop blocking stayed at `1.60 ms p95` (`max 1.83 ms`). For `512 MiB` restores on slower spinning disks or contended storage, `WorkspaceLockManager`'s `5,000 ms` heartbeat / `15,000 ms` staleness window remains the governing constraint because the atomic `BEGIN IMMEDIATE` `INSERT ... SELECT` + `COMMIT` span (`842 ms` on local APFS SSD) scales with disk write throughput; slower or network-mounted disks remain unobserved and require re-measurement before relying on the `512 MiB` ceiling.
 
 Re-run this measurement matrix before relying on the `512 MiB` ceiling if any of the following change:
 

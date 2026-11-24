@@ -18,7 +18,8 @@ import { validateAccountingQueryRequest, validateReadGapsRequest } from '../cont
 import type { UsageAccountingService } from '../services/usage-accounting/usage-accounting-service';
 
 /** The service surface the reader needs; a narrower type keeps fakes honest in tests. */
-export type UsageAccountingApiService = Pick<UsageAccountingService, 'query' | 'readGaps' | 'readQualifications'>;
+export type UsageAccountingApiService = Pick<UsageAccountingService, 'query' | 'readGaps' | 'readQualifications'> &
+  Partial<Pick<UsageAccountingService, 'queryAsync'>>;
 
 const STORE_UNAVAILABLE = Object.freeze({ ok: false, refusal: Object.freeze({ code: 'store-unavailable' }) } as const);
 
@@ -27,12 +28,15 @@ export function createUsageAccountingReader(service: UsageAccountingApiService |
   if (service === null) {
     return {
       query: () => STORE_UNAVAILABLE,
+      queryAsync: async () => STORE_UNAVAILABLE,
       readGaps: () => STORE_UNAVAILABLE,
       readQualifications: () => STORE_UNAVAILABLE
     };
   }
   return {
     query: (request, signal) => service.query(request, signal),
+    queryAsync: (request, signal) =>
+      service.queryAsync !== undefined ? service.queryAsync(request, signal) : Promise.resolve(service.query(request, signal)),
     readGaps: (request) => service.readGaps(request),
     readQualifications: () => service.readQualifications()
   };
@@ -47,6 +51,17 @@ export function queryUsageAccounting(
   const valid = validateAccountingQueryRequest(request);
   if (!valid.ok) return valid;
   return reader.query(valid.value, signal);
+}
+
+/** FR-R8-03 (03-03) — async revision-pinned accounting page via read-only worker when available. */
+export async function queryUsageAccountingAsync(
+  reader: UsageAccountingReader,
+  request: unknown,
+  signal?: AbortSignal
+): Promise<AccountingResult<AccountingQueryResponse>> {
+  const valid = validateAccountingQueryRequest(request);
+  if (!valid.ok) return valid;
+  return reader.queryAsync !== undefined ? reader.queryAsync(valid.value, signal) : reader.query(valid.value, signal);
 }
 
 /** One page of counted gaps (FR-015). */

@@ -267,17 +267,26 @@ To prevent unit-cardinality DoS and retention evasion:
 
 ### Measured query latency and host blocking (`tests/perf/usage-accounting-query.test.ts`)
 
-- **100,000-attempt regression budget (`NFR-003`, `SC-006`)**: at 100,000 retained attempts (400,000 open contributions), warm filtered 200-row reads meet `p95 <= 500 ms` and `<= 1 MiB` per response.
-- **1,000,000-observation retention-bound measurement (`FR-R7-16` / `16-07`)**: measured on `darwin-arm64` (Apple M4 Max), Node `v24.22.2` on 2026-11-23 against `1,000,000` retained observations (`250,000` attempts, `1,000,000` open contributions, `500` phases, `2` backends, `4` models), filtered `200`-row pages (`5` warm-up, `30` measured):
-  - **Cold first page**: `455.16 ms`
-  - **Warm read latency**: `p50 115.65 ms`, `p95 458.26 ms`, `p99 459.73 ms`, `max 459.73 ms`
-  - **Synchronous host event-loop blocking** (`setTimeout(0)` timer lag across synchronous `service.query()` calls): `p50 115.74 ms`, `p95 458.65 ms`, `p99 459.92 ms`, `max 459.92 ms`
-  - **Aborted preflight** (between-statement `AbortSignal` check): `0.079 ms`
-  - **Largest response**: `125,384 bytes` (`<= 1 MiB`)
+- **100,000-attempt regression budget (`NFR-003`, `SC-006`)**: at 100,000 retained attempts (400,000 open contributions), warm filtered 200-row reads measured `p50 36.89 ms`, `p95 128.80 ms`, `p99 129.99 ms`, `max 134.62 ms`, and `maxResponseBytes 125,068 B` (`<= 500 ms` p95 and `<= 1 MiB`, re-measured 2026-11-24 on Apple M4 Max / Node `v24.22.2`).
+- **1,000,000-observation retention-bound remediation (`FR-R8-03` / `03-03`)**:
+  - **Design evaluation**: live `EXPLAIN QUERY PLAN` on Schema v9 showed that covering indexes (`idx_accounting_attempts_backend_phase`, `idx_accounting_contributions_query_cover`, `idx_accounting_observations_disposition`) were already in use; the `334–460 ms` stall came from executing the `node:sqlite` C++ `DatabaseSync` scan synchronously on the extension-host event loop. Neither index tuning alone nor JS yielding between SQL statements can prevent a single multi-hundred-millisecond SQLite query from stalling the host or allow mid-statement cancellation.
+  - **Implemented solution**: `src/services/usage-accounting/accounting-query-worker.ts` runs file-backed WAL reads (`queryAsync`) inside a reusable lazy-spawned read-only `node:worker_threads` worker (`readOnly: true`, verified `PRAGMA query_only = ON`, `foreign_keys = ON`, `trusted_schema = OFF`, `temp_store = MEMORY`, `busy_timeout = 5000`, bounded FIFO queue `MAX_PENDING_QUERIES = 64`, `10 s` unref'd idle shutdown, and real mid-read `AbortSignal` / deadline termination via `worker.terminate()` with transparent respawn). `accounting-query.ts` also skips the redundant occupancy `latest` window query when no occupancy measures (`context_used`, `context_size`) are present. All production async readers (sidebar IPC `cmd-read-usage-accounting.ts`, reporting `report-usage.ts` / `report-capture.ts` / `report-engine.ts`, and headless `queryUsageAccountingAsync`) use `queryAsync`; `:memory:` stores retain the synchronous fallback.
+  - **Before vs. after comparison** (measured 2026-11-24 on `darwin-arm64`, Apple M4 Max, local APFS SSD, Node `v24.22.2`, `1,000,000` retained observations, `250,000` attempts, `1,000,000` open contributions, `500` phases, `2` backends, `4` models, filtered `200`-row pages, `5` warm-up + `30` measured):
+
+| Metric (1,000,000 observations, 200-row page) | Before: Sync Host Thread (`service.query`) | After: Read-Only Worker (`service.queryAsync`, idle disk) | After: Read-Only Worker (concurrent async disk-fsync contention) |
+|---|---:|---:|---:|
+| Cold first page (incl. lazy worker spawn on After) | `334.54 ms` | `526.34 ms` | — |
+| Warm end-to-end read (`p50` / `p95` / `max`) | `86.91` / `333.65` / `336.27 ms` | `130.88` / `522.46` / `524.41 ms` | `132.35` / `534.33` / `539.63 ms` |
+| Worker queue wait (`p50` / `p95` / `max`) | — | `0.00` / `0.00` / `0.01 ms` | — |
+| **Host event-loop blocking (`p50` / `p95` / `max`)** | **`87.01` / `333.88` / `336.66 ms`** | **`1.34` / `1.46` / `1.50 ms`** (`<= 50 ms` target) | **`1.33` / `1.60` / `1.83 ms`** (`<= 50 ms` target) |
+| Host `monitorEventLoopDelay` (`p95` / `max`) | — | `1.28` / `3.80 ms` | — |
+| Concurrent unrelated host ticks serviced during reads | `0` (blocked per query) | **`1,851` ticks** | — |
+| Cancellation (`AbortSignal`) latency | `0.066 ms` (preflight only; cannot cancel mid-SQL) | **`6.75 ms`** (real mid-read worker terminate + clean respawn) | — |
+| Largest response payload | `125,384 bytes` (`<= 1 MiB`) | `125,384 bytes` (`<= 1 MiB`) | `125,384 bytes` (`<= 1 MiB`) |
 
 ## Known limits
 
-- **The deadline and abort signal are checked between statements.** Queries run synchronously on the extension host thread via `node:sqlite` (`DatabaseSync`), so an already-executing SQL statement is not interrupted mid-statement and blocks the host event loop for its duration (measured up to `459.92 ms` at the `1,000,000`-observation bound on `darwin-arm64` Apple M4 Max / Node `v24.22.2`; slower hardware will block proportionally longer). The 5-second deadline and a headless caller's `AbortSignal` are checked before each SQL step; the sidebar passes no abort signal because no cancel message can be dispatched while a synchronous read is in progress.
+- **File-backed vs. `:memory:` query execution (`FR-R8-03` / `03-03`).** Production file-backed WAL stores serve `queryAsync` through the dedicated read-only worker thread (`<= 50 ms p95` host event-loop blocking, measured `1.46 ms p95` idle / `1.60 ms p95` under concurrent async `fsync` disk contention on Apple M4 Max, with single-snapshot `BEGIN DEFERRED` WAL reads and real mid-read `AbortSignal` / `5 s` deadline cancellation via worker termination). Synchronous `service.query()` and `:memory:` test stores still execute synchronously on the calling thread and check deadlines/aborts between statements only. Measurements cover local `darwin-arm64` APFS SSD only; slower spinning disks, network filesystems, Linux, and Windows remain unobserved.
 - **A response's `cutoffIngestSeq` is a high-water mark.** It is the highest ingest sequence any
   projection reflected, not a promise that every earlier observation is reflected. One whose
   projection failed shows as a `projection-failed` gap until the next start applies it.

@@ -176,10 +176,12 @@ export function privacyProfiles(): readonly PrivacyProfile[] {
         transportCaptureMode: 'inherit' as const
       }),
       residual: Object.freeze([
-        'A failed, canceled or paused Run retains an UNREDACTED transcript — operator prompts, source, ' +
-          'and model output — for the session-retention window above; because `errors-only` is evaluated at ' +
-          'the Run level, resuming that same Run to `completed` removes its promoted raw transcript and ' +
-          'promoted `errors-only` transport log.',
+        'While an `errors-only` Run executes, unredacted output is staged temporarily in ' +
+          '`.schegent/sessions/.pending/raw-<runId>.log` and the OS temporary spool ' +
+          '(`<temp>/schegent-raw-spool-<pid>-<suffix>/`). A failed, canceled or paused Run retains an ' +
+          'UNREDACTED transcript — operator prompts, source, and model output — for the session-retention ' +
+          'window above; because `errors-only` is evaluated at the Run level, resuming that same Run to ' +
+          '`completed` removes its promoted raw transcript and promoted `errors-only` transport log.',
         ...COMMON_RESIDUALS
       ])
     }),

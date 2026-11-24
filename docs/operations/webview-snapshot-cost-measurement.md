@@ -328,3 +328,13 @@ Every UI performance claim must keep three distinct latency layers separate and 
 1. Re-run `tests/perf/webview-snapshot-cost.test.ts`, `tests/perf/snapshot-slice-equality-cost.test.ts`, and `tests/visual/snapshot-render-cost.visual.spec.ts` (plus schema-9 write and startup/recovery benchmarks) before raising `MAX_RETAINED_HISTORY_ENTRIES`, `MAX_QUEUES`, rendered History/phase-log row caps, or typical catalog sizes.
 2. Re-evaluate `FR-R7-09`'s deferral only if dual-consumer host routine flush p95 approaches or exceeds the declared `8 ms` threshold on a supported platform, or if full-resync payload size approaches the `1 MiB` ceiling.
 3. Measure interactive latency directly inside a real desktop VS Code extension host + webview (and on Linux/Windows hosts) before making time-to-interactive or cross-platform UI responsiveness claims.
+
+### Repeated verification capture (`FR-R8-03` / `03-04`, 2026-11-24)
+
+Re-run sequentially on 2026-11-24 (`darwin/arm64`, Apple M4 Max, Node `v24.22.2`, 20 warm-up + 200 measured samples per workload):
+
+- **`tests/perf/webview-snapshot-cost.test.ts` (9/9 passed)**:
+  - `large-history` (`2,000` entries): full-resync `780,706 B` (`<= 1 MiB`), routine update `17,207 B` (`<= 512 KiB`), `project()` `p50 0.231 ms` / `p95 0.265 ms`, routine serialize `p50 0.021 ms` / `p95 0.028 ms`.
+  - `activation-and-sustained-memory`: cold host activation CPU `16.04 ms` vs `33.33 ms` 2-rAF browser floor; 500 sustained routine ticks (`17,207 B` each) showed `-10.25 MiB` net V8 heap delta (`51.4 → 41.1 MiB`, RSS `331.4 MiB`).
+- **`tests/perf/snapshot-slice-equality-cost.test.ts` (6/6 passed)**:
+  - `large-history-with-catalogs`: 1-consumer routine flush `p50 0.334 ms` / `p95 0.425 ms` / `max 0.712 ms`; 2-consumer routine flush `p50 0.404 ms` / `p95 0.506 ms` / `max 0.873 ms` (>15× below the `8 ms` p95 threshold; `FR-R7-09` deferral stands).

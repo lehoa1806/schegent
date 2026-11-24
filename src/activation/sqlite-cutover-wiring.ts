@@ -10,11 +10,7 @@ import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { DeliveryRepresentation } from '../contracts/phase-context/context-delivery';
-import type { StorageDetailsReader } from '../contracts/sidebar-ipc/storage-details';
-import type { UsageAccountingReader } from '../contracts/sidebar-ipc/usage-accounting';
-import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
 import { createPhaseContextApi, type PhaseContextApi } from '../headless/phase-context-api';
-import { createUsageAccountingReader } from '../headless/usage-accounting-api';
 import type { SanitizedLogger } from '../lib/logger';
 import { createSideEffectFailureReporter, type SideEffectFailureReport } from '../lib/side-effect-failure-reporter';
 import type { AcpRunnerObservationEvent } from '../runner/acp-backed-runner';
@@ -37,11 +33,16 @@ import {
   buildOwnerResolver,
   buildScanRoots,
   buildSecretPort,
+  createDynamicStorageDetailsReader,
+  createDynamicUsageAccountingReader,
   disposeSqliteRuntimeResources,
   isChildOfActiveComposableRun,
   isRecoveryEnvelopeProtectedForServices,
   isRecoveryRunProtectedForServices,
-  reportRelocationOutcome
+  ProtectedRunIdsUnavailableError,
+  replayTelemetrySpoolAfterSettling,
+  reportRelocationOutcome,
+  sweepWithReadableProtection
 } from './sqlite-cutover-helpers';
 import {
   createExecFileGitRunner,
@@ -374,6 +375,7 @@ async function openPrimarySqliteServices(
   }
 
   let createdTelemetryHost: TelemetryHostService | null = null;
+  let createdUsageAccounting: UsageAccountingService | null = null;
   let usageWiring: UsageAccountingWiring | null = null;
   let workflowComposition: ProductionWorkflowComposition | null = null;
   let configSub: vscode.Disposable | null = null;
@@ -385,6 +387,7 @@ async function openPrimarySqliteServices(
       catalogFs: input.catalogFs,
       clearDetachedWriter: ownedShared,
       disposeTelemetryConfig: () => configSub?.dispose(),
+      usageAccounting: createdUsageAccounting,
       usageWiring,
       workflowComposition,
       telemetryHost: createdTelemetryHost,
@@ -447,6 +450,7 @@ async function openPrimarySqliteServices(
       workspaceId: scopeId,
       logger: deps.logger
     });
+    createdUsageAccounting = usageAccounting;
     await usageAccounting.importLegacyEpoch(metricsRollupLegacySource(deps.workspaceRoot));
     if (input.isClosed()) {
       cleanupPartial();
@@ -780,6 +784,7 @@ export function createSqliteCutoverCoordinator(
       catalogFs,
       clearDetachedWriter: includeShared,
       disposeTelemetryConfig: current.disposeTelemetryConfig,
+      usageAccounting: current.usageAccounting,
       usageWiring: current.usageWiring,
       workflowComposition: current.workflowComposition,
       telemetryHost: current.telemetryHost,
@@ -1041,52 +1046,13 @@ export function createSqliteCutoverCoordinator(
   return coordinator;
 }
 
-/** The SQLite half of the protected-run set could not be read, so no sweep may act on the rest. */
-export class ProtectedRunIdsUnavailableError extends Error {
-  public constructor() {
-    super('the protected run set could not be read');
-    this.name = 'ProtectedRunIdsUnavailableError';
-  }
-}
-
-/**
- * Review gap GC-05 follow-up (2026-11-12) — runs `sweep` only on a protected set that was read
- * whole. When the set is unavailable the query has already reported why, and the sweep is skipped:
- * a set missing its SQLite pins would let the sweep delete what those pins protect. Any other
- * failure propagates.
- */
-export async function sweepWithReadableProtection(
-  readProtected: () => ReadonlySet<string>,
-  sweep: (protectedIds: ReadonlySet<string>) => Promise<unknown>
-): Promise<'swept' | 'skipped'> {
-  let protectedIds: ReadonlySet<string>;
-  try {
-    protectedIds = readProtected();
-  } catch (err) {
-    if (err instanceof ProtectedRunIdsUnavailableError) return 'skipped';
-    throw err;
-  }
-  await sweep(protectedIds);
-  return 'swept';
-}
-
-/**
- * Re-sends the batches a previous host spooled, once, after the spool work that configuring the
- * destination started has settled, so the two reconciles do not race over the same rows. Review gap
- * closure (2026-11-12): the replay existed and was tested across a reopen, but nothing in the
- * extension called it. A failure is reported as `telemetry-spool` and never rejects activation.
- */
-export async function replayTelemetrySpoolAfterSettling(
-  host: Pick<TelemetryHostService, 'idle' | 'reconcileAndReplaySpool'>,
-  reportFailure: SideEffectFailureReport
-): Promise<void> {
-  try {
-    await host.idle();
-    await host.reconcileAndReplaySpool();
-  } catch (err) {
-    reportFailure('telemetry-spool', err);
-  }
-}
+export {
+  createDynamicStorageDetailsReader,
+  createDynamicUsageAccountingReader,
+  ProtectedRunIdsUnavailableError,
+  replayTelemetrySpoolAfterSettling,
+  sweepWithReadableProtection
+};
 
 /**
  * The run ids a sweep must spare: lane pins, export pins and active protective references.
@@ -1125,24 +1091,4 @@ export function querySqliteProtectedRunIds(
     throw new ProtectedRunIdsUnavailableError();
   }
   return result;
-}
-
-export function createDynamicStorageDetailsReader(
-  getService: () => ArtifactLifecycleService | null
-): StorageDetailsReader {
-  return {
-    read(cursor) {
-      return createStorageDetailsReader(getService()).read(cursor);
-    }
-  };
-}
-
-export function createDynamicUsageAccountingReader(
-  getService: () => UsageAccountingService | null
-): UsageAccountingReader {
-  return {
-    query: (req, signal) => createUsageAccountingReader(getService()).query(req, signal),
-    readGaps: (req) => createUsageAccountingReader(getService()).readGaps(req),
-    readQualifications: () => createUsageAccountingReader(getService()).readQualifications()
-  };
 }

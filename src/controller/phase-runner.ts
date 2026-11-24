@@ -640,7 +640,7 @@ export class PhaseRunner {
     let compactionInvoked = false;
     if (backendDescriptor.supportsSessionCompaction && effectiveSessionReuse && typeof effectiveResumeSessionId === 'string') {
       try {
-        await this.compactSession(inputs, backendRunner);
+        await this.compactSession(inputs, backendRunner, attemptRef.attempt.attemptId);
         compactionInvoked = true;
       } catch (err) {
         // FR-R7-11 — a containment/admission refusal raised while invoking compaction
@@ -694,6 +694,7 @@ export class PhaseRunner {
         phase: inputs.phase,
         iteration: inputs.iteration,
         runId: inputs.runId,
+        attemptId: attemptRef.attempt.attemptId,
         prompt,
         // The AUTHORED per-phase bound, not the workspace default. This line used
         // to read `inputs.timeoutMs` while four records claimed the phase value.
@@ -765,6 +766,7 @@ export class PhaseRunner {
       runner: effectiveRunnerKind,
       operation: 'phase',
       permissionMode: raw.admissionDecision?.permissionMode ?? backendDescriptor.defaultAuditPermissionMode,
+      attemptId: attemptRef.attempt.attemptId,
       continued: effectiveIsContinue,
       sessionReused: effectiveSessionReuse,
       ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),
@@ -1144,7 +1146,7 @@ export class PhaseRunner {
     };
   }
 
-  private async compactSession(inputs: PhaseRunInputs, runner: BackendRunner): Promise<void> {
+  private async compactSession(inputs: PhaseRunInputs, runner: BackendRunner, attemptId?: string): Promise<void> {
     await compactClaudeSession({
       runner,
       rawTranscript: this.rawTranscript,
@@ -1160,14 +1162,9 @@ export class PhaseRunner {
       resumeSessionId: inputs.resumeSessionId!,
       logger: phaseLogger(this.logger, inputs),
       onCommand: () => this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
-        runner: 'claude',
-        operation: 'session-compaction',
-        permissionMode: 'unrestricted',
-        continued: false,
-        sessionReused: true,
-        // The COMPACTION's model and no effort, never the Phase's — see the constant.
-        modelId: COMPACTION_MODEL_ID,
-        diagnosticsEnabled: false
+        runner: 'claude', operation: 'session-compaction', permissionMode: 'unrestricted',
+        ...(attemptId !== undefined ? { attemptId } : {}),
+        continued: false, sessionReused: true, modelId: COMPACTION_MODEL_ID, diagnosticsEnabled: false
       })).then(() => undefined)
     });
   }
@@ -1234,18 +1231,14 @@ export class PhaseRunner {
     raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode' | 'sessionCostBaselineUsd'>,
     backend: BackendRunnerKind
   ): Record<string, unknown> {
+    const hasStreamPeak = Number.isFinite(raw.stdoutBuffer.highWaterRetainedBytes) && Number.isFinite(raw.stderrBuffer.highWaterRetainedBytes);
     return {
-      // Runner timing stays canonical; CLI-reported duration is separate.
       durationMs: raw.durationMs,
-      // FR-R3-075 (feature 152) — the exit code rides the SHARED payload so no
-      // termination arm can omit it again: the idle-timeout arm used to leave
-      // it out, and the projection defaulted the absence to 0, recording a run
-      // our own SIGTERM killed (exitCode null) as having exited cleanly.
       exitCode: raw.exitCode,
       ...(raw.stdoutBuffer.truncated ? { stdoutTruncated: true } : {}),
       ...(raw.stderrBuffer.truncated ? { stderrTruncated: true } : {}),
+      ...(hasStreamPeak ? { streamHighWaterBytes: raw.stdoutBuffer.highWaterRetainedBytes + raw.stderrBuffer.highWaterRetainedBytes, streamObservedBytes: raw.stdoutBuffer.totalBytes + raw.stderrBuffer.totalBytes } : {}),
       ...(extractInvocationUsageMetrics(raw.stdoutBuffer, backend, raw.sessionCostBaselineUsd) ?? {}),
-      // FR-R3-104 — the version observed at this phase's START, not re-probed here.
       ...(this.observedCliVersion === null ? {} : { cliVersion: this.observedCliVersion })
     };
   }

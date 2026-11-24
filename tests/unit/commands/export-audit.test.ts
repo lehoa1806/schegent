@@ -263,6 +263,40 @@ describe('createCountsOnlyAuditExport', () => {
     expect(onFamily.attemptId).toBe('3f2a5c18-9d4e-4b07-8a61-2c5f0e7d1b93');
     expect(onFamily.resultEnvelope).toBe('received');
   });
+
+  it('preserves valid UUID attemptId on cli-invocation and monitor-invocation-summary and rejects malformed values (FR-R8-03 03-02)', () => {
+    const validId = '3f2a5c18-9d4e-4b07-8a61-2c5f0e7d1b93';
+    const makeRow = (eventType: string, attemptId: unknown): string =>
+      JSON.stringify({
+        id: `event-${eventType}`,
+        timestamp: '2026-11-24T00:00:00.000Z',
+        runId: 'run-private',
+        correlationId: 'correlation-private',
+        phase: 'speckit-implement',
+        iteration: 1,
+        eventType,
+        outcome: 'info',
+        schemaVersion: 3,
+        payload: { attemptId }
+      });
+
+    const input = [
+      makeRow('cli-invocation', validId),
+      makeRow('monitor-invocation-summary', validId),
+      makeRow('cli-invocation', '/Users/alice/secret.txt'),
+      makeRow('monitor-invocation-summary', 'not-a-uuid')
+    ].join('\n');
+
+    const payloads = createCountsOnlyAuditExport(input)
+      .trim()
+      .split('\n')
+      .map((line) => (JSON.parse(line) as { payload: Record<string, unknown> }).payload);
+
+    expect(payloads[0]?.attemptId).toBe(validId);
+    expect(payloads[1]?.attemptId).toBe(validId);
+    expect(payloads[2]).toHaveProperty('attemptId', null);
+    expect(payloads[3]).toHaveProperty('attemptId', null);
+  });
 });
 
 // FR-R4-F14 (spec 242, contract E4.1) — the metadata-only export carries `failureCause`, with the module's

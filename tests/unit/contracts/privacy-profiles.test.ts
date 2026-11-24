@@ -300,9 +300,15 @@ describe('privacy profiles disclose backend-owned home stores and Run-level erro
     }
   );
 
-  it('qualifies ephemeral transport capture and diagnostic Run-level errors-only completion', () => {
+  it('qualifies ephemeral transport capture and diagnostic Run-level errors-only staging & completion', () => {
     expect(privacyProfile('ephemeral').residual[0]).toContain(
       "not kept in Schegent's transport capture either"
+    );
+    expect(privacyProfile('diagnostic').residual[0]).toContain(
+      '.schegent/sessions/.pending/raw-<runId>.log'
+    );
+    expect(privacyProfile('diagnostic').residual[0]).toContain(
+      'schegent-raw-spool-<pid>-<suffix>'
     );
     expect(privacyProfile('diagnostic').residual[0]).toContain(
       'resuming that same Run to `completed` removes its promoted raw transcript and promoted `errors-only` transport log'

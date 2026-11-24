@@ -23,7 +23,7 @@ import type {
   RootReviewLoopSummary
 } from '../../contracts/reporting/report-rows';
 import { toUtcIso } from './report-time';
-import { readUsage, usageRequestOf, type AccountingPort, type UsageReadOptions } from './report-usage';
+import { readUsage, readUsageAsync, usageRequestOf, type AccountingPort, type UsageReadOptions } from './report-usage';
 import {
   captureRunSnapshot,
   type CaptureConnection,
@@ -178,4 +178,57 @@ export function captureReport(
   asOfRevision?: number
 ): ReportResult<Capture> {
   return query.view === 'usage' ? captureUsage(source, query, signal, asOfRevision) : captureRuns(source, query, cutoffMs);
+}
+
+async function captureUsageAsync(
+  source: ReportSource,
+  query: ReportQuery,
+  signal: AbortSignal | undefined,
+  asOfRevision: number | undefined
+): Promise<ReportResult<Capture>> {
+  const request = asOfRevision === undefined ? usageRequestOf(query) : { ...usageRequestOf(query), asOfRevision };
+  const read = await readUsageAsync(source.accounting, request, usageOptions(source.snapshotCap, signal));
+  if (!read.ok) {
+    return read;
+  }
+  const { revision, rows, unattributed, gaps, legacy } = read.value;
+  const totals = await readUsageAsync(
+    source.accounting,
+    { ...request, groupBy: [], asOfRevision: revision },
+    usageOptions(1, signal)
+  );
+  if (!totals.ok) {
+    return totals;
+  }
+  const total = totals.value.rows.at(0);
+  const coverage: ReportCoverage = Object.freeze({
+    roots: total?.roots ?? 0,
+    attempts: total?.attempts ?? 0,
+    unknownDurations: 0,
+    unattributed,
+    ...(gaps.length > 0 ? { gaps } : {})
+  });
+  return reportOk({
+    roots: [],
+    attempts: [],
+    accountingRevision: revision,
+    omissions: NONE,
+    usage: Object.freeze({ rows, coverage, ...(legacy !== undefined ? { legacy } : {}) })
+  });
+}
+
+/**
+ * FR-R8-03 (03-03) — async report source capture delegating usage views to `readUsageAsync`
+ * (off-main-thread read-only worker when file-backed) without blocking the host event loop.
+ */
+export async function captureReportAsync(
+  source: ReportSource,
+  query: ReportQuery,
+  cutoffMs: number,
+  signal: AbortSignal | undefined,
+  asOfRevision?: number
+): Promise<ReportResult<Capture>> {
+  return query.view === 'usage'
+    ? captureUsageAsync(source, query, signal, asOfRevision)
+    : captureRuns(source, query, cutoffMs);
 }

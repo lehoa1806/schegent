@@ -40,7 +40,10 @@ The Windows / Node 24 and Windows / Node 22 cells stay `unobserved` under a **da
 verification reopens whenever a Windows machine or contributor becomes available, per
 [platform observation record](../operations/platform-observation-record.md#what-would-change-this)).
 Independent third-party Criterion 8 review also remains open before widening distribution beyond
-private-to-author use.
+private-to-author use; see [Preview release-candidate evidence](preview-rc-evidence.md) for the
+current bound preview candidate summary and `docs/architecture/release-posture-engineering-preview.md`
+in the planning envelope for the structured expansion triggers, owners, and qualifying experiments
+required to lift any posture hold (`FR-R8-03` / `03-08`, `03-09`).
 
 ## What the one observed cell is, and is not
 

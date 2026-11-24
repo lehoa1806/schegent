@@ -47,6 +47,7 @@ export const MAX_STREAM_BUFFER_BYTES = 64 * 1024 * 1024;
 
 let liveBufferCount = 0;
 let liveRetainedBytes = 0;
+let peakRetainedBytes = 0;
 
 /** The aggregate, as the projection reads it. */
 export interface StreamPressureReading {
@@ -66,10 +67,16 @@ export function readStreamPressure(): StreamPressureReading {
   };
 }
 
+/** FR-R8-03 (03-02) — high-water mark of aggregate retained stream bytes across live buffers. */
+export function readStreamPressurePeak(): number {
+  return peakRetainedBytes;
+}
+
 /** Test-only: module state outlives a test, and a bled number is a false reading. */
 export function resetStreamPressure(): void {
   liveBufferCount = 0;
   liveRetainedBytes = 0;
+  peakRetainedBytes = 0;
 }
 
 
@@ -126,6 +133,7 @@ export class ZippedStreamBuffer {
   private headBytes = 0;
   private tailBytes = 0;
   private observedBytes = 0;
+  private highWaterBytes = 0;
 
   constructor(
     flushThresholdBytes = 1024 * 1024,
@@ -164,6 +172,11 @@ export class ZippedStreamBuffer {
     return this.headBytes + this.tailBytes;
   }
 
+  /** FR-R8-03 (03-02) — peak retained bytes observed on this buffer before eviction/finalize. */
+  public get highWaterRetainedBytes(): number {
+    return this.highWaterBytes;
+  }
+
   /** Number of retained tail allocations (bounded by bytes/segment + two). */
   public get retainedTailChunkCount(): number {
     return (
@@ -187,7 +200,14 @@ export class ZippedStreamBuffer {
   public append(chunk: string): void {
     const retainedBefore = this.headBytes + this.tailBytes;
     this.appendInternal(chunk);
-    liveRetainedBytes += this.headBytes + this.tailBytes - retainedBefore;
+    const retainedAfter = this.headBytes + this.tailBytes;
+    if (retainedAfter > this.highWaterBytes) {
+      this.highWaterBytes = retainedAfter;
+    }
+    liveRetainedBytes += retainedAfter - retainedBefore;
+    if (liveRetainedBytes > peakRetainedBytes) {
+      peakRetainedBytes = liveRetainedBytes;
+    }
   }
 
   private appendInternal(chunk: string): void {

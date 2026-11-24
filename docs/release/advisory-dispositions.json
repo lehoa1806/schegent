@@ -9,9 +9,9 @@
       "range": "3.2.7",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 used exclusively during local unit/lint test runs. Verified absent from dist/module-graph/host.json (0 bundled third-party packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade tracked in docs/release/held-major-upgrades.md."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 used exclusively during local unit/lint test runs. Exposure: local developer/CI test runner only; mitigation: npm ignore-scripts=true, never bundled (verified absent from dist/module-graph/host.json [0 bundled third-party packages] and schegent-sbom.cdx.json on 2026-11-24, FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-qxg6-89mg-rqv8",
@@ -21,9 +21,9 @@
       "range": "3.2.7",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 used exclusively during local test execution and never exposed over a network listener. Verified absent from dist/module-graph/host.json and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade tracked in docs/release/held-major-upgrades.md."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 used exclusively during local test execution and never exposed over a network listener. Exposure: local test runner only; mitigation: never bundled (verified absent from dist/module-graph/host.json and schegent-sbom.cdx.json on 2026-11-24, FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-3g3m-2fjr-6pw4",
@@ -33,9 +33,9 @@
       "range": "13.0.7 || 10.5.0",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): glob@13.0.7 and nested glob@10.5.0 are transitive devDependencies of @vscode/vsce and test-exclude/@vitest/coverage-v8. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major @vscode/vsce@4.x / vitest@5.x upgrades tracked in docs/release/held-major-upgrades.md."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): glob@13.0.7 and nested glob@10.5.0 are transitive devDependencies of @vscode/vsce and test-exclude/@vitest/coverage-v8. Exposure: local build/test tooling on trusted repository files only; mitigation: never bundled (verified absent from dist/module-graph/host.json and schegent-sbom.cdx.json on 2026-11-24, FR-R8-03 03-05); upgrade trigger: dedicated semver-major @vscode/vsce@4.x and vitest@5.x migrations tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-g3hv-75wg-m249",
@@ -45,9 +45,9 @@
       "range": "10.2.6 || 9.0.9",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): minimatch@10.2.6 and nested minimatch@9.0.9 are transitive devDependencies of @vscode/vsce, glob, and test-exclude. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major @vscode/vsce@4.x / vitest@5.x upgrades."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): minimatch@10.2.6 and nested minimatch@9.0.9 are transitive devDependencies of @vscode/vsce, glob, and test-exclude. Exposure: local packaging and coverage tooling on trusted repository paths only; mitigation: never bundled (verified absent from dist/module-graph/host.json and schegent-sbom.cdx.json on 2026-11-24, FR-R8-03 03-05); upgrade trigger: dedicated semver-major @vscode/vsce@4.x and vitest@5.x migrations tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-5gmw-xhrv-c9v3",
@@ -57,9 +57,9 @@
       "range": "1.1.1",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive worker-pool devDependency of vitest@3.2.7 executed only in developer/CI test runs with trusted local test configs. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade tracked in docs/release/held-major-upgrades.md."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive worker-pool devDependency of vitest@3.2.7. Exposure: local developer test runner on trusted test files only (never invoked on untrusted inputs or shipped in VSIX); mitigation: npm ignore-scripts=true, verified absent from dist/module-graph/host.json and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration (or immediate promotion if tinypool ever becomes runtime-reachable, which advisory-shipped now blocks unconditionally)."
     },
     {
       "advisory": "GHSA-85c8-ppgw-ccpr",
@@ -69,9 +69,9 @@
       "range": "1.1.1",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive worker-pool devDependency of vitest@3.2.7 executed only in local test runs with trusted inputs. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade tracked in docs/release/held-major-upgrades.md."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive worker-pool devDependency of vitest@3.2.7. Exposure: local developer test runs on trusted inputs only; mitigation: npm ignore-scripts=true, verified absent from dist/module-graph/host.json and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration tracked in docs/release/held-major-upgrades.md (advisory-shipped blocks any runtime-reachable finding unconditionally)."
     },
     {
       "advisory": "GHSA-82fw-gwwq-j7x9",
@@ -81,9 +81,9 @@
       "range": "3.2.7",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): vitest@3.2.7 is a devDependency test runner never bundled into dist/extension.js or dist/acp-stdio-bridge.js. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade tracked in docs/release/held-major-upgrades.md."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): vitest@3.2.7 is a devDependency test runner never bundled into dist/extension.js or dist/acp-stdio-bridge.js. Exposure: local test runner only; mitigation: verified absent from dist/module-graph/host.json and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-82fw-gwwq-j7x9",
@@ -93,9 +93,9 @@
       "range": "3.2.7",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 in webview-ui. Verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 in webview-ui. Exposure: local webview component test runner only; mitigation: verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration."
     },
     {
       "advisory": "GHSA-qxg6-89mg-rqv8",
@@ -105,9 +105,9 @@
       "range": "3.2.7",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 in webview-ui used exclusively in local component tests. Verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12)."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): @vitest/mocker is a devDependency of vitest@3.2.7 in webview-ui used exclusively in local component tests. Exposure: local test runner only; mitigation: verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration."
     },
     {
       "advisory": "GHSA-3g3m-2fjr-6pw4",
@@ -117,9 +117,9 @@
       "range": "10.5.0",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): glob@10.5.0 is a transitive devDependency of test-exclude/@vitest/coverage-v8 in webview-ui. Verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12)."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): glob@10.5.0 is a transitive devDependency of test-exclude/@vitest/coverage-v8 in webview-ui. Exposure: local webview coverage tooling only; mitigation: verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration."
     },
     {
       "advisory": "GHSA-g3hv-75wg-m249",
@@ -129,9 +129,9 @@
       "range": "10.2.6 || 9.0.9",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): minimatch@10.2.6 and nested minimatch@9.0.9 are transitive devDependencies of glob and test-exclude in webview-ui. Verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12)."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): minimatch@10.2.6 and nested minimatch@9.0.9 are transitive devDependencies of glob and test-exclude in webview-ui. Exposure: local webview coverage tooling only; mitigation: verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration."
     },
     {
       "advisory": "GHSA-5gmw-xhrv-c9v3",
@@ -141,9 +141,9 @@
       "range": "1.1.1",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive devDependency of vitest@3.2.7 in webview-ui executed only during local unit tests. Verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive devDependency of vitest@3.2.7 in webview-ui. Exposure: local webview unit test runner on trusted files only; mitigation: npm ignore-scripts=true, verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-85c8-ppgw-ccpr",
@@ -153,9 +153,9 @@
       "range": "1.1.1",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive devDependency of vitest@3.2.7 in webview-ui executed only during local unit tests. Verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: critical; shipped runtime impact: none): tinypool@1.1.1 is a transitive devDependency of vitest@3.2.7 in webview-ui. Exposure: local webview unit test runner on trusted files only; mitigation: npm ignore-scripts=true, verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-82fw-gwwq-j7x9",
@@ -165,9 +165,9 @@
       "range": "3.2.7",
       "status": "accepted",
       "owner": "maintainer",
-      "decidedOn": "2026-11-23",
-      "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): vitest@3.2.7 is a devDependency test runner in webview-ui never bundled into dist/webview/. Verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major vitest@5.x upgrade."
+      "decidedOn": "2026-11-24",
+      "expiresOn": "2027-02-22",
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): vitest@3.2.7 is a devDependency test runner in webview-ui never bundled into dist/webview/. Exposure: local webview test runner only; mitigation: verified absent from dist/module-graph/webview.json (bundles only svelte and esm-env) and schegent-sbom.cdx.json on 2026-11-24 (FR-R8-03 03-05); upgrade trigger: dedicated semver-major vitest@5.x migration tracked in docs/release/held-major-upgrades.md."
     }
   ]
 }
