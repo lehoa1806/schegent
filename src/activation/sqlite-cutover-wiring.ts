@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
+import type { DeliveryRepresentation } from '../contracts/phase-context/context-delivery';
 import type { StorageDetailsReader } from '../contracts/sidebar-ipc/storage-details';
 import type { UsageAccountingReader } from '../contracts/sidebar-ipc/usage-accounting';
 import { createStorageDetailsReader } from '../headless/artifact-lifecycle-api';
@@ -182,6 +183,8 @@ export interface SqliteCutoverCoordinator {
   getLaneService(): LaneService | null;
   getRunLaneCoordinator(): RunLaneCoordinator | null;
   getPhaseHandoffCoordinator(): PhaseHandoffCoordinator | null;
+  resolveHandoffRepresentation(attemptId: string): DeliveryRepresentation | null;
+  resolveHandoffContentDigest(handoffId: string): string | null;
   getReportingService(): ReportingService | null;
   getChangeReviewService(): ChangeReviewService | null;
   getPhaseContextApi(): PhaseContextApi;
@@ -509,6 +512,7 @@ async function openPrimarySqliteServices(
       resolveExecutionRoot: (runId) => runLaneCoordinator.resolveExecutionRootSyncOrCached(runId),
       resolveLaneId: (runId) => runLaneCoordinator.resolveLaneIdForRun(runId)
     });
+    phaseHandoffCoordinator.reconcileInterruptedDispatches();
 
     const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     const reportingService = createReportingService({
@@ -909,6 +913,10 @@ export function createSqliteCutoverCoordinator(
     getLaneService: () => activeServices?.laneService ?? null,
     getRunLaneCoordinator: () => activeServices?.runLaneCoordinator ?? null,
     getPhaseHandoffCoordinator: () => activeServices?.phaseHandoffCoordinator ?? null,
+    resolveHandoffRepresentation: (attemptId) =>
+      activeServices?.phaseHandoffCoordinator.resolveHandoffRepresentation(attemptId) ?? null,
+    resolveHandoffContentDigest: (handoffId) =>
+      activeServices?.phaseHandoffCoordinator.resolveHandoffContentDigest(handoffId) ?? null,
     getReportingService: () => activeServices?.reportingService ?? null,
     getChangeReviewService: () => activeServices?.changeReviewService ?? null,
     getPhaseContextApi: () => createPhaseContextApi(() => activeServices?.phaseHandoffCoordinator ?? null),
@@ -929,11 +937,13 @@ export function createSqliteCutoverCoordinator(
         );
         const handoff = matchedRun?.envelope?.phaseHandoff;
         if (handoff?.handoffId != null && handoff.revision != null) {
+          const cleanCompletion =
+            summary.status === 'completed' || summary.status === 'succeeded';
           activeServices.phaseHandoffCoordinator.settleAttemptDispatch({
             handoffId: handoff.handoffId,
             revision: handoff.revision,
             targetAttemptId: handoff.attemptId,
-            delivered: summary.status === 'completed'
+            delivered: cleanCompletion
           });
         }
         if (
@@ -983,6 +993,9 @@ export function createSqliteCutoverCoordinator(
       } catch (err) {
         // Best-effort observation ledger recording.
         reportSideEffectFailure('acp-observation-ledger', err);
+      }
+      if (event.observation.kind === 'usage') {
+        coordinator.recordAcpUsageUpdate(event.observation.usage, event.observation.binding);
       }
     },
     recordAcpUsageUpdate(update, binding) {

@@ -7,31 +7,34 @@ import { ack } from './handler-helpers';
 // FR-R6-F11 (FR-001..FR-022, NFR-006) — read-only historical reporting queries and active-query
 // cancellation. Starts no process, writes no persisted state or file, and appends no audit row.
 
-let activeReportAbort: AbortController | null = null;
+const activeReportAborts = new WeakMap<object, AbortController>();
 
-function beginActiveQuery(): AbortController {
-  if (activeReportAbort !== null) {
-    activeReportAbort.abort();
+function beginActiveQuery(scope: object): AbortController {
+  const existing = activeReportAborts.get(scope);
+  if (existing !== undefined) {
+    existing.abort();
   }
   const next = new AbortController();
-  activeReportAbort = next;
+  activeReportAborts.set(scope, next);
   return next;
 }
 
-function finishActiveQuery(controller: AbortController): void {
-  if (activeReportAbort === controller) {
-    activeReportAbort = null;
+function finishActiveQuery(scope: object, controller: AbortController): void {
+  if (activeReportAborts.get(scope) === controller) {
+    activeReportAborts.delete(scope);
   }
 }
 
 export const handler: CommandHandler<ReadReportCommand> = async (ctx, command) => {
   const payload = command.payload;
+  const scope = ctx.deps;
 
   if (payload.op === 'cancelActive') {
-    const hadActive = activeReportAbort !== null && !activeReportAbort.signal.aborted;
-    if (activeReportAbort !== null) {
-      activeReportAbort.abort();
-      activeReportAbort = null;
+    const current = activeReportAborts.get(scope);
+    const hadActive = current !== undefined && !current.signal.aborted;
+    if (current !== undefined) {
+      current.abort();
+      activeReportAborts.delete(scope);
     }
     const response: ReadReportResponse = { op: 'cancelActive', canceled: hadActive };
     await ack(ctx, 'accepted', undefined, response);
@@ -62,14 +65,14 @@ export const handler: CommandHandler<ReadReportCommand> = async (ctx, command) =
   try {
     switch (payload.op) {
       case 'run': {
-        const controller = beginActiveQuery();
+        const controller = beginActiveQuery(scope);
         try {
           const result = await api.runReport(payload.query, controller.signal);
           const response: ReadReportResponse = { op: 'run', result };
           await ack(ctx, result.ok ? 'accepted' : 'rejected', result.ok ? undefined : result.outcome, response);
           return;
         } finally {
-          finishActiveQuery(controller);
+          finishActiveQuery(scope, controller);
         }
       }
       case 'page': {
@@ -97,25 +100,25 @@ export const handler: CommandHandler<ReadReportCommand> = async (ctx, command) =
         return;
       }
       case 'rerunSaved': {
-        const controller = beginActiveQuery();
+        const controller = beginActiveQuery(scope);
         try {
           const result = await api.rerunSavedReport({ reportId: payload.reportId }, controller.signal);
           const response: ReadReportResponse = { op: 'rerunSaved', result };
           await ack(ctx, result.ok ? 'accepted' : 'rejected', result.ok ? undefined : result.outcome, response);
           return;
         } finally {
-          finishActiveQuery(controller);
+          finishActiveQuery(scope, controller);
         }
       }
       case 'reproduceSaved': {
-        const controller = beginActiveQuery();
+        const controller = beginActiveQuery(scope);
         try {
           const result = await api.reproduceSavedReport({ reportId: payload.reportId }, controller.signal);
           const response: ReadReportResponse = { op: 'reproduceSaved', result };
           await ack(ctx, result.ok ? 'accepted' : 'rejected', result.ok ? undefined : result.outcome, response);
           return;
         } finally {
-          finishActiveQuery(controller);
+          finishActiveQuery(scope, controller);
         }
       }
     }

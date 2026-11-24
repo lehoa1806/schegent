@@ -1,12 +1,13 @@
 /**
- * FR-R6-F14 (F14-A; FR-001 to FR-019) — optional OpenTelemetry export: the destination profile
+ * FR-R6-F14 (FR-001 to FR-019) — optional OpenTelemetry export: the destination profile
  * and its evaluation, the source record the exporter accepts, the pinned mapping revision, the
  * bounds, the batch dispositions, the delivery receipt, the health projection and the ports.
  *
  * The exporter sends metrics only, as OTLP over HTTP with JSON encoding, and it never listens.
- * It is built and tested against a loopback fixture: no activation path constructs it in this
- * delivery (F14-B owns the settings surface, the secret-store adapter, the SQLite ledger, the
- * file spool and the wiring), and no collector or live provider was observed.
+ * Host wiring (`TelemetryHostService` in `src/services/telemetry-host/`) supplies the user
+ * settings surface, the secret-store adapter, the SQLite ledger, and the governed 32 MiB file
+ * spool; verification uses a loopback fixture collector and no real OpenTelemetry Collector or
+ * live provider was observed.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
@@ -44,7 +45,7 @@ const HOUR_MS = 60 * 60 * 1000;
 export const TELEMETRY_EXPORT_BOUNDS = Object.freeze({
   /** Encoded bytes of sealed batches held in memory. */
   memoryQueueBytes: 8 * MIB,
-  /** The disk spool's bound. Declared for F14-B; nothing in this delivery writes a spool. */
+  /** The disk spool's bound, enforced by `TelemetrySpoolStore` (`src/services/telemetry-host/`). */
   diskSpoolBytes: 32 * MIB,
   /** Age at which a batch expires unsent. */
   copyExpiryMs: 24 * HOUR_MS,

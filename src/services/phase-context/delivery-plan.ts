@@ -10,8 +10,9 @@
  * pass F13's prompt builder before they are returned.
  *
  * The representation holds identities, digests and route names, never a location: planning
- * again once a copy exists gives the same record. Sending the blocks, copying files, reusing
- * a session and storing the representation are F15-B.
+ * again once a copy exists gives the same record. Sending the blocks, materializing copies,
+ * reusing a qualified session, and persisting the representation are coordinated by
+ * `handoff-delivery-coordinator.ts`, `handoff-materializer.ts`, and `sqlite-handoff-store.ts`.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
@@ -131,16 +132,23 @@ function parseProfile(value: unknown): Checked<{ readonly profileId: string; rea
 }
 
 /**
- * FR-013. A fresh session always works. Reuse needs a policy that permits it, a target lineage
- * that is the attempt being dispatched, and a session of that node and occurrence: a session of
- * another lineage is never forwarded.
+ * FR-013. A fresh session always works. Reuse needs a policy that permits it, negotiated
+ * `loadSession` capability on the target backend, a target lineage that is the attempt being
+ * dispatched, and a session of that node and occurrence: a session of another lineage is never
+ * forwarded.
  */
-function checkSession(value: unknown, manifest: HandoffManifest, targetAttemptId: string): Checked<{ readonly session: DeliverySession }> {
+function checkSession(
+  value: unknown,
+  manifest: HandoffManifest,
+  targetAttemptId: string,
+  capabilities: NegotiatedCapabilities
+): Checked<{ readonly session: DeliverySession }> {
   const record = plainRecord(value);
   if (record === null) return refuse('invalid-source', 'session-shape');
   if (record.kind === 'fresh' && hasExactKeys(record, FRESH_SESSION_KEYS)) return { ok: true, session: 'fresh' };
   if (record.kind !== 'reuse' || !hasExactKeys(record, REUSE_SESSION_KEYS)) return refuse('invalid-source', 'session-shape');
   if (manifest.session === 'fresh') return refuse('invalid-policy', 'session-reuse-not-permitted');
+  if (!capabilities.loadSession) return refuse('invalid-policy', 'session-load-unsupported');
   const sessionLineage = parseProducerRef(record.sessionLineage);
   const targetLineage = parseProducerRef(record.targetLineage);
   if (sessionLineage === null || targetLineage === null) return refuse('invalid-source', 'session-shape');
@@ -301,7 +309,7 @@ export function planDelivery(input: DeliveryInput): DeliveryResult {
   if (!profile.ok) return profile;
   const { rendered } = recorded;
   if (rendered.bytes > profile.qualifiedBytes) return refuse('capacity-exceeded', 'qualified-bound');
-  const session = checkSession(input.session, manifest, targetAttemptId);
+  const session = checkSession(input.session, manifest, targetAttemptId, capabilities);
   if (!session.ok) return session;
   const routed = routeArtifacts(manifest, input.accessOf, capabilities.embeddedContext, profile.qualifiedBytes - rendered.bytes);
   if (!routed.ok) return routed;

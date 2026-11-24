@@ -30,10 +30,22 @@ export interface DurableBatchDisposition {
   readonly at: number;
 }
 
+export interface PersistedTelemetryAuthFingerprint {
+  readonly version: 1;
+  readonly fingerprint: string | null;
+  readonly updatedAtMs: number;
+}
+
 export interface SqliteTelemetryLedger extends TelemetryLedgerPort {
   setActiveProfileId(profileId: string): void;
   readAuthorizationGeneration(): number;
   bumpAuthorizationGeneration(): number;
+  readAuthorizationFingerprint(): string | null;
+  writeAuthorizationFingerprint(fingerprint: string | null): void;
+  syncAuthorizationDestination(fingerprint: string | null): {
+    readonly generation: number;
+    readonly changed: boolean;
+  };
   copyCount(): number;
   receipts(): readonly DeliveryReceipt[];
   dispositions(): readonly DurableBatchDisposition[];
@@ -52,7 +64,30 @@ export interface SqliteTelemetryLedger extends TelemetryLedgerPort {
 
 const AUTH_GEN_NAMESPACE = 'telemetry-export';
 const AUTH_GEN_KEY = 'authorization-generation';
+const AUTH_FINGERPRINT_KEY = 'telemetry-authorization-fingerprint';
 const RECENT_ENTRIES_MAX = 256;
+
+type StoredFingerprintState =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'valid'; readonly fingerprint: string | null }
+  | { readonly kind: 'corrupt' };
+
+function inTransaction(conn: SqliteApplicationStore['writerConnection']): boolean {
+  return conn.db.isTransaction;
+}
+
+function inImmediateTransaction<T>(conn: SqliteApplicationStore['writerConnection'], work: () => T): T {
+  if (inTransaction(conn)) return work();
+  conn.exec('BEGIN IMMEDIATE');
+  try {
+    const result = work();
+    conn.exec('COMMIT');
+    return result;
+  } catch (error) {
+    if (inTransaction(conn)) conn.exec('ROLLBACK');
+    throw error;
+  }
+}
 
 export function createSqliteTelemetryLedger(
   sqliteStore: SqliteApplicationStore,
@@ -60,8 +95,98 @@ export function createSqliteTelemetryLedger(
 ): SqliteTelemetryLedger {
   const conn = sqliteStore.writerConnection;
   let activeProfileId = 'default';
+  let lastNowMs = 0;
   const recentReceipts: DeliveryReceipt[] = [];
   const recentDispositions: DurableBatchDisposition[] = [];
+
+  function safeNowMs(): number {
+    try {
+      const value = nowMs();
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        lastNowMs = value;
+        return value;
+      }
+    } catch {
+      // Clock faults fall back to the last valid timestamp so durability writes never throw.
+    }
+    return lastNowMs;
+  }
+
+  function readGenerationRow(): number {
+    const row = conn.get<{ revision: number }>(
+      `SELECT revision FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
+      AUTH_GEN_NAMESPACE,
+      AUTH_GEN_KEY
+    );
+    return row?.revision ?? 1;
+  }
+
+  function writeGenerationRow(generation: number): void {
+    const payload = JSON.stringify({ generation });
+    conn.run(
+      `INSERT INTO operational_kv_documents (
+        doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
+      ) VALUES (?, ?, ?, 1, ?, ?, 0, ?)
+      ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
+        revision = excluded.revision,
+        payload_json = excluded.payload_json,
+        payload_bytes = excluded.payload_bytes,
+        updated_at_ms = excluded.updated_at_ms`,
+      AUTH_GEN_NAMESPACE,
+      AUTH_GEN_KEY,
+      generation,
+      payload,
+      Buffer.byteLength(payload, 'utf8'),
+      safeNowMs()
+    );
+  }
+
+  function readStoredFingerprint(): StoredFingerprintState {
+    const row = conn.get<{ payload_json: string }>(
+      `SELECT payload_json FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
+      AUTH_GEN_NAMESPACE,
+      AUTH_FINGERPRINT_KEY
+    );
+    if (row === undefined) return { kind: 'absent' };
+    try {
+      const parsed = JSON.parse(row.payload_json) as Partial<PersistedTelemetryAuthFingerprint>;
+      if (
+        parsed.version === 1 &&
+        (parsed.fingerprint === null || (typeof parsed.fingerprint === 'string' && parsed.fingerprint.length > 0))
+      ) {
+        return { kind: 'valid', fingerprint: parsed.fingerprint };
+      }
+      return { kind: 'corrupt' };
+    } catch {
+      // Corrupt persisted fingerprint fails closed by forcing an authorization generation bump.
+      return { kind: 'corrupt' };
+    }
+  }
+
+  function writeFingerprintRow(fingerprint: string | null): void {
+    const updatedAtMs = safeNowMs();
+    const doc: PersistedTelemetryAuthFingerprint = {
+      version: 1,
+      fingerprint,
+      updatedAtMs
+    };
+    const payload = JSON.stringify(doc);
+    conn.run(
+      `INSERT INTO operational_kv_documents (
+        doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
+      ) VALUES (?, ?, 1, 1, ?, ?, 0, ?)
+      ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
+        revision = operational_kv_documents.revision + 1,
+        payload_json = excluded.payload_json,
+        payload_bytes = excluded.payload_bytes,
+        updated_at_ms = excluded.updated_at_ms`,
+      AUTH_GEN_NAMESPACE,
+      AUTH_FINGERPRINT_KEY,
+      payload,
+      Buffer.byteLength(payload, 'utf8'),
+      updatedAtMs
+    );
+  }
 
   function ensureDestinationRegistered(profileId: string): void {
     const existing = conn.get<{ destination_id: string }>(
@@ -101,34 +226,58 @@ export function createSqliteTelemetryLedger(
     },
 
     readAuthorizationGeneration(): number {
-      const row = conn.get<{ revision: number }>(
-        `SELECT revision FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?`,
-        AUTH_GEN_NAMESPACE,
-        AUTH_GEN_KEY
-      );
-      return row?.revision ?? 1;
+      return readGenerationRow();
     },
 
     bumpAuthorizationGeneration(): number {
-      const next = this.readAuthorizationGeneration() + 1;
-      const payload = JSON.stringify({ generation: next });
-      conn.run(
-        `INSERT INTO operational_kv_documents (
-          doc_namespace, doc_key, revision, schema_version, payload_json, payload_bytes, is_terminal, updated_at_ms
-        ) VALUES (?, ?, ?, 1, ?, ?, 0, ?)
-        ON CONFLICT(doc_namespace, doc_key) DO UPDATE SET
-          revision = excluded.revision,
-          payload_json = excluded.payload_json,
-          payload_bytes = excluded.payload_bytes,
-          updated_at_ms = excluded.updated_at_ms`,
-        AUTH_GEN_NAMESPACE,
-        AUTH_GEN_KEY,
-        next,
-        payload,
-        Buffer.byteLength(payload, 'utf8'),
-        nowMs()
-      );
-      return next;
+      return inImmediateTransaction(conn, () => {
+        const next = readGenerationRow() + 1;
+        writeGenerationRow(next);
+        return next;
+      });
+    },
+
+    readAuthorizationFingerprint(): string | null {
+      const stored = readStoredFingerprint();
+      return stored.kind === 'valid' ? stored.fingerprint : null;
+    },
+
+    writeAuthorizationFingerprint(fingerprint: string | null): void {
+      inImmediateTransaction(conn, () => {
+        writeFingerprintRow(fingerprint);
+      });
+    },
+
+    syncAuthorizationDestination(nextFingerprint: string | null): {
+      readonly generation: number;
+      readonly changed: boolean;
+    } {
+      return inImmediateTransaction(conn, () => {
+        const currentGen = readGenerationRow();
+        const stored = readStoredFingerprint();
+        if (stored.kind === 'absent') {
+          if (nextFingerprint === null) {
+            return { generation: currentGen, changed: false };
+          }
+          const hasLegacySpooledBatches =
+            Number(conn.scalar(`SELECT COUNT(*) FROM telemetry_spool_batches`) ?? 0) > 0;
+          if (hasLegacySpooledBatches) {
+            const nextGen = currentGen + 1;
+            writeGenerationRow(nextGen);
+            writeFingerprintRow(nextFingerprint);
+            return { generation: nextGen, changed: true };
+          }
+          writeFingerprintRow(nextFingerprint);
+          return { generation: currentGen, changed: false };
+        }
+        if (stored.kind === 'valid' && stored.fingerprint === nextFingerprint) {
+          return { generation: currentGen, changed: false };
+        }
+        const nextGen = currentGen + 1;
+        writeGenerationRow(nextGen);
+        writeFingerprintRow(nextFingerprint);
+        return { generation: nextGen, changed: true };
+      });
     },
 
     rememberCopy(copyId: string): 'new' | 'duplicate' {
@@ -147,7 +296,7 @@ export function createSqliteTelemetryLedger(
         copyId,
         activeProfileId,
         TELEMETRY_MAPPING_REVISION,
-        nowMs()
+        safeNowMs()
       );
       pruneRememberedCopiesIfNeeded();
       return 'new';
@@ -193,7 +342,7 @@ export function createSqliteTelemetryLedger(
       state: BatchTerminalState,
       reason: ExpiryReason | DropReason | null
     ): void {
-      const at = nowMs();
+      const at = safeNowMs();
       recentDispositions.push(Object.freeze({ batchId, state, reason, at }));
       if (recentDispositions.length > RECENT_ENTRIES_MAX) {
         recentDispositions.splice(0, recentDispositions.length - RECENT_ENTRIES_MAX);
@@ -276,7 +425,7 @@ export interface TelemetrySpoolStore {
     readonly body: Uint8Array;
   }): Promise<{ readonly spooled: boolean; readonly droppedBatchIds: readonly string[] }>;
   readSpooledPayload(entry: SpooledBatchEntry): Promise<Uint8Array | null>;
-  removeBatch(batchId: string): Promise<void>;
+  removeBatch(batchId: string): Promise<boolean>;
   reconcileForDestination(params: {
     readonly activeDestination: ResolvedDestination | null;
     readonly authorizationGeneration: number;
@@ -317,6 +466,20 @@ export function createTelemetrySpoolStore(params: {
   const conn = params.sqliteStore.writerConnection;
   const storageRoot = params.storageRoot;
   const nowMs = params.nowMs ?? (() => Date.now());
+  let lastNowMs = 0;
+
+  function safeNowMs(): number {
+    try {
+      const value = nowMs();
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        lastNowMs = value;
+        return value;
+      }
+    } catch {
+      // Clock faults fall back to the last valid timestamp so spool operations never reject.
+    }
+    return lastNowMs;
+  }
 
   async function unlinkQuietly(relPath: string): Promise<void> {
     if (!relPath.startsWith(`${SPOOL_SUBDIR}/`) || relPath.includes('..')) return;
@@ -408,10 +571,12 @@ export function createTelemetrySpoolStore(params: {
       for (const candidate of existing) {
         if (currentBytes + req.body.byteLength <= TELEMETRY_EXPORT_BOUNDS.diskSpoolBytes) break;
         if (conn.isClosed()) return { spooled: false, droppedBatchIds: [...droppedBatchIds, req.batchId] };
-        conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, candidate.batchId);
-        await unlinkQuietly(candidate.relPath);
+        const del = conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, candidate.batchId);
         currentBytes -= candidate.payloadBytes;
-        droppedBatchIds.push(candidate.batchId);
+        if (del.changes > 0) {
+          await unlinkQuietly(candidate.relPath);
+          droppedBatchIds.push(candidate.batchId);
+        }
       }
 
       const relPath = `${SPOOL_SUBDIR}/${req.batchId}.json`;
@@ -434,7 +599,7 @@ export function createTelemetrySpoolStore(params: {
         return { spooled: false, droppedBatchIds: [...droppedBatchIds, req.batchId] };
       }
 
-      const now = nowMs();
+      const now = safeNowMs();
       const metaJson = JSON.stringify({
         relPath,
         profileRevision: req.destination.profileRevision,
@@ -468,30 +633,38 @@ export function createTelemetrySpoolStore(params: {
     },
 
     async removeBatch(batchId) {
+      if (conn.isClosed()) return false;
       const existing = listDbEntries().find((item) => item.batchId === batchId);
-      conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, batchId);
+      const deleted = conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, batchId);
       if (existing !== undefined) {
         await unlinkQuietly(existing.relPath);
       }
+      return deleted.changes > 0;
     },
 
     async reconcileForDestination(rec) {
-      const now = nowMs();
+      if (conn.isClosed()) return [];
+      const now = safeNowMs();
       const entries = listDbEntries();
       const referencedRelPaths = new Set<string>();
       const kept: SpooledBatchEntry[] = [];
 
       for (const entry of entries) {
+        if (conn.isClosed()) return [];
         if (now - entry.createdAtMs > TELEMETRY_EXPORT_BOUNDS.copyExpiryMs) {
-          conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
-          await unlinkQuietly(entry.relPath);
-          rec.onExpired(entry.batchId, 'age');
+          const del = conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
+          if (del.changes > 0) {
+            await unlinkQuietly(entry.relPath);
+            rec.onExpired(entry.batchId, 'age');
+          }
           continue;
         }
         if (rec.activeDestination === null) {
-          conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
-          await unlinkQuietly(entry.relPath);
-          rec.onDropped(entry.batchId, 'disabled');
+          const del = conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
+          if (del.changes > 0) {
+            await unlinkQuietly(entry.relPath);
+            rec.onDropped(entry.batchId, 'disabled');
+          }
           continue;
         }
         if (
@@ -499,16 +672,21 @@ export function createTelemetrySpoolStore(params: {
           entry.profileRevision !== rec.activeDestination.profileRevision ||
           entry.authorizationGeneration !== rec.authorizationGeneration
         ) {
-          conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
-          await unlinkQuietly(entry.relPath);
-          rec.onDropped(entry.batchId, 'authorization-changed');
+          const del = conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
+          if (del.changes > 0) {
+            await unlinkQuietly(entry.relPath);
+            rec.onDropped(entry.batchId, 'authorization-changed');
+          }
           continue;
         }
         const payload = await this.readSpooledPayload(entry);
+        if (conn.isClosed()) return [];
         if (payload === null || payload.byteLength !== entry.payloadBytes) {
-          conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
-          await unlinkQuietly(entry.relPath);
-          rec.onDropped(entry.batchId, 'rejected');
+          const del = conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
+          if (del.changes > 0) {
+            await unlinkQuietly(entry.relPath);
+            rec.onDropped(entry.batchId, 'rejected');
+          }
           continue;
         }
         referencedRelPaths.add(entry.relPath);
@@ -533,6 +711,7 @@ export function createTelemetrySpoolStore(params: {
     },
 
     stats() {
+      if (conn.isClosed()) return { spooledBatches: 0, spooledBytes: 0 };
       const row = conn.get<{ cnt: number; total_bytes: number | null }>(
         `SELECT COUNT(*) AS cnt, SUM(payload_bytes) AS total_bytes FROM telemetry_spool_batches`
       );

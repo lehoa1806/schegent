@@ -258,7 +258,8 @@ export async function readIterationManifest(
   let truncatedCount = 0;
   for (const { entry: projected } of shown) {
     const truncated = truncateDisplayEntryBody(projected, {
-      perFieldBytes: args.caps.perFieldBytes
+      perFieldBytes: args.caps.perFieldBytes,
+      sanitize: args.sanitize
     });
     if (truncated.bodyTruncated !== null) truncatedCount += 1;
     const sanitized = sanitizeDisplayEntryBody(truncated, args.sanitize);

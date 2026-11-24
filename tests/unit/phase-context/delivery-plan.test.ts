@@ -9,6 +9,7 @@ import type { ArtifactAccess, DeliveryPlan, DeliveryRepresentation } from '../..
 import type { AcceptedRevision, HandoffManifest, ManifestSource } from '../../../src/contracts/phase-context/context-manifest';
 import type { ArtifactRef } from '../../../src/contracts/phase-context/context-policy';
 import { createAcceptanceService } from '../../../src/services/phase-context/acceptance';
+import { capabilityRequestFields } from '../../../src/controller/capability-decision-recorder';
 import { checkDispatch, planDelivery, type DeliveryInput } from '../../../src/services/phase-context/delivery-plan';
 import { buildManifest, type ManifestInput } from '../../../src/services/phase-context/manifest';
 import { createMemoryHandoffStore } from '../../../src/services/phase-context/memory-store';
@@ -386,6 +387,55 @@ describe('planDelivery', () => {
       const result = planDelivery(inputOf(reusable, {}, { session: { kind: 'reuse', sessionLineage: targetLineage, targetLineage } }));
 
       expect(result).toEqual(refusal('invalid-source', 'session-target'));
+    });
+
+    it('refuses reuse when target capabilities.loadSession is false while still allowing fresh', () => {
+      const refused = planDelivery(
+        inputOf(
+          reusable,
+          {},
+          {
+            capabilities: capabilities({ loadSession: false }),
+            session: { kind: 'reuse', sessionLineage: earlier, targetLineage: target }
+          }
+        )
+      );
+      expect(refused).toEqual(refusal('invalid-policy', 'session-load-unsupported'));
+
+      const fresh = planned(
+        inputOf(
+          reusable,
+          {},
+          {
+            capabilities: capabilities({ loadSession: false }),
+            session: { kind: 'fresh' }
+          }
+        )
+      );
+      expect(fresh.representation.session).toBe('fresh');
+    });
+
+    it('clears ambient sessionReuse and resumeSessionId in capabilityRequestFields when sessionReusePermitted is false', () => {
+      const merged = {
+        sessionReuse: true,
+        resumeSessionId: 'ambient-session-123',
+        resumeSessionOrigin: 'acp' as const,
+        ...capabilityRequestFields({
+          iteration: 0,
+          envelope: {
+            phaseHandoff: {
+              handoffId: 'h-1',
+              revision: 1,
+              attemptId: TARGET_ATTEMPT,
+              representationDigest: digestOf('a'),
+              sessionReusePermitted: false
+            }
+          }
+        })
+      };
+      expect(merged.sessionReuse).toBe(false);
+      expect(merged.resumeSessionId).toBeUndefined();
+      expect(merged.resumeSessionOrigin).toBeUndefined();
     });
 
     it('refuses a lineage that is not a producer reference', () => {

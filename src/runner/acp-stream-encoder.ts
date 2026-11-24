@@ -9,6 +9,7 @@
  *
  * Zero `vscode` or `child_process` imports.
  */
+import { sanitizeAgentDisplayTitle } from '../services/acp-runtime/agent-identifier';
 import type { AcpNormalizedEvent } from '../services/phase-log/acp-live-projection';
 
 export const MAX_COALESCED_ACP_TEXT_BYTES = 65_536;
@@ -34,10 +35,11 @@ function encodeSystemLine(subtype: 'acp-plan' | 'acp-status', summary: string): 
 }
 
 function encodeToolCallLine(event: AcpNormalizedEvent): string {
+  const safeToolName = sanitizeAgentDisplayTitle(event.toolName) ?? 'tool';
   const block: Record<string, unknown> = {
     type: 'tool_use',
     ...(event.sourceEventId !== null ? { id: event.sourceEventId } : {}),
-    name: event.toolName ?? 'tool',
+    name: safeToolName,
     ...('toolArgs' in event && event.toolArgs !== undefined ? { input: event.toolArgs } : {})
   };
   return `${JSON.stringify({

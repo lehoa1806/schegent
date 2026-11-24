@@ -486,4 +486,240 @@ describe('FR-R7-16 (16-09) — ACP projection metadata grammar and pre-allocatio
     expect(JSON.stringify(oversizedItems)).not.toContain(secret);
     expect(Buffer.byteLength(JSON.stringify(oversizedEntry), 'utf8')).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
   });
+
+  it('strips ANSI CSI/OSC, bidi overrides/isolates/marks, newlines, redacts secrets, and bounds >100 KiB hostile toolName (R7-17-05)', () => {
+    const secret = ['sk', 'proj', 'B'.repeat(28)].join('-');
+    const hostileToolName =
+      `\u001b[31mRun\u001b[0m \u001b]0;title\u0007\u202eevil\u202c ` +
+      `\u2066iso\u2069\u200e\u200f\u061c\r\nnext\u2028line\u2029end ${secret} ` +
+      'W'.repeat(120_000);
+    const items = project([
+      {
+        connectionGeneration: 'g1',
+        attemptId: 'attempt-1',
+        sourceEventId: 'e-hostile',
+        origin: 'live',
+        kind: 'tool-call',
+        toolName: hostileToolName,
+        toolArgs: { path: 'a.ts' }
+      },
+      {
+        connectionGeneration: 'g1',
+        attemptId: 'attempt-1',
+        sourceEventId: 'e-invisible',
+        origin: 'live',
+        kind: 'tool-call',
+        toolName: '\u001b[31m\u202e\u2066\u200e\u200f\r\n',
+        toolArgs: { path: 'b.ts' }
+      }
+    ]);
+
+    expect(items).toHaveLength(2);
+    const cleaned = items.at(0)?.entry.body.toolName ?? '';
+    expect(cleaned.length).toBeGreaterThan(0);
+    expect(cleaned.length).toBeLessThanOrEqual(ACP_TOOL_NAME_MAX_LENGTH);
+    expect(cleaned).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+    expect(cleaned).not.toContain('\u001b');
+    expect(cleaned).not.toContain(secret);
+    expect(cleaned).toContain('[REDACTED]');
+    expect(items.at(1)?.entry.body.toolName).toBe('tool');
+  });
+
+  it('runs custom options.sanitize before 128-char and 128-UTF-8-byte toolName capping (SR-A2 #2)', () => {
+    const customToken = ['CUSTOM', 'ACP', 'SECRET1234567890'].join('_');
+    const customOptions = {
+      sanitize: (s: string): string => logger.sanitize(s).replaceAll(customToken, REDACTION_SENTINEL),
+      caps: { perFieldBytes: 4096 }
+    };
+    const base = {
+      connectionGeneration: 'g1',
+      attemptId: 'attempt-1',
+      sourceEventId: null,
+      origin: 'live',
+      kind: 'tool-call',
+      toolArgs: { path: 'notes.md' }
+    } as const;
+
+    const asciiStraddle = `${'a'.repeat(110)} ${customToken}`;
+    const accentedByteStraddle = `${'é'.repeat(55)} ${customToken}`; // 84 chars, 139 UTF-8 bytes
+    const cjkByteStraddle = `${'中'.repeat(38)} ${customToken}`; // 67 chars, 143 UTF-8 bytes
+
+    const { items } = projectAcpEvents(
+      initialAcpProjectionState(),
+      [
+        { ...base, toolName: asciiStraddle },
+        { ...base, toolName: accentedByteStraddle },
+        { ...base, toolName: cjkByteStraddle }
+      ],
+      customOptions
+    );
+
+    expect(items).toHaveLength(3);
+    expect(items.at(0)?.entry.body.toolName).toBe(`${'a'.repeat(110)} ${REDACTION_SENTINEL}`);
+    expect(items.at(1)?.entry.body.toolName).toBe(`${'é'.repeat(55)} ${REDACTION_SENTINEL}`);
+    expect(items.at(2)?.entry.body.toolName).toBe(`${'中'.repeat(38)} ${REDACTION_SENTINEL}`);
+    for (const item of items) {
+      const name = item.entry.body.toolName ?? '';
+      expect(Buffer.byteLength(name, 'utf8')).toBeLessThanOrEqual(ACP_TOOL_NAME_MAX_LENGTH);
+      expect(name).not.toContain('CUSTOM_ACP');
+    }
+  });
+
+  it('redacts secrets straddling perFieldBytes across message, toolInput, tool-result, plan, and status (SR-A2 #2 / CR-A2 #3)', () => {
+    const customToken = ['CUSTOM', 'FIELD', 'SECRET1234567890'].join('_');
+    const skToken = ['sk', 'ant', 'api03', 'P'.repeat(36)].join('-');
+    const ghToken = ['ghp', 'Q'.repeat(36)].join('_');
+    const customOptions = {
+      sanitize: (s: string): string => logger.sanitize(s).replaceAll(customToken, REDACTION_SENTINEL),
+      caps: { perFieldBytes: 4096 }
+    };
+    const base = {
+      connectionGeneration: 'g1',
+      attemptId: 'attempt-1',
+      sourceEventId: null,
+      origin: 'live'
+    } as const;
+
+    const msgPayload = `${'m'.repeat(4_080)} ${skToken}`;
+    const toolInputPayload = `${'t'.repeat(4_080)} ${ghToken}`;
+    const toolResultPayload = `${'r'.repeat(4_080)} ${customToken}`;
+    const planPayload = `${'中'.repeat(1_360)} ${skToken}`;
+    const statusPayload = `${'é'.repeat(2_040)} ${customToken}`;
+    const oversizedJwt = [['eyJ', 'hbGciOiJIUzI1NiJ9'].join(''), 'A'.repeat(20_000), 'sig12345678'].join('.');
+    const lookaheadPull = `${['ghp', 'Z'.repeat(8_130)].join('_')}.${['SG', 'B'.repeat(22), `${'C'.repeat(42)}Z`].join('.')}${'x'.repeat(20_000)}`;
+
+    const { items } = projectAcpEvents(
+      initialAcpProjectionState(),
+      [
+        { ...base, kind: 'message', text: msgPayload },
+        { ...base, kind: 'tool-call', toolName: 'Run', toolArgs: toolInputPayload },
+        { ...base, kind: 'tool-result', text: toolResultPayload },
+        { ...base, kind: 'plan', text: planPayload },
+        { ...base, kind: 'status', text: statusPayload },
+        { ...base, kind: 'message', text: oversizedJwt },
+        { ...base, kind: 'tool-result', text: lookaheadPull }
+      ],
+      customOptions
+    );
+
+    expect(items).toHaveLength(7);
+    const serialized = JSON.stringify(items);
+    expect(serialized).not.toContain('sk-ant-');
+    expect(serialized).not.toContain('ghp_');
+    expect(serialized).not.toContain('CUSTOM_FIELD');
+    expect(serialized).not.toContain('eyJ');
+    expect(serialized).not.toContain('SG.');
+
+    expect(items.at(0)?.entry.body.text).toContain(REDACTION_SENTINEL);
+    expect(items.at(0)?.entry.bodyTruncated?.text?.originalLength).toBe(Buffer.byteLength(msgPayload, 'utf8'));
+    expect(items.at(1)?.entry.body.toolInput).toContain(REDACTION_SENTINEL);
+    expect(items.at(1)?.entry.bodyTruncated?.toolInput?.originalLength).toBe(Buffer.byteLength(toolInputPayload, 'utf8'));
+    expect(items.at(2)?.entry.body.toolResult).toContain(REDACTION_SENTINEL);
+    expect(items.at(2)?.entry.bodyTruncated?.toolResult?.originalLength).toBe(Buffer.byteLength(toolResultPayload, 'utf8'));
+    expect(items.at(3)?.entry.body.systemSummary).toContain(REDACTION_SENTINEL);
+    expect(items.at(3)?.entry.bodyTruncated?.systemSummary?.originalLength).toBe(Buffer.byteLength(planPayload, 'utf8'));
+    expect(items.at(4)?.entry.body.systemSummary).toContain(REDACTION_SENTINEL);
+    expect(items.at(4)?.entry.bodyTruncated?.systemSummary?.originalLength).toBe(Buffer.byteLength(statusPayload, 'utf8'));
+    expect(items.at(5)?.entry.body.text).toBe(REDACTION_SENTINEL);
+    expect(items.at(5)?.entry.bodyTruncated?.text?.originalLength).toBe(Buffer.byteLength(oversizedJwt, 'utf8'));
+    expect(items.at(6)?.entry.body.toolResult).toBe(REDACTION_SENTINEL);
+    expect(items.at(6)?.entry.bodyTruncated?.toolResult?.originalLength).toBe(Buffer.byteLength(lookaheadPull, 'utf8'));
+
+    for (const item of items) {
+      expect(Buffer.byteLength(JSON.stringify(item.entry), 'utf8')).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
+    }
+  });
+
+  it('blocks SR-A3 #1/#2/#3 JWT dead-zone, glued-prefix, sentinel-injection, and custom-sanitize toolName secret-pull vectors end-to-end', () => {
+    const customOptions = {
+      sanitize: (s: string): string => logger.sanitize(s).replace(/CUSTOM_[A-Za-z0-9]{16,}/g, REDACTION_SENTINEL),
+      caps: { perFieldBytes: 4096 }
+    };
+    const base = {
+      connectionGeneration: 'g1',
+      attemptId: 'attempt-1',
+      sourceEventId: null,
+      origin: 'live'
+    } as const;
+
+    const jwtPayload = ['eyJ', 'zdWIiOiIxMjM0NTY3ODkwIn0'].join('');
+    const jwtSig = 'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const jwt128 = `${['eyJ', 'A'.repeat(4_090)].join('')}.${jwtPayload}.${jwtSig}`;
+    const jwt4096 = `${['eyJ', 'A'.repeat(4_602)].join('')}.${jwtPayload}.${jwtSig}`;
+    const jwtTrunc = `${['eyJ', 'A'.repeat(8_186)].join('')}.${jwtPayload}.${jwtSig}`;
+    const prefJwt = `${['jwt', `eyJ${'A'.repeat(5_000)}`].join('_')}.${jwtPayload}.${jwtSig}`;
+
+    const secretPass = ['MY', 'SECRET', 'PASS'].join('_');
+    const urlPullTitle = `${['sk', 'ant', 'A'.repeat(4_050)].join('-')},${['https', '//u'].join(':')}:${secretPass}[REDACTED]TAIL1234567890@host.com`;
+    const urlPullTitle4096 = `${['sk', 'ant', 'A'.repeat(4_560)].join('-')},${['https', '//u'].join(':')}:${secretPass}[REDACTED]TAIL1234567890@host.com`;
+    const urlPullBody4096 = `${['sk', 'ant', 'A'.repeat(8_140)].join('-')},${['https', '//u'].join(':')}:${secretPass}[REDACTED]TAIL1234567890@host.com`;
+
+    const customLeaked = ['CUSTOM', 'LEAKED12345678901234'].join('_');
+    const customTool = `${['CUSTOM', 'A'.repeat(4_075)].join('_')} ${customLeaked}`;
+    const singleBlobCustomComma = `${['CUSTOM', 'A'.repeat(4_580)].join('_')},${customLeaked}`;
+    const singleBlobCustomDot = `${['CUSTOM', 'A'.repeat(4_580)].join('_')}.${customLeaked}`;
+
+    const { items } = projectAcpEvents(
+      initialAcpProjectionState(),
+      [
+        { ...base, kind: 'tool-call', toolName: jwt128, toolArgs: { ok: true } },
+        { ...base, kind: 'tool-call', toolName: jwt4096, toolArgs: { ok: true } },
+        { ...base, kind: 'message', text: jwtTrunc },
+        { ...base, kind: 'tool-call', toolName: prefJwt, toolArgs: { ok: true } },
+        { ...base, kind: 'tool-call', toolName: urlPullTitle, toolArgs: { ok: true } },
+        { ...base, kind: 'tool-call', toolName: urlPullTitle4096, toolArgs: { ok: true } },
+        { ...base, kind: 'tool-result', text: urlPullBody4096 },
+        { ...base, kind: 'tool-call', toolName: customTool, toolArgs: { ok: true } },
+        { ...base, kind: 'tool-call', toolName: singleBlobCustomComma, toolArgs: { ok: true } },
+        { ...base, kind: 'tool-call', toolName: singleBlobCustomDot, toolArgs: { ok: true } }
+      ],
+      customOptions
+    );
+
+    expect(items).toHaveLength(10);
+    const serialized = JSON.stringify(items);
+    expect(serialized).not.toContain('eyJ');
+    expect(serialized).not.toContain(secretPass);
+    expect(serialized).not.toContain('CUSTOM_LEAKED');
+
+    expect(items.at(0)?.entry.body.toolName).toBe(REDACTION_SENTINEL);
+    expect(items.at(1)?.entry.body.toolName).toBe(REDACTION_SENTINEL);
+    expect(items.at(2)?.entry.body.text).toBe(REDACTION_SENTINEL);
+    expect(items.at(3)?.entry.body.toolName).toBe(REDACTION_SENTINEL);
+    expect(items.at(4)?.entry.body.toolName).toBe(`${REDACTION_SENTINEL},https://u:${REDACTION_SENTINEL}@host.com`);
+    expect(items.at(5)?.entry.body.toolName).toBe(REDACTION_SENTINEL);
+    expect(items.at(6)?.entry.body.toolResult).toBe(REDACTION_SENTINEL);
+    expect(items.at(7)?.entry.body.toolName).toBe(`${REDACTION_SENTINEL} ${REDACTION_SENTINEL}`);
+    expect(items.at(7)?.entry.bodyTruncated?.toolName?.originalLength).toBe(Buffer.byteLength(customTool, 'utf8'));
+    expect(items.at(8)?.entry.body.toolName).toBe(REDACTION_SENTINEL);
+    expect(items.at(8)?.entry.bodyTruncated?.toolName?.originalLength).toBe(
+      Buffer.byteLength(singleBlobCustomComma, 'utf8')
+    );
+    expect(items.at(9)?.entry.body.toolName).toBe(REDACTION_SENTINEL);
+    expect(items.at(9)?.entry.bodyTruncated?.toolName?.originalLength).toBe(
+      Buffer.byteLength(singleBlobCustomDot, 'utf8')
+    );
+
+    // Benign oversized (>4096 bytes) and multi-byte/redacted (>128 bytes) toolNames preserve exact pre-truncation UTF-8 byte length (CR-A4 #1).
+    const hugeBenignTool = 'T'.repeat(5_000);
+    const redactedShortenedTool = `${'x'.repeat(120)} ${['sk', 'ant', 'api03', 'A'.repeat(24)].join('-')}`;
+    const { items: metaItems } = projectAcpEvents(
+      initialAcpProjectionState(),
+      [
+        { ...base, kind: 'tool-call', toolName: hugeBenignTool, toolArgs: { ok: true } },
+        { ...base, kind: 'tool-call', toolName: redactedShortenedTool, toolArgs: { ok: true } }
+      ],
+      customOptions
+    );
+    expect(metaItems.at(0)?.entry.body.toolName).toBe('T'.repeat(128));
+    expect(metaItems.at(0)?.entry.bodyTruncated?.toolName?.originalLength).toBe(5_000);
+    expect(metaItems.at(1)?.entry.body.toolName).not.toContain('api03');
+    expect(metaItems.at(1)?.entry.bodyTruncated?.toolName?.originalLength).toBe(
+      Buffer.byteLength(redactedShortenedTool, 'utf8')
+    );
+
+    for (const item of [...items, ...metaItems]) {
+      expect(Buffer.byteLength(JSON.stringify(item.entry), 'utf8')).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
+    }
+  });
 });

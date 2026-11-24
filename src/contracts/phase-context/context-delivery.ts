@@ -3,7 +3,7 @@
  * delivery: the profile's capacity, the route of each artifact, the session request and the
  * recorded representation a dispatch is checked against.
  *
- * The plan produces prompt blocks; sending them is F15-B.
+ * The plan produces prompt blocks and the recorded representation verified before dispatch.
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
@@ -25,7 +25,7 @@ export interface ArtifactAccess {
   /** An immutable reference the agent can read. */
   readonly linkUri: string | null;
   readonly materializePermitted: boolean;
-  /** The protected copy, once F15-B has made it. */
+  /** The protected materialized copy URI, once materialized into the target root. */
   readonly materializedUri: string | null;
 }
 

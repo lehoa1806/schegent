@@ -1,15 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { availabilityPhrase } from '../../../../src/contracts/change-review';
-  import { CSV_STATEMENT, type SavedReportView } from '../../../../src/contracts/reporting/report-manifest';
-  import {
-    DAY_MS,
-    REPORT_VIEWS,
-    VIEW_SHAPES,
-    type ReportQueryInput,
-    type ReportSort,
-    type ReportView
-  } from '../../../../src/contracts/reporting/report-query';
+  import { CSV_STATEMENT, RETENTION_STATEMENT, type SavedReportView } from '../../../../src/contracts/reporting/report-manifest';
+  import { DAY_MS, REPORT_VIEWS, VIEW_SHAPES, type ReportQueryInput, type ReportSort, type ReportView } from '../../../../src/contracts/reporting/report-query';
   import type { ReportFailure } from '../../../../src/contracts/reporting/report-outcomes';
   import type { ReportPage, ReportRow, RootDrillDown } from '../../../../src/contracts/reporting/report-rows';
   import { requestMutateReport, requestReadReport } from '../../lib/reporting-ipc';
@@ -49,7 +42,7 @@
   let outcomeFilter = $state('');
   let backendFilter = $state('');
   let sort = $state<ReportSort>('root-created-desc');
-
+  let appliedSort = $state<ReportSort>('root-created-desc');
   let loading = $state(false);
   let mutating = $state(false);
   let statusNotice = $state<string>('');
@@ -60,6 +53,9 @@
   let savedReports = $state<readonly SavedReportView[]>([]);
   let confirmDeleteId = $state<string | null>(null);
   let lastTriggerId = $state<string | null>(null);
+  let queryGen = 0;
+  let activeQueryGen = 0;
+  let cancelRequestedGen = 0;
 
   const availableSorts = $derived.by((): readonly ReportSort[] => {
     const shape = VIEW_SHAPES[view];
@@ -86,7 +82,11 @@
       void executeQuery();
     });
     return () => untrack(() => {
-      if (page !== null) void requestReadReport({ op: 'close', reportId: page.reportId });
+      queryGen += 1;
+      activeQueryGen = 0;
+      const activeId = page?.reportId ?? null;
+      page = null;
+      if (activeId !== null) void requestReadReport({ op: 'close', reportId: activeId });
     });
   });
 
@@ -115,56 +115,112 @@
     }
   }
 
-  async function executeQuery(): Promise<void> {
-    loading = true;
+  function commitPage(nextPage: ReportPage, nextSort: ReportSort, notice: string): void {
+    const previousReportId = page?.reportId ?? null;
+    page = nextPage;
+    rows = nextPage.rows;
+    nextCursor = nextPage.cursor;
+    appliedSort = nextSort;
     drillDown = null;
-    statusNotice = 'Running pinned historical report…';
-    if (page !== null) {
-      void requestReadReport({ op: 'close', reportId: page.reportId });
+    if (previousReportId !== null && previousReportId !== nextPage.reportId) {
+      void requestReadReport({ op: 'close', reportId: previousReportId });
     }
-    const env = await requestReadReport({ op: 'run', query: buildQuery() });
-    loading = false;
-    if (env.boundaryRefusal !== null) {
-      statusNotice = env.boundaryRefusal;
+    statusNotice = notice;
+  }
+
+  const currentPage = (): ReportPage | null => page;
+  function beginReadOp(notice?: string): number {
+    activeQueryGen = ++queryGen;
+    loading = true;
+    if (notice !== undefined) statusNotice = notice;
+    return activeQueryGen;
+  }
+  function finishReadOp(gen: number): boolean {
+    if (gen !== queryGen || cancelRequestedGen === gen) {
+      if (activeQueryGen === gen) { activeQueryGen = 0; loading = false; }
+      if (gen === queryGen && cancelRequestedGen === gen) statusNotice = 'Canceled active report query.';
+      return false;
+    }
+    activeQueryGen = 0; loading = false;
+    return true;
+  }
+
+  async function runReplacement(
+    request: { readonly op: 'run'; readonly query: ReportQueryInput } | { readonly op: 'rerunSaved'; readonly reportId: string },
+    requestedSort: ReportSort,
+    pendingNotice: string,
+    onLoaded: (next: ReportPage) => string,
+    failurePrefix: string
+  ): Promise<void> {
+    if (loading) return;
+    const gen = beginReadOp(pendingNotice);
+    const env = await requestReadReport(request);
+    if (!finishReadOp(gen)) {
+      if ((env.response.op === 'run' || env.response.op === 'rerunSaved') && env.response.result.ok) {
+        void requestReadReport({ op: 'close', reportId: env.response.result.value.reportId });
+      }
       return;
     }
-    if (env.response.op === 'run') {
-      if (env.response.result.ok) {
-        page = env.response.result.value;
-        rows = env.response.result.value.rows;
-        nextCursor = env.response.result.value.cursor;
-        statusNotice = `Loaded ${env.response.result.value.rowCount} row(s) at cutoff ${env.response.result.value.sourceCutoffUtc}.`;
-      } else {
-        statusNotice = `Report unavailable: ${failureCode(env.response.result)}.`;
-      }
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
+    if (env.response.op !== request.op) return;
+    if (env.response.result.ok) {
+      commitPage(env.response.result.value, requestedSort, onLoaded(env.response.result.value));
+      return;
     }
+    statusNotice = env.response.result.outcome === 'cancelled'
+      ? 'Canceled active report query.'
+      : `${failurePrefix}: ${failureCode(env.response.result)}.`;
+  }
+
+  function executeQuery(): Promise<void> {
+    return runReplacement(
+      { op: 'run', query: buildQuery() }, sort, 'Running pinned historical report…',
+      (next) => `Loaded ${next.rowCount} row(s) at cutoff ${next.sourceCutoffUtc}.`, 'Report unavailable'
+    );
   }
 
   async function cancelActive(): Promise<void> {
+    const targetGen = activeQueryGen;
+    const genAtCancel = queryGen;
+    if (targetGen !== 0) cancelRequestedGen = targetGen;
     const env = await requestReadReport({ op: 'cancelActive' });
-    loading = false;
-    statusNotice =
-      env.response.op === 'cancelActive' && env.response.canceled
+    if (genAtCancel !== queryGen) return;
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
+    if (targetGen === 0 || activeQueryGen === targetGen) {
+      activeQueryGen = 0; loading = false;
+      statusNotice = env.response.op === 'cancelActive' && env.response.canceled
         ? 'Canceled active report query.'
         : 'No active report query to cancel.';
+    }
   }
 
   async function loadMore(): Promise<void> {
-    if (nextCursor === null) return;
-    loading = true;
+    const expectedReportId = currentPage()?.reportId ?? null;
+    if (loading || expectedReportId === null || nextCursor === null) return;
+    const gen = beginReadOp();
     const env = await requestReadReport({ op: 'page', cursor: nextCursor });
-    loading = false;
-    if (env.response.op === 'page' && env.response.result.ok) {
-      rows = [...rows, ...env.response.result.value.rows];
-      nextCursor = env.response.result.value.cursor;
-      statusNotice = `Showing ${rows.length} of ${page?.rowCount ?? rows.length} row(s).`;
+    if (!finishReadOp(gen)) return;
+    const latestPage = currentPage();
+    if (latestPage === null || latestPage.reportId !== expectedReportId) return;
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
+    if (env.response.op !== 'page') return;
+    if (!env.response.result.ok) {
+      statusNotice = env.response.result.outcome === 'expired'
+        ? 'Report snapshot expired. Run the report again to restart paging.'
+        : `Could not load next page: ${failureCode(env.response.result)}.`;
+      return;
     }
+    if (env.response.result.value.reportId !== expectedReportId) return;
+    rows = [...rows, ...env.response.result.value.rows];
+    nextCursor = env.response.result.value.cursor;
+    statusNotice = `Showing ${rows.length} of ${latestPage.rowCount} row(s).`;
   }
 
   async function openDrillDown(rootId: string, triggerDomId: string): Promise<void> {
     if (page === null) return;
     lastTriggerId = triggerDomId;
     const env = await requestReadReport({ op: 'drillDown', reportId: page.reportId, rootId });
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
     if (env.response.op === 'drillDown') {
       if (env.response.result.ok) {
         drillDown = env.response.result.value;
@@ -178,20 +234,15 @@
   function closeDrillDown(): void {
     drillDown = null;
     const targetId = lastTriggerId;
-    if (targetId !== null) {
-      queueMicrotask(() => document.getElementById(targetId)?.focus());
-    }
+    if (targetId !== null) queueMicrotask(() => document.getElementById(targetId)?.focus());
   }
 
   async function exportActive(format: 'json' | 'csv'): Promise<void> {
-    if (page === null) return;
+    if (mutating || page === null) return;
     mutating = true;
     const env = await requestMutateReport({ op: 'export', reportId: page.reportId, format });
     mutating = false;
-    if (env.boundaryRefusal !== null) {
-      statusNotice = env.boundaryRefusal;
-      return;
-    }
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
     if (env.response.op === 'export') {
       if (env.response.exportOutcome.outcome === 'dialog-canceled') {
         statusNotice = 'Export canceled before writing any file.';
@@ -205,14 +256,11 @@
   }
 
   async function saveActive(): Promise<void> {
-    if (page === null) return;
+    if (mutating || page === null) return;
     mutating = true;
     const env = await requestMutateReport({ op: 'save', reportId: page.reportId });
     mutating = false;
-    if (env.boundaryRefusal !== null) {
-      statusNotice = env.boundaryRefusal;
-      return;
-    }
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
     if (env.response.op === 'save' && env.response.result.ok) {
       statusNotice = `Saved report ${env.response.result.value.reportId}.`;
       await loadSavedList();
@@ -221,44 +269,40 @@
     }
   }
 
-  async function rerunSaved(reportId: string): Promise<void> {
-    loading = true;
-    const env = await requestReadReport({ op: 'rerunSaved', reportId });
-    loading = false;
-    if (env.response.op === 'rerunSaved' && env.response.result.ok) {
-      page = env.response.result.value;
-      rows = env.response.result.value.rows;
-      nextCursor = env.response.result.value.cursor;
-      statusNotice = `Re-ran saved report ${reportId} against current cutoff ${page.sourceCutoffUtc}.`;
-    } else if (env.response.op === 'rerunSaved' && !env.response.result.ok) {
-      statusNotice = `Re-run refused: ${failureCode(env.response.result)}.`;
-    }
+  function rerunSaved(reportId: string): Promise<void> {
+    const savedSort = savedReports.find((item) => item.reportId === reportId)?.query.sort ?? sort;
+    return runReplacement(
+      { op: 'rerunSaved', reportId }, savedSort, `Re-executing saved report ${reportId}…`,
+      (next) => `Re-ran saved report ${reportId} against current cutoff ${next.sourceCutoffUtc}.`, 'Re-run refused'
+    );
   }
 
   async function reproduceSaved(reportId: string): Promise<void> {
-    loading = true;
+    if (loading) return;
+    const gen = beginReadOp(`Checking saved report ${reportId}…`);
     const env = await requestReadReport({ op: 'reproduceSaved', reportId });
-    loading = false;
-    if (env.response.op === 'reproduceSaved' && env.response.result.ok) {
+    if (!finishReadOp(gen)) return;
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
+    if (env.response.op !== 'reproduceSaved') return;
+    if (env.response.result.ok) {
       const verdict = env.response.result.value;
-      statusNotice =
-        verdict.verdict === 'reproduced'
-          ? `Saved report ${reportId}: exact population and digest reproduced.`
-          : `Saved report ${reportId}: source no longer reproducible (${verdict.reason}).`;
-    } else if (env.response.op === 'reproduceSaved' && !env.response.result.ok) {
-      statusNotice = `Reproduce check unavailable: ${failureCode(env.response.result)}.`;
+      statusNotice = verdict.verdict === 'reproduced'
+        ? `Saved report ${reportId}: exact population and digest reproduced.`
+        : `Saved report ${reportId}: source no longer reproducible (${verdict.reason}).`;
+      return;
     }
+    statusNotice = env.response.result.outcome === 'cancelled'
+      ? 'Canceled active report query.'
+      : `Reproduce check unavailable: ${failureCode(env.response.result)}.`;
   }
 
   async function confirmDeleteSaved(reportId: string): Promise<void> {
+    if (mutating) return;
     mutating = true;
     const env = await requestMutateReport({ op: 'deleteSaved', reportId, confirmed: true });
     mutating = false;
     confirmDeleteId = null;
-    if (env.boundaryRefusal !== null) {
-      statusNotice = env.boundaryRefusal;
-      return;
-    }
+    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
     if (env.response.op === 'deleteSaved' && env.response.result.ok) {
       statusNotice = `Deleted saved report ${reportId}.`;
       await loadSavedList();
@@ -322,7 +366,7 @@
         </select>
       </label>
       <div class="query-actions">
-        <button type="submit" class="btn btn-primary" disabled={loading} data-testid="report-run-button">
+        <button type="submit" class="btn btn-primary" aria-disabled={loading ? 'true' : undefined} data-testid="report-run-button">
           {loading ? 'Running…' : 'Run report'}
         </button>
         {#if loading}
@@ -341,7 +385,7 @@
         <h2 id="report-results-heading">{VIEW_LABELS[page.view]}</h2>
         <span class="small muted">{page.rowCount} row(s) · as of {cutoffLabel(page.sourceCutoffUtc)}</span>
         <span class="push">
-          <button type="button" class="btn btn-secondary btn-sm" disabled={mutating} onclick={() => void saveActive()} data-testid="report-save-button">
+          <button type="button" class="btn btn-secondary btn-sm" aria-disabled={mutating ? 'true' : undefined} onclick={() => void saveActive()} data-testid="report-save-button">
             Save report
           </button>
           <!-- The items, not the button, wait out an export: a button disabled under focus drops it.
@@ -360,10 +404,10 @@
       {#if rows.length === 0}
         <p class="empty" data-testid="report-empty-rows">No rows matched this pinned query window.</p>
       {:else}
-        <ReportRowsTable {rows} {sort} onOpenRoot={(rootId, triggerDomId) => void openDrillDown(rootId, triggerDomId)} />
+        <ReportRowsTable {rows} sort={appliedSort} onOpenRoot={(rootId, triggerDomId) => void openDrillDown(rootId, triggerDomId)} />
         {#if nextCursor !== null}
           <div class="more">
-            <button type="button" class="btn btn-secondary btn-sm" disabled={loading} onclick={() => void loadMore()} data-testid="report-next-page">
+            <button type="button" class="btn btn-secondary btn-sm" aria-disabled={loading ? 'true' : undefined} onclick={() => void loadMore()} data-testid="report-next-page">
               Load next page
             </button>
           </div>
@@ -397,6 +441,11 @@
     </section>
   {/if}
 
+  <p class="small muted retention-note" data-testid="report-retention-disclosure">
+    Completed exported files ({RETENTION_STATEMENT}) live outside managed retention and are not
+    deleted by retention sweeps or by deleting saved reports.
+  </p>
+
   {#if drillDown !== null}
     <ReportDrillDownPanel {drillDown} onClose={closeDrillDown} />
   {/if}
@@ -406,67 +455,27 @@
     {confirmDeleteId}
     onRerun={(reportId) => void rerunSaved(reportId)}
     onReproduce={(reportId) => void reproduceSaved(reportId)}
-    onAskDelete={(reportId) => {
-      confirmDeleteId = reportId;
-    }}
+    onAskDelete={(reportId) => (confirmDeleteId = reportId)}
     onConfirmDelete={(reportId) => void confirmDeleteSaved(reportId)}
-    onKeep={() => {
-      confirmDeleteId = null;
-    }}
+    onKeep={() => (confirmDeleteId = null)}
   />
 </section>
 
 <style>
-  .query h2 {
-    margin-bottom: var(--schegent-space-2-5);
-    font-size: var(--schegent-text-body);
-  }
-  .query .toolbar {
-    align-items: flex-end;
-    margin-bottom: 0;
-  }
-  /* The mockup's field widths. A narrow panel wraps the fields, and one wider than the line
-     takes the line. */
-  .query .field {
-    max-width: 100%;
-  }
-  .w-report {
-    width: 200px;
-  }
-  .w-window {
-    width: 140px;
-  }
-  .w-text {
-    width: 180px;
-  }
-  .w-outcome {
-    width: 150px;
-  }
-  .w-sort {
-    width: 160px;
-  }
-  .query-actions {
-    display: flex;
-    gap: var(--schegent-space-2);
-  }
-  /* Always in the document, so a screen reader hears every change; spaced only when it speaks. */
-  .notice {
-    margin: 0;
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-secondary);
-  }
-  .notice:not(:empty) {
-    margin-top: var(--schegent-space-2-5);
-  }
-  .results .titlerow {
-    margin-bottom: var(--schegent-space-2);
-  }
-  .results .titlerow h2 {
-    font-size: var(--schegent-text-subheading);
-  }
-  .more {
-    margin-top: var(--schegent-space-2);
-  }
+  .query h2 { margin-bottom: var(--schegent-space-2-5); font-size: var(--schegent-text-body); }
+  .query .toolbar { align-items: flex-end; margin-bottom: 0; }
+  .query .field { max-width: 100%; }
+  .w-report { width: 200px; }
+  .w-window { width: 140px; }
+  .w-text { width: 180px; }
+  .w-outcome { width: 150px; }
+  .w-sort { width: 160px; }
+  .query-actions { display: flex; gap: var(--schegent-space-2); }
+  .notice { margin: 0; color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
+  .notice:not(:empty) { margin-top: var(--schegent-space-2-5); }
+  .results .titlerow { margin-bottom: var(--schegent-space-2); }
+  .results .titlerow h2 { font-size: var(--schegent-text-subheading); }
+  .more { margin-top: var(--schegent-space-2); }
   .coverage {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -474,20 +483,13 @@
     margin: var(--schegent-space-2) 0 0;
     font-size: var(--schegent-text-secondary);
   }
-  .coverage dt {
-    color: var(--schegent-muted-fg);
-  }
-  .coverage dd {
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
+  .coverage dt { color: var(--schegent-muted-fg); }
+  .coverage dd { margin: 0; overflow-wrap: anywhere; }
   .omissions {
     margin: var(--schegent-space-2) 0 0;
     padding-left: var(--schegent-space-4-5);
     color: var(--schegent-muted-fg);
     font-size: var(--schegent-text-secondary);
   }
-  .csv-note {
-    margin: var(--schegent-space-2) 0 0;
-  }
+  .csv-note, .retention-note { margin: var(--schegent-space-2) 0 0; }
 </style>

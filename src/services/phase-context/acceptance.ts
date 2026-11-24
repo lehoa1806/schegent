@@ -44,12 +44,23 @@ export type InspectResult = { readonly ok: true; readonly record: HandoffRecord 
 export type DispatchIntentResult = { readonly ok: true; readonly dispatch: DispatchRecord; readonly created: boolean } | Refusal;
 export type SettleResult = { readonly ok: true; readonly dispatch: DispatchRecord } | Refusal;
 
+export interface DispatchIntentOptions {
+  /** When true, refuse if any unsettled `'intent'` dispatch already exists on the same revision. */
+  readonly blockUnsettledIntent?: boolean;
+}
+
 export interface AcceptanceService {
   accept(prepared: PreparedHandoff): AcceptResult;
   edit(handoffId: string, baseRevision: number, replacementSources: unknown): EditOutcome;
   approve(handoffId: string, revision: number, decisionId: string): ApproveResult;
   inspect(handoffId: string): InspectResult;
-  recordDispatchIntent(handoffId: string, revision: number, targetAttemptId: string, representationDigest: string): DispatchIntentResult;
+  recordDispatchIntent(
+    handoffId: string,
+    revision: number,
+    targetAttemptId: string,
+    representationDigest: string,
+    options?: DispatchIntentOptions
+  ): DispatchIntentResult;
   settleDispatch(handoffId: string, revision: number, targetAttemptId: string, outcome: 'delivered' | 'uncertain'): SettleResult;
 }
 
@@ -75,19 +86,37 @@ function parseJson(text: string): { readonly value: unknown } | null {
   }
 }
 
+export type StoredManifestRead =
+  | { readonly kind: 'valid'; readonly manifest: HandoffManifest }
+  | { readonly kind: 'unsupported-version' }
+  | { readonly kind: 'invalid' };
+
+/**
+ * Reads a stored revision's manifest while preserving the distinction between an unsupported
+ * future `manifestVersion` and a malformed or digest-mismatched stored manifest.
+ */
+export function readStoredManifest(revision: AcceptedRevision): StoredManifestRead {
+  const text: unknown = revision.serializedManifest;
+  if (typeof text !== 'string' || utf8Bytes(text) > PHASE_CONTEXT_LIMITS.manifestBytesMax) {
+    return { kind: 'invalid' };
+  }
+  if (manifestDigestOf(text) !== revision.manifestDigest) return { kind: 'invalid' };
+  const parsed = parseJson(text);
+  if (parsed === null) return { kind: 'invalid' };
+  const manifest = parseManifest(parsed.value);
+  if (manifest.kind === 'valid') return { kind: 'valid', manifest: manifest.manifest };
+  if (manifest.kind === 'unsupported-version') return { kind: 'unsupported-version' };
+  return { kind: 'invalid' };
+}
+
 /**
  * The manifest a stored revision holds, or `null` when the stored text is not one. The text is
  * read only when it is text, within the manifest size limit, and the text the recorded digest
  * was taken of.
  */
 export function storedManifest(revision: AcceptedRevision): HandoffManifest | null {
-  const text: unknown = revision.serializedManifest;
-  if (typeof text !== 'string' || utf8Bytes(text) > PHASE_CONTEXT_LIMITS.manifestBytesMax) return null;
-  if (manifestDigestOf(text) !== revision.manifestDigest) return null;
-  const parsed = parseJson(text);
-  if (parsed === null) return null;
-  const manifest = parseManifest(parsed.value);
-  return manifest.kind === 'valid' ? manifest.manifest : null;
+  const read = readStoredManifest(revision);
+  return read.kind === 'valid' ? read.manifest : null;
 }
 
 /** A stored revision in its place: revisions are numbered from 1 in the order they were written. */
@@ -199,14 +228,21 @@ function withRevision(record: HandoffRecord | null, handoffId: string, revision:
   };
 }
 
+function storedManifestRefusal(read: Exclude<StoredManifestRead, { readonly kind: 'valid' }>): Refusal {
+  return read.kind === 'unsupported-version'
+    ? refuse('unsupported-version', 'manifest-version')
+    : refuse('storage-unavailable', 'stored-manifest');
+}
+
 /**
  * Why a revision cannot follow the current one, or `null`. A later revision selects again or
  * edits; it does not change the rules the handoff was accepted under, so a manual handoff
  * cannot become automatic by being prepared again.
  */
 function successorFault(current: AcceptedRevision, next: HandoffManifest): Refusal | null {
-  const basis = storedManifest(current);
-  if (basis === null) return refuse('storage-unavailable', 'stored-manifest');
+  const read = readStoredManifest(current);
+  if (read.kind !== 'valid') return storedManifestRefusal(read);
+  const basis = read.manifest;
   const sameBasis =
     basis.policyDigest === next.policyDigest &&
     basis.approval === next.approval &&
@@ -238,9 +274,9 @@ function placeEdit(record: HandoffRecord | null, baseRevision: number, replaceme
   const current = record.revisions.at(-1);
   if (current?.revision !== baseRevision) return { result: refuse('stale-revision', 'revision-not-current') };
   if (record.revisions.length >= PHASE_CONTEXT_LIMITS.revisionsMax) return { result: refuse('capacity-exceeded', 'revision-count') };
-  const base = storedManifest(current);
-  if (base === null) return { result: refuse('storage-unavailable', 'stored-manifest') };
-  const edited = editRevision(base, replacementSources);
+  const baseRead = readStoredManifest(current);
+  if (baseRead.kind !== 'valid') return { result: storedManifestRefusal(baseRead) };
+  const edited = editRevision(baseRead.manifest, replacementSources);
   if (!edited.ok) return { result: edited };
   const revision = revisionOf(edited.prepared);
   return { result: { ok: true, revision, prepared: edited.prepared }, write: withRevision(record, record.handoffId, revision) };
@@ -250,9 +286,9 @@ function placeApproval(record: HandoffRecord | null, revision: number, decisionI
   if (record === null) return { result: refuse('stale-revision', 'unknown-handoff') };
   const named = record.revisions.find((entry) => entry.revision === revision);
   if (named === undefined) return { result: refuse('stale-revision', 'unknown-revision') };
-  const manifest = storedManifest(named);
-  if (manifest === null) return { result: refuse('storage-unavailable', 'stored-manifest') };
-  if (manifest.approval !== 'manual') return { result: refuse('invalid-policy', 'approval-not-required') };
+  const manifestRead = readStoredManifest(named);
+  if (manifestRead.kind !== 'valid') return { result: storedManifestRefusal(manifestRead) };
+  if (manifestRead.manifest.approval !== 'manual') return { result: refuse('invalid-policy', 'approval-not-required') };
   if (record.revisions.at(-1)?.revision !== revision) return { result: refuse('stale-revision', 'revision-not-current') };
   const stored = record.approvals.find((entry) => entry.revision === revision);
   if (stored !== undefined) {
@@ -264,11 +300,26 @@ function placeApproval(record: HandoffRecord | null, revision: number, decisionI
   return { result: { ok: true, approval, created: true }, write: { ...record, revisions, approvals: [...record.approvals, approval] } };
 }
 
-function placeIntent(record: HandoffRecord | null, intent: DispatchRecord): Step<DispatchIntentResult> {
+function placeIntent(
+  record: HandoffRecord | null,
+  intent: DispatchRecord,
+  options?: DispatchIntentOptions
+): Step<DispatchIntentResult> {
   if (record === null) return { result: refuse('stale-revision', 'unknown-handoff') };
   // One target attempt gets one dispatch record, whichever revision it was for.
   const stored = record.dispatches.find((entry) => entry.targetAttemptId === intent.targetAttemptId);
   if (stored?.state === 'uncertain') return { result: refuse('uncertain-delivery', 'dispatch-uncertain') };
+  // FR-R7-17 (FR-008): any uncertain dispatch on this revision blocks both the same attempt
+  // and any newly minted targetAttemptId on that revision until explicit recovery supersedes it.
+  if (record.dispatches.some((entry) => entry.revision === intent.revision && entry.state === 'uncertain')) {
+    return { result: refuse('uncertain-delivery', 'dispatch-uncertain') };
+  }
+  if (
+    options?.blockUnsettledIntent === true &&
+    record.dispatches.some((entry) => entry.revision === intent.revision && entry.state === 'intent')
+  ) {
+    return { result: refuse('uncertain-delivery', 'dispatch-uncertain') };
+  }
   const named = record.revisions.find((entry) => entry.revision === intent.revision);
   if (named?.state !== 'ready') return { result: refuse('stale-revision', 'revision-not-ready') };
   if (stored !== undefined) {
@@ -289,7 +340,7 @@ function placeSettlement(
   const stored = record.dispatches.find((entry) => entry.revision === revision && entry.targetAttemptId === targetAttemptId);
   if (stored === undefined) return { result: refuse('stale-revision', 'unknown-dispatch') };
   if (stored.state === outcome) return { result: { ok: true, dispatch: stored } };
-  // A settled dispatch keeps its outcome; reconciling an uncertain one is F15-B.
+  // A settled dispatch keeps its outcome; explicit recovery supersedes the revision rather than mutating a settled dispatch.
   if (stored.state !== 'intent') return { result: refuse('stale-revision', 'dispatch-settled') };
   const settled: DispatchRecord = { ...stored, state: outcome };
   const dispatches = record.dispatches.map((entry) => (entry === stored ? settled : entry));
@@ -358,13 +409,15 @@ export function createAcceptanceService(store: HandoffStorePort): AcceptanceServ
       const loaded = load(handoffId);
       return 'ok' in loaded ? loaded : { ok: true, record: loaded.record };
     },
-    recordDispatchIntent(handoffId, revision, targetAttemptId, representationDigest) {
+    recordDispatchIntent(handoffId, revision, targetAttemptId, representationDigest, options) {
       const fault =
         inputFault(handoffId, revision) ??
         (matchesPattern(IDENTIFIER_PATTERN, targetAttemptId) ? null : 'target-attempt') ??
         (matchesPattern(DIGEST_PATTERN, representationDigest) ? null : 'representation-digest');
       if (fault !== null) return refuse('invalid-source', fault);
-      return mutate(handoffId, (record) => placeIntent(record, { revision, targetAttemptId, representationDigest, state: 'intent' }));
+      return mutate(handoffId, (record) =>
+        placeIntent(record, { revision, targetAttemptId, representationDigest, state: 'intent' }, options)
+      );
     },
     settleDispatch(handoffId, revision, targetAttemptId, outcome) {
       const fault =

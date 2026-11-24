@@ -8,6 +8,7 @@ import {
 } from './acp-backed-runner';
 import { SpawnGatedRunner } from './spawn-gated-runner';
 import type { SpawnGate } from '../contracts/containment-qualification';
+import type { DeliveryRepresentation } from '../contracts/phase-context/context-delivery';
 import type { AcpSessionBindingStore } from '../services/acp-runtime/acp-durable-runtime-store';
 import type { AcpHostLocality } from '../services/acp-runtime/profiles';
 import type { AcpAuthorityGate } from '../services/containment-qualification/acp-authority-gate';
@@ -133,6 +134,10 @@ export interface BackendRunnerFactoryOptions {
     readonly allocateConnectionGeneration?: () => number;
     /** FR-R7-14 (14-11): host locality classification (`'local'` vs `'remote'`). */
     readonly hostLocality?: AcpHostLocality;
+    /** FR-035: persisted phase-handoff DeliveryRepresentation lookup verified before ACP dispatch. */
+    readonly resolveHandoffRepresentation?: (attemptId: string) => DeliveryRepresentation | null;
+    /** FR-035: current handoff manifest contentDigest lookup verified against persisted representation. */
+    readonly resolveHandoffContentDigest?: (handoffId: string) => string | null;
   };
 }
 
@@ -216,6 +221,12 @@ export function createBackendRunner(
             : {}),
           ...(options.acpDispatch.hostLocality !== undefined
             ? { hostLocality: options.acpDispatch.hostLocality }
+            : {}),
+          ...(options.acpDispatch.resolveHandoffRepresentation !== undefined
+            ? { resolveHandoffRepresentation: options.acpDispatch.resolveHandoffRepresentation }
+            : {}),
+          ...(options.acpDispatch.resolveHandoffContentDigest !== undefined
+            ? { resolveHandoffContentDigest: options.acpDispatch.resolveHandoffContentDigest }
             : {})
         })
       : cliRunner;

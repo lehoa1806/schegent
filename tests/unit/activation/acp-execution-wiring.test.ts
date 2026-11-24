@@ -11,7 +11,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const registry = vi.hoisted(() => ({
   writer: undefined as { run(sql: string, ...params: unknown[]): void } | undefined,
-  protectedPaths: [] as string[]
+  protectedPaths: [] as string[],
+  resolveHandoffRepresentation: undefined as ((attemptId: string) => unknown) | undefined,
+  resolveHandoffContentDigest: undefined as ((handoffId: string) => string | null) | undefined
 }));
 
 vi.mock('../../../src/activation/sqlite-cutover-wiring', () => ({
@@ -19,7 +21,11 @@ vi.mock('../../../src/activation/sqlite-cutover-wiring', () => ({
     getSqliteStore: () =>
       registry.writer === undefined ? null : { writerConnection: registry.writer },
     getDatabaseProtectedPaths: () => registry.protectedPaths,
-    recordAcpObservation: () => undefined
+    recordAcpObservation: () => undefined,
+    resolveHandoffRepresentation: (attemptId: string) =>
+      registry.resolveHandoffRepresentation?.(attemptId) ?? null,
+    resolveHandoffContentDigest: (handoffId: string) =>
+      registry.resolveHandoffContentDigest?.(handoffId) ?? null
   })
 }));
 
@@ -32,6 +38,7 @@ import {
 } from '../../../src/lib/protected-path-match';
 import { AcpBackedRunner } from '../../../src/runner/acp-backed-runner';
 import type { AcpStdioTransport } from '../../../src/services/acp-runtime/stdio-transport';
+import { taggedDigest } from '../../../src/services/phase-context/primitives';
 import type { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { removeTempRoot } from '../../temp-root-cleanup';
 
@@ -1334,5 +1341,126 @@ describe('GC-08 — ACP authority gate primacy and receipt writer wiring', () =>
     expect(resB.diagnosticWarnings).toContain('acp-ownership-unverified');
     expect(promptsSentB).toEqual([]);
     expect(sqlRuns).toHaveLength(0);
+  });
+
+  it('CR-314-1 / SR-314-1: wires resolveHandoffRepresentation and resolveHandoffContentDigest from SqliteCutoverCoordinator and refuses profile mismatch', async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-wiring-handoff-'));
+    tempDirs.push(root);
+    const seenAttemptIds: string[] = [];
+    const seenHandoffIds: string[] = [];
+    const caps = {
+      protocolVersion: 1 as const,
+      loadSession: true,
+      image: false,
+      audio: false,
+      embeddedContext: true,
+      authMethodCount: 0
+    };
+    const repFields = {
+      handoffId: 'handoff-wiring-1',
+      revision: 1,
+      targetAttemptId: 'run-wiring:attempt-1',
+      contentDigest: 'sha256:expected-digest',
+      rendererVersion: 1,
+      renderedDigest: 'sha256:rendered',
+      capabilities: caps,
+      profileId: 'codex-acp-bridge', // Intentionally mismatches agy-acp-native
+      profileRevision: 1,
+      session: 'fresh' as const,
+      routes: [] as const
+    };
+    const persistedRep = {
+      ...repFields,
+      representationDigest: taggedDigest([
+        'pcd1',
+        repFields.handoffId,
+        repFields.revision,
+        repFields.targetAttemptId,
+        repFields.contentDigest,
+        repFields.rendererVersion,
+        repFields.renderedDigest,
+        [caps.protocolVersion, caps.loadSession, caps.image, caps.audio, caps.embeddedContext, caps.authMethodCount],
+        repFields.profileId,
+        repFields.profileRevision,
+        repFields.session,
+        []
+      ])
+    };
+    registry.resolveHandoffRepresentation = (attemptId: string) => {
+      seenAttemptIds.push(attemptId);
+      return attemptId === 'run-wiring:attempt-1' ? persistedRep : null;
+    };
+    registry.resolveHandoffContentDigest = (handoffId: string) => {
+      seenHandoffIds.push(handoffId);
+      return handoffId === 'handoff-wiring-1' ? 'sha256:expected-digest' : null;
+    };
+
+    try {
+      const dispatch = buildHostAcpDispatchOptions({
+        workspaceRoot: root,
+        store: {} as WorkspaceStateStore,
+        logger: makeLogger() as never,
+        isWorkspaceTrusted: () => true,
+        hasPrimacy: async () => true,
+        readRemoteName: () => undefined
+      });
+      expect(dispatch.resolveHandoffRepresentation).toBeTypeOf('function');
+      expect(dispatch.resolveHandoffContentDigest).toBeTypeOf('function');
+      expect(dispatch.resolveHandoffRepresentation?.('run-wiring:attempt-1')).toEqual(persistedRep);
+      expect(dispatch.resolveHandoffContentDigest?.('handoff-wiring-1')).toBe('sha256:expected-digest');
+
+      const promptsSent: string[] = [];
+      const runner = new AcpBackedRunner({
+        kind: 'agy',
+        inner: makeDummyInnerRunner(),
+        readConfiguredProfile: () => 'agy-acp-native',
+        ...(dispatch.authorityGate ? { authorityGate: dispatch.authorityGate } : {}),
+        primaryWorkspaceRoot: root,
+        ...(dispatch.currentOwnershipGeneration
+          ? { currentOwnershipGeneration: dispatch.currentOwnershipGeneration }
+          : {}),
+        ...(dispatch.primeAuthority ? { primeAuthority: dispatch.primeAuthority } : {}),
+        ...(dispatch.resolveHandoffRepresentation
+          ? { resolveHandoffRepresentation: dispatch.resolveHandoffRepresentation }
+          : {}),
+        ...(dispatch.resolveHandoffContentDigest
+          ? { resolveHandoffContentDigest: dispatch.resolveHandoffContentDigest }
+          : {}),
+        platform: { os: 'darwin', arch: 'arm64' },
+        launchTransport: () => {
+          const inner = createFakeAcpTransport();
+          return {
+            ...inner,
+            write(line: string) {
+              const msg = JSON.parse(line.trim()) as { method?: string };
+              if (msg.method === 'session/prompt') {
+                promptsSent.push(line);
+              }
+              inner.write(line);
+            }
+          };
+        }
+      });
+
+      const res = await runner.invoke({
+        cliPath: '/usr/bin/fake-agy',
+        cwd: root,
+        prompt: 'Must be refused due to profile mismatch',
+        phase: 'implement',
+        iteration: 1,
+        timeoutMs: 5_000,
+        runId: 'run-wiring',
+        attemptId: 'run-wiring:attempt-1'
+      });
+
+      expect(res.exitCode).toBe(1);
+      expect(promptsSent).toEqual([]);
+      expect(seenAttemptIds).toContain('run-wiring:attempt-1');
+      expect(seenHandoffIds).toContain('handoff-wiring-1');
+      expect(res.diagnosticWarnings?.some((w) => w.includes('profile-changed'))).toBe(true);
+    } finally {
+      registry.resolveHandoffRepresentation = undefined;
+      registry.resolveHandoffContentDigest = undefined;
+    }
   });
 });

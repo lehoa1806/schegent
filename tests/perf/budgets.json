@@ -149,6 +149,12 @@
       "name": "Historical report first-page open at 25,000 roots and 100,000 attempts",
       "budgetMs": 1000,
       "firstPageP95BudgetMs": 1000,
+      "specTargets": {
+        "firstPageShouldP95Ms": 500,
+        "slicedGapShouldP95Ms": 10,
+        "cancelAckMustMs": 1000,
+        "queryDeadlineMs": 5000
+      },
       "constant": "FIRST_PAGE_P95_BUDGET_MS",
       "metadata": {
         "hardware": "darwin-arm64 (Apple M4 Max, 16 cores, 64 GiB RAM, Node v24.22.2)",
@@ -156,15 +162,19 @@
         "measuredIterations": 20,
         "runCount": 25000,
         "attemptCount": 100000,
-        "pageRows": 200
+        "pageRows": 200,
+        "measurementDoc": "docs/operations/historical-reporting-measurement.md"
       },
-      "rationale": "FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / NFR-004 / NFR-005: splits first-page opening latency from later-page cursor reads so fast cursor pages cannot mask opening cost. Execution-summary over 25,000 runs and 100,000 attempts (200-row pages, 22,120,000 bytes working data). Measured on darwin-arm64 (Apple M4 Max, Node v24.22.2): 2026-11-23 takes measured p50 492.07-522.40 ms, p95 504.88-537.76 ms, max 539.36-566.13 ms (capture p50 291.67-305.14 ms); earlier Node 24.19.0 runs at load 5.9 to 7.9 measured p95 551.56 to 563.54 ms. Enforced firstPageP95BudgetMs = 1,000 ms (~1.8x-2x measured p95) guards against opening-latency regressions without flaking under host load, while keeping the ~500 ms opening cost explicit and distinct from later-page cursor latency."
+      "rationale": "FR-R7-17 (R7-17-02) / FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / NFR-004 / NFR-005: preserves the 500 ms first-page SHOULD (NFR-002) and 10 ms sliced-gap SHOULD (NFR-005) targets alongside explicit met/missed verdicts, isolates warm-measured capture latency (20 measured samples only), excludes only the single capture-spanning event-loop gap (never masking additional stalls), and enforces firstPageP95BudgetMs = 1,000 ms as the CI regression ceiling. Execution-summary over 25,000 runs and 100,000 attempts (200-row pages, 22,120,000 bytes working data) on darwin-arm64 (Apple M4 Max, Node v24.22.2, 2026-11-23): firstPage p50 497.01 ms, p95 522.09 ms, max 526.28 ms (firstPageShouldMet: false); isolated warm capture (20 samples) p50 294.29 ms, p95 312.26 ms, max 314.23 ms, probedCaptureMs 290.14 ms; sliced event-loop gap slicedP95Ms 16.22 ms (slicedGapShouldMet: false; overall p95 18.33 ms, max 298.42 ms across 22 gaps); cancel ack 8.29 ms (cancelAckMustMet: true); 1 ms deadline limited/deadline-exceeded; full-range attempt-detail limited/working-data."
     },
     {
       "test": "tests/perf/historical-report-query.test.ts",
       "name": "Historical report later-page cursor read at 25,000 roots and 100,000 attempts",
       "budgetMs": 50,
       "laterPageP95BudgetMs": 50,
+      "specTargets": {
+        "laterPageShouldP95Ms": 500
+      },
       "constant": "LATER_PAGE_P95_BUDGET_MS",
       "metadata": {
         "hardware": "darwin-arm64 (Apple M4 Max, 16 cores, 64 GiB RAM, Node v24.22.2)",
@@ -172,9 +182,10 @@
         "measuredIterations": 200,
         "runCount": 25000,
         "attemptCount": 100000,
-        "pageRows": 200
+        "pageRows": 200,
+        "measurementDoc": "docs/operations/historical-reporting-measurement.md"
       },
-      "rationale": "FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / F11-AC-08: cursor-based later-page read over 25,000 aggregated rows (200-row pages, 20 warm-up and 200 measured reads). Measured on darwin-arm64 (Apple M4 Max, Node v24.22.2): 2026-11-23 takes measured p50 0.0965-0.0970 ms, p95 0.1061-0.1118 ms, p99 0.1175-0.1229 ms, max 0.1294-0.1334 ms (earlier Node 24.19.0 takes at load 5.9 to 7.9 measured p95 0.164 to 0.181 ms). Enforced laterPageP95BudgetMs = 50 ms keeps generous headroom over sub-millisecond cursor reads while tightly separating cursor pagination from first-page opening cost; also asserts cancellation within 1 s, 1 ms deadline ending limited deadline-exceeded, and attempt-detail ending limited working-data."
+      "rationale": "FR-R7-17 (R7-17-02) / FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / F11-AC-08: cursor-based later-page read over 25,000 aggregated rows (200-row pages, 20 warm-up and 200 measured reads, maxBytes 36,544 B). Measured on darwin-arm64 (Apple M4 Max, Node v24.22.2, 2026-11-23): p50 0.1152 ms, p95 0.1299 ms, p99 0.1468 ms, max 0.9295 ms (laterPageShouldMet: true against preserved 500 ms NFR-002 SHOULD target). Enforced laterPageP95BudgetMs = 50 ms keeps generous headroom over sub-millisecond cursor reads while tightly separating cursor pagination from first-page opening cost."
     },
     {
       "test": "tests/perf/change-review-first-page.test.ts",

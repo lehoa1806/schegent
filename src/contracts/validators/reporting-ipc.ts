@@ -51,7 +51,7 @@ function isDrillDownShape(value: unknown): boolean {
     isPlain(value['root']) &&
     typeof value['root']['rootId'] === 'string' &&
     Array.isArray(value['attempts']) &&
-    typeof value['frozenDefinitionId'] === 'string' &&
+    (value['frozenDefinitionId'] === null || typeof value['frozenDefinitionId'] === 'string') &&
     Array.isArray(value['outcomeLineage']) &&
     (value['usage'] === null || Array.isArray(value['usage'])) &&
     Array.isArray(value['omissions'])
