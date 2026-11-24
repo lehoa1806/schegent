@@ -261,6 +261,22 @@ export const DATED_REVIEW_RECORDS = Object.freeze([
       'offers a translation',
       'cannot see'
     ]
+  },
+  {
+    // FR-R7-18 (N04) — 30-day local freshness review for the credential-free
+    // per-backend prompt-behavior fixtures (`tests/evals/fixtures/backend-behavior/manifest.json`).
+    // Hosted CI is retired (FR-R3-099), so this dated review and `npm run review:due`
+    // enforce scheduled local staleness awareness alongside `backend-behavior-eval.test.ts`
+    // without spending live provider quota on PR/gate runs.
+    document: 'docs/operations/live-canary-cadence.md',
+    marker: 'eval-fixture-review-date',
+    defers: 'refreshing the 30-day credential-free per-backend prompt-behavior eval fixtures (FR-R7-18 N04)',
+    mustMention: [
+      'npm run test:evals',
+      'operator holding the checkout',
+      'Refresh procedure',
+      'cannot see'
+    ]
   }
 ]);
 

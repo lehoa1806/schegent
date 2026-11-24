@@ -11,9 +11,9 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 | Setting | Type and accepted values | Default | Scope | Purpose |
 |---|---|---|---|---|
 | `schegent.cli.path` | string | `claude` | application | Claude executable path. |
-| `schegent.cli.inheritEnvironment` | boolean | `true` | application | Legacy compatibility switch. `false` forces the effective environment mode to `minimal`. |
-| `schegent.cli.environmentMode` | `inherit`, `minimal`, or `allowlist` | `allowlist` | application | Selects how much of the extension-host environment reaches backend processes. A value that is not one of the three modes is treated as `allowlist`; only the exact, case-sensitive string `inherit` inherits the whole environment. |
-| `schegent.cli.environmentAllowlist` | array of names matching `^[A-Za-z_][A-Za-z0-9_]*$` | `[]` | application | Adds environment-variable names to the bootstrap set in `allowlist` mode; values are read at spawn time. |
+| `schegent.cli.inheritEnvironment` | boolean | `true` | application | **Deprecated** legacy compatibility switch, superseded by `schegent.cli.environmentMode`. When absent (`undefined`), defaults to `true`. Explicit `false` — or any defined non-boolean value (fail-closed) — overrides `schegent.cli.environmentMode` to `minimal` and ignores `schegent.cli.environmentAllowlist`. |
+| `schegent.cli.environmentMode` | `inherit`, `minimal`, or `allowlist` | `allowlist` | application | Selects how much of the extension-host environment reaches backend processes when `schegent.cli.inheritEnvironment` is `true` (or unset). A value that is not one of the three modes is treated as `allowlist`; only the exact, case-sensitive string `inherit` inherits the whole environment. |
+| `schegent.cli.environmentAllowlist` | array of names matching `^[A-Za-z_][A-Za-z0-9_]*$` | `[]` | application | Adds environment-variable names to the bootstrap set in `allowlist` mode; values are read at spawn time. Ignored when effective mode is `minimal` or `inherit`. |
 | `schegent.backend.runner` | `claude`, `codex`, or `agy` | `claude` | application | Selects the default backend. Claude is the default and, like Agy, runs with approval prompts off and acts without asking via `--dangerously-skip-permissions`; Codex uses `exec --json --sandbox workspace-write`. |
 | `schegent.backend.probeTimeoutSeconds` | integer, `1`–`30` | `5` | application | Bounds availability and model-discovery probes. |
 | `schegent.codex.path` | string | `codex` | application | Codex executable path. |
@@ -22,6 +22,8 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 | `schegent.models` | object keyed by `claude`, `codex`, and `agy` | `{ "claude": [], "codex": [], "agy": [] }` | resource | Adds operator-supplied model identifiers to the Model Catalog. |
 
 <!-- Source: package.json -->
+<!-- Source: src/activation/uncached-settings-accessors.ts -->
+<!-- Source: src/contracts/process-environment-policy.ts -->
 <!-- Source: src/runner/spawn-env.ts -->
 <!-- Source: src/runner/claude-cli.ts -->
 <!-- Source: src/runner/codex-cli.ts -->
@@ -30,7 +32,13 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 
 <a id="schegentclienvironmentmode"></a>
 
-The policy that `schegent.cli.environmentMode` selects reaches every backend process Schegent starts: the Phase runner, the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe. Isolated-lane verification checks follow it too, read at each check, except that `minimal` keeps the bootstrap names for a check so a build tool can be found on `PATH` ([execution lanes](../operations/execution-lanes.md)). A hand-edited value that is not `inherit`, `minimal`, or `allowlist`, whether misspelled, mis-cased, empty or not a string, resolves to `allowlist` and never to `inherit`.
+**Environment-policy precedence** is evaluated once by `readProcessEnvironmentPolicy` (`src/activation/uncached-settings-accessors.ts`) and `resolveProcessEnvironmentPolicy` (`src/contracts/process-environment-policy.ts`), in strict order:
+
+1. **`schegent.cli.inheritEnvironment` (deprecated) first**: if unset (`undefined`), it defaults to `true`. If explicitly `false` — or if defined as any non-boolean value (such as `"false"`, `1`, `null`, or `{}`) — it fails closed to `false`, forcing effective mode `minimal` (`inheritProcessEnv: false`) and dropping `schegent.cli.environmentAllowlist` regardless of `schegent.cli.environmentMode`.
+2. **`schegent.cli.environmentMode` second**: when `inheritEnvironment` is `true`, `'minimal'` yields `minimal` (only Schegent-controlled overlays, no ambient or bootstrap variables, allowlist dropped); only the exact, case-sensitive string `'inherit'` yields `inherit` (full extension-host environment plus overlays); `'allowlist'` or any absent, malformed, misspelled, or mis-cased value resolves to `allowlist` (required bootstrap variables from `REQUIRED_PROCESS_ENV_NAMES`, every `LC_*` variable, valid allowlisted names from `schegent.cli.environmentAllowlist`, plus overlays). See the executable precedence table in [System configuration](system-config.md#backend-process-environment).
+3. **Isolated-lane verification checks (`src/services/execution-lanes/verification-runner.ts`)**: read this same policy per check, except that under both `minimal` and `allowlist` a lane verification check retains the `REQUIRED_PROCESS_ENV_NAMES` bootstrap variables (including `PATH`, `HOME`, `USER`, `LOGNAME`, `USERNAME`, etc.) and `LC_*` so build and test executables can resolve on `PATH`, while still excluding non-allowlisted ambient secrets (and dropping operator allowlist entries under `minimal`; see [execution lanes](../operations/execution-lanes.md)).
+
+The resolved policy reaches every backend process Schegent starts: the Phase runner (and its ACP stdio bridge / native ACP transport), the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe.
 
 The default backend and process-environment policy are resolved during workspace-bound activation. Reload the VS Code Extension Host after changing `schegent.backend.runner`, `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, or `schegent.cli.inheritEnvironment`. In contrast, the three CLI executable-path settings are read for each invocation and can take effect without a reload.
 
@@ -66,6 +74,8 @@ A workspace or folder value of `schegent.loop.maxIterations`, `schegent.loop.max
 `schegent.invocation.maxDurationSeconds` may only tighten the user's value (or the default): a lower
 cap, a shorter timeout, a cap where none was set, or `false`. A value that would raise, clear or switch off the limit is
 ignored, and activation logs a warning. See [Autonomy bounds](../operations/autonomy-bounds-disclosure.md#where-each-limit-comes-from).
+
+**Daily and workspace-wide cross-run aggregate spend caps do not exist today and remain an explicit open product decision** (alongside GC-10 tighten-only per-run caps above and GC-25 post-turn phase-end overshoot). `schegent.spend.maxUsdPerRun` and `schegent.spend.maxTokensPerRun` bound a single Run only; starting another Run begins a fresh per-run tally, and F06 historical usage accounting reports cross-run totals without enforcing a daily or workspace-wide stop. See [Autonomy bounds](../operations/autonomy-bounds-disclosure.md#open-product-decision-daily-and-workspace-wide-aggregate-spend-caps) and [Usage and Metrics Accounting](../operations/usage-accounting.md#three-spend-and-usage-mechanisms-and-when-each-enforces).
 
 <!-- Source: src/config/tighten-only-limits.ts -->
 
@@ -397,9 +407,10 @@ bytes regardless.
 
 ## Where writes go
 
-The General Settings webview does not accept arbitrary keys. Its host allowlist covers only the scalar settings represented by `KEY_SPECS`; the host validates the entire update batch before writing any accepted value to VS Code's workspace target and rolls back earlier writes if a later write fails. Backend selection, model entries, environment-policy controls, trust gates, and other settings use their owning surfaces instead of that general-settings payload.
+The General Settings webview (`CMD_SAVE_GENERAL_SETTINGS`) does not accept arbitrary keys. Its host allowlist covers the 33 scalar settings declared in `KEY_SPECS` (`src/config/general-settings-keys.ts` — including `cli.path`, `codex.path`, `agy.path`, `cli.inheritEnvironment`, `cli.environmentMode`, `cli.environmentAllowlist`, `backend.runner`, `backend.probeTimeoutSeconds`, spend bounds, retry/loop/invocation limits, logging/retention settings, and queue failure policy; see [API and command reference](api-and-cli.md#webview-command-boundary)). The host validates the entire update batch before writing, persists each key at the target its manifest scope requires (`Global` for `application`-scoped keys and `Workspace` for `resource`- and `window`-scoped keys), and rolls back earlier writes at their written layer if a later write fails. Model entries (`CMD_SAVE_MODELS`), uncontained-backend posture grants (`CMD_SET_UNCONTAINED_BACKEND_GRANT`), queue concurrency cap (`CMD_SAVE_QUEUE_SETTINGS`), trust gates (`schegent.trust.allowCustomPhases`, `schegent.trust.allowCustomRetryConditions`), ACP profile (`schegent.acp.profile`), execution lanes (`schegent.lanes.enabled`, `schegent.lanes.liveCap`, `schegent.lanes.provisioningDeadlineSeconds`), telemetry export (`schegent.telemetry.export.enabled` and sibling export keys), and deprecated read-only aliases use their own owning surfaces or VS Code Settings instead of that general-settings payload.
 
 <!-- Source: src/config/general-settings.ts -->
+<!-- Source: src/config/general-settings-keys.ts -->
 <!-- Source: src/ui/sidebar/commands/cmd-save-general-settings.ts -->
 
 Values may also be edited through VS Code's normal Settings UI or workspace JSON according to their declared scope. The supported environment-variable surface is documented separately in [System configuration](system-config.md); Schegent does not read a repository `.env` file.

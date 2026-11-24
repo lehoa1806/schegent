@@ -34,6 +34,8 @@ parenthetical says *by injection* is **Asserted by unit table only** — that ph
 | A symlink at any component of a safe-open walk is refused | `FR-R3-053` | `tests/unit/lib/safe-open*.test.ts` | **Observed here** |
 | A reparse point at the Windows leaf is refused | `FR-R3-083` §3 | `tests/unit/platform/windows-reparse.test.ts` | **Unrun here** |
 | The reparse classification itself (platform-independent) | `FR-R3-083` §3 | `tests/unit/lib/safe-open-reparse.test.ts` | **Observed here** |
+| Windows bare-name executable resolution (`taskkill`, `powershell.exe`, agent CLIs, and Git) rejects `cwd`, relative `PATH` entries, and `.cmd`/`.bat` shims against virtual Win32 paths (`WIN32_PROBE`) | Review gap GC-24, `FR-R7-16`, `FR-R7-18` (`N10`) | `tests/unit/lib/spawn-command.test.ts` | **Asserted by unit table only** — exercises `spawnCommandFor` and `resolveExecutableCommand` over the synthetic `WIN32_PROBE` map (`taskkill`, `powershell.exe`, `claude`, `codex`, `agy`, `git`) and pins every agent CLI, Git, and Windows utility spawn site (`src/runner/process-tree.ts`, `src/telemetry/platform/platform-windows.ts`). Real Windows filesystem and `CreateProcessW` behaviour is not measured here. |
+| Real Windows `cwd` decoy executable vs strictly-absolute `PATH` resolution and `spawn` execution (`taskkill`, `powershell.exe`, and Node binary) | Review gap GC-24, `FR-R7-18` (`N10`) | `tests/unit/platform/windows-cwd-executable.test.ts` | **Unrun here** |
 | Two names differing only by case stay two output identities on Linux (row 3 below) | `FR-R3-115`, review gap GC-18 | `tests/unit/platform/linux-case-sensitivity.test.ts` | **Observed here**, in the local Linux leg on 2026-11-12. On macOS it skips with its platform named. |
 | A mount that refuses exclusive creation is reported `unsupported` | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
 | A mount that permits a **second** exclusive create is reported `unsupported` | `FR-R3-083` §4 | `tests/unit/state/mount-capability.test.ts` | **Asserted by unit table only** |
@@ -101,9 +103,9 @@ saying-so.
 
 ### Review date and trigger
 
-<!-- decline-review-date: 2026-11-27 -->
+<!-- decline-review-date: 2026-12-24 -->
 
-**This decline is reviewed on or before 2026-11-27**, and
+**This decline is reviewed on or before 2026-12-24**, and
 `repo/tests/lint/dated-review-records.test.ts` fails on that day until someone re-reads it.
 `FR-R3-129` added both, for the reason the item states: *a dated decline is only honest while someone
 re-reads it.* Without a date and a check, the conditions below expire quietly and a temporary
@@ -113,7 +115,7 @@ decline becomes a permanent posture by nobody deciding.
 machine appeared or that a contributor ran the suite on one — those
 are facts about the world, and no gate in a repository sees them. Those stay the operator's to watch,
 and they are the reason the date is a *ceiling* rather than a schedule: any one of them arriving
-reopens this before 2026-11-27.
+reopens this before 2026-12-24.
 
 **When the date arrives**, one of two things happens and both are edits to this file: a route became
 available and the decline is **retired**, or nothing changed and the decline is **re-dated** with a
@@ -136,16 +138,53 @@ Feature 282 (`FR-R5-F21`) re-read this decline ahead of its date.
   observation that nobody has made, so the review cannot renew the date. The 2026-11-06 floor run
   under Node 22 was on macOS and changes nothing here.
 
+### Review 2026-11-24
+
+Feature 332 (`FR-R7-18`, task `N10`) re-read this decline ahead of its `2026-11-27` ceiling and
+audited every platform-branched production file under `src/`:
+
+- **What changed since 2026-11-06**:
+  - **GC-18 (2026-11-12)**: Route B executed the unit tier in a local Linux `aarch64` container
+    (`npm run verify:linux`, OrbStack 2.2.5) and closed row 3 (`linux-case-sensitivity.test.ts`).
+    No Linux desktop VS Code extension host, browser, or real CLI has run.
+  - **GC-24 & `FR-R7-18` `N10` (2026-11-12 / 2026-11-24)**: `src/lib/spawn-command.ts`
+    (`spawnCommandFor`) eliminated bare-name `cwd` lookup across agent CLIs and Git, and `N10`
+    closed the remaining Windows bare-name utility spawns (`taskkill` in `src/runner/process-tree.ts`
+    and `powershell.exe` in `src/telemetry/platform/platform-windows.ts`), adding unit-table
+    assertions (`tests/unit/lib/spawn-command.test.ts`) and an unrun Windows fixture
+    (`tests/unit/platform/windows-cwd-executable.test.ts`).
+  - **`FR-R7-14` (`14-11` / `14-13`, 2026-11-23)**: host-locality classification refuses remote
+    extension hosts (including remote `darwin/arm64`) before ACP process spawn, `RELEASE.md`
+    distinguishes attested `npm run gate` from `npm run verify:release` (including the non-hermetic
+    Linux Dockerfile base tag and live Debian `apt-get` installs), and `qualification-matrix.md`
+    aligns Windows with this dated decline rather than describing it as a permanent limit.
+- **Explicitly still unverified / open**:
+  - **Linux desktop editor host**: no VS Code extension host, browser, or real CLI run on Linux, and
+    no Linux `npm run gate:record`. Linux stays **Unverified**.
+  - **Windows desktop, host, `taskkill /T`, `cwd`-executable, and reparse-point hardware runs**: no
+    Windows machine or Windows contributor run has occurred; all three Windows fixtures
+    (`windows-sentinel.test.ts`, `windows-reparse.test.ts`, and `windows-cwd-executable.test.ts`)
+    remain **Unrun here** and Windows stays **Unverified**.
+  - **Criterion 8 independent third-party review / attestation**: still **open / not met** (single-operator
+    local verification posture; distribution remains private to the author).
+- **Re-dated to `2026-12-24`** (30 days from this review), because none of the Windows hardware or
+  independent-observer reopening conditions below has arrived.
+
 ### What would change this
 
-**Rewritten 2026-11-12**, because one of its three conditions arrived: a container runtime on the
-operator's machine (OrbStack 2.2.5), in which `npm run test:host` ran unedited in a Linux container, and its result is recorded under
-[Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). That closed row 3. What remains is
-Windows only, and any one of these rewrites this heading again:
+**Rewritten 2026-11-12 and updated 2026-11-24**, because one of its three conditions arrived: a
+container runtime on the operator's machine (OrbStack 2.2.5), in which `npm run test:host` ran
+unedited in a Linux container, and its result is recorded under
+[Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). That closed row 3. What remains for the
+dated decline is Windows hardware observation (plus desktop editor host qualification for Linux and
+Windows, and independent third-party Criterion 8 review before external distribution), and any one
+of these rewrites this heading again:
 
-- A Windows machine or VM becomes available to the operator (closes rows 1 and 2).
+- A Windows machine or VM becomes available to the operator (closes the unrun `taskkill /T`,
+  reparse-point leaf, and `cwd`-executable Windows fixtures).
 - A contributor on Windows runs `npm run test:host` unedited and reports what they saw, pass or
-  fail. Both fixtures are written to need no edit, so this costs them one command.
+  fail. All three Windows fixtures (`windows-sentinel.test.ts`, `windows-reparse.test.ts`, and
+  `windows-cwd-executable.test.ts`) are written to need no edit, so this costs them one command.
 
 A Linux container cannot stand in for either: process-group and reparse-point semantics are the
 things under test, and only Windows has them. Moving Linux itself out of the `unverified` tier is a
@@ -277,9 +316,9 @@ to it, and `tests/lint/platform-branch-has-record-row.test.ts` refuses a
 
 | Platform | Tier | Evidence |
 |---|---|---|
-| **macOS** (darwin, arm64) | **Verified** | The full host suite runs here every cycle. This record's header names the date and the platform. |
-| **Linux** | **Unverified** | Ships, and is branched for (`src/lib/output-target-identity.ts:40`). The unit tier has executed here in a Linux container (`npm run verify:linux`, 2026-11-12, aarch64), and the case branch is observed, see [Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). The extension host, a browser and a real CLI have not run on Linux, and no gate record was made there, so the tier stays **Unverified**. |
-| **Windows** (win32) | **Unverified** | Ships, and is branched for in four production files, two of them safety paths. Has never executed here. Both fixtures are *Unrun here*. The one Windows result there is, [the red Windows CI leg](../release/actions-terminal-record.md#the-red-windows-ciyml-leg-versus-every-windows-path-claim) at `2a885187`, ran on CI, not on this machine, so "has never executed here" stays true of this machine; its cause is unrecovered. |
+| **macOS** (darwin, arm64) | **Verified** | The full host suite runs here every cycle on local `darwin/arm64` (remote extension hosts, including remote `darwin/arm64`, are unqualified and refused before ACP spawn per `FR-R7-14` `14-11`). This record's header names the date and the platform. |
+| **Linux** | **Unverified** | Ships, and is explicitly branched for in **3** production files under `src/` (**2** direct `process.platform` comparisons: `src/lib/output-target-identity.ts:40` for case-sensitive output identity and `src/host-services/catalog-fs-adapter.ts` for POSIX mode narrowing; plus **1** injected-`platform` branch in `src/services/sqlite-store/filesystem-type-detector.ts` for `/proc/mounts` WAL filesystem detection). The unit tier has executed here in a Linux container (`npm run verify:linux`, 2026-11-12, `aarch64`), and the case branch is observed, see [Local Linux leg 2026-11-12](#local-linux-leg-2026-11-12). The desktop VS Code extension host, a browser, and a real CLI have not run on Linux, and no gate record was made there, so the tier stays **Unverified**. |
+| **Windows** (win32) | **Unverified** | Ships, and is explicitly branched for in **18** production files under `src/` (**13** direct `process.platform` comparisons plus **5** injected-`platform` branches), alongside the Windows-only telemetry adapter (`src/telemetry/platform/platform-windows.ts`) and the `O_NOFOLLOW`-absent reparse-leaf path (`src/lib/safe-open.ts`). Key safety paths include `src/runner/process-tree.ts` (`taskkill /T` resolved via `spawnCommandFor`), `src/lib/spawn-command.ts` (bare-name `PATH`-only executable resolution and `.cmd`/`.bat` refusal), `src/lib/safe-open.ts` (reparse-point leaf refusal), `src/lib/narrow-mode.ts` (`narrowOpenFileHandle` Win32 mode-narrowing skip), `src/services/containment-qualification/acp-authority-gate.ts` (Win32 path/verbatim containment), `src/services/execution-lanes/git-runner.ts` and `src/services/execution-lanes/verification-runner.ts` (lane subprocess teardown), `src/services/process-liveness.ts` (`unanswerable` liveness verdict), `src/services/sqlite-store/filesystem-type-detector.ts` (WAL share detection), `src/services/sqlite-store/backup-restore-service.ts` (mode narrowing), and `src/telemetry/platform/platform-windows.ts` (`powershell.exe` resolved via `spawnCommandFor`). Has never executed here. All three Windows fixtures (`windows-sentinel.test.ts`, `windows-reparse.test.ts`, and `windows-cwd-executable.test.ts`) are *Unrun here*. The one Windows result there is, [the red Windows CI leg](../release/actions-terminal-record.md#the-red-windows-ciyml-leg-versus-every-windows-path-claim) at `2a885187`, ran on CI, not on this machine, so "has never executed here" stays true of this machine; its cause is unrecovered. |
 
 **"Unverified" is a claim about evidence, not about quality.** It does not say the
 platform is broken, and it does not say it works. It says nobody has run it and this
@@ -317,11 +356,14 @@ than a declaration that excludes it.
 "unknown" is replaced by a verdict a reader can act on. **What it is not**: field evidence for any
 row. Four rows say classification-only, two say inside-with-a-failure-mode, and one says outside — and
 none of the seven has been observed on this host.
-- **No Windows checkout ran this suite.** Both Windows rows are unrun. They are
+- **No Windows checkout ran this suite.** All three Windows fixtures
+  (`tests/unit/platform/windows-sentinel.test.ts`,
+  `tests/unit/platform/windows-reparse.test.ts`, and
+  `tests/unit/platform/windows-cwd-executable.test.ts`) are unrun here. They are
   written to run without edits — `tests/unit/platform/` is inside the configured
-  test globs, and both fixtures skip with the platform named in the skip reason —
-  so a Windows contributor produces the missing evidence by running `npm run
-  test:host` and reporting what they see, whether it passes or fails.
+  test globs, and each fixture skips with the platform named in the skip title only
+  when skipped — so a Windows contributor produces the missing evidence by running
+  `npm run test:host` and reporting what they see, whether it passes or fails.
 
 ## Ownership timing (`FR-R4-F01`, 2026-10-27)
 

@@ -83,7 +83,10 @@ import {
   CMD_OPEN_CHANGE_REVIEW,
   CMD_DECIDE_PHASE_HANDOFF
 } from '../../../../src/ui/sidebar/messages';
-import { MUTATING_COMMAND_TYPES } from '../../../../src/contracts/sidebar-command-metadata';
+import {
+  COMMAND_AUTHORITY,
+  MUTATING_COMMAND_TYPES
+} from '../../../../src/contracts/sidebar-command-metadata';
 import { isMutatingCommand } from '../../../../src/ui/sidebar/message-router';
 
 const PINNED_MUTATING_COMMANDS: ReadonlyArray<string> = [
@@ -284,6 +287,24 @@ describe('Feature 012 T050 — MUTATING_COMMANDS pinned-list regression', () => 
   it('keeps CMD_CONTINUE_WORKFLOW gated for workflow continuation and candidate-block control actions (FR-R5-F31)', () => {
     expect(isMutatingCommand(CMD_CONTINUE_WORKFLOW)).toBe(true);
     expect(PINNED_MUTATING_COMMANDS).toContain(CMD_CONTINUE_WORKFLOW);
+    expect(COMMAND_AUTHORITY.CMD_CONTINUE_WORKFLOW).toMatchObject({
+      authority: 'gated',
+      execution: 'serialized'
+    });
+  });
+
+  // FR-R7-18 (`N01`, FR-001) — reclassifying `CMD_CANCEL` to `gatedConcurrent`
+  // unblocks it from slow serialized starts/teardowns without leaving the
+  // workspace-trust / primary-window gate or dropping it from the 57-item pin.
+  it('keeps CMD_CANCEL gated and pinned at 57 while classified concurrent (FR-R7-18 N01)', () => {
+    expect(isMutatingCommand(CMD_CANCEL)).toBe(true);
+    expect(PINNED_MUTATING_COMMANDS).toContain(CMD_CANCEL);
+    expect(PINNED_MUTATING_COMMANDS).toHaveLength(57);
+    expect(COMMAND_AUTHORITY.CMD_CANCEL).toEqual({
+      authority: 'gated',
+      execution: 'concurrent',
+      reason: 'workflow cancellation'
+    });
   });
 });
 

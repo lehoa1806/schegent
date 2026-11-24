@@ -33,6 +33,7 @@ import {
 import { createDiskOwnershipFs } from '../../src/state/ownership-fs';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { removeTempRoot } from '../temp-root-cleanup';
+import { waitForCondition } from '../wait-for-condition';
 
 function createMemoryMemento(): Memento {
   const data = new Map<string, unknown>();
@@ -293,13 +294,23 @@ describe('FR-R7-14 (14-03) Large restore execution, ownership fencing & two-wind
         if (heapNow > peakHeap) peakHeap = heapNow;
       }, 25);
 
-      const startMs = performance.now();
-      const restored = await api.restoreBackup('bkp-large-16m');
-      const wallMs = performance.now() - startMs;
-      // Allow one timer turn after restore so monitorEventLoopDelay captures the full transaction stall
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      clearInterval(probeTimer);
-      eld.disable();
+      let restored: Awaited<ReturnType<typeof api.restoreBackup>>;
+      let wallMs: number;
+      try {
+        const startMs = performance.now();
+        restored = await api.restoreBackup('bkp-large-16m');
+        wallMs = performance.now() - startMs;
+        // Wait for at least one post-restore heartbeat probe tick so monitorEventLoopDelay
+        // captures the full transaction stall without relying on a blind fixed sleep.
+        const ticksAtRestoreEnd = heartbeatTicks;
+        await waitForCondition(() => heartbeatTicks > ticksAtRestoreEnd, {
+          timeoutMs: 2_000,
+          label: 'post-restore heartbeat probe tick'
+        });
+      } finally {
+        clearInterval(probeTimer);
+        eld.disable();
+      }
 
       const eldMaxMs = eld.max / 1e6;
       const heapDeltaMiB =

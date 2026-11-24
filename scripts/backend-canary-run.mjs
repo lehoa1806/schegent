@@ -25,7 +25,8 @@ import {
   QUALIFICATION_PATH,
   computeQualificationSourceFingerprint,
   readHeadCommit,
-  recordFromCanaryResults
+  recordFromCanaryResults,
+  summarizeBehaviorEvalManifest
 } from './backend-qualification.mjs';
 import {
   runnerBackendResult,
@@ -397,12 +398,23 @@ export async function runFixtureQualification({ repoRoot = REPO_ROOT, now = new 
         executable: cliPath
       });
     }
+    const manifestPath = resolve(
+      repoRoot,
+      'tests',
+      'evals',
+      'fixtures',
+      'backend-behavior',
+      'manifest.json'
+    );
+    const manifestExists = existsSync(manifestPath);
+    const behaviorEvals = manifestExists ? summarizeBehaviorEvalManifest(manifestPath) : undefined;
     const record = recordFromCanaryResults(results, {
       commit: readHeadCommit(),
       platform: `${process.platform} ${process.arch} node ${process.versions.node}`,
       now,
       mode: 'fixture',
-      sourceFingerprint: computeQualificationSourceFingerprint(repoRoot)
+      sourceFingerprint: computeQualificationSourceFingerprint(repoRoot),
+      ...(manifestExists ? { behaviorEvals } : {})
     });
     return { results, record };
   } finally {
@@ -527,12 +539,23 @@ if (!isEntryPoint) {
 
   console.log(formatReport(results));
 
+  const liveManifestPath = resolve(
+    REPO_ROOT,
+    'tests',
+    'evals',
+    'fixtures',
+    'backend-behavior',
+    'manifest.json'
+  );
+  const liveManifestExists = existsSync(liveManifestPath);
+  const behaviorEvals = liveManifestExists ? summarizeBehaviorEvalManifest(liveManifestPath) : undefined;
   const qualificationRecord = recordFromCanaryResults(results, {
     commit: readHeadCommit(),
     platform: `${process.platform} ${process.arch} node ${process.versions.node}`,
     now: new Date().toISOString(),
     mode: 'live',
-    sourceFingerprint: computeQualificationSourceFingerprint(REPO_ROOT)
+    sourceFingerprint: computeQualificationSourceFingerprint(REPO_ROOT),
+    ...(liveManifestExists ? { behaviorEvals } : {})
   });
   writeFileSync(outPath, `${JSON.stringify(qualificationRecord, null, 2)}\n`, 'utf8');
   console.log(`[backend-canary] qualification record written to ${outPath}`);

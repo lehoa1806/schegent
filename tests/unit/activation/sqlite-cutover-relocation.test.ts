@@ -889,4 +889,98 @@ describe('FR-R7-10 — createSqliteCutoverCoordinator relocation wiring', () => 
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(closeAsyncReject).toHaveBeenCalledTimes(1);
   });
+
+  it('FR-R7-18 N12: detached SQLite writer refuses trusted non-primary windows and fails closed on primacy error, while permitting trusted primary windows', async () => {
+    const root = await makeTempDir('fr-r7-18-n12-detached-primacy-');
+    const workspaceRoot = path.join(root, 'repo-detached-primacy');
+    await fsp.mkdir(workspaceRoot, { recursive: true });
+    const globalStorage = path.join(root, 'globalStorage', 'schegent.schegent');
+
+    const { logger } = createSpyLogger();
+    const legacyMemento = createMemoryMemento();
+    const operationalMemento = createSwitchableOperationalMemento(legacyMemento, logger);
+    const store = new WorkspaceStateStore(operationalMemento, logger);
+    registerOperationalMementoForStore(store, operationalMemento);
+
+    let trusted = true;
+    let primary = true;
+    let primacyThrows = false;
+
+    const coord = createSqliteCutoverCoordinator({
+      context: {
+        storageUri: undefined,
+        globalStorageUri: { fsPath: globalStorage } as never,
+        subscriptions: []
+      },
+      workspaceRoot,
+      store,
+      auditWriter: {
+        write: async () => undefined,
+        subscribe: () => ({ dispose: () => undefined })
+      } as unknown as AuditLogWriter,
+      envelopes: { readEnvelope: () => null } as unknown as RecoveryEnvelopePort,
+      pinnedRunIds: () => new Set(),
+      logger,
+      isWorkspaceTrusted: () => trusted,
+      hasPrimacy: async () => {
+        if (primacyThrows) throw new Error('ownership-probe-failed');
+        return primary;
+      },
+      disposables: []
+    });
+
+    const services = await coord.activatePrimary();
+    expect(services).not.toBeNull();
+
+    // Detach the live SQLite backing so subsequent operational writes must go through the detached writer gate.
+    operationalMemento.detachSqlite();
+
+    // 1. Trusted but non-primary window MUST refuse both single-key and batched detached writes.
+    primary = false;
+    await expect(
+      operationalMemento.update('schegent.run', { default: { id: 'run-non-primary', status: 'running', currentPhase: 'plan' } })
+    ).rejects.toBeInstanceOf(PostCutoverMementoWriteForbiddenError);
+    await expect(
+      operationalMemento.updateBatch([
+        { key: 'schegent.run', value: { default: { id: 'run-non-primary-batch', status: 'running', currentPhase: 'plan' } } }
+      ])
+    ).rejects.toBeInstanceOf(PostCutoverMementoWriteForbiddenError);
+
+    // 2. Rejecting primacy probe MUST fail closed.
+    primacyThrows = true;
+    await expect(
+      operationalMemento.update('schegent.run', { default: { id: 'run-primacy-err', status: 'running', currentPhase: 'plan' } })
+    ).rejects.toBeInstanceOf(PostCutoverMementoWriteForbiddenError);
+    primacyThrows = false;
+
+    // 3. Untrusted primary window MUST refuse detached writes.
+    trusted = false;
+    primary = true;
+    await expect(
+      operationalMemento.update('schegent.run', { default: { id: 'run-untrusted', status: 'running', currentPhase: 'plan' } })
+    ).rejects.toBeInstanceOf(PostCutoverMementoWriteForbiddenError);
+
+    // 4. Trusted AND primary window permits detached writes and commits them durably to SQLite.
+    trusted = true;
+    primary = true;
+    await operationalMemento.update('schegent.run', {
+      default: { id: 'run-detached-allowed', status: 'completed', currentPhase: 'done' }
+    });
+    await operationalMemento.updateBatch([
+      {
+        key: 'schegent.run',
+        value: { default: { id: 'run-detached-batch-allowed', status: 'completed', currentPhase: 'done' } }
+      }
+    ]);
+
+    const checkDb = new DatabaseSync(coord.expectedDatabasePath, { readOnly: true });
+    try {
+      const rows = checkDb.prepare('SELECT run_id FROM operational_runs').all() as Array<{ run_id: string }>;
+      expect(rows.map((r) => r.run_id)).toEqual(['run-detached-batch-allowed']);
+    } finally {
+      checkDb.close();
+    }
+
+    coord.close();
+  });
 });

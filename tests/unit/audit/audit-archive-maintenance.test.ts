@@ -48,11 +48,12 @@ function chainFrom(from: string, firstId: number, count: number): { lines: strin
 
 type Snapshot = ReadonlyMap<string, { readonly mode: number; readonly bytes: string }>;
 
-/** Two ticks of the event loop are not enough for a thread-pool fs call: wait for real quiet. */
-async function drain(): Promise<void> {
-  for (let round = 0; round < 10; round += 1) await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  for (let round = 0; round < 10; round += 1) await new Promise((resolve) => setImmediate(resolve));
+/** Complete a bounded sequence of real fs stat + immediate turns so any accidentally-queued thread-pool I/O settles. */
+async function drain(dir: string): Promise<void> {
+  for (let round = 0; round < 10; round += 1) {
+    await fs.stat(dir);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }
 
 describe('construction is read-only and maintenance is one explicit step (SC-005)', () => {
@@ -104,7 +105,7 @@ describe('construction is read-only and maintenance is one explicit step (SC-005
     expect(before.get(EXPIRED_ARCHIVE)?.mode).toBe(0o644);
 
     newWriter();
-    await drain();
+    await drain(auditDir());
 
     expect(await snapshot()).toEqual(before);
   });
@@ -138,7 +139,7 @@ describe('construction is read-only and maintenance is one explicit step (SC-005
     const afterFirst = await snapshot();
 
     expect(await writer.runArchiveMaintenance()).toBe('already-ran');
-    await drain();
+    await drain(auditDir());
 
     expect(await snapshot()).toEqual(afterFirst);
   });
@@ -149,7 +150,7 @@ describe('construction is read-only and maintenance is one explicit step (SC-005
     const before = await snapshot();
 
     expect(await writer.runArchiveMaintenance()).toBe('not-owner');
-    await drain();
+    await drain(auditDir());
     expect(await snapshot()).toEqual(before);
 
     owner.fence = 8;

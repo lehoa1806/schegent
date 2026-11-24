@@ -93,11 +93,11 @@ export function sanitizeProcessEnvAllowlist(value: unknown): readonly string[] {
  * is strict and case-sensitive on purpose: a typo must never widen.
  */
 export function resolveProcessEnvironmentPolicy(input: {
-  readonly inheritEnvironment: boolean;
+  readonly inheritEnvironment: unknown;
   readonly mode: unknown;
   readonly allowlist: unknown;
 }): ProcessEnvironmentPolicy {
-  if (!input.inheritEnvironment || input.mode === 'minimal') {
+  if (input.inheritEnvironment !== true || input.mode === 'minimal') {
     return Object.freeze({ mode: 'minimal', inheritProcessEnv: false });
   }
   if (input.mode === 'inherit') {

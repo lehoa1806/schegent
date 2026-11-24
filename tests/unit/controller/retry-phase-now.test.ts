@@ -13,6 +13,7 @@ import { SchegentWorkflowController } from '../../../src/controller/workflow-con
 // ids here are the real Spec Kit ones.
 import { buildSpeckitCatalog } from '../../fixtures/speckit-catalog-fixture';
 import { RecordingDeadlineTimer } from '../../recording-deadline-timer';
+import { waitForCondition } from '../../wait-for-condition';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -214,8 +215,10 @@ describe('retryPhaseNow — happy path', () => {
 
     // Settled state (after setImmediate-driven resumeExisting) — count
     // resets to 0 and pendingRetry* clear.
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => store.getRun(DEFAULT_QUEUE_ID)?.status === 'completed',
+      { label: 'retryPhaseNow resumed run completion' }
+    );
 
     const settled = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(settled.delayedRetryCount).toBe(0);
@@ -263,8 +266,10 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => store.getRun(DEFAULT_QUEUE_ID)?.status === 'completed',
+      { label: 'retryPhaseNow resumed run completion after cap unpause' }
+    );
 
     expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
     expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBeNull();
@@ -286,8 +291,10 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => runSpy.mock.calls.length >= 2 && deadlineTimer.sets.length >= 2,
+      { label: 'retryPhaseNow resumed invocation settled' }
+    );
 
     expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
     expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe('retry-cap-exhausted:some-other-run-id-9999');
@@ -303,8 +310,10 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => runSpy.mock.calls.length >= 2 && deadlineTimer.sets.length >= 2,
+      { label: 'retryPhaseNow resumed invocation settled' }
+    );
 
     expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
     expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe('operator-paused');

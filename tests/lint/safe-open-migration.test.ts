@@ -418,6 +418,12 @@ const PERMANENT_LIMIT: readonly PermanentLimit[] = [
   },
   {
     residual:
+      'Path-based removal TOCTOU window (contained unlink, artifact deletion, and audit archive pruning) between resolveContainedLink/lstat and unlink.',
+    site: 'src/lib/path-containment.ts',
+    missingPrimitive: 'openat(2) / unlinkat(2) — descriptor-relative removal.'
+  },
+  {
+    residual:
       'On Windows, a descendant that re-parents itself escapes taskkill /T. On POSIX, one that calls setsid escapes its group.',
     site: 'src/runner/process-tree.ts',
     missingPrimitive: 'A Job Object with kill-on-close.'

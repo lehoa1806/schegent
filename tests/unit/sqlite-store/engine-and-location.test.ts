@@ -16,6 +16,10 @@ import {
   F04_INITIAL_STRICT_TABLE_COUNT,
   SQLITE_SCHEMA_CURRENT_VERSION
 } from '../../../src/contracts/sqlite-store/schema-types';
+import {
+  STRUCTURED_STATE_CENSUS,
+  validateStructuredStateCensus
+} from '../../../src/contracts/sqlite-store/state-census';
 import { F05_LIFECYCLE_TABLE_NAMES } from '../../../src/services/artifact-lifecycle/lifecycle-schema';
 import { F06_ACCOUNTING_TABLE_NAMES } from '../../../src/services/usage-accounting/accounting-schema';
 import { F07_LIVE_LOG_TABLE_NAMES } from '../../../src/services/phase-log/live-log-index-schema';
@@ -201,5 +205,48 @@ describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storag
     expect(report.meetsMinimumVersionFloor).toBe(true);
     expect(report.strictSchemaTableCount).toBe(EXPECTED_STRICT_TABLE_COUNT);
     expect(report.foreignKeyCheckViolations).toBe(0);
+  });
+
+  it('FR-R7-18 N12: leaves PRAGMA fullfsync unset (0) alongside journal_mode=wal and synchronous=FULL (2)', async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-n12-fullfsync-'));
+    tempDirs.push(rootDir);
+
+    const resolved = await resolveTrustedSqliteLocation({
+      trustedRootDir: rootDir,
+      relativeSegments: ['sqlite-store'],
+      databaseFileName: 'schegent-state.db',
+      sourceKind: 'host_global_storage_uri',
+      filesystemType: 'apfs',
+      requestedJournalMode: 'wal'
+    });
+    expect(resolved.status).toBe('resolved');
+    if (resolved.status !== 'resolved') return;
+
+    const conn = new NodeSqliteConnection({
+      databasePath: resolved.databasePath,
+      journalMode: 'wal'
+    });
+    try {
+      expect(conn.verifiedPragmas.journalMode).toBe('wal');
+      expect(conn.verifiedPragmas.synchronous).toBe(2);
+      expect(Number(conn.scalar('PRAGMA fullfsync'))).toBe(0);
+    } finally {
+      conn.close();
+    }
+  });
+
+  it('FR-R7-18 N12: state census truthfully classifies window-primacy-and-locks on .schegent/ownership/ and passthrough Memento keys', () => {
+    const validation = validateStructuredStateCensus(STRUCTURED_STATE_CENSUS);
+    expect(validation.valid).toBe(true);
+    expect(validation.unclassifiedExecutionAffectingSurfaces).toEqual([]);
+
+    const primacy = STRUCTURED_STATE_CENSUS.find((entry) => entry.surfaceId === 'window-primacy-and-locks');
+    expect(primacy).toBeDefined();
+    expect(primacy?.classification).toBe('filesystem-ownership-fence');
+    expect(primacy?.migrationStage).toBe('external-retained');
+    expect(primacy?.targetTables).toEqual([]);
+    expect(primacy?.rationale).toContain('.schegent/ownership/');
+    expect(primacy?.rationale).toContain('PASSTHROUGH_OWNERSHIP_KEYS');
+    expect(primacy?.rationale).toContain('AtomicTransactionUnitsService');
   });
 });

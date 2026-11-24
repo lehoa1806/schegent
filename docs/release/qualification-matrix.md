@@ -20,8 +20,8 @@ and `tests/lint/qualification-matrix-shape.test.ts` reports it by name.
 | macOS | 22 | unobserved | — | — | — | — | — | a macOS machine running Node 22, then `npm run gate:record` on it |
 | Linux | 24 | unobserved | — | — | — | — | — | a Linux host running Node 24, then `npm run gate:record` on it |
 | Linux | 22 | unobserved | — | — | — | — | — | a Linux host running Node 22, then `npm run gate:record` on it |
-| Windows | 24 | unobserved | — | — | — | — | — | a Windows host running Node 24; Windows is a stated permanent limit of this repository |
-| Windows | 22 | unobserved | — | — | — | — | — | a Windows host running Node 22; Windows is a stated permanent limit of this repository |
+| Windows | 24 | unobserved | — | — | — | — | — | a Windows host running Node 24, then `npm run gate:record` on it (dated decline with reopening triggers in [platform observation record](../operations/platform-observation-record.md#what-would-change-this)) |
+| Windows | 22 | unobserved | — | — | — | — | — | a Windows host running Node 22, then `npm run gate:record` on it (dated decline with reopening triggers in [platform observation record](../operations/platform-observation-record.md#what-would-change-this)) |
 
 The macOS / Node 22 cell stays `unobserved` even though the floor was exercised on 2026-11-06. The
 [Node 22 floor record](node-floor-record.md) covers a plain-Node run of `test:host`, `build` and
@@ -34,6 +34,13 @@ Linux container under Node v24.19.0 on aarch64, and what it saw is in the
 [platform observation record](../operations/platform-observation-record.md#local-linux-leg-2026-11-12).
 That is the unit tier, not `npm run gate`: no extension host, browser or real CLI ran, the workspace
 envelope was absent, and no gate record was made.
+
+The Windows / Node 24 and Windows / Node 22 cells stay `unobserved` under a **dated decline**
+(not a permanent limit: hosted multi-OS CI is permanently retired, while Windows hardware
+verification reopens whenever a Windows machine or contributor becomes available, per
+[platform observation record](../operations/platform-observation-record.md#what-would-change-this)).
+Independent third-party Criterion 8 review also remains open before widening distribution beyond
+private-to-author use.
 
 ## What the one observed cell is, and is not
 

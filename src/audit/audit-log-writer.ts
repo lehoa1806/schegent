@@ -955,10 +955,14 @@ export class AuditLogWriter {
   }
 
   private async maybeRotate(): Promise<void> {
-    let stat: Awaited<ReturnType<typeof fs.stat>> | null = null;
+    let stat: Awaited<ReturnType<typeof fs.lstat>> | null = null;
     try {
-      stat = await fs.stat(this.logPath);
+      stat = await fs.lstat(this.logPath);
     } catch {
+      return;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      this.logger.warn('audit log rotation refused: live log is not a regular file');
       return;
     }
     const sizeExceeded = stat.size >= this.config.rotationSizeBytes;
@@ -975,22 +979,23 @@ export class AuditLogWriter {
     const milliseconds = String(rotationTime.getUTCMilliseconds()).padStart(3, '0');
     const stamp = `${formatStamp(rotationTime)}-${milliseconds}-${randomUUID().slice(0, 8)}`;
     const archive = `${this.logPath}.${stamp}`;
-    // Feature FR-R3-005 — both ends, link form. `rename` acts on the directory
-    // entries and follows neither, and the archive does not exist yet, so the
-    // check that matters is the one on the directory they share. A refusal
-    // leaves the live log where it is: an unrotated audit log is a large file,
-    // and moving one out of the workspace is not the recovery.
-    const ends = await Promise.all([
+    // Feature FR-R3-005 & FR-R7-18 (N11) — both ends, link form; rename operates
+    // on the canonical resolved paths inside the proven workspace root.
+    const [srcVerdict, dstVerdict] = await Promise.all([
       resolveContainedLink(this.logPath, [this.config.workspaceRoot]),
       resolveContainedLink(archive, [this.config.workspaceRoot])
     ]);
-    const refused = ends.find((verdict) => verdict.outcome === 'refused');
-    if (refused && refused.outcome === 'refused') {
-      this.warnContainmentRefusal('rotation', refused.reason);
+    if (srcVerdict.outcome === 'refused') {
+      this.warnContainmentRefusal('rotation', srcVerdict.reason);
       return;
     }
+    if (dstVerdict.outcome === 'refused') {
+      this.warnContainmentRefusal('rotation', dstVerdict.reason);
+      return;
+    }
+    if (srcVerdict.outcome !== 'contained' || dstVerdict.outcome !== 'contained') return;
     try {
-      await fs.rename(this.logPath, archive);
+      await fs.rename(srcVerdict.resolved, dstVerdict.resolved);
     } catch (err) {
       this.logger.warn(`audit log rotation failed: ${(err as Error).message}`);
       return;
@@ -1036,8 +1041,9 @@ export class AuditLogWriter {
       if (!ARCHIVE_STAMP_RE.test(stampSuffix)) continue;
       const fullPath = path.join(dir, name);
       try {
-        const stat = await fs.stat(fullPath);
-        if (stat.isFile()) archives.push({ fullPath, mtimeMs: stat.mtimeMs });
+        const stat = await fs.lstat(fullPath);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        archives.push({ fullPath, mtimeMs: stat.mtimeMs });
       } catch {
         // ignore unreadable entries
       }
@@ -1069,7 +1075,7 @@ export class AuditLogWriter {
       .sort((a, b) => path.basename(a.fullPath).localeCompare(path.basename(b.fullPath)));
     if (pruneCandidates.length === 0) return;
 
-    const verifiedToPrune: { fullPath: string; acc: AuditCutAccumulator }[] = [];
+    const verifiedToPrune: { fullPath: string; resolvedPath: string; acc: AuditCutAccumulator }[] = [];
     let cutsNeeded = false;
     for (const entry of pruneCandidates) {
       const verdict = await resolveContainedLink(entry.fullPath, [this.config.workspaceRoot]);
@@ -1077,6 +1083,7 @@ export class AuditLogWriter {
         this.warnContainmentRefusal('retention', verdict.reason);
         break;
       }
+      if (verdict.outcome !== 'contained') continue;
       const reading = await openWithinRootByPath(this.config.workspaceRoot, entry.fullPath, {
         flags: 'r'
       });
@@ -1102,7 +1109,7 @@ export class AuditLogWriter {
       const acc = createAuditCutAccumulator();
       appendCutText(acc, body);
       if (acc.removedFrom !== null || acc.removedLegacy > 0) cutsNeeded = true;
-      verifiedToPrune.push({ fullPath: entry.fullPath, acc });
+      verifiedToPrune.push({ fullPath: entry.fullPath, resolvedPath: verdict.resolved, acc });
     }
     if (verifiedToPrune.length === 0) return;
 
@@ -1128,7 +1135,7 @@ export class AuditLogWriter {
       const totalAcc = createAuditCutAccumulator();
       for (const item of verifiedToPrune) {
         try {
-          await fs.unlink(item.fullPath);
+          await fs.unlink(item.resolvedPath);
           mergeAuditCutAccumulator(totalAcc, item.acc);
         } catch (err) {
           this.logger.warn(

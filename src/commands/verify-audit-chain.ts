@@ -24,7 +24,8 @@ import * as path from 'path';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import { describeFailure } from '../lib/errors';
-import { verifyAuditChainAt, type ChainVerdict } from '../audit/audit-chain';
+import { openWithinRoot } from '../lib/safe-open';
+import { verifyAuditChainThrough, type ChainCheck, type ChainVerdict } from '../audit/audit-chain';
 import { classifyLoss, type CheckpointRead, type LossState } from '../audit/audit-checkpoint';
 
 /** The command a loss finding sends the operator to. */
@@ -157,10 +158,22 @@ export interface VerifyAuditChainCtx {
 export async function runVerifyAuditChain(ctx: VerifyAuditChainCtx): Promise<void> {
   const auditDir = path.join(ctx.workspaceRoot, '.schegent');
   const stored = await ctx.readCheckpoint();
-  let checked: ReturnType<typeof verifyAuditChainAt>;
+  const readContainedChainFile = async (name: string): Promise<Buffer> => {
+    const opened = await openWithinRoot(ctx.workspaceRoot, ['.schegent', name], { flags: 'r' });
+    if (opened.outcome === 'refused') {
+      throw new Error(`Audit chain read refused (${opened.reason}): ${name}`);
+    }
+    try {
+      return await opened.handle.readFile();
+    } finally {
+      await opened.handle.close();
+    }
+  };
+  let checked: ChainCheck | null;
   try {
-    checked = verifyAuditChainAt(
+    checked = await verifyAuditChainThrough(
       auditDir,
+      readContainedChainFile,
       stored.status === 'active' ? { probeDigest: stored.checkpoint.headDigest } : {}
     );
   } catch (err) {

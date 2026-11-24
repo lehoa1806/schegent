@@ -77,11 +77,17 @@ function writeAt(root: string, path: string, body: string): void {
 function fixture(options: FixtureOptions = {}): string {
   const root = mkdtempSync(join(tmpdir(), 'review-due-'));
   writeAt(root, HELD_RECORD, holdRecord([holdRow('left-pad', options.holdDate ?? RECENT)]));
+  const byDocument = new Map<string, string[]>();
   cadence.DATED_REVIEW_RECORDS.forEach((record, index) => {
     if (index === 0 && options.omitFirstRecord === true) return;
     const text = index === 0 ? (options.firstMarkerText ?? options.reviewDate ?? FAR_FUTURE) : FAR_FUTURE;
-    writeAt(root, record.document, `# ${record.defers}\n\n<!-- ${record.marker}: ${text} -->\n`);
+    const blocks = byDocument.get(record.document) ?? [];
+    blocks.push(`# ${record.defers}\n\n<!-- ${record.marker}: ${text} -->\n`);
+    byDocument.set(record.document, blocks);
   });
+  for (const [docPath, blocks] of byDocument) {
+    writeAt(root, docPath, blocks.join('\n'));
+  }
   for (const [path, body] of options.extraDocs ?? new Map<string, string>()) writeAt(root, path, body);
   return root;
 }

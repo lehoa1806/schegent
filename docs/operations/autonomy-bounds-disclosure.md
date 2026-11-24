@@ -187,6 +187,10 @@ Precedence is per denomination and independent: a phase declaring only a token b
 operator's dollar bound rather than clearing it.
 See `docs/features/custom-phases.md` for the authored field table and its bounds.
 
+## Open product decision: daily and workspace-wide aggregate spend caps
+
+**Daily and workspace-wide cross-run aggregate spend caps do not exist today and remain an explicit open product decision** (alongside GC-10 tighten-only per-run caps and GC-25 post-turn phase-end overshoot). `schegent.spend.maxUsdPerRun` and `schegent.spend.maxTokensPerRun` (and Phase-level `spendBoundUsd` / `spendBoundTokens`) bound a **single Run** only — and connected-workflow `strict-usd` control admission bounds one connected-workflow root only. Starting additional Runs on the same day or in the same workspace starts a fresh per-run tally. F06 historical usage accounting (`usage-accounting.md`) aggregates usage across Runs for reporting and telemetry, but does not enforce a calendar-day or workspace-wide admission cap.
+
 ## Relationship to strict-USD control admission and historical usage reports
 
 The bounds table above describes the **post-turn `SpendBoundWatcher`** (`src/services/spend-bound-watcher.ts`), which pauses at `phase-end` (allowing phase-end overshoot). Two sibling mechanisms complement it:

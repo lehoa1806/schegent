@@ -49,6 +49,8 @@ environment policies need their corresponding settings.
 Follow [Course: Use Schegent](courses/use-schegent.md). After the first
 successful Run, keep only these optional branches:
 
+- [Operator Incident Recovery Guide](operations/incident-recovery-guide.md) when Schegent refuses to open the SQLite store, quarantines workspace-state writes, or leaves an execution lane stuck.
+- [Operations documentation](operations/README.md) — begins with the bounded 5-item [Operator First-Recovery Required Reading List](operations/README.md#operator-first-recovery-required-reading-list) and separates current runbooks from dated measurements.
 - [Product workflows](how-to/product-workflows.md) for normal Queue, Run, repeat, and audit tasks.
 - [Command Palette reference](reference/commands.md) for exact command titles, guards, and operator results.
 - [Backend operations](operations/backends.md) when selection, authentication, probing, or invocation fails.
@@ -95,7 +97,7 @@ Document type describes when to read a page; it is not a required sequence.
 | Type | Read it when | Examples |
 |---|---|---|
 | **Course** | You are new to an audience path and want a complete outcome. | Use Schegent; Develop Schegent. |
-| **Tutorial** | You need one tightly guided setup or demonstration. | Developer setup; shipped Spec-kit pipeline. |
+| **Tutorial** | You need one tightly guided setup or demonstration. | Developer setup; shipped Spec-kit workflow. |
 | **How-to** | You already know the goal and need a procedure. | Product workflows; developer workflows. |
 | **Reference** | You need an exact contract, field, setting, event, or layout. | Commands; settings; API and CLI; file layout. |
 | **Explanation** | You need the reason, model, or system relationship behind behavior. | Core concepts; architecture; domain model. |
@@ -151,7 +153,7 @@ neither listed nor excluded.
 ### Tutorials
 
 - [Developer setup](tutorials/developer-setup.md)
-- [Run the shipped Spec-kit pipeline](tutorials/user-quickstart.md)
+- [Run the shipped Spec-kit workflow](tutorials/user-quickstart.md)
 
 ### How-to
 
@@ -172,78 +174,91 @@ neither listed nor excluded.
 
 ### Operations
 
+Start at [Operations documentation](operations/README.md) for the bounded 5-item [Operator First-Recovery Required Reading List](operations/README.md#operator-first-recovery-required-reading-list) and task-oriented navigation. Pages below are grouped into active recovery runbooks, active runtime/feature/security guides, and dated historical measurements.
+
+#### Current recovery and incident runbooks
+
+- [Operator Incident Recovery Guide](operations/incident-recovery-guide.md) — **rehearsed 2026-11-24**: symptom-first recovery for future schema refusal, quarantined Memento writer (`GC-04`), and stuck execution lanes (`FR-R7-18`, `N03`)
+- [SQLite application store rollback runbook](operations/sqlite-rollback-runbook.md) — step-by-step operator runbook for online same-version restore and offline schema `N` → `N-1` downgrade rollback across `min_reader_version`, backup file sensitivity/permissions, and post-backup state loss disclosure (`FR-R7-03`)
+- [Recovery from an interrupted run](operations/recovery-checkpoints.md)
+- [Recovery handoff](operations/recovery-handoff.md) — what a recovery handoff protects and why it refuses a delivery: states, pin purposes, the seven resolution reasons, the redelivery refusal order, explanation bounds, future versions, legacy records and the prune fail-safe (`FR-R6-F08`)
+- [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them, and what Resume, Restart, Skip and a row Retry each do to a failed run
+- [Workflow control flow, repetition, and backend recovery](operations/workflow-control-recovery.md) — candidate recovery blocks, scoped child-Workflow `Repeat`, sequential `ForEach`, durable availability monitoring, and workspace handover (`FR-R5-F35`)
+- [Execution lanes](operations/execution-lanes.md) — what a lane is and is not: the working-tree disclosure, the eight provisioning refusals, the integration lifecycle, fast-forward landing and the hooks it may run, reconciliation, cleanup rules, and what is deferred (`FR-R6-F10`)
+- [Runtime log](operations/runtime-log.md)
+- [Inspect audit logs](operations/inspect-audit-logs.md)
+- [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
+- [Live-log delivery](operations/live-log-delivery.md) — what the live phase-log view can drop and how it reports it: byte bounds, the ten coverage-gap reasons, the six delivery counters, resumable cursors, and the segment index (`FR-R6-F07`)
+- [Built-artifact route diagnosis](operations/built-artifact-route-diagnosis.md)
+
+#### Current runtime, feature, and security operations guides
+
 - [What Schegent keeps on this machine](operations/evidence-retention-disclosure.md) — every artifact
   retained locally, whether its content is redacted, and the bound on each, derived from the constants
   that enforce them rather than restated (FR-R3-085)
-
 - [What stops an unattended run](operations/autonomy-bounds-disclosure.md) — every bound on
   autonomy in one table, including the per-run spend bound and which denomination applies to which
   backend, derived from the constants that enforce them (FR-R3-112)
-
 - [Artifact lifecycle, storage and recovery](operations/artifact-lifecycle.md) — what Schegent may delete, why it kept something, and what an interrupted deletion or legacy catalog migration leaves behind
 - [Backends](operations/backends.md)
-- [Built-artifact route diagnosis](operations/built-artifact-route-diagnosis.md)
 - [Configuration](operations/configuration.md)
 - [Contract generation](operations/contract-generation.md)
 - [Dashboard UI](operations/dashboard-ui.md)
 - [Data retention and deletion](operations/data-retention-and-deletion.md)
 - [Gate recording](operations/gate-recording.md) — **declared 2026-10-02**: what a `npm run gate:record` record is and is not, and the rule that binds a bot-proposed dependency change to one, with how to perform it; the recording cadence for every merge into `develop`, and `npm run gate:distance`, which reports how far the record is from `HEAD`
-- [Inspect audit logs](operations/inspect-audit-logs.md)
-- [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
 - [Interactive verification register](operations/interactive-verification-register.md) — **opened 2026-09-06**: the interactive dev-host evidence specs `067` and `068` still owe, who owes it, what would close it, and the date it is re-read on
 - [Dependency advisory comparison](operations/dependency-advisory-comparison.md) — **declared 2026-10-30**: `npm run security:advisory-diff`, which tells whether a candidate commit introduced or worsened a dependency advisory against an explicit base commit; report-only, not part of `npm run gate`, and it leaves `npm run security:audit` as it was
 - [Licenses](operations/licenses.md)
-- [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
-- [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2
-- [Large-workspace resource measurement](operations/large-workspace-resource-measurement.md) — **measured 2026-08-27**: resident/retained, descriptors and Git behaviour at concurrency 1/2/4/8 on 2,000 tracked files, plus activation percentiles and the release-claim floor they establish
-- [Webview snapshot cost, render cost and persisted-state growth](operations/webview-snapshot-cost-measurement.md) — **measured 2026-10-31**: what the state snapshot costs the host and the webview per workload, how many snapshots a hidden sidebar is sent, how persisted records grow, the adoption decision against a threshold declared first, and the retention options that are documented and not implemented
-- [Transport-sink descriptor measurement](operations/transport-descriptor-measurement.md) — **measured 2026-08-28**: the sink's own append-handle count across 200 build/teardown cycles, 200 repoint/rotation cycles and 2,000 sustained records, and how it relates to the flat process-wide delta the large-workspace record reports
 - [Live-canary cadence](operations/live-canary-cadence.md) — **declared 2026-08-27**: when the live backend canary must run, who owns it, and the cost bound. A live run was made on 2026-10-19; the dated deferral stays open until the operator's review
-- [Merge-gate observation](operations/merge-gate-observation.md)
 - [Multi-queue concurrency](operations/multi-queue-concurrency.md)
 - [Phase and task management](operations/phase-task-management.md) — the Phase controls, what each refusal means, and what Disable and Enable now say when the host refuses them (FR-R5-F19)
 - [Run status transitions and atomic admission](operations/run-status-transitions.md) — the exhaustive Run status transition table, actor classes, typed error hierarchy, and single-transaction atomic admission invariant (FR-R7-01)
-- [Platform observation record](operations/platform-observation-record.md)
 - [Process YAML](operations/process-yaml.md)
-- [Recovery from an interrupted run](operations/recovery-checkpoints.md)
-- [Workflow control flow, repetition, and backend recovery](operations/workflow-control-recovery.md) — candidate recovery blocks, scoped child-Workflow `Repeat`, sequential `ForEach`, durable availability monitoring, and workspace handover (`FR-R5-F35`)
 - [Production workflow integration and support boundary matrix](operations/production-workflow-integration-matrix.md) — entry-point wiring census, production collaborator composition, seven-category refusal taxonomy, eight-checkpoint recovery, and F08/F01-B seams (`FR-R6-F01`)
 - [Shared memory and storage contracts](operations/shared-memory-storage-contracts.md) — C1 field dictionary, current-record mappings, C2 single-authority inventory, 15-feature consumer mapping, C4 retention inventory, and acceptance fixtures (`FR-R6-F02`)
 - [Runtime resource budgets and qualification](operations/runtime-resource-budgets.md) — runtime resource inventory, FR-015 common queue and query bounds, registered qualification targets, current-store migration baselines, and pending joint qualification (`FR-R6-F03`)
 - [SQLite application store and structured-state migration](operations/sqlite-application-store.md) — `node:sqlite` engine qualification, `STRICT` operational and domain schema (through Migration 9 per-entity Task and Run rows), seven `BEGIN IMMEDIATE` transaction units, bounded writer queue and WAL checkpoint policy, seven-stage migration and quarantine pipeline, and online backup/restore verification (`FR-R6-F04`, `FR-R7-02`)
-- [SQLite application store rollback runbook](operations/sqlite-rollback-runbook.md) — step-by-step operator runbook for online same-version restore and offline schema `N` → `N-1` downgrade rollback across `min_reader_version`, backup file sensitivity/permissions, and post-backup state loss disclosure (`FR-R7-03`)
-- [SQLite operational state commit latency measurement](operations/sqlite-operational-commit-latency-measurement.md) — **measured 2026-11-19**: host-thread write-commit, read-view, prune, and event-loop delay distributions on `WAL` + `synchronous = FULL` across four workload tiers, the pre-declared Round 6 decision gate that triggered Migration 9, and before/after Schema 8 → Schema 9 verification (`FR-R7-02`)
-- [SQLite large restore measurement and ownership fencing](operations/sqlite-large-restore-measurement.md) — **measured 2026-11-23**: legacy JS materialization versus SQLite-native `ATTACH` + `INSERT INTO ... SELECT` restore timings, peak RSS, event-loop delay, heartbeat continuity, logger latency, and calibrated 512 MiB maintenance envelope (`FR-R7-14`, `14-03`)
-- [Legacy Pipeline compatibility caller inventory](operations/legacy-pipeline-caller-inventory.md) — **inventoried 2026-11-23**: exact host (`src/`) and webview (`webview-ui/src/`) file counts, surface categories, and retirement prerequisites for remaining internal `Pipeline` compatibility callers (`FR-R7-14`, `14-21`)
 - [Usage and metrics accounting](operations/usage-accounting.md) — how a usage or cost total is built and how far to trust it: completeness and coverage, reported and estimated cost lanes, currencies and credits, unattributed and historical observations, corrections and revisions, the legacy epoch, gaps, and limits (`FR-R6-F06`)
-- [Live-log delivery](operations/live-log-delivery.md) — what the live phase-log view can drop and how it reports it: byte bounds, the ten coverage-gap reasons, the six delivery counters, resumable cursors, and the segment index (`FR-R6-F07`)
-- [Recovery handoff](operations/recovery-handoff.md) — what a recovery handoff protects and why it refuses a delivery: states, pin purposes, the seven resolution reasons, the redelivery refusal order, explanation bounds, future versions, legacy records and the prune fail-safe (`FR-R6-F08`)
-- [Execution lanes](operations/execution-lanes.md) — what a lane is and is not: the working-tree disclosure, the eight provisioning refusals, the integration lifecycle, fast-forward landing and the hooks it may run, reconciliation, cleanup rules, and what is deferred (`FR-R6-F10`)
 - [Historical reports and exports](operations/historical-reporting.md) — what a report reads and how far it goes: the six views, the bounds and their typed outcomes, export destinations, publication and reconciliation, the CSV profile and JSON as the exact format, saved reports and reproduction, trust, and what is deferred (`FR-R6-F11`, `FR-R7-17`)
-- [Historical reporting query latency measurement](operations/historical-reporting-measurement.md) — **measured 2026-11-23**: 100,000-attempt reference fixture first-page, isolated warm capture, sliced event-loop gap, later-page, cancellation, deadline, and working-data measurements against preserved `NFR-002`/`NFR-005` SHOULD targets (`FR-R7-17`, `R7-17-02`)
 - [Change review](operations/change-review.md) — reviewing an integration request's change set before approval or landing: the four states and their reasons, display-only eligibility, change kinds, bounds, placeholders, the editor opener and its fallback, the headless port, and what is deferred (`FR-R6-F12`)
 - [ACP agent runtime](operations/acp-runtime.md) — the host-owned ACP client: lifecycle, prompt outcomes, the refusal and failure reasons, bounds, cancellation and permissions, identities and history, host locality classification (`local` vs `remote`), event mapping, and platform qualification (`FR-R6-F13`, `FR-R7-14`)
 - [Optional OpenTelemetry export](operations/telemetry-export.md) — the opt-in metrics exporter: what is and is never exported, the profile and its refusal reasons, the instruments, corrections and coverage outcomes, the overflow set, delivery bounds and dispositions, health, the retransmission and label limits, and what was not observed (`FR-R6-F14`)
 - [Phase-to-phase context handoff](operations/phase-context-handoff.md) — the opt-in handoff between two workflow phases: shipped F15-B production persistence and ACP prompt delivery, disabled versus opted-in transition traces, selection and omission reasons, limits, revisions, approval and dispatch records, review-loop verification, and remaining limits (`FR-R6-F15`, `FR-R7-14`)
 - [Release notes](operations/release-notes.md)
-- [Release provenance observation](operations/release-provenance-observation.md)
-- [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them, and what Resume, Restart, Skip and a row Retry each do to a failed run
-- [Runtime log](operations/runtime-log.md)
-- [Single-task queue migration](operations/single-task-queue-migration.md)
 - [Trust scopes](operations/trust-scopes.md)
 - [VSIX allowlist derivation](operations/vsix-allowlist-derivation.md)
 - [Workspace Trust](operations/workspace-trust.md) — what stays available, what refuses, and what granting trust runs, in a window VS Code has not trusted
 - [Running Schegent on a repository you do not trust](operations/untrusted-repositories.md) — owns the rule; the threat model and the quickstart link here
+
+#### Dated measurements and historical observations
+
+- [Sidebar cancellation latency measurement](operations/cancellation-latency-measurement.md) — **measured 2026-11-24**: sidebar cancellation dispatch/ACK latency behind held start and teardown mutations and ordering decision (`FR-R7-18`, `N01`)
+- [Stage 2 startup and 5 MiB audit chain verification measurement](operations/startup-and-audit-verification-measurement.md) — **measured 2026-11-24**: Stage 2 activation sub-stage timings with sidebar open and 5 MiB whole-file / multi-archive audit verification latency and responsiveness (`FR-R7-18`, `N05`)
+- [Asynchronous test flakiness remediation and isolated-vs-loaded measurement](operations/async-test-flakiness-measurement.md) — **measured 2026-11-24**: split multi-invariant tests, deterministic wait replacements, wait-lint hardening, and repeated isolated versus loaded run comparison (`FR-R7-18`, `N06`)
+- [SQLite large restore measurement and ownership fencing](operations/sqlite-large-restore-measurement.md) — **measured 2026-11-23**: legacy JS materialization versus SQLite-native `ATTACH` + `INSERT INTO ... SELECT` restore timings, peak RSS, event-loop delay, heartbeat continuity, logger latency, and calibrated 512 MiB maintenance envelope (`FR-R7-14`, `14-03`)
+- [Historical reporting query latency measurement](operations/historical-reporting-measurement.md) — **measured 2026-11-23**: 100,000-attempt reference fixture first-page, isolated warm capture, sliced event-loop gap, later-page, cancellation, deadline, and working-data measurements against preserved `NFR-002`/`NFR-005` SHOULD targets (`FR-R7-17`, `R7-17-02`)
+- [Legacy Pipeline compatibility caller inventory](operations/legacy-pipeline-caller-inventory.md) — **inventoried 2026-11-23**: exact host (`src/`) and webview (`webview-ui/src/`) file counts, surface categories, and retirement prerequisites for remaining internal `Pipeline` compatibility callers (`FR-R7-14`, `14-21`)
+- [SQLite operational state commit latency measurement](operations/sqlite-operational-commit-latency-measurement.md) — **measured 2026-11-19**: host-thread write-commit, read-view, prune, and event-loop delay distributions on `WAL` + `synchronous = FULL` across four workload tiers, the pre-declared Round 6 decision gate that triggered Migration 9, and before/after Schema 8 → Schema 9 verification (`FR-R7-02`)
+- [Webview snapshot cost, render cost and persisted-state growth](operations/webview-snapshot-cost-measurement.md) — **measured 2026-10-31**: what the state snapshot costs the host and the webview per workload, how many snapshots a hidden sidebar is sent, how persisted records grow, the adoption decision against a threshold declared first, and the retention options that are documented and not implemented
+- [Transport-sink descriptor measurement](operations/transport-descriptor-measurement.md) — **measured 2026-08-28**: the sink's own append-handle count across 200 build/teardown cycles, 200 repoint/rotation cycles and 2,000 sustained records, and how it relates to the flat process-wide delta the large-workspace record reports
+- [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2
+- [Large-workspace resource measurement](operations/large-workspace-resource-measurement.md) — **measured 2026-08-27**: resident/retained, descriptors and Git behaviour at concurrency 1/2/4/8 on 2,000 tracked files, plus activation percentiles and the release-claim floor they establish
+- [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
+- [Platform observation record](operations/platform-observation-record.md)
 - [Counts the round-3 documents assert](operations/asserted-counts-sweep.md) — what was examined, and why the mechanism is the size it is (FR-R3-067)
 - [Duplicate-authority detection: the threshold measurements](operations/duplicate-authority-threshold-measurement.md) — the measurements behind the threshold (FR-R3-066)
 - [Lazy-route wait budget](operations/lazy-route-wait-budget.md) — the sweep, and what was observed (FR-R3-068)
 - [Visual gate preflight observations](operations/visual-gate-preflight-observations.md) — the recorded observations behind the preflight (FR-R3-065)
+- [Single-task queue migration](operations/single-task-queue-migration.md)
+- [Merge-gate observation](operations/merge-gate-observation.md)
+- [Release provenance observation](operations/release-provenance-observation.md)
 
 ### Architecture and decisions
 
 - [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.uncontainedBackends` is the opt-in, per backend since FR-R3-125)
 - [Backend containment qualification](architecture/backend-containment-qualification.md) — **qualified 2026-08-27**: what OS-enforced containment is actually available per backend and platform, and why Agy's `--sandbox` is available and not requested by default
 - [English-only is a product decision](concepts/english-only-not-localizable.md) — **decided 2026-08-22, re-taken 2026-10-21: English only** (1,122 distinct user-visible strings measured; what would reopen it, and its review date)
+- [High-coupling ownership boundaries and headless facade inventory](architecture/high-coupling-ownership-and-facades.md) — **measured 2026-11-24**: host layer ownership for high-coupling hotspots, store-keyed lifecycle disposal boundaries, and AST-verified caller inventory of all 15 `src/headless/` modules (`FR-R7-18`, `N08`)
 - [HostServices facade removal](architecture/host-services-facade-removal.md) — **decided 2026-08-29: deleted** (a nine-member host facade no installed extension could reach; two of its members had no caller at either end, and `tests/lint/adapter-module-reachability.test.ts` now fails the next one)
 - [Native binding decision](architecture/native-binding-decision.md) — **decided 2026-08-25: no** (the `openat`, `renameat`, Job Object and reparse-tag residuals are permanent stated limits)
 - [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
@@ -292,10 +307,11 @@ neither listed nor excluded.
   still pending qualification (FR-R4-F12)
 - [The devcontainer question](development/devcontainer-declination.md) — **declined 2026-08-28** (FR-R3-132)
 - [Lint gate census](development/lint-gate-census.md) — one line per gate, generated, with the current dated count
-- [Verification tiers](development/verification-tiers.md) — three tiers, cheapest first, and what each one does not establish (FR-R3-132)
+- [Verification tiers](development/verification-tiers.md) — four tiers, cheapest first, and what each one does not establish (FR-R3-132, FR-R7-08)
 
 ### Release
 
+- [Release documentation](release/README.md) — index of live release gates, qualification matrices, advisory dispositions, and retired hosted-CI records alongside [RELEASE.md](../RELEASE.md)
 - [Current release controls](release/current-release-controls.md) — what actually runs today, derived
   from the tree rather than written down. The single present-tense authority; four pages used to answer
   this question independently and all four were wrong (FR-R3-138)
@@ -342,7 +358,7 @@ neither listed nor excluded.
 
 ### Features
 
-- [Custom Phases and Pipelines](features/custom-phases.md) — the empty catalog, and how definitions are imported or authored
+- [Custom Phases and Workflows](features/custom-phases.md) — the empty catalog, and how definitions are imported or authored
 - [Process YAML exchange format](features/phase-yaml-exchange.md) — portable YAML for Phase, Workflow and ModelCatalog
 
 ### Other

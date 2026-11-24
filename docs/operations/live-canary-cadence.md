@@ -146,3 +146,50 @@ Feature 282 (`FR-R5-F21`) re-read this deferral ahead of its date.
   enforced elsewhere is how the two come to disagree.
 - It does not claim a cadence substitutes for the real-CLI matrix, which stays opt-in. The canary
   establishes that one turn completes; the matrix is a broader question and a separate cost.
+
+## 7. Scheduled credential-free prompt-behavior eval fixture freshness (FR-R7-18 N04)
+
+<!-- eval-fixture-review-date: 2026-12-24 -->
+
+Alongside the 14-day live paid canary qualification (`QUALIFICATION_MAX_AGE_MS` in
+`repo/scripts/backend-qualification.mjs`, per `FR-R7-14` `14-10`), Schegent runs a deterministic,
+credential-free prompt-behavior fixture replay suite (`repo/tests/evals/backend-behavior-eval.test.ts`)
+inside `npm run test:evals` and `npm run gate`.
+
+- **Coverage**: 4 stable representative behavioral tasks per advertised backend (`claude`, `codex`,
+  `agy` — 12 tasks total: `structured-token`, `read-only-inspect`, `scoped-file-create`, and
+  `injection-refusal`) backed by recorded CLI/ACP invocation argument and stream fixtures under
+  `repo/tests/evals/fixtures/backend-behavior/`.
+- **Cost & credential posture**: Zero credentials, zero network calls, zero paid provider turns.
+  `npm run canary -- --fixture` and live `npm run canary` optionally attach an additive
+  `behaviorEvals` summary of `manifest.json` to v2 `.backend-qualification.json` records while
+  keeping live release qualification (`mode: 'live'`, 14-day bound) explicitly separate.
+- **Freshness window & stale-fixture owner**: **30 days** (`maxAgeDays: 30` in
+  `repo/tests/evals/fixtures/backend-behavior/manifest.json`), enforced offline by
+  `backend-behavior-eval.test.ts` and tracked on the calendar by `<!-- eval-fixture-review-date: ... -->`
+  via `repo/scripts/review-cadence.mjs` (`npm run review:due`) and
+  `repo/tests/lint/dated-review-records.test.ts`. The stale-fixture owner is **the operator holding
+  the checkout** (the same single-owner rule as §2, because hosted CI is retired under `FR-R3-099`).
+- **Refresh procedure** (when `eval-fixture-review-date` comes due, when `manifest.json` ages past
+  30 days, or after a backend CLI / ACP profile / transport contract update):
+  1. Confirm the installed CLI versions and shipped ACP transports (`npm run canary -- --fixture`
+     for credential-free bridge/native verification, or deliberate `npm run canary` when also
+     refreshing live release qualification under §3).
+  2. Re-verify or re-record the 12 invocation and stream fixtures under
+     `repo/tests/evals/fixtures/backend-behavior/` with zero secrets, exact SHA-256 `promptDigest`
+     matches, and `cliVersion`/`profileId`/`transport`/`costUnits` parity against
+     `BACKEND_DESCRIPTORS` and `EXPECTED_BACKEND_TRANSPORTS`.
+  3. Update `recordedAt` in `repo/tests/evals/fixtures/backend-behavior/manifest.json` (and per-task
+     `recordedAt` values), advance `<!-- eval-fixture-review-date: YYYY-MM-DD -->` above by at most
+     30 days, and record a short dated review note below.
+  4. Verify locally with `npm run test:evals`, `npm run review:due`, `npm run security:secrets`, and
+     `npx vitest run tests/lint/dated-review-records.test.ts`.
+- **What this gate cannot see**: live model or upstream provider behavior drift occurring between
+  refreshes. The offline replay proves contract, parser, side-effect, and fixture-freshness
+  invariants against recorded fixtures; live provider turns remain deliberate under §3.
+
+### Fixture baseline 2026-11-24
+
+Initial 12-task behavioral fixture baseline recorded on `2026-11-24` (`claude` `2.1.302` via
+`acp-stdio-bridge`, `codex` `0.159.2` via `acp-stdio-bridge`, `agy` `1.4.2` via `acp-native`).
+Next 30-day freshness review is due on or before `2026-12-24`.

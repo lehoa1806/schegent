@@ -194,6 +194,7 @@ the configured local CLI and projects progress and evidence back into the UI.
 ## 5. Read only when the task requires it
 
 - For ordinary queue, run, repeat, and audit operations, use [Product workflows](../how-to/product-workflows.md).
+- When Schegent refuses to open the SQLite store, quarantines state writes, or leaves an execution lane stuck, use the rehearsed [Incident recovery guide](../operations/incident-recovery-guide.md) and [SQLite rollback runbook](../operations/sqlite-rollback-runbook.md).
 - For exact Command Palette titles and behavior, use the [Command Palette reference](../reference/commands.md).
 - To change or diagnose a backend, use [Backend operations](../operations/backends.md).
 - To look up a setting, use [Settings reference](../reference/settings.md).

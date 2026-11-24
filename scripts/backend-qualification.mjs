@@ -49,6 +49,13 @@ export const EXPECTED_BACKEND_PROFILES = Object.freeze({
   agy: 'agy-acp-native'
 });
 
+/** Expected spend/cost denomination for each advertised backend (FR-R7-18 N04). */
+export const EXPECTED_BACKEND_COST_DENOMINATIONS = Object.freeze({
+  claude: 'usd',
+  codex: 'tokens',
+  agy: 'tokens'
+});
+
 /**
  * The paths whose change invalidates an older qualification (FR-053 + FR-R7-14 14-10 +
  * FR-R7-17 R7-17-05).
@@ -82,8 +89,301 @@ export const QUALIFICATION_CHECK_KEYS = Object.freeze([
 /** Built bridge output hashed into the qualification source/build fingerprint when present. */
 export const QUALIFICATION_BUILD_OUTPUTS = Object.freeze(['dist/acp-stdio-bridge.js']);
 
+/** Default path to the credential-free per-backend prompt-behavior eval manifest (FR-R7-18 N04). */
+export const BEHAVIOR_EVAL_MANIFEST_PATH = resolve(
+  REPO_ROOT,
+  'tests',
+  'evals',
+  'fixtures',
+  'backend-behavior',
+  'manifest.json'
+);
+
+/** Maximum freshness age in days for credential-free prompt-behavior eval fixtures (FR-R7-18 N04). */
+export const BEHAVIOR_EVAL_MAX_AGE_DAYS = 30;
+
 /** The override, and its name says what it costs. */
 export const DRIFT_OVERRIDE_ENV = 'SCHEGENT_RELEASE_UNQUALIFIED';
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Summarize the credential-free per-backend prompt-behavior eval manifest (FR-R7-18 N04)
+ * into an additive `behaviorEvals` metadata block for v2 qualification records.
+ *
+ * Pure over a parsed manifest object; reads from disk when given a file path string.
+ * Returns `null` when a path does not exist or cannot be parsed.
+ */
+export function summarizeBehaviorEvalManifest(
+  manifestOrPath = BEHAVIOR_EVAL_MANIFEST_PATH,
+  { requiredBackends = ADVERTISED_BACKENDS } = {}
+) {
+  let manifest = manifestOrPath;
+  if (typeof manifestOrPath === 'string') {
+    try {
+      manifest = JSON.parse(readFileSync(manifestOrPath, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return null;
+  if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.tasks)) return null;
+  const headerRecordedMs =
+    typeof manifest.recordedAt === 'string' ? Date.parse(manifest.recordedAt) : Number.NaN;
+  if (!Number.isFinite(headerRecordedMs)) {
+    return null;
+  }
+  if (
+    typeof manifest.maxAgeDays !== 'number' ||
+    !Number.isFinite(manifest.maxAgeDays) ||
+    manifest.maxAgeDays <= 0 ||
+    manifest.maxAgeDays > BEHAVIOR_EVAL_MAX_AGE_DAYS
+  ) {
+    return null;
+  }
+  if (typeof manifest.staleFixtureOwner !== 'string' || manifest.staleFixtureOwner.trim().length === 0) {
+    return null;
+  }
+
+  let oldestRecordedMs = headerRecordedMs;
+  let oldestRecordedAt = manifest.recordedAt;
+  let newestRecordedMs = headerRecordedMs;
+  let newestRecordedAt = manifest.recordedAt;
+  const perBackend = {};
+  for (const backend of requiredBackends) {
+    const tasks = manifest.tasks.filter((task) => task && task.backend === backend);
+    const promptDigests = [];
+    const expectedDenom = EXPECTED_BACKEND_COST_DENOMINATIONS[backend];
+    let passedCount = 0;
+    let totalCostUnits = 0;
+    let costDenomination = expectedDenom ?? null;
+    for (const task of tasks) {
+      const digestValid =
+        typeof task.promptText === 'string' &&
+        typeof task.promptDigest === 'string' &&
+        SHA256_HEX.test(task.promptDigest) &&
+        sha256Hex(task.promptText) === task.promptDigest;
+      const transportValid =
+        EXPECTED_BACKEND_TRANSPORTS[backend] === undefined ||
+        task.transport === EXPECTED_BACKEND_TRANSPORTS[backend];
+      const profileValid =
+        EXPECTED_BACKEND_PROFILES[backend] === undefined ||
+        task.profileId === EXPECTED_BACKEND_PROFILES[backend];
+      const denomValid =
+        task.costUnits &&
+        (expectedDenom !== undefined
+          ? task.costUnits.denomination === expectedDenom
+          : task.costUnits.denomination === 'usd' || task.costUnits.denomination === 'tokens');
+      const costValid =
+        Boolean(denomValid) &&
+        typeof task.costUnits.value === 'number' &&
+        Number.isFinite(task.costUnits.value) &&
+        task.costUnits.value >= 0;
+      const taskRecordedMs =
+        typeof task.recordedAt === 'string' ? Date.parse(task.recordedAt) : Number.NaN;
+      const recordedValid = Number.isFinite(taskRecordedMs);
+      if (recordedValid) {
+        if (taskRecordedMs < oldestRecordedMs) {
+          oldestRecordedMs = taskRecordedMs;
+          oldestRecordedAt = task.recordedAt;
+        }
+        if (taskRecordedMs > newestRecordedMs) {
+          newestRecordedMs = taskRecordedMs;
+          newestRecordedAt = task.recordedAt;
+        }
+      }
+      if (typeof task.promptDigest === 'string') promptDigests.push(task.promptDigest);
+      if (costValid) {
+        costDenomination = costDenomination ?? task.costUnits.denomination;
+        totalCostUnits += task.costUnits.value;
+      }
+      if (digestValid && transportValid && profileValid && costValid && recordedValid) {
+        passedCount += 1;
+      }
+    }
+    perBackend[backend] = {
+      taskCount: tasks.length,
+      passedCount,
+      promptDigests,
+      costDenomination: costDenomination ?? (backend === 'claude' ? 'usd' : 'tokens'),
+      totalCostUnits: Number(totalCostUnits.toFixed(6))
+    };
+  }
+
+  return {
+    recordedAt: oldestRecordedAt,
+    latestRecordedAt: newestRecordedAt,
+    maxAgeDays: manifest.maxAgeDays,
+    staleFixtureOwner: manifest.staleFixtureOwner.trim(),
+    perBackend
+  };
+}
+
+/**
+ * Validate an optional `behaviorEvals` summary block attached to a v2 qualification record
+ * (FR-R7-18 N04). Pure over its inputs; called by `decideQualification` only when `behaviorEvals`
+ * is present so existing v2 records remain 100% backwards compatible.
+ */
+export function validateBehaviorEvalsSummary(
+  behaviorEvals,
+  { now, requiredBackends = ADVERTISED_BACKENDS }
+) {
+  if (!behaviorEvals || typeof behaviorEvals !== 'object' || Array.isArray(behaviorEvals)) {
+    return {
+      ok: false,
+      reason: 'invalid-behavior-evals',
+      message: 'the qualification record carries a malformed behaviorEvals summary.'
+    };
+  }
+  const owner =
+    typeof behaviorEvals.staleFixtureOwner === 'string' &&
+    behaviorEvals.staleFixtureOwner.trim().length > 0
+      ? behaviorEvals.staleFixtureOwner.trim()
+      : null;
+  if (owner === null) {
+    return {
+      ok: false,
+      reason: 'invalid-behavior-evals',
+      message:
+        'the qualification record behaviorEvals summary omits staleFixtureOwner; declare the ' +
+        'checkout operator owner per repo/docs/operations/live-canary-cadence.md.'
+    };
+  }
+  const maxAgeDays = behaviorEvals.maxAgeDays;
+  if (
+    typeof maxAgeDays !== 'number' ||
+    !Number.isFinite(maxAgeDays) ||
+    maxAgeDays <= 0 ||
+    maxAgeDays > BEHAVIOR_EVAL_MAX_AGE_DAYS
+  ) {
+    return {
+      ok: false,
+      reason: 'invalid-behavior-evals',
+      message:
+        `the qualification record behaviorEvals summary carries invalid maxAgeDays ` +
+        `(${String(maxAgeDays)}); expected a finite value in (0, ${String(BEHAVIOR_EVAL_MAX_AGE_DAYS)}].`
+    };
+  }
+  const nowMs = Date.parse(now ?? '');
+  if (!Number.isFinite(nowMs)) {
+    return {
+      ok: false,
+      reason: 'invalid-behavior-evals',
+      message: 'cannot evaluate behaviorEvals freshness without a readable current timestamp.'
+    };
+  }
+  const recordedAtMs = Date.parse(behaviorEvals.recordedAt ?? '');
+  if (!Number.isFinite(recordedAtMs)) {
+    return {
+      ok: false,
+      reason: 'invalid-behavior-evals',
+      message: 'the qualification record behaviorEvals summary carries no readable recordedAt timestamp.'
+    };
+  }
+  if (behaviorEvals.latestRecordedAt !== undefined) {
+    const latestMs = Date.parse(behaviorEvals.latestRecordedAt ?? '');
+    if (!Number.isFinite(latestMs)) {
+      return {
+        ok: false,
+        reason: 'invalid-behavior-evals',
+        message: 'the qualification record behaviorEvals summary carries no readable latestRecordedAt timestamp.'
+      };
+    }
+    if (nowMs - latestMs < 0) {
+      return {
+        ok: false,
+        reason: 'future-behavior-evals',
+        message:
+          `the behaviorEvals timestamp (${behaviorEvals.latestRecordedAt}) is after ${now}. ` +
+          `Owner: ${owner}.`
+      };
+    }
+  }
+  const ageMs = nowMs - recordedAtMs;
+  if (ageMs < 0) {
+    return {
+      ok: false,
+      reason: 'future-behavior-evals',
+      message:
+        `the behaviorEvals timestamp (${behaviorEvals.recordedAt}) is after ${now}. ` +
+        `Owner: ${owner}.`
+    };
+  }
+  if (ageMs > maxAgeDays * MS_PER_DAY) {
+    const days = Math.round(ageMs / MS_PER_DAY);
+    return {
+      ok: false,
+      reason: 'stale-behavior-evals',
+      message:
+        `per-backend prompt-behavior eval fixtures are ${String(days)} days old; the declared ` +
+        `bound is ${String(maxAgeDays)} days. Stale-fixture owner: ${owner}. Refresh ` +
+        'repo/tests/evals/fixtures/backend-behavior/ and run `npm run test:evals`.'
+    };
+  }
+
+  const perBackend = behaviorEvals.perBackend;
+  if (!perBackend || typeof perBackend !== 'object' || Array.isArray(perBackend)) {
+    return {
+      ok: false,
+      reason: 'invalid-behavior-evals',
+      message: 'the qualification record behaviorEvals summary omits perBackend coverage.'
+    };
+  }
+  const incomplete = [];
+  for (const backend of requiredBackends) {
+    const entry = perBackend[backend];
+    if (!entry || typeof entry !== 'object') {
+      incomplete.push(`${backend}: missing`);
+      continue;
+    }
+    if (!Number.isInteger(entry.taskCount) || entry.taskCount < 3) {
+      incomplete.push(`${backend}: taskCount=${String(entry.taskCount)} (< 3)`);
+      continue;
+    }
+    if (!Number.isInteger(entry.passedCount) || entry.passedCount !== entry.taskCount) {
+      incomplete.push(
+        `${backend}: passedCount=${String(entry.passedCount)}/${String(entry.taskCount)}`
+      );
+      continue;
+    }
+    if (
+      !Array.isArray(entry.promptDigests) ||
+      entry.promptDigests.length !== entry.taskCount ||
+      !entry.promptDigests.every((d) => typeof d === 'string' && SHA256_HEX.test(d)) ||
+      new Set(entry.promptDigests).size !== entry.taskCount
+    ) {
+      incomplete.push(`${backend}: invalid promptDigests`);
+      continue;
+    }
+    const expectedDenom = EXPECTED_BACKEND_COST_DENOMINATIONS[backend];
+    if (
+      expectedDenom !== undefined
+        ? entry.costDenomination !== expectedDenom
+        : entry.costDenomination !== 'usd' && entry.costDenomination !== 'tokens'
+    ) {
+      incomplete.push(`${backend}: invalid costDenomination=${String(entry.costDenomination)}`);
+      continue;
+    }
+    if (
+      typeof entry.totalCostUnits !== 'number' ||
+      !Number.isFinite(entry.totalCostUnits) ||
+      entry.totalCostUnits < 0
+    ) {
+      incomplete.push(`${backend}: invalid totalCostUnits=${String(entry.totalCostUnits)}`);
+    }
+  }
+  if (incomplete.length > 0) {
+    return {
+      ok: false,
+      reason: 'incomplete-behavior-evals',
+      message:
+        `behaviorEvals summary is incomplete or degraded — ${incomplete.join('; ')}. ` +
+        `Owner: ${owner}. Run \`npm run test:evals\`.`
+    };
+  }
+  return { ok: true };
+}
 
 const git = (args) =>
   execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -365,6 +665,18 @@ export function decideQualification({
     });
   }
 
+  // FR-R7-18 (N04): Validate optional additive `behaviorEvals` summary when present,
+  // preserving 100% backwards compatibility with existing v2 records that omit it.
+  if (record.behaviorEvals !== undefined) {
+    const evalVerdict = validateBehaviorEvalsSummary(record.behaviorEvals, {
+      now,
+      requiredBackends
+    });
+    if (!evalVerdict.ok) {
+      return override(evalVerdict);
+    }
+  }
+
   // FR-R7-14 (14-10): Every advertised backend must have positive turn evidence (`state === 'ok'`),
   // a recorded version token, the expected shipped transport, and the expected built-in profile.
   const incomplete = [];
@@ -507,7 +819,16 @@ function describeVersions(versions) {
  */
 export function recordFromCanaryResults(
   results,
-  { commit, platform, now, mode = 'live', sourceFingerprint = null, locality, checks }
+  {
+    commit,
+    platform,
+    now,
+    mode = 'live',
+    sourceFingerprint = null,
+    locality,
+    checks,
+    behaviorEvals
+  }
 ) {
   return buildQualificationRecord({
     versions: Object.fromEntries(
@@ -535,7 +856,8 @@ export function recordFromCanaryResults(
     mode,
     sourceFingerprint,
     ...(locality !== undefined ? { locality } : {}),
-    ...(checks !== undefined ? { checks } : {})
+    ...(checks !== undefined ? { checks } : {}),
+    ...(behaviorEvals !== undefined ? { behaviorEvals } : {})
   });
 }
 
@@ -552,7 +874,8 @@ export function buildQualificationRecord({
   profiles = { ...EXPECTED_BACKEND_PROFILES },
   executables,
   locality,
-  checks
+  checks,
+  behaviorEvals
 }) {
   return {
     version: 2,
@@ -567,7 +890,8 @@ export function buildQualificationRecord({
     transports,
     profiles,
     ...(executables !== undefined ? { executables } : {}),
-    ...(checks !== undefined ? { checks } : {})
+    ...(checks !== undefined ? { checks } : {}),
+    ...(behaviorEvals !== undefined ? { behaviorEvals } : {})
   };
 }
 
