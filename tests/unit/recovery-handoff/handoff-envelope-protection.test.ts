@@ -562,4 +562,90 @@ describe('FR-R7-16 (16-11) — assessRecoveryEnvelopeProtection', () => {
       store.close();
     }
   });
+
+  it('16-11: treats malformed/empty manifest references fail-safe as ambiguous and checks ref.artifactId locations', () => {
+    const fixture = lifecycleFixture();
+    const lifecycle = fixture.build();
+    const store = createHandoffStore(fixture.conn);
+
+    // 1. Malformed / empty `references` elements must fail safe (`ambiguous`, `protected: true`).
+    store.insertHandoff({
+      handoffId: 'a'.repeat(64),
+      workspaceId: 'ws-1',
+      rootExecutionId: 'run-bad-ref',
+      invocationId: 'inv-bad-ref',
+      sourceAttemptId: 'att-bad-ref',
+      legacyProvenance: null,
+      nowMs: NOW
+    });
+    store.insertRevision({
+      handoffId: 'a'.repeat(64),
+      revisionNo: 1,
+      cutoffKey: 'b'.repeat(64),
+      executionRevision: 'exec-bad-ref',
+      usageRevision: 0,
+      factCutoffMs: NOW,
+      manifestVersion: 1,
+      manifestJson: JSON.stringify({
+        version: 1,
+        envelope: { artifactId: 'other-env' },
+        references: [{ artifactId: '' }]
+      }),
+      manifestDigest: 'c'.repeat(64),
+      certainty: 'safe',
+      coverage: 'complete'
+    });
+    expect(assessRecoveryEnvelopeProtection(fixture.conn, 'run-bad-ref', 'hand-unmatched')).toEqual({
+      protected: true,
+      decision: 'ambiguous'
+    });
+
+    // 2. A `references` entry whose `artifact_locations.uri_or_relpath` matches the checkpoint
+    //    envelope protects that envelope even when `artifactId` != `handoverSegment` and no F05 pin exists yet.
+    expect(
+      lifecycle.registerArtifact(
+        checkpointArtifact('art-ref-aliased', {
+          ownerRunId: 'run-ref-loc',
+          locator: {
+            storageTier: 'workspace_file',
+            uriOrRelpath: 'checkpoints/run-ref-loc/hand-via-ref-loc.recovery.json'
+          }
+        })
+      ).ok
+    ).toBe(true);
+    store.insertHandoff({
+      handoffId: 'd'.repeat(64),
+      workspaceId: 'ws-1',
+      rootExecutionId: 'run-ref-loc',
+      invocationId: 'inv-ref-loc',
+      sourceAttemptId: 'att-ref-loc',
+      legacyProvenance: null,
+      nowMs: NOW
+    });
+    store.insertRevision({
+      handoffId: 'd'.repeat(64),
+      revisionNo: 1,
+      cutoffKey: 'e'.repeat(64),
+      executionRevision: 'exec-ref-loc',
+      usageRevision: 0,
+      factCutoffMs: NOW,
+      manifestVersion: 1,
+      manifestJson: JSON.stringify({
+        version: 1,
+        envelope: { artifactId: 'other-envelope-id' },
+        references: [{ artifactId: 'art-ref-aliased' }]
+      }),
+      manifestDigest: 'f'.repeat(64),
+      certainty: 'safe',
+      coverage: 'complete'
+    });
+    expect(
+      assessRecoveryEnvelopeProtection(fixture.conn, 'run-ref-loc', 'hand-via-ref-loc')
+    ).toEqual({
+      protected: true,
+      decision: 'protected'
+    });
+
+    fixture.conn.close();
+  });
 });

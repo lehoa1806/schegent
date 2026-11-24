@@ -532,6 +532,14 @@ code (`shipped`, `build-only`, or `unknown`), and its disposition verdict.
 The list is [`docs/release/advisory-dispositions.json`](docs/release/advisory-dispositions.md),
 changed only in a reviewed commit. `npm run security:audit` and `npm run security:advisory-diff`
 remain report-only outside release verdicts.
+
+**Backend qualification in the release record.** `prepare-release.mjs` / `release-candidate.mjs`
+also validates `.backend-qualification.json` directly against `HEAD`, the probed installed CLI
+versions, `computeQualificationSourceFingerprint()`, and live v2 requirements (`requireLive: true`).
+A missing, malformed, fixture-only, stale, version-drifted, or fingerprint-mismatched record refuses
+preparation with `backend-qualification-invalid` unless `SCHEGENT_ALLOW_UNQUALIFIED_BACKEND=1` is
+explicitly set. When valid, the validated summary is embedded in `.release/schegent-<version>.release.json`
+under `backendQualification`.
 <!-- Source: scripts/release-candidate.mjs -->
 <!-- Source: scripts/prepare-release.mjs -->
 <!-- Source: scripts/release-advisory.mjs -->
@@ -630,7 +638,7 @@ the single present-tense authority the table below must not contradict.
 | Build provenance attestation | GitHub OIDC attestation over the VSIX and SBOM, verifiable with `gh attestation verify --signer-workflow` | **None.** A consumer cannot verify who built a Schegent VSIX |
 | `schegent-sbom.cdx.json` | `npm sbom --sbom-format cyclonedx` in the tag job | **Replaced, and improved.** `npm run release` writes the SBOM from the build's own module graphs and packages it inside the VSIX, and checks the archive's copy against the code beside it — which the tag job never did. `npm run package` is local-trial packaging and inspects nothing |
 | `SHA256SUMS` | `sha256sum` over the VSIX and SBOM | **Partly replaced.** `npm run release` writes a local release record naming the candidate's SHA-256 and the SBOM's, computed by `scripts/release-digest.mjs`. There is no `SHA256SUMS` file and nothing publishes the digest, so a recipient has to be handed it |
-| A three-OS verification matrix | `ci.yml` on ubuntu, macOS and Windows | **None.** Single-platform is now a permanent stated limit, not a pending state |
+| A three-OS verification matrix | `ci.yml` on ubuntu, macOS and Windows | **Hosted matrix permanently retired; partial local substitute.** `npm run verify:linux` runs the Linux arm64 unit-tier container leg locally; Windows and Linux desktop editor host verification remain unobserved under the dated decline and reopening triggers in [`docs/operations/platform-observation-record.md`](docs/operations/platform-observation-record.md) and [`docs/release/qualification-matrix.md`](docs/release/qualification-matrix.md) (not a permanent limit) |
 | A weekly whole-tree gate | `full-gate.yml`, run weekly, red for fourteen weeks unread | `npm run gate`, run deliberately and attested at a commit |
 | Code scanning | CodeQL | **None.** Recorded in `SECURITY.md` |
 | A scheduled backend canary | `backend-canary.yml` | `npm run canary`, on the declared local cadence that gates the release path |

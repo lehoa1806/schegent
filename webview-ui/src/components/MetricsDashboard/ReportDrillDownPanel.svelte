@@ -7,6 +7,7 @@
   import { availabilityPhrase } from '../../../../src/contracts/change-review';
   import type { PercentileValue, RootDrillDown } from '../../../../src/contracts/reporting/report-rows';
   import { formatDuration } from '../../lib/format-duration';
+  import { fmtUsageMeasure } from './report-measure-format';
   import ReportStatusChip from './ReportStatusChip.svelte';
 
   interface Props {
@@ -102,7 +103,7 @@
             <li>
               {Object.entries(row.key).map(([k, v]) => `${k}=${v ?? 'unattributed'}`).join(', ') || 'total'}:
               {row.measures
-                .map((m) => `${m.measure}=${m.total} ${m.unit} (${m.completeness})`)
+                .map((m) => fmtUsageMeasure(m))
                 .join('; ')}
             </li>
           {/each}

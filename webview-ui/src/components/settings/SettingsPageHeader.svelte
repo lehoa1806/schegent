@@ -42,6 +42,16 @@
     saveGeneration += 1;
   });
 
+  // W01 — clear any save-level refusal once unsaved edits return to zero (e.g., manually edited
+  // back to the saved value or reconciled by a host snapshot), so the alert never stays stuck
+  // while both Revert and Save are aria-disabled.
+  $effect(() => {
+    if (changed === 0 && saveOff && saveError !== null) {
+      saveGeneration += 1;
+      saveError = null;
+    }
+  });
+
   /**
    * Formats a rejected `page.save()` value for the header alert without echoing raw paths,
    * stacks, secret-shaped tokens, or arbitrary exception text, and without ever throwing.

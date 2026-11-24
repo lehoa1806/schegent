@@ -589,10 +589,17 @@ export function createTelemetrySpoolStore(params: {
       if (opened.outcome !== 'opened') {
         return { spooled: false, droppedBatchIds: [...droppedBatchIds, req.batchId] };
       }
+      let writeFailed = false;
       try {
         await opened.handle.writeFile(req.body);
+      } catch (err) {
+        writeFailed = true;
+        throw err;
       } finally {
         await opened.handle.close();
+        if (writeFailed) {
+          await unlinkQuietly(relPath);
+        }
       }
       if (conn.isClosed()) {
         await unlinkQuietly(relPath);

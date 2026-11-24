@@ -223,7 +223,7 @@ export function classifyExternalArtifactDependencies(
 export function collectExternalDependenciesFromConn(
   conn: NodeSqliteConnection,
   auditLogDependencies: readonly BackupExternalDependency[] = [],
-  limit = -1
+  limit = MAX_BACKUP_EXTERNAL_DEPENDENCIES + 1
 ): readonly BackupExternalDependency[] {
   const deps: BackupExternalDependency[] = [];
 

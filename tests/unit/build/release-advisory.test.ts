@@ -7,12 +7,12 @@ import { describe, expect, it } from 'vitest';
  * -- advisory evidence at release preparation.
  *
  * WHAT IT PINS. A release is prepared against two feature-249 captures, one per tree, and a tracked
- * disposition list. The module judges them and refuses for exactly seven reasons, in a fixed
+ * disposition list. The module judges them and refuses for exactly eight reasons, in a fixed
  * order, naming the tree and the failing value. The boundaries are the point: a capture exactly
  * seven days old is accepted and one millisecond older is not, a capture from the future is
- * refused so clock skew cannot make one fresh, and a lockfile that is not byte-identical to the
- * one HEAD holds is refused whatever the capture's age. An uncovered finding is REPORTED with its
- * verdict and is not a refusal (research R14): a fourth condition would be a new requirement.
+ * refused so clock skew cannot make one fresh, a lockfile that is not byte-identical to the one
+ * HEAD holds is refused whatever the capture's age, and since FR-R7-14 (14-12) any uncovered,
+ * expired, or actionable finding refuses release preparation (`advisory-uncovered`).
  *
  * The module is driven with file contents and an injected clock only. It has no filesystem seam,
  * no spawn seam and no network seam, and the last case reads its own source to prove it.

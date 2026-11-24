@@ -2089,4 +2089,65 @@ describe('WorkflowCatalogEditor Save keyboard focus preservation (W02, FR-002)',
     expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
     expect(saveBtn.textContent.trim()).toBe('Saving…');
   });
+
+  it('keeps focus on Save when saving a newly duplicated unpersisted draft and host ack transitions draft::* to a persisted row (W02)', async () => {
+    const { saveDefinitionDraft } = await import('../../lib/catalog-lifecycle');
+    vi.mocked(saveDefinitionDraft).mockClear();
+
+    const initialRecord = record();
+    const { container, getByTestId, rerender } = render(WorkflowCatalogEditor, {
+      props: { snapshot: snapshot([initialRecord]), trusted: true }
+    });
+
+    // Open an existing Workflow and Duplicate it to create an unpersisted `draft::*` row.
+    await fireEvent.click(rowFor(container, 'design-then-build'));
+    await tick();
+    await fireEvent.click(getByTestId('workflows-duplicate'));
+    await tick();
+
+    const editor = getByTestId('workflow-catalog-editor');
+    const duplicatedId = editor.getAttribute('data-selected-workflow-id');
+    expect(duplicatedId).toBeTruthy();
+    expect(duplicatedId).not.toBe('design-then-build');
+
+    const saveBtn = getByTestId('workflows-save-all') as HTMLButtonElement;
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+    saveBtn.focus();
+    expect(document.activeElement).toBe(saveBtn);
+
+    await activateFocusedButton(saveBtn, 'Enter');
+    await tick();
+    expect(saveDefinitionDraft).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(saveBtn);
+    expect(saveBtn.textContent.trim()).toBe('Saving…');
+
+    // Host acknowledges with incremented revision and the newly persisted Workflow record.
+    const persistedCopy = record({
+      workflowId: duplicatedId!,
+      definition: {
+        ...initialRecord.definition,
+        workflowId: duplicatedId!,
+        name: 'Design then Build (copy)'
+      } as WorkflowCatalogSourceProjection['definition']
+    });
+    const baseNext = snapshot([initialRecord, persistedCopy]);
+    const acknowledgedSnapshot = {
+      ...baseNext,
+      workflowCatalog: {
+        ...baseNext.workflowCatalog,
+        revision: 'w-draft-ack-2'
+      }
+    } as unknown as WorkflowSnapshot;
+
+    await rerender({ snapshot: acknowledgedSnapshot, trusted: true });
+    await tick();
+
+    // Editor and Save button must stay mounted with keyboard focus still on the exact Save button.
+    expect(document.activeElement).toBe(saveBtn);
+    expect(getByTestId('workflow-catalog-editor').getAttribute('data-selected-workflow-id')).toBe(
+      duplicatedId
+    );
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Save');
+  });
 });

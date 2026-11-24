@@ -256,7 +256,7 @@ class SqliteHandoffStoreImpl implements DurableHandoffStore {
     const latestRev = record.revisions.at(-1);
     const manifest = latestRev !== undefined ? storedManifest(latestRev) : null;
     const runId =
-      pending?.runId ?? existing?.run_id ?? manifest?.identity.workspaceId ?? 'unknown-run';
+      pending?.runId ?? existing?.run_id ?? manifest?.identity.rootExecutionId ?? 'unknown-run';
     const sourceAttemptId =
       pending?.sourceAttemptId ??
       existing?.source_attempt_id ??

@@ -53,6 +53,7 @@ import {
   type WorkflowConditionPatch,
   type WorkflowNodeTarget
 } from './workflow-catalog-state';
+import { reselectIndex } from '../../lib/builder-selection';
 import type { MutableWorkflow } from './types';
 import {
   boundHistorySnapshots,
@@ -186,6 +187,73 @@ export function mergeWorkflowRows(
     }),
     ...draftRows
   ];
+}
+
+/**
+ * W02 — prune submitted draft/edit/history entries on revision ack and synchronously resolve
+ * the replacement `selectedKey`/`selectedId` so `selected` never transitions through `null`
+ * (keeping `<WorkflowToolbar>` mounted and keyboard focus on `workflows-save-all`).
+ */
+export function reconcileWorkflowRevisionAck(input: {
+  readonly submittedKey: string | null;
+  readonly persisted: readonly MutableWorkflow[];
+  readonly drafts: readonly MutableWorkflow[];
+  readonly editedByKey: Readonly<Record<string, MutableWorkflow>>;
+  readonly historyByKey: Readonly<Record<string, WorkflowHistoryTrack>>;
+  readonly selectedKey: string | null;
+  readonly selectedId: string | null;
+}): {
+  readonly drafts: MutableWorkflow[];
+  readonly editedByKey: Record<string, MutableWorkflow>;
+  readonly historyByKey: Record<string, WorkflowHistoryTrack>;
+  readonly selectedKey: string | null;
+  readonly selectedId: string | null;
+  readonly reselected: boolean;
+  readonly clearedSelection: boolean;
+} {
+  const { submittedKey, persisted, drafts, editedByKey, historyByKey } = input;
+  const nextDrafts = submittedKey !== null ? drafts.filter((d) => d.sourceKey !== submittedKey) : [];
+  let nextEdited: Record<string, MutableWorkflow>;
+  let nextHistory: Record<string, WorkflowHistoryTrack>;
+  if (submittedKey !== null) {
+    const { [submittedKey]: _ed, ...restEdited } = editedByKey;
+    nextEdited = restEdited;
+    const { [submittedKey]: _hist, ...restHist } = historyByKey;
+    nextHistory = restHist;
+  } else {
+    nextEdited = {};
+    nextHistory = {};
+  }
+  let nextSelectedKey = input.selectedKey;
+  let nextSelectedId = input.selectedId;
+  let reselected = false;
+  let clearedSelection = false;
+  if (nextSelectedKey !== null) {
+    const nextRows = mergeWorkflowRows(persisted, nextEdited, nextDrafts);
+    if (!nextRows.some((row) => row.sourceKey === nextSelectedKey)) {
+      const index = reselectIndex(
+        nextRows,
+        { sourceKey: nextSelectedKey, id: nextSelectedId ?? '' },
+        (row) => ({ sourceKey: row.sourceKey, id: row.workflowId })
+      );
+      nextSelectedKey = index === null ? null : nextRows[index].sourceKey;
+      nextSelectedId =
+        nextSelectedKey === null
+          ? null
+          : (nextRows.find((row) => row.sourceKey === nextSelectedKey)?.workflowId ?? nextSelectedId);
+      reselected = true;
+      clearedSelection = index === null;
+    }
+  }
+  return {
+    drafts: nextDrafts,
+    editedByKey: nextEdited,
+    historyByKey: nextHistory,
+    selectedKey: nextSelectedKey,
+    selectedId: nextSelectedId,
+    reselected,
+    clearedSelection
+  };
 }
 
 /** The callbacks the canvas Builder raises, in the order its panes declare them. */

@@ -446,6 +446,12 @@ async function persistImmutableCapture(params: {
     return refuse('storage-unavailable', 'immutable-capture-containment-failed');
   }
 
+  const existingCheck = await openWithinRoot(params.primaryWorkspaceRoot, finalSegments, { flags: 'r' });
+  const existedBefore = existingCheck.outcome === 'opened';
+  if (existingCheck.outcome === 'opened') {
+    await existingCheck.handle.close().catch(() => undefined);
+  }
+
   const published = await publishPartial(nodeExportFs, dirVerdict.resolved, tempName, fileName, true);
   if (published !== 'published') {
     await removePartials(nodeExportFs, dirVerdict.resolved, [tempName]).catch(() => undefined);
@@ -468,6 +474,9 @@ async function persistImmutableCapture(params: {
       relPath
     });
     if (lifecycleFault !== null) {
+      if (!existedBefore) {
+        await removePartials(nodeExportFs, dirVerdict.resolved, [fileName]).catch(() => undefined);
+      }
       return lifecycleFault;
     }
   }

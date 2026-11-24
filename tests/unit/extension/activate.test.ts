@@ -6,7 +6,11 @@ const mocks = vi.hoisted(() => {
    * (`output:dispose`, `lock:release`, `release:start`, `release:end`), and the
    * runtime log writer each activation built, so a case can read its count.
    */
-  const teardown = { events: [] as string[], sinks: [] as RuntimeLogSink[] };
+  const teardown = {
+    events: [] as string[],
+    sinks: [] as RuntimeLogSink[],
+    registeredStores: [] as unknown[]
+  };
   const state = {
     workspaceFolders: undefined as readonly { uri: { fsPath: string } }[] | undefined,
     listeners: new Set<(event: { added: readonly unknown[]; removed: readonly unknown[] }) => void | Promise<void>>(),
@@ -147,7 +151,22 @@ vi.mock('../../../src/activation/backend-wiring', async (importOriginal) => {
   };
 });
 
+vi.mock('../../../src/activation/sqlite-cutover-wiring', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/activation/sqlite-cutover-wiring')>();
+  return {
+    ...actual,
+    registerOperationalMementoForStore: (
+      ...args: Parameters<typeof actual.registerOperationalMementoForStore>
+    ): ReturnType<typeof actual.registerOperationalMementoForStore> => {
+      mocks.teardown.registeredStores.push(args[0]);
+      return actual.registerOperationalMementoForStore(...args);
+    }
+  };
+});
+
 import * as vscode from 'vscode';
+import { inspectCutoverRegistrations } from '../../../src/activation/sqlite-cutover-wiring';
+import type { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { activate, deactivate } from '../../../src/extension';
 import type { RuntimeLogSink } from '../../../src/lib/runtime-log/runtime-log-sink';
 // Feature 058 — the canonical-folder picker memoizes its first read for the
@@ -873,5 +892,27 @@ describe('activate() — the host teardown releases the runtime log writer (FR-R
       DEACTIVATED
     ]);
     expect(sink.openDescriptorCount).toBe(0);
+  });
+
+  it('FR-R7-14 (14-21) — registers cutover collaborators in strict order on activation and disposes the store entry on deactivation', async () => {
+    const startIdx = mocks.teardown.registeredStores.length;
+    await activateWithLine();
+    const store = mocks.teardown.registeredStores.at(startIdx) as WorkspaceStateStore | undefined;
+    expect(store).toBeDefined();
+    if (!store) return;
+
+    const beforeDeactivate = inspectCutoverRegistrations(store);
+    expect(beforeDeactivate.disposed).toBe(false);
+    expect(beforeDeactivate.orderViolations).toEqual([]);
+    expect(beforeDeactivate.registered).toEqual([
+      'operationalMemento',
+      'catalogFs',
+      'workspaceLock',
+      'coordinator'
+    ]);
+
+    await deactivate();
+    const afterDeactivate = inspectCutoverRegistrations(store);
+    expect(afterDeactivate.disposed).toBe(true);
   });
 });

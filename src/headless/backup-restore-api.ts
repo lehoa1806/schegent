@@ -276,6 +276,19 @@ export function createWorkspaceExternalDependencyInspector(
   };
 }
 
+function formatBackupFailureMessage(errorCode: string): string {
+  switch (errorCode) {
+    case 'EXTERNAL_DEPENDENCY_BOUND_EXCEEDED':
+      return 'Store backup refused (EXTERNAL_DEPENDENCY_BOUND_EXCEEDED): external dependencies exceed the verification ceiling (10,000 dependencies or 512 MiB). Run artifact retention or remove expired external artifacts, then retry.';
+    case 'BACKUP_MANIFEST_BOUND_EXCEEDED':
+      return 'Store backup refused (BACKUP_MANIFEST_BOUND_EXCEEDED): backup manifest exceeds the 16 MiB verification ceiling. Prune stale external dependencies, then retry.';
+    case 'RESTORE_IMAGE_BOUND_EXCEEDED':
+      return 'Store backup refused (RESTORE_IMAGE_BOUND_EXCEEDED): SQLite database image exceeds the 512 MiB verification ceiling. Compact or prune historical records, then retry.';
+    default:
+      return `Store backup failed (${errorCode}).`;
+  }
+}
+
 export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): StoreBackupRestoreApi {
   const nowMs = deps.nowMs ?? (() => Date.now());
   const relativeBackupDirSegments = Object.freeze(['sqlite', deps.scopeId, 'backups'] as const);
@@ -443,7 +456,7 @@ export function createStoreBackupRestoreApi(deps: StoreBackupRestoreApiDeps): St
         return {
           status: 'failed',
           errorCode,
-          message: `Store backup failed (${errorCode}).`
+          message: formatBackupFailureMessage(errorCode)
         };
       }
     },

@@ -397,8 +397,16 @@ describe('FR-R7-17 (AC-14) — handoff-materializer', () => {
     // ZERO exposed destination files AND ZERO leftover temp files!
     expect(await listMaterializedDir(targetRoot, 'att-enospc')).toEqual([]);
     // Newly added copy pins for files 1 & 2 were released on rollback!
-    expect(lifecycle.isProtected('mat-batch-0-att-enospc').protected).toBe(false);
-    expect(lifecycle.isProtected('mat-batch-1-att-enospc').protected).toBe(false);
+    expect(
+      lifecycle.isProtected(
+        materializedCopyArtifactId(srcs[0]!.ref.artifactId, 'att-enospc', srcs[0]!.ref.digestHex)
+      ).protected
+    ).toBe(false);
+    expect(
+      lifecycle.isProtected(
+        materializedCopyArtifactId(srcs[1]!.ref.artifactId, 'att-enospc', srcs[1]!.ref.digestHex)
+      ).protected
+    ).toBe(false);
     // Original source handoff pins ALL survived the failure and rollback!
     for (const s of srcs) {
       expect(lifecycle.isProtected(s.ref.artifactId).protected).toBe(true);
@@ -556,7 +564,11 @@ describe('FR-R7-17 (AC-14) — handoff-materializer', () => {
       expect(reused.byArtifactKey.has(artifactVersionKey(src.ref.artifactId, src.ref.immutableVersion))).toBe(true);
     }
     // F05 artifact record AND protective pin MUST exist after restart reuse!
-    const copyArtifactId = 'mat-art-reuse-att-reuse';
+    const copyArtifactId = materializedCopyArtifactId(
+      src.ref.artifactId,
+      'att-reuse',
+      src.ref.digestHex
+    );
     expect(lifecycle.getArtifact(copyArtifactId).ok).toBe(true);
     expect(lifecycle.isProtected(copyArtifactId).protected).toBe(true);
 
@@ -696,8 +708,11 @@ describe('FR-R7-17 (AC-14) — handoff-materializer', () => {
     const payload = Buffer.from('collision-free-materialization-payload', 'utf8');
     const src = await createSourceFile(sourceRoot, longArtId, payload);
 
-    // Short IDs retain legacy format; long IDs fold into 120-char collision-free hash suffix.
-    expect(materializedCopyArtifactId('art-1', 'att-1', src.ref.digestHex)).toBe('mat-art-1-att-1');
+    // Short IDs include the 12-hex digest suffix so distinct immutable versions of the same
+    // artifactId in one batch never collide; long IDs fold into 120-char collision-free hash suffix.
+    expect(materializedCopyArtifactId('art-1', 'att-1', src.ref.digestHex)).toBe(
+      `mat-art-1-att-1-${src.ref.digestHex.slice(0, 12)}`
+    );
     const idA = materializedCopyArtifactId(longArtId, attemptA, src.ref.digestHex);
     const idB = materializedCopyArtifactId(longArtId, attemptB, src.ref.digestHex);
     expect(idA).not.toBe(idB);
@@ -727,5 +742,58 @@ describe('FR-R7-17 (AC-14) — handoff-materializer', () => {
     expect(resB.ok).toBe(true);
     expect(lifecycle.isProtected(idA).protected).toBe(true);
     expect(lifecycle.isProtected(idB).protected).toBe(true);
+  });
+
+  it('FR-R7-17 (R7-17-08 GAP-06): materializes two distinct immutable versions of the same artifactId in one batch without F05 registration conflict', async () => {
+    const sourceRoot = await makeTempDir('hm-multiver-src-');
+    const targetRoot = await makeTempDir('hm-multiver-dst-');
+    const v1Payload = Buffer.from('version-1-artifact-bytes', 'utf8');
+    const v2Payload = Buffer.from('version-2-artifact-bytes-updated', 'utf8');
+    const relV1 = ['src-artifacts', 'shared-art-v1.txt'] as const;
+    const relV2 = ['src-artifacts', 'shared-art-v2.txt'] as const;
+    await fsp.mkdir(path.join(sourceRoot, 'src-artifacts'), { recursive: true });
+    await fsp.writeFile(path.join(sourceRoot, ...relV1), v1Payload);
+    await fsp.writeFile(path.join(sourceRoot, ...relV2), v2Payload);
+    const srcV1: MaterializationSource = {
+      ref: {
+        artifactId: 'shared-art',
+        immutableVersion: 'v1',
+        digestHex: sha256Hex(v1Payload),
+        byteSize: v1Payload.byteLength,
+        kind: 'text'
+      },
+      sourceRoot,
+      sourceSegments: relV1
+    };
+    const srcV2: MaterializationSource = {
+      ref: {
+        artifactId: 'shared-art',
+        immutableVersion: 'v2',
+        digestHex: sha256Hex(v2Payload),
+        byteSize: v2Payload.byteLength,
+        kind: 'text'
+      },
+      sourceRoot,
+      sourceSegments: relV2
+    };
+
+    const copyIdV1 = materializedCopyArtifactId('shared-art', 'att-mv-1', srcV1.ref.digestHex);
+    const copyIdV2 = materializedCopyArtifactId('shared-art', 'att-mv-1', srcV2.ref.digestHex);
+    expect(copyIdV1).not.toBe(copyIdV2);
+
+    const lifecycle = makeLifecycle();
+    const result = await materializeHandoffArtifacts({
+      runId: 'run-mv-1',
+      handoffId: 'h-mv-1',
+      targetAttemptId: 'att-mv-1',
+      targetRoot,
+      sources: [srcV1, srcV2],
+      lifecycle
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.entries).toHaveLength(2);
+    expect(lifecycle.isProtected(copyIdV1).protected).toBe(true);
+    expect(lifecycle.isProtected(copyIdV2).protected).toBe(true);
   });
 });

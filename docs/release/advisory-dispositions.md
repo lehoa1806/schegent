@@ -7,7 +7,7 @@ and was refreshed on **2026-11-23 (`FR-R7-14` / `14-12`)**: safe non-breaking lo
 trees (cutting normalized findings from 61 → 7 in `root` and 24 → 7 in `webview-ui`). The
 remaining 14 entries (7 `root`, 7 `webview-ui`, expiring `2027-02-21`) are all **builder-only**
 devDependencies (`@vitest/mocker`, `vitest`, `tinypool`, `glob`, `minimatch`) held behind
-semver-major upgrades (`vitest@5.x` / `@vscode/vsce@3.9.1`) and verified absent from both shipped
+semver-major upgrades (`vitest@5.x` / `@vscode/vsce@4.x`) and verified absent from both shipped
 runtime bundles (`dist/module-graph/host.json`: 0 bundled third-party packages;
 `dist/module-graph/webview.json`: `svelte` and `esm-env` only) and `schegent-sbom.cdx.json`. A
 finding with no valid non-expired entry refuses release preparation. Two commands read it and
@@ -33,7 +33,7 @@ below is required and a non-empty string.
 | `package` | The package the advisory is about |
 | `tree` | `root` or `webview-ui`: the dependency tree the decision is about |
 | `range` | A semver range. The entry covers a finding only when every installed version satisfies it |
-| `status` | `actionable`, `accepted` or `inapplicable`: a label, not an instruction (see below) |
+| `status` | `actionable`, `accepted` or `inapplicable`: release preparation treats non-expired `accepted` and `inapplicable` entries covering all installed versions as satisfied, while `actionable` still refuses release preparation (`advisory-uncovered`) |
 | `owner` | A name or handle the maintainer types. **It is not verified**: no identity check exists |
 | `decidedOn` | `YYYY-MM-DD`, a real calendar date |
 | `expiresOn` | `YYYY-MM-DD`. The entry stops covering at `00:00:00Z` on that day |
@@ -72,13 +72,14 @@ Each finding in a release shows one verdict, decided by the comparison's own rul
 time of preparation:
 
 - **covers**: an entry names the finding for this tree, its range covers every installed version,
-  and it has not expired.
+  and it has not expired. Release preparation additionally requires `status` to be `accepted` or
+  `inapplicable` (`actionable` refuses with `advisory-uncovered`).
 - **expired**: an entry names the finding, but its expiry has passed.
 - **does-not-cover**: an entry names the finding but is for the other tree, or its range leaves an
   installed version out.
 - **not-recorded**: no entry relates to the finding.
 
-An uncovered finding (`not-recorded`, `expired` or `does-not-cover`) **refuses release
+An uncovered or actionable finding (`not-recorded`, `expired`, `does-not-cover`, or `status: "actionable"`) **refuses release
 preparation** (`advisory-uncovered`, the eighth refusal condition in [releasing](../../RELEASE.md)).
 Every finding is still reported with its verdict, severity, and bundled usage classification;
 `npm run security:audit` and `npm run security:advisory-diff` remain report-only outside release
@@ -86,9 +87,10 @@ verdicts.
 
 ## What a disposition does not do
 
-- **It is not a waiver.** `accepted` is a label. It does not suppress a finding, change a count,
-  change whether a capture is complete, or permit anything; the finding is listed whatever its
-  verdict.
+- **It is not silent suppression.** `accepted` and `inapplicable` satisfy the release-preparation
+  disposition gate while unexpired, but they never suppress listing the finding, change a count,
+  or change whether a capture is complete; every finding is still reported in full alongside its
+  registry severity and bundled-usage classification.
 - **It does not establish present exploitability or its absence.** An advisory record is the
   registry's data at the time of capture, and a disposition is a person's decision about it.
 - **It is not signed.** The list is an ordinary tracked file. Its authenticity is the review of the

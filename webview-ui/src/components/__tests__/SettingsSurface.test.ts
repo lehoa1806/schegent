@@ -1302,6 +1302,32 @@ describe('SettingsSurface — failure-policy refusal announcements and focus rec
       expect(document.activeElement).toBe(saveButton);
       expect(isDisabled(saveButton)).toBe(false);
 
+      // Operator can immediately retry after re-filtering via search: savePolicy clears prior
+      // refusal before dispatching so a second identical refusal remounts role="alert" and
+      // re-reveals the hidden row cleanly (W05).
+      const searchInput = getByTestId('settings-search') as HTMLInputElement;
+      await fireEvent.input(searchInput, { target: { value: 'fatal signature' } });
+      await settled();
+      expect(isShown(getByTestId('queue-failure-policy-row-q-gamma'))).toBe(false);
+
+      await fireEvent.click(saveButton);
+      await vi.waitFor(() => expect(unanswered).toHaveLength(1));
+      expect(queryByTestId('queue-failure-policy-message-q-gamma')).toBeNull();
+      for (const answer of unanswered.splice(0)) {
+        answer({
+          status: 'rejected',
+          reason: 'unknown-queue-id',
+          outcome: 'refused'
+        });
+      }
+      await vi.waitFor(() => {
+        expect(isShown(getByTestId('queue-failure-policy-message-q-gamma'))).toBe(true);
+      });
+      await settled();
+      expect(searchInput.value).toBe('');
+      expect(isShown(getByTestId('queue-failure-policy-row-q-gamma'))).toBe(true);
+      expect(getByTestId('queue-failure-policy-message-q-gamma').getAttribute('role')).toBe('alert');
+
       // Operator can immediately edit the policy select to clear the refusal and prepare a retry.
       await fireEvent.change(select, { target: { value: 'halt-on-failure' } });
       expect(queryByTestId('queue-failure-policy-message-q-gamma')).toBeNull();

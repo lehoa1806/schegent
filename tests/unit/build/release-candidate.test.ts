@@ -173,8 +173,29 @@ interface Options {
   gateRecord?: Record<string, unknown> | null;
   /** Raw text for the gate record file, for one that does not parse. */
   gateText?: string;
+  /** Backend qualification record on disk: `null` for absent, or leave unset for a valid v2 live one. */
+  qualification?: Record<string, unknown> | null;
   computeQualificationFingerprint?: () => string | null;
+  probeInstalledVersions?: () => Record<string, string | null>;
   unqualifiedOverride?: boolean;
+}
+
+function verifiedQualification(head: string = HEAD) {
+  return {
+    version: 2,
+    mode: 'live',
+    qualifiedAt: new Date(NOW - 3_600_000).toISOString(),
+    commit: head,
+    sourceFingerprint: 'f'.repeat(64),
+    versions: { claude: '2.1.302', codex: '0.159.2', agy: '1.4.2' },
+    states: { claude: 'ok', codex: 'ok', agy: 'ok' },
+    transports: { claude: 'acp-stdio-bridge', codex: 'acp-stdio-bridge', agy: 'acp-native' },
+    profiles: {
+      claude: 'claude-acp-bridge',
+      codex: 'codex-acp-bridge',
+      agy: 'agy-acp-native'
+    }
+  };
 }
 
 function world(options: Options = {}) {
@@ -201,6 +222,13 @@ function world(options: Options = {}) {
   if (options.gateText !== undefined) files.set('.gate-attestation.json', Buffer.from(options.gateText));
   else if (options.gateRecord !== null) {
     files.set('.gate-attestation.json', asBuffer(options.gateRecord ?? verifiedGateRecord()));
+  }
+  const effectiveHead = options.head ?? options.treeStates?.at(0)?.head ?? HEAD;
+  if (options.qualification !== null) {
+    files.set(
+      '.backend-qualification.json',
+      asBuffer(options.qualification ?? verifiedQualification(effectiveHead))
+    );
   }
   for (const [path, bytes] of options.seedFiles ?? []) files.set(path, bytes);
 
@@ -294,6 +322,9 @@ function world(options: Options = {}) {
     },
     ...(options.computeQualificationFingerprint !== undefined
       ? { computeQualificationFingerprint: options.computeQualificationFingerprint }
+      : {}),
+    ...(options.probeInstalledVersions !== undefined
+      ? { probeInstalledVersions: options.probeInstalledVersions }
       : {}),
     ...(options.unqualifiedOverride !== undefined
       ? { unqualifiedOverride: options.unqualifiedOverride }
@@ -606,6 +637,22 @@ describe('an accepted candidate (RP3, RP5)', () => {
     expect(overridden.result.exitCode).toBe(0);
     const overriddenRecord = JSON.parse(overridden.written.at(0)?.text ?? '{}');
     expect(overriddenRecord.backendQualification).toBeUndefined();
+
+    // Missing .backend-qualification.json refuses fail-closed unless unqualifiedOverride is set.
+    const missingRejected = await run({ qualification: null });
+    expectRefused(missingRejected, 'backend-qualification-invalid');
+    expect(missingRejected.errors.join('\n')).toContain('missing');
+
+    const missingOverridden = await run({ qualification: null, unqualifiedOverride: true });
+    expect(missingOverridden.result.exitCode).toBe(0);
+    expect(JSON.parse(missingOverridden.written.at(0)?.text ?? '{}').backendQualification).toBeUndefined();
+
+    // Installed CLI version drift detected through probeInstalledVersions refuses fail-closed.
+    const versionDriftRejected = await run({
+      seedFiles: [['.backend-qualification.json', asBuffer(qual)]],
+      probeInstalledVersions: () => ({ claude: '2.9.999', codex: '0.159.2', agy: '1.4.2' })
+    });
+    expectRefused(versionDriftRejected, 'backend-qualification-invalid');
   });
 
   it('records the advisory evidence it relied on, with the budget and the lockfile digests', async () => {
@@ -1179,7 +1226,13 @@ describe('the gate record the release relies on (TA6, data-model section 5, GR4)
   it('copies the version-3 fields into the record\'s gate section, after the advisory evidence', async () => {
     const { written } = await run();
     const record = JSON.parse(written.at(0)?.text ?? '{}');
-    expect(Object.keys(record).slice(-4)).toEqual(['advisory', 'gate', 'tagged', 'published']);
+    expect(Object.keys(record).slice(-5)).toEqual([
+      'advisory',
+      'gate',
+      'backendQualification',
+      'tagged',
+      'published'
+    ]);
     expect(record.gate).toEqual({
       recordVersion: 3,
       head: HEAD,

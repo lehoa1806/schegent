@@ -1,5 +1,6 @@
 /**
- * FR-R6-F10 (specs/309-isolated-workspace-lanes/contracts/execution-lanes.md) — the vocabulary,
+ * FR-R6-F10 (live reconciled contract: docs/operations/execution-lanes.md; original historical
+ * filing: specs/309-isolated-workspace-lanes/contracts/execution-lanes.md) — the vocabulary,
  * bounds, disclosure and record views of execution lanes and reviewed integration.
  *
  * A lane is a host-provisioned Git working tree under the host storage directory. It is a

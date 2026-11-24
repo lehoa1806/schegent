@@ -130,7 +130,7 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
     executionAffecting: false,
     migrationStage: 'external-retained',
     rationale:
-      'High-volume streaming stdout/stderr bytes stay in bounded segment files indexed by F07 live_log_segments and tracked by BackupDependencyManifest (F04 log_segments is retained as an empty schema-v9 placeholder).'
+      'High-volume streaming stdout/stderr bytes stay in bounded segment files indexed by F07 live_log_segments (F04 log_segments is retained as an empty schema-v9 placeholder; BackupDependencyManifest collects F05 artifacts/artifact_locations, F04 log_segments, and caller-supplied audit logs).'
   },
   {
     surfaceId: 'recovery-handoffs',

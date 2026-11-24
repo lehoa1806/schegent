@@ -15,7 +15,8 @@
   } from '../../lib/catalog-lifecycle';
   import {
     buildWorkflowRemoval, makeWorkflowGraphActions, mergeWorkflowRows, pushWorkflowHistory,
-    stepWorkflowHistory, takenWorkflowIds, withWorkflowDraftEdited, type WorkflowHistoryTrack
+    reconcileWorkflowRevisionAck, stepWorkflowHistory, takenWorkflowIds, withWorkflowDraftEdited,
+    type WorkflowHistoryTrack
   } from './workflow-catalog-actions';
   import {
     formatWorkflowSaveRejection, makeDuplicateWorkflowDraft, makeNewWorkflowDraft,
@@ -141,19 +142,19 @@
 
   $effect(() => {
     if (submittedRevision !== null && revision !== '' && revision !== submittedRevision) {
-      const key = submittedKey;
+      const ack = reconcileWorkflowRevisionAck({
+        submittedKey, persisted, drafts, editedByKey, historyByKey, selectedKey, selectedId
+      });
       submittedRevision = null;
       submittedKey = null;
-      if (key !== null) {
-        drafts = drafts.filter((d) => d.sourceKey !== key);
-        const { [key]: _ed, ...restEdited } = editedByKey;
-        editedByKey = restEdited;
-        const { [key]: _hist, ...restHist } = historyByKey;
-        historyByKey = restHist;
-      } else {
-        drafts = [];
-        editedByKey = {};
-        historyByKey = {};
+      drafts = ack.drafts;
+      editedByKey = ack.editedByKey;
+      historyByKey = ack.historyByKey;
+      if (ack.reselected) {
+        selectedKey = ack.selectedKey;
+        selectedId = ack.selectedId;
+        restoredNodeId = null;
+        if (ack.clearedSelection) breadcrumbs = [];
       }
     }
   });

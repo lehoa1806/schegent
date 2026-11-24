@@ -384,5 +384,45 @@ describe('SQLite rollback rehearsal with deletion tombstones & bounds (FR-R7-14)
     } finally {
       reopenedConn.close();
     }
+
+    // 7. FR-R7-14 (14-14 & 14-15): rehearse Delete Run Evidence + full workspace deletion and verify
+    //    that external <globalStorage> copies survive outside the workspace exactly as documented
+    //    in evidence-retention-disclosure.md, user-quickstart.md, and DELETE_EVIDENCE_TEXT.
+    const auditCheckpointPath = path.join(storageRoot, 'audit-checkpoints', `${scopeId}.json`);
+    const recoveryCheckpointPath = path.join(storageRoot, 'checkpoints', 'run-rb-1', 'handover.recovery.json');
+    const telemetrySpoolPath = path.join(storageRoot, 'telemetry-spool', 'batch-1.json');
+    for (const externalFile of [auditCheckpointPath, recoveryCheckpointPath, telemetrySpoolPath]) {
+      await fs.mkdir(path.dirname(externalFile), { recursive: true });
+      await fs.writeFile(externalFile, JSON.stringify({ rehearsal: true }), { mode: 0o600 });
+    }
+
+    // Delete the entire disposable workspace directory (quickstart cleanup rehearsal)
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+    await expect(fs.lstat(workspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // Every documented external <globalStorage> copy MUST survive workspace deletion intact
+    for (const survivingPath of [
+      liveDbPath,
+      postDeleteBackupPath,
+      postDeleteManifestPath,
+      auditCheckpointPath,
+      recoveryCheckpointPath,
+      telemetrySpoolPath
+    ]) {
+      expect((await fs.lstat(survivingPath)).isFile(), survivingPath).toBe(true);
+    }
+
+    // Reopen the surviving folder-scoped SQLite store after workspace deletion to confirm integrity
+    const afterWsDelete = new NodeSqliteConnection({ databasePath: liveDbPath, journalMode: 'wal' });
+    try {
+      expect(afterWsDelete.runQuickCheck()).toEqual(['ok']);
+      expect(
+        afterWsDelete.get<{ availability: string }>(
+          `SELECT availability FROM artifact_lifecycle WHERE artifact_id = 'rb-ws-deleted'`
+        )
+      ).toEqual({ availability: 'deleted' });
+    } finally {
+      afterWsDelete.close();
+    }
   });
 });

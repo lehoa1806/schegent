@@ -35,7 +35,8 @@ export function sanitizePhaseContextToken(raw: string, fallback: string): string
 
 /**
  * Canonical collision-free F05 artifact ID for a materialized handoff copy.
- * Preserves `mat-<cleanArt>-<cleanAttempt>` when <= 120 chars; longer combinations fold the raw
+ * Includes a 12-char digest tag whenever `digestHex` is provided so distinct immutable versions of
+ * the same `artifactId` in one batch never collide; combinations exceeding 120 chars fold the raw
  * `(artifactId, attemptId, digestHex)` inputs into a 16-hex SHA-256 suffix (120 chars total).
  */
 export function materializedCopyArtifactId(
@@ -45,7 +46,11 @@ export function materializedCopyArtifactId(
 ): string {
   const cleanArt = sanitizePhaseContextToken(artifactId, 'art');
   const cleanAttempt = sanitizePhaseContextToken(attemptId, 'attempt');
-  const raw = `mat-${cleanArt}-${cleanAttempt}`;
+  const digestTag =
+    typeof digestHex === 'string' && digestHex.length > 0
+      ? `-${sanitizePhaseContextToken(digestHex.slice(0, 12), 'd')}`
+      : '';
+  const raw = `mat-${cleanArt}-${cleanAttempt}${digestTag}`;
   if (raw.length <= 120) return raw;
   const suffix = sha256Hex(JSON.stringify([artifactId, attemptId, digestHex ?? ''])).slice(0, 16);
   return `${raw.slice(0, 103)}-${suffix}`;

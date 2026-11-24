@@ -368,6 +368,7 @@
         <HistoryRunDetail
           row={selectedRow}
           {catalogNames}
+          {isPrimary}
           rawTranscriptMode={snapshot.generalSettings?.rawTranscriptMode ?? 'errors-only'}
           retentionMaxAgeDays={snapshot.generalSettings?.sessionRetentionMaxAgeDays ?? 30}
           onBack={closeDetail}

@@ -271,6 +271,7 @@
    * changed, and the wording says so).
    */
   async function savePolicy(queueId: string, choice: FailurePolicyChoice): Promise<void> {
+    policyMessages = without(policyMessages, queueId);
     const policy = choice === FOLLOW_DEFAULT ? null : choice;
     const show = (outcome: SetQueueFailurePolicyOutcome): void => showPolicyOutcome(queueId, outcome);
     show(await setQueueFailurePolicy(queueId, policy, { signal: lifetime.signal, onLateOutcome: show }));
