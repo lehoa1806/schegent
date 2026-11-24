@@ -1,36 +1,31 @@
-// FR-R3-128 (T1486, FR-005) — the whole first-party import graph has no cycles.
+// FR-R3-128 (T1486, FR-005) & FR-R8-04 (`04-03`) — the whole first-party import
+// graph has no static value cycles, including `.js`/`.jsx`/`.cjs`/`.mjs`
+// specifiers backed by TypeScript sources, re-exports, and Svelte `<script>`
+// blocks, while keeping type-only and dynamic lazy `import()` edges explicitly
+// distinguished and counted.
 //
-// WHAT WAS MISSING. `dependency-direction.test.ts` checks two leaf layers against a
-// list of acting ones — a rule-by-rule scan, and a good one. It cannot see a cycle
-// that does not cross a leaf boundary, and there was no whole-tree checker at all:
-// `ARCHITECTURE.md` admitted so in its own words until this gate replaced the
-// admission with a pointer.
+// SCOPE, STATED:
+//   * Nodes are non-test `.ts`, `.tsx`, `.cts`, `.mts`, and `.svelte` files
+//     under `src/` and `webview-ui/src/`.
+//   * Edges are relative static value `import`, `export ... from`, `import =
+//     require(...)`, and literal `require(...)` specifiers parsed with the
+//     TypeScript AST (`ts.createSourceFile`, extracting `<script>` blocks from
+//     `.svelte` files).
+//   * Emitted JS specifiers (`.js` -> `.ts`/`.tsx`, `.jsx` -> `.tsx`, `.cjs`
+//     -> `.cts`, `.mjs` -> `.mts`) resolve to their backing TypeScript sources.
+//   * Type-only edges (`import type`, `export type`, all-`type` named clauses)
+//     are distinguished and excluded from the runtime cycle graph.
+//   * Dynamic `import(...)` edges (such as lazy dashboard routes) are
+//     distinguished and excluded from the static cycle graph.
 //
-// A cycle is not a style problem. It defeats the one thing a reader uses to
-// understand a module — "what does this depend on" — and in this codebase it also
-// defeats initialisation order, which `elect-before-recovering.test.ts` and the
-// composition-root work spent a whole round making explicit.
-//
-// SCOPE, STATED, because a scan whose scope is unstated reads as a scan with no
-// scope:
-//
-//   * Nodes are files under `src/` and `webview-ui/src/`.
-//   * Edges are static `import` / `export from` specifiers that are RELATIVE.
-//     A bare specifier is third-party; a cycle through `node_modules` is not this
-//     project's to fix and is not looked for.
-//   * `import type` is EXCLUDED. A type-only edge is erased at compile time, cannot
-//     produce an initialisation-order failure, and is legitimately circular in a
-//     mutually-recursive type model. `dependency-direction.test.ts` draws the same
-//     line for the same reason.
-//   * Dynamic `import()` is excluded: it is a deliberate deferral, and treating one
-//     as a static edge would report the very technique used to break a cycle.
-//
-// NON-VACUITY IS THE WHOLE RISK. "No cycles found" is exactly what an empty graph
-// reports. So the gate asserts floors on nodes and edges, prints what it walked, and
-// is driven red by an injected two-file cycle.
+// NON-VACUITY: asserts floors on nodes and value edges, publishes exact
+// candidate graph counts, and proves detection of both an ordinary two-file
+// cycle and a cycle crossing `.js` -> `.ts` resolution (plus Svelte scripts).
+
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, extname, relative, resolve } from 'node:path';
+import ts from 'typescript';
 
 import { filesUnder } from './source-scan';
 import { ACTING_LAYERS, LEAF_LAYERS } from './architecture-layers';
@@ -38,75 +33,249 @@ import { ACTING_LAYERS, LEAF_LAYERS } from './architecture-layers';
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const ROOTS = ['src', 'webview-ui/src'] as const;
 
-/**
- * A static, non-type-only import or re-export with a relative specifier.
- *
- * `(?!type\s)` is what keeps type-only edges out. It is deliberately syntactic:
- * standing up a TypeScript program to resolve this would make the gate slow enough
- * that someone excludes it, and `lint-gates-are-hermetic.test.ts` forbids shelling
- * out to anything that would do it faster.
- */
-const EDGE = /^\s*(?:import|export)\s+(?!type\s)(?:[\s\S]*?from\s*)?['"](\.[^'"]*)['"]/gm;
+export interface ExtractedSpecifiers {
+  readonly value: readonly string[];
+  readonly typeOnly: readonly string[];
+  readonly dynamicLazy: readonly string[];
+}
 
-/** Extensionless specifier -> the file it names, if it is one of ours. */
-function resolveEdge(fromFile: string, specifier: string, nodes: ReadonlySet<string>): string | null {
-  const base = resolve(dirname(fromFile), specifier);
+const SVELTE_SCRIPT_BLOCK = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+
+/** Extract script text(s) from `.svelte` files, or return TS/TSX source as-is. */
+function scriptBlocksForFile(filePath: string, body: string): readonly string[] {
+  if (!filePath.endsWith('.svelte')) return [body];
+  const blocks: string[] = [];
+  for (const match of body.matchAll(SVELTE_SCRIPT_BLOCK)) {
+    const content = match.at(1);
+    if (content !== undefined) blocks.push(content);
+  }
+  return blocks;
+}
+
+/**
+ * Parse one file's relative specifiers via the TypeScript AST (`ts.createSourceFile`),
+ * distinguishing static value edges, type-only edges, and dynamic lazy `import()` edges.
+ */
+export function extractModuleSpecifiers(body: string, filePath: string): ExtractedSpecifiers {
+  const value: string[] = [];
+  const typeOnly: string[] = [];
+  const dynamicLazy: string[] = [];
+  const scriptKind =
+    filePath.endsWith('.tsx')
+      ? ts.ScriptKind.TSX
+      : filePath.endsWith('.svelte')
+        ? ts.ScriptKind.TS
+        : undefined;
+
+  for (const block of scriptBlocksForFile(filePath, body)) {
+    const sf = ts.createSourceFile(filePath, block, ts.ScriptTarget.Latest, false, scriptKind);
+
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportEqualsDeclaration(node)) {
+        const ref = node.moduleReference;
+        if (ts.isExternalModuleReference(ref) && ts.isStringLiteralLike(ref.expression)) {
+          const spec = ref.expression.text;
+          if (spec.startsWith('.')) {
+            if (node.isTypeOnly) typeOnly.push(spec);
+            else value.push(spec);
+          }
+        }
+        return;
+      }
+
+      if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+        const spec = node.moduleSpecifier.text;
+        if (spec.startsWith('.')) {
+          const clause = node.importClause;
+          if (clause === undefined) {
+            value.push(spec);
+          } else if (clause.isTypeOnly) {
+            typeOnly.push(spec);
+          } else {
+            const isAllTypeNamed =
+              clause.name === undefined &&
+              clause.namedBindings !== undefined &&
+              ts.isNamedImports(clause.namedBindings) &&
+              clause.namedBindings.elements.length > 0 &&
+              clause.namedBindings.elements.every((el) => el.isTypeOnly);
+            if (isAllTypeNamed) typeOnly.push(spec);
+            else value.push(spec);
+          }
+        }
+        return;
+      }
+
+      if (
+        ts.isExportDeclaration(node) &&
+        node.moduleSpecifier !== undefined &&
+        ts.isStringLiteralLike(node.moduleSpecifier)
+      ) {
+        const spec = node.moduleSpecifier.text;
+        if (spec.startsWith('.')) {
+          if (node.isTypeOnly) {
+            typeOnly.push(spec);
+          } else {
+            const isAllTypeNamed =
+              node.exportClause !== undefined &&
+              ts.isNamedExports(node.exportClause) &&
+              node.exportClause.elements.length > 0 &&
+              node.exportClause.elements.every((el) => el.isTypeOnly);
+            if (isAllTypeNamed) typeOnly.push(spec);
+            else value.push(spec);
+          }
+        }
+        return;
+      }
+
+      if (ts.isCallExpression(node)) {
+        const firstArg = node.arguments.at(0);
+        if (firstArg !== undefined && ts.isStringLiteralLike(firstArg) && firstArg.text.startsWith('.')) {
+          if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+            dynamicLazy.push(firstArg.text);
+          } else if (ts.isIdentifier(node.expression) && node.expression.text === 'require') {
+            value.push(firstArg.text);
+          }
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sf, visit);
+  }
+
+  return { value, typeOnly, dynamicLazy };
+}
+
+export interface ResolvedEdge {
+  readonly target: string;
+  readonly resolvedViaEmittedJs: boolean;
+}
+
+/** Resolve a relative specifier (including `.js`/`.jsx`/`.cjs`/`.mjs` -> TS) against known graph nodes. */
+export function resolveRelativeNode(
+  fromRelPath: string,
+  specifier: string,
+  nodes: ReadonlySet<string>
+): ResolvedEdge | null {
+  const fromAbs = resolve(REPO_ROOT, fromRelPath);
+  const base = resolve(dirname(fromAbs), specifier);
+  const ext = extname(base);
+  const stem = ext.length > 0 ? base.slice(0, -ext.length) : base;
+
+  const emittedTargets = new Map<string, readonly string[]>([
+    ['.js', [`${stem}.ts`, `${stem}.tsx`]],
+    ['.jsx', [`${stem}.tsx`]],
+    ['.cjs', [`${stem}.cts`]],
+    ['.mjs', [`${stem}.mts`]]
+  ]);
+
+  for (const candidate of emittedTargets.get(ext) ?? []) {
+    const rel = relative(REPO_ROOT, candidate).split('\\').join('/');
+    if (nodes.has(rel)) return { target: rel, resolvedViaEmittedJs: true };
+  }
+
   for (const candidate of [
     base,
     `${base}.ts`,
     `${base}.tsx`,
+    `${base}.cts`,
+    `${base}.mts`,
     `${base}.svelte`,
-    resolve(base, 'index.ts')
+    resolve(base, 'index.ts'),
+    resolve(base, 'index.tsx'),
+    resolve(base, 'index.cts'),
+    resolve(base, 'index.mts')
   ]) {
     const rel = relative(REPO_ROOT, candidate).split('\\').join('/');
-    if (nodes.has(rel)) return rel;
+    if (nodes.has(rel)) return { target: rel, resolvedViaEmittedJs: false };
   }
   return null;
 }
 
-interface Graph {
+export interface Graph {
   readonly nodes: readonly string[];
   readonly edges: ReadonlyMap<string, readonly string[]>;
   readonly edgeCount: number;
+  readonly typeOnlyEdgeCount: number;
+  readonly dynamicLazyEdgeCount: number;
+  readonly emittedJsResolvedCount: number;
 }
 
-function buildGraph(): Graph {
-  const absolute: string[] = [];
-  for (const root of ROOTS) {
-    for (const abs of filesUnder(resolve(REPO_ROOT, root), {
-      extensions: ['.ts', '.tsx', '.svelte']
-    })) {
-      // Tests and generated declaration files are not part of the product graph.
-      if (/\.d\.ts$/.test(abs) || /(^|[\\/])__tests__[\\/]/.test(abs)) continue;
-      absolute.push(abs);
-    }
-  }
-  const nodes = absolute.map((abs) => relative(REPO_ROOT, abs).split('\\').join('/'));
+export function buildGraphFromSources(sources: ReadonlyMap<string, string>): Graph {
+  const nodes = [...sources.keys()].sort();
   const nodeSet = new Set(nodes);
   const edges = new Map<string, readonly string[]>();
   let edgeCount = 0;
-  for (const abs of absolute) {
-    const rel = relative(REPO_ROOT, abs).split('\\').join('/');
-    const body = readFileSync(abs, 'utf8');
-    const out: string[] = [];
-    for (const match of body.matchAll(EDGE)) {
-      const target = resolveEdge(abs, match[1]!, nodeSet);
-      if (target !== null && target !== rel) out.push(target);
+  let typeOnlyEdgeCount = 0;
+  let dynamicLazyEdgeCount = 0;
+  let emittedJsResolvedCount = 0;
+
+  for (const rel of nodes) {
+    const body = sources.get(rel) ?? '';
+    const extracted = extractModuleSpecifiers(body, rel);
+
+    const outValue = new Set<string>();
+    const outEmitted = new Set<string>();
+    for (const spec of extracted.value) {
+      const resolved = resolveRelativeNode(rel, spec, nodeSet);
+      if (resolved !== null && resolved.target !== rel) {
+        outValue.add(resolved.target);
+        if (resolved.resolvedViaEmittedJs) outEmitted.add(resolved.target);
+      }
     }
-    const unique = [...new Set(out)];
-    edges.set(rel, unique);
-    edgeCount += unique.length;
+    const uniqueValue = [...outValue];
+    edges.set(rel, uniqueValue);
+    edgeCount += uniqueValue.length;
+    emittedJsResolvedCount += outEmitted.size;
+
+    const outType = new Set<string>();
+    for (const spec of extracted.typeOnly) {
+      const resolved = resolveRelativeNode(rel, spec, nodeSet);
+      if (resolved !== null && resolved.target !== rel) outType.add(resolved.target);
+    }
+    typeOnlyEdgeCount += outType.size;
+
+    const outDynamic = new Set<string>();
+    for (const spec of extracted.dynamicLazy) {
+      const resolved = resolveRelativeNode(rel, spec, nodeSet);
+      if (resolved !== null && resolved.target !== rel) outDynamic.add(resolved.target);
+    }
+    dynamicLazyEdgeCount += outDynamic.size;
   }
-  return { nodes, edges, edgeCount };
+
+  return {
+    nodes,
+    edges,
+    edgeCount,
+    typeOnlyEdgeCount,
+    dynamicLazyEdgeCount,
+    emittedJsResolvedCount
+  };
+}
+
+function buildGraph(): Graph {
+  const sources = new Map<string, string>();
+  for (const root of ROOTS) {
+    for (const abs of filesUnder(resolve(REPO_ROOT, root), {
+      extensions: ['.ts', '.tsx', '.cts', '.mts', '.svelte']
+    })) {
+      if (
+        /\.d\.[cm]?ts$/.test(abs) ||
+        /(^|[\\/])__tests__[\\/]/.test(abs) ||
+        /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(abs)
+      ) {
+        continue;
+      }
+      const rel = relative(REPO_ROOT, abs).split('\\').join('/');
+      sources.set(rel, readFileSync(abs, 'utf8'));
+    }
+  }
+  return buildGraphFromSources(sources);
 }
 
 /**
- * Every cycle, as a path.
- *
- * Iterative depth-first with an explicit stack: the graph is ~1,700 nodes and a
- * recursive walk risks a stack overflow on a long chain, which would present as a
- * crashed gate rather than a reported cycle — and a gate that crashes rather than
- * reports is the same defect as one that passes vacuously (`FR-R3-063`).
+ * Every cycle, as a path (iterative DFS with explicit stack).
  */
 export function findCycles(edges: ReadonlyMap<string, readonly string[]>): readonly string[][] {
   const WHITE = 0;
@@ -148,94 +317,110 @@ export function findCycles(edges: ReadonlyMap<string, readonly string[]>): reado
   return cycles;
 }
 
-describe('the first-party import graph is acyclic (FR-R3-128)', () => {
+describe('the first-party import graph is acyclic (FR-R3-128, FR-R8-04 04-03)', () => {
   const graph = buildGraph();
 
-  it('walked a graph worth walking', () => {
-    // Vacuity control, and the only one that matters: "no cycles found" is exactly
-    // what an empty graph reports, so a broken walk or a matcher that stopped
-    // matching would report the cleanest possible result.
-    expect(
-      graph.nodes.length,
-      'the module walk found almost nothing — the roots or the extensions are wrong'
-      // 673 modules measured 2026-08-27. The floor is set well below it rather than
-      // just below: a floor tight against the measurement fails on every ordinary
-      // module deletion, and a gate that fails for uninteresting reasons is a gate
-      // someone loosens. It exists to catch a walk that broke, not tree churn.
-    ).toBeGreaterThan(500);
-    expect(
-      graph.edgeCount,
-      'the edge matcher found almost nothing — it no longer recognises how this tree writes an ' +
-        'import, so this gate is reporting an absence of cycles in an absence of a graph'
-      // 1,484 value edges measured 2026-08-27, same reasoning as the node floor.
-    ).toBeGreaterThan(1_200);
-    // The figures are how a regression in the walk itself becomes visible; a silent
-    // shrink is the failure mode this print exists to prevent.
+  it('walked the full host + webview graph and distinguished value, type-only, lazy, and .js->.ts edges', () => {
+    expect(graph.nodes.length, 'expected substantial host + webview module count').toBeGreaterThan(1_000);
+    expect(graph.edgeCount, 'expected substantial static value edge count').toBeGreaterThan(2_500);
+    expect(graph.typeOnlyEdgeCount, 'type-only edges must be recognized and counted').toBeGreaterThan(100);
+    expect(graph.dynamicLazyEdgeCount, 'lazy dynamic import() edges (routes) must be recognized').toBeGreaterThanOrEqual(5);
+    expect(graph.emittedJsResolvedCount, 'emitted .js -> .ts relative imports (e.g. snapshot-merge.ts) must resolve').toBeGreaterThanOrEqual(1);
     console.log(
-      `[FR-R3-128] import graph: ${graph.nodes.length} module(s), ${graph.edgeCount} value edge(s)`
+      `[FR-R8-04 04-03] import graph: ${graph.nodes.length} module(s), ${graph.edgeCount} static value edge(s), ` +
+        `${graph.typeOnlyEdgeCount} type-only edge(s), ${graph.dynamicLazyEdgeCount} dynamic lazy edge(s), ` +
+        `${graph.emittedJsResolvedCount} emitted-.js->.ts value edge(s)`
     );
   });
 
-  it('has no cycles', () => {
+  it('has no static value cycles across src/ and webview-ui/src/', () => {
     const cycles = findCycles(graph.edges).map((cycle) => cycle.join(' -> '));
     expect(
       cycles,
-      'These first-party modules import each other in a cycle. A cycle defeats the one question a ' +
-        'reader asks of a module — what does this depend on — and in this codebase it also defeats ' +
-        'initialisation order, which the composition-root work spent a round making explicit. Break ' +
-        'it by moving the shared thing to a leaf (`contracts/` or `lib/`), by making one edge ' +
-        '`import type`, or by deferring one with a dynamic import — in that order of preference.'
+      'These first-party modules import each other in a static value cycle. Break it by moving the shared ' +
+        'symbol to a leaf (`contracts/` or `lib/`), making one edge `import type`, or deferring with dynamic `import()`.'
     ).toEqual([]);
   });
 
-  it('reports an injected cycle — proved, not assumed', () => {
-    // The mutation control. `toEqual([])` passes over a walk that finds nothing, so
-    // the detector is driven against a graph that certainly has a cycle, and against
-    // one that certainly does not.
-    // Fixture node names are deliberately NOT `src/…`: `lint-anchor-grounding.test.ts`
-    // resolves every `src/`-prefixed path literal in this directory against the tree,
-    // and a fixture path that does not exist would fail it. A synthetic graph needs
-    // synthetic names.
-    const cyclic = new Map<string, readonly string[]>([
-      ['graph/a.ts', ['graph/b.ts']],
-      ['graph/b.ts', ['graph/c.ts']],
-      ['graph/c.ts', ['graph/a.ts']]
-    ]);
-    const found = findCycles(cyclic);
-    expect(found.length, 'a three-module cycle must be reported').toBeGreaterThan(0);
-    expect(found[0]!.join(' -> ')).toContain('graph/a.ts');
+  it('detects both an ordinary two-file cycle and a cycle crossing .js -> .ts and Svelte script resolution', () => {
+    // 1. Ordinary two-file TS cycle
+    const twoFile = buildGraphFromSources(
+      new Map([
+        ['graph/a.ts', "import { b } from './b'; export const a = () => b();"],
+        ['graph/b.ts', "import { a } from './a'; export const b = () => a();"]
+      ])
+    );
+    const twoFileCycles = findCycles(twoFile.edges);
+    expect(twoFileCycles.length).toBeGreaterThan(0);
+    expect(twoFileCycles[0]!.join(' -> ')).toContain('graph/a.ts');
+    expect(twoFileCycles[0]!.join(' -> ')).toContain('graph/b.ts');
 
-    const acyclic = new Map<string, readonly string[]>([
-      ['graph/a.ts', ['graph/b.ts', 'graph/c.ts']],
-      ['graph/b.ts', ['graph/c.ts']],
-      ['graph/c.ts', []]
-    ]);
-    expect(findCycles(acyclic), 'a diamond is not a cycle').toEqual([]);
+    // 2. Cycle crossing `.js` -> `.ts` resolution and `export ... from` re-export
+    const jsToTsCycle = buildGraphFromSources(
+      new Map([
+        ['graph/x.ts', "import { y } from './y.js'; export const x = y + 1;"],
+        ['graph/y.ts', "export { x as y } from './x.js';"]
+      ])
+    );
+    expect(jsToTsCycle.emittedJsResolvedCount).toBe(2);
+    const jsCycles = findCycles(jsToTsCycle.edges);
+    expect(jsCycles.length).toBeGreaterThan(0);
+    expect(jsCycles[0]!.join(' -> ')).toContain('graph/x.ts');
+    expect(jsCycles[0]!.join(' -> ')).toContain('graph/y.ts');
 
-    // A self-edge is excluded at graph-build time; assert the detector does not
-    // invent one from a node that lists itself.
-    expect(findCycles(new Map([['graph/a.ts', []]]))).toEqual([]);
+    // 3. Cycle crossing Svelte `<script lang="ts">` + `.js` -> `.ts` resolution
+    const svelteCycle = buildGraphFromSources(
+      new Map([
+        ['graph/View.svelte', '<script lang="ts">\nimport { helper } from "./helper.js";\nvoid helper;\n</script>\n<div />'],
+        ['graph/helper.ts', "import View from './View.svelte'; export const helper = View;"]
+      ])
+    );
+    expect(svelteCycle.emittedJsResolvedCount).toBe(1);
+    const svelteCycles = findCycles(svelteCycle.edges);
+    expect(svelteCycles.length).toBeGreaterThan(0);
+    expect(svelteCycles[0]!.join(' -> ')).toContain('graph/View.svelte');
+
+    // 4. Acyclic diamond and self-edge exclusion
+    const acyclic = buildGraphFromSources(
+      new Map([
+        ['graph/a.ts', "import { b } from './b.js'; import { c } from './c'; export const a = b + c;"],
+        ['graph/b.ts', "import { c } from './c'; export const b = c;"],
+        ['graph/c.ts', 'export const c = 1;']
+      ])
+    );
+    expect(findCycles(acyclic.edges)).toEqual([]);
   });
 
-  it('excludes type-only edges, and says why', () => {
-    // A type-only edge is erased at compile time, cannot produce an
-    // initialisation-order failure, and is legitimately circular in a mutually
-    // recursive type model. Asserted on the matcher so the exclusion cannot be
-    // lost in a rewrite.
-    const typeOnly = "import type { Foo } from './foo';";
-    const valueImport = "import { foo } from './foo';";
-    expect([...typeOnly.matchAll(EDGE)]).toHaveLength(0);
-    expect([...valueImport.matchAll(EDGE)]).toHaveLength(1);
-    // A re-export is a value edge.
-    expect([..."export { foo } from './foo';".matchAll(EDGE)]).toHaveLength(1);
-    expect([..."export type { Foo } from './foo';".matchAll(EDGE)]).toHaveLength(0);
-    // A bare specifier is third-party and out of scope.
-    expect([..."import { z } from 'zod';".matchAll(EDGE)]).toHaveLength(0);
+  it('distinguishes type-only and dynamic lazy route imports from static value edges', () => {
+    const mixed = buildGraphFromSources(
+      new Map([
+        [
+          'graph/loader.ts',
+          [
+            "import type { LazyType } from './lazy.js';",
+            "import { type InlineOnly } from './inline';",
+            "export type { Reexported } from './lazy.js';",
+            "import { z } from 'zod';",
+            "export const loadLazy = () => import('./lazy.svelte');",
+            'export type Keep = LazyType | InlineOnly | typeof z;'
+          ].join('\n')
+        ],
+        [
+          'graph/lazy.svelte',
+          '<script lang="ts">\nimport type { Keep } from "./loader";\nimport { loadLazy } from "./loader";\nvoid loadLazy;\nexport type T = Keep;\n</script>'
+        ],
+        ['graph/lazy.ts', "import type { Keep } from './loader'; export type LazyType = Keep; export type Reexported = Keep;"],
+        ['graph/inline.ts', 'export type InlineOnly = string;']
+      ])
+    );
+    // Static value edge goes only lazy.svelte -> loader.ts; loader.ts -> lazy.svelte is dynamic lazy.
+    expect(mixed.edgeCount).toBe(1);
+    expect(mixed.typeOnlyEdgeCount).toBeGreaterThanOrEqual(4);
+    expect(mixed.dynamicLazyEdgeCount).toBe(1);
+    expect(findCycles(mixed.edges)).toEqual([]);
   });
 
   it('reuses the layer declaration rather than restating it', () => {
-    // FR-R3-128 A4 — two lists of layers is how two gates come to disagree about the
-    // architecture they both police. This asserts the shared module is the source.
     expect(LEAF_LAYERS.map((layer) => layer.dir)).toEqual(['contracts', 'lib']);
     expect(ACTING_LAYERS.length).toBeGreaterThan(10);
   });

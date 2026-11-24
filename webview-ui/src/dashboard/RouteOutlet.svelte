@@ -76,6 +76,10 @@
   // The two outcomes evict for different reasons and only one of them means the
   // chunk is bad, so conflating them would lose that.
   const ROUTE_LOAD_EXPIRED = Symbol('route-load-expired');
+  // FR-R8-04 (`04-06`) — resolved synchronously during `$effect` teardown so
+  // `Promise.race` settles immediately instead of leaving an orphaned timer or
+  // late post-unmount microtask hanging across test/view cleanup.
+  const ROUTE_LOAD_CANCELLED = Symbol('route-load-cancelled');
 
   // Feature 105 (T583b, FR-004b) — Retry after a *load* rejection has to ask
   // again, and `route` is already the route being retried, so an assignment to it
@@ -115,14 +119,20 @@
     // happens in a microtask where it is untracked; a flag says what it means.
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let settleExpiry:
+      | ((value: typeof ROUTE_LOAD_EXPIRED | typeof ROUTE_LOAD_CANCELLED) => void)
+      | undefined;
 
-    const expiry = new Promise<typeof ROUTE_LOAD_EXPIRED>((resolve) => {
-      timer = setTimeout(() => resolve(ROUTE_LOAD_EXPIRED), ROUTE_LOAD_TIMEOUT_MS);
-    });
+    const expiry = new Promise<typeof ROUTE_LOAD_EXPIRED | typeof ROUTE_LOAD_CANCELLED>(
+      (resolve) => {
+        settleExpiry = resolve;
+        timer = setTimeout(() => resolve(ROUTE_LOAD_EXPIRED), ROUTE_LOAD_TIMEOUT_MS);
+      }
+    );
 
     void Promise.race([loader.load(active), expiry])
       .then((outcome) => {
-        if (cancelled) return;
+        if (cancelled || outcome === ROUTE_LOAD_CANCELLED) return;
         if (outcome === ROUTE_LOAD_EXPIRED) {
           loader.evict(active);
           routeLoadError = routeErrorMessage(active);
@@ -141,6 +151,7 @@
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      settleExpiry?.(ROUTE_LOAD_CANCELLED);
     };
   });
 

@@ -55,16 +55,42 @@
   // and then gives up quietly rather than throwing.
   const BACKEND_HEALTH_HEADING_ID = 'backend-health-heading';
   const SCROLL_WAIT_FRAMES = 120;
+  let scrollRequest = 0;
+  let pendingScrollRaf: number | null = null;
+  let resolvePendingScroll: (() => void) | null = null;
+
+  function cancelPendingScrollRaf(): void {
+    if (pendingScrollRaf !== null) {
+      cancelAnimationFrame(pendingScrollRaf);
+      pendingScrollRaf = null;
+    }
+    if (resolvePendingScroll !== null) {
+      const done = resolvePendingScroll;
+      resolvePendingScroll = null;
+      done();
+    }
+  }
 
   async function scrollToBackendHealth(): Promise<void> {
+    scrollRequest += 1;
+    cancelPendingScrollRaf();
+    const request = scrollRequest;
     await tick();
     for (let frame = 0; frame < SCROLL_WAIT_FRAMES; frame += 1) {
+      if (request !== scrollRequest) return;
       const heading = document.getElementById(BACKEND_HEALTH_HEADING_ID);
       if (heading !== null) {
         heading.scrollIntoView({ block: 'start' });
         return;
       }
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => {
+        resolvePendingScroll = resolve;
+        pendingScrollRaf = requestAnimationFrame(() => {
+          pendingScrollRaf = null;
+          resolvePendingScroll = null;
+          resolve();
+        });
+      });
     }
   }
 
@@ -90,9 +116,24 @@
   const PAGE_HEADING_SELECTOR = '#dashboard-content h1';
   const HEADING_WAIT_FRAMES = 120;
   let headingRequest = 0;
+  let pendingHeadingRaf: number | null = null;
+  let resolvePendingHeading: (() => void) | null = null;
+
+  function cancelPendingHeadingRaf(): void {
+    if (pendingHeadingRaf !== null) {
+      cancelAnimationFrame(pendingHeadingRaf);
+      pendingHeadingRaf = null;
+    }
+    if (resolvePendingHeading !== null) {
+      const done = resolvePendingHeading;
+      resolvePendingHeading = null;
+      done();
+    }
+  }
 
   async function focusPageHeading(fromPointer = false): Promise<void> {
     headingRequest += 1;
+    cancelPendingHeadingRaf();
     const request = headingRequest;
     const origin = document.activeElement;
     // After this tick the page being left is gone, so its heading cannot be taken for the new one.
@@ -115,7 +156,14 @@
         heading.focus();
         return;
       }
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await new Promise<void>((resolve) => {
+        resolvePendingHeading = resolve;
+        pendingHeadingRaf = requestAnimationFrame(() => {
+          pendingHeadingRaf = null;
+          resolvePendingHeading = null;
+          resolve();
+        });
+      });
     }
   }
 
@@ -150,6 +198,17 @@
     }
   };
   setContext(DASHBOARD_NAVIGATION, navigation);
+
+  // FR-R8-04 (`04-06`) — cancel pending focus/scroll animation loops and mark
+  // the route loader disposed on shell unmount so no late post-teardown work
+  // survives component cleanup.
+  $effect(() => () => {
+    headingRequest += 1;
+    scrollRequest += 1;
+    cancelPendingHeadingRaf();
+    cancelPendingScrollRaf();
+    loader.dispose();
+  });
 </script>
 
 <div class="sg dash" data-testid="dashboard-app-root">

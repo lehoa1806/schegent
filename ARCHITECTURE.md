@@ -89,6 +89,46 @@ VS Code commands / sidebar / Dashboard
      state, audit, transcript, runtime log
 ```
 
+### System and ownership boundaries (`FR-R8-04`)
+
+```mermaid
+flowchart LR
+    U["Operator and VS Code Workspace Trust"]
+    UI["Svelte sidebar and dashboard"]
+    Router["Host validators, command router and permissions"]
+    Catalog["Versioned catalog and frozen workflow closures"]
+    Engine["Desktop workflow composition, control ledger, queues and run driver"]
+    Guard["Phase runner, consent, scanner/spawn admission and live fence"]
+    ACP["ACP over stdio (bounded stream + authority gate)"]
+    Vendors["Claude / Codex bridge or native Agy CLI"]
+    Model["Configured model provider"]
+    DB[("SQLite under VS Code global storage (v9)")]
+    Files[("Workspace files, Git lanes and .schegent evidence")]
+    OTLP["Optional user-authorized OTLP collector"]
+    U --> UI
+    U --> Router
+    UI -->|"validated IPC v3"| Router
+    Router --> Catalog
+    Router --> Engine
+    Catalog -->|"immutable FrozenWorkflowClosure"| Engine
+    Engine <-->|"BEGIN IMMEDIATE + ownership fence"| DB
+    Engine --> Guard --> ACP --> Vendors
+    Vendors --> Model
+    Vendors --> Files
+    Guard --> Files
+    Engine -->|"revisioned v4 snapshots, logs and CMD_ACK"| UI
+    DB -->|"redacted metadata-only metrics"| OTLP
+```
+
+The system boundary diagram tracks the same ownership commitments tested in
+[`docs/operations/production-workflow-integration-matrix.md`](docs/operations/production-workflow-integration-matrix.md):
+desktop activation (`src/activation/sqlite-cutover-wiring.ts`) constructs
+`ProductionWorkflowComposition` exclusively through
+`createDesktopWorkflowComposition`, making Workspace Trust, live filesystem
+primacy/queue fencing (`createDesktopOwnershipFenceForStore`), durable SQLite
+handoffs, `PhaseHandoffCoordinator`, and `post-cutover-strict` authority
+mandatory at compile time and runtime.
+
 `src/activation/` is the composition root, **together with `wireStage2()` in
 `src/extension.ts`, which is still part of it.** Domain modules do not construct VS
 Code adapters themselves.
@@ -287,7 +327,32 @@ passes through these hops, in order. Files are under
    and `RawTranscriptWriter` (`src/audit/raw-transcript-writer.ts`).
 
 The enqueue boundary persists the frozen snapshot, and execution consumes that
-frozen value instead of re-reading a changed live catalog.
+frozen value instead of re-reading a changed live catalog. For composable
+Workflows, `admitComposableWorkflowLaunchAtomically` commits the connected run
+parent, the first queue task, and the linked control-ledger root together
+under the live ownership fence so an interruption before dispatch leaves zero
+unrecoverable orphans (`FR-R8-01` `01-02`, `01-09`):
+
+```mermaid
+flowchart TD
+    A["Author or import Phase / Workflow"] --> B["Preflight YAML, validate graph and publish version"]
+    B --> C["Launch via CMD_LAUNCH_WORKFLOW or headless API"]
+    C --> D{"Validate IPC v3, trust, primacy, live fence, inputs and 20-root cap"}
+    D -->|refused| N["Return typed refusal + CMD_ACK rejected (0 effects)"]
+    D -->|accepted| E["Freeze FrozenWorkflowClosure + ExecutionEnvelope"]
+    E --> F["Atomic SQLite commit: connected parent + first queue item + control root"]
+    F --> G{"Primary drain, queue lease, consent, handoff eligibility and quota"}
+    G -->|deferred| W["Wait on queue, retry deadline or quota wakeup (spawnedDirectly: false)"]
+    W --> G
+    G -->|admitted| H["Dispatch ACP turn via SpawnGatedRunner + AcpAuthorityGate"]
+    H --> I["Bounded stream buffer + usage parser + ResultOperator contract evaluation"]
+    I -->|next node / Repeat / ForEach / Candidate fallback| G
+    I -->|retryable or freeze failed| W
+    I -->|uncertain effect or intervention| P["Pause (recovery-uncertain-effect) + hold permit; operator recovers"]
+    I -->|terminal| K["Settle attempt, run, history, audit and lane candidate"]
+    P -->|validated resume or schegent.recoverExecutionLane| G
+    K --> L["Project revisioned v4 snapshot and usage metrics to editor"]
+```
 
 A Phase definition's `sideEffects` declaration selects mutation planning,
 operator consent, rollback checkpoint behavior, and the refusal of a
@@ -1079,9 +1144,52 @@ migrator is intentionally absent.
 
 ## Extension points and review obligations
 
-A new backend implements the shared runner contract, registers in the factory,
-uses the common spawn environment and bounded output result, and documents its
-actual permission-shaped argv. A new mutating IPC command must join the command
+### Extending workflows and adding a built-in backend (`FR-R8-04` `04-05`)
+
+An operator or contributor can add a new authored **Workflow** over existing
+Phases without modifying host code: author or import `schegent/v1` YAML, run
+`preflightProcessDocument` / catalog validation, publish, and execute through
+the normal `ProductionWorkflowComposition` launch path (exercised end-to-end
+in `tests/integration/extension-point-exercise.test.ts`).
+
+Adding a fourth **built-in backend** is governed by the expansion freeze
+(`tests/lint/expansion-freeze.test.ts`) and requires coordinated changes across
+the exact 18 canonical and behavioral production sites tracked by
+`tests/fixtures/backend-recipe-sites.ts` (enforced by
+`tests/lint/backend-recipe-sites.test.ts`):
+
+1. **Identity, pure-data descriptor, and manifest** (owner: contracts & manifest — `src/contracts/backend-kinds.ts`, `src/contracts/backend-descriptors.ts`, `src/contracts/backend-runner.ts`, `package.json`, plus regenerated `webview-ui/src/lib/generated/backend-descriptors.ts` via `npm run contracts:generate`). Every descriptor field uses explicit sentinels (`null`, `false`, `'none'`, `[]`) rather than optional omissions.
+2. **Subprocess construction and CLI adapter** (owner: runner — `src/runner/backend-runner-factory.ts` exhaustive switch plus `src/runner/<backend>-cli.ts` implementing `BackendRunner`, `shell: false`, `spawn-env.ts`, bounded `ZippedStreamBuffer`, and `AbortSignal` cancellation).
+3. **ACP transport, spawn qualification, and audit posture** (owner: runner, ACP runtime & containment qualification — `src/runner/acp-backed-runner.ts`, `src/runner/acp-runner-stream-helpers.ts`, `src/services/acp-runtime/bridges/acp-stdio-bridge.ts`, `src/services/acp-runtime/profiles.ts`, `src/controller/native-review.ts`, `src/services/containment-qualification/spawn-admission-gate.ts`, `src/runner/spawn-gated-runner.ts`, `src/audit/audit-payload-acp-vocab.ts`).
+4. **Capability withholding and usage/spend extraction** (owner: policy & parser — `src/services/capability-enforcement-plan.ts` and `src/parser/invocation-usage.ts`, preserving explicit `unknown`/missing usage rather than synthetic `0` so `evaluateSpend` in `src/services/spend-bound.ts` never reports `within` on unmeasured spend).
+
+### Alternate storage engine obligations
+
+Replacing the `node:sqlite` operational store (`src/services/sqlite-store/index.ts`)
+requires an owner for every contract across four boundaries:
+
+1. **Transactions & concurrency** (`src/services/sqlite-store/transaction-units.ts`, `src/services/sqlite-store/writer-coordinator.ts`, `src/state/sqlite-operational-backing.ts`): single primary-window serialized writer fenced by `.schegent/ownership/`, atomic multi-entity commits (connected run + queue row + control root), and `expectedRevision` compare-and-set.
+2. **Forward-only migrations & reader floor** (`src/services/sqlite-store/schema-bootstrap.ts`, `src/contracts/sqlite-store/schema-types.ts`): monotonic schema upgrades (`SQLITE_SCHEMA_CURRENT_VERSION = 9`), fail-closed `SqliteUnsupportedSchemaError` when `min_reader_version` exceeds the running build with zero byte modifications, and untrusted/secondary read-only snapshot isolation (`withZeroMutationReadOnlySqliteConnection`).
+3. **Projections & bounded reads** (`src/state/workspace-state.ts`, `src/services/usage-accounting/accounting-query-worker.ts`, `src/services/reporting/`): opaque preservation of malformed or future records alongside healthy sibling writes (`01-08`), plus off-thread read-only snapshot reads meeting the `<= 50 ms p95` host-thread blocking target at retention limits (`03-03`).
+4. **Backup, verification, and atomic restore** (`src/services/sqlite-store/backup-restore-service.ts`, `src/services/sqlite-store/backup-restore-executor.ts`, `src/headless/backup-restore-api.ts`): consistent online snapshot with SHA-256 manifest (`0600`/`0700`), read-only integrity/FK/schema pre-flight verification, refusal while any Run is non-terminal (`RUN_IN_FLIGHT`), atomic full-table replacement, and distinct `committed_refresh_failed` recovery reporting.
+
+### Accidental coupling observed during extension exercise (`04-05`)
+
+Exercising a test-only backend profile strictly inside `tests/` highlighted two
+deliberate but real coupling points to review before unfreezing a fourth
+backend: (a) `BackendRunnerKind` is a closed TypeScript union enforced across
+`BACKEND_DESCRIPTORS`, `RunnerLabel`, and `audit-payload-acp-vocab.ts`, so even
+a test-only profile cannot register through `createBackendRunner` without a
+narrow test seam or union change (preventing accidental unreviewed backends at
+compile time, at the cost of testing production seams individually via
+composition/descriptor/admission/parser/bounds ports); and (b) `services/` still
+carries 11 owned `services/ -> controller/` static value edges plus 2
+`services/ -> commands|ui` edges now locked under `LAYER_IMPORT_ALLOWLIST` in
+`tests/lint/architecture-layers.ts` so no new reverse coupling can accumulate.
+
+### Review obligations for existing boundaries
+
+A new mutating IPC command must join the command
 metadata registry, receive runtime payload validation, and pass through the
 trust and primacy executor. It must also acknowledge what the host command
 answered rather than the fact that it asked: a route that dispatches and then
@@ -1106,7 +1214,9 @@ model and exit criteria; increasing local queue concurrency does not silently
 authorize any of them.
 
 <!-- Source: src/contracts/backend-runner.ts -->
+<!-- Source: src/contracts/backend-descriptors.ts -->
 <!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/services/sqlite-store/index.ts -->
 <!-- Source: src/contracts/sidebar-command-metadata.ts -->
 <!-- Source: src/ui/sidebar/ipc-validator.ts -->
 <!-- Source: src/catalog/catalog-store.ts -->

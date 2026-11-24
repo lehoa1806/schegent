@@ -25,8 +25,99 @@ import type {
 import type { ControlLedgerBackingStore } from './control-ledger-store';
 import {
   createWorkflowRefusalOutcome,
+  type CutoverAuthorityGuard,
+  type DurableArtifactHandoverSeam,
   type WorkflowRefusalOutcome
 } from './entry-point-wiring-census';
+import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
+import type { ExecutionFence } from '../../contracts/control-ledger';
+
+/**
+ * FR-R8-04 (`04-02`) — Mandatory live collaborator contract for desktop host
+ * composition (`src/activation/sqlite-cutover-wiring.ts`). Omitting any required
+ * live ownership, trust, handoff, or post-cutover authority dependency fails
+ * TypeScript compilation rather than silently falling back to an in-memory or
+ * permissive default.
+ */
+export interface RequiredDesktopWorkflowCollaborators {
+  readonly store: ControlLedgerBackingStore;
+  readonly workspaceRoot: string;
+  readonly isWorkspaceTrusted: () => boolean;
+  readonly resolveExecutionFence: (run: ConnectedWorkflowRun, queueId: string) => ExecutionFence;
+  readonly verifyLiveFence: (
+    fence: ExecutionFence,
+    context: { readonly rootRunId: string; readonly queueId: string }
+  ) => Promise<boolean> | boolean;
+  readonly isLocalFenceCurrent: (
+    fence: ExecutionFence,
+    context: { readonly rootRunId: string; readonly queueId: string }
+  ) => boolean;
+  readonly durableHandoffSeam: DurableArtifactHandoverSeam;
+  readonly phaseHandoffCoordinator: PhaseHandoffCoordinator;
+  readonly cutoverAuthorityGuard: CutoverAuthorityGuard & { readonly mode: 'post-cutover-strict' };
+}
+
+export function assertDesktopWorkflowCollaborators(
+  options: RequiredDesktopWorkflowCollaborators
+): void {
+  const unknownOptions: unknown = options;
+  if (typeof unknownOptions !== 'object' || unknownOptions === null) {
+    throw new Error('DesktopWorkflowComposition missing mandatory collaborator(s): options');
+  }
+  const raw = unknownOptions as Record<string, unknown>;
+  const missing: string[] = [];
+  if (!isControlLedgerBackingStore(raw.store as ControlLedgerBackingStore | undefined)) {
+    missing.push('store');
+  }
+  if (typeof raw.workspaceRoot !== 'string' || raw.workspaceRoot.trim().length === 0) {
+    missing.push('workspaceRoot');
+  }
+  if (typeof raw.isWorkspaceTrusted !== 'function') missing.push('isWorkspaceTrusted');
+  if (typeof raw.resolveExecutionFence !== 'function') missing.push('resolveExecutionFence');
+  if (typeof raw.verifyLiveFence !== 'function') missing.push('verifyLiveFence');
+  if (typeof raw.isLocalFenceCurrent !== 'function') missing.push('isLocalFenceCurrent');
+  if (
+    typeof raw.durableHandoffSeam !== 'object' ||
+    raw.durableHandoffSeam === null ||
+    typeof (raw.durableHandoffSeam as Record<string, unknown>).requestHandover !== 'function'
+  ) {
+    missing.push('durableHandoffSeam');
+  }
+  if (
+    typeof raw.phaseHandoffCoordinator !== 'object' ||
+    raw.phaseHandoffCoordinator === null ||
+    typeof (raw.phaseHandoffCoordinator as Record<string, unknown>).prepareTransitionHandoff !==
+      'function' ||
+    typeof (raw.phaseHandoffCoordinator as Record<string, unknown>)
+      .planAndAuthorizeAttemptDelivery !== 'function'
+  ) {
+    missing.push('phaseHandoffCoordinator');
+  }
+  if (
+    typeof raw.cutoverAuthorityGuard !== 'object' ||
+    raw.cutoverAuthorityGuard === null ||
+    typeof (raw.cutoverAuthorityGuard as Record<string, unknown>).verifyAuthority !== 'function' ||
+    (raw.cutoverAuthorityGuard as Record<string, unknown>).mode !== 'post-cutover-strict'
+  ) {
+    missing.push('cutoverAuthorityGuard');
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `DesktopWorkflowComposition missing mandatory collaborator(s): ${missing.join(', ')}`
+    );
+  }
+  const disallowed: string[] = [];
+  if (raw.requireLiveFenceVerifier === false) disallowed.push('requireLiveFenceVerifier');
+  if (raw.allowFixtureCapabilities === true) disallowed.push('allowFixtureCapabilities');
+  if (raw.collaboratorOverrides !== undefined) disallowed.push('collaboratorOverrides');
+  if (raw.admissionDeps !== undefined) disallowed.push('admissionDeps');
+  if (raw.commandServiceDeps !== undefined) disallowed.push('commandServiceDeps');
+  if (disallowed.length > 0) {
+    throw new Error(
+      `DesktopWorkflowComposition disallowed bypass option(s): ${disallowed.join(', ')}`
+    );
+  }
+}
 
 export interface SettlementEvaluationInput {
   readonly attemptId: string;
