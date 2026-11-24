@@ -16,23 +16,34 @@
 //
 // See `specs/007-principal-review-remediation/contracts/guarded-run-service.md`.
 
+import { randomUUID } from 'node:crypto';
 import { decideEntry } from '../state/entry-trust-decision';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { WorkspaceLockManager } from '../state/lock';
 import { STALENESS_THRESHOLD_MS } from '../state/lock';
+import { PRIMACY_RESOURCE } from '../state/ownership-registry';
+import { OWNERSHIP_VERIFY_DEADLINE_MS, readOwnershipStatusWithinDeadline } from '../state/ownership-claim';
+import { systemScheduler } from '../state/lock';
 import type { SanitizedLogger } from '../lib/logger';
 import { describeFailure } from '../lib/errors';
 import { classifyEnqueueFailure } from './enqueue-failure';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
+  FeatureRequest,
   FeatureRequestRerun,
   QueueLifecycle,
   ScheduledStartSource,
   WorkflowOccurrenceIdentity
 } from '../queue/feature-request';
 import { MAX_DESCRIPTION_LENGTH } from '../queue/feature-request';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { MAX_PENDING_TASKS_PER_QUEUE } from '../contracts/queue-feature-request-helpers';
+import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
+import type { AtomicComposableLaunchInput } from '../state/workspace-state-connected';
+import {
+  QueueMutationRejected,
+  type WorkspaceStateStore
+} from '../state/workspace-state';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import type { ScheduledStartCoordinator } from './scheduled-start-coordinator';
@@ -148,7 +159,20 @@ export interface GuardedRunServiceDeps {
   readonly controller: Pick<SchegentWorkflowController, 'getCatalog'>;
   readonly logger: SanitizedLogger;
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
-  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'updateQueue' | 'runCommitClaim'>;
+  readonly store: Pick<
+    WorkspaceStateStore,
+    'getLock' | 'getQueue' | 'updateQueue' | 'runCommitClaim'
+  > &
+    Partial<
+      Pick<
+        WorkspaceStateStore,
+        | 'canCommitConnectedRun'
+        | 'ownership'
+        | 'supportsBatchWrite'
+        | 'admitComposableWorkflowLaunchAtomically'
+        | 'getDefaultQueueId'
+      >
+    >;
   readonly clock?: () => number;
   /** Optional override for tests; production reads the catalog via the controller. */
   readonly catalogProvider?: () => PipelineCatalog;
@@ -208,7 +232,7 @@ export class GuardedRunService {
       return { outcome: 'rejected-validation', reason: pipelineCheck.reason };
     }
 
-    const foreign = this.checkForeignFreshLock();
+    const foreign = await this.checkAuthoritativePrimacy();
     if (foreign) {
       await this.emitRejection('schedule', 'rejected-foreign-lock', foreign, req.via);
       return { outcome: 'rejected-foreign-lock', reason: foreign };
@@ -282,6 +306,220 @@ export class GuardedRunService {
         error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
       });
       return { outcome: 'enqueued', queueItemId: feature.id };
+    }
+  }
+
+  /**
+   * FR-R8-01 (01-02, 01-03) — Admit a composable Workflow launch by running all
+   * `GuardedRunService` trust, validation, authoritative primacy, pause, and
+   * start-intent policy checks, then committing `KEYS.controlLedger`,
+   * `KEYS.connectedRuns`, and `KEYS.queue` together in one SQLite batch
+   * transaction (with deterministic rollback on non-batch stores and
+   * idempotency on `connectedRunId` / `workflowOccurrence`).
+   */
+  public async admitComposableWorkflowLaunchAtomically(input: {
+    readonly req: GuardedScheduleRequest;
+    readonly queueItemId?: string;
+    readonly connectedRun: ConnectedWorkflowRun;
+    readonly mutateControlLedger: AtomicComposableLaunchInput['mutateControlLedger'];
+  }): Promise<GuardedScheduleResult> {
+    if (this.deps.store.admitComposableWorkflowLaunchAtomically === undefined) {
+      return { outcome: 'failed-storage', reason: 'atomic-launch-unsupported' };
+    }
+    const { req } = input;
+    const trust = this.checkWorkspaceTrust();
+    if (trust) {
+      await this.emitRejection('schedule', 'rejected-untrusted', trust, req.via);
+      return { outcome: 'rejected-untrusted', reason: trust };
+    }
+    const validated = this.validateDescription(req.description);
+    if (validated.kind === 'invalid') {
+      await this.emitRejection('schedule', 'rejected-validation', validated.reason, req.via);
+      return { outcome: 'rejected-validation', reason: validated.reason };
+    }
+    const rerunCheck = this.validateRerunPair(req.rerun ?? null, req.pipelineId ?? null);
+    if (rerunCheck.kind === 'invalid') {
+      await this.emitRejection('schedule', 'rejected-validation', rerunCheck.reason, req.via);
+      return { outcome: 'rejected-validation', reason: rerunCheck.reason };
+    }
+    const pipelineCheck = this.validatePipelineId(req.pipelineId ?? null, req.runPlan ?? null);
+    if (pipelineCheck.kind === 'invalid') {
+      await this.emitRejection('schedule', 'rejected-validation', pipelineCheck.reason, req.via);
+      return { outcome: 'rejected-validation', reason: pipelineCheck.reason };
+    }
+    const foreign = await this.checkAuthoritativePrimacy();
+    if (foreign) {
+      await this.emitRejection('schedule', 'rejected-foreign-lock', foreign, req.via);
+      return { outcome: 'rejected-foreign-lock', reason: foreign };
+    }
+    const targetQueueId = req.queueId ?? this.deps.store.getDefaultQueueId?.() ?? 'default';
+    const lifecycleAtAdmission = this.deps.store.getQueue(targetQueueId).queueLifecycle;
+    if (lifecycleAtAdmission === 'operator-paused' && req.continuesWorkflow !== true) {
+      const reason = 'queue-paused';
+      await this.emitRejection('schedule', 'rejected-paused', reason, req.via);
+      return { outcome: 'rejected-paused', reason };
+    }
+    const policy = this.resolveStartIntentPolicy({ ...req, queueId: targetQueueId });
+    if (policy.kind === 'rejected-horizon') {
+      await this.emitHorizonRejection(req, policy.requestedScheduledStartAt);
+      throw new ScheduledStartHorizonError(policy.requestedScheduledStartAt, req.callerId);
+    }
+
+    const now = this.clock();
+    const allocatedId = input.queueItemId ?? randomUUID();
+    const preCommitSnapshot = {
+      queueLifecycle: this.deps.store.getQueue(targetQueueId).queueLifecycle,
+      scheduledStartAt: this.deps.store.getQueue(targetQueueId).scheduledStartAt
+    };
+    let outcome: Awaited<ReturnType<WorkspaceStateStore['admitComposableWorkflowLaunchAtomically']>>;
+    try {
+      outcome = await this.deps.store.admitComposableWorkflowLaunchAtomically({
+        queueId: targetQueueId,
+        connectedRun: input.connectedRun,
+        mutateControlLedger: input.mutateControlLedger,
+        mutateQueue: (queue) => {
+          preCommitSnapshot.queueLifecycle = queue.queueLifecycle;
+          preCommitSnapshot.scheduledStartAt = queue.scheduledStartAt;
+          if (req.workflowOccurrence !== undefined) {
+            const occ = req.workflowOccurrence;
+            const existing = queue.requests.find(
+              (r) =>
+                r.status !== 'canceled' &&
+                r.workflowOccurrence !== undefined &&
+                r.workflowOccurrence.rootRunId === occ.rootRunId &&
+                r.workflowOccurrence.invocationId === occ.invocationId &&
+                r.workflowOccurrence.attemptId === occ.attemptId
+            );
+            if (existing !== undefined) {
+              return { queue, request: existing };
+            }
+          }
+          const pendingCount = queue.requests.filter((item) => item.status === 'pending').length;
+          if (pendingCount >= MAX_PENDING_TASKS_PER_QUEUE) {
+            throw new QueueMutationRejected(
+              'task-cap-reached',
+              `Queue ${targetQueueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
+            );
+          }
+          const insertAt =
+            req.position !== null && req.position !== undefined
+              ? req.position
+              : queue.requests.length;
+          if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > queue.requests.length) {
+            throw new QueueMutationRejected(
+              'position-out-of-range',
+              `Position must be in [0, ${queue.requests.length}] (got ${String(req.position)})`
+            );
+          }
+          const nextRequest: FeatureRequest = {
+            id: allocatedId,
+            description: validated.value,
+            enqueuedAt: now,
+            createdAt: now,
+            startedAt: null,
+            updatedAt: now,
+            completedAt: null,
+            status: 'pending',
+            queueId: targetQueueId,
+            position: insertAt,
+            pauseCause: null,
+            runId: null,
+            retryCount: 0,
+            lastError: null,
+            pausedReason: null,
+            ...(req.pipelineId ? { pipelineId: req.pipelineId } : {}),
+            ...(req.rerun ? { rerun: req.rerun } : {}),
+            ...(req.runPlan ? { runPlan: req.runPlan } : {}),
+            ...(req.workflowOccurrence ? { workflowOccurrence: req.workflowOccurrence } : {})
+          };
+          const denseIndex = new Map<string, number>();
+          queue.requests
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .forEach((item, idx) => denseIndex.set(item.id, idx));
+          const shifted = queue.requests.map((item) => {
+            const dense = denseIndex.get(item.id) ?? item.position;
+            const repositioned = dense >= insertAt ? dense + 1 : dense;
+            return repositioned === item.position
+              ? item
+              : { ...item, position: repositioned, updatedAt: now };
+          });
+          let nextLifecycle = queue.queueLifecycle;
+          let nextScheduledStartAt = queue.scheduledStartAt;
+          let nextScheduledStartSource = queue.scheduledStartSource;
+          if (policy.kind === 'now') {
+            nextLifecycle = 'running';
+            nextScheduledStartAt = null;
+            nextScheduledStartSource = null;
+          } else if (policy.kind === 'scheduled') {
+            nextLifecycle = 'idle-pending';
+            nextScheduledStartAt = policy.scheduledStartAt;
+            nextScheduledStartSource = policy.source;
+          } else if (
+            (policy.kind === 'no-intent-human' || policy.kind === 'no-intent-automation') &&
+            queue.queueLifecycle !== 'idle-pending'
+          ) {
+            nextLifecycle = 'idle-pending';
+            nextScheduledStartAt = null;
+            nextScheduledStartSource = null;
+          }
+          return {
+            queue: {
+              ...queue,
+              queueLifecycle: nextLifecycle,
+              scheduledStartAt: nextScheduledStartAt,
+              scheduledStartSource: nextScheduledStartSource,
+              requests: [...shifted, nextRequest],
+              updatedAt: now
+            },
+            request: nextRequest
+          };
+        }
+      });
+    } catch (err) {
+      const failure = classifyEnqueueFailure(err);
+      this.deps.logger.warn('guarded-run-service: atomic composable launch failed', {
+        outcome: failure.outcome,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      await this.emitRejection('schedule', failure.outcome, failure.reason, req.via);
+      return { outcome: failure.outcome, reason: failure.reason };
+    }
+
+    if (outcome.outcome === 'rejected') {
+      const mappedOutcome =
+        outcome.code === 'stale-execution-fence'
+          ? ('rejected-foreign-lock' as const)
+          : outcome.code === 'unknown-queue-id' ||
+              outcome.code === 'task-cap-reached' ||
+              outcome.code === 'position-out-of-range'
+            ? ('rejected-validation' as const)
+            : ('failed-storage' as const);
+      await this.emitRejection('schedule', mappedOutcome, outcome.code, req.via);
+      return { outcome: mappedOutcome, reason: outcome.code };
+    }
+
+    if (outcome.idempotent) {
+      return {
+        outcome: 'enqueued',
+        queueItemId: outcome.queueItemId,
+        lifecycleAfter: this.deps.store.getQueue(targetQueueId).queueLifecycle
+      };
+    }
+
+    try {
+      const lifecycleAfter = await this.applyPostCommitStartIntentSideEffects(
+        { ...req, queueId: targetQueueId },
+        policy,
+        preCommitSnapshot
+      );
+      return { outcome: 'enqueued', queueItemId: outcome.queueItemId, lifecycleAfter };
+    } catch (err) {
+      this.deps.logger.warn('guarded-run-service: start-intent step failed after atomic commit', {
+        queueItemId: outcome.queueItemId,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      return { outcome: 'enqueued', queueItemId: outcome.queueItemId };
     }
   }
 
@@ -593,6 +831,54 @@ export class GuardedRunService {
    * coordinator timer when relevant. Emits the required audit events.
    * Returns the lifecycle the queue lands in.
    */
+  private async applyPostCommitStartIntentSideEffects(
+    req: GuardedScheduleRequest,
+    policy: ReturnType<GuardedRunService['resolveStartIntentPolicy']>,
+    preCommit: { readonly queueLifecycle: QueueLifecycle; readonly scheduledStartAt: number | null }
+  ): Promise<QueueLifecycle> {
+    if (policy.kind === 'rejected-horizon') return 'active-empty';
+    const now = this.clock();
+    const queueId = req.queueId ?? 'default';
+    if (policy.kind === 'append-tail-no-chooser') return this.deps.store.getQueue(queueId).queueLifecycle;
+    const wasIdlePending = preCommit.queueLifecycle === 'idle-pending';
+    if (policy.kind === 'now') {
+      if (policy.coercedFromPast && policy.originalScheduledStartAt !== undefined) {
+        await this.appendScheduleAudit('scheduled-start-past-timestamp-coerced-to-now', {
+          queueId, requestedScheduledStartAt: policy.originalScheduledStartAt, coercedAt: now,
+          scheduledStartSource: policy.source, transitionReason: 'past-timestamp'
+        });
+      }
+      if (wasIdlePending && preCommit.scheduledStartAt !== null && this.deps.scheduledStartCoordinator) {
+        await this.deps.scheduledStartCoordinator.cancel(queueId, 'operator-cancel');
+      }
+      if (wasIdlePending) {
+        await this.appendScheduleAudit('idle-pending-exited', {
+          queueId, exitReason: 'operator-start-now', scheduledStartSource: policy.source, transitionReason: 'operator-start-now'
+        });
+      }
+      return 'running';
+    }
+    if (policy.kind === 'scheduled') {
+      if (this.deps.scheduledStartCoordinator) await this.deps.scheduledStartCoordinator.arm(queueId, policy.scheduledStartAt, policy.source);
+      if (!wasIdlePending) {
+        await this.appendScheduleAudit('idle-pending-entered', {
+          queueId, scheduledStartAt: policy.scheduledStartAt, scheduledStartSource: policy.source, transitionReason: policy.source
+        });
+      }
+      return 'idle-pending';
+    }
+    const reason = policy.kind === 'no-intent-human' ? 'operator-no-start-mode' : 'automation-no-start-mode';
+    if (!wasIdlePending) {
+      await this.appendScheduleAudit('idle-pending-entered', { queueId, scheduledStartAt: null, scheduledStartSource: null, transitionReason: reason });
+    }
+    if (policy.kind === 'no-intent-automation') {
+      const payload: Record<string, unknown> = { queueId, transitionReason: reason };
+      if (policy.callerId !== undefined) payload.callerId = policy.callerId;
+      await this.appendScheduleAudit('automation-enqueue-no-start-mode', payload);
+    }
+    return 'idle-pending';
+  }
+
   private async applyStartIntentPolicy(
     req: GuardedScheduleRequest,
     policy: ReturnType<GuardedRunService['resolveStartIntentPolicy']>
@@ -900,6 +1186,25 @@ export class GuardedRunService {
     const age = this.clock() - existing.heartbeatAt;
     if (age > STALENESS_THRESHOLD_MS) return null;
     return `foreign-fresh:${this.deps.logger.sanitize(existing.ownerId)}`;
+  }
+
+  private async checkAuthoritativePrimacy(): Promise<string | null> {
+    const mementoForeign = this.checkForeignFreshLock();
+    if (mementoForeign !== null) return mementoForeign;
+    if (this.deps.store.canCommitConnectedRun !== undefined) {
+      const canCommit = await this.deps.store.canCommitConnectedRun();
+      if (!canCommit) return 'primacy-lost';
+    }
+    const registry = this.deps.store.ownership;
+    if (registry !== undefined && typeof registry.readStatus === 'function') {
+      const status = await readOwnershipStatusWithinDeadline(registry, PRIMACY_RESOURCE, OWNERSHIP_VERIFY_DEADLINE_MS, systemScheduler);
+      if (status.outcome === 'unavailable') return 'ownership-unverified';
+      const holder = status.outcome === 'present' ? status.record.holder : null;
+      if (holder !== null && holder.ownerId !== this.deps.lock.id && this.clock() - holder.heartbeatAt <= STALENESS_THRESHOLD_MS) {
+        return `foreign-fresh:${this.deps.logger.sanitize(holder.ownerId)}`;
+      }
+    }
+    return null;
   }
 
   private async emitRejection(

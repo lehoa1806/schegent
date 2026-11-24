@@ -31,7 +31,7 @@ import {
   freezeSnapshotWithStructuralSharing,
   hasOwnDefinedEntries,
   isDeepEqualJsonValue,
-  isDeepFrozenSnapshot,
+  isPlainRecord,
   parseStrictSchemaMetaVersion,
   setOwnProp,
   toSafeIntOrDefault,
@@ -61,6 +61,18 @@ import {
   SQLITE_SCHEMA_CURRENT_VERSION,
   type RunStatus
 } from '../contracts/sqlite-store/schema-types';
+import {
+  CONNECTED_RUNS_REFUSED_MAX_BYTES,
+  CONNECTED_RUNS_REFUSED_MAX_COUNT,
+  classifyConnectedRunEntry,
+  connectedRunLastUpdatedMs,
+  deepFreezeConnectedRunsDocument,
+  isConnectedRunTerminal,
+  migrateConnectedRuns,
+  selectPreservedRefusedEntries,
+  serializedConnectedRunBytes
+} from './connected-run-migrator';
+export { CONNECTED_RUNS_REFUSED_MAX_BYTES, CONNECTED_RUNS_REFUSED_MAX_COUNT };
 import type { ConnectedWorkflowRun } from './connected-workflow-run';
 import { isTerminalRunStatus, type WorkflowRun } from './workflow-run';
 import type { MementoBatchEntry } from './memento-write-gate';
@@ -131,47 +143,6 @@ function mapWorkflowStatusToSqlite(status: string | undefined): RunStatus {
   }
 }
 
-const FROZEN_CONNECTED_RUN_BYTES = new WeakMap<object, number>();
-
-function serializedConnectedRunBytes(run: ConnectedWorkflowRun): number {
-  if (isDeepFrozenSnapshot(run)) {
-    const cached = FROZEN_CONNECTED_RUN_BYTES.get(run);
-    if (cached !== undefined) return cached;
-    const bytes = Buffer.byteLength(JSON.stringify(run), 'utf8');
-    FROZEN_CONNECTED_RUN_BYTES.set(run, bytes);
-    return bytes;
-  }
-  return Buffer.byteLength(JSON.stringify(run), 'utf8');
-}
-
-function isConnectedRunTerminal(
-  run: ConnectedWorkflowRun,
-  activeFeatureIds: ReadonlySet<string>
-): boolean {
-  if (run.pendingHandoff !== undefined && run.pendingHandoff !== null) {
-    return false;
-  }
-  if (run.invocations !== undefined) {
-    const frames = Object.values(run.invocations);
-    if (frames.length > 0) {
-      return frames.every(
-        (frame) =>
-          frame.status === 'completed' ||
-          frame.status === 'failed' ||
-          frame.status === 'canceled'
-      );
-    }
-  }
-  for (const node of Object.values(run.nodes)) {
-    for (const attempt of node.attempts) {
-      if (activeFeatureIds.has(attempt.queueItemId)) {
-        return false;
-      }
-    }
-  }
-  return Object.keys(run.nodes).length > 0;
-}
-
 function collectActiveFeatureIds(
   liveRunMap: Readonly<Record<string, WorkflowRun | undefined>> | unknown
 ): ReadonlySet<string> {
@@ -192,34 +163,15 @@ function collectActiveFeatureIds(
   return activeFeatureIds;
 }
 
-function connectedRunLastUpdatedMs(run: ConnectedWorkflowRun): number {
-  let latest = toSafeIntOrDefault(run.startedAt, 0);
-  if (run.invocations !== undefined) {
-    for (const frame of Object.values(run.invocations)) {
-      const completed = toSafeIntOrDefault(frame.completedAt, -1);
-      const started = toSafeIntOrDefault(frame.startedAt, -1);
-      if (completed > latest) latest = completed;
-      else if (started > latest) latest = started;
-    }
-  }
-  for (const decision of run.decisions) {
-    const decided = toSafeIntOrDefault(decision.decidedAt, -1);
-    if (decided > latest) latest = decided;
-  }
-  return latest;
-}
-
 export function pruneConnectedRunsMap(
   rawValue: unknown,
   liveRunMap: Readonly<Record<string, WorkflowRun | undefined>>,
-  nowMs: number
-): Record<string, ConnectedWorkflowRun> | unknown {
-  if (rawValue === null || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
-    return rawValue;
-  }
-  const entries = Object.entries(rawValue as Record<string, unknown>);
-  if (entries.length === 0) return rawValue;
+  nowMs: number,
+  logger?: SanitizedLogger
+): Record<string, unknown> | unknown {
+  if (!isPlainRecord(rawValue) || Object.keys(rawValue).length === 0) return rawValue;
 
+  const migrated = migrateConnectedRuns(rawValue);
   const activeFeatureIds = collectActiveFeatureIds(liveRunMap);
   const nonTerminal: Array<readonly [string, ConnectedWorkflowRun, number]> = [];
   const terminal: Array<{
@@ -229,30 +181,37 @@ export function pruneConnectedRunsMap(
     readonly bytes: number;
   }> = [];
 
-  for (const [id, rawRun] of entries) {
-    if (rawRun === null || typeof rawRun !== 'object') continue;
-    const run = rawRun as ConnectedWorkflowRun;
+  for (const [id, run] of Object.entries(migrated.runs)) {
     const bytes = serializedConnectedRunBytes(run);
     if (!isConnectedRunTerminal(run, activeFeatureIds)) {
       nonTerminal.push([id, run, bytes]);
       continue;
     }
     const updatedAtMs = connectedRunLastUpdatedMs(run);
-    if (updatedAtMs > 0 && nowMs - updatedAtMs > CONNECTED_RUNS_TERMINAL_RETENTION_MS) {
-      continue;
-    }
+    if (updatedAtMs > 0 && nowMs - updatedAtMs > CONNECTED_RUNS_TERMINAL_RETENTION_MS) continue;
     terminal.push({ id, run, updatedAtMs, bytes });
   }
 
-  // Sort terminal runs newest-first so we keep the most recent entries within count & byte caps.
+  // Sort terminal runs newest-first so we keep the most recent valid entries within count & byte caps.
   terminal.sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id));
 
   const maxTerminalCount = Math.max(0, CONNECTED_RUNS_CACHE_MAX - nonTerminal.length);
   let totalBytes = nonTerminal.reduce((acc, item) => acc + item[2], 0);
-  const kept: Record<string, ConnectedWorkflowRun> = {};
-  for (const [id, run] of nonTerminal) {
-    setOwnProp(kept, id, run);
+  const kept: Record<string, unknown> = {};
+  const refusedSelection = selectPreservedRefusedEntries(
+    migrated.refused,
+    Math.max(0, CONNECTED_RUNS_MAX_TOTAL_BYTES - totalBytes)
+  );
+  for (const [id, rawRefused] of refusedSelection.entries) setOwnProp(kept, id, rawRefused);
+  totalBytes += refusedSelection.totalBytes;
+  if (refusedSelection.quarantinedUnsafeCount + refusedSelection.quarantinedBudgetCount > 0) {
+    logger?.warn('quarantined refused connectedRuns entries during prune', {
+      unsafeCount: refusedSelection.quarantinedUnsafeCount,
+      budgetCount: refusedSelection.quarantinedBudgetCount,
+      keys: refusedSelection.quarantinedKeys
+    });
   }
+  for (const [id, run] of nonTerminal) setOwnProp(kept, id, run);
 
   let keptTerminal = 0;
   for (const candidate of terminal) {
@@ -327,7 +286,7 @@ export class SqliteOperationalBacking {
     const prepared = entries.map(({ key, value }) => {
       const effectiveValue =
         key === KEYS.connectedRuns && value !== undefined
-          ? pruneConnectedRunsMap(value, liveRuns, now)
+          ? pruneConnectedRunsMap(value, liveRuns, now, this.logger)
           : value;
       return {
         key,
@@ -486,7 +445,7 @@ export class SqliteOperationalBacking {
         continue;
       }
       const effectiveVal =
-        key === KEYS.connectedRuns ? pruneConnectedRunsMap(rawVal, liveRuns, now) : rawVal;
+        key === KEYS.connectedRuns ? pruneConnectedRunsMap(rawVal, liveRuns, now, this.logger) : rawVal;
       if (key === KEYS.queue && isOperationalQueueMap(effectiveVal) && hasOwnDefinedEntries(effectiveVal)) {
         deleteOperationalQueueScopeInTx(conn, this.scopeId);
         writeOperationalQueueMapDiffInTx(conn, this.scopeId, {}, effectiveVal, now);
@@ -546,7 +505,19 @@ export class SqliteOperationalBacking {
       for (const row of rows) {
         nextKvKeys.add(row.doc_key);
         try {
-          nextCache.set(row.doc_key, deepFreezeValue(JSON.parse(row.payload_json)));
+          const parsed: unknown = JSON.parse(row.payload_json);
+          if (row.doc_key === KEYS.connectedRuns) {
+            const frozen = deepFreezeConnectedRunsDocument(parsed);
+            nextCache.set(row.doc_key, frozen.value);
+            if (frozen.quarantinedCount > 0) {
+              this.logger?.warn('quarantined unfreezable connectedRuns entries on reload', {
+                count: frozen.quarantinedCount,
+                keys: frozen.quarantinedKeys
+              });
+            }
+          } else {
+            nextCache.set(row.doc_key, deepFreezeValue(parsed));
+          }
         } catch {
           this.logger?.warn('corrupt operational_kv_documents payload skipped', { key: row.doc_key });
         }
@@ -650,7 +621,6 @@ export class SqliteOperationalBacking {
           : undefined;
       const emptyActive = new Set<string>();
       for (const [id, rawWfRun] of Object.entries(value as Record<string, unknown>)) {
-        if (rawWfRun === null || typeof rawWfRun !== 'object') continue;
         const prevEntry = prevMap && Object.hasOwn(prevMap, id) ? prevMap[id] : undefined;
         if (
           prevEntry !== undefined &&
@@ -658,8 +628,9 @@ export class SqliteOperationalBacking {
         ) {
           continue;
         }
-        const wfRun = rawWfRun as ConnectedWorkflowRun;
-        if (typeof wfRun.connectedRunId !== 'string') continue;
+        const classified = classifyConnectedRunEntry(id, rawWfRun);
+        if (!classified.ok) continue;
+        const wfRun = classified.run;
         const isTerm = isConnectedRunTerminal(wfRun, emptyActive);
         let wfStatus: RunStatus = isTerm ? 'succeeded' : 'running';
         if (wfRun.invocations !== undefined) {
@@ -812,7 +783,12 @@ function readOperationalSnapshotFromConnection(
     const snapshot = new Map<string, unknown>();
     for (const row of rows) {
       try {
-        snapshot.set(row.doc_key, deepFreezeValue(JSON.parse(row.payload_json)));
+        const parsed: unknown = JSON.parse(row.payload_json);
+        const frozen =
+          row.doc_key === KEYS.connectedRuns
+            ? deepFreezeConnectedRunsDocument(parsed).value
+            : deepFreezeValue(parsed);
+        snapshot.set(row.doc_key, frozen);
       } catch {
         // Skip malformed row in read-only view.
       }

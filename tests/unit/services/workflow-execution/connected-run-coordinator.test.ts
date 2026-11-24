@@ -402,8 +402,8 @@ describe('connected-run-coordinator — composable nested Workflow call/return (
         });
         return { outcome: 'dispatched' as const, queueItemId: 'qitem-paused-race' };
       },
-      cancelOrphanedQueueItem: async (queueItemId: string, queueId: string) => {
-        canceledOrphans.push({ queueItemId, queueId });
+      cancelOrphanedQueueItem: async (target: { readonly queueId: string; readonly taskId: string }) => {
+        canceledOrphans.push({ queueItemId: target.taskId, queueId: target.queueId });
       }
     };
 
@@ -463,8 +463,8 @@ describe('connected-run-coordinator — composable nested Workflow call/return (
         });
         return { outcome: 'dispatched' as const, queueItemId: 'qitem-canceled-race' };
       },
-      cancelOrphanedQueueItem: async (queueItemId: string, queueId: string) => {
-        canceledOrphans.push({ queueItemId, queueId });
+      cancelOrphanedQueueItem: async (target: { readonly queueId: string; readonly taskId: string }) => {
+        canceledOrphans.push({ queueItemId: target.taskId, queueId: target.queueId });
       }
     };
 

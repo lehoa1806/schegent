@@ -416,3 +416,132 @@ describe('FR-R6-F10 US4-3: a refreeze while a request is verifying or landing re
     expect(verified.ok && verified.value.state).toBe('awaiting-review');
   });
 });
+
+describe('FR-R8-01 (01-06 / 01-07) freeze failure fencing, single completion & read-only inspection', () => {
+  it('fences recordFreezeFailure by host generation and lane state, and clears reason on single completeLane', async () => {
+    const f = await frozen();
+    const recorded = f.h.service.recordFreezeFailure({
+      laneId: f.lane.laneId,
+      reason: 'git-identity-missing'
+    });
+    expect(recorded.ok).toBe(true);
+    expect(recorded.ok && recorded.value.state).toBe('active');
+    expect(recorded.ok && recorded.value.stateReason).toBe('freeze-failed:git-identity-missing');
+
+    // Superseded host refuses ownership-superseded and leaves persisted reason intact.
+    const host2 = f.h.reopen();
+    expect(
+      f.h.service.recordFreezeFailure({ laneId: f.lane.laneId, reason: 'lane-busy' })
+    ).toEqual({ ok: false, refusal: { reason: 'ownership-superseded' } });
+    expect(host2.getLane({ laneId: f.lane.laneId })).toMatchObject({
+      ok: true,
+      value: { state: 'active', stateReason: 'freeze-failed:git-identity-missing' }
+    });
+
+    // Unknown lane refuses lane-not-found.
+    expect(
+      host2.recordFreezeFailure({ laneId: 'f'.repeat(32), reason: 'git-identity-missing' })
+    ).toEqual({ ok: false, refusal: { reason: 'lane-not-found' } });
+
+    // Explicit completeLane clears stateReason and succeeds exactly once.
+    const completed = host2.completeLane({ laneId: f.lane.laneId });
+    expect(completed.ok).toBe(true);
+    expect(completed.ok && completed.value.state).toBe('completed');
+    expect(completed.ok && completed.value.stateReason).toBeNull();
+    expect(host2.completeLane({ laneId: f.lane.laneId })).toEqual({
+      ok: false,
+      refusal: { reason: 'lane-state-invalid' }
+    });
+    expect(
+      host2.recordFreezeFailure({ laneId: f.lane.laneId, reason: 'git-identity-missing' })
+    ).toEqual({ ok: false, refusal: { reason: 'lane-state-invalid' } });
+  });
+
+  it('exposes sanitized read-only journal and live Git observations without raw paths', async () => {
+    const f = await frozen();
+    const request = await verified(f, profileExiting(0), RELEASE);
+    expect(f.h.service.approveRequest(approvalOf(request)).ok).toBe(true);
+    const advanced = f.h.fixture
+      .git(['commit-tree', `${request.expectedTargetCommit}^{tree}`, '-p', request.expectedTargetCommit, '-m', 'advance'])
+      .trim();
+    f.h.fixture.git(['update-ref', `refs/heads/${RELEASE}`, advanced]);
+    expect((await f.h.service.landRequest({ requestId: request.requestId })).ok).toBe(false);
+
+    const journal = f.h.service.listRequestJournal({ requestId: request.requestId });
+    expect(journal.ok).toBe(true);
+    if (!journal.ok) throw new Error('expected journal ok');
+    expect(journal.value.length).toBeGreaterThanOrEqual(1);
+    expect(journal.value.at(-1)?.observedTip).toBe(advanced);
+    expect(f.h.service.listRequestJournal({ requestId: 'f'.repeat(32) })).toEqual({
+      ok: false,
+      refusal: { reason: 'request-not-found' }
+    });
+
+    const laneRoot = await f.h.laneRoot(f.lane.laneId);
+    fs.writeFileSync(path.join(laneRoot, 'untracked-note.txt'), 'dirty\n');
+
+    const observed = await f.h.service.inspectLaneGitState({
+      laneId: f.lane.laneId,
+      targetRefs: [`refs/heads/${RELEASE}`]
+    });
+    expect(observed.ok).toBe(true);
+    if (!observed.ok) throw new Error('expected git observation ok');
+    expect(observed.value).toMatchObject({
+      rootStatus: 'contained',
+      worktreeRegistered: true,
+      worktreeLocked: false,
+      dirtyCount: 1,
+      statusProbe: 'ok',
+      headCommit: f.candidateCommit,
+      headMatchesRecorded: true,
+      targetTips: { [`refs/heads/${RELEASE}`]: advanced }
+    });
+    const serialized = JSON.stringify(observed.value);
+    expect(serialized).not.toContain(f.h.fixture.root);
+    expect(serialized).not.toContain(f.h.storageDir);
+  });
+
+  it('refuses worktree-registry lookup and Git probing in inspectLaneGitState when rootRef escapes containment', async () => {
+    const gitCalls: string[][] = [];
+    const f = await frozen({
+      wrapGit: (real) => ({
+        run: (args, opts) => {
+          gitCalls.push([...args]);
+          return real.run(args, opts);
+        }
+      })
+    });
+
+    // Replace the contained lane worktree with a symlink pointing to an external registered worktree.
+    const laneRow = f.h.lanes.getLane(HARNESS_WS, f.lane.laneId);
+    expect(laneRow).not.toBeNull();
+    const containedRoot = await f.h.laneRoot(f.lane.laneId);
+    const escapedDir = path.join(f.h.fixture.sibling('escaped-wt'), 'outside');
+    f.h.fixture.git(['worktree', 'add', '--detach', escapedDir, 'HEAD']);
+    f.h.fixture.git(['worktree', 'remove', '--force', containedRoot]);
+    fs.symlinkSync(escapedDir, containedRoot);
+
+    gitCalls.length = 0;
+    const observed = await f.h.service.inspectLaneGitState({
+      laneId: f.lane.laneId,
+      targetRefs: ['refs/heads/main']
+    });
+    expect(observed.ok).toBe(true);
+    if (!observed.ok) throw new Error('expected git observation ok');
+    expect(observed.value).toEqual({
+      rootStatus: 'not-contained',
+      worktreeRegistered: null,
+      worktreeLocked: null,
+      worktreePrunable: null,
+      worktreeBranch: null,
+      worktreeDetached: null,
+      dirtyCount: null,
+      statusProbe: 'unavailable',
+      headCommit: null,
+      headMatchesRecorded: null,
+      targetTips: { 'refs/heads/main': f.h.fixture.head() }
+    });
+    expect(gitCalls.some((args) => args.at(0) === 'worktree')).toBe(false);
+    expect(gitCalls.some((args) => args.at(0) === 'status')).toBe(false);
+  });
+});

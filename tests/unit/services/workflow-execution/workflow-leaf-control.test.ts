@@ -29,11 +29,12 @@ function connectedRun(queueItemIds: readonly string[]): ConnectedWorkflowRun {
 
 function makeHooks(overrides: { readonly currentTask?: string | null; readonly queues?: readonly string[] } = {}) {
   const controller = {
+    cancelActive: vi.fn(),
     cancelPendingRetry: vi.fn(),
     isDriving: vi.fn(() => false),
     drainQueuedWork: vi.fn(() => Promise.resolve())
   };
-  const endLeaf = vi.fn((_queueId: string, _taskId: string) => Promise.resolve());
+  const endLeaf = vi.fn((_target: { readonly queueId: string; readonly taskId: string }) => Promise.resolve());
   const executionLease = {
     tenureOf: vi.fn((_queueId: string): ClaimTenure => ({ state: 'never-held' })),
     isForeignLeaseHeld: vi.fn((_queueId: string) => false)
@@ -70,7 +71,7 @@ describe('abortActiveLeaf', () => {
 
     await hooks.abortActiveLeaf({ ...LEAF_INPUT, queueItemId: LEAF_TASK });
 
-    expect(endLeaf).toHaveBeenCalledWith(QUEUE, LEAF_TASK);
+    expect(endLeaf).toHaveBeenCalledWith({ queueId: QUEUE, taskId: LEAF_TASK });
   });
 
   it('has nothing to end for an attempt that never got a queue row', async () => {
@@ -111,23 +112,23 @@ describe('cancelRetryTimer', () => {
 });
 
 describe('verifyLeaseFence', () => {
-  it('passes a queue no rival took, including one that holds no lease between leaves', () => {
+  it('passes a queue no rival took, including one that holds no lease between leaves', async () => {
     const { hooks } = makeHooks();
 
-    expect(hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(true);
+    expect(await hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(true);
   });
 
-  it('passes a queue this window holds, or gave back', () => {
+  it('passes a queue this window holds, or gave back', async () => {
     const { hooks, executionLease } = makeHooks();
 
     executionLease.tenureOf.mockReturnValue({ state: 'held', claim: {} as never });
-    expect(hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(true);
+    expect(await hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(true);
 
     executionLease.tenureOf.mockReturnValue({ state: 'released' });
-    expect(hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(true);
+    expect(await hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(true);
   });
 
-  it('refuses a queue whose claim this window lost', () => {
+  it('refuses a queue whose claim this window lost', async () => {
     const { hooks, executionLease } = makeHooks();
     executionLease.tenureOf.mockReturnValue({
       state: 'lost',
@@ -136,15 +137,15 @@ describe('verifyLeaseFence', () => {
       lostAt: 0
     });
 
-    expect(hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(false);
+    expect(await hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(false);
     expect(executionLease.tenureOf).toHaveBeenCalledWith(QUEUE);
   });
 
-  it('refuses a queue another window holds', () => {
+  it('refuses a queue another window holds', async () => {
     const { hooks, executionLease } = makeHooks();
     executionLease.isForeignLeaseHeld.mockReturnValue(true);
 
-    expect(hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(false);
+    expect(await hooks.verifyLeaseFence(QUEUE, 'crun')).toBe(false);
     expect(executionLease.isForeignLeaseHeld).toHaveBeenCalledWith(QUEUE);
   });
 });
@@ -216,6 +217,16 @@ describe('releaseQueueLease', () => {
     await hooks.releaseQueueLease(QUEUE, 'crun');
 
     expect(controller.drainQueuedWork).not.toHaveBeenCalled();
+  });
+
+  it('stops only local active child and retry timer when localOnly is set on fence-lost, without calling endLeaf', async () => {
+    const { hooks, controller, endLeaf } = makeHooks();
+
+    await hooks.abortActiveLeaf({ ...LEAF_INPUT, queueItemId: LEAF_TASK, localOnly: true });
+
+    expect(controller.cancelActive).toHaveBeenCalledWith(QUEUE);
+    expect(controller.cancelPendingRetry).toHaveBeenCalledWith(QUEUE);
+    expect(endLeaf).not.toHaveBeenCalled();
   });
 
   it('logs a failed drain rather than failing the command that already committed', async () => {

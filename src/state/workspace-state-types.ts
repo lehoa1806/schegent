@@ -153,6 +153,8 @@ export interface RunClaimSource {
 
 export interface PrimacyClaimSource {
   canCommitConnectedRun(): Promise<boolean>;
+  /** FR-R8-01 (01-03) — current window primacy claim with its monotonic generation, or `null` when unheld. */
+  primacyClaim?(): OwnershipClaim | null;
 }
 
 export type RunReadVerdict =

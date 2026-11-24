@@ -253,4 +253,48 @@ describe('OwnershipRegistry', () => {
     await reg.acquire(sibling, 'window-a', T0, STALENESS);
     expect(await fs.list(DIR)).toHaveLength(2);
   });
+
+  it('readStatus skips an aborted partial newest generation, fails closed when only corrupt files exist, and retries once on concurrent prune', async () => {
+    const { registry: reg, fs } = registry();
+    expect(await reg.readStatus(PRIMACY_RESOURCE)).toEqual({ outcome: 'absent' });
+
+    await reg.acquire(PRIMACY_RESOURCE, 'window-a', T0, STALENESS);
+    const [g1File] = await fs.list(DIR);
+    const g2File = g1File!.replace(/01\.json$/, '02.json');
+    expect(g2File).not.toBe(g1File);
+    await fs.createExclusive(`${DIR}/${g2File}`, '');
+    const withPartial = await reg.readStatus(PRIMACY_RESOURCE);
+    expect(withPartial.outcome).toBe('present');
+    if (withPartial.outcome === 'present') {
+      expect(withPartial.record.holder?.ownerId).toBe('window-a');
+      expect(withPartial.record.fence).toBe(1);
+    }
+
+    // Corrupt sole file (no valid prior generation) must fail closed as unavailable.
+    await fs.remove(`${DIR}/${g1File!}`);
+    expect(await reg.readStatus(PRIMACY_RESOURCE)).toEqual({ outcome: 'unavailable' });
+
+    // Concurrent prune race: listed generation vanishes on first read while rival acquires next generation.
+    const { registry: raceReg, fs: raceFs } = registry();
+    await raceReg.acquire(PRIMACY_RESOURCE, 'window-a', T0, STALENESS);
+    let prunedOnce = false;
+    const racingFs: OwnershipFs = {
+      ...raceFs,
+      read: async (filePath) => {
+        if (!prunedOnce) {
+          prunedOnce = true;
+          await raceReg.acquire(PRIMACY_RESOURCE, 'window-b', T0 + STALENESS + 1, STALENESS);
+          return null;
+        }
+        return raceFs.read(filePath);
+      }
+    };
+    const racyRegistry = new OwnershipRegistry(racingFs, DIR);
+    const afterPrune = await racyRegistry.readStatus(PRIMACY_RESOURCE);
+    expect(afterPrune.outcome).toBe('present');
+    if (afterPrune.outcome === 'present') {
+      expect(afterPrune.record.holder?.ownerId).toBe('window-b');
+      expect(afterPrune.record.fence).toBe(2);
+    }
+  });
 });

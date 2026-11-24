@@ -56,7 +56,11 @@ import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-val
 import type { OutputTargetProbe } from '../run-request/output-target-validator';
 import type { EffectivePipelineSource } from '../run-request/run-request-validator';
 import { validateRunRequest } from '../run-request/run-request-validator';
-import type { GuardedScheduleRequest, GuardedScheduleResult } from '../guarded-run-service';
+import type {
+  GuardedRunService,
+  GuardedScheduleRequest,
+  GuardedScheduleResult
+} from '../guarded-run-service';
 import { synthesizePhasePipelineSnapshot } from './connected-run-factory';
 
 /** How much of a queue guard's own refusal text is echoed back to the caller. */
@@ -125,6 +129,11 @@ export type NodeRunStartResult =
       readonly outcome: 'rejected-queue';
       readonly reason: 'queue-refused';
       readonly detail?: string;
+    }
+  | {
+      readonly outcome: 'rejected-foreign-lock';
+      readonly reason: 'foreign-lock';
+      readonly detail?: string;
     };
 
 /**
@@ -135,6 +144,7 @@ export type NodeRunStartResult =
 export interface NodeRunStartDeps {
   readonly guardedRun?: {
     scheduleOrEnqueue(request: GuardedScheduleRequest): Promise<GuardedScheduleResult>;
+    admitComposableWorkflowLaunchAtomically?: GuardedRunService['admitComposableWorkflowLaunchAtomically'];
   };
   readonly getCatalog?: () => PipelineCatalog;
   /**
@@ -440,6 +450,16 @@ export async function startPipelineRun(
       queueItemId: result.queueItemId,
       plan,
       ...(input.occurrence !== undefined ? { occurrence: input.occurrence } : {})
+    };
+  }
+
+  if (result.outcome === 'rejected-foreign-lock') {
+    return {
+      outcome: 'rejected-foreign-lock',
+      reason: 'foreign-lock',
+      ...(result.reason !== undefined
+        ? { detail: deps.logger.sanitize(result.reason).slice(0, DETAIL_MAX) }
+        : {})
     };
   }
 

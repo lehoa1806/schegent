@@ -556,6 +556,8 @@ export interface ProcessEvidenceProbeInput {
   readonly pid?: number;
 }
 
+export const LIVE_PROCESS_STATE = 'running' as const;
+
 export interface ProcessEvidenceSnapshot {
   readonly processState: ControlProcessEvidenceState;
   readonly durableTerminalStatus?: ControlAttemptTerminalStatus;
@@ -701,6 +703,28 @@ export interface ControlAdmissionPort {
       readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>> | undefined;
     }
   ): Promise<unknown>;
+  markRootTerminal?(
+    input: {
+      readonly ledgerRunId: string;
+      readonly connectedRunId: string;
+      readonly status: 'completed' | 'failed' | 'canceled';
+      readonly completedAt: number;
+    }
+  ): Promise<unknown>;
+  releaseUnstartedRootLink?(
+    input: {
+      readonly ledgerRunId: string;
+      readonly connectedRunId: string;
+      readonly fence?: ExecutionFence | undefined;
+      readonly allowRecoveryTakeover?: boolean | undefined;
+    }
+  ): Promise<unknown>;
+  listRootRunIds?(): readonly {
+    readonly ledgerRunId: string;
+    readonly connectedRunId: string;
+    readonly queueId: string;
+    readonly rootGeneration?: number;
+  }[];
 }
 
 export function createEmptyControlLedger(): ControlLedger {

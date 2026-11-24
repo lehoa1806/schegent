@@ -49,6 +49,7 @@ import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring
 import { registerAuditChainCommands } from './audit-commands-wiring';
 import { registerEvidenceCommands } from './evidence-commands-wiring';
 import { registerSqliteBackupCommands } from './sqlite-backup-commands-wiring';
+import { registerLaneRecoveryCommands } from './lane-recovery-commands-wiring';
 import type { TransportRouter } from '../monitor/transport/transport-router';
 import type { OperatorAttribution } from '../lib/operator-attribution';
 import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
@@ -56,7 +57,12 @@ import { registerQueueItemExitCommands } from './queue-item-exit-wiring';
 import { readQueueFailurePolicyDefault } from './uncached-settings-accessors';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { errorMessage } from '../lib/errors';
-import type { SanitizedLogger } from '../lib/logger';
+import { SanitizedLogger } from '../lib/logger';
+import {
+  isPlainRecord,
+  isSafeEntityKey,
+  setOwnProp
+} from '../lib/operational-value-helpers';
 import {
   registerGuardedCommand,
   type GuardedCommandDeps
@@ -65,10 +71,19 @@ import type { QueueManager } from '../queue/queue-manager';
 import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
 import type { QueueStartFailureRegistry } from '../services/queue-start-failure-registry';
 import type { GuardedRunService } from '../services/guarded-run-service';
+import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { ConnectedRunProjection } from '../contracts/sidebar-ipc';
+import type { ConnectedRunProjection, ControlProjection } from '../contracts/sidebar-ipc';
+import {
+  CONTROL_LEDGER_VERSION,
+  type ControlFrame,
+  type ControlLedger,
+  type RootControlState
+} from '../contracts/control-ledger';
+import { buildControlProjection } from '../services/workflow-execution/control-command-service';
+import { lookupRecord } from '../services/workflow-execution/control-ledger-store';
 import { DashboardBridge } from '../ui/dashboard/dashboard-bridge';
 import { HistoryDescriptionStore } from '../services/history/history-description-store';
 import type { Notifier } from '../ui/notifications';
@@ -140,7 +155,8 @@ export interface ConnectedRunService extends ConnectedRunPort {
 type ConnectedRunStore = Pick<
   WorkspaceStateStore,
   'getRequest' | 'getConnectedRun' | 'getConnectedRuns' | 'compareAndSetConnectedRun'
->;
+> &
+  Partial<Pick<WorkspaceStateStore, 'getRawControlLedger'>>;
 
 /**
  * One child Pipeline Run's state, read from the queue and then from history.
@@ -182,10 +198,77 @@ function readChildState(
   return history.list().find((entry) => entry.featureId === queueItemId)?.terminalStatus ?? null;
 }
 
+const FALLBACK_SANITIZER = new SanitizedLogger();
+
+function controlProjectionsForRun(
+  store: ConnectedRunStore,
+  run: ConnectedWorkflowRun,
+  logger?: Pick<SanitizedLogger, 'warn' | 'sanitize'>
+): Readonly<Record<string, ControlProjection>> | undefined {
+  if (run.controlState === undefined || store.getRawControlLedger === undefined) {
+    return undefined;
+  }
+  try {
+    const raw = store.getRawControlLedger();
+    if (
+      !isPlainRecord(raw) ||
+      raw.version !== CONTROL_LEDGER_VERSION ||
+      !isPlainRecord(raw.roots) ||
+      !isPlainRecord(raw.quotaObservations) ||
+      !isPlainRecord(raw.checks) ||
+      !isPlainRecord(raw.permits)
+    ) {
+      return undefined;
+    }
+    const ledger = raw as unknown as ControlLedger;
+    const rootCandidate: unknown = lookupRecord(ledger.roots, run.controlState.ledgerRunId);
+    if (
+      !isPlainRecord(rootCandidate) ||
+      rootCandidate.version !== CONTROL_LEDGER_VERSION ||
+      rootCandidate.connectedRunId !== run.connectedRunId ||
+      !isPlainRecord(rootCandidate.fence) ||
+      !isPlainRecord(rootCandidate.rootBudget) ||
+      !isPlainRecord(rootCandidate.framesByKey)
+    ) {
+      return undefined;
+    }
+    const root = rootCandidate as unknown as RootControlState;
+    const nowWallMs = Date.now();
+    const sanitize = (value: string): string => (logger ?? FALLBACK_SANITIZER).sanitize(value);
+    const byInv: Record<string, ControlProjection> = {};
+    for (const frameCandidate of Object.values(rootCandidate.framesByKey)) {
+      if (!isPlainRecord(frameCandidate) || frameCandidate.kind !== 'candidate-block') continue;
+      if (
+        typeof frameCandidate.invocationId !== 'string' ||
+        !isSafeEntityKey(frameCandidate.invocationId)
+      ) {
+        continue;
+      }
+      const frame = frameCandidate as unknown as ControlFrame;
+      setOwnProp(
+        byInv,
+        frame.invocationId,
+        buildControlProjection({
+          root,
+          frame,
+          ledger,
+          nowWallMs,
+          isTrusted: vscode.workspace.isTrusted,
+          sanitize
+        })
+      );
+    }
+    return Object.keys(byInv).length > 0 ? Object.freeze(byInv) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Constructs the facade above. Pure composition — no VS Code API is touched. */
 export function createConnectedRunService(
   store: ConnectedRunStore,
-  history: Pick<HistoryStore, 'list'>
+  history: Pick<HistoryStore, 'list'>,
+  logger?: Pick<SanitizedLogger, 'warn' | 'sanitize'>
 ): ConnectedRunService {
   const reader = (queueItemId: string): ConnectedChildState | null =>
     readChildState(store, history, queueItemId);
@@ -194,10 +277,26 @@ export function createConnectedRunService(
     compareAndSetConnectedRun: (next, expectedRevision) =>
       store.compareAndSetConnectedRun(next, expectedRevision),
     readChildState: reader,
-    listProjections: () =>
-      Object.freeze(
-        Object.values(store.getConnectedRuns()).map((run) => projectConnectedRun(run, reader))
-      )
+    listProjections: () => {
+      const projections: ConnectedRunProjection[] = [];
+      for (const run of Object.values(store.getConnectedRuns())) {
+        try {
+          projections.push(
+            projectConnectedRun(run, reader, controlProjectionsForRun(store, run, logger))
+          );
+        } catch (err) {
+          const safeRunId = (logger ?? FALLBACK_SANITIZER)
+            .sanitize(run.connectedRunId)
+            .slice(0, 128);
+          const errorCode = err instanceof Error ? err.name : 'unknown-error';
+          logger?.warn('connected-run: skipped malformed run during sidebar projection', {
+            runId: safeRunId,
+            errorCode
+          });
+        }
+      }
+      return Object.freeze(projections);
+    }
   };
 }
 
@@ -458,6 +557,14 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       workspaceRoot: deps.workspaceRoot, globalStorageRoot: deps.globalStorageRoot,
       store: deps.store, controller: deps.controller, lock: deps.lock,
       auditWriter: deps.auditWriter, notifier: deps.notifier, projector: deps.projector, refreshCatalog: deps.refreshCatalog, logger: deps.logger
+    }),
+    // FR-R8-01 (01-07) — Guarded installed-editor execution lane inspection and recovery commands.
+    ...registerLaneRecoveryCommands(guard, {
+      workspaceRoot: deps.workspaceRoot,
+      globalStorageRoot: deps.globalStorageRoot,
+      store: deps.store,
+      notifier: deps.notifier,
+      logger: deps.logger
     }),
     // Feature 195 (T064) — retry and attested completion, the two queue-item
     // exits that must offer the queue a drain; extracted together for the

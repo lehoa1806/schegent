@@ -421,21 +421,10 @@ export class PhaseRunner {
     const phaseRunStartMs = Date.now();
     // Feature 098 (T045, FR-034) — six expressions here read
     // `?? BUILT_IN_PIPELINE_ID`; all six omit rather than invent.
-    const pipelineAttribution: { pipelineId?: string } =
-      inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId };
+    const pipelineAttribution: { pipelineId?: string } = inputs.pipelineId === undefined ? {} : { pipelineId: inputs.pipelineId };
     const debugPhaseId = inputs.phaseDef?.id ?? inputs.phase;
-    phaseLogger(this.logger, inputs).debug('phase-runner.lock-acquired', {
-      ...pipelineAttribution,
-      phaseId: debugPhaseId,
-      runId: inputs.runId,
-      waitMs: 0
-    });
-    phaseLogger(this.logger, inputs).debug('phase-runner.iteration-tick', {
-      ...pipelineAttribution,
-      phaseId: debugPhaseId,
-      runId: inputs.runId,
-      iteration: inputs.iteration
-    });
+    phaseLogger(this.logger, inputs).debug('phase-runner.lock-acquired', { ...pipelineAttribution, phaseId: debugPhaseId, runId: inputs.runId, waitMs: 0 });
+    phaseLogger(this.logger, inputs).debug('phase-runner.iteration-tick', { ...pipelineAttribution, phaseId: debugPhaseId, runId: inputs.runId, iteration: inputs.iteration });
     // Feature 212 (FR-001) — the attempt, reachable from the `finally` below.
     // A holder rather than a field on `this`: `runInner` is where the attempt is
     // opened and this is the only construct that survives the re-throw out of the
@@ -647,17 +636,20 @@ export class PhaseRunner {
     let effectiveSessionReuse = handoffAllowsReuse && inputs.sessionReuse === true;
     let effectiveIsContinue = handoffAllowsReuse && inputs.isContinue === true;
     let effectiveResumeSessionId = handoffAllowsReuse ? inputs.resumeSessionId : undefined;
+    let compactionInvoked = false;
     if (backendDescriptor.supportsSessionCompaction && effectiveSessionReuse && typeof effectiveResumeSessionId === 'string') {
       try {
         await this.compactSession(inputs, backendRunner);
+        compactionInvoked = true;
       } catch (err) {
         // FR-R7-11 — a containment/admission refusal raised while invoking compaction
         // (e.g. `ContainmentAdmissionRefusedError` from `SpawnGatedRunner`) is a
         // hard pre-spawn refusal, never a recoverable compaction failure.
-        if (isUncontainedBackendRefusal(err)) {
+        if (isUncontainedBackendRefusal(err) || (err instanceof Error && err.name === 'AttemptSpawnFenceError')) {
           attemptRef.preSpawnRefusal = true;
           throw err;
         }
+        compactionInvoked = true;
         effectiveSessionReuse = false;
         effectiveIsContinue = false;
         effectiveResumeSessionId = undefined;
@@ -758,7 +750,7 @@ export class PhaseRunner {
       // `UncontainedBackendRefusedError`) are raised before `SpawnGatedRunner`
       // spawns. Neither can have left a child when `reviewAttempt.invoked` is false.
       // By error type, not by position: see `AttemptRef` for what position got wrong.
-      if (!reviewAttempt.invoked && (isCapabilityRefusal(err) || isUncontainedBackendRefusal(err))) attemptRef.preSpawnRefusal = true;
+      if (!reviewAttempt.invoked && !compactionInvoked && (isCapabilityRefusal(err) || isUncontainedBackendRefusal(err) || (err instanceof Error && err.name === 'AttemptSpawnFenceError' && (err as { postSpawn?: unknown }).postSpawn !== true))) attemptRef.preSpawnRefusal = true;
       await rawTranscriptCapture?.dispose();
       throw err;
     }

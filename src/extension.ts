@@ -19,6 +19,7 @@ import { StateProjector } from './ui/sidebar/state-projector';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { PlaceholderProjector, type PlaceholderReason } from './ui/sidebar/placeholder-projector';
 import { GuardedRunService } from './services/guarded-run-service';
+import { createWorkflowLeafEnd } from './controller/workflow-leaf-end';
 import { createSidebarRouter } from './activation/sidebar-router-wiring';
 import { wireBackendExecution } from './activation/backend-execution-wiring';
 import { resolveWorkspaceSettings } from './activation/workspace-settings';
@@ -485,7 +486,7 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     audit: auditWriter,
     store
   });
-  runSafety.bindGuardedRun(guardedRunService, backendKind);
+  runSafety.bindGuardedRun(guardedRunService, backendKind, createWorkflowLeafEnd({ logger, queue, store, controller, executionLease: executionLeases, terminalTransitions: runSafety.terminalTransitions, audit: auditWriter }));
 
   // FR-R3-119 — extracted to `src/activation/scheduled-work-wiring.ts`: the three
   // things that act on a clock. 168 lines for seventeen bindings in and three out.

@@ -21,30 +21,32 @@ import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type {
   ControlAdmissionPort,
   ControlClockPort,
+  ControlLedgerErrorCode,
   ExecutionFence,
   PrepareControlAttemptInput
 } from '../../contracts/control-ledger';
-import type { DecisionFieldValue, ResultContract } from '../../contracts/decision-results';
-import type { PhaseDefinition } from '../../contracts/process-definitions';
-import type { ResolvedPortValue } from '../../contracts/run-request';
-import type { RunOutputRecord } from '../../contracts/run-results';
-import type { WorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
+import type { WorkflowLeafTarget } from '../../contracts/workflow-leaf-target';
 import {
   resolveBoundQueueId,
   resolveRootInvocationId,
   type ConnectedWorkflowRun
 } from '../../state/connected-workflow-run';
-import type { Memento } from '../../state/workspace-state';
 import {
   BackendAvailabilityService,
   type AvailabilityClockPort
 } from '../backend-availability-service';
+import { ResultOperator } from '../result-operator';
 import {
-  ResultOperator,
-  type CanonicalBackendDiagnosticInput,
-  type HostControlReason
-} from '../result-operator';
+  buildRootControlBudget,
+  createInMemoryMemento,
+  evaluateWorkflowSettlementOutcome,
+  isControlLedgerBackingStore,
+  toRootLinkFailure,
+  type SettlementEvaluationInput,
+  type SettlementEvaluationResult
+} from './production-workflow-helpers';
 import { CandidateBlockExecutor } from './candidate-block-executor';
+import type { CandidateSpecResolver } from './candidate-block-coordinator';
 import type {
   ComposableWorkflowCoordinatorDeps,
   PhaseAttemptDispatchInput,
@@ -104,6 +106,8 @@ export {
   type CapabilityAssessmentSource,
   type CutoverAuthorityGuard,
   type DurableArtifactHandoverSeam,
+  type SettlementEvaluationInput,
+  type SettlementEvaluationResult,
   type WorkflowControlStore
 };
 
@@ -126,36 +130,20 @@ export type PreAdmissionCheckResult =
   | { readonly allowed: true }
   | { readonly allowed: false; readonly refusal: WorkflowRefusalOutcome };
 
-export interface SettlementEvaluationInput {
-  readonly attemptId: string;
-  readonly workspaceRoot: string;
-  readonly status: WorkflowNodeTerminalStatus;
-  readonly phase?: PhaseDefinition | undefined;
-  readonly resultContract?: ResultContract | undefined;
-  readonly runOutputs?: readonly RunOutputRecord[] | undefined;
-  readonly declaredOutputs?: Readonly<Record<string, ResolvedPortValue>> | undefined;
-  readonly backendResultText?: string | undefined;
-  readonly diagnosticRecordsText?: string | undefined;
-  readonly backendDiagnostic?: CanonicalBackendDiagnosticInput | undefined;
-  readonly conflictingBackendDiagnostic?: CanonicalBackendDiagnosticInput | undefined;
-  readonly hostControl?: HostControlReason | undefined;
-  readonly evaluatedAt?: number | undefined;
-}
-
-export interface SettlementEvaluationResult {
-  readonly status: WorkflowNodeTerminalStatus;
-  readonly declaredOutputs: Readonly<Record<string, ResolvedPortValue>>;
-  readonly decisionResults?: Readonly<Record<string, DecisionFieldValue>> | undefined;
-  readonly verdict?: 'pass' | 'fail' | null | undefined;
-  readonly failureCode?: string | undefined;
-  readonly refusal?: WorkflowRefusalOutcome | undefined;
-}
-
 export interface ProductionAvailabilityWakeupResult {
   readonly observationRecorded: boolean;
   readonly schedulerNotified: boolean;
   readonly spawnedDirectly: false;
 }
+
+export type EnsureRootControlLinkResult =
+  | { readonly ok: true; readonly run: ConnectedWorkflowRun }
+  | {
+      readonly ok: false;
+      readonly code: ControlLedgerErrorCode;
+      readonly message: string;
+      readonly refusal: WorkflowRefusalOutcome;
+    };
 
 export interface ProductionWorkflowCompositionOptions {
   readonly store?: ControlLedgerBackingStore | undefined;
@@ -163,8 +151,11 @@ export interface ProductionWorkflowCompositionOptions {
   readonly clock?: ControlClockPort | undefined;
   readonly hostEpoch?: string | undefined;
   readonly isWorkspaceTrusted?: (() => boolean) | undefined;
-  readonly verifyLiveFence?: ((fence: ExecutionFence, context: { readonly rootRunId: string; readonly queueId: string }) => boolean) | undefined;
+  readonly verifyLiveFence?: ((fence: ExecutionFence, context: { readonly rootRunId: string; readonly queueId: string }) => Promise<boolean> | boolean) | undefined;
+  readonly isLocalFenceCurrent?: ((fence: ExecutionFence, context: { readonly rootRunId: string; readonly queueId: string }) => boolean) | undefined;
+  readonly requireLiveFenceVerifier?: boolean | undefined;
   readonly resolveExecutionFence?: ((run: ConnectedWorkflowRun, queueId: string) => ExecutionFence) | undefined;
+  readonly resolveCandidateSpec?: CandidateSpecResolver | undefined;
   readonly collaboratorOverrides?: CollaboratorAvailabilityMap | undefined;
   readonly assessBackendCapability?: ((backendId: string, capability: BackendCapabilityName) => BackendCapabilityAssessment) | undefined;
   readonly allowFixtureCapabilities?: boolean | undefined;
@@ -207,7 +198,7 @@ export interface ProductionWorkflowComposition {
   ensureRootControlLink(
     run: ConnectedWorkflowRun,
     queueId?: string
-  ): Promise<ConnectedWorkflowRun>;
+  ): Promise<EnsureRootControlLinkResult>;
   evaluateSettlementOutcome(
     input: SettlementEvaluationInput
   ): Promise<SettlementEvaluationResult>;
@@ -219,6 +210,10 @@ export interface ProductionWorkflowComposition {
     readonly resetAtWallMs?: number | undefined;
     readonly queueId?: string | undefined;
   }): Promise<ProductionAvailabilityWakeupResult>;
+  readonly verifyLiveFence: (
+    fence: ExecutionFence,
+    context: { readonly rootRunId: string; readonly queueId: string }
+  ) => Promise<boolean>;
   createCoordinatorDeps(options: {
     readonly connectedRuns: ConnectedRunWriter;
     readonly dispatchPhase: (
@@ -226,7 +221,7 @@ export interface ProductionWorkflowComposition {
     ) => Promise<PhaseAttemptDispatchResult>;
     readonly workspaceRoot?: string | undefined;
     readonly cancelOrphanedQueueItem?:
-      | ((queueItemId: string, queueId: string) => Promise<void> | void)
+      | ((target: WorkflowLeafTarget) => Promise<void> | void)
       | undefined;
   }): ComposableWorkflowCoordinatorDeps;
   createControlService(
@@ -235,11 +230,14 @@ export interface ProductionWorkflowComposition {
       | 'controlAdmission'
       | 'repeatExecutor'
       | 'forEachExecutor'
+      | 'candidateBlockExecutor'
+      | 'resolveCandidateSpec'
       | 'workspaceRoot'
       | 'resolveExecutionFence'
       | 'controlCommandService'
     > & {
       readonly workspaceRoot?: string | undefined;
+      readonly controlCommandService?: ControlCommandService | undefined;
     }
   ): WorkflowControlService;
   createRecoveryService(
@@ -248,55 +246,19 @@ export interface ProductionWorkflowComposition {
       | 'controlAdmission'
       | 'repeatExecutor'
       | 'forEachExecutor'
+      | 'candidateBlockExecutor'
+      | 'resolveCandidateSpec'
       | 'workspaceRoot'
       | 'quotaPermitArbiter'
       | 'notificationService'
       | 'usageAccounting'
       | 'resolveRecoveryFence'
+      | 'resolveOrphanFence'
     > & {
       readonly workspaceRoot?: string | undefined;
     }
   ): WorkflowRecoveryService;
   dispose(): void;
-}
-
-function createInMemoryMemento(): Memento {
-  const map = new Map<string, unknown>();
-  return {
-    get<T>(key: string, defaultValue?: T): T | undefined {
-      return map.has(key) ? (map.get(key) as T) : defaultValue;
-    },
-    async update(key: string, value: unknown): Promise<void> {
-      if (value === undefined) map.delete(key);
-      else map.set(key, structuredClone(value));
-    }
-  };
-}
-
-function isControlLedgerBackingStore(candidate: unknown): candidate is ControlLedgerBackingStore {
-  if (typeof candidate !== 'object' || candidate === null) return false;
-  const obj = candidate as Record<string, unknown>;
-  return (
-    (typeof obj.getRawControlLedger === 'function' &&
-      typeof obj.transactControlLedger === 'function') ||
-    (typeof obj.get === 'function' && typeof obj.update === 'function')
-  );
-}
-
-function buildDeclaredOutputsFromRunOutputs(
-  outputs: readonly RunOutputRecord[] | undefined
-): Readonly<Record<string, ResolvedPortValue>> {
-  if (outputs === undefined || outputs.length === 0) return Object.freeze({});
-  const byPort: Record<string, ResolvedPortValue> = {};
-  for (const entry of outputs) {
-    if (entry.status !== 'resolved' || entry.reference === undefined) continue;
-    byPort[entry.name] = Object.freeze({
-      portId: entry.name,
-      type: 'local-file',
-      value: entry.reference
-    });
-  }
-  return Object.freeze(byPort);
 }
 
 export function createProductionWorkflowComposition(
@@ -321,15 +283,38 @@ export function createProductionWorkflowComposition(
       rootGeneration: 1
     }));
 
+  const verifyLiveFenceAsync = async (
+    fence: ExecutionFence,
+    ctx: { readonly rootRunId: string; readonly queueId: string }
+  ): Promise<boolean> => {
+    if (options.verifyLiveFence !== undefined) {
+      try {
+        return (await options.verifyLiveFence(fence, ctx)) === true;
+      } catch {
+        return false;
+      }
+    }
+    return options.requireLiveFenceVerifier !== true;
+  };
+
+  const arbiterFenceCheck =
+    options.isLocalFenceCurrent ??
+    (options.verifyLiveFence !== undefined
+      ? (fence: ExecutionFence, ctx: { readonly rootRunId: string; readonly queueId: string }): boolean => {
+          const verdict = options.verifyLiveFence!(fence, ctx);
+          return typeof verdict === 'boolean' ? verdict : false;
+        }
+      : options.requireLiveFenceVerifier === true
+        ? () => false
+        : undefined);
+
   const quotaPermitArbiter = new QuotaPermitArbiter({
     ledgerStore,
     clock,
     ...(options.isWorkspaceTrusted !== undefined
       ? { isWorkspaceTrusted: options.isWorkspaceTrusted }
       : {}),
-    ...(options.verifyLiveFence !== undefined
-      ? { verifyLiveFence: options.verifyLiveFence }
-      : {}),
+    ...(arbiterFenceCheck !== undefined ? { verifyLiveFence: arbiterFenceCheck } : {}),
     ...(options.onScheduleQueueWakeup !== undefined
       ? {
           onCapacityOrWaiterChanged: (queueId?: string) => {
@@ -350,6 +335,9 @@ export function createProductionWorkflowComposition(
               queueId: ctx.queueId
             })
         }
+      : {}),
+    ...(options.requireLiveFenceVerifier !== undefined
+      ? { requireLiveFenceVerifier: options.requireLiveFenceVerifier }
       : {}),
     ...options.admissionDeps
   });
@@ -378,6 +366,28 @@ export function createProductionWorkflowComposition(
       return;
     }
 
+    // Never touch a foreign run's ledger root or resurrect a completed/canceled root.
+    if (existingRoot.connectedRunId !== input.connectedRunId) {
+      return;
+    }
+    if (
+      existingRoot.status === 'completed' ||
+      existingRoot.status === 'canceled' ||
+      (existingRoot.linkState === 'terminal' && existingRoot.status !== 'failed')
+    ) {
+      return;
+    }
+
+    // Verify live ownership and exact root fence BEFORE any reactivation mutation
+    // so a stale or unleased caller can never mutate ControlLedger pre-admission.
+    const liveFenceOk = await verifyLiveFenceAsync(input.fence, {
+      rootRunId: input.ledgerRunId,
+      queueId: input.queueId
+    });
+    if (!liveFenceOk) {
+      return;
+    }
+
     const hasExistingFrame = Object.prototype.hasOwnProperty.call(
       existingRoot.framesByKey,
       input.frameKey
@@ -386,58 +396,93 @@ export function createProductionWorkflowComposition(
     const targetAttemptId =
       input.attemptId ??
       `${input.invocationId}:${input.nodeId}:attempt-${input.attemptIndex ?? 1}`;
-    const hasStaleAttemptCollision = Object.prototype.hasOwnProperty.call(
+    const existingAttempt = Object.prototype.hasOwnProperty.call(
       existingRoot.attemptsById,
       targetAttemptId
-    );
+    )
+      ? existingRoot.attemptsById[targetAttemptId]
+      : undefined;
+    // Never delete live/pending-dispatch/spawned/uncertain or normal settled attempts;
+    // only allow cleanup of never-spawned pre-enqueue crash placeholders.
+    const isNeverSpawnedCrashPlaceholder = (
+      a: typeof existingAttempt
+    ): boolean =>
+      a !== undefined &&
+      a.stage === 'settled' &&
+      a.terminalStatus === 'canceled' &&
+      a.failureCode === 'crash-before-enqueue' &&
+      a.permitId === undefined;
+    const canCleanAttemptCollision = isNeverSpawnedCrashPlaceholder(existingAttempt);
     const needsRootReactivation =
       existingRoot.linkState !== 'active' || existingRoot.status !== 'in-flight';
     const needsFrameReactivation =
-      existingFrame !== null && existingFrame.status !== 'executing';
+      existingFrame !== null &&
+      existingFrame.kind !== 'candidate-block' &&
+      existingFrame.status !== 'executing';
 
-    if (needsRootReactivation || needsFrameReactivation || hasStaleAttemptCollision) {
-      await ledgerStore.mutate({ targetRootId: input.ledgerRunId }, ({ ledger }) => {
-        if (!Object.prototype.hasOwnProperty.call(ledger.roots, input.ledgerRunId)) {
-          return { commit: false, code: 'control-root-not-found', message: 'Root missing' };
-        }
-        const root = ledger.roots[input.ledgerRunId];
-        const nextFrames = { ...root.framesByKey };
-        if (existingFrame !== null && existingFrame.status !== 'executing') {
-          nextFrames[input.frameKey] = Object.freeze({
-            ...existingFrame,
-            status: 'executing',
-            updatedAt: clock.nowWallMs()
-          });
-        }
-        const nextAttempts = { ...root.attemptsById };
-        let nextDispatched = root.dispatchedAttempts;
-        if (hasStaleAttemptCollision) {
-          delete nextAttempts[targetAttemptId];
-          nextDispatched = Math.max(0, nextDispatched - 1);
-        }
-        return {
-          commit: true,
-          plan: {
-            nextLedger: {
-              ...ledger,
-              roots: {
-                ...ledger.roots,
-                [input.ledgerRunId]: Object.freeze({
-                  ...root,
-                  linkState: 'active',
-                  status: 'in-flight',
-                  dispatchedAttempts: nextDispatched,
-                  framesByKey: Object.freeze(nextFrames),
-                  attemptsById: Object.freeze(nextAttempts),
-                  updatedAt: clock.nowWallMs()
-                })
-              }
-            },
-            targetRootId: input.ledgerRunId,
-            result: true
+    if (needsRootReactivation || needsFrameReactivation || canCleanAttemptCollision) {
+      await ledgerStore.mutate(
+        { targetRootId: input.ledgerRunId, expectedFence: input.fence },
+        ({ ledger }) => {
+          if (!Object.prototype.hasOwnProperty.call(ledger.roots, input.ledgerRunId)) {
+            return { commit: false, code: 'control-root-not-found', message: 'Root missing' };
           }
-        };
-      });
+          const root = ledger.roots[input.ledgerRunId]!;
+          if (
+            root.connectedRunId !== input.connectedRunId ||
+            root.status === 'completed' ||
+            root.status === 'canceled'
+          ) {
+            return { commit: false, code: 'stale-execution-fence', message: 'Root not reactivatable' };
+          }
+          const nextFrames = { ...root.framesByKey };
+          const currentFrame = Object.prototype.hasOwnProperty.call(root.framesByKey, input.frameKey)
+            ? root.framesByKey[input.frameKey]
+            : undefined;
+          if (
+            currentFrame !== undefined &&
+            currentFrame.kind !== 'candidate-block' &&
+            currentFrame.status !== 'executing'
+          ) {
+            nextFrames[input.frameKey] = Object.freeze({
+              ...currentFrame,
+              status: 'executing',
+              updatedAt: clock.nowWallMs()
+            });
+          }
+          const nextAttempts = { ...root.attemptsById };
+          let nextDispatched = root.dispatchedAttempts;
+          const liveAttempt = Object.prototype.hasOwnProperty.call(root.attemptsById, targetAttemptId)
+            ? root.attemptsById[targetAttemptId]
+            : undefined;
+          if (isNeverSpawnedCrashPlaceholder(liveAttempt)) {
+            delete nextAttempts[targetAttemptId];
+            nextDispatched = Math.max(0, nextDispatched - 1);
+          }
+          return {
+            commit: true,
+            plan: {
+              nextLedger: {
+                ...ledger,
+                roots: {
+                  ...ledger.roots,
+                  [input.ledgerRunId]: Object.freeze({
+                    ...root,
+                    linkState: 'active',
+                    status: 'in-flight',
+                    dispatchedAttempts: nextDispatched,
+                    framesByKey: Object.freeze(nextFrames),
+                    attemptsById: Object.freeze(nextAttempts),
+                    updatedAt: clock.nowWallMs()
+                  })
+                }
+              },
+              targetRootId: input.ledgerRunId,
+              result: true
+            }
+          };
+        }
+      );
     }
   };
 
@@ -449,6 +494,9 @@ export function createProductionWorkflowComposition(
     },
     commitAttempt: (token) => controlAdmission.commitAttempt(token),
     settleAttempt: (input) => controlAdmission.settleAttempt(input),
+    markRootTerminal: (input) => controlAdmission.markRootTerminal(input),
+    releaseUnstartedRootLink: (input) => controlAdmission.releaseUnstartedRootLink(input),
+    listRootRunIds: () => controlAdmission.listRootRunIds(),
     reconcileControlRoot: (input) => controlAdmission.reconcileControlRoot(input)
   };
 
@@ -503,7 +551,18 @@ export function createProductionWorkflowComposition(
     ledgerStore,
     clock,
     ...(options.isWorkspaceTrusted !== undefined
-      ? { isWorkspaceTrusted: options.isWorkspaceTrusted }
+      ? { isTrusted: options.isWorkspaceTrusted }
+      : options.requireLiveFenceVerifier === true
+        ? { isTrusted: () => false }
+        : {}),
+    ...(options.verifyLiveFence !== undefined || options.requireLiveFenceVerifier === true
+      ? {
+          verifyFence: (root) =>
+            verifyLiveFenceAsync(root.fence, {
+              rootRunId: root.ledgerRunId,
+              queueId: root.queueId
+            })
+        }
       : {}),
     ...options.commandServiceDeps
   });
@@ -684,7 +743,7 @@ export function createProductionWorkflowComposition(
   const ensureRootControlLink = async (
     run: ConnectedWorkflowRun,
     queueId?: string
-  ): Promise<ConnectedWorkflowRun> => {
+  ): Promise<EnsureRootControlLinkResult> => {
     const boundQueueId = queueId ?? resolveBoundQueueId(run);
     const ledgerRunId = run.controlState?.ledgerRunId ?? run.connectedRunId;
     const fence = resolveFence(run, boundQueueId);
@@ -697,120 +756,59 @@ export function createProductionWorkflowComposition(
         rootWorkflowId: run.workflowId,
         queueId: boundQueueId,
         fence,
+        rootBudget: buildRootControlBudget(run),
         rootFrameKey: rootInvId,
         rootInvocationId: rootInvId
       });
-      if (prepared.ok) {
-        await controlAdmission.activateRootLink({
-          ledgerRunId,
-          connectedRunId: run.connectedRunId,
-          fence
-        });
-        if (run.controlState === undefined) {
-          return Object.freeze({ ...run, controlState: prepared.controlState });
-        }
+      if (!prepared.ok) {
+        return toRootLinkFailure(prepared.code, prepared.message, run.connectedRunId, rootInvId);
       }
-    } else if (existingRoot.linkState === 'prepared') {
-      await controlAdmission.activateRootLink({
+      const activated = await controlAdmission.activateRootLink({
         ledgerRunId,
         connectedRunId: run.connectedRunId,
         fence
       });
+      if (!activated.ok) {
+        await controlAdmission.releaseUnstartedRootLink({
+          ledgerRunId,
+          connectedRunId: run.connectedRunId
+        });
+        return toRootLinkFailure(activated.code, activated.message, run.connectedRunId, rootInvId);
+      }
+      const linkedRun =
+        run.controlState === undefined
+          ? Object.freeze({ ...run, controlState: prepared.controlState })
+          : run;
+      return { ok: true, run: linkedRun };
     }
-    return run;
+    if (existingRoot.linkState === 'prepared') {
+      const activated = await controlAdmission.activateRootLink({
+        ledgerRunId,
+        connectedRunId: run.connectedRunId,
+        fence
+      });
+      if (!activated.ok) {
+        await controlAdmission.releaseUnstartedRootLink({
+          ledgerRunId,
+          connectedRunId: run.connectedRunId
+        });
+        return toRootLinkFailure(activated.code, activated.message, run.connectedRunId, rootInvId);
+      }
+    }
+    const linkedRun =
+      run.controlState === undefined
+        ? Object.freeze({
+            ...run,
+            controlState: Object.freeze({ version: 1 as const, ledgerRunId })
+          })
+        : run;
+    return { ok: true, run: linkedRun };
   };
 
-  const evaluateSettlementOutcome = async (
+  const evaluateSettlementOutcome = (
     input: SettlementEvaluationInput
-  ): Promise<SettlementEvaluationResult> => {
-    const declaredOutputs =
-      input.declaredOutputs ?? buildDeclaredOutputsFromRunOutputs(input.runOutputs);
-    const contract = input.resultContract ?? input.phase?.resultContract;
-
-    if (!isCollaboratorSupplied('resultOperator') && contract !== undefined) {
-      const refusal = createWorkflowRefusalOutcome({
-        category: 'missing-collaborator',
-        reasonCode: 'collaborator-absent:resultOperator',
-        message: 'Required collaborator resultOperator is absent at settlement.',
-        attemptId: input.attemptId,
-        attemptsConsumed: 1
-      });
-      return Object.freeze({
-        status: 'failed',
-        declaredOutputs: Object.freeze({}),
-        verdict: 'fail',
-        failureCode: refusal.reasonCode,
-        refusal
-      });
-    }
-
-    if (contract === undefined) {
-      return Object.freeze({
-        status: input.status,
-        declaredOutputs,
-        verdict: input.status === 'completed' ? 'pass' : 'fail'
-      });
-    }
-
-    const declaredOutputsByKey: Record<string, string> = {};
-    for (const [key, portVal] of Object.entries(declaredOutputs)) {
-      if (typeof portVal.value === 'string') declaredOutputsByKey[key] = portVal.value;
-    }
-
-    const evaluated = await resultOperator.evaluateWithPrecedence({
-      attemptId: input.attemptId,
-      workspaceRoot: input.workspaceRoot,
-      resultContract: contract,
-      declaredOutputsByKey,
-      ...(input.backendResultText !== undefined
-        ? { backendResultText: input.backendResultText }
-        : {}),
-      ...(input.diagnosticRecordsText !== undefined
-        ? { diagnosticRecordsText: input.diagnosticRecordsText }
-        : {}),
-      ...(input.backendDiagnostic !== undefined
-        ? { backendDiagnostic: input.backendDiagnostic }
-        : {}),
-      ...(input.conflictingBackendDiagnostic !== undefined
-        ? { conflictingBackendDiagnostic: input.conflictingBackendDiagnostic }
-        : {}),
-      ...(input.hostControl !== undefined ? { hostControl: input.hostControl } : {}),
-      ...(input.evaluatedAt !== undefined ? { evaluatedAt: input.evaluatedAt } : {})
-    });
-
-    if (evaluated.kind === 'host-control') {
-      const isCanceled = evaluated.hostControl === 'cancelled';
-      return Object.freeze({
-        status: isCanceled ? 'canceled' : 'failed',
-        declaredOutputs: Object.freeze({}),
-        verdict: 'fail',
-        failureCode: `host-control:${evaluated.hostControl}`
-      });
-    }
-
-    const { outcome } = evaluated;
-    if (outcome.status === 'done') {
-      const rawVerdict = outcome.values.verdict;
-      const verdict: 'pass' | 'fail' =
-        rawVerdict === 'fail' || rawVerdict === false ? 'fail' : 'pass';
-      return Object.freeze({
-        status: input.status === 'completed' ? 'completed' : input.status,
-        declaredOutputs,
-        decisionResults: Object.freeze({ ...outcome.values }),
-        verdict
-      });
-    }
-
-    return Object.freeze({
-      status: 'failed',
-      declaredOutputs: Object.freeze({}),
-      ...(Object.keys(outcome.values).length > 0
-        ? { decisionResults: Object.freeze({ ...outcome.values }) }
-        : {}),
-      verdict: 'fail',
-      failureCode: `typed-result-${outcome.status}:${outcome.reason}`
-    });
-  };
+  ): Promise<SettlementEvaluationResult> =>
+    evaluateWorkflowSettlementOutcome(resultOperator, isCollaboratorSupplied('resultOperator'), input);
 
   const recordAvailabilityWakeup = async (input: {
     readonly quotaId: string;
@@ -868,7 +866,7 @@ export function createProductionWorkflowComposition(
     readonly connectedRuns: ConnectedRunWriter;
     readonly dispatchPhase: (input: PhaseAttemptDispatchInput) => Promise<PhaseAttemptDispatchResult>;
     readonly workspaceRoot?: string | undefined;
-    readonly cancelOrphanedQueueItem?: ((queueItemId: string, queueId: string) => Promise<void> | void) | undefined;
+    readonly cancelOrphanedQueueItem?: ((target: WorkflowLeafTarget) => Promise<void> | void) | undefined;
   }): ComposableWorkflowCoordinatorDeps => {
     const effectiveRoot = coordOptions.workspaceRoot ?? options.workspaceRoot;
     return {
@@ -877,6 +875,8 @@ export function createProductionWorkflowComposition(
       ...(isCollaboratorSupplied('controlAdmission') ? { controlAdmission: coordinatorControlAdmissionPort } : {}),
       ...(isCollaboratorSupplied('repeatExecutor') ? { repeatExecutor } : {}),
       ...(isCollaboratorSupplied('forEachExecutor') ? { forEachExecutor } : {}),
+      ...(isCollaboratorSupplied('candidateBlockExecutor') ? { candidateBlockExecutor } : {}),
+      ...(options.resolveCandidateSpec !== undefined ? { resolveCandidateSpec: options.resolveCandidateSpec } : {}),
       ...(options.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: options.phaseHandoffCoordinator } : {}),
       ...(effectiveRoot !== undefined ? { workspaceRoot: effectiveRoot } : {}),
       resolveExecutionFence: resolveFence,
@@ -885,25 +885,49 @@ export function createProductionWorkflowComposition(
   };
 
   const createControlService = (
-    svcOptions: Omit<WorkflowControlServiceDeps, 'controlAdmission' | 'repeatExecutor' | 'forEachExecutor' | 'workspaceRoot' | 'resolveExecutionFence' | 'controlCommandService'> & { readonly workspaceRoot?: string | undefined }
+    svcOptions: Omit<WorkflowControlServiceDeps, 'controlAdmission' | 'repeatExecutor' | 'forEachExecutor' | 'candidateBlockExecutor' | 'resolveCandidateSpec' | 'workspaceRoot' | 'resolveExecutionFence' | 'controlCommandService'> & {
+      readonly workspaceRoot?: string | undefined;
+      readonly controlCommandService?: ControlCommandService | undefined;
+    }
   ): WorkflowControlService => {
-    const effectiveRoot = svcOptions.workspaceRoot ?? options.workspaceRoot;
+    const { controlCommandService: overrideCommandService, ...restSvcOptions } = svcOptions;
+    const effectiveRoot = restSvcOptions.workspaceRoot ?? options.workspaceRoot;
+    const effectiveCommandService =
+      overrideCommandService ??
+      (isCollaboratorSupplied('controlCommandService') ? controlCommandService : undefined);
     return new WorkflowControlService({
-      ...svcOptions,
+      ...restSvcOptions,
       ...(isCollaboratorSupplied('controlAdmission') ? { controlAdmission: coordinatorControlAdmissionPort } : {}),
       ...(isCollaboratorSupplied('repeatExecutor') ? { repeatExecutor } : {}),
       ...(isCollaboratorSupplied('forEachExecutor') ? { forEachExecutor } : {}),
+      ...(isCollaboratorSupplied('candidateBlockExecutor') ? { candidateBlockExecutor } : {}),
+      ...(options.resolveCandidateSpec !== undefined ? { resolveCandidateSpec: options.resolveCandidateSpec } : {}),
       ...(options.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: options.phaseHandoffCoordinator } : {}),
       ...(effectiveRoot !== undefined ? { workspaceRoot: effectiveRoot } : {}),
       resolveExecutionFence: resolveFence,
-      ...(isCollaboratorSupplied('controlCommandService') ? { controlCommandService } : {})
+      ...(effectiveCommandService !== undefined ? { controlCommandService: effectiveCommandService } : {})
     });
   };
 
   const createRecoveryService = (
-    recOptions: Omit<WorkflowRecoveryServiceDeps, 'controlAdmission' | 'repeatExecutor' | 'forEachExecutor' | 'workspaceRoot' | 'quotaPermitArbiter' | 'notificationService' | 'usageAccounting' | 'resolveRecoveryFence'> & { readonly workspaceRoot?: string | undefined }
+    recOptions: Omit<WorkflowRecoveryServiceDeps, 'controlAdmission' | 'repeatExecutor' | 'forEachExecutor' | 'candidateBlockExecutor' | 'resolveCandidateSpec' | 'workspaceRoot' | 'quotaPermitArbiter' | 'notificationService' | 'usageAccounting' | 'resolveRecoveryFence' | 'resolveOrphanFence'> & { readonly workspaceRoot?: string | undefined }
   ): WorkflowRecoveryService => {
     const effectiveRoot = recOptions.workspaceRoot ?? options.workspaceRoot;
+    const resolveOrphanFence = (ref: {
+      readonly ledgerRunId: string;
+      readonly connectedRunId: string;
+      readonly queueId: string;
+      readonly rootGeneration?: number | undefined;
+    }): ExecutionFence => {
+      const resolved = resolveFence(
+        { connectedRunId: ref.connectedRunId } as ConnectedWorkflowRun,
+        ref.queueId
+      );
+      return Object.freeze({
+        ...resolved,
+        rootGeneration: Math.max(resolved.rootGeneration, ref.rootGeneration ?? 1)
+      });
+    };
     return new WorkflowRecoveryService({
       ...recOptions,
       ...(isCollaboratorSupplied('controlAdmission')
@@ -911,12 +935,15 @@ export function createProductionWorkflowComposition(
         : {}),
       ...(isCollaboratorSupplied('repeatExecutor') ? { repeatExecutor } : {}),
       ...(isCollaboratorSupplied('forEachExecutor') ? { forEachExecutor } : {}),
+      ...(isCollaboratorSupplied('candidateBlockExecutor') ? { candidateBlockExecutor } : {}),
+      ...(options.resolveCandidateSpec !== undefined ? { resolveCandidateSpec: options.resolveCandidateSpec } : {}),
       ...(options.phaseHandoffCoordinator !== undefined ? { phaseHandoffCoordinator: options.phaseHandoffCoordinator } : {}),
       ...(effectiveRoot !== undefined ? { workspaceRoot: effectiveRoot } : {}),
       ...(isCollaboratorSupplied('quotaPermitArbiter') ? { quotaPermitArbiter } : {}),
       notificationService,
       usageAccounting,
-      resolveRecoveryFence: resolveFence
+      resolveRecoveryFence: resolveFence,
+      resolveOrphanFence
     });
   };
 
@@ -946,6 +973,7 @@ export function createProductionWorkflowComposition(
     ensureRootControlLink,
     evaluateSettlementOutcome,
     recordAvailabilityWakeup,
+    verifyLiveFence: verifyLiveFenceAsync,
     createCoordinatorDeps,
     createControlService,
     createRecoveryService,
@@ -1001,6 +1029,12 @@ export function unregisterProductionWorkflowComposition(
  */
 export function hasRegisteredProductionWorkflowComposition(store: object): boolean {
   return compositionCacheByStore.has(store);
+}
+
+export function getRegisteredProductionWorkflowComposition(
+  store: object
+): ProductionWorkflowComposition | undefined {
+  return compositionCacheByStore.get(store);
 }
 
 export function getOrCreateProductionWorkflowComposition(

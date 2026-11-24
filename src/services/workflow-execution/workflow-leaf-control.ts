@@ -8,15 +8,20 @@
 import { errorMessage } from '../../lib/errors';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { ResolvedPortValue } from '../../contracts/run-request';
+import type { WorkflowLeafTarget } from '../../contracts/workflow-leaf-target';
 import { isWorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
 import { connectedRunOwnsQueueItem } from '../../state/connected-workflow-run';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { ExecutionLeasePort } from '../auto-drain-coordinator';
-import { isQueueClaimLostToRival } from '../execution-lease-release';
+import {
+  isQueueOwnershipLostOnDisk,
+  type AuthoritativeOwnershipStorePort
+} from '../execution-lease-release';
 import type { WorkflowControlServiceDeps } from './workflow-control-service';
 
 export interface WorkflowLeafControlPort {
+  cancelActive?(queueId: string): void;
   cancelPendingRetry(queueId: string): void;
   isDriving(queueId: string): boolean;
   drainQueuedWork(queueId: string): Promise<void>;
@@ -25,11 +30,12 @@ export interface WorkflowLeafControlPort {
 export interface WorkflowLeafControlDeps {
   readonly controller: WorkflowLeafControlPort;
   /** Stops one leaf and settles what is under it; `workflow-leaf-end.ts` holds the ordering. */
-  readonly endLeaf: (queueId: string, taskId: string) => Promise<void>;
+  readonly endLeaf: (target: WorkflowLeafTarget) => Promise<void>;
   readonly executionLease: Pick<ExecutionLeasePort, 'tenureOf' | 'isForeignLeaseHeld'>;
   readonly logger: Pick<SanitizedLogger, 'warn'>;
   readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getConnectedRun' | 'getQueueRegistry'> &
-    Partial<Pick<WorkspaceStateStore, 'getQueue' | 'getRunMap' | 'getHistory'>>;
+    Partial<Pick<WorkspaceStateStore, 'getQueue' | 'getRunMap' | 'getHistory'>> &
+    AuthoritativeOwnershipStorePort;
 }
 
 export type WorkflowLeafControlHooks = Required<
@@ -84,10 +90,21 @@ export function createWorkflowLeafControlHooks(
   deps: WorkflowLeafControlDeps
 ): WorkflowLeafControlHooks {
   const { controller, endLeaf, executionLease, store } = deps;
+  const stopLocalOnly = (queueId: string, taskId: string): void => {
+    const current = store.getRun(queueId);
+    if (current?.featureId === taskId) {
+      controller.cancelActive?.(queueId);
+      controller.cancelPendingRetry(queueId);
+    }
+  };
   return {
     abortActiveLeaf: async (leaf) => {
       if (leaf.queueItemId === undefined) return;
-      await endLeaf(leaf.queueId, leaf.queueItemId);
+      if (leaf.localOnly === true) {
+        stopLocalOnly(leaf.queueId, leaf.queueItemId);
+        return;
+      }
+      await endLeaf({ queueId: leaf.queueId, taskId: leaf.queueItemId });
     },
 
     // Asked once per frame, and the timer belongs to the queue's Run rather than to a frame, so it
@@ -102,13 +119,20 @@ export function createWorkflowLeafControlHooks(
     },
 
     // "Not lost to a rival", never "held": a queue between two leaves holds no lease at all.
-    verifyLeaseFence: (queueId) => !isQueueClaimLostToRival(executionLease, queueId),
+    // Also verify authoritative workspace primacy and `.schegent/ownership/` queue state before
+    // any pre-CAS leaf cancellation can touch a rival window's Run or queue row.
+    verifyLeaseFence: async (queueId) =>
+      !(await isQueueOwnershipLostOnDisk({ executionLease, store }, queueId)),
 
     isQueuePresent: (queueId) =>
       store.getQueueRegistry().entries.some((entry) => entry.id === queueId),
 
-    cancelOrphanedQueueItem: async (queueId, queueItemId) => {
-      await endLeaf(queueId, queueItemId);
+    cancelOrphanedQueueItem: async (target) => {
+      if (await isQueueOwnershipLostOnDisk({ executionLease, store }, target.queueId)) {
+        stopLocalOnly(target.queueId, target.taskId);
+        return;
+      }
+      await endLeaf(target);
     },
 
     isQueueOrTaskPresent: (queueId, taskId) => {

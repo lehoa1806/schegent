@@ -12,6 +12,9 @@ Use this guide when Schegent stops admitting work, refuses to open the operation
 <!-- Source: ../../src/state/memento-write-gate.ts -->
 <!-- Source: ../../src/services/enqueue-failure.ts -->
 <!-- Source: ../../src/commands/reset.ts -->
+<!-- Source: ../../src/commands/execution-lane-recovery.ts -->
+<!-- Source: ../../src/activation/lane-recovery-commands-wiring.ts -->
+<!-- Source: ../../src/services/execution-lanes/run-lane-binding.ts -->
 <!-- Source: ../../src/services/execution-lanes/lane-reconciler.ts -->
 <!-- Source: ../../src/services/execution-lanes/lane-cleanup.ts -->
 <!-- Source: ../../src/services/execution-lanes/landing.ts -->
@@ -23,7 +26,7 @@ Use this guide when Schegent stops admitting work, refuses to open the operation
 |---|---|---|
 | Extension refuses to open or relocate the operational SQLite store (`UNSUPPORTED_MIN_READER_VERSION` or `UNSUPPORTED_FUTURE_SCHEMA_VERSION`) | [Symptom 1](#symptom-1-future-schema-or-minimum-reader-version-refusal) | Upgrade Schegent to a build supporting schema `N` (zero data loss); roll back to schema 8 only with a verified pre-upgrade backup |
 | State writes fail with `storage-write-timeout`, `storage-write-quarantined`, or `queue-state-unavailable` | [Symptom 2](#symptom-2-quarantined-workspace-state-writer-gc-04) | Wait briefly for GC-04 late-settle auto-recovery; if it does not settle, run **Developer: Reload Window**; use `schegent.reset` only as a last resort |
-| Lane provisioning refuses `lane-bound-reached`, integration refuses `integration-busy`/`lane-busy`, or a lane/request stays in `preparing`, `verifying`, `landing`, `uncertain`, or `root-missing` | [Symptom 3](#symptom-3-stuck-execution-lane) | Reload/activate the primary window (runs `reconcile()` automatically), settle `uncertain`/`blocked` requests, then run `completeLane` → `releaseLane({ disposition: 'eligible' })` → `cleanupLanes` |
+| Lane provisioning refuses `lane-bound-reached`, integration refuses `integration-busy`/`lane-busy`, candidate freezing fails (`freeze-failed:*`), or a lane/request stays in `preparing`, `verifying`, `landing`, `uncertain`, or `root-missing` | [Symptom 3](#symptom-3-stuck-execution-lane) | Run **Schegent: Inspect Execution Lanes** (`schegent.inspectExecutionLanes`), then use **Schegent: Recover Execution Lane** (`schegent.recoverExecutionLane`) in a trusted primary window to reconcile, retry freeze, explicitly acknowledge `uncertain` requests, retain/complete, or run safe cleanup |
 
 For related deep dives, see [SQLite rollback runbook](sqlite-rollback-runbook.md), [SQLite application store](sqlite-application-store.md), [Recovery from an interrupted run](recovery-checkpoints.md), [Execution lanes](execution-lanes.md), and [Inspect the runtime log](runtime-log.md).
 
@@ -148,12 +151,14 @@ Work down this ladder in order — do not jump straight to a destructive reset:
 
 ### Exact diagnostics
 
-When a host crashes, loses primacy, or encounters a Git failure while managing isolated worktree lanes (`schegent.lanes.enabled = true`), operators observe one or more of these refusal or reconciliation codes (`src/contracts/execution-lanes.ts`, `src/services/execution-lanes/lane-reconciler.ts`, `src/services/execution-lanes/lane-cleanup.ts`, `src/services/execution-lanes/landing.ts`):
+When a host crashes, loses primacy, or encounters a Git or storage failure while managing isolated worktree lanes (`schegent.lanes.enabled = true`), operators observe one or more of these refusal, freeze-failure, or reconciliation codes (`src/contracts/execution-lanes.ts`, `src/services/execution-lanes/run-lane-binding.ts`, `src/services/execution-lanes/lane-reconciler.ts`, `src/services/execution-lanes/lane-cleanup.ts`, `src/services/execution-lanes/landing.ts`):
 
 - **Admission & lock refusals**:
   - `lane-bound-reached`: live lanes (`preparing`, `active`, `paused`) have reached `schegent.lanes.liveCap`.
   - `integration-busy`: another integration request in this repository is still recorded as `verifying` or `landing`.
   - `lane-busy`: another operation in this window holds the lane (or a request on that lane is `verifying` / `landing`).
+- **Candidate freeze failures at run completion (`FR-R8-01` / `01-06`)**:
+  - `freeze-failed:<reason>` (for example `freeze-failed:git-identity-missing`, `freeze-failed:lane-busy`, `freeze-failed:git-commit-tree-exit`, or `freeze-failed:storage-*`): persisted in `execution_lanes.state_reason` while the lane stays `active` (never silently closed to `completed`), preserving the worktree and any prior candidate across reopen until the operator fixes the cause and retries freezing (whereas an empty diff `candidate-empty` still completes cleanly).
 - **Reconciliation transitions & observations**:
   - `preparing` lane from an earlier host → transitioned to `preparation-failed` with state reason `provisioning-interrupted` (immediately frees its live-lane cap slot).
   - Interrupted `pending` cleanup operation:
@@ -171,25 +176,32 @@ When a host crashes, loses primacy, or encounters a Git failure while managing i
 - **Cleanup keep reasons (`cleanupLanes`)**:
   - `lane-pinned`, `lane-live`, `lane-state-invalid`, `request-open`, `not-contained`, `registry-mismatch`, `worktree-locked`, `status-buffer-exceeded`, `status-timeout`, `lane-dirty`, `lane-busy`, `lane-not-found`.
 
-### Safest recovery sequence
+### Safest recovery sequence (installed editor commands)
 
-Mutating sidebar/dashboard UI controls for lane approval, landing, and cleanup remain deferred (see [Execution lanes](execution-lanes.md#cutover-status-and-what-remains-deferred-16-23)). Perform post-reconcile manual operations through the headless `src/headless/execution-lanes-api.ts` operations (never with forced Git commands such as `git reset --hard`, `git clean -fd`, or `git worktree remove --force`):
+Perform lane inspection and recovery directly from the installed VS Code extension via the Command Palette (keyboard-accessible; never run forced Git commands such as `git reset --hard`, `git clean -fd`, or `git worktree remove --force`). Every mutating action in **Schegent: Recover Execution Lane** is **owner-only** (refused at the point of effect in Restricted Mode and secondary windows) and displays a sanitized modal confirmation disclosing recorded lane state, integration/journal commits, and live observed Git state before mutating anything:
 
-1. **Run reconciliation first (automatic on reload/primary activation).**
-   Reload or activate the primary VS Code window (`src/activation/sqlite-cutover-wiring.ts` invokes `laneService.reconcile()` automatically on primary activation), or invoke headless `reconcile(service)`.
+1. **Inspect lanes and live Git state first (read-only).**
+   Run **Schegent: Inspect Execution Lanes** (`schegent.inspectExecutionLanes`) from the Command Palette.
+   - Opens an unsaved Markdown report listing every persisted lane (`laneId`, `state`, `stateReason` including `freeze-failed:*`, `pinned`, candidate short SHA), every integration request and journal `observedTip`, and (in trusted primary windows) live worktree status, dirty count, `HEAD` short SHA, and live target-branch tips.
+   - Safe in Restricted Mode (reads persisted SQLite state in zero-mutation read-only mode without spawning Git subprocesses) and secondary windows.
+2. **Run reconciliation in the trusted primary window.**
+   Reload/activate the primary VS Code window (`src/activation/sqlite-cutover-wiring.ts` invokes `reconcile()` automatically on primary activation), or run **Schegent: Recover Execution Lane** (`schegent.recoverExecutionLane`) → **Reconcile Execution Lanes** (`reconcile`):
    - Interrupted `preparing` lanes move to `preparation-failed` (`provisioning-interrupted`), freeing the live-lane cap.
    - Interrupted `verifying` requests return to `queued`, clearing `integration-busy`.
    - Interrupted `landing` requests settle honestly to `blocked` (`landing-not-applied`), `landed`, or `uncertain` without replaying Git writes.
    - `root-missing` and `containment-refused` lanes are reported without deleting records or touching Git.
-2. **Inspect and explicitly settle `uncertain` or `blocked` requests.**
-   List open requests (`listRequests({ states: ['queued', 'awaiting-review', 'blocked', 'uncertain'] })`):
-   - For **`uncertain`**: inspect the target branch in Git (`git log`, `git status`) comparing `expectedTarget` (`expectedTargetCommit`), `candidate` (`candidateCommit`), and `observedTip` (`commits.observed` / `lane_integration_journal.observed_tip`). Once you have verified the repository state, explicitly call `cancelRequest({ requestId })` (which transitions the request to `canceled` and journals `acknowledged-uncertain`), or freeze a fresh candidate after resolving the branch state.
-   - For **`blocked`** (e.g., `landing-not-applied`, `target-advanced`, `verification-failed`): either call `cancelRequest({ requestId })` if abandoning that request, or make needed edits in the lane and call `freezeCandidate({ laneId })` before creating a fresh integration request.
-   - For **`queued`** (returned from interrupted `verifying`): either retry `verifyRequest({ requestId })` or `cancelRequest({ requestId })`.
-3. **Complete, release, and cleanly remove unneeded lanes (never forced).**
-   - For `active` or `paused` lanes you are done with: call `completeLane({ laneId })`. (Skip this step for `preparation-failed` lanes — they release directly to `cleanup-eligible`.)
-   - Call `releaseLane({ laneId, disposition: 'eligible' })` (or `disposition: 'retain'` if you want to keep the worktree out of cleanup).
-   - Call `cleanupLanes({})` (or pass specific `laneIds`). Cleanup runs `git worktree remove` **without `--force`** and only removes a lane when it is unpinned, `cleanup-eligible`, has zero open requests, is contained and registered, is unlocked, and has a clean working tree whose `HEAD` matches `sourceCommit` or the frozen candidate. If cleanup keeps a lane (for example `lane-dirty`, `lane-pinned`, `worktree-locked`, or `request-open`), resolve that specific condition before retrying.
+3. **Retry failed candidate freezes (when `stateReason` is `freeze-failed:*`).**
+   Correct the root cause (for example, configure `git config user.name` and `user.email` after `freeze-failed:git-identity-missing`), then run **Schegent: Recover Execution Lane** → **Retry Failed Candidate Freeze** (`retry-freeze`):
+   - Review the pre-mutation disclosure modal (lane state, worktree dirty count, `HEAD` short SHA), confirm to invoke `freezeCandidate`, atomically clear `state_reason`, and choose whether to complete the lane (`completeLane`) once the candidate commit is recorded.
+4. **Inspect and explicitly settle `uncertain` or `blocked` requests.**
+   Run **Schegent: Recover Execution Lane**:
+   - For **`uncertain`**: choose **Acknowledge Uncertain Integration Request** (`acknowledge-uncertain`). Review the modal's commit comparison (`expectedTarget` / `expectedTargetCommit`, `candidate` / `candidateCommit`, `observedTip` from `lane_integration_journal`, and live target branch tip). Confirming calls `cancelRequest`, transitioning the request to `canceled` and appending `acknowledged-uncertain` — **Schegent never automatically replays or retries an uncertain landing.**
+   - For **`blocked`** or unwanted **`queued`** / **`awaiting-review`** requests: choose **Cancel Open Integration Request** (`cancel-request`) to cancel without touching Git, or make needed edits in the lane and run **Retry Failed Candidate Freeze** (`retry-freeze`) before opening a fresh integration request.
+5. **Complete, retain/pin, or safely clean up unneeded lanes (never forced).**
+   Run **Schegent: Recover Execution Lane**:
+   - To keep a lane's worktree out of cleanup: choose **Complete and Retain Lane** (`complete-and-retain`, invoking `completeLane` → `releaseLane({ disposition: 'retain' })`) and/or **Pin Lane (Protect from Cleanup)** (`pin`, invoking `setLanePinned`).
+   - To prepare a lane for safe removal: complete any `active`/`paused` lane first (skip for `preparation-failed` lanes — they release directly), then choose **Mark Lane Cleanup-Eligible** (`mark-cleanup-eligible`, invoking `releaseLane({ disposition: 'eligible' })`).
+   - To remove eligible clean worktrees: choose **Safe Cleanup Eligible Lanes** (`cleanup`, invoking `cleanupLanes`). Cleanup runs `git worktree remove` **without `--force`** and only removes a lane when it is unpinned, `cleanup-eligible`, has zero open requests, is contained and registered, is unlocked, and has a clean working tree whose `HEAD` matches `sourceCommit` or the frozen candidate. Any lane kept with `lane-dirty`, `lane-pinned`, `lane-live`, `worktree-locked`, or `request-open` is reported in the outcome toast without removing its files.
 
 ### Surviving files and service-resumption checks
 
@@ -197,14 +209,14 @@ Mutating sidebar/dashboard UI controls for lane approval, landing, and cleanup r
   - Primary workspace checkout and `.git` directory (never altered by `reconcile` or `cleanupLanes`).
   - `refs/schegent/lanes/<laneId>/candidate` (intentionally preserved across cleanup and retention so every frozen candidate remains recoverable by ref; only `refs/schegent/lanes/<laneId>/base` is deleted on clean removal).
   - Unowned Git worktrees created outside Schegent (counted in `unknownWorktrees`, never touched).
-  - Dirty (`lane-dirty`), pinned (`lane-pinned`), locked (`worktree-locked`), `root-missing`, `containment-refused`, and open-request (`request-open`) lanes.
+  - Dirty (`lane-dirty`), pinned (`lane-pinned`), live (`lane-live`), locked (`worktree-locked`), `root-missing`, `containment-refused`, and open-request (`request-open`) lanes.
   - SQLite lane candidates, review receipts, and `lane_integration_journal` records.
   - `.schegent/audit.log` and workspace evidence.
-  - **Important caveat**: **ignored files** (such as build output inside a lane worktree) are **not** protected by Git during `git worktree remove` unless the lane is pinned (`setLanePinned({ laneId, pinned: true })`).
+  - **Important caveat**: **ignored files** (such as build output inside a lane worktree) are **not** protected by Git during `git worktree remove` unless the lane is pinned (**Schegent: Recover Execution Lane** → **Pin Lane**).
 - **Verify service resumed**:
-  1. Run `reconcile(service)` a second time and confirm `{ lanes: [], requests: [] }` (idempotent settlement, with any unowned worktrees still counted cleanly in `unknownWorktrees`).
-  2. Confirm `listLanes({ states: ['preparing', 'active', 'paused'] })` is below `schegent.lanes.liveCap` and `listRequests({ states: ['verifying', 'landing'] })` is empty.
-  3. Confirm a fresh `provisionLane(...)` succeeds without `lane-bound-reached` and new integration/verification operations do not fail with `integration-busy` or `lane-busy`.
+  1. Run **Schegent: Recover Execution Lane** → **Reconcile Execution Lanes** a second time and confirm `0 lane update(s), 0 request update(s)` (idempotent settlement, with any unowned worktrees still counted cleanly).
+  2. Run **Schegent: Inspect Execution Lanes** and confirm live lanes (`preparing`, `active`, `paused`) are below `schegent.lanes.liveCap`, no `freeze-failed:*` active lanes remain unresolved, and no `verifying`/`landing`/`uncertain` requests remain open.
+  3. Confirm a fresh isolated-lane Run provisions cleanly without `lane-bound-reached`, `integration-busy`, or `lane-busy`.
 
 ---
 

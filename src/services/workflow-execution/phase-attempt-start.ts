@@ -199,6 +199,8 @@ export async function startPhaseAttempt(
   return startPhaseNodeRun(deps, {
     frozenClosure: closure,
     phaseId: input.phase.phaseId,
+    ...(input.workflowId !== undefined ? { workflowId: input.workflowId } : {}),
+    ...(input.candidateId !== undefined ? { candidateId: input.candidateId } : {}),
     request,
     workspaceRoot,
     ...(hasInstructions ? {} : { description: input.node.label ?? input.phase.name }),
@@ -235,6 +237,13 @@ export function phaseDispatchResultOf(started: NodeRunStartResult): PhaseAttempt
       outcome: 'rejected',
       reason: started.outcome,
       detail: [...codes].join(VALIDATION_CODE_SEPARATOR)
+    };
+  }
+  if (started.outcome === 'rejected-foreign-lock') {
+    return {
+      outcome: 'rejected',
+      reason: 'rejected-foreign-lock',
+      ...(started.detail !== undefined ? { detail: started.detail } : {})
     };
   }
   return { outcome: 'rejected', reason: started.outcome };
