@@ -64,6 +64,7 @@ import {
   mapTerminationReason,
   summarize
 } from './phase-outcome-mapper';
+import { applyPhaseTerminalReconciliation } from './phase-terminal-reconciliation';
 import { resolveHostVerification } from '../config/phase-runner-policy';
 import { COMPACTION_MODEL_ID, compactClaudeSession, compactionFailureRecord } from './session-compactor';
 import { RequiredEvidenceUnavailableError } from '../lib/errors';
@@ -763,12 +764,13 @@ export class PhaseRunner {
     await this.appendAudit(inputs, 'cli-invocation', 'info', projectAuditPayload('cli-invocation', {
       runner: effectiveRunnerKind,
       operation: 'phase',
-      permissionMode: backendDescriptor.defaultAuditPermissionMode,
+      permissionMode: raw.admissionDecision?.permissionMode ?? backendDescriptor.defaultAuditPermissionMode,
       continued: effectiveIsContinue,
       sessionReused: effectiveSessionReuse,
       ...(inputs.phaseDef?.model ? { modelId: inputs.phaseDef.model } : {}),
       ...(inputs.phaseDef?.effort ? { effortId: inputs.phaseDef.effort } : {}),
-      diagnosticsEnabled: raw.diagnosticsCaptured === true
+      diagnosticsEnabled: raw.diagnosticsCaptured === true,
+      ...(raw.admissionDecision ? { executableTarget: raw.admissionDecision.executableTarget, containmentPosture: raw.admissionDecision.containmentPosture } : {})
     }));
     await this.rawTranscript?.appendEnd({
       runId: inputs.runId,
@@ -812,9 +814,9 @@ export class PhaseRunner {
       turnEnd: raw, // FR-R3-198 — the two turn-end facts, and `killed`
       ...(raw.streamFatalMatch ? { streamFatalMatch: raw.streamFatalMatch } : {})
     });
-    const result = failClosedOnTruncatedOutput(
-      parsedResult,
-      raw.stdoutBuffer.truncated || raw.stderrBuffer.truncated
+    const { result, forceCancel, forceFailed } = applyPhaseTerminalReconciliation(
+      failClosedOnTruncatedOutput(parsedResult, raw.stdoutBuffer.truncated || raw.stderrBuffer.truncated),
+      raw
     );
 
     // FR-R3-047 (H-04) — checked FIRST, and no arm below moved to make room.
@@ -944,7 +946,7 @@ export class PhaseRunner {
       };
     }
 
-    if (raw.killed && raw.exitCode === null) {
+    if ((raw.killed && raw.exitCode === null) || forceCancel) {
       const auditEntry = await this.appendAudit(inputs, 'cancel', 'info', {
         ...this.pipelineMeta(inputs),
         reason: 'killed'
@@ -1050,8 +1052,8 @@ export class PhaseRunner {
       });
     }
 
-    const outcome = mapOutcome(result, raw.exitCode);
-    const terminationReason = mapTerminationReason(result, raw.exitCode);
+    const outcome = forceFailed ? 'failed' : mapOutcome(result, raw.exitCode);
+    const terminationReason = forceFailed ? 'error' : mapTerminationReason(result, raw.exitCode);
     const fatalCause = result.kind === 'malformed' ? result.fatalCause : undefined;
     const fatalSource = result.kind === 'malformed' ? result.fatalSource : undefined;
 

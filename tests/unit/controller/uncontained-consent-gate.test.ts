@@ -56,6 +56,13 @@ describe('FR-R6-F09 T019 -- a non-consentable refusal is reported, never offered
       reason: 'acceptance-fingerprint-changed',
       consentable: false,
       fingerprint: FINGERPRINT
+    }),
+    new ContainmentAdmissionRefusedError({
+      kind: 'codex',
+      scannerTarget: 'codex-security',
+      reason: 'containment-unqualified-for-tuple',
+      consentable: true,
+      fingerprint: FINGERPRINT
     })
   ])('$reason', async (err) => {
     const h = harness();

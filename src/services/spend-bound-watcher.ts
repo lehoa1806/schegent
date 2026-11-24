@@ -346,7 +346,9 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     trustFor: (runId, denomination) => {
       const total = observed.get(runId) ?? NO_SPEND_OBSERVED;
       const figure = denomination === 'usd' ? total.costUsd : total.totalTokens;
-      return figure === undefined || total.completeness.kind === 'incomplete'
+      const missingDenomination =
+        denomination === 'usd' ? total.missingUsdRows === true : total.missingTokenRows === true;
+      return figure === undefined || total.completeness.kind === 'incomplete' || missingDenomination
         ? 'not-trustworthy'
         : 'enforced';
     }

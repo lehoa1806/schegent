@@ -15,14 +15,17 @@ import {
   type ContainmentRefusalReason,
   type ExecutableUnresolvedCause,
   type FingerprintComponent,
-  type FingerprintRecord
+  type FingerprintRecord,
+  type ReviewScannerId
 } from '../../contracts/containment-qualification';
 import { UncontainedBackendRefusedError } from '../backend-containment-policy';
 
 export interface ContainmentAdmissionRefusalInit {
   readonly kind: BackendRunnerKind;
+  /** Distinct standalone review scanner identity when this refusal is for a scanner, never the core backend. */
+  readonly scannerTarget?: ReviewScannerId;
   readonly reason: ContainmentRefusalReason;
-  /** Defaults to whether `reason` is consentable. A caller may only narrow it to `false`. */
+  /** Defaults to whether `reason` is consentable (always `false` when `scannerTarget` is set unless overridden). */
   readonly consentable?: boolean;
   readonly fingerprint?: FingerprintRecord;
   readonly changedComponent?: FingerprintComponent;
@@ -58,10 +61,15 @@ function remedyFor(init: ContainmentAdmissionRefusalInit): string {
 function messageFor(init: ContainmentAdmissionRefusalInit): string {
   const detail = init.cause ?? init.changedComponent;
   const qualifier = detail === undefined ? '' : ` (${detail})`;
-  return `Backend '${init.kind}' refused: ${init.reason}${qualifier} -- ${remedyFor(init)}.`;
+  const subject =
+    init.scannerTarget !== undefined
+      ? `Scanner '${init.scannerTarget}'`
+      : `Backend '${init.kind}'`;
+  return `${subject} refused: ${init.reason}${qualifier} -- ${remedyFor(init)}.`;
 }
 
 export class ContainmentAdmissionRefusedError extends UncontainedBackendRefusedError {
+  public readonly scannerTarget: ReviewScannerId | undefined;
   public readonly reason: ContainmentRefusalReason;
   public readonly consentable: boolean;
   public readonly fingerprint: FingerprintRecord | undefined;
@@ -71,8 +79,13 @@ export class ContainmentAdmissionRefusedError extends UncontainedBackendRefusedE
   public constructor(init: ContainmentAdmissionRefusalInit) {
     super(init.kind, messageFor(init));
     this.name = 'ContainmentAdmissionRefusedError';
+    this.scannerTarget = init.scannerTarget;
     this.reason = init.reason;
-    this.consentable = CONSENTABLE_REFUSAL_REASONS.includes(init.reason) && init.consentable !== false;
+    // Standalone scanner refusals are NEVER lifted by core-backend uncontained grants.
+    this.consentable =
+      init.scannerTarget === undefined &&
+      CONSENTABLE_REFUSAL_REASONS.includes(init.reason) &&
+      init.consentable !== false;
     this.fingerprint = init.fingerprint;
     this.changedComponent = init.changedComponent;
     this.executableCause = init.cause;

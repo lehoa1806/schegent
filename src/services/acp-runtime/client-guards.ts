@@ -93,6 +93,7 @@ export function buildUsageUpdate(context: UsageContext, reading: UsageReading): 
     hasQualifiedSessionBaseline: false,
     ...(reading.cost !== undefined ? { cost: reading.cost } : {}),
     ...(reading.producerEventId !== undefined ? { producerEventId: reading.producerEventId } : {}),
+    ...(reading.billableTokens !== undefined ? { billableTokens: reading.billableTokens } : {}),
     ...(providerSessionId !== undefined ? { providerSessionId } : {})
   };
 }

@@ -288,6 +288,8 @@ export function armedMaxDurationMs(request: InvocationRequest): number | null {
 }
 
 import type { ZippedStreamBuffer } from './zipped-stream-buffer';
+import type { SpawnAdmissionDecision } from '../contracts/containment-qualification';
+import type { AcpTerminalReconciliation } from '../services/acp-runtime/terminal-reconciliation';
 import type {
   EffectiveSignature,
   FatalClassification
@@ -496,4 +498,10 @@ export interface RawInvocationOutput {
    * code-resident floor.
    */
   streamFatalMatch?: FatalClassification;
+  /** FR-R8-02 (02-02): authoritative spawn-admission identity/posture decision for metadata-only audit. */
+  admissionDecision?: SpawnAdmissionDecision;
+  /** FR-R8-02 (02-04): reconciled ACP/bridge terminal outcome preventing contradictory/absent-terminal advance. */
+  terminalReconciliation?: AcpTerminalReconciliation;
+  /** FR-R8-02 (02-03): high-water pending output bytes observed across host stream backpressure/tee. */
+  streamPendingHighWaterBytes?: number;
 }

@@ -8,6 +8,7 @@
  *
  * Zero `vscode` imports.
  */
+import type { AcpBillableTokens } from '../../contracts/acp-runtime';
 import type { AcpEventKind, AcpEventOrigin, AcpNormalizedEvent } from '../phase-log/acp-live-projection';
 import { isAgentIdentifier } from './agent-identifier';
 
@@ -24,6 +25,7 @@ export interface UsageReading {
   readonly size: number;
   readonly cost?: { readonly amount: string; readonly currency?: string };
   readonly producerEventId?: string;
+  readonly billableTokens?: AcpBillableTokens;
 }
 
 export type IgnoreReason = 'unknown-kind' | 'non-terminal-tool-update' | 'invalid-update';
@@ -128,17 +130,57 @@ function producerEventIdOf(update: Fields): string | undefined {
   return isAgentIdentifier(candidate) ? candidate : undefined;
 }
 
+function billableTokensOf(update: Fields): AcpBillableTokens | undefined {
+  const meta = update['_meta'];
+  if (!isRecord(meta)) return undefined;
+  const raw = meta['billableTokens'];
+  if (!isRecord(raw)) return undefined;
+  // FR-R8-02 (02-01 / SEC-04): reject the entire billableTokens object if ANY present token field
+  // is invalid (negative, float, non-safe-int, wrong type) so partial-invalid counters never spoof 0.
+  const keys = [
+    'inputTokens',
+    'outputTokens',
+    'cacheCreationInputTokens',
+    'cacheReadInputTokens'
+  ] as const;
+  for (const key of keys) {
+    if (raw[key] !== undefined && !isCount(raw[key])) {
+      return undefined;
+    }
+  }
+  const inputTokens = raw['inputTokens'] as number | undefined;
+  const outputTokens = raw['outputTokens'] as number | undefined;
+  const cacheCreationInputTokens = raw['cacheCreationInputTokens'] as number | undefined;
+  const cacheReadInputTokens = raw['cacheReadInputTokens'] as number | undefined;
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheCreationInputTokens === undefined &&
+    cacheReadInputTokens === undefined
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cacheCreationInputTokens !== undefined ? { cacheCreationInputTokens } : {}),
+    ...(cacheReadInputTokens !== undefined ? { cacheReadInputTokens } : {})
+  });
+}
+
 function mapUsage(update: Fields): MappedUpdate {
   const used = update['used'];
   const size = update['size'];
   if (!isCount(used) || !isCount(size)) return INVALID;
   const cost = costOf(update['cost']);
   const producerEventId = producerEventIdOf(update);
+  const billableTokens = billableTokensOf(update);
   const usage: UsageReading = {
     used,
     size,
     ...(cost !== undefined ? { cost } : {}),
-    ...(producerEventId !== undefined ? { producerEventId } : {})
+    ...(producerEventId !== undefined ? { producerEventId } : {}),
+    ...(billableTokens !== undefined ? { billableTokens } : {})
   };
   return { kind: 'usage', usage };
 }

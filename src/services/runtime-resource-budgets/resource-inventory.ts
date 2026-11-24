@@ -9,6 +9,11 @@
  */
 
 import {
+  ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES,
+  ACP_MAX_CLI_LINE_BYTES,
+  ACP_MAX_VERBOSE_TEE_PENDING_BYTES
+} from '../../contracts/acp-runtime';
+import {
   ACK_RETENTION_MAX_ENTRIES,
   ACK_RETENTION_MS
 } from '../../contracts/ack-retention';
@@ -279,6 +284,18 @@ export const AUTHORITATIVE_CONSTANT_VALUES: ReadonlyMap<string, number> = new Ma
   [
     'src/metrics/metrics-service.ts#METRICS_SCAN_CORPUS_MAX_ENTRIES',
     METRICS_SCAN_CORPUS_MAX_ENTRIES
+  ],
+  [
+    'src/contracts/acp-runtime.ts#ACP_MAX_CLI_LINE_BYTES',
+    ACP_MAX_CLI_LINE_BYTES
+  ],
+  [
+    'src/contracts/acp-runtime.ts#ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES',
+    ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES
+  ],
+  [
+    'src/contracts/acp-runtime.ts#ACP_MAX_VERBOSE_TEE_PENDING_BYTES',
+    ACP_MAX_VERBOSE_TEE_PENDING_BYTES
   ]
 ]);
 
@@ -827,6 +844,27 @@ export const RUNTIME_RESOURCE_INVENTORY: readonly InventoryEntry[] = Object.free
     limit: { kind: 'owning-feature', featureId: 'F13', description: 'Native or bridge child-process resident memory reported in the backend-process-memory category' },
     overflow: 'Measured and reported separately from host-process memory; never folded into host RSS.',
     architecture: 'target', consumers: ['F03', 'F13', 'F14']
+  },
+  {
+    id: 'acp-bridge-cli-line-framer',
+    category: 'parser-residual', owner: 'src/services/acp-runtime/bridge-byte-framer.ts', lifetime: 'per-invocation', units: 'bytes',
+    limit: { kind: 'authority', module: 'src/contracts/acp-runtime.ts', symbol: 'ACP_MAX_CLI_LINE_BYTES', value: ACP_MAX_CLI_LINE_BYTES },
+    overflow: 'Discard unterminated CLI bytes past 2 MiB until newline, record overflow count, and fail closed at reconciliation.',
+    architecture: 'current', consumers: ['F03', 'F13']
+  },
+  {
+    id: 'acp-bridge-pending-stdout-backlog',
+    category: 'delivery-backlog', owner: 'src/services/acp-runtime/bridges/acp-stdio-bridge.ts', lifetime: 'per-invocation', units: 'bytes',
+    limit: { kind: 'authority', module: 'src/contracts/acp-runtime.ts', symbol: 'ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES', value: ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES },
+    overflow: 'Pause child stdout while bridge stdout is backpressured; terminate child with stream-overflow if pending backlog exceeds 4 MiB.',
+    architecture: 'current', consumers: ['F03', 'F13']
+  },
+  {
+    id: 'acp-host-verbose-tee-backlog',
+    category: 'delivery-backlog', owner: 'src/runner/acp-runner-stream-helpers.ts', lifetime: 'per-invocation', units: 'bytes',
+    limit: { kind: 'authority', module: 'src/contracts/acp-runtime.ts', symbol: 'ACP_MAX_VERBOSE_TEE_PENDING_BYTES', value: ACP_MAX_VERBOSE_TEE_PENDING_BYTES },
+    overflow: 'Drop excess verbose diagnostic tee chunks past 4 MiB pending and record acp-verbose-tee-overflow warning without blocking execution.',
+    architecture: 'current', consumers: ['F03', 'F13']
   },
   {
     id: 'target-phase-context-materialization',

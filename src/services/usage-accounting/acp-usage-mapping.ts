@@ -26,6 +26,7 @@
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 import { createHash } from 'node:crypto';
+import type { AcpBillableTokens } from '../../contracts/acp-runtime';
 import { ACP_USAGE_PRODUCER_NAMESPACE } from '../../contracts/usage-accounting/accounting-types';
 import { isAgentIdentifier } from '../acp-runtime/agent-identifier';
 import { qualifyAcpSessionCost } from './cumulative-qualifier';
@@ -72,6 +73,8 @@ export interface AcpUsageUpdate extends AcpEventEnvelope {
   readonly producerEventId?: string | undefined;
   /** The producer subtracted a session baseline it could vouch for. */
   readonly hasQualifiedSessionBaseline: boolean;
+  /** FR-R8-02 (02-01): qualified billable token counters, strictly distinct from `used`/`size` context occupancy. */
+  readonly billableTokens?: AcpBillableTokens | undefined;
 }
 
 /** An admitted prompt-to-attempt entry: this turn on this connection belongs to this attempt. */
