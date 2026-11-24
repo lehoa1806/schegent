@@ -98,6 +98,33 @@ describe('sidebar command metadata', () => {
       expect(MUTATING_COMMAND_TYPES.length + READ_ONLY_COMMAND_TYPES.length).toBe(71);
     });
 
+    // FR-R7-18 (`N01`, FR-001) — `CMD_CANCEL` is gated and concurrent so operator
+    // cancellation is never starved behind slow serialized starts or teardowns;
+    // `CMD_CONTINUE_WORKFLOW` stays serialized by default with a payload-scoped
+    // cancellation bypass in `MessageRouter`.
+    it('classifies CMD_CANCEL as gatedConcurrent and pins the 11 concurrent / 46 serialized split', () => {
+      expect(COMMAND_AUTHORITY.CMD_CANCEL).toEqual({
+        authority: 'gated',
+        execution: 'concurrent',
+        reason: 'workflow cancellation'
+      });
+      expect(COMMAND_AUTHORITY.CMD_CONTINUE_WORKFLOW).toMatchObject({
+        authority: 'gated',
+        execution: 'serialized'
+      });
+      const concurrent = MUTATING_COMMAND_TYPES.filter((type) => {
+        const entry = COMMAND_AUTHORITY[type];
+        return entry.authority === 'gated' && entry.execution === 'concurrent';
+      });
+      const serialized = MUTATING_COMMAND_TYPES.filter((type) => {
+        const entry = COMMAND_AUTHORITY[type];
+        return entry.authority === 'gated' && entry.execution === 'serialized';
+      });
+      expect(concurrent).toContain('CMD_CANCEL');
+      expect(concurrent).toHaveLength(11);
+      expect(serialized).toHaveLength(46);
+    });
+
     it('treats a type outside the union as gated and serialized (fail-closed)', () => {
       expect(commandAuthorityOf('CMD_NOT_A_COMMAND')).toMatchObject({
         authority: 'gated',

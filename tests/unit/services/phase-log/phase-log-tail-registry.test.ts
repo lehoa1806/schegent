@@ -22,11 +22,41 @@ import {
 import { PhaseLogTailSession } from '../../../../src/services/phase-log/phase-log-tail-session';
 import type { PhaseLogBatchPushMessage } from '../../../../src/contracts/sidebar-ipc';
 import type { PhaseLogSelection } from '../../../../src/services/phase-log/types';
+import { waitForCondition } from '../../../wait-for-condition';
 
 let tmpDir: string;
 const logger = new SanitizedLogger();
 const sanitize = (s: string): string => logger.sanitize(s);
 const INIT_LINE = '{"type":"system","subtype":"init"}\n';
+
+async function flushImmediate(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function captureSessionTicks(): {
+  readonly awaitSettled: () => Promise<void>;
+  readonly restore: () => void;
+} {
+  const realTick = PhaseLogTailSession.prototype.tick;
+  const inFlight: Promise<unknown>[] = [];
+  const spy = vi
+    .spyOn(PhaseLogTailSession.prototype, 'tick')
+    .mockImplementation(function (this: PhaseLogTailSession) {
+      const result = realTick.call(this);
+      inFlight.push(result.catch(() => undefined));
+      return result;
+    });
+  return {
+    awaitSettled: async () => {
+      await Promise.all(inFlight.splice(0));
+      await flushImmediate();
+    },
+    restore: () => {
+      spy.mockRestore();
+    }
+  };
+}
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'phase-log-registry-'));
@@ -249,8 +279,9 @@ describe('Feature 020 T042 — PhaseLogTailRegistry lifecycle', () => {
     const h = makeHarness();
     const sessionId = await startReady(h, 'run-1');
     h.fireTaskLeftInFlight('run-1');
-    // Allow microtasks for the async dispose.
-    await new Promise((r) => setTimeout(r, 0));
+    await waitForCondition(() => tailEndedOf(h.batches, sessionId) !== undefined, {
+      label: 'tail-ended batch after task leaves in-flight'
+    });
     const tailEnded = tailEndedOf(h.batches, sessionId);
     expect(tailEnded).toBeDefined();
     expect(tailEnded?.body.reason).toBe('phase-complete');
@@ -262,7 +293,7 @@ describe('Feature 020 T042 — PhaseLogTailRegistry lifecycle', () => {
     const h = makeHarness();
     await startReady(h, 'run-1');
     h.fireTaskLeftInFlight('run-OTHER');
-    await new Promise((r) => setTimeout(r, 0));
+    await flushImmediate();
     expect(entriesOf(h.batches).find((e) => e.kind === 'tail-ended')).toBeUndefined();
     await h.registry.disposeAll('webview-dispose');
   });
@@ -364,7 +395,7 @@ describe('FR-R6-F07 (T017) — slots, the ready ack and batch envelopes', () => 
     const h = makeHarness();
     const result = await h.registry.start({ workspaceRoot: tmpDir, selection: makeSelection('run-1') });
     if (result.outcome !== 'success') throw new Error('start failed');
-    await new Promise((r) => setTimeout(r, 20));
+    await flushImmediate();
     expect(h.batches).toHaveLength(0);
     expect(h.registry.ack(result.sessionId, { batchSeq: 0 })).toEqual({
       outcome: 'success',
@@ -434,12 +465,17 @@ describe('FR-R6-F07 (T017) — slots, the ready ack and batch envelopes', () => 
     await writeStream('run-1', INIT_LINE);
     const h = makeHarness();
     h.registry.setConsumerVisible('dashboard', false);
-    await startReady(h, 'run-1');
-    await new Promise((r) => setTimeout(r, 20));
-    expect(h.batches).toHaveLength(0);
-    h.registry.setConsumerVisible('dashboard', true);
-    await vi.waitFor(() => expect(h.batches.length).toBeGreaterThan(0));
-    await h.registry.disposeAll('webview-dispose');
+    const ticks = captureSessionTicks();
+    try {
+      await startReady(h, 'run-1');
+      await ticks.awaitSettled();
+      expect(h.batches).toHaveLength(0);
+      h.registry.setConsumerVisible('dashboard', true);
+      await vi.waitFor(() => expect(h.batches.length).toBeGreaterThan(0));
+    } finally {
+      ticks.restore();
+      await h.registry.disposeAll('webview-dispose');
+    }
   });
 
   it('keeps a slot hidden during its in-flight start hidden once the start lands', async () => {
@@ -456,11 +492,16 @@ describe('FR-R6-F07 (T017) — slots, the ready ack and batch envelopes', () => 
     const result = await h.registry.start({ workspaceRoot: tmpDir, selection: makeSelection('run-1') });
     spy.mockRestore();
     if (result.outcome !== 'success') throw new Error(`start failed: ${result.reason}`);
-    expect(h.registry.ack(result.sessionId, { batchSeq: 0 }).outcome).toBe('success');
-    await new Promise((r) => setTimeout(r, 20));
-    expect(h.batches).toHaveLength(0);
-    h.registry.setConsumerVisible('dashboard', true);
-    await vi.waitFor(() => expect(h.batches.length).toBeGreaterThan(0));
-    await h.registry.disposeAll('webview-dispose');
+    const ticks = captureSessionTicks();
+    try {
+      expect(h.registry.ack(result.sessionId, { batchSeq: 0 }).outcome).toBe('success');
+      await ticks.awaitSettled();
+      expect(h.batches).toHaveLength(0);
+      h.registry.setConsumerVisible('dashboard', true);
+      await vi.waitFor(() => expect(h.batches.length).toBeGreaterThan(0));
+    } finally {
+      ticks.restore();
+      await h.registry.disposeAll('webview-dispose');
+    }
   });
 });

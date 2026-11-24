@@ -81,6 +81,26 @@ export default defineConfig({
     // to paper over a hang: a genuine deadlock still fails, 25s later. The
     // wall-clock cost of the raise is zero on a green run, because a passing
     // test never reaches its timeout.
+    //
+    // Re-measured 2026-11-24 (`FR-R7-18` / `N06`, darwin/arm64, 16-core Apple
+    // M4 Max, Node v24.22.2) after splitting multi-invariant quota/candidate/
+    // availability mega-tests (26 -> 56 cases, 213 -> 261 assertions), removing
+    // avoidable fixed sleeps across unit/integration/visual/webview suites, and
+    // expanding `tests/lint/waits-are-bounded-by-time.test.ts` to cover sleep
+    // wrappers, step-sum deadline loops, and `tests/integration/`:
+    //   - 3 isolated runs of the 19-file async/contention suite (147 tests):
+    //     6.51s, 6.53s, 6.55s; 147/147 passed, 0 timeouts (slowest single test
+    //     3.14s in `shutdown-teardown-order.test.ts` real SIGTERM->SIGKILL ladder).
+    //   - 1 loaded run under 16 saturated CPU workers (1m load avg 5.37 -> 12.95):
+    //     16.87s (2.58x isolated wall time); 147/147 passed, 0 timeouts
+    //     (`concurrent-run-execution.test.ts` stretched 2.74x from 4.79s to 13.14s;
+    //     `concurrency-cap.test.ts` stretched 2.12x from 1.55s to 3.29s; slowest
+    //     single test 2.91s).
+    // Keeping `testTimeout: 30_000` and `hookTimeout: 30_000` preserves ~9.6x
+    // headroom over the slowest real-process test under single-host contention
+    // (and accommodates full `test:coverage` V8 + disk overhead) without masking
+    // genuine hangs or costing green runs any wall time. Full record:
+    // `docs/operations/async-test-flakiness-measurement.md`.
     testTimeout: 30_000,
     hookTimeout: 30_000,
     // Gives the run its own temp root rather than the shared system one, so a

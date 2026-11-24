@@ -9,6 +9,7 @@ import {
   openWithinRootByPath,
   segmentsUnderRoot
 } from '../../../src/lib/safe-open';
+import { narrowOpenFileHandle } from '../../../src/lib/narrow-mode';
 
 /**
  * FR-R3-053 — every assertion here drives the real filesystem with real
@@ -231,6 +232,28 @@ describe('openWithinRoot refuses a symlink at any component', () => {
         { flags: 'a+' }
       )
     ).rejects.toThrow(/unsupported flags/);
+  });
+
+  posixOnly('refuses a POSIX FIFO (named pipe) on read, append, and write opens immediately without blocking', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const fifoPath = path.join(root, 'audit.fifo');
+    execFileSync('mkfifo', [fifoPath]);
+    expect(await openWithinRoot(root, ['audit.fifo'], { flags: 'r' })).toMatchObject({
+      outcome: 'refused',
+      reason: 'not-a-regular-file'
+    });
+    expect(
+      await openWithinRoot(root, ['audit.fifo'], { flags: 'a', fileMode: 0o600 })
+    ).toMatchObject({
+      outcome: 'refused',
+      reason: 'not-a-regular-file'
+    });
+    expect(
+      await openWithinRoot(root, ['audit.fifo'], { flags: 'w', fileMode: 0o600 })
+    ).toMatchObject({
+      outcome: 'refused',
+      reason: 'not-a-regular-file'
+    });
   });
 });
 
@@ -871,5 +894,114 @@ describe('the helper refuses a mode that is not one, before it creates anything 
     await result.handle.close();
     expect(result.narrowing).toEqual([{ scope: 'file', outcome: 'narrowed', previousMode: 0o644 }]);
     expect((await fs.lstat(file)).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe('narrowOpenFileHandle narrows verified open descriptors without pathname re-resolution (FR-R7-18 / N11)', () => {
+  let base: string;
+
+  beforeEach(async () => {
+    base = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-fchmod-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(base, { recursive: true, force: true });
+  });
+
+  posixOnly('narrows the opened inode via handle.chmod even if the original path is replaced with a symlink', async () => {
+    const original = path.join(base, 'audit.log');
+    const decoy = path.join(base, 'decoy.txt');
+    await fs.writeFile(original, 'chained-entry\n');
+    await fs.chmod(original, 0o644);
+    await fs.writeFile(decoy, 'outsider');
+    await fs.chmod(decoy, 0o644);
+
+    const handle = await fs.open(original, 'a');
+    try {
+      // Simulate a race after open: move the original path aside and replace it with a symlink to decoy.
+      const moved = path.join(base, 'audit.log.moved');
+      await fs.rename(original, moved);
+      await fs.symlink(decoy, original);
+
+      const outcome = await narrowOpenFileHandle(handle, original, 0o600);
+      expect(outcome).toEqual({ outcome: 'narrowed', previousMode: 0o644 });
+      expect((await handle.stat()).mode & 0o777).toBe(0o600);
+      expect((await fs.lstat(moved)).mode & 0o777).toBe(0o600);
+      expect((await fs.lstat(decoy)).mode & 0o777, 'symlink target must remain untouched').toBe(0o644);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  posixOnly('returns already-private for owner-only handles and never widens stricter modes', async () => {
+    const privateFile = path.join(base, 'private.log');
+    await fs.writeFile(privateFile, 'x');
+    await fs.chmod(privateFile, 0o600);
+    const privateHandle = await fs.open(privateFile, 'a');
+    try {
+      expect(await narrowOpenFileHandle(privateHandle, privateFile, 0o600)).toEqual({
+        outcome: 'already-private'
+      });
+    } finally {
+      await privateHandle.close();
+    }
+
+    const readOnlyWidened = path.join(base, 'readonly.log');
+    await fs.writeFile(readOnlyWidened, 'x');
+    await fs.chmod(readOnlyWidened, 0o444);
+    const roHandle = await fs.open(readOnlyWidened, 'r');
+    try {
+      expect(await narrowOpenFileHandle(roHandle, readOnlyWidened, 0o600)).toEqual({
+        outcome: 'narrowed',
+        previousMode: 0o444
+      });
+      expect((await roHandle.stat()).mode & 0o777).toBe(0o400);
+    } finally {
+      await roHandle.close();
+    }
+  });
+
+  it('refuses non-regular or symlink descriptors and reports unapplied handle.chmod', async () => {
+    const symlinkHandle = {
+      stat: async () => ({
+        isSymbolicLink: () => true,
+        isFile: () => false,
+        mode: 0o120777
+      }),
+      chmod: async () => {
+        throw new Error('must not chmod symlink descriptor');
+      }
+    } as unknown as fs.FileHandle;
+    expect(await narrowOpenFileHandle(symlinkHandle, '/ignored', 0o600)).toMatchObject({
+      outcome: 'refused-symlink'
+    });
+
+    const dirHandle = {
+      stat: async () => ({
+        isSymbolicLink: () => false,
+        isFile: () => false,
+        mode: 0o040755
+      }),
+      chmod: async () => {
+        throw new Error('must not chmod non-regular descriptor');
+      }
+    } as unknown as fs.FileHandle;
+    expect(await narrowOpenFileHandle(dirHandle, '/ignored', 0o600)).toMatchObject({
+      outcome: 'unsupported',
+      code: 'EINVAL'
+    });
+
+    const noOpChmodHandle = {
+      stat: async () => ({
+        isSymbolicLink: () => false,
+        isFile: () => true,
+        mode: 0o100644
+      }),
+      chmod: async () => undefined
+    } as unknown as fs.FileHandle;
+    expect(await narrowOpenFileHandle(noOpChmodHandle, '/ignored', 0o600)).toMatchObject({
+      outcome: 'unsupported',
+      code: 'not-applied'
+    });
   });
 });

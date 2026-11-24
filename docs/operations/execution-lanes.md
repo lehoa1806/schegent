@@ -37,6 +37,8 @@ Implemented in:
 For the store these records live in, see [SQLite application store](sqlite-application-store.md).
 For the decision this engine implements, see
 [Run isolation decision](../architecture/run-isolation-decision.md).
+For the rehearsed, symptom-first recovery procedure when a lane or integration request is stuck,
+see [Incident recovery guide — Symptom 3: Stuck execution lane](incident-recovery-guide.md#symptom-3-stuck-execution-lane).
 
 ## What a lane is
 

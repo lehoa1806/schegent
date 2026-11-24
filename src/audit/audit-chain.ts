@@ -42,8 +42,17 @@
 // The module still imports nothing relative: `npm run audit:verify` loads it under
 // `node --experimental-strip-types`, which resolves relative imports literally.
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync
+} from 'node:fs';
+import { lstat, open as openRegularFile, readdir } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 
 /** The digest algorithm, recorded per entry so a future change is readable rather than inferred. */
 export const AUDIT_DIGEST_ALG = 'sha256';
@@ -366,10 +375,253 @@ export interface VerifyChainOptions {
   readonly probeDigest?: string;
 }
 
+/**
+ * FR-R7-18 (`N05`, `FR-005`) — default line chunk walked per event-loop turn by the async chain
+ * verifiers (`verifyChainAsync`, `verifyAuditChainAtAsync`, `verifyAuditChainThrough`).
+ *
+ * Chosen from the N05 measurement on `darwin/arm64` (11,676 lines / 5 MiB in ~15.6 ms, 46,629 lines /
+ * 20 MiB in ~66–70 ms synchronously): 512 lines execute in ~0.7–1.5 ms per chunk, keeping peak
+ * event-loop delay far below the 50 ms responsiveness gate even across multi-archive chains while
+ * adding negligible wall-clock overhead.
+ */
+export const DEFAULT_VERIFY_CHUNK_LINES = 512;
+
+export interface VerifyChainAsyncOptions extends VerifyChainOptions {
+  /** Lines processed before yielding to the event loop (`setImmediate`). Defaults to `DEFAULT_VERIFY_CHUNK_LINES`. */
+  readonly chunkLines?: number;
+}
+
 /** The detail of a cut written before this release whose range began at a legacy digest. */
 const PRE_FEATURE_CUT_DETAIL =
   'a cut written before this release removed the start of the chain, so its first link cannot be ' +
   'checked (it names a legacy row\'s digest that no retained byte produces)';
+
+interface ChainWalkState {
+  expected: string;
+  entries: number;
+  cuts: number;
+  unchainedPrefix: number;
+  prunedLegacy: number;
+  legacyTail: string | null;
+  transition: ChainTransition | null;
+  chainBegun: boolean;
+  readonly damages: DiagnosedDamage[];
+  prunedThrough: number;
+  probeFoundAt: number | null;
+}
+
+function createChainWalkState(): ChainWalkState {
+  return {
+    /** The digest the next link must equal, once the chain has begun. */
+    expected: AUDIT_CHAIN_GENESIS,
+    entries: 0,
+    cuts: 0,
+    /**
+     * Entries written before FR-R3-112, which carry no `prevDigest`.
+     *
+     * WHY THIS ARM EXISTS. Every workspace that ran a phase before this feature has a log full of
+     * unchained entries. Reporting them as tampering would mean the verifier's first run on every
+     * existing installation says the audit log has been altered — false, alarming, and the fastest
+     * possible route to nobody invoking it again.
+     *
+     * WHY IT IS A PREFIX AND NOT AN EXEMPTION. Only a LEADING run of unchained entries is excused.
+     * Once a chained entry appears, an unchained one after it IS a break: that is exactly what
+     * removing a link would look like, and treating it as "legacy" would be the fail-open this whole
+     * mechanism exists to remove. The count is reported either way, so an operator can see how much
+     * of the log the chain covers.
+     */
+    unchainedPrefix: 0,
+    /** Legacy rows accounted to a version-2 cut record. */
+    prunedLegacy: 0,
+    /**
+     * FR-R4-F03 (FR-001, FR-002; contract V1) — the digest of the most recent legacy item in walk
+     * order: a retained legacy row's digest, or a version-2 cut's `legacyTail`. While no chained link
+     * has been accepted, the first link is accepted if it is `genesis` or this digest, and nothing
+     * else. Form B (a writer constructed over a legacy log seeds from its last line) links to it;
+     * form A (a chain that began on an empty log) links to genesis. Accepting any other digest would
+     * accept an unproven first link, which FR-002 forbids.
+     */
+    legacyTail: null,
+    transition: null,
+    /** True once a first link has been accepted. From then on the walk is strict. */
+    chainBegun: false,
+    damages: [],
+    /** Chained rows retention removed, summed over the cuts applied (contract V4). */
+    prunedThrough: 0,
+    probeFoundAt: null
+  };
+}
+
+function stepChainLine(
+  state: ChainWalkState,
+  lines: readonly string[],
+  index: number,
+  options: VerifyChainOptions
+): ChainVerdict | null {
+  const trimmed = (lines[index] as string).trim();
+  if (trimmed.length === 0) return null;
+
+  let parsed: ChainLine['parsed'];
+  try {
+    parsed = JSON.parse(trimmed) as ChainLine['parsed'];
+  } catch {
+    // A line that does not parse is DIAGNOSED damage only when the next non-empty line says so,
+    // byte for byte (contract V3); the walk then skips it and carries on from that row.
+    const damage = diagnoseDamage(
+      lines,
+      index,
+      options.sources,
+      state.chainBegun ? state.expected : state.legacyTail
+    );
+    if (damage !== null) {
+      state.damages.push(damage);
+      return null;
+    }
+    // A truncated final line is the expected shape of a power-loss casualty, and the disclosure
+    // in the durability decision says so. It is reported as malformed rather than as tampering:
+    // those have different remedies.
+    return {
+      ok: false,
+      reason: 'malformed',
+      atEntry: index + 1,
+      detail: 'line is not valid JSON (a truncated final line is the usual cause)'
+    };
+  }
+
+  if (isAuditCutRecord(parsed)) {
+    const version: unknown = parsed.version ?? 1;
+    if (version !== 1 && version !== 2) {
+      // A cut a newer release wrote is never applied on a guess (data-model §3).
+      return {
+        ok: false,
+        reason: 'malformed',
+        atEntry: index + 1,
+        detail: 'a cut record is of a version this release does not understand'
+      };
+    }
+    if (version === 2 && !isWellFormedVersion2Cut(parsed)) {
+      return {
+        ok: false,
+        reason: 'malformed',
+        atEntry: index + 1,
+        detail: 'a version 2 cut record does not carry the fields that version defines'
+      };
+    }
+    state.cuts += 1;
+    state.prunedThrough += version === 2 ? parsed.removedChained ?? 0 : parsed.removedCount;
+    const removedLegacy = version === 2 ? parsed.removedLegacy ?? 0 : 0;
+    if (removedLegacy > 0) {
+      state.prunedLegacy += removedLegacy;
+      state.legacyTail = parsed.legacyTail ?? state.legacyTail;
+    }
+    if (
+      version === 2
+      && parsed.removedChained === 0
+      && parsed.removedFrom === AUDIT_CHAIN_GENESIS
+      && parsed.removedTo === AUDIT_CHAIN_GENESIS
+    ) {
+      // A legacy-only cut moves no link: it sets the legacy tail and nothing else.
+      return null;
+    }
+    // A prune. The chain resumes from where the removed range ended.
+    const accepted = state.chainBegun
+      ? parsed.removedFrom === state.expected
+      : parsed.removedFrom === AUDIT_CHAIN_GENESIS || parsed.removedFrom === state.legacyTail;
+    if (!accepted) {
+      return {
+        ok: false,
+        reason: 'broken-link',
+        atEntry: index + 1,
+        detail: !state.chainBegun && version === 1
+          ? PRE_FEATURE_CUT_DETAIL
+          : `a cut record claims to remove a range starting at ${parsed.removedFrom}, but the ` +
+            `chain was at ${state.chainBegun ? state.expected : AUDIT_CHAIN_GENESIS} — entries were removed ` +
+            'without a cut record covering them'
+      };
+    }
+    if (!state.chainBegun) {
+      state.chainBegun = true;
+      state.transition = parsed.removedFrom === AUDIT_CHAIN_GENESIS ? 'genesis' : 'legacy-tail';
+    }
+    state.expected = parsed.removedTo;
+    return null;
+  }
+
+  const prev = parsed.prevDigest;
+  if (typeof prev !== 'string') {
+    if (!state.chainBegun) {
+      // Pre-FR-R3-112. Excused as a prefix, counted, and remembered as the legacy tail, which is
+      // what a form-B chain's first row links to.
+      state.unchainedPrefix += 1;
+      state.legacyTail = digestOf(trimmed);
+      return null;
+    }
+    return {
+      ok: false,
+      reason: 'malformed',
+      atEntry: index + 1,
+      detail:
+        'entry carries no prevDigest, and it follows entries that do. A missing link after a '
+        + 'chained entry is a removal, not legacy data — legacy entries are only excused as a '
+        + 'leading prefix.'
+    };
+  }
+  const linksCorrectly = state.chainBegun
+    ? prev === state.expected
+    : prev === AUDIT_CHAIN_GENESIS || prev === state.legacyTail;
+  if (!linksCorrectly) {
+    return {
+      ok: false,
+      reason: 'broken-link',
+      atEntry: index + 1,
+      detail: state.chainBegun
+        ? `entry links to ${prev} but the previous entry hashes to ${state.expected}. Either this ` +
+          'entry or an earlier one was modified, or entries were removed without a cut record.'
+        : `entry links to ${prev}, but the first link of a chain must be genesis or the digest ` +
+          'of the last legacy entry before it'
+    };
+  }
+  if (!state.chainBegun) {
+    state.chainBegun = true;
+    state.transition = prev === AUDIT_CHAIN_GENESIS ? 'genesis' : 'legacy-tail';
+  }
+  state.expected = digestOf(trimmed);
+  state.entries += 1;
+  if (state.probeFoundAt === null && state.expected === options.probeDigest) {
+    state.probeFoundAt = state.prunedThrough + state.entries;
+  }
+  return null;
+}
+
+function finalizeChainWalk(state: ChainWalkState, options: VerifyChainOptions): ChainVerdict {
+  const probe = options.probeDigest === undefined ? null : { digest: options.probeDigest, foundAt: state.probeFoundAt };
+  const positions: ChainPositions = {
+    prunedThrough: state.prunedThrough,
+    tail: state.prunedThrough + state.entries,
+    probe
+  };
+  return {
+    ok: true,
+    entries: state.entries,
+    cuts: state.cuts,
+    unchainedPrefix: state.unchainedPrefix,
+    prunedLegacy: state.prunedLegacy,
+    transition: state.transition,
+    damages: state.damages,
+    positions
+  };
+}
+
+function normalizeChunkLines(chunkLines: number | undefined): number {
+  if (chunkLines === undefined || !Number.isFinite(chunkLines) || chunkLines < 1) {
+    return DEFAULT_VERIFY_CHUNK_LINES;
+  }
+  return Math.floor(chunkLines);
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 /**
  * Walk a chain and name the FIRST break.
@@ -385,175 +637,38 @@ export function verifyChain(
   lines: readonly string[],
   options: VerifyChainOptions = {}
 ): ChainVerdict {
-  /** The digest the next link must equal, once the chain has begun. */
-  let expected = AUDIT_CHAIN_GENESIS;
-  let entries = 0;
-  let cuts = 0;
-  /**
-   * Entries written before FR-R3-112, which carry no `prevDigest`.
-   *
-   * WHY THIS ARM EXISTS. Every workspace that ran a phase before this feature has a log full of
-   * unchained entries. Reporting them as tampering would mean the verifier's first run on every
-   * existing installation says the audit log has been altered — false, alarming, and the fastest
-   * possible route to nobody invoking it again.
-   *
-   * WHY IT IS A PREFIX AND NOT AN EXEMPTION. Only a LEADING run of unchained entries is excused.
-   * Once a chained entry appears, an unchained one after it IS a break: that is exactly what
-   * removing a link would look like, and treating it as "legacy" would be the fail-open this whole
-   * mechanism exists to remove. The count is reported either way, so an operator can see how much
-   * of the log the chain covers.
-   */
-  let unchainedPrefix = 0;
-  /** Legacy rows accounted to a version-2 cut record. */
-  let prunedLegacy = 0;
-  /**
-   * FR-R4-F03 (FR-001, FR-002; contract V1) — the digest of the most recent legacy item in walk
-   * order: a retained legacy row's digest, or a version-2 cut's `legacyTail`. While no chained link
-   * has been accepted, the first link is accepted if it is `genesis` or this digest, and nothing
-   * else. Form B (a writer constructed over a legacy log seeds from its last line) links to it;
-   * form A (a chain that began on an empty log) links to genesis. Accepting any other digest would
-   * accept an unproven first link, which FR-002 forbids.
-   */
-  let legacyTail: string | null = null;
-  let transition: ChainTransition | null = null;
-  /** True once a first link has been accepted. From then on the walk is strict. */
-  let chainBegun = false;
-  const damages: DiagnosedDamage[] = [];
-  /** Chained rows retention removed, summed over the cuts applied (contract V4). */
-  let prunedThrough = 0;
-  let probeFoundAt: number | null = null;
-
-  for (const [index, raw] of lines.entries()) {
-    const trimmed = raw.trim();
-    if (trimmed.length === 0) continue;
-
-    let parsed: ChainLine['parsed'];
-    try {
-      parsed = JSON.parse(trimmed) as ChainLine['parsed'];
-    } catch {
-      // A line that does not parse is DIAGNOSED damage only when the next non-empty line says so,
-      // byte for byte (contract V3); the walk then skips it and carries on from that row.
-      const damage = diagnoseDamage(lines, index, options.sources, chainBegun ? expected : legacyTail);
-      if (damage !== null) {
-        damages.push(damage);
-        continue;
-      }
-      // A truncated final line is the expected shape of a power-loss casualty, and the disclosure
-      // in the durability decision says so. It is reported as malformed rather than as tampering:
-      // those have different remedies.
-      return {
-        ok: false,
-        reason: 'malformed',
-        atEntry: index + 1,
-        detail: 'line is not valid JSON (a truncated final line is the usual cause)'
-      };
-    }
-
-    if (isAuditCutRecord(parsed)) {
-      const version: unknown = parsed.version ?? 1;
-      if (version !== 1 && version !== 2) {
-        // A cut a newer release wrote is never applied on a guess (data-model §3).
-        return {
-          ok: false,
-          reason: 'malformed',
-          atEntry: index + 1,
-          detail: 'a cut record is of a version this release does not understand'
-        };
-      }
-      if (version === 2 && !isWellFormedVersion2Cut(parsed)) {
-        return {
-          ok: false,
-          reason: 'malformed',
-          atEntry: index + 1,
-          detail: 'a version 2 cut record does not carry the fields that version defines'
-        };
-      }
-      cuts += 1;
-      prunedThrough += version === 2 ? parsed.removedChained ?? 0 : parsed.removedCount;
-      const removedLegacy = version === 2 ? parsed.removedLegacy ?? 0 : 0;
-      if (removedLegacy > 0) {
-        prunedLegacy += removedLegacy;
-        legacyTail = parsed.legacyTail ?? legacyTail;
-      }
-      if (
-        version === 2
-        && parsed.removedChained === 0
-        && parsed.removedFrom === AUDIT_CHAIN_GENESIS
-        && parsed.removedTo === AUDIT_CHAIN_GENESIS
-      ) {
-        // A legacy-only cut moves no link: it sets the legacy tail and nothing else.
-        continue;
-      }
-      // A prune. The chain resumes from where the removed range ended.
-      const accepted = chainBegun
-        ? parsed.removedFrom === expected
-        : parsed.removedFrom === AUDIT_CHAIN_GENESIS || parsed.removedFrom === legacyTail;
-      if (!accepted) {
-        return {
-          ok: false,
-          reason: 'broken-link',
-          atEntry: index + 1,
-          detail: !chainBegun && version === 1
-            ? PRE_FEATURE_CUT_DETAIL
-            : `a cut record claims to remove a range starting at ${parsed.removedFrom}, but the ` +
-              `chain was at ${chainBegun ? expected : AUDIT_CHAIN_GENESIS} — entries were removed ` +
-              'without a cut record covering them'
-        };
-      }
-      if (!chainBegun) {
-        chainBegun = true;
-        transition = parsed.removedFrom === AUDIT_CHAIN_GENESIS ? 'genesis' : 'legacy-tail';
-      }
-      expected = parsed.removedTo;
-      continue;
-    }
-
-    const prev = parsed.prevDigest;
-    if (typeof prev !== 'string') {
-      if (!chainBegun) {
-        // Pre-FR-R3-112. Excused as a prefix, counted, and remembered as the legacy tail, which is
-        // what a form-B chain's first row links to.
-        unchainedPrefix += 1;
-        legacyTail = digestOf(trimmed);
-        continue;
-      }
-      return {
-        ok: false,
-        reason: 'malformed',
-        atEntry: index + 1,
-        detail:
-          'entry carries no prevDigest, and it follows entries that do. A missing link after a '
-          + 'chained entry is a removal, not legacy data — legacy entries are only excused as a '
-          + 'leading prefix.'
-      };
-    }
-    const linksCorrectly = chainBegun
-      ? prev === expected
-      : prev === AUDIT_CHAIN_GENESIS || prev === legacyTail;
-    if (!linksCorrectly) {
-      return {
-        ok: false,
-        reason: 'broken-link',
-        atEntry: index + 1,
-        detail: chainBegun
-          ? `entry links to ${prev} but the previous entry hashes to ${expected}. Either this ` +
-            'entry or an earlier one was modified, or entries were removed without a cut record.'
-          : `entry links to ${prev}, but the first link of a chain must be genesis or the digest ` +
-            'of the last legacy entry before it'
-      };
-    }
-    if (!chainBegun) {
-      chainBegun = true;
-      transition = prev === AUDIT_CHAIN_GENESIS ? 'genesis' : 'legacy-tail';
-    }
-    expected = digestOf(trimmed);
-    entries += 1;
-    if (probeFoundAt === null && expected === options.probeDigest) probeFoundAt = prunedThrough + entries;
+  const state = createChainWalkState();
+  for (let index = 0; index < lines.length; index += 1) {
+    const failure = stepChainLine(state, lines, index, options);
+    if (failure !== null) return failure;
   }
+  return finalizeChainWalk(state, options);
+}
 
-  const probe = options.probeDigest === undefined ? null : { digest: options.probeDigest, foundAt: probeFoundAt };
-  const positions: ChainPositions = { prunedThrough, tail: prunedThrough + entries, probe };
-  return { ok: true, entries, cuts, unchainedPrefix, prunedLegacy, transition, damages, positions };
+/**
+ * FR-R7-18 (`N05`, `FR-005`) — asynchronous chunked-yielding twin of `verifyChain`.
+ *
+ * Runs the identical `stepChainLine` / `finalizeChainWalk` state machine, yielding to the event
+ * loop (`setImmediate`) between chunks of `chunkLines` lines so large logs and multi-archive
+ * chains do not stall the VS Code extension host thread.
+ */
+export async function verifyChainAsync(
+  lines: readonly string[],
+  options: VerifyChainAsyncOptions = {}
+): Promise<ChainVerdict> {
+  const chunkSize = normalizeChunkLines(options.chunkLines);
+  const state = createChainWalkState();
+  let inChunk = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const failure = stepChainLine(state, lines, index, options);
+    if (failure !== null) return failure;
+    inChunk += 1;
+    if (inChunk >= chunkSize && index + 1 < lines.length) {
+      inChunk = 0;
+      await yieldToEventLoop();
+    }
+  }
+  return finalizeChainWalk(state, options);
 }
 
 /**
@@ -635,17 +750,8 @@ export interface ChainFiles {
   readonly unrecognized: readonly string[];
 }
 
-/**
- * Which files make up the chain, in walk order.
- *
- * The cut file comes FIRST because a prune removes the oldest end of history: the surviving
- * entries link past the removed range, so the record explaining the gap has to be read
- * before the entries that follow it. Archives sort by their stamp, which is lexicographically
- * chronological. The live log is always last.
- */
-export function collectChainFiles(auditDir: string): ChainFiles | null {
-  if (!existsSync(auditDir)) return null;
-  const names = readdirSync(auditDir).filter((name) => name.startsWith(AUDIT_LOG_BASENAME));
+function classifyChainFileNames(allNames: readonly string[]): ChainFiles | null {
+  const names = allNames.filter((name) => name.startsWith(AUDIT_LOG_BASENAME));
   if (names.length === 0) return null;
 
   const stamped: { name: string; stamp: string }[] = [];
@@ -666,6 +772,45 @@ export function collectChainFiles(auditDir: string): ChainFiles | null {
     ],
     unrecognized
   };
+}
+
+/**
+ * Which files make up the chain, in walk order.
+ *
+ * The cut file comes FIRST because a prune removes the oldest end of history: the surviving
+ * entries link past the removed range, so the record explaining the gap has to be read
+ * before the entries that follow it. Archives sort by their stamp, which is lexicographically
+ * chronological. The live log is always last.
+ */
+export function collectChainFiles(auditDir: string): ChainFiles | null {
+  const normalizedDir = resolve(auditDir);
+  let dirStat;
+  try {
+    dirStat = lstatSync(normalizedDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return null;
+    throw err;
+  }
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+    throw new Error('Audit directory must be a non-symlink directory');
+  }
+  return classifyChainFileNames(readdirSync(normalizedDir));
+}
+
+async function collectChainFilesAsync(auditDir: string): Promise<ChainFiles | null> {
+  const normalizedDir = resolve(auditDir);
+  let dirStat;
+  try {
+    dirStat = await lstat(normalizedDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return null;
+    throw err;
+  }
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+    throw new Error('Audit directory must be a non-symlink directory');
+  }
+  const names = await readdir(normalizedDir);
+  return classifyChainFileNames(names);
 }
 
 export interface ChainCheck {
@@ -705,6 +850,32 @@ export function splitChainBytes(file: string, content: Buffer): ChainLineSource[
   }
 }
 
+function readContainedRegularFileSync(auditDir: string, name: string): Buffer {
+  const target = join(auditDir, name);
+  const noFollow = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0;
+  if (noFollow === 0) {
+    const entryStat = lstatSync(target);
+    if (entryStat.isSymbolicLink() || !entryStat.isFile()) {
+      throw new Error(`Refused non-regular or symlink audit file: ${name}`);
+    }
+  }
+  const fd = openSync(
+    target,
+    fsConstants.O_RDONLY |
+      ((fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0) |
+      ((fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0)
+  );
+  try {
+    const handleStat = fstatSync(fd);
+    if (!handleStat.isFile()) {
+      throw new Error(`Refused non-regular audit file: ${name}`);
+    }
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
  * Verify the chain under one audit directory, or `null` when there is no log.
  *
@@ -722,7 +893,7 @@ export function verifyAuditChainAt(
   if (files === null) return null;
   const sources: ChainLineSource[] = [];
   for (const name of files.ordered) {
-    for (const source of splitChainBytes(name, readFileSync(join(auditDir, name)))) {
+    for (const source of splitChainBytes(name, readContainedRegularFileSync(auditDir, name))) {
       sources.push(source);
     }
   }
@@ -736,29 +907,96 @@ export function verifyAuditChainAt(
 }
 
 /**
- * `verifyAuditChainAt`, with each chain file read through `readFile`. The writer passes its canonical
- * walk, so a planted archive link is refused there rather than followed out of the workspace.
+ * Decode line buffers into UTF-8 strings in bounded chunks so multi-megabyte chains do not
+ * monopolize the event loop before the hash walk even starts.
+ */
+async function decodeChainLinesAsync(
+  sources: readonly ChainLineSource[],
+  chunkSize: number
+): Promise<string[]> {
+  const lines: string[] = new Array<string>(sources.length);
+  let inChunk = 0;
+  for (let index = 0; index < sources.length; index += 1) {
+    lines[index] = (sources[index] as ChainLineSource).bytes.toString('utf8');
+    inChunk += 1;
+    if (inChunk >= chunkSize && index + 1 < sources.length) {
+      inChunk = 0;
+      await yieldToEventLoop();
+    }
+  }
+  return lines;
+}
+
+/**
+ * `verifyAuditChainAt`, with each chain file read through `readFile` and verified asynchronously
+ * in bounded chunks so large logs and multi-archive chains keep the host event loop responsive.
+ * The writer passes its canonical walk, so a planted archive link is refused there rather than
+ * followed out of the workspace.
  */
 export async function verifyAuditChainThrough(
   auditDir: string,
   readFile: (name: string) => Promise<Buffer>,
-  options: Pick<VerifyChainOptions, 'probeDigest'> = {}
+  options: Pick<VerifyChainAsyncOptions, 'probeDigest' | 'chunkLines'> = {}
 ): Promise<ChainCheck | null> {
-  const files = collectChainFiles(auditDir);
+  const files = await collectChainFilesAsync(auditDir);
   if (files === null) return null;
+  const chunkSize = normalizeChunkLines(options.chunkLines);
   const sources: ChainLineSource[] = [];
   for (const name of files.ordered) {
     for (const source of splitChainBytes(name, await readFile(name))) {
       sources.push(source);
     }
   }
+  const lines = await decodeChainLinesAsync(sources, chunkSize);
   return {
     files,
-    verdict: verifyChain(
-      sources.map((source) => source.bytes.toString('utf8')),
-      { sources, ...options }
-    )
+    verdict: await verifyChainAsync(lines, { sources, ...options, chunkLines: chunkSize })
   };
+}
+
+async function readContainedRegularFileAsync(auditDir: string, name: string): Promise<Buffer> {
+  const target = join(auditDir, name);
+  const noFollow = (fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0;
+  if (noFollow === 0) {
+    const entryStat = await lstat(target);
+    if (entryStat.isSymbolicLink() || !entryStat.isFile()) {
+      throw new Error(`Refused non-regular or symlink audit file: ${name}`);
+    }
+  }
+  const handle = await openRegularFile(
+    target,
+    fsConstants.O_RDONLY |
+      ((fsConstants as Partial<typeof fsConstants>).O_NOFOLLOW ?? 0) |
+      ((fsConstants as Partial<typeof fsConstants>).O_NONBLOCK ?? 0)
+  );
+  try {
+    const handleStat = await handle.stat();
+    if (!handleStat.isFile()) {
+      throw new Error(`Refused non-regular audit file: ${name}`);
+    }
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * FR-R7-18 (`N05`, `FR-005`) — non-blocking, chunked-yielding twin of `verifyAuditChainAt`.
+ * Opens each file with `O_NOFOLLOW | O_NONBLOCK` and regular-file `fstat` verification,
+ * decodes lines in bounded chunks, and yields between chunks during the hash walk while preserving
+ * byte-for-byte verdict parity with `verifyAuditChainAt`. Workspace-scoped callers such as
+ * `runVerifyAuditChain` pass `openWithinRoot` via `verifyAuditChainThrough`; synchronous
+ * `verifyAuditChainAt` remains synchronous for CLI callers (`scripts/verify-audit-chain.ts`).
+ */
+export async function verifyAuditChainAtAsync(
+  auditDir: string,
+  options: Pick<VerifyChainAsyncOptions, 'probeDigest' | 'chunkLines'> = {}
+): Promise<ChainCheck | null> {
+  return verifyAuditChainThrough(
+    auditDir,
+    (name) => readContainedRegularFileAsync(auditDir, name),
+    options
+  );
 }
 
 /**
@@ -808,7 +1046,7 @@ function parsesAsObject(bytes: Buffer): boolean {
  */
 export async function readChainTail(
   auditDir: string,
-  readFile: (name: string) => Promise<Buffer> = (name) => Promise.resolve(readFileSync(join(auditDir, name)))
+  readFile: (name: string) => Promise<Buffer> = (name) => readContainedRegularFileAsync(auditDir, name)
 ): Promise<ChainTail | null> {
   const files = collectChainFiles(auditDir);
   if (files === null) return null;
@@ -851,7 +1089,7 @@ export async function readChainTail(
  */
 export async function readCutLink(
   auditDir: string,
-  readFile: (name: string) => Promise<Buffer> = (name) => Promise.resolve(readFileSync(join(auditDir, name)))
+  readFile: (name: string) => Promise<Buffer> = (name) => readContainedRegularFileAsync(auditDir, name)
 ): Promise<string | null> {
   if (collectChainFiles(auditDir)?.ordered.includes(AUDIT_CUTS_BASENAME) !== true) return null;
   let expected: string | null = null;

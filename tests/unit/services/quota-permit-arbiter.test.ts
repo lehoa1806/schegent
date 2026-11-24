@@ -117,122 +117,131 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
     // in-memory store cleanup
   });
 
+  function createArbiter(
+    onCapacityOrWaiterChanged?: (queueId?: string) => void
+  ): QuotaPermitArbiter {
+    return new QuotaPermitArbiter({
+      ledgerStore: store,
+      clock: {
+        nowWallMs: () => nowWallMs,
+        nowMonotonicMs: () => nowMonoMs,
+        hostEpoch: 'epoch-1'
+      },
+      ...(onCapacityOrWaiterChanged !== undefined
+        ? { onCapacityOrWaiterChanged }
+        : {})
+    });
+  }
+
+  async function seedSingleRootArbiter(): Promise<QuotaPermitArbiter> {
+    await store.mutate({ targetRootId: 'root-1' }, ({ ledger }) => ({
+      commit: true,
+      plan: {
+        nextLedger: {
+          ...ledger,
+          roots: { 'root-1': makeRoot('root-1', 'q-1') }
+        },
+        targetRootId: 'root-1',
+        result: undefined
+      }
+    }));
+    return createArbiter();
+  }
+
+  function makeValidWaiterInput(
+    overrides?: Record<string, unknown>
+  ): Record<string, unknown> {
+    return {
+      waiterId: 'w-1',
+      rootRunId: 'root-1',
+      queueId: 'q-1',
+      invocationId: 'inv-1',
+      generation: 1,
+      sequence: 1,
+      quotaIds: ['quota-a'],
+      registeredAt: 1_000,
+      ...overrides
+    };
+  }
+
+  function makeValidPermitInput(
+    overrides?: Record<string, unknown>
+  ): Record<string, unknown> {
+    return {
+      permitId: 'permit:att-1',
+      attemptId: 'att-1',
+      rootRunId: 'root-1',
+      queueId: 'q-1',
+      quotaIds: ['quota-a'],
+      executionFence: makeFence(),
+      grantedAt: 1_000,
+      state: 'held',
+      ...overrides
+    };
+  }
+
   describe('closed-shape validation (D7)', () => {
-    it('validates QuotaWaiter and rejects unknown keys, empty/duplicate/>4 quotaIds, and invalid sequence', () => {
-      const valid = validateQuotaWaiter({
-        waiterId: 'w-1',
-        rootRunId: 'root-1',
-        queueId: 'q-1',
-        invocationId: 'inv-1',
-        generation: 1,
-        sequence: 1,
-        quotaIds: ['quota-b', 'quota-a'],
-        registeredAt: 1_000
-      });
+    it('accepts a valid QuotaWaiter and normalizes quotaIds into UTF-8 order', () => {
+      const valid = validateQuotaWaiter(
+        makeValidWaiterInput({ quotaIds: ['quota-b', 'quota-a'] })
+      );
       expect(valid.ok).toBe(true);
       if (valid.ok) {
         expect(valid.value.quotaIds).toEqual(['quota-a', 'quota-b']);
       }
+    });
 
-      // Unknown field rejected
+    it('rejects QuotaWaiter payloads containing unknown fields', () => {
       expect(
-        validateQuotaWaiter({
-          waiterId: 'w-1',
-          rootRunId: 'root-1',
-          queueId: 'q-1',
-          invocationId: 'inv-1',
-          generation: 1,
-          sequence: 1,
-          quotaIds: ['quota-a'],
-          registeredAt: 1_000,
-          extraField: true
-        }).ok
-      ).toBe(false);
-
-      // Duplicate quotaIds rejected
-      expect(
-        validateQuotaWaiter({
-          waiterId: 'w-1',
-          rootRunId: 'root-1',
-          queueId: 'q-1',
-          invocationId: 'inv-1',
-          generation: 1,
-          sequence: 1,
-          quotaIds: ['quota-a', 'quota-a'],
-          registeredAt: 1_000
-        }).ok
-      ).toBe(false);
-
-      // > 4 quotaIds rejected
-      expect(
-        validateQuotaWaiter({
-          waiterId: 'w-1',
-          rootRunId: 'root-1',
-          queueId: 'q-1',
-          invocationId: 'inv-1',
-          generation: 1,
-          sequence: 1,
-          quotaIds: ['q1', 'q2', 'q3', 'q4', 'q5'],
-          registeredAt: 1_000
-        }).ok
-      ).toBe(false);
-
-      // Sequence <= 0 rejected
-      expect(
-        validateQuotaWaiter({
-          waiterId: 'w-1',
-          rootRunId: 'root-1',
-          queueId: 'q-1',
-          invocationId: 'inv-1',
-          generation: 1,
-          sequence: 0,
-          quotaIds: ['q1'],
-          registeredAt: 1_000
-        }).ok
+        validateQuotaWaiter(makeValidWaiterInput({ extraField: true })).ok
       ).toBe(false);
     });
 
-    it('validates QuotaPermit and rejects unknown keys, invalid state, or malformed fence', () => {
-      const valid = validateQuotaPermit({
-        permitId: 'permit:att-1',
-        attemptId: 'att-1',
-        rootRunId: 'root-1',
-        queueId: 'q-1',
-        quotaIds: ['quota-z', 'quota-a'],
-        executionFence: makeFence(),
-        grantedAt: 1_000,
-        state: 'held'
-      });
+    it('rejects QuotaWaiter payloads with duplicate quotaIds', () => {
+      expect(
+        validateQuotaWaiter(
+          makeValidWaiterInput({ quotaIds: ['quota-a', 'quota-a'] })
+        ).ok
+      ).toBe(false);
+    });
+
+    it('rejects QuotaWaiter payloads with more than 4 quotaIds', () => {
+      expect(
+        validateQuotaWaiter(
+          makeValidWaiterInput({ quotaIds: ['q1', 'q2', 'q3', 'q4', 'q5'] })
+        ).ok
+      ).toBe(false);
+    });
+
+    it('rejects QuotaWaiter payloads with sequence <= 0', () => {
+      expect(
+        validateQuotaWaiter(
+          makeValidWaiterInput({ sequence: 0, quotaIds: ['q1'] })
+        ).ok
+      ).toBe(false);
+    });
+
+    it('accepts a valid QuotaPermit and normalizes quotaIds into UTF-8 order', () => {
+      const valid = validateQuotaPermit(
+        makeValidPermitInput({ quotaIds: ['quota-z', 'quota-a'] })
+      );
       expect(valid.ok).toBe(true);
       if (valid.ok) {
         expect(valid.value.quotaIds).toEqual(['quota-a', 'quota-z']);
       }
+    });
 
+    it('rejects QuotaPermit payloads with invalid terminal state', () => {
       expect(
-        validateQuotaPermit({
-          permitId: 'permit:att-1',
-          attemptId: 'att-1',
-          rootRunId: 'root-1',
-          queueId: 'q-1',
-          quotaIds: ['quota-a'],
-          executionFence: makeFence(),
-          grantedAt: 1_000,
-          state: 'released'
-        }).ok
+        validateQuotaPermit(makeValidPermitInput({ state: 'released' })).ok
       ).toBe(false);
+    });
 
+    it('rejects QuotaPermit payloads containing unknown fields', () => {
       expect(
-        validateQuotaPermit({
-          permitId: 'permit:att-1',
-          attemptId: 'att-1',
-          rootRunId: 'root-1',
-          queueId: 'q-1',
-          quotaIds: ['quota-a'],
-          executionFence: makeFence(),
-          grantedAt: 1_000,
-          state: 'uncertain',
-          unexpected: 'field'
-        }).ok
+        validateQuotaPermit(
+          makeValidPermitInput({ state: 'uncertain', unexpected: 'field' })
+        ).ok
       ).toBe(false);
     });
 
@@ -248,27 +257,8 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
   });
 
   describe('monotonic sequence allocation, preservation, reselection, and overflow', () => {
-    it('allocates sequence once per selection, preserves across polling and pause/resume, and allocates new sequence on quota-set reselection', async () => {
-      await store.mutate({ targetRootId: 'root-1' }, ({ ledger }) => ({
-        commit: true,
-        plan: {
-          nextLedger: {
-            ...ledger,
-            roots: { 'root-1': makeRoot('root-1', 'q-1') }
-          },
-          targetRootId: 'root-1',
-          result: undefined
-        }
-      }));
-
-      const arbiter = new QuotaPermitArbiter({
-        ledgerStore: store,
-        clock: {
-          nowWallMs: () => nowWallMs,
-          nowMonotonicMs: () => nowMonoMs,
-          hostEpoch: 'epoch-1'
-        }
-      });
+    it('allocates sequence 1 once for a newly registered waiter selection', async () => {
+      const arbiter = await seedSingleRootArbiter();
 
       const first = await arbiter.registerWaiter({
         rootRunId: 'root-1',
@@ -282,8 +272,23 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       if (!first.ok) return;
       expect(first.waiter.sequence).toBe(1);
       expect(first.preservedSequence).toBe(false);
+    });
 
-      // Polling update with same quota set in reverse order preserves sequence = 1
+    it('preserves existing waiter sequence across polling updates with the same quota set in any order', async () => {
+      const arbiter = await seedSingleRootArbiter();
+
+      const first = await arbiter.registerWaiter({
+        rootRunId: 'root-1',
+        queueId: 'q-1',
+        invocationId: 'frame:main',
+        frameKey: 'frame:main',
+        generation: 1,
+        quotaIds: ['quota-b', 'quota-a']
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.waiter.sequence).toBe(1);
+
       nowWallMs += 500;
       const polled = await arbiter.registerWaiter({
         rootRunId: 'root-1',
@@ -297,8 +302,22 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       if (!polled.ok) return;
       expect(polled.waiter.sequence).toBe(1);
       expect(polled.preservedSequence).toBe(true);
+    });
 
-      // Pause and resume preserve sequence = 1
+    it('preserves existing waiter sequence across pause and resume transitions', async () => {
+      const arbiter = await seedSingleRootArbiter();
+
+      const first = await arbiter.registerWaiter({
+        rootRunId: 'root-1',
+        queueId: 'q-1',
+        invocationId: 'frame:main',
+        frameKey: 'frame:main',
+        generation: 1,
+        quotaIds: ['quota-b', 'quota-a']
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
       const paused = await arbiter.setWaiterPaused({
         rootRunId: 'root-1',
         invocationId: 'frame:main',
@@ -314,8 +333,23 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       });
       expect(resumed?.sequence).toBe(1);
       expect(resumed?.paused).toBe(false);
+    });
 
-      // Reselecting to a different quota set allocates a new sequence = 2
+    it('allocates a new monotonic sequence when a waiter reselects a different quota set', async () => {
+      const arbiter = await seedSingleRootArbiter();
+
+      const first = await arbiter.registerWaiter({
+        rootRunId: 'root-1',
+        queueId: 'q-1',
+        invocationId: 'frame:main',
+        frameKey: 'frame:main',
+        generation: 1,
+        quotaIds: ['quota-b', 'quota-a']
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.waiter.sequence).toBe(1);
+
       const reselected = await arbiter.registerWaiter({
         rootRunId: 'root-1',
         queueId: 'q-1',
@@ -643,7 +677,11 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       }
     });
 
-    it('matches release to immutable attemptId and current ownership claims, allowing current-owner teardown after generation advance and rejecting stale claims', async () => {
+    async function seedHeldPermitAfterGenerationAdvance(): Promise<{
+      readonly arbiter: QuotaPermitArbiter;
+      getNotifiedQueueId: () => string | undefined;
+      resetNotifiedQueueId: () => void;
+    }> {
       // Root generation advanced from 1 to 2 due to pause/cancel while att-1 was running
       const root = makeRoot('root-1', 'q-1', {
         primacyClaim: 'window-1:epoch-1',
@@ -683,19 +721,22 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       }));
 
       let notifiedQueueId: string | undefined;
-      const arbiter = new QuotaPermitArbiter({
-        ledgerStore: store,
-        clock: {
-          nowWallMs: () => nowWallMs,
-          nowMonotonicMs: () => nowMonoMs,
-          hostEpoch: 'epoch-1'
-        },
-        onCapacityOrWaiterChanged: (qId) => {
-          notifiedQueueId = qId;
-        }
+      const arbiter = createArbiter((qId) => {
+        notifiedQueueId = qId;
       });
+      return {
+        arbiter,
+        getNotifiedQueueId: () => notifiedQueueId,
+        resetNotifiedQueueId: () => {
+          notifiedQueueId = undefined;
+        }
+      };
+    }
 
-      // Stale primacyClaim rejected
+    it('rejects permit release when ownership primacyClaim is stale', async () => {
+      const { arbiter, getNotifiedQueueId } =
+        await seedHeldPermitAfterGenerationAdvance();
+
       const staleClaim = await arbiter.releasePermit({
         attemptId: 'att-1',
         rootRunId: 'root-1',
@@ -708,8 +749,13 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       if (!staleClaim.ok) {
         expect(staleClaim.reason).toBe('stale-execution-fence');
       }
+      expect(getNotifiedQueueId()).toBeUndefined();
+    });
 
-      // Mismatched attemptId rejected
+    it('rejects permit release when attemptId does not match the held permit', async () => {
+      const { arbiter, getNotifiedQueueId } =
+        await seedHeldPermitAfterGenerationAdvance();
+
       const wrongAttempt = await arbiter.releasePermit({
         permitId: 'permit:att-1',
         attemptId: 'att-other',
@@ -720,8 +766,13 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       if (!wrongAttempt.ok) {
         expect(wrongAttempt.reason).toBe('attempt-mismatch');
       }
+      expect(getNotifiedQueueId()).toBeUndefined();
+    });
 
-      // Current owner with original attempt generation (1) can release after rootGeneration advanced to 2
+    it('allows current owner to release a held permit using its original attempt generation after rootGeneration advances', async () => {
+      const { arbiter, getNotifiedQueueId } =
+        await seedHeldPermitAfterGenerationAdvance();
+
       const validRelease = await arbiter.releasePermit({
         attemptId: 'att-1',
         rootRunId: 'root-1',
@@ -736,10 +787,25 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
         expect(validRelease.alreadyReleased).toBe(false);
         expect(validRelease.state).toBe('released');
       }
-      expect(notifiedQueueId).toBe('q-1');
+      expect(getNotifiedQueueId()).toBe('q-1');
+    });
 
-      // Duplicate release is idempotent and does not re-notify
-      notifiedQueueId = undefined;
+    it('treats duplicate permit release as idempotent without re-notifying waiters', async () => {
+      const { arbiter, getNotifiedQueueId, resetNotifiedQueueId } =
+        await seedHeldPermitAfterGenerationAdvance();
+
+      const initialRelease = await arbiter.releasePermit({
+        attemptId: 'att-1',
+        rootRunId: 'root-1',
+        fence: makeFence({
+          primacyClaim: 'window-1:epoch-1',
+          queueClaim: 'queue-claim-1',
+          rootGeneration: 1
+        })
+      });
+      expect(initialRelease.ok).toBe(true);
+
+      resetNotifiedQueueId();
       const duplicateRelease = await arbiter.releasePermit({
         attemptId: 'att-1',
         rootRunId: 'root-1',
@@ -749,7 +815,7 @@ describe('QuotaPermitArbiter unit tests (FR-R5-F29 / SPEC-07)', () => {
       if (duplicateRelease.ok) {
         expect(duplicateRelease.alreadyReleased).toBe(true);
       }
-      expect(notifiedQueueId).toBeUndefined();
+      expect(getNotifiedQueueId()).toBeUndefined();
     });
   });
 });

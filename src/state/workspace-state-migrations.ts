@@ -52,6 +52,8 @@ import {
 import {
   KEYS,
   SCHEMA_VERSION,
+  UnsupportedStateSchemaVersionError,
+  describeMalformedVersionValue,
   type ForwardMigrationEvents,
   type InitializeResult,
   type WorkspaceStateFamilyContext
@@ -421,13 +423,14 @@ async function runForwardMigrations(
 export async function initializeWorkspaceState(
   ctx: WorkspaceStateFamilyContext
 ): Promise<InitializeResult> {
-  const persistedNumeric = ctx.memento.get<number>(KEYS.schemaVersionNumeric);
+  const persistedNumericRaw = ctx.memento.get<unknown>(KEYS.schemaVersionNumeric);
   const rawRegistryBeforeInit = ctx.memento.get<unknown>(KEYS.queueRegistry);
   const hadPersistedRegistry =
     rawRegistryBeforeInit !== undefined && rawRegistryBeforeInit !== null;
-  assertPersistedVersionSupported(persistedNumeric);
-  const persistedVersion = ctx.memento.get<string>(KEYS.schemaVersion);
-  if (!persistedVersion) {
+  assertPersistedVersionSupported(persistedNumericRaw);
+  const persistedNumeric = persistedNumericRaw as number | undefined;
+  const persistedVersionRaw = ctx.memento.get<unknown>(KEYS.schemaVersion);
+  if (persistedVersionRaw === undefined || persistedVersionRaw === '') {
     const runRepairEvents = await normalizeRunForInitialize(
       ctx,
       needsLegacyRunMigration(persistedNumeric)
@@ -440,6 +443,19 @@ export async function initializeWorkspaceState(
       runRepairEvents
     };
   }
+  if (
+    typeof persistedVersionRaw !== 'string' ||
+    persistedVersionRaw.length > 32 ||
+    !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(persistedVersionRaw)
+  ) {
+    throw new UnsupportedStateSchemaVersionError(
+      'MALFORMED_LEGACY_STATE_VERSION',
+      persistedVersionRaw,
+      SCHEMA_VERSION,
+      `Schegent state version (${describeMalformedVersionValue(persistedVersionRaw)}) is malformed (expected semver matching ${SCHEMA_VERSION}). Run "Schegent: Reset Workspace State" to clear.`
+    );
+  }
+  const persistedVersion = persistedVersionRaw;
   if (persistedVersion === SCHEMA_VERSION) {
     if (persistedNumeric !== STATE_SCHEMA_VERSION) {
       const runRepairEvents = await normalizeRunForInitialize(
@@ -481,7 +497,10 @@ export async function initializeWorkspaceState(
       runRepairEvents
     };
   }
-  throw new Error(
+  throw new UnsupportedStateSchemaVersionError(
+    'UNSUPPORTED_LEGACY_STATE_VERSION',
+    persistedVersion,
+    SCHEMA_VERSION,
     `Schegent state version ${persistedVersion} is incompatible with runtime ${SCHEMA_VERSION}. Run "Schegent: Reset Workspace State" to clear.`
   );
 }

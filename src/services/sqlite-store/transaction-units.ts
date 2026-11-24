@@ -164,11 +164,14 @@ export class AtomicTransactionUnitsService {
       | TransactionUnitOutcome<T>
   ): TransactionUnitOutcome<T> {
     const writeOutcome = this.writer.executeSerializedWrite(lane, payloadBytes, 4, (conn) => {
-      conn.exec('BEGIN IMMEDIATE');
+      let txOpen = false;
       try {
+        conn.exec('BEGIN IMMEDIATE');
+        txOpen = true;
         const replayedOrMismatch = this.checkIdempotencyReceipt<T>(commitUnit, envelope);
         if (replayedOrMismatch !== null) {
           conn.exec('ROLLBACK');
+          txOpen = false;
           return replayedOrMismatch;
         }
         const now = this.nowMs();
@@ -176,34 +179,50 @@ export class AtomicTransactionUnitsService {
           const fenceRejection = this.verifyFence(commitUnit, fence, now);
           if (fenceRejection !== null) {
             conn.exec('ROLLBACK');
+            txOpen = false;
             return fenceRejection;
           }
         }
         const outcome = body(now);
         if ('status' in outcome) {
           conn.exec('ROLLBACK');
+          txOpen = false;
           return outcome;
         }
         const outboxSeq = this.recordOutboxAndReceipt(
           commitUnit, envelope, outcome.revision, outcome.value, now
         );
         conn.exec('COMMIT');
+        txOpen = false;
         return {
           status: 'committed' as const, commitUnit, revision: outcome.revision,
           replayed: false, outboxSeq, value: outcome.value
         };
       } catch (error) {
-        try {
-          conn.exec('ROLLBACK');
-        } catch {
-          // Ignore rollback error
+        if (txOpen) {
+          try {
+            conn.exec('ROLLBACK');
+          } catch {
+            // Ignore rollback error
+          }
         }
         const rawMessage = error instanceof Error ? error.message : String(error);
+        const rawErrCode =
+          typeof error === 'object' && error !== null && typeof (error as { errcode?: unknown }).errcode === 'number'
+            ? ((error as { errcode: number }).errcode & 0xff)
+            : null;
+        const isStorageBusyOrFull =
+          rawErrCode === 5
+          || rawErrCode === 6
+          || rawErrCode === 8
+          || rawErrCode === 10
+          || rawErrCode === 13
+          || /SQLITE_BUSY|SQLITE_FULL|SQLITE_READONLY|SQLITE_IOERR|database is locked|database table is locked|database or disk is full|readonly database|disk I\/O error/i.test(rawMessage);
         const code = rawMessage.startsWith('FAILPOINT_INJECTED:')
           ? ('FAILPOINT_INJECTED' as const)
           : /FOREIGN KEY constraint failed/i.test(rawMessage)
             ? ('FOREIGN_KEY_VIOLATION' as const)
-            : /SQLITE_BUSY|SQLITE_FULL|database is locked/i.test(rawMessage)
+            : isStorageBusyOrFull
               ? ('STORAGE_BUSY_OR_FULL' as const)
               : ('CONSTRAINT_VIOLATION' as const);
         return {

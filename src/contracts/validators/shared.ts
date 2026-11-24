@@ -3,6 +3,7 @@ import type { SidebarCommand } from '../sidebar-ipc';
 export interface IpcValidationError {
   readonly ok: false;
   readonly reason: string;
+  readonly code?: string;
   readonly type?: string;
   readonly correlationId?: string;
 }
@@ -65,7 +66,7 @@ export function ok(command: SidebarCommand): IpcValidationResult {
 
 export function fail(
   reason: string,
-  extra: { type?: string; correlationId?: string } = {}
+  extra: { code?: string; type?: string; correlationId?: string } = {}
 ): IpcValidationError {
   return { ok: false, reason, ...extra };
 }

@@ -41,6 +41,7 @@ import {
   type ReadPhaseLogRequest,
   type ReadPhaseLogResponse
 } from '../../src/contracts/sidebar-ipc';
+import { waitForCondition } from '../wait-for-condition';
 
 const FIXTURES_DIR = path.resolve(__dirname, 'fixtures/phase-log');
 
@@ -183,19 +184,6 @@ function asSuccess(
     );
   }
   return res;
-}
-
-async function pollUntil(
-  cond: () => boolean,
-  timeoutMs: number,
-  stepMs = 25
-): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (cond()) return true;
-    await new Promise((r) => setTimeout(r, stepMs));
-  }
-  return cond();
 }
 
 let harness: Harness;
@@ -345,7 +333,10 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     // coverage gap in place, rather than vanishing.
     const isRecord = (e: { readonly payload: { readonly entry: PhaseLogWireEntry } }): boolean =>
       e.payload.entry.kind !== 'coverage-gap';
-    await pollUntil(() => envelopes.filter(isRecord).length >= 3, 2000);
+    await waitForCondition(() => envelopes.filter(isRecord).length >= 3, {
+      timeoutMs: 2_000,
+      label: 'initial 3 valid phase-log entries'
+    });
     expect(envelopes.filter(isRecord).length).toBeGreaterThanOrEqual(3);
     const gaps = envelopes.filter((e) => !isRecord(e));
     expect(gaps.length).toBeGreaterThan(0);
@@ -382,11 +373,10 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     await fs.appendFile(streamPath, newLine + '\n', 'utf8');
 
     const expectedAfterAppend = envelopes.length + 1;
-    const arrived = await pollUntil(
-      () => envelopes.length >= expectedAfterAppend,
-      2000
-    );
-    expect(arrived).toBe(true);
+    await waitForCondition(() => envelopes.length >= expectedAfterAppend, {
+      timeoutMs: 2_000,
+      label: 'appended live phase-log entry push'
+    });
     const latest = envelopes.at(-1)?.payload.entry;
     expect(latest?.kind).toBe('assistant-text');
     expect(latest?.body.text).toBe('appended live');
@@ -401,7 +391,10 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     // TypeScript can't narrow `leaveCb` through the closure, so cast.
     (leaveCb as (runId: string) => void)(RUN_ID);
 
-    await pollUntil(() => envelopes.length > beforeLeave, 2000);
+    await waitForCondition(() => envelopes.length > beforeLeave, {
+      timeoutMs: 2_000,
+      label: 'synthetic tail-ended entry after task leaves in-flight'
+    });
     const tailEnded = envelopes.at(-1)?.payload.entry;
     expect(tailEnded?.kind).toBe('tail-ended');
     expect(tailEnded?.body.reason).toBe('phase-complete');
@@ -411,9 +404,9 @@ describe('Feature 020 T057 — phase-log end-to-end', () => {
     // matching session id, with the stopped event carrying the
     // 'phase-complete' reason. The stopped event lands AFTER
     // disposeCurrent inside an async handler; poll until it arrives.
-    await pollUntil(
+    await waitForCondition(
       () => auditEvents.some((e) => e.type === 'phase-log-tail-stopped'),
-      2000
+      { timeoutMs: 2_000, label: 'phase-log-tail-stopped audit event' }
     );
     const started = auditEvents.find((e) => e.type === 'phase-log-tail-started');
     const stopped = auditEvents.find((e) => e.type === 'phase-log-tail-stopped');

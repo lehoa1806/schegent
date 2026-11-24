@@ -28,7 +28,7 @@ import {
   DENY_ALL_ACCESS_POLICY,
   type ArtifactLifecycleService
 } from '../services/artifact-lifecycle';
-import { SqliteCutoverStoreRegistry } from './sqlite-cutover-registry';
+import { SqliteCutoverStoreRegistry, type CutoverRegistrationSlot } from './sqlite-cutover-registry';
 import {
   buildContainedProbeAndReader,
   buildDurableHandoffSeam,
@@ -98,6 +98,7 @@ import {
   defaultCapabilityAssessment,
   getOrCreateProductionWorkflowComposition,
   registerProductionWorkflowComposition,
+  unregisterProductionWorkflowComposition,
   type ProductionWorkflowComposition
 } from '../services/workflow-execution/production-workflow-composition';
 import type { SwitchableOperationalMemento } from '../state/sqlite-operational-backing';
@@ -127,8 +128,21 @@ export const getWorkspaceLockForStore = cutoverRegistry.getWorkspaceLock.bind(cu
 export const getSqliteCutoverCoordinator = cutoverRegistry.getCoordinator.bind(cutoverRegistry);
 export const inspectCutoverRegistrations = cutoverRegistry.inspect.bind(cutoverRegistry);
 export const assertCutoverRegistrationOrder = cutoverRegistry.assertCompleteAndOrdered.bind(cutoverRegistry);
-export const resetCutoverStage2 = cutoverRegistry.resetStage2.bind(cutoverRegistry);
-export const disposeCutoverStore = cutoverRegistry.dispose.bind(cutoverRegistry);
+export function resetCutoverStage2(store: WorkspaceStateStore): readonly CutoverRegistrationSlot[] {
+  try {
+    return cutoverRegistry.resetStage2(store);
+  } finally {
+    unregisterProductionWorkflowComposition(store);
+  }
+}
+
+export function disposeCutoverStore(store: WorkspaceStateStore): readonly CutoverRegistrationSlot[] {
+  try {
+    return cutoverRegistry.dispose(store);
+  } finally {
+    unregisterProductionWorkflowComposition(store);
+  }
+}
 
 export function deriveWorkspaceScopeId(workspaceRoot: string): string {
   return createHash('sha256').update(workspaceRoot, 'utf8').digest('hex').slice(0, 16);
@@ -283,6 +297,7 @@ async function openPrimarySqliteServices(
       verifyPrimacy: deps.hasPrimacy
     });
   } catch (error) {
+    if (input.isClosed()) return null;
     const isWalFsRefusal = error instanceof RelocationWalFilesystemRefusedError;
     input.operationalMemento?.setDurableBatchUnavailableReason(
       isWalFsRefusal ? 'network-share-wal-unsupported' : 'relocation-aborted'
@@ -295,6 +310,8 @@ async function openPrimarySqliteServices(
     }
     return null;
   }
+
+  if (input.isClosed()) return null;
 
   if (relocationOutcome.outcome === 'refused_newer_schema') {
     input.operationalMemento?.setDurableBatchUnavailableReason('refused-newer-schema');
@@ -347,7 +364,7 @@ async function openPrimarySqliteServices(
       detectFilesystemType: deps.detectFilesystemType
     });
   } catch (error) {
-    input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-open-failed');
+    if (!input.isClosed()) input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-open-failed');
     deps.logger.warn('sqlite cutover: failed to open application store', {
       reason: error instanceof Error ? error.name : 'unknown'
     });
@@ -359,9 +376,12 @@ async function openPrimarySqliteServices(
   let workflowComposition: ProductionWorkflowComposition | null = null;
   let configSub: vscode.Disposable | null = null;
   const cleanupPartial = (): void => {
+    const ownedShared = !input.isClosed();
+    if (workflowComposition !== null) unregisterProductionWorkflowComposition(deps.store, workflowComposition);
     disposeSqliteRuntimeResources({
       operationalMemento: input.operationalMemento,
       catalogFs: input.catalogFs,
+      clearDetachedWriter: ownedShared,
       disposeTelemetryConfig: () => configSub?.dispose(),
       usageWiring,
       workflowComposition,
@@ -377,7 +397,7 @@ async function openPrimarySqliteServices(
   try {
     input.operationalMemento?.attachSqlite(sqliteStore, scopeId);
     if (input.catalogFs !== undefined) {
-      await input.catalogFs.attachSqlite(sqliteStore, scopeId);
+      await input.catalogFs.attachSqlite(sqliteStore, scopeId, undefined, () => !input.isClosed());
       if (input.isClosed()) {
         cleanupPartial();
         return null;
@@ -580,7 +600,7 @@ async function openPrimarySqliteServices(
     input.operationalMemento?.configureDetachedTrustedSqliteWriter({
       databasePath: activeDatabasePath,
       scopeId,
-      canWrite: () => deps.isWorkspaceTrusted(),
+      canWrite: async () => !input.isClosed() && deps.isWorkspaceTrusted() && (await deps.hasPrimacy()) && !input.isClosed(),
       openStore: (databasePath) =>
         new SqliteApplicationStore({
           databasePath,
@@ -606,7 +626,7 @@ async function openPrimarySqliteServices(
       disposeTelemetryConfig: () => boundConfigSub.dispose()
     };
   } catch (error) {
-    input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-init-failed');
+    if (!input.isClosed()) input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-init-failed');
     cleanupPartial();
     deps.logger.warn('sqlite cutover: initialization failed', {
       reason: error instanceof Error ? error.name : 'unknown'
@@ -619,6 +639,7 @@ export function createSqliteCutoverCoordinator(
   deps: CreateSqliteCutoverCoordinatorDeps
 ): SqliteCutoverCoordinator {
   cutoverRegistry.assertNotDisposed(deps.store, 'coordinator');
+  cutoverRegistry.getCoordinator(deps.store)?.close();
   const scopeId = deriveWorkspaceScopeId(deps.workspaceRoot);
   const globalStorageRoot = deps.context.globalStorageUri.fsPath;
   const legacyStorageRoot = deps.context.storageUri?.fsPath;
@@ -690,8 +711,9 @@ export function createSqliteCutoverCoordinator(
     return [...protectedSet];
   };
 
+  const isInactive = (): boolean => closed || cutoverRegistry.getCoordinator(deps.store) !== coordinator;
   const isPassive = (): boolean =>
-    !closed &&
+    !isInactive() &&
     activeServices === null &&
     activatingPromise === null &&
     !(operationalMemento?.isSqliteAttached() ?? false) &&
@@ -709,7 +731,7 @@ export function createSqliteCutoverCoordinator(
     if (!isPassive()) return;
     if (!canonicalOperationalAttached && operationalMemento !== undefined) {
       const canonicalOk = await safeProbeAsync(() =>
-        operationalMemento.attachReadOnlySnapshotIfPresentAsync(globalStorageRoot, relSegments, 'schegent-state.db', scopeId)
+        operationalMemento.attachReadOnlySnapshotIfPresentAsync(globalStorageRoot, relSegments, 'schegent-state.db', scopeId, isPassive)
       );
       if (!isPassive()) return;
       if (canonicalOk) {
@@ -718,7 +740,7 @@ export function createSqliteCutoverCoordinator(
         canonicalPassiveAttached = true;
       } else if (!attachedOperational && legacyStorageRoot !== undefined && legacyDatabasePath !== null) {
         attachedOperational = await safeProbeAsync(() =>
-          operationalMemento.attachReadOnlySnapshotIfPresentAsync(legacyStorageRoot, relSegments, 'schegent-state.db', scopeId)
+          operationalMemento.attachReadOnlySnapshotIfPresentAsync(legacyStorageRoot, relSegments, 'schegent-state.db', scopeId, isPassive)
         );
         if (!isPassive()) return;
         if (attachedOperational) legacyPassiveAttached = true;
@@ -726,7 +748,7 @@ export function createSqliteCutoverCoordinator(
     }
     if (!canonicalCatalogAttached && catalogFs !== undefined) {
       const canonicalOk = await safeProbeAsync(() =>
-        catalogFs.attachReadOnlySnapshotIfPresentAsync(globalStorageRoot, relSegments, 'schegent-state.db', scopeId)
+        catalogFs.attachReadOnlySnapshotIfPresentAsync(globalStorageRoot, relSegments, 'schegent-state.db', scopeId, isPassive)
       );
       if (!isPassive()) return;
       if (canonicalOk) {
@@ -735,7 +757,7 @@ export function createSqliteCutoverCoordinator(
         canonicalPassiveAttached = true;
       } else if (!attachedCatalog && legacyStorageRoot !== undefined && legacyDatabasePath !== null) {
         attachedCatalog = await safeProbeAsync(() =>
-          catalogFs.attachReadOnlySnapshotIfPresentAsync(legacyStorageRoot, relSegments, 'schegent-state.db', scopeId)
+          catalogFs.attachReadOnlySnapshotIfPresentAsync(legacyStorageRoot, relSegments, 'schegent-state.db', scopeId, isPassive)
         );
         if (!isPassive()) return;
         if (attachedCatalog) legacyPassiveAttached = true;
@@ -760,10 +782,11 @@ export function createSqliteCutoverCoordinator(
     return passiveProbePromise;
   };
 
-  const disposeServices = (current: SqliteCutoverServices): void => {
+  const disposeServices = (current: SqliteCutoverServices, includeShared = true): void => {
     disposeSqliteRuntimeResources({
       operationalMemento,
       catalogFs,
+      clearDetachedWriter: includeShared,
       disposeTelemetryConfig: current.disposeTelemetryConfig,
       usageWiring: current.usageWiring,
       workflowComposition: current.workflowComposition,
@@ -775,25 +798,27 @@ export function createSqliteCutoverCoordinator(
   const close = (): void => {
     if (closed) return;
     closed = true;
+    const ownsRegistration = cutoverRegistry.getCoordinator(deps.store) === coordinator;
     if (activeServices !== null) {
       const current = activeServices;
       activeServices = null;
-      disposeServices(current);
-    } else {
+      disposeServices(current, ownsRegistration);
+      unregisterProductionWorkflowComposition(deps.store, current.workflowComposition);
+    } else if (ownsRegistration) {
       operationalMemento?.configureDetachedTrustedSqliteWriter(null);
       operationalMemento?.detachSqlite();
       catalogFs?.detachSqlite();
+      unregisterProductionWorkflowComposition(deps.store);
     }
     cutoverRegistry.unregisterCoordinator(deps.store, coordinator);
   };
 
-  const isClosed = (): boolean => closed;
   const openAndWirePrimary = async (): Promise<SqliteCutoverServices | null> => {
-    if (isClosed()) return null;
+    if (isInactive()) return null;
     if (!deps.isWorkspaceTrusted() || !(await deps.hasPrimacy())) {
       return null;
     }
-    if (isClosed()) return null;
+    if (isInactive()) return null;
     if (activeServices !== null) return activeServices;
     const opened = await openPrimarySqliteServices({
       deps,
@@ -804,18 +829,19 @@ export function createSqliteCutoverCoordinator(
       catalogFs,
       reportSideEffectFailure,
       onActiveLocationResolved: (location) => {
-        if (isClosed()) return;
+        if (isInactive()) return;
         activeStorageRoot = location.activeStorageRoot;
         activeDatabasePath = location.activeDatabasePath;
         preservedUnselectedPaths = location.preservedUnselectedPaths;
         legacyRetired = location.legacyRetired;
       },
       getProtectedPaths: getDatabaseProtectedPaths,
-      isClosed
+      isClosed: isInactive
     });
-    if (isClosed()) {
+    if (isInactive()) {
       if (opened !== null) {
-        disposeServices(opened);
+        unregisterProductionWorkflowComposition(deps.store, opened.workflowComposition);
+        disposeServices(opened, false);
       }
       return null;
     }

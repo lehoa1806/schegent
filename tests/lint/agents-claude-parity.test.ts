@@ -173,7 +173,10 @@ const HARD_RULE_ANCHORS: ReadonlyArray<string> = [
   // Feature 309 (FR-R6-F10) — opt-in isolated lane dispatch amendment to rule 59.
   'isolated-lane-fallback-forbidden',
   // Feature 316 (FR-R7-02) — SQLite schema 9 per-entity operational rows amendment to rule 58.
-  'writes\n  changed queue/task and run entities incrementally to `operational_queue_meta`'
+  'writes\n  changed queue/task and run entities incrementally to `operational_queue_meta`',
+  // Feature 332 (FR-R7-18 / N12) — canonical SQLite storage location, network-share WAL refusal,
+  // and macOS synchronous=FULL without fullfsync durability disclosure (rule 70).
+  'open the operational sqlite database or its wal sidecars inside'
 ];
 
 /** The authoritative file — the only one that carries the rule set. */

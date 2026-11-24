@@ -1,13 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ExclusiveCreateObservation, MountCapabilityVerdict } from '../../../src/state/mount-capability';
+
+const injected = vi.hoisted(() => ({
+  probeOverride: undefined as undefined | (() => Promise<MountCapabilityVerdict>)
+}));
+
+vi.mock('../../../src/state/mount-capability-probe', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/state/mount-capability-probe')>(
+    '../../../src/state/mount-capability-probe'
+  );
+  return {
+    ...actual,
+    probeMountCapability: (deps: Parameters<typeof actual.probeMountCapability>[0]) =>
+      injected.probeOverride ? injected.probeOverride() : actual.probeMountCapability(deps)
+  };
+});
+
 import { probeMountCapability } from '../../../src/state/mount-capability-probe';
 import {
   reportMountCapability,
   resetMountCapabilityWarnings,
   startMountCapabilityProbe
 } from '../../../src/activation/mount-capability-wiring';
-import type { ExclusiveCreateObservation } from '../../../src/state/mount-capability';
 
 /**
  * FR-R3-083 (T1131) — activation does not depend on the probe.
@@ -45,6 +61,10 @@ const EXTENSION = resolve(
 );
 
 describe('the mount probe does not gate activation (FR-R3-083)', () => {
+  afterEach(() => {
+    injected.probeOverride = undefined;
+  });
+
   it('is called fire-and-forget, with a rejection handler', () => {
     const launcher = readFileSync(LAUNCHER, 'utf8');
     const call = launcher.slice(launcher.indexOf('void probeMountCapability('));
@@ -74,20 +94,22 @@ describe('the mount probe does not gate activation (FR-R3-083)', () => {
     // MISATTRIBUTED notification, which is the actual operator-visible defect.
     resetMountCapabilityWarnings();
     const notifications: string[] = [];
-    let settle: (() => void) | undefined;
-    const gate = new Promise<void>((resolve) => {
-      settle = resolve;
+    let settle!: (verdict: MountCapabilityVerdict) => void;
+    const gate = new Promise<MountCapabilityVerdict>((resolveVerdict) => {
+      settle = resolveVerdict;
     });
+    injected.probeOverride = () => gate;
     const handle = startMountCapabilityProbe(
       '/nonexistent-root-for-this-assertion',
       { info: () => undefined, warn: () => undefined },
       { warn: (m: string) => void notifications.push(m) }
     );
     handle.dispose();
-    settle?.();
+    // Resolve with an 'unsupported' verdict (the arm that notifies when not disposed)
+    // and drain microtasks + one immediate turn to prove nothing reaches the notifier.
+    settle({ capability: 'unsupported', cause: 'second-exclusive-create-succeeded' });
     await gate;
-    // Let the probe settle on its own terms; nothing may reach the notifier.
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise<void>((resolveTick) => setImmediate(resolveTick));
     expect(notifications).toEqual([]);
   });
 

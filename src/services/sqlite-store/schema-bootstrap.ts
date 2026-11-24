@@ -818,6 +818,29 @@ export const BUILTIN_SCHEMA_MIGRATIONS: readonly SchemaMigrationDefinition[] = O
   }
 ]);
 
+export type SqliteUnsupportedSchemaCode =
+  | 'UNSUPPORTED_MIN_READER_VERSION'
+  | 'UNSUPPORTED_FUTURE_SCHEMA_VERSION';
+
+export class SqliteUnsupportedSchemaError extends Error {
+  public readonly code: SqliteUnsupportedSchemaCode;
+  public readonly recordedVersion: number | null;
+  public readonly maxSupportedVersion: number;
+
+  constructor(
+    code: SqliteUnsupportedSchemaCode,
+    recordedVersion: number | null,
+    maxSupportedVersion: number,
+    message: string
+  ) {
+    super(message);
+    this.name = 'SqliteUnsupportedSchemaError';
+    this.code = code;
+    this.recordedVersion = recordedVersion;
+    this.maxSupportedVersion = maxSupportedVersion;
+  }
+}
+
 export class SchemaBootstrapService {
   /** Refuses a database whose recorded `min_reader_version` exceeds what this build reads (GC-09). */
   private static assertReaderFloor(conn: NodeSqliteConnection, maxSupportedVersion: number): number {
@@ -827,10 +850,18 @@ export class SchemaBootstrapService {
     if (row === undefined) return 0;
     const floor = parseStrictSchemaMetaVersion(row.meta_value);
     if (floor === null) {
-      throw new Error('UNSUPPORTED_MIN_READER_VERSION: database records an unreadable reader floor');
+      throw new SqliteUnsupportedSchemaError(
+        'UNSUPPORTED_MIN_READER_VERSION',
+        null,
+        maxSupportedVersion,
+        'UNSUPPORTED_MIN_READER_VERSION: database records an unreadable reader floor'
+      );
     }
     if (floor > maxSupportedVersion) {
-      throw new Error(
+      throw new SqliteUnsupportedSchemaError(
+        'UNSUPPORTED_MIN_READER_VERSION',
+        floor,
+        maxSupportedVersion,
         `UNSUPPORTED_MIN_READER_VERSION: database requires a reader of schema ${floor} or later; this build reads up to ${maxSupportedVersion}`
       );
     }
@@ -862,10 +893,18 @@ export class SchemaBootstrapService {
       if (currentVersionRow) {
         const existingVersion = parseStrictSchemaMetaVersion(currentVersionRow.meta_value);
         if (existingVersion === null) {
-          throw new Error('UNSUPPORTED_FUTURE_SCHEMA_VERSION: database records an unreadable schema_version');
+          throw new SqliteUnsupportedSchemaError(
+            'UNSUPPORTED_FUTURE_SCHEMA_VERSION',
+            null,
+            maxSupportedVersion,
+            'UNSUPPORTED_FUTURE_SCHEMA_VERSION: database records an unreadable schema_version'
+          );
         }
         if (existingVersion > maxSupportedVersion) {
-          throw new Error(
+          throw new SqliteUnsupportedSchemaError(
+            'UNSUPPORTED_FUTURE_SCHEMA_VERSION',
+            existingVersion,
+            maxSupportedVersion,
             `UNSUPPORTED_FUTURE_SCHEMA_VERSION: database schema_version=${existingVersion} exceeds supported max=${maxSupportedVersion}`
           );
         }
@@ -876,10 +915,18 @@ export class SchemaBootstrapService {
       );
       for (const appliedRow of appliedRows) {
         if (!Number.isSafeInteger(appliedRow.version) || appliedRow.version < 1) {
-          throw new Error('UNSUPPORTED_FUTURE_SCHEMA_VERSION: database records an unreadable migration version');
+          throw new SqliteUnsupportedSchemaError(
+            'UNSUPPORTED_FUTURE_SCHEMA_VERSION',
+            null,
+            maxSupportedVersion,
+            'UNSUPPORTED_FUTURE_SCHEMA_VERSION: database records an unreadable migration version'
+          );
         }
         if (appliedRow.version > maxSupportedVersion) {
-          throw new Error(
+          throw new SqliteUnsupportedSchemaError(
+            'UNSUPPORTED_FUTURE_SCHEMA_VERSION',
+            appliedRow.version,
+            maxSupportedVersion,
             `UNSUPPORTED_FUTURE_SCHEMA_VERSION: applied migration version=${appliedRow.version} exceeds supported max=${maxSupportedVersion}`
           );
         }

@@ -226,8 +226,12 @@ export async function importLegacyCatalogIntoSqlite(
   store: SqliteApplicationStore,
   scopeId: string,
   legacyFs: CatalogFsPort,
-  nowMs: () => number = () => Date.now()
+  nowMs: () => number = () => Date.now(),
+  shouldCommit?: () => boolean
 ): Promise<{ readonly importedFiles: number; readonly alreadyInitialized: boolean }> {
+  if (shouldCommit?.() === false || store.writerConnection.isClosed()) {
+    return { importedFiles: 0, alreadyInitialized: false };
+  }
   const ns = namespaceOf(scopeId);
   const conn = store.writerConnection;
   const existingCount = Number(
@@ -242,6 +246,9 @@ export async function importLegacyCatalogIntoSqlite(
 
   const collected: Array<{ readonly relKey: string; readonly contents: string }> = [];
   const manifestRead = await legacyFs.readFile(['manifest.json']);
+  if (shouldCommit?.() === false || conn.isClosed()) {
+    return { importedFiles: 0, alreadyInitialized: false };
+  }
   if (manifestRead.outcome === 'read') {
     for (const kindDir of ['phases', 'pipelines', 'workflows'] as const) {
       const ids = await legacyFs.listDirectory([kindDir]);
@@ -259,13 +266,27 @@ export async function importLegacyCatalogIntoSqlite(
     collected.push({ relKey: 'manifest.json', contents: manifestRead.contents });
   }
 
-  if (collected.length === 0) {
+  if (collected.length === 0 || shouldCommit?.() === false || conn.isClosed()) {
     return { importedFiles: 0, alreadyInitialized: false };
   }
 
   const now = nowMs();
   conn.exec('BEGIN IMMEDIATE');
   try {
+    if (shouldCommit?.() === false) {
+      conn.exec('ROLLBACK');
+      return { importedFiles: 0, alreadyInitialized: false };
+    }
+    const existingInTx = Number(
+      conn.scalar(
+        `SELECT COUNT(*) FROM operational_kv_documents WHERE doc_namespace = ?`,
+        ns
+      ) ?? 0
+    );
+    if (existingInTx > 0) {
+      conn.exec('ROLLBACK');
+      return { importedFiles: 0, alreadyInitialized: true };
+    }
     for (const item of collected) {
       const bytes = Buffer.byteLength(item.contents, 'utf8');
       conn.run(
@@ -477,7 +498,8 @@ export interface SwitchableCatalogFsAdapter extends CatalogFsPort {
   attachSqlite(
     store: SqliteApplicationStore,
     scopeId: string,
-    nowMs?: () => number
+    nowMs?: () => number,
+    shouldCommit?: () => boolean
   ): Promise<SqliteCatalogFsAdapter>;
   attachReadOnlySnapshotIfPresent(
     databasePath: string,
@@ -488,9 +510,10 @@ export interface SwitchableCatalogFsAdapter extends CatalogFsPort {
     rootDir: string,
     relativeDirSegments: readonly string[],
     dbFileName: string,
-    scopeId: string
+    scopeId: string,
+    shouldCommit?: () => boolean
   ): Promise<boolean>;
-  detachSqlite(): void;
+  detachSqlite(expectedStore?: SqliteApplicationStore): void;
   isSqliteAttached(): boolean;
 }
 
@@ -527,11 +550,22 @@ export function createSwitchableCatalogFsAdapter(
   hasWorkspace: () => boolean = () => true
 ): SwitchableCatalogFsAdapter {
   let sqliteAdapter: SqliteCatalogFsAdapter | null = null;
+  let sqliteStoreRef: SqliteApplicationStore | null = null;
   let readOnlyFiles: Map<string, string> | null = null;
   let postCutoverActive = false;
   let stateEpoch = 0;
-  let attachingSqlite = 0;
-  const isAttachingSqlite = (): boolean => attachingSqlite > 0;
+  let attachEpochCounter = 0;
+  const inFlightAttaches = new Set<{
+    readonly store: SqliteApplicationStore;
+    aborted: boolean;
+    readonly canCommit: () => boolean;
+  }>();
+  const isAttachingSqlite = (): boolean => {
+    for (const token of inFlightAttaches) {
+      if (token.canCommit()) return true;
+    }
+    return false;
+  };
 
   return {
     async readFile(at: StoreSegments): Promise<FsReadOutcome> {
@@ -592,24 +626,56 @@ export function createSwitchableCatalogFsAdapter(
     async attachSqlite(
       store: SqliteApplicationStore,
       scopeId: string,
-      nowMs: () => number = () => Date.now()
+      nowMs: () => number = () => Date.now(),
+      shouldCommit?: () => boolean
     ): Promise<SqliteCatalogFsAdapter> {
-      attachingSqlite += 1;
+      const safeShouldCommit = (): boolean => {
+        try {
+          return shouldCommit?.() !== false;
+        } catch {
+          return false;
+        }
+      };
+      if (!safeShouldCommit() || store.writerConnection.isClosed()) {
+        throw new Error('SQLite catalog attachment aborted by concurrent detach');
+      }
+      for (const prior of inFlightAttaches) {
+        prior.aborted = true;
+      }
       stateEpoch += 1;
-      const attachEpoch = stateEpoch;
+      attachEpochCounter += 1;
+      const myAttachEpoch = attachEpochCounter;
+      const token = {
+        store,
+        aborted: false,
+        canCommit(): boolean {
+          if (token.aborted) return false;
+          if (
+            attachEpochCounter !== myAttachEpoch ||
+            store.writerConnection.isClosed() ||
+            !safeShouldCommit()
+          ) {
+            token.aborted = true;
+            return false;
+          }
+          return true;
+        }
+      };
+      inFlightAttaches.add(token);
       try {
-        await importLegacyCatalogIntoSqlite(store, scopeId, legacyFs, nowMs);
-        if (stateEpoch !== attachEpoch) {
+        await importLegacyCatalogIntoSqlite(store, scopeId, legacyFs, nowMs, token.canCommit);
+        if (!token.canCommit()) {
           throw new Error('SQLite catalog attachment aborted by concurrent detach');
         }
         const adapter = new SqliteCatalogFsAdapter(store, scopeId, hasWorkspace, nowMs);
         stateEpoch += 1;
         readOnlyFiles = null;
         sqliteAdapter = adapter;
+        sqliteStoreRef = store;
         postCutoverActive = true;
         return adapter;
       } finally {
-        attachingSqlite -= 1;
+        inFlightAttaches.delete(token);
       }
     },
 
@@ -618,7 +684,7 @@ export function createSwitchableCatalogFsAdapter(
       scopeId: string,
       containment?: StrictCatalogReadOnlyContainment
     ): boolean {
-      if (sqliteAdapter !== null || attachingSqlite > 0) return false;
+      if (sqliteAdapter !== null || isAttachingSqlite()) return false;
       if (containment !== undefined) {
         let openedDb: DatabaseSync | null = null;
         try {
@@ -637,6 +703,7 @@ export function createSwitchableCatalogFsAdapter(
           const files = readCatalogSnapshotFromDb(openedDb, scopeId);
           if (files === null) return false;
           stateEpoch += 1;
+          attachEpochCounter += 1;
           readOnlyFiles = files;
           postCutoverActive = true;
           return true;
@@ -658,6 +725,7 @@ export function createSwitchableCatalogFsAdapter(
         const files = readCatalogSnapshotFromDb(roConn.db, scopeId);
         if (files === null) return false;
         stateEpoch += 1;
+        attachEpochCounter += 1;
         readOnlyFiles = files;
         postCutoverActive = true;
         return true;
@@ -672,9 +740,10 @@ export function createSwitchableCatalogFsAdapter(
       rootDir: string,
       relativeDirSegments: readonly string[],
       dbFileName: string,
-      scopeId: string
+      scopeId: string,
+      shouldCommit?: () => boolean
     ): Promise<boolean> {
-      if (sqliteAdapter !== null || attachingSqlite > 0) return false;
+      if (sqliteAdapter !== null || isAttachingSqlite()) return false;
       const startEpoch = stateEpoch;
       const res = await withZeroMutationReadOnlySqlite(
         rootDir,
@@ -690,16 +759,31 @@ export function createSwitchableCatalogFsAdapter(
         { queryOnly: true }
       );
       if (res.outcome !== 'ok' || res.value === null) return false;
-      if (this.isSqliteAttached() || isAttachingSqlite() || stateEpoch !== startEpoch) return false;
+      if (
+        this.isSqliteAttached() ||
+        isAttachingSqlite() ||
+        stateEpoch !== startEpoch ||
+        shouldCommit?.() === false
+      ) {
+        return false;
+      }
       stateEpoch += 1;
+      attachEpochCounter += 1;
       readOnlyFiles = res.value;
       postCutoverActive = true;
       return true;
     },
 
-    detachSqlite(): void {
+    detachSqlite(expectedStore?: SqliteApplicationStore): void {
+      for (const token of inFlightAttaches) {
+        if (expectedStore === undefined || token.store === expectedStore) {
+          token.aborted = true;
+        }
+      }
+      if (expectedStore !== undefined && sqliteStoreRef !== expectedStore) return;
       stateEpoch += 1;
       sqliteAdapter = null;
+      sqliteStoreRef = null;
       readOnlyFiles = null;
     },
 

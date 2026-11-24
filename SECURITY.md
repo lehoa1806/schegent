@@ -135,9 +135,14 @@ truncated mid-line. The parser tolerates a truncated final line, so the loss is 
 entries rather than to the file.
 
 The gate attestation a release is bound to **does** carry an explicit durability barrier — it is
-written once per gate run, so the cost is negligible against a four-minute gate. The
-terminal-transition journal is a VS Code `Memento` key, so a barrier is **unavailable** there rather
-than declined.
+written once per gate run, so the cost is negligible against a four-minute gate. After SQLite
+operational cutover, `KEYS.terminalTransitionIntent` (the terminal-transition journal) is no longer
+stored on VS Code `Memento` (only `KEYS.lock`, `KEYS.executionLeases`, and `KEYS.operatorPseudonym`
+remain passthrough Memento keys); it persists in SQLite `operational_kv_documents` under
+`journal_mode = WAL` and `synchronous = FULL` (`2`), with `PRAGMA fullfsync` left unset (`0`).
+Committed writes survive process and OS crashes on local filesystems, while a macOS power cut or
+forced shutdown can lose the most recent commits because macOS `fsync` does not issue `F_FULLFSYNC`
+(before cutover, legacy Memento has no extension-controlled barrier).
 
 The measurement that split that decision three ways — an `fsync` costs 289× a plain append on this
 machine — and what is deliberately out of scope are recorded in

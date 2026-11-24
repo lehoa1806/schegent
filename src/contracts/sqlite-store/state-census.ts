@@ -10,6 +10,7 @@
 export const STRUCTURED_STATE_CLASSIFICATIONS = [
   'sqlite-authoritative',
   'external-immutable-blob',
+  'filesystem-ownership-fence',
   'append-only-evidence-log',
   'host-ui-preference'
 ] as const;
@@ -42,14 +43,16 @@ export const STRUCTURED_STATE_CENSUS: readonly StructuredStateCensusEntry[] = Ob
   },
   {
     surfaceId: 'window-primacy-and-locks',
-    legacyLocation: '.schegent/locks/*.json',
+    legacyLocation:
+      '.schegent/ownership/* & workspaceState:KEYS.{lock,executionLeases,operatorPseudonym}',
     scope: 'workspace',
-    classification: 'sqlite-authoritative',
-    targetTables: ['lease_fences', 'operation_receipts', 'state_change_outbox'],
-    owningFeature: 'F01/F04-A',
+    classification: 'filesystem-ownership-fence',
+    targetTables: [],
+    owningFeature: 'FR-R3-003/FR-R5-F09',
     executionAffecting: true,
-    migrationStage: 'F04-A',
-    rationale: 'Fences mutating commits by owner_id and monotonic epoch inside SQLite.'
+    migrationStage: 'external-retained',
+    rationale:
+      'Production window primacy and per-queue execution leases remain on the filesystem-fenced .schegent/ownership/ registry plus Memento PASSTHROUGH_OWNERSHIP_KEYS (KEYS.lock, KEYS.executionLeases, KEYS.operatorPseudonym) to avoid circular SQLite writer authority; SQLite lease_fences, operation_receipts, and state_change_outbox are used only by AtomicTransactionUnitsService and qualification.'
   },
   {
     surfaceId: 'artifact-metadata-and-pins',
@@ -366,7 +369,8 @@ export function validateStructuredStateCensus(
     if (
       entry.executionAffecting &&
       entry.classification !== 'sqlite-authoritative' &&
-      entry.classification !== 'external-immutable-blob'
+      entry.classification !== 'external-immutable-blob' &&
+      entry.classification !== 'filesystem-ownership-fence'
     ) {
       unclassifiedExecutionAffecting.push(entry.surfaceId);
     }

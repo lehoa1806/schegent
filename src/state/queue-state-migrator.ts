@@ -24,7 +24,8 @@ import type {
   FeatureRequestStatus,
   QueueState
 } from '../queue/feature-request';
-import { STATE_SCHEMA_VERSION, STATE_SCHEMA_VERSION_V13 } from '../contracts/state-schema';
+import { STATE_SCHEMA_VERSION_V13 } from '../contracts/state-schema';
+import { assertPersistedStateSchemaVersionSupported } from './workspace-state-types';
 
 export interface LegacyQueueLiftResult {
   readonly queueState: QueueState;
@@ -657,12 +658,8 @@ export interface MigrateV9ToV10Result {
  * comparison lives in exactly one place and is keyed to the runtime constant
  * rather than to whichever version was current when it was written.
  */
-export function assertPersistedVersionSupported(persistedNumeric: number | undefined): void {
-  if (typeof persistedNumeric === 'number' && persistedNumeric > STATE_SCHEMA_VERSION) {
-    throw new Error(
-      `Schegent state schemaVersion ${persistedNumeric} exceeds runtime ${STATE_SCHEMA_VERSION}. Update the extension before opening this workspace.`
-    );
-  }
+export function assertPersistedVersionSupported(persistedNumeric: unknown): void {
+  assertPersistedStateSchemaVersionSupported(persistedNumeric);
 }
 
 /** A v9 record: a single `QueueState`, recognisable by its `requests` array. */

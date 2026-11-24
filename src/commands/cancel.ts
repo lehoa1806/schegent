@@ -133,14 +133,6 @@ async function cancelByTaskId(
     // Feature 093 (T042) — addressed: cancel this Task's queue, not every Run
     // the window is driving.
     ctx.controller.cancelActive(queueId);
-    await ctx.audit.append({
-      runId: activeRun.id,
-      phase: activeRun.currentPhase,
-      iteration: activeRun.currentIteration,
-      eventType: 'task-canceled',
-      payload: { taskId: feature.id, runId: activeRun.id, reason: 'user-cancel' },
-      outcome: 'info'
-    });
     await markCanceled(ctx.store, queueId, activeRun.id);
     const finished = await ctx.queue.finish(feature.id, 'canceled');
     // FR-R3-153 — `finish` refuses a transition outside the closed table by
@@ -152,6 +144,18 @@ async function cancelByTaskId(
       ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
       return { ok: false, reason: finished.reason ?? 'unexpected-error' };
     }
+    // FR-R7-18 (`N01`, FR-001) — append `task-canceled` only after this call
+    // claims the single terminal transition in `queue.finish`, eliminating
+    // stray audit rows when a concurrent cancel loses a race to another
+    // terminal transition or deletion.
+    await ctx.audit.append({
+      runId: activeRun.id,
+      phase: activeRun.currentPhase,
+      iteration: activeRun.currentIteration,
+      eventType: 'task-canceled',
+      payload: { taskId: feature.id, runId: activeRun.id, reason: 'user-cancel' },
+      outcome: 'info'
+    });
     // Feature 093 (T068b, FR-028) — cancelling one Task does not end the
     // window's primacy. See the header note.
     ctx.notifier.info('Schegent: task canceled.');
@@ -160,6 +164,16 @@ async function cancelByTaskId(
 
   // Pending OR in-flight without a matching active run. The controller
   // is not signaled — we only finalize the FeatureRequest row.
+  const finished = await ctx.queue.finish(feature.id, 'canceled');
+  // FR-R3-153 — see the `runMatches` branch above: a refusal is a returned
+  // value now, not a throw, and must not be reported as a success.
+  if (finished.ok === false) {
+    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+  }
+  // FR-R7-18 (`N01`, FR-001) — emit only after `queue.finish` claims the
+  // single terminal transition.
   await ctx.audit.append({
     runId: feature.runId ?? `task:${feature.id}`,
     phase: 'queue',
@@ -172,14 +186,6 @@ async function cancelByTaskId(
     },
     outcome: 'info'
   });
-  const finished = await ctx.queue.finish(feature.id, 'canceled');
-  // FR-R3-153 — see the `runMatches` branch above: a refusal is a returned
-  // value now, not a throw, and must not be reported as a success.
-  if (finished.ok === false) {
-    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
-    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
-    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
-  }
   ctx.notifier.info('Schegent: task canceled.');
   return { ok: true };
 }
@@ -202,9 +208,33 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
       : 'no-active-run' };
   }
   const { queueId, run } = target;
+  const hadQueueRow = ctx.queue.findById(run.featureId) !== null;
   // Feature 093 (T042) — `resolveControlTarget` already named the queue; cancel
   // that one.
   ctx.controller.cancelActive(queueId);
+  const claimedRun = await markCanceled(ctx.store, queueId, run.id);
+  const finished = await ctx.queue.finish(run.featureId, 'canceled');
+  // FR-R3-153 — see `cancelByTaskId` above: a refusal is a returned value
+  // now, not a throw, and must not be reported as a success.
+  if (finished.ok === false) {
+    // FR-R7-18 (`N01`, FR-001) — when no queue row owned the transition and
+    // this call itself claimed the terminal Run transition via `markCanceled`,
+    // record that single transition; when a queue row owned the transition and
+    // `finish` refused (lost race), emit zero stray audit entries.
+    if (!hadQueueRow && claimedRun) {
+      await ctx.audit.append({
+        runId: run.id,
+        phase: run.currentPhase,
+        iteration: run.currentIteration,
+        eventType: 'task-canceled',
+        payload: { taskId: run.featureId, runId: run.id, reason: 'user-cancel' },
+        outcome: 'info'
+      });
+    }
+    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+  }
   await ctx.audit.append({
     runId: run.id,
     phase: run.currentPhase,
@@ -213,15 +243,6 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
     payload: { taskId: run.featureId, runId: run.id, reason: 'user-cancel' },
     outcome: 'info'
   });
-  await markCanceled(ctx.store, queueId, run.id);
-  const finished = await ctx.queue.finish(run.featureId, 'canceled');
-  // FR-R3-153 — see `cancelByTaskId` above: a refusal is a returned value
-  // now, not a throw, and must not be reported as a success.
-  if (finished.ok === false) {
-    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
-    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
-    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
-  }
   // Feature 093 (T068b, FR-028) — same as the by-id path: the window keeps
   // primacy. Here it matters even when the resolver found a sole *running* Run,
   // because a paused sibling is still this window's work.
@@ -237,13 +258,14 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
  * A Run that has already ended, or been replaced, refuses the update instead of
  * being overwritten as canceled. That refusal is not a failed cancel: the driver
  * `cancelActive` just aborted writes its own `canceled` transition, and it can
- * reach the chain first.
+ * reach the chain first. Returns `true` iff this call committed the terminal
+ * transition on the Run record.
  */
 async function markCanceled(
   store: WorkspaceStateStore,
   queueId: string,
   runId: string
-): Promise<void> {
+): Promise<boolean> {
   try {
     await store.updateRun(
       queueId,
@@ -255,7 +277,9 @@ async function markCanceled(
       },
       store.runCommitClaim(queueId)
     );
+    return true;
   } catch (error) {
     if (!isRunRaceRefusal(error)) throw error;
+    return false;
   }
 }

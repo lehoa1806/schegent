@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "backend": "agy",
+  "taskId": "structured-token",
+  "transport": "acp-native",
+  "profileId": "agy-acp-native",
+  "profileVersion": "acp-v1/rev-1",
+  "command": "agy",
+  "argv": [
+    "acp",
+    "--stdio",
+    "--disable-telemetry"
+  ],
+  "underlyingCliArgs": null,
+  "requests": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": 1,
+        "clientCapabilities": {}
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "method": "session/new",
+      "params": {
+        "cwd": "<workspace-dir>",
+        "mcpServers": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "method": "session/prompt",
+      "params": {
+        "sessionId": "agy-structured-token-session-1",
+        "prompt": [
+          {
+            "type": "text",
+            "text": "Behavior eval (Agy / structured-token):\nConfirm readiness in one concise sentence without creating, modifying, or deleting any workspace files.\nEmit a complete === SCHEGENT AUDIT LOG === ... === END AUDIT LOG === block recording phase: eval-structured-token, empty file/command/network/ruleset lists, and a brief notes field.\nOn the final line after === END AUDIT LOG ===, print [SCHEGENT_STATUS: CLEAR]."
+          }
+        ]
+      }
+    }
+  ]
+}

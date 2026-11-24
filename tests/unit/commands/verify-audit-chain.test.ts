@@ -23,7 +23,16 @@ import {
   renderLossCheck,
   runVerifyAuditChain
 } from '../../../src/commands/verify-audit-chain';
-import { digestOf, verifyAuditChainAt } from '../../../src/audit/audit-chain';
+import {
+  AUDIT_CHAIN_GENESIS,
+  AUDIT_DIGEST_ALG,
+  cutRecordFor,
+  digestOf,
+  verifyAuditChainAt,
+  verifyAuditChainAtAsync,
+  verifyAuditChainThrough,
+  verifyChainAsync
+} from '../../../src/audit/audit-chain';
 import type { CheckpointRead, LossState } from '../../../src/audit/audit-checkpoint';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -32,7 +41,7 @@ import { removeTempRoot } from '../../temp-root-cleanup';
 
 vi.mock('../../../src/audit/audit-chain', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../../src/audit/audit-chain')>();
-  return { ...real, verifyAuditChainAt: vi.fn(real.verifyAuditChainAt) };
+  return { ...real, verifyAuditChainThrough: vi.fn(real.verifyAuditChainThrough) };
 });
 
 interface Sent {
@@ -69,7 +78,7 @@ describe('Verify Audit Chain command', () => {
   });
 
   afterEach(async () => {
-    vi.mocked(verifyAuditChainAt).mockReset();
+    vi.mocked(verifyAuditChainThrough).mockReset();
     await removeTempRoot(workspaceRoot);
     // SC-005: hooks run after a failing case too, so each case proves its own workspace is gone.
     await expect(fs.access(workspaceRoot)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -130,9 +139,7 @@ describe('Verify Audit Chain command', () => {
     // FR-R4-F05: the warning is the same fixed sentence whatever was thrown; the description of
     // what was thrown goes to the log, not to the operator's screen.
     it('U2 — a read failure that is not an Error gets the same fixed warning, still a single one', async () => {
-      vi.mocked(verifyAuditChainAt).mockImplementationOnce(() => {
-        throw 'not-an-error-object';
-      });
+      vi.mocked(verifyAuditChainThrough).mockRejectedValueOnce('not-an-error-object');
       const warnLog = vi.spyOn(logger, 'warn');
 
       await run();
@@ -149,9 +156,9 @@ describe('Verify Audit Chain command', () => {
     // prefixes, never a path". A real read fault names the path in its message, so the
     // message is kept for the log and the warning is the fixed sentence.
     it('U3 — a read fault that names a path leaves the path out of the warning and in the log', async () => {
-      vi.mocked(verifyAuditChainAt).mockImplementationOnce(() => {
-        throw new Error("EACCES: permission denied, open '/synthetic/home/user-252/.schegent/audit.log'");
-      });
+      vi.mocked(verifyAuditChainThrough).mockRejectedValueOnce(
+        new Error("EACCES: permission denied, open '/synthetic/home/user-252/.schegent/audit.log'")
+      );
       const warnLog = vi.spyOn(logger, 'warn');
 
       await run();
@@ -424,6 +431,178 @@ describe('Verify Audit Chain command', () => {
 
       expect(await names()).toEqual(before);
       expect((await fs.readFile(logPath())).equals(bytes)).toBe(true);
+    });
+  });
+
+  describe('FR-R7-18 (N05) — chunked async verifier parity and event-loop yielding', () => {
+    const buildChainedLines = (count: number, seed = AUDIT_CHAIN_GENESIS): { lines: string[]; tail: string } => {
+      const lines: string[] = [];
+      let prev = seed;
+      for (let i = 0; i < count; i += 1) {
+        const line = JSON.stringify({
+          schemaVersion: 3,
+          id: `chunk-evt-${i}`,
+          eventType: 'cli-invocation',
+          prevDigest: prev,
+          digestAlg: AUDIT_DIGEST_ALG
+        });
+        lines.push(line);
+        prev = digestOf(line);
+      }
+      return { lines, tail: prev };
+    };
+
+    it('matches synchronous verifyAuditChainAt identically across multi-archive, cuts, legacy prefix, probeDigest, tamper, truncation, damage, and absent dir', async () => {
+      const auditDir = path.join(workspaceRoot, '.schegent');
+
+      // 1. Absent directory -> both return null
+      expect(await verifyAuditChainAtAsync(auditDir, { chunkLines: 3 })).toBeNull();
+      expect(verifyAuditChainAt(auditDir)).toBeNull();
+
+      // 2. Legacy prefix + version-2 cut + 2 rotated archives + active log + probeDigest
+      await fs.mkdir(auditDir, { recursive: true });
+      const legacyRow = JSON.stringify({ id: 'legacy-0', eventType: 'warning' });
+      const removed = buildChainedLines(4, digestOf(legacyRow));
+      const cut = cutRecordFor([legacyRow, ...removed.lines], 1_700_000_000_000);
+      expect(cut).not.toBeNull();
+      const archive1 = buildChainedLines(7, removed.tail);
+      const archive2 = buildChainedLines(6, archive1.tail);
+      const active = buildChainedLines(8, archive2.tail);
+      const probeDigest = digestOf(archive2.lines[3]!);
+
+      await fs.writeFile(path.join(auditDir, 'audit.log.cuts'), `${JSON.stringify(cut)}\n`);
+      await fs.writeFile(path.join(auditDir, 'audit.log.20261121-100000'), `${archive1.lines.join('\n')}\n`);
+      await fs.writeFile(path.join(auditDir, 'audit.log.20261122-100000'), `${archive2.lines.join('\n')}\n`);
+      await fs.writeFile(path.join(auditDir, 'audit.log'), `${active.lines.join('\n')}\n`);
+
+      const syncValid = verifyAuditChainAt(auditDir, { probeDigest });
+      const asyncValid = await verifyAuditChainAtAsync(auditDir, { probeDigest, chunkLines: 3 });
+      const throughValid = await verifyAuditChainThrough(
+        auditDir,
+        (name) => fs.readFile(path.join(auditDir, name)),
+        { probeDigest, chunkLines: 3 }
+      );
+      expect(asyncValid).toEqual(syncValid);
+      expect(throughValid).toEqual(syncValid);
+      expect(asyncValid?.verdict).toMatchObject({
+        ok: true,
+        entries: 21,
+        cuts: 1,
+        prunedLegacy: 1,
+        transition: 'legacy-tail'
+      });
+
+      // 3. Tampered entry across archive seam -> identical broken-link verdict & atEntry
+      const tamperedArchive2 = [...archive2.lines];
+      tamperedArchive2[2] = tamperedArchive2[2]!.replace('"cli-invocation"', '"warning"');
+      await fs.writeFile(path.join(auditDir, 'audit.log.20261122-100000'), `${tamperedArchive2.join('\n')}\n`);
+
+      const syncTampered = verifyAuditChainAt(auditDir, { probeDigest });
+      const asyncTampered = await verifyAuditChainAtAsync(auditDir, { probeDigest, chunkLines: 3 });
+      expect(asyncTampered).toEqual(syncTampered);
+      expect(asyncTampered?.verdict).toMatchObject({ ok: false, reason: 'broken-link' });
+
+      // 4. Truncated final line -> identical malformed verdict & atEntry
+      await fs.writeFile(path.join(auditDir, 'audit.log.20261122-100000'), `${archive2.lines.join('\n')}\n`);
+      await fs.writeFile(path.join(auditDir, 'audit.log'), `${active.lines.join('\n')}\n{"id":"torn`);
+
+      const syncTruncated = verifyAuditChainAt(auditDir);
+      const asyncTruncated = await verifyAuditChainAtAsync(auditDir, { chunkLines: 3 });
+      expect(asyncTruncated).toEqual(syncTruncated);
+      expect(asyncTruncated?.verdict).toMatchObject({ ok: false, reason: 'malformed' });
+
+      // 5. Diagnosed damage produced by real writer -> identical damages verdict
+      await fs.rm(auditDir, { recursive: true, force: true });
+      const writer = writerWith();
+      for (let i = 0; i < 6; i += 1) await append(writer, i);
+      await fs.appendFile(path.join(auditDir, 'audit.log'), '{"id":"torn-tail');
+      await append(writerWith(), 99);
+
+      const syncDamaged = verifyAuditChainAt(auditDir);
+      const asyncDamaged = await verifyAuditChainAtAsync(auditDir, { chunkLines: 2 });
+      expect(asyncDamaged).toEqual(syncDamaged);
+      expect(asyncDamaged?.verdict.ok).toBe(true);
+      if (asyncDamaged?.verdict.ok) {
+        expect(asyncDamaged.verdict.damages).toHaveLength(1);
+      }
+    });
+
+    it('yields to the event loop between chunks so concurrent setImmediate work runs before completion', async () => {
+      const { lines } = buildChainedLines(120);
+      let interleavedTicks = 0;
+      let done = false;
+
+      const scheduleTick = (): void => {
+        if (done) return;
+        interleavedTicks += 1;
+        setImmediate(scheduleTick);
+      };
+      setImmediate(scheduleTick);
+
+      const verdict = await verifyChainAsync(lines, { chunkLines: 10 });
+      done = true;
+
+      expect(verdict.ok).toBe(true);
+      if (verdict.ok) expect(verdict.entries).toBe(120);
+      // 120 lines at 10 lines/chunk yields 11 times between chunks, letting interleaved work run.
+      expect(interleavedTicks).toBeGreaterThanOrEqual(5);
+    });
+
+    it('refuses symlinked .schegent directory and symlinked audit.log fail-closed without escaping workspace', async () => {
+      const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-verify-outside-'));
+      try {
+        const outsideLog = path.join(outsideDir, 'audit.log');
+        const { lines } = buildChainedLines(3);
+        await fs.writeFile(outsideLog, `${lines.join('\n')}\n`, 'utf8');
+
+        // Case 1: `.schegent` itself is a symlink pointing outside the workspace.
+        await fs.symlink(outsideDir, path.join(workspaceRoot, '.schegent'));
+        await run();
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.level).toBe('warn');
+        expect(sent[0]!.message).toBe(CHAIN_UNREADABLE_TOAST);
+        await expect(verifyAuditChainAtAsync(path.join(workspaceRoot, '.schegent'))).rejects.toThrow(
+          /non-symlink/i
+        );
+        // Trailing slash must NOT dereference symlinked auditDir on POSIX lstat(2).
+        await expect(
+          verifyAuditChainAtAsync(`${path.join(workspaceRoot, '.schegent')}${path.sep}`)
+        ).rejects.toThrow(/non-symlink/i);
+        expect(() =>
+          verifyAuditChainAt(`${path.join(workspaceRoot, '.schegent')}${path.sep}`)
+        ).toThrow(/non-symlink/i);
+
+        // Case 2: `.schegent` is a real directory, `audit.log` is a symlink pointing outside.
+        await fs.unlink(path.join(workspaceRoot, '.schegent'));
+        await fs.mkdir(path.join(workspaceRoot, '.schegent'), { recursive: true });
+        await fs.symlink(outsideLog, path.join(workspaceRoot, '.schegent', 'audit.log'));
+        sent.length = 0;
+        await run();
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.level).toBe('warn');
+        expect(sent[0]!.message).toBe(CHAIN_UNREADABLE_TOAST);
+        await expect(verifyAuditChainAtAsync(path.join(workspaceRoot, '.schegent'))).rejects.toThrow();
+        expect(() => verifyAuditChainAt(path.join(workspaceRoot, '.schegent'))).toThrow();
+
+        // Case 3 (POSIX): `.schegent/audit.log` is a FIFO (named pipe) -> refused immediately without hanging.
+        if (process.platform !== 'win32') {
+          const { execFileSync } = await import('node:child_process');
+          const fifoLog = path.join(workspaceRoot, '.schegent', 'audit.log');
+          await fs.unlink(fifoLog);
+          execFileSync('mkfifo', [fifoLog]);
+          sent.length = 0;
+          await run();
+          expect(sent).toHaveLength(1);
+          expect(sent[0]!.level).toBe('warn');
+          expect(sent[0]!.message).toBe(CHAIN_UNREADABLE_TOAST);
+          await expect(verifyAuditChainAtAsync(path.join(workspaceRoot, '.schegent'))).rejects.toThrow(
+            /non-regular/i
+          );
+          expect(() => verifyAuditChainAt(path.join(workspaceRoot, '.schegent'))).toThrow(/non-regular/i);
+        }
+      } finally {
+        await fs.rm(outsideDir, { recursive: true, force: true });
+      }
     });
   });
 });

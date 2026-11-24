@@ -58,7 +58,7 @@ const RECORD_PATH = 'docs/architecture/native-binding-decision.md';
  * reader writing `OpenAt` is not naming `openat(2)`.
  */
 const NATIVE_PRIMITIVE_TOKEN =
-  /\bopenat\b|\brenameat\b|\bJob Object\b|\breparse[- ](?:point|tag)|FSCTL_GET_REPARSE_POINT|\bREPARSE\b/;
+  /\bopenat\b|\brenameat\b|\bunlinkat\b|\bJob Object\b|\breparse[- ](?:point|tag)|FSCTL_GET_REPARSE_POINT|\bREPARSE\b/;
 
 /** How a citation is recognised: the record's path, wherever it appears in the file. */
 const CITATION = RECORD_PATH;

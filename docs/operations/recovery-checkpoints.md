@@ -8,7 +8,9 @@ checkpoint-recovery runbooks were deleted without replacement. Cited from
 <!-- Source: src/services/run-checkpoint-service.ts -->
 
 Read [Data retention and deletion](data-retention-and-deletion.md) first if the question is what is
-kept and for how long; this page is about getting a workspace moving again.
+kept and for how long; this page is about getting a workspace moving again. For rehearsed,
+symptom-first procedures covering future SQLite schema refusal, quarantined workspace-state
+writers (GC-04), and stuck execution lanes, see [Incident recovery guide](incident-recovery-guide.md).
 
 ## Before anything: what state is safe to touch
 
@@ -17,8 +19,12 @@ Two things hold a run's identity, and they are not the same:
 - **The audit log** (`.schegent/audit.log`) is append-only evidence. Never delete it to clear a
   stuck run — a hard rule, not a preference. It is the only record of what happened, and a
   reset that erases it removes the evidence needed to explain the reset.
-- **Workspace state** (VS Code `Memento`) holds the queue, run records and execution leases. This
-  is what a reset touches.
+- **Operational workspace state** — authoritative in the per-workspace SQLite schema-9 store
+  (`<globalStorageUri>/sqlite/<scopeId>/schegent-state.db`, backed through `WorkspaceStateStore`;
+  VS Code `Memento` remains only for pre-cutover fallback and passthrough keys) — holds queues,
+  tasks, run records, history, execution leases, and schedules. This is what a reset clears.
+  See [SQLite application store](sqlite-application-store.md) and
+  [SQLite rollback runbook](sqlite-rollback-runbook.md).
 
 ## A run appears stuck
 
@@ -158,9 +164,13 @@ the Phase proceeds, a failure to snapshot stops it. The reason tells you what to
 
 ## What this page does not claim
 
-Apart from "Restoring a checkpoint by hand", none of the procedures here has an automated
-end-to-end test behind it. That section's commands are run in throwaway repositories by
-`tests/integration/checkpoints/manual-restore-runbook.test.ts`, which also fails if its fenced block
-and the test's command list differ. FR-R3-062 asks for tested runbooks; this page restores the
-*content* that was deleted, and the tested-procedure half remains outstanding for every other
-section and is recorded as such in that item.
+On this page, "Restoring a checkpoint by hand" is backed by an automated end-to-end test in
+`tests/integration/checkpoints/manual-restore-runbook.test.ts`, which runs its commands in
+throwaway repositories and fails if the fenced block and the test's command list differ. The
+remaining prose sections on this page (run cancellation and host-crash reattachment) do not have a
+single end-to-end procedure harness on this page itself; however, the three critical operator
+incident procedures (future schema refusal and schema-8 rollback, quarantined workspace-state
+writer auto-recovery / reload / `schegent.reset`, and stuck execution lanes) are rehearsed
+end-to-end in [Incident recovery guide](incident-recovery-guide.md) via
+[`tests/integration/operator-incident-guide-rehearsal.test.ts`](../../tests/integration/operator-incident-guide-rehearsal.test.ts)
+and [`tests/integration/sqlite-rollback-runbook-rehearsal.test.ts`](../../tests/integration/sqlite-rollback-runbook-rehearsal.test.ts).

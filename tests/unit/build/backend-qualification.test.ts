@@ -435,6 +435,7 @@ describe('FR-R7-14 (14-10) — shipped-transport v2 qualification, fingerprintin
   });
 
   it('qualifies all three advertised backends end-to-end through shipped transport in fixture mode', async () => {
+    const evalNow = '2026-11-24T12:00:00.000Z';
     const { runFixtureQualification } = (await import(
       '../../../scripts/backend-canary-run.mjs' as string
     )) as {
@@ -443,7 +444,7 @@ describe('FR-R7-14 (14-10) — shipped-transport v2 qualification, fingerprintin
         record: Record<string, unknown>;
       }>;
     };
-    const { results, record: fixtureRecord } = await runFixtureQualification({ now: NOW });
+    const { results, record: fixtureRecord } = await runFixtureQualification({ now: evalNow });
     expect(results.map((r) => [r.backend, r.state, r.transport])).toEqual([
       ['claude', 'ok', 'acp-stdio-bridge'],
       ['codex', 'ok', 'acp-stdio-bridge'],
@@ -451,6 +452,7 @@ describe('FR-R7-14 (14-10) — shipped-transport v2 qualification, fingerprintin
     ]);
     expect(fixtureRecord.version).toBe(2);
     expect(fixtureRecord.mode).toBe('fixture');
+    expect(fixtureRecord.behaviorEvals).toBeDefined();
     const fp = q.computeQualificationSourceFingerprint();
     expect(fixtureRecord.sourceFingerprint).toBe(fp);
 
@@ -465,7 +467,7 @@ describe('FR-R7-14 (14-10) — shipped-transport v2 qualification, fingerprintin
       changedPaths: [],
       expectedFingerprint: fp,
       requireLive: false,
-      now: NOW
+      now: evalNow
     });
     expect(verdict.ok, verdict.message).toBe(true);
   });
@@ -568,5 +570,223 @@ describe('FR-R7-17 (R7-17-05) — authority-gate/wiring fingerprint sensitivity,
 
     // Missing checks are refused when requireChecks is true.
     expect(decide({ requireChecks: true }).reason).toBe('incomplete-qualification-checks');
+  });
+});
+
+interface BehaviorEvalsBackendSummary {
+  taskCount: number;
+  passedCount: number;
+  promptDigests: string[];
+  costDenomination: 'usd' | 'tokens';
+  totalCostUnits: number;
+}
+
+interface BehaviorEvalsSummary {
+  recordedAt: string;
+  maxAgeDays: number;
+  staleFixtureOwner: string;
+  perBackend: Record<'claude' | 'codex' | 'agy', BehaviorEvalsBackendSummary>;
+}
+
+interface QualificationBehaviorExtensions {
+  BEHAVIOR_EVAL_MANIFEST_PATH: string;
+  BEHAVIOR_EVAL_MAX_AGE_DAYS: number;
+  summarizeBehaviorEvalManifest: (
+    manifestOrPath?: unknown
+  ) => BehaviorEvalsSummary | null;
+  validateBehaviorEvalsSummary: (
+    summary: unknown,
+    opts: { now: string; requiredBackends?: readonly string[] }
+  ) => { ok: boolean; reason?: string; message?: string };
+}
+
+describe('FR-R7-18 (N04) — optional additive behaviorEvals metadata validation and backwards compatibility', () => {
+  it('keeps existing v2 records omitting behaviorEvals 100% valid', () => {
+    const legacyV2 = record();
+    expect('behaviorEvals' in legacyV2).toBe(false);
+    const verdict = decide({ record: legacyV2 });
+    expect(verdict.ok, verdict.message).toBe(true);
+    expect(verdict.reason).toBe('qualified');
+  });
+
+  it('summarizes the committed behavior-eval manifest and accepts fresh summaries in v2 records', () => {
+    const ext = q as unknown as QualificationBehaviorExtensions;
+    const summary = ext.summarizeBehaviorEvalManifest(ext.BEHAVIOR_EVAL_MANIFEST_PATH);
+    expect(summary).not.toBeNull();
+    if (summary === null) return;
+    expect(summary.maxAgeDays).toBe(30);
+    expect(summary.staleFixtureOwner.length).toBeGreaterThan(0);
+    for (const backend of ['claude', 'codex', 'agy'] as const) {
+      expect(summary.perBackend[backend].taskCount).toBe(4);
+      expect(summary.perBackend[backend].passedCount).toBe(4);
+      expect(summary.perBackend[backend].promptDigests).toHaveLength(4);
+    }
+    expect(summary.perBackend.claude.costDenomination).toBe('usd');
+    expect(summary.perBackend.codex.costDenomination).toBe('tokens');
+    expect(summary.perBackend.agy.costDenomination).toBe('tokens');
+
+    const evalNow = '2026-11-24T12:00:00.000Z';
+    const withEvals = record({
+      qualifiedAt: '2026-11-24T11:00:00.000Z',
+      behaviorEvals: summary
+    });
+    const verdict = decide({ record: withEvals, now: evalNow });
+    expect(verdict.ok, verdict.message).toBe(true);
+  });
+
+  it('refuses stale, missing-owner, future, malformed, or incomplete behaviorEvals summaries', () => {
+    const ext = q as unknown as QualificationBehaviorExtensions;
+    const summary = ext.summarizeBehaviorEvalManifest(ext.BEHAVIOR_EVAL_MANIFEST_PATH);
+    if (summary === null) throw new Error('expected committed behavior-eval manifest summary');
+
+    // Stale (> 30 days) refuses and names staleFixtureOwner.
+    const staleNow = '2026-12-26T12:00:00.000Z';
+    const staleVerdict = decide({
+      record: record({ qualifiedAt: '2026-12-25T12:00:00.000Z', behaviorEvals: summary }),
+      now: staleNow
+    });
+    expect(staleVerdict.ok).toBe(false);
+    expect(staleVerdict.reason).toBe('stale-behavior-evals');
+    expect(staleVerdict.message).toContain(summary.staleFixtureOwner);
+
+    // Future behaviorEvals timestamp is refused.
+    const futureVerdict = decide({
+      record: record({ qualifiedAt: '2026-11-20T12:00:00.000Z', behaviorEvals: summary }),
+      now: '2026-11-21T12:00:00.000Z'
+    });
+    expect(futureVerdict.ok).toBe(false);
+    expect(futureVerdict.reason).toBe('future-behavior-evals');
+
+    // Missing staleFixtureOwner is refused.
+    const noOwner = decide({
+      record: record({
+        qualifiedAt: '2026-11-24T11:00:00.000Z',
+        behaviorEvals: { ...summary, staleFixtureOwner: '' }
+      }),
+      now: '2026-11-24T12:00:00.000Z'
+    });
+    expect(noOwner.ok).toBe(false);
+    expect(noOwner.reason).toBe('invalid-behavior-evals');
+
+    // Degraded per-backend pass count is refused.
+    const degraded = decide({
+      record: record({
+        qualifiedAt: '2026-11-24T11:00:00.000Z',
+        behaviorEvals: {
+          ...summary,
+          perBackend: {
+            ...summary.perBackend,
+            codex: { ...summary.perBackend.codex, passedCount: 3 }
+          }
+        }
+      }),
+      now: '2026-11-24T12:00:00.000Z'
+    });
+    expect(degraded.ok).toBe(false);
+    expect(degraded.reason).toBe('incomplete-behavior-evals');
+    expect(degraded.message).toContain('codex: passedCount=3/4');
+
+    // Non-object or null summary is refused (including fail-closed null from malformed on-disk manifest).
+    for (const bad of ['invalid', null] as const) {
+      const malformed = decide({
+        record: record({
+          qualifiedAt: '2026-11-24T11:00:00.000Z',
+          behaviorEvals: bad
+        }),
+        now: '2026-11-24T12:00:00.000Z'
+      });
+      expect(malformed.ok).toBe(false);
+      expect(malformed.reason).toBe('invalid-behavior-evals');
+    }
+
+    // Invalid `now`, duplicate promptDigests, and wrong per-backend costDenomination are refused.
+    expect(ext.validateBehaviorEvalsSummary(summary, { now: 'not-a-date' })).toMatchObject({
+      ok: false,
+      reason: 'invalid-behavior-evals'
+    });
+    const dupDigest = decide({
+      record: record({
+        qualifiedAt: '2026-11-24T11:00:00.000Z',
+        behaviorEvals: {
+          ...summary,
+          perBackend: {
+            ...summary.perBackend,
+            claude: {
+              ...summary.perBackend.claude,
+              promptDigests: Array(4).fill(summary.perBackend.claude.promptDigests[0])
+            }
+          }
+        }
+      }),
+      now: '2026-11-24T12:00:00.000Z'
+    });
+    expect(dupDigest.ok).toBe(false);
+    expect(dupDigest.reason).toBe('incomplete-behavior-evals');
+
+    const wrongDenom = decide({
+      record: record({
+        qualifiedAt: '2026-11-24T11:00:00.000Z',
+        behaviorEvals: {
+          ...summary,
+          perBackend: {
+            ...summary.perBackend,
+            claude: { ...summary.perBackend.claude, costDenomination: 'tokens' }
+          }
+        }
+      }),
+      now: '2026-11-24T12:00:00.000Z'
+    });
+    expect(wrongDenom.ok).toBe(false);
+    expect(wrongDenom.reason).toBe('incomplete-behavior-evals');
+
+    // Stale or future per-task timestamps, wrong profileId, or mixed cost denominations cannot hide behind header.
+    const rawManifest = JSON.parse(readFileSync(ext.BEHAVIOR_EVAL_MANIFEST_PATH, 'utf8'));
+    const withStaleTask = ext.summarizeBehaviorEvalManifest({
+      ...rawManifest,
+      tasks: rawManifest.tasks.map((t: Record<string, unknown>, idx: number) =>
+        idx === 0 ? { ...t, recordedAt: '2026-09-01T00:00:00.000Z' } : t
+      )
+    });
+    expect(withStaleTask?.recordedAt).toBe('2026-09-01T00:00:00.000Z');
+    expect(
+      decide({
+        record: record({ qualifiedAt: '2026-11-24T11:00:00.000Z', behaviorEvals: withStaleTask }),
+        now: '2026-11-24T12:00:00.000Z'
+      })
+    ).toMatchObject({ ok: false, reason: 'stale-behavior-evals' });
+
+    const withFutureTask = ext.summarizeBehaviorEvalManifest({
+      ...rawManifest,
+      tasks: rawManifest.tasks.map((t: Record<string, unknown>, idx: number) =>
+        idx === 0 ? { ...t, recordedAt: '2026-12-10T00:00:00.000Z' } : t
+      )
+    });
+    expect(
+      decide({
+        record: record({ qualifiedAt: '2026-11-24T11:00:00.000Z', behaviorEvals: withFutureTask }),
+        now: '2026-11-24T12:00:00.000Z'
+      })
+    ).toMatchObject({ ok: false, reason: 'future-behavior-evals' });
+
+    const withBadProfile = ext.summarizeBehaviorEvalManifest({
+      ...rawManifest,
+      tasks: rawManifest.tasks.map((t: Record<string, unknown>, idx: number) =>
+        idx === 0 ? { ...t, profileId: 'wrong-profile' } : t
+      )
+    });
+    expect(withBadProfile?.perBackend.claude.passedCount).toBe(3);
+
+    const withMixedDenom = ext.summarizeBehaviorEvalManifest({
+      ...rawManifest,
+      tasks: rawManifest.tasks.map((t: Record<string, unknown>, idx: number) =>
+        idx === 0 ? { ...t, costUnits: { denomination: 'tokens', value: 999 } } : t
+      )
+    });
+    expect(withMixedDenom?.perBackend.claude.passedCount).toBe(3);
+    expect(withMixedDenom?.perBackend.claude.totalCostUnits).toBeLessThan(1);
+
+    expect(
+      ext.summarizeBehaviorEvalManifest({ ...rawManifest, maxAgeDays: 999 })
+    ).toBeNull();
   });
 });

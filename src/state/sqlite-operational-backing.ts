@@ -3,10 +3,13 @@
  * (`finding-persisted-connected-runs-map`) — SQLite operational state backing for
  * `WorkspaceStateStore`.
  *
- * - Commits operational key updates (`operational_kv_documents`) together with relational
- *   projections (`runs`, `steps`, `attempts`, `queue_entries`, `execution_summary_revisions`,
- *   `containment_acceptance_bindings`) in a single serialized `BEGIN IMMEDIATE` transaction
- *   (Hard Rule 58).
+ * - Commits schema-9 per-entity queue/Task and Run diffs (`operational_queue_meta`,
+ *   `operational_tasks`, `operational_runs`), relational projections (`runs`,
+ *   `containment_acceptance_bindings`), and non-entity operational keys
+ *   (`operational_kv_documents`) in a single serialized `BEGIN IMMEDIATE ... COMMIT`
+ *   transaction with monotonic `revision = revision + 1` upserts (Hard Rule 58;
+ *   `steps`, `attempts`, `queue_entries`, `execution_summary_revisions`, and SQLite-level
+ *   `expectedRevision` CAS belong to `AtomicTransactionUnitsService`).
  * - Imports pre-cutover `context.workspaceState` records once through `MigrationCoordinator`
  *   (`prepare-copy` .. `retain-source`) and fences post-cutover legacy Memento writes with
  *   `PostCutoverMementoWriteForbiddenError` (`post-cutover-memento-write-forbidden`).
@@ -762,11 +765,12 @@ export interface SwitchableOperationalMemento extends Memento, AcceptanceMemento
     rootDir: string,
     relativeDirSegments: readonly string[],
     dbFileName: string,
-    scopeId: string
+    scopeId: string,
+    shouldCommit?: () => boolean
   ): Promise<boolean>;
   configureDetachedTrustedSqliteWriter(config: DetachedSqliteWriterConfig | null): void;
   reloadSqliteCache(): void;
-  detachSqlite(): void;
+  detachSqlite(expectedStore?: SqliteOperationalStorePort): void;
   isSqliteAttached(): boolean;
   isPostCutoverAuthorityActive(): boolean;
 }
@@ -847,6 +851,42 @@ export function createSwitchableOperationalMemento(
   let durableBatchUnavailableReason: string | null = null;
   let stateEpoch = 0;
 
+  const currentActiveSqlite = (): SqliteOperationalBacking | null => activeSqlite;
+  const canUseDetachedWriter = async (writer: DetachedSqliteWriterConfig): Promise<boolean> => {
+    try {
+      return (await writer.canWrite()) === true;
+    } catch {
+      return false;
+    }
+  };
+  const writeViaDetachedOrThrow = async (
+    scope: string,
+    keyLabel: string,
+    apply: (backing: SqliteOperationalBacking) => void
+  ): Promise<void> => {
+    const writer = detachedWriter;
+    if (writer === null || writer.scopeId !== scope || !(await canUseDetachedWriter(writer))) {
+      throw new PostCutoverMementoWriteForbiddenError(keyLabel, scope);
+    }
+    const live = currentActiveSqlite();
+    if (live !== null && postCutoverScopeId === scope) {
+      apply(live);
+      return;
+    }
+    if (detachedWriter !== writer || postCutoverScopeId !== scope) {
+      throw new PostCutoverMementoWriteForbiddenError(keyLabel, scope);
+    }
+    const transient = writer.openStore(writer.databasePath);
+    try {
+      const backing = new SqliteOperationalBacking(transient, scope, legacyMemento, () => Date.now(), logger);
+      apply(backing);
+      stateEpoch += 1;
+      readOnlyCache = backing.exportSnapshot();
+    } finally {
+      transient.close();
+    }
+  };
+
   return {
     get<T>(key: string): T | undefined {
       if (PASSTHROUGH_OWNERSHIP_KEYS.has(key)) {
@@ -874,19 +914,8 @@ export function createSwitchableOperationalMemento(
         if (readOnlyCache !== null && isSameSerializedState(readOnlyCache.get(key), value)) {
           return;
         }
-        if (detachedWriter !== null && detachedWriter.scopeId === postCutoverScopeId && detachedWriter.canWrite()) {
-          const transient = detachedWriter.openStore(detachedWriter.databasePath);
-          try {
-            const backing = new SqliteOperationalBacking(transient, postCutoverScopeId, legacyMemento, () => Date.now(), logger);
-            backing.update(key, value);
-            stateEpoch += 1;
-            readOnlyCache = backing.exportSnapshot();
-            return;
-          } finally {
-            transient.close();
-          }
-        }
-        throw new PostCutoverMementoWriteForbiddenError(key, postCutoverScopeId);
+        await writeViaDetachedOrThrow(postCutoverScopeId, key, (b) => b.update(key, value));
+        return;
       }
       await legacyMemento.update(key, value);
     },
@@ -925,32 +954,11 @@ export function createSwitchableOperationalMemento(
               isSameSerializedState(readOnlyCache?.get(entry.key), entry.value)
             );
           if (!allUnchanged) {
-            if (
-              detachedWriter !== null &&
-              detachedWriter.scopeId === postCutoverScopeId &&
-              detachedWriter.canWrite()
-            ) {
-              const transient = detachedWriter.openStore(detachedWriter.databasePath);
-              try {
-                const backing = new SqliteOperationalBacking(
-                  transient,
-                  postCutoverScopeId,
-                  legacyMemento,
-                  () => Date.now(),
-                  logger
-                );
-                backing.updateBatch(operationalEntries);
-                stateEpoch += 1;
-                readOnlyCache = backing.exportSnapshot();
-              } finally {
-                transient.close();
-              }
-            } else {
-              throw new PostCutoverMementoWriteForbiddenError(
-                operationalEntries.map((entry) => entry.key).join('+'),
-                postCutoverScopeId
-              );
-            }
+            await writeViaDetachedOrThrow(
+              postCutoverScopeId,
+              operationalEntries.map((entry) => entry.key).join('+'),
+              (b) => b.updateBatch(operationalEntries)
+            );
           }
         } else if (durableBatchRequired) {
           const detail = durableBatchUnavailableReason ? ` (${durableBatchUnavailableReason})` : '';
@@ -1030,7 +1038,8 @@ export function createSwitchableOperationalMemento(
       rootDir: string,
       relativeDirSegments: readonly string[],
       dbFileName: string,
-      scopeId: string
+      scopeId: string,
+      shouldCommit?: () => boolean
     ): Promise<boolean> {
       if (activeSqlite !== null) return false;
       const startEpoch = stateEpoch;
@@ -1047,7 +1056,7 @@ export function createSwitchableOperationalMemento(
         }
       );
       if (result.outcome !== 'ok' || result.value === null) return false;
-      if (this.isSqliteAttached() || stateEpoch !== startEpoch) return false;
+      if (this.isSqliteAttached() || stateEpoch !== startEpoch || shouldCommit?.() === false) return false;
       stateEpoch += 1;
       readOnlyCache = result.value;
       postCutoverScopeId = scopeId;
@@ -1062,7 +1071,8 @@ export function createSwitchableOperationalMemento(
       activeSqlite?.reloadCacheFromSqlite();
     },
 
-    detachSqlite(): void {
+    detachSqlite(expectedStore?: SqliteOperationalStorePort): void {
+      if (expectedStore !== undefined && activeSqlite?.store !== expectedStore) return;
       stateEpoch += 1;
       if (activeSqlite !== null) {
         readOnlyCache = activeSqlite.exportSnapshot();

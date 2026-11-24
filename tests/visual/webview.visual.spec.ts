@@ -243,7 +243,6 @@ function assertNoPageErrors(page: Page, step: string, allowance?: ErrorAllowance
 }
 
 const MOUNT_TIMEOUT_MS = 10_000;
-const MOUNT_POLL_MS = 50;
 
 /**
  * Wait for a route's mount target, surrendering to a page error the moment one
@@ -253,21 +252,39 @@ const MOUNT_POLL_MS = 50;
  * unexplained for a round and one that names it. `toBeVisible()` on a surface
  * that threw during mount reports "testid never became visible" after its
  * timeout: true, useless, and indistinguishable from a chunk that never loaded.
- * Checking the error channel first reports the `TypeError`.
+ * Racing Playwright's native `locator.waitFor` against page error listeners
+ * reports the `TypeError` immediately with zero fixed polling sleep.
  */
 async function assertRouteMounted(page: Page, route: string, target: string): Promise<void> {
+  assertNoPageErrors(page, route);
   const locator = page.getByTestId(target);
-  const deadline = Date.now() + MOUNT_TIMEOUT_MS;
-  for (;;) {
+  let signalError!: () => void;
+  const errorArrived = new Promise<'error'>((resolve) => {
+    signalError = () => resolve('error');
+  });
+  const onPageError = (): void => signalError();
+  const onConsole = (message: { type(): string }): void => {
+    if (message.type() === 'error') signalError();
+  };
+  page.on('pageerror', onPageError);
+  page.on('console', onConsole);
+  try {
+    const outcome = await Promise.race([
+      locator.waitFor({ state: 'visible', timeout: MOUNT_TIMEOUT_MS }).then(
+        () => 'visible' as const,
+        () => 'timeout' as const
+      ),
+      errorArrived
+    ]);
     assertNoPageErrors(page, route);
-    if (await locator.isVisible()) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `${route}: mount target '${target}' never became visible within ` +
-          `${MOUNT_TIMEOUT_MS} ms, and the page reported no error explaining why`
-      );
-    }
-    await page.waitForTimeout(MOUNT_POLL_MS);
+    if (outcome === 'visible' || (await locator.isVisible())) return;
+    throw new Error(
+      `${route}: mount target '${target}' never became visible within ` +
+        `${MOUNT_TIMEOUT_MS} ms, and the page reported no error explaining why`
+    );
+  } finally {
+    page.off('pageerror', onPageError);
+    page.off('console', onConsole);
   }
 }
 
@@ -370,15 +387,6 @@ async function publishSnapshotMissingHistoryQueueId(page: Page): Promise<void> {
 
 /** The chunk the History route is code-split into (`chunkFileNames: 'chunks/[name].js'`). */
 const HISTORY_CHUNK_PATH = '/chunks/HistoryDashboard.js';
-
-/**
- * How long to let a Retry settle before counting what it did.
- *
- * A fixed wait, not a poll, because the assertion is about something that does
- * *not* happen — `expect.poll` on an absence returns immediately on the first
- * look and proves nothing about the interval after it.
- */
-const RETRY_SETTLE_MS = 2_000;
 
 /**
  * Count every chunk request the page makes, by path.
@@ -1891,9 +1899,17 @@ test.describe('route load failure recovery', () => {
     });
 
     // Unblocked, so the network would serve the chunk if it were asked. It is not.
+    // Stamp the pre-retry error element so we wait on the observable DOM cycle:
+    // Retry clears routeLoadError (unmounting this element), re-runs the loader
+    // effect, catches the cached ES module rejection, and mounts a fresh error element.
     blockChunk = false;
+    await errorBranch.evaluate((el) => el.setAttribute('data-retry-generation', 'before'));
     await errorBranch.getByRole('button', { name: 'Retry' }).click();
-    await page.waitForTimeout(RETRY_SETTLE_MS);
+    await expect(
+      page.locator('[data-testid="dashboard-route-error"]:not([data-retry-generation="before"])'),
+      'Retry re-ran the loader effect and mounted a fresh error branch after the cached rejection'
+    ).toBeVisible();
+    await page.evaluate(AFTER_TWO_FRAMES);
 
     expect(
       chunkRequests().filter((path) => path === HISTORY_CHUNK_PATH),

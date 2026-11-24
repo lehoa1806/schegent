@@ -72,6 +72,7 @@ import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
 import type { CommandAckMessage } from '../../src/ui/sidebar/messages';
 import { removeTempRoot } from '../temp-root-cleanup';
+import { waitForCondition } from '../wait-for-condition';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -206,22 +207,6 @@ function postedFromWebview(raw: unknown): unknown {
 /** How long the scheduled resume gets to finish before we give up on it. */
 const RESUME_SETTLE_MS = 5_000;
 
-/**
- * Wait for something the scheduled resume produces, or give up.
- *
- * `resumeActivePhase` hands the actual resume to `setImmediate` rather than
- * awaiting it, so `dispatch` resolves while the CLI turn is still ahead. Every
- * assertion about what the path reached therefore has to wait for it. This
- * returns rather than asserts: the caller says what it expected to find, so a
- * timeout fails on the real claim instead of on "waited too long".
- */
-async function settle(done: () => boolean | Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + RESUME_SETTLE_MS;
-  while (!(await done()) && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
-
 /** The audit log the path writes, or `''` before the first event lands. */
 async function readAuditLog(h: Harness): Promise<string> {
   try {
@@ -335,7 +320,10 @@ describe('FR-R3-114 row 5 — webview -> IPC -> controller -> CLI, once, end to 
     );
     // The whole turn, not just its start: `phase-end` is the last thing the path
     // writes, so waiting for it is waiting for every step in between.
-    await settle(async () => (await readAuditLog(harness!)).includes('phase-end'));
+    await waitForCondition(async () => (await readAuditLog(harness!)).includes('phase-end'), {
+      timeoutMs: RESUME_SETTLE_MS,
+      label: 'audit log to record phase-end after CMD_RESUME_PHASE'
+    });
 
     expect(
       harness!.invocations.length,

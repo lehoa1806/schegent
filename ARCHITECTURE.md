@@ -822,13 +822,24 @@ opened for writing only in a trusted primary window, and any other window
 attaches a read-only snapshot at most.
 The cutover is staged and resumable: until its `publish-authority` stage
 completes, the legacy Memento and JSON copies stay authoritative. After it,
-`WorkspaceStateStore` delegates Run, Queue and related writes to
-`SqliteOperationalBacking`, which commits them as `BEGIN IMMEDIATE` transactions
-through one serialized writer with revision fencing, and direct writes to the
-legacy keys are refused (Hard Rule 58). The census in
-`src/contracts/sqlite-store/state-census.ts` classifies each state surface: 16 of
-20 are `sqlite-authoritative`; the audit log, content-addressed blobs and log
-segment bytes, and UI layout preferences are not. The store's pragma profile,
+`WorkspaceStateStore` delegates Run, Queue, terminal-transition journal, and
+related operational writes to `SqliteOperationalBacking`, which commits schema-9
+per-entity diffs (`operational_queue_meta`, `operational_tasks`,
+`operational_runs`), relational `runs` and `containment_acceptance_bindings`
+projections, and non-entity `operational_kv_documents` in direct serialized
+`BEGIN IMMEDIATE ... COMMIT` transactions with monotonic `revision = revision + 1`
+upserts under `WorkspaceStateStore`'s write chain and `.schegent/ownership/`
+primacy fence, while direct writes to legacy Memento keys are refused (Hard Rule
+58; only `KEYS.lock`, `KEYS.executionLeases`, and `KEYS.operatorPseudonym` pass
+through). SQLite-level `expectedRevision` Compare-And-Set fencing, `steps` /
+`attempts` rows, and bounded `WriterCoordinator` lanes live in
+`AtomicTransactionUnitsService` (`src/services/sqlite-store/transaction-units.ts`)
+and `WorkflowControlService`, not inside `SqliteOperationalBacking.updateBatch()`.
+The census in `src/contracts/sqlite-store/state-census.ts` classifies each state
+surface: 15 of 20 are `sqlite-authoritative`; window primacy and execution leases
+remain on the filesystem ownership fence (`.schegent/ownership/` plus Memento
+passthrough keys), and the audit log, content-addressed blobs and log segment
+bytes, and UI layout preferences remain external. The store's pragma profile,
 write limits and migration stages are in
 `docs/operations/sqlite-application-store.md`; its schema version is in the
 Schema Versions table below.
@@ -1030,16 +1041,21 @@ reclassified as optional evidence.
 
 ## Schema Versions
 
-The table is the current persisted compatibility contract. Migration arrows are
-kept as plain text so the Current cells remain the sole numeric code spans on
+The table is the current persisted and wire compatibility contract across all six core version
+families (plus the legacy string workspace state version). Migration arrows and version numbers in
+prose columns are kept as plain text so the Current cells remain the sole numeric code spans on
 their constant rows.
 
-| Store | Constant | Current | Migrators |
+| Store / Boundary | Constant | Current | Compatibility & Refusals |
 |---|---|---|---|
-| Workspace state | `STATE_SCHEMA_VERSION` | `15` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14, 14→15 (credit-pause default) |
-| SQLite operational store | `SQLITE_SCHEMA_CURRENT_VERSION` | `9` | Forward-only migrations 1 to 9 applied by `schema-bootstrap.ts`; Migration 9 (`009_fr_r7_02_operational_per_entity_rows`) is non-additive, a database written by a newer schema is refused (`UNSUPPORTED_FUTURE_SCHEMA_VERSION`), and rollback uses a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
-| SQLite operational store reader floor | `SQLITE_MIN_READER_VERSION` | `9` | Older builds below the reader floor fail closed at open with `UNSUPPORTED_MIN_READER_VERSION` without modifying the database; downgrade requires restoring a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
-| Audit event envelope | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; readers preserve unknown historical event types. |
+| Sidebar IPC contract | `SIDEBAR_IPC_SCHEMA_VERSION` | `3` | Contract schema artifact version (`src/contracts/sidebar-ipc.ts`). Inbound wire messages may omit `schemaVersion` for backwards compatibility; any explicitly supplied mismatch is refused by `validateInboundMessage` with `unsupported-ipc-schema-version`. |
+| Sidebar / Dashboard snapshot body (`src/ui/sidebar/snapshot.ts`) | `SCHEMA_VERSION` | `4` | Carried on `WorkflowSnapshot`. Host `SnapshotTransport` refuses non-matching shapes via `isWorkflowSnapshot`; webview `reconcileSnapshotMessage` returns `unknown-schema` and renders `IncompatibleSnapshotNotice`. |
+| Workspace state numeric (`schegent.schemaVersionNumeric`) | `STATE_SCHEMA_VERSION` | `15` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14, 14→15 (credit-pause default). Future or malformed numeric values throw `UnsupportedStateSchemaVersionError` (`UNSUPPORTED_NUMERIC_STATE_VERSION` / `MALFORMED_NUMERIC_STATE_VERSION`). |
+| Workspace state legacy string (`schegent.schemaVersion`, `src/state/workspace-state.ts`) | `SCHEMA_VERSION` | `1.0.0` | Same-major strings upgrade forward in place; incompatible major strings or corrupted non-string values throw `UnsupportedStateSchemaVersionError` (`UNSUPPORTED_LEGACY_STATE_VERSION` / `MALFORMED_LEGACY_STATE_VERSION`). |
+| SQLite operational store | `SQLITE_SCHEMA_CURRENT_VERSION` | `9` | Forward-only migrations 1 to 9 applied by `schema-bootstrap.ts`; Migration 9 (`009_fr_r7_02_operational_per_entity_rows`) is non-additive, a database written by a newer schema or unreadable version throws `SqliteUnsupportedSchemaError` (`UNSUPPORTED_FUTURE_SCHEMA_VERSION`), and rollback uses a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
+| SQLite operational store reader floor | `SQLITE_MIN_READER_VERSION` | `9` | Older builds below the reader floor (or reading an unreadable floor) fail closed at open with `SqliteUnsupportedSchemaError` (`UNSUPPORTED_MIN_READER_VERSION`) without modifying the database; downgrade requires restoring a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
+| Process-YAML exchange (`Phase`, `Workflow`, `ModelCatalog`) | `PHASE_YAML_API_VERSION` | `schegent/v1` | Enforced across `validatePhaseDocument`, `parseWorkflowPackage`, `parseModelCatalogDocument`, and `preflightProcessDocument`; missing or unsupported `apiVersion` returns typed `DocumentRefusal` `{ code: 'unsupported-version' }`. |
+| Audit event envelope (and checkpoint) | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; `parseAuditLogLineDetailed` warns and preserves newer-schema rows, `readSpendReplay` marks spans containing newer `phase-end` rows as `unknown-row-schema` lower bounds, and `audit-checkpoint.ts` (`CHECKPOINT_VERSION`, version 1) refuses unknown checkpoint versions with `{ status: 'unreadable', reason: 'version-unknown' }` (`checkpoint-version-unknown`). |
 
 Workspace migration history includes the legacy Run lift, queue-registry lift,
 breakpoint additions, queue coalescing, explicit queue lifecycle, frozen
@@ -1047,9 +1063,14 @@ evidence and mutation metadata, connected Runs, queue/run/history map
 pluralization, and the final collapse to one persisted pause answer. A downgrade
 migrator is intentionally absent.
 
+<!-- Source: src/contracts/sidebar-ipc.ts -->
+<!-- Source: src/ui/sidebar/snapshot.ts -->
 <!-- Source: src/contracts/state-schema.ts -->
+<!-- Source: src/state/workspace-state.ts -->
 <!-- Source: src/contracts/sqlite-store/schema-types.ts -->
+<!-- Source: src/services/process-yaml/types.ts -->
 <!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
 <!-- Source: src/state/workflow-run-migrator.ts -->
 <!-- Source: src/state/queue-state-migrator.ts -->
 <!-- Source: src/state/connected-run-migrator.ts -->

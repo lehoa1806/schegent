@@ -87,6 +87,32 @@ deliberately did **not** do, written here because an unnamed limit reads as an a
   from `classifyFatal`, because a line carrying a signature cannot be blank. It is covered by a
   written reason, not by a case, and that reason expires if a blank pattern ever becomes registrable.
 
+## Four distinct evaluation layers in this repository
+
+To keep offline regression coverage distinct from live provider qualification, this directory and
+the qualification scripts maintain four separate layers:
+
+1. **Deterministic parser & outcome corpus (`backend-outcome-corpus.test.ts`, `fixtures/backend-outcomes.json`)**:
+   the 39 parser/unwrapper/detector/mapper cases documented above — classification conformance only.
+2. **Structural artifact conformance (`artifact-conformance.test.ts`, `artifacts/`)**: twelve
+   synthetic Spec Kit documents checked for required headings and structure only.
+3. **Deterministic credential-free behavioral fixture replay (`backend-behavior-eval.test.ts`, `fixtures/backend-behavior/`)**:
+   4 representative prompt-behavior tasks per advertised backend (`claude`, `codex`, `agy` — 12
+   behavioral tasks total: `structured-token`, `read-only-inspect`, `scoped-file-create`, and
+   `injection-refusal`). Replays recorded CLI/ACP invocation arguments and JSON-RPC response streams
+   completely offline (zero credentials, zero network calls) inside `npm run test:evals` and
+   `npm run gate`, verifying explicit output and disposable-workspace side-effect expectations,
+   SHA-256 `promptDigest`, `cliVersion`/`profileId`/`transport`/`costUnits` parity with
+   `BACKEND_DESCRIPTORS` and `EXPECTED_BACKEND_TRANSPORTS`, and a **30-day fixture freshness
+   window** (`maxAgeDays: 30`) owned by the operator holding the checkout (tracked via
+   `eval-fixture-review-date` in [live canary cadence](../../docs/operations/live-canary-cadence.md)
+   and `npm run review:due`). Offline replay verifies recorded behavioral contracts and host parsing
+   without spending live turns or claiming unobserved live model quality.
+4. **Deliberate paid live production-transport qualification (`npm run canary`, `FR-R7-14` `14-10`)**:
+   the off-gate live ACP transport qualification described below (14-day release preflight bound in
+   `scripts/backend-qualification.mjs`, optionally attaching a `behaviorEvals` summary alongside
+   live turn evidence).
+
 ## Where behavioral qualification will live
 
 `scripts/backend-canary-run.mjs`, invoked as `npm run canary` — off the PR path and non-blocking by

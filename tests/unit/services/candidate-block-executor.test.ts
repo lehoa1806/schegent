@@ -276,30 +276,41 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     expect(h.releasedSlots.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('evaluates first-ready, wait-for-selected, and stop-on-unavailability selection policies', async () => {
-    const h = makeHarness();
-    const fence = makeFence(1);
-
+  async function activateRoot(
+    h: ReturnType<typeof makeHarness>,
+    rootRunId: string,
+    connectedRunId: string,
+    fence: ExecutionFence,
+    rootBudget?: { readonly version: 1; readonly maxPhaseAttempts: number }
+  ): Promise<void> {
     await h.admissionService.prepareRootLink({
-      ledgerRunId: 'root-policies',
-      connectedRunId: 'run-policies',
+      ledgerRunId: rootRunId,
+      connectedRunId,
       rootWorkflowId: 'wf-1',
       queueId: 'default',
-      fence
+      fence,
+      ...(rootBudget !== undefined ? { rootBudget } : {})
     });
     await h.admissionService.activateRootLink({
-      ledgerRunId: 'root-policies',
-      connectedRunId: 'run-policies',
+      ledgerRunId: rootRunId,
+      connectedRunId,
       fence
     });
+  }
 
+  async function initTwoCandidatePolicyFrame(
+    h: ReturnType<typeof makeHarness>,
+    fence: ExecutionFence,
+    selectionPolicy: 'first-ready' | 'wait-for-selected' | 'stop-on-unavailability'
+  ) {
+    await activateRoot(h, 'root-policies', 'run-policies', fence);
     const init = await h.executor.initializeCandidateBlock({
       rootRunId: 'root-policies',
       workflowId: 'wf-1',
       frameKey: 'frame:pol',
       invocationId: 'inv-pol',
       nodeId: 'node-pol',
-      selectionPolicy: 'wait-for-selected',
+      selectionPolicy,
       candidates: [
         {
           candidateId: 'primary',
@@ -322,10 +333,56 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
       ],
       fence
     });
-    const root = init.root!;
-    const frame = init.frame!;
+    return { root: init.root!, frame: init.frame! };
+  }
 
-    // Under wait-for-selected, when primary is unavailable and fallback is ready, waits for primary
+  async function dispatchSingleAttemptBlock(
+    h: ReturnType<typeof makeHarness>,
+    fence: ExecutionFence,
+    params: {
+      readonly frameKey: string;
+      readonly invocationId: string;
+      readonly nodeId: string;
+      readonly candidateId: string;
+      readonly phaseNodeId: string;
+    }
+  ): Promise<string> {
+    await activateRoot(h, 'root-final', 'run-final', fence);
+    await h.executor.initializeCandidateBlock({
+      rootRunId: 'root-final',
+      workflowId: 'wf-1',
+      frameKey: params.frameKey,
+      invocationId: params.invocationId,
+      nodeId: params.nodeId,
+      candidates: [
+        {
+          candidateId: params.candidateId,
+          nodeId: params.phaseNodeId,
+          backend: 'claude',
+          priority: 1,
+          authoredOrder: 0,
+          maxAttempts: 1
+        }
+      ],
+      fence
+    });
+    const step = await h.executor.stepCandidateBlock({
+      rootRunId: 'root-final',
+      frameKey: params.frameKey,
+      fence
+    });
+    return step.attempt!.attemptId;
+  }
+
+  it('waits for primary under wait-for-selected policy when primary is unavailable and fallback is ready', async () => {
+    const h = makeHarness();
+    const fence = makeFence(1);
+    const { root, frame } = await initTwoCandidatePolicyFrame(
+      h,
+      fence,
+      'wait-for-selected'
+    );
+
     const waitAction = selectNextCandidateAction({
       root,
       frame,
@@ -342,11 +399,20 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     if (waitAction.kind === 'wait-availability') {
       expect(waitAction.candidateIds).toEqual(['primary']);
     }
+  });
 
-    // Under stop-on-unavailability, when primary is unavailable, pauses for intervention
+  it('pauses for intervention under stop-on-unavailability policy when primary is unavailable', async () => {
+    const h = makeHarness();
+    const fence = makeFence(1);
+    const { root, frame } = await initTwoCandidatePolicyFrame(
+      h,
+      fence,
+      'stop-on-unavailability'
+    );
+
     const stopAction = selectNextCandidateAction({
       root,
-      frame: { ...frame, selectionPolicy: 'stop-on-unavailability' },
+      frame,
       nowWallMs: h.clock.nowWallMs(),
       nowMonotonicMs: h.clock.nowMonotonicMs(),
       hostEpoch: h.clock.hostEpoch,
@@ -359,13 +425,21 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     if (stopAction.kind === 'pause-intervention') {
       expect(stopAction.pauseCause).toBe('candidate-unavailable-stop-policy');
     }
+  });
 
-    // Under first-ready, switches to ready fallback
+  it('switches to ready fallback under first-ready policy when selected primary is unavailable', async () => {
+    const h = makeHarness();
+    const fence = makeFence(1);
+    const { root, frame } = await initTwoCandidatePolicyFrame(
+      h,
+      fence,
+      'first-ready'
+    );
+
     const firstReadyAction = selectNextCandidateAction({
       root,
       frame: {
         ...frame,
-        selectionPolicy: 'first-ready',
         selectedCandidateId: 'primary'
       },
       nowWallMs: h.clock.nowWallMs(),
@@ -383,50 +457,17 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     }
   });
 
-  it('commits returnCommitId once on final-attempt success and gives intervention-required precedence over exhaustion on invalid final output', async () => {
+  it('commits returnCommitId once with winning outputs and decisionResults on final-attempt success', async () => {
     const h = makeHarness();
     const fence = makeFence(1);
-
-    await h.admissionService.prepareRootLink({
-      ledgerRunId: 'root-final',
-      connectedRunId: 'run-final',
-      rootWorkflowId: 'wf-1',
-      queueId: 'default',
-      fence
-    });
-    await h.admissionService.activateRootLink({
-      ledgerRunId: 'root-final',
-      connectedRunId: 'run-final',
-      fence
-    });
-
-    await h.executor.initializeCandidateBlock({
-      rootRunId: 'root-final',
-      workflowId: 'wf-1',
+    const attemptId = await dispatchSingleAttemptBlock(h, fence, {
       frameKey: 'frame:win',
       invocationId: 'inv-win',
       nodeId: 'node-win',
-      candidates: [
-        {
-          candidateId: 'cand-only',
-          nodeId: 'phase-only',
-          backend: 'claude',
-          priority: 1,
-          authoredOrder: 0,
-          maxAttempts: 1
-        }
-      ],
-      fence
+      candidateId: 'cand-only',
+      phaseNodeId: 'phase-only'
     });
 
-    const step1 = await h.executor.stepCandidateBlock({
-      rootRunId: 'root-final',
-      frameKey: 'frame:win',
-      fence
-    });
-    const attemptId = step1.attempt!.attemptId;
-
-    // Final attempt (1 of 1) succeeds: must return once with returnCommitId
     const settled1 = await h.executor.settleCandidateAttempt({
       rootRunId: 'root-final',
       frameKey: 'frame:win',
@@ -443,8 +484,31 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     expect(settled1.frame?.status).toBe('completed');
     expect(settled1.frame?.winningOutputs).toEqual({ artifact: 'spec.md' });
     expect(settled1.frame?.decisionResults).toEqual({ approved: true });
+  });
 
-    // Duplicate settle is ignored and returns returnCommitted: false
+  it('ignores duplicate settlement for an already-returned candidate block without overwriting winning outputs', async () => {
+    const h = makeHarness();
+    const fence = makeFence(1);
+    const attemptId = await dispatchSingleAttemptBlock(h, fence, {
+      frameKey: 'frame:win',
+      invocationId: 'inv-win',
+      nodeId: 'node-win',
+      candidateId: 'cand-only',
+      phaseNodeId: 'phase-only'
+    });
+
+    const settled1 = await h.executor.settleCandidateAttempt({
+      rootRunId: 'root-final',
+      frameKey: 'frame:win',
+      attemptId,
+      candidateId: 'cand-only',
+      fence,
+      outcome: 'succeeded',
+      validatedOutputs: { artifact: 'spec.md' },
+      decisionResults: { approved: true }
+    });
+    expect(settled1.returnCommitted).toBe(true);
+
     const duplicateSettle = await h.executor.settleCandidateAttempt({
       rootRunId: 'root-final',
       frameKey: 'frame:win',
@@ -458,35 +522,23 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     expect(duplicateSettle.frame?.winningOutputs).toEqual({
       artifact: 'spec.md'
     });
+  });
 
-    // Now test invalid final output taking intervention-required precedence over attempts-exhausted
-    await h.executor.initializeCandidateBlock({
-      rootRunId: 'root-final',
-      workflowId: 'wf-1',
+  it('gives intervention-required precedence over exhaustion on invalid final-attempt output', async () => {
+    const h = makeHarness();
+    const fence = makeFence(1);
+    const attemptId = await dispatchSingleAttemptBlock(h, fence, {
       frameKey: 'frame:invalid',
       invocationId: 'inv-invalid',
       nodeId: 'node-invalid',
-      candidates: [
-        {
-          candidateId: 'cand-inv',
-          nodeId: 'phase-inv',
-          backend: 'claude',
-          priority: 1,
-          authoredOrder: 0,
-          maxAttempts: 1
-        }
-      ],
-      fence
+      candidateId: 'cand-inv',
+      phaseNodeId: 'phase-inv'
     });
-    const stepInv = await h.executor.stepCandidateBlock({
-      rootRunId: 'root-final',
-      frameKey: 'frame:invalid',
-      fence
-    });
+
     const settledInv = await h.executor.settleCandidateAttempt({
       rootRunId: 'root-final',
       frameKey: 'frame:invalid',
-      attemptId: stepInv.attempt!.attemptId,
+      attemptId,
       candidateId: 'cand-inv',
       fence,
       outcome: 'invalid-output'
@@ -496,25 +548,13 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     expect(settledInv.frame?.pauseCause).toBe('invalid-candidate-output');
   });
 
-  it('counts ordinary sibling leaf dispatches toward root maxPhaseAttempts and expires monitoring window after 8 hours', async () => {
+  it('counts ordinary sibling leaf dispatches toward root maxPhaseAttempts and rejects overflow', async () => {
     const h = makeHarness();
     const fence = makeFence(1);
 
-    await h.admissionService.prepareRootLink({
-      ledgerRunId: 'root-cap',
-      connectedRunId: 'run-cap',
-      rootWorkflowId: 'wf-1',
-      queueId: 'default',
-      fence,
-      rootBudget: {
-        version: 1,
-        maxPhaseAttempts: 2
-      }
-    });
-    await h.admissionService.activateRootLink({
-      ledgerRunId: 'root-cap',
-      connectedRunId: 'run-cap',
-      fence
+    await activateRoot(h, 'root-cap', 'run-cap', fence, {
+      version: 1,
+      maxPhaseAttempts: 2
     });
 
     const leaf1 = await h.executor.recordOrdinaryLeafDispatch({
@@ -543,20 +583,13 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     });
     expect(leaf3.ok).toBe(false);
     expect(leaf3.code).toBe('root-attempt-budget-exhausted');
+  });
 
-    // Monitoring window expiry check
-    await h.admissionService.prepareRootLink({
-      ledgerRunId: 'root-mon',
-      connectedRunId: 'run-mon',
-      rootWorkflowId: 'wf-1',
-      queueId: 'default',
-      fence
-    });
-    await h.admissionService.activateRootLink({
-      ledgerRunId: 'root-mon',
-      connectedRunId: 'run-mon',
-      fence
-    });
+  it('expires waiting-availability candidate block into monitoring-expired after the 8-hour monitoring window', async () => {
+    const h = makeHarness();
+    const fence = makeFence(1);
+
+    await activateRoot(h, 'root-mon', 'run-mon', fence);
     await h.executor.initializeCandidateBlock({
       rootRunId: 'root-mon',
       workflowId: 'wf-1',
@@ -594,7 +627,7 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
     expect(expiredStep.frame?.status).toBe('monitoring-expired');
   });
 
-  it('suppresses inner delayed-retry pause when blockOwnedRetry is true while keeping standalone Phase behavior unchanged', () => {
+  it('keeps standalone Phase rate_limited transition pausing when blockOwnedRetry is omitted', () => {
     const standaloneRateLimit = transition({
       phase: 'speckit-implement',
       outcome: 'rate_limited',
@@ -607,7 +640,9 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
       warnings: [],
       cause: 'rate_limit'
     });
+  });
 
+  it('converts rate_limited transition to failed when blockOwnedRetry is true', () => {
     const blockOwnedRateLimit = transition({
       phase: 'speckit-implement',
       outcome: 'rate_limited',
@@ -621,7 +656,9 @@ describe('CandidateBlockExecutor unit tests (FR-R5-F30 / SPEC-08 / D5)', () => {
       warnings: [],
       cause: 'rate_limit'
     });
+  });
 
+  it('fails directly in PhaseSequencer.decideAfterPhase on transient_error when blockOwnedRetry is true', () => {
     const sequencer = new PhaseSequencer();
     const seqDecision = sequencer.decideAfterPhase({
       run: {

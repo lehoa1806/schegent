@@ -107,6 +107,60 @@ export async function narrowMode(pathname: string, desired: number): Promise<Nar
   }
 }
 
+/**
+ * FR-R7-18 (`N11`, FR-013, Contract 6) — narrow an already-verified open file
+ * descriptor in place via `handle.chmod` (`fchmod(2)`), closing the leaf
+ * `lstat`→`chmod` pathname TOCTOU window while keeping this module as the sole
+ * `chmod` authority (Hard Rule 69).
+ *
+ * Uses `handle.stat()` to confirm the descriptor refers to a regular file and
+ * inspect its current permission bits, clears all non-owner bits without ever
+ * widening, calls `handle.chmod(desiredMode)` on POSIX (`process.platform !== 'win32'`),
+ * and re-verifies the applied mode through `handle.stat()`. The `_pathname`
+ * parameter is carried for call-site symmetry and is never re-resolved or logged.
+ */
+export async function narrowOpenFileHandle(
+  handle: fsp.FileHandle,
+  _pathname: string,
+  target: number
+): Promise<NarrowOutcome> {
+  try {
+    const stat = await handle.stat();
+    if (stat.isSymbolicLink()) {
+      return { outcome: 'refused-symlink', reason: 'the descriptor is a symbolic link' };
+    }
+    if (!stat.isFile()) {
+      return {
+        outcome: 'unsupported',
+        reason: 'the descriptor is not a regular file',
+        code: 'EINVAL'
+      };
+    }
+    const current = stat.mode & PERMISSION_BITS;
+    if ((current & NON_OWNER_BITS) === 0) return { outcome: 'already-private' };
+    if (process.platform === 'win32') {
+      return {
+        outcome: 'unsupported',
+        reason: 'descriptor chmod is unsupported on Windows',
+        code: NOT_APPLIED
+      };
+    }
+    const desiredMode = current & target & ~NON_OWNER_BITS;
+    await handle.chmod(desiredMode);
+    const applied = (await handle.stat()).mode & PERMISSION_BITS;
+    if (applied !== desiredMode) {
+      return {
+        outcome: 'unsupported',
+        reason: 'the platform accepted the mode change but did not apply it',
+        code: NOT_APPLIED
+      };
+    }
+    return { outcome: 'narrowed', previousMode: current };
+  } catch (error) {
+    return { outcome: 'unsupported', reason: messageOf(error), code: codeOf(error) };
+  }
+}
+
 /** Which kind of path a notice is about. Never which path. */
 export type NarrowingScope = 'file' | 'directory';
 
