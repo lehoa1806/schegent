@@ -104,6 +104,30 @@ export const BACKEND_RECIPE_SITES: readonly BackendRecipeSite[] = [
     how: 'equality',
     note: 'Chooses the vendor review entry point and records the reviewer invocation'
   },
+  {
+    path: 'src/services/containment-qualification/spawn-admission-gate.ts',
+    role: 'Permission posture and policy',
+    how: 'equality',
+    note: 'behaviour: routes codex native security reviews to standalone codex-security scanner admission'
+  },
+  {
+    path: 'src/runner/spawn-gated-runner.ts',
+    role: 'Permission posture and policy',
+    how: 'equality',
+    note: 'behaviour: forwards host-resolved codex-security path and SHA-256 digest only for codex security review'
+  },
+  {
+    path: 'src/audit/audit-payload-acp-vocab.ts',
+    role: 'Permission posture and policy',
+    how: 'equality',
+    note: 'behaviour: enforces cross-field audit invariant that codex-security is recorded only under codex unrestricted posture'
+  },
+  {
+    path: 'src/runner/acp-runner-stream-helpers.ts',
+    role: 'ACP runtime and bridge launch',
+    how: 'equality',
+    note: 'behaviour: synthesizes backend-specific wire-format JSONL terminal usage envelopes for ACP turns'
+  },
 
   // ---- Capability withholding policy and usage stream parsing (behaviour)
   {

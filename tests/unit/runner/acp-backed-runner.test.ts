@@ -635,9 +635,14 @@ rl.on('line', (line) => {
       expect('backgroundWorkOpenAtResult' in cleanTools).toBe(false);
 
       const refused = await runMode('refusal');
-      expect(refused.exitCode).toBe(0);
+      expect(refused.exitCode).toBe(1);
       expect('acpTurnSettled' in refused).toBe(false);
       expect('backgroundWorkOpenAtResult' in refused).toBe(false);
+      expect(refused.terminalReconciliation).toEqual({
+        status: 'refusal',
+        stopReason: 'refusal',
+        warningCode: 'acp-turn-refusal'
+      });
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

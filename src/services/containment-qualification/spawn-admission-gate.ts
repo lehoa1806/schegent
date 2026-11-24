@@ -15,6 +15,7 @@
 // is rethrown unchanged, so the caller's ordinary failure path reports it; nothing here admits on
 // an error. Log lines name the kind and the reason, never a path or a version string.
 
+import { getBackendDescriptor } from '../../contracts/backend-descriptors';
 import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type {
   AcceptanceOrigin,
@@ -22,6 +23,7 @@ import type {
   BindingInput,
   ExecutableUnresolvedCause,
   FingerprintRecord,
+  SpawnAdmissionDecision,
   SpawnAdmissionRequest,
   SpawnGate
 } from '../../contracts/containment-qualification';
@@ -29,6 +31,7 @@ import { judgeSpawnAdmission, versionIsIgnorable } from './admission';
 import { ContainmentAdmissionRefusedError } from './admission-refusal';
 import { diffFingerprint, versionMinorOf } from './fingerprint';
 import type { BackendIdentityCache } from './identity-cache';
+import type { ScannerAdmissionGate } from './scanner-admission';
 
 /** Runs whose first admitted fingerprints are kept; the oldest is evicted past this. */
 export const PER_RUN_FINGERPRINT_CAPACITY = 256;
@@ -68,6 +71,8 @@ export interface SpawnAdmissionGateDeps {
   /** Called at each admission; the wiring passes the policy resolved when the window started. */
   environmentPolicyDigest(): string;
   readonly identityCache?: BackendIdentityCache;
+  /** FR-R8-02 (02-02): dedicated single-resolution admission gate for standalone review scanners (`codex-security`). */
+  readonly scannerAdmission?: ScannerAdmissionGate;
   readonly logger: { warn(line: string): void };
 }
 
@@ -135,13 +140,35 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
     return identity;
   }
 
-  async function admit(kind: BackendRunnerKind, request: SpawnAdmissionRequest): Promise<void> {
+  async function admitWithDecision(
+    kind: BackendRunnerKind,
+    request: SpawnAdmissionRequest
+  ): Promise<SpawnAdmissionDecision> {
     const signal = request.cancellationSignal;
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     if (!deps.isTrusted()) throw refused(kind, { reason: 'workspace-untrusted-at-spawn' });
     const primacy = await deps.hasPrimacy();
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     if (!primacy) throw refused(kind, { reason: 'ownership-lost-at-spawn' });
+
+    // FR-R8-02 (02-02): Codex native security review launches the standalone `codex-security`
+    // scanner, NOT `codex`. Never inherit `codex`'s qualification, consent, or fingerprint; fail
+    // closed unless the dedicated single-resolution scanner gate admits it.
+    if (kind === 'codex' && request.review?.kind === 'security') {
+      if (deps.scannerAdmission === undefined) {
+        throw refused(kind, {
+          reason: 'containment-unqualified-for-tuple',
+          consentable: false
+        });
+      }
+      return deps.scannerAdmission.admitScanner({
+        scanner: 'codex-security',
+        runId: request.runId,
+        ...(request.env !== undefined ? { env: request.env } : {}),
+        ...(signal !== undefined ? { cancellationSignal: signal } : {})
+      });
+    }
+
     const identity = await observe(kind, request.cliPath, signal);
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     const verdict = judgeSpawnAdmission({ identity, granted: deps.granted(), binding: deps.bindings.read(kind) });
@@ -157,7 +184,23 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
     if (verdict.bindingWrite !== undefined) await deps.bindings.bind(kind, fingerprint, verdict.bindingWrite);
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     perRun.remember(request.runId, kind, fingerprint);
+    const permissionMode =
+      kind === 'codex' && request.review?.kind === 'code'
+        ? 'read-only'
+        : getBackendDescriptor(kind).defaultAuditPermissionMode;
+    return Object.freeze({
+      kind,
+      executableTarget: kind,
+      resolvedExecutablePath: request.cliPath,
+      containmentPosture: verdict.containment,
+      permissionMode,
+      fingerprint
+    });
   }
 
-  return Object.freeze({ admit });
+  async function admit(kind: BackendRunnerKind, request: SpawnAdmissionRequest): Promise<void> {
+    await admitWithDecision(kind, request);
+  }
+
+  return Object.freeze({ admit, admitWithDecision });
 }

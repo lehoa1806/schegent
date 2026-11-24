@@ -15,9 +15,15 @@
 // a name found only on the host's PATH is one the spawn cannot start.
 
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
-import type { FingerprintRecord, SpawnGate } from '../contracts/containment-qualification';
+import type {
+  FingerprintRecord,
+  ReviewScannerId,
+  SpawnGate
+} from '../contracts/containment-qualification';
 import type { ProcessEnvironmentPolicy } from '../contracts/process-environment-policy';
 import { resolveExecutable } from '../runner/executable-identity';
+import { createCliVersionProbe } from '../runner/cli-version-probe';
+import { resolveCodexSecurityExecutable } from '../runner/native-review-launch';
 import { buildSpawnEnv, policyRequestFields } from '../runner/spawn-env';
 import {
   AcceptanceBindingStore,
@@ -25,8 +31,14 @@ import {
 } from '../services/containment-qualification/acceptance-bindings';
 import { environmentPolicyDigestOf } from '../services/containment-qualification/fingerprint';
 import { BackendIdentityCache } from '../services/containment-qualification/identity-cache';
+import {
+  ScannerAcceptanceBindingStore,
+  createScannerAdmissionGate
+} from '../services/containment-qualification/scanner-admission';
 import { createSpawnAdmissionGate } from '../services/containment-qualification/spawn-admission-gate';
 import type { BackendQualificationSource } from '../ui/sidebar/backend-qualification-projection';
+
+const EMPTY_SCANNER_GRANTS: ReadonlySet<ReviewScannerId> = new Set();
 
 export interface ContainmentAdmissionWiringDeps {
   /** The workspace memento the acceptance bindings live in. */
@@ -40,8 +52,20 @@ export interface ContainmentAdmissionWiringDeps {
   readonly environmentPolicy: ProcessEnvironmentPolicy;
   /** The live grant reader, the same thunk the runner factory judges against. */
   readonly granted: () => ReadonlySet<BackendRunnerKind>;
+  /** Optional explicit standalone scanner grant reader (defaults empty — fail closed; FR-R8-02 02-02). */
+  readonly grantedScanners?: () => ReadonlySet<ReviewScannerId>;
   /** The registry's cached `--version` probe. */
   readonly observeVersion: (cliPath: string) => Promise<string | null>;
+  /**
+   * Optional dedicated scanner `--version` probe (defaults to a sanitized `buildCodexSecurityEnv`
+   * probe keyed by `(resolvedPath, binaryDigest, policy)` with `AbortSignal` support).
+   */
+  readonly observeScannerVersion?: (
+    resolvedPath: string,
+    binaryDigest: string,
+    env?: Readonly<Record<string, string>>,
+    signal?: AbortSignal
+  ) => Promise<string | null>;
 }
 
 export interface ContainmentAdmissionWiring {
@@ -51,15 +75,52 @@ export interface ContainmentAdmissionWiring {
   readonly qualification: BackendQualificationSource;
   /** Handed to the consent gate: an accepted fingerprint is bound with origin `consent`. */
   readonly recordAcceptance: (kind: BackendRunnerKind, fingerprint: FingerprintRecord) => Promise<void>;
+  /** Records explicit operator consent for a standalone scanner fingerprint (`codex-security`). */
+  readonly recordScannerAcceptance: (scanner: ReviewScannerId, fingerprint: FingerprintRecord) => Promise<void>;
+  /** Explicit operator-initiated inspection helper returning the full scanner fingerprint for consent. */
+  readonly inspectScannerForConsent: (
+    scanner: ReviewScannerId,
+    env?: Readonly<Record<string, string>>,
+    cancellationSignal?: AbortSignal
+  ) => Promise<
+    | { readonly ok: true; readonly fingerprint: FingerprintRecord; readonly resolvedPath: string; readonly binaryDigest: string }
+    | { readonly ok: false; readonly cause: 'not-found' | 'not-executable' }
+  >;
 }
 
-function spawnEnvOf(policy: ProcessEnvironmentPolicy): NodeJS.ProcessEnv {
-  return buildSpawnEnv(policyRequestFields(policy));
+function spawnEnvOf(
+  policy: ProcessEnvironmentPolicy,
+  extraEnv?: Readonly<Record<string, string>>
+): NodeJS.ProcessEnv {
+  return buildSpawnEnv({
+    ...policyRequestFields(policy),
+    ...(extraEnv !== undefined ? { env: { ...extraEnv } } : {})
+  });
 }
 
 export function wireContainmentAdmission(deps: ContainmentAdmissionWiringDeps): ContainmentAdmissionWiring {
   const bindings = new AcceptanceBindingStore(deps.memento, deps.logger);
+  const scannerBindings = new ScannerAcceptanceBindingStore(deps.memento, deps.logger);
   const identityCache = new BackendIdentityCache();
+  const scannerVersionProbe = createCliVersionProbe({
+    environmentPolicy: () => deps.environmentPolicy,
+    isTrusted: deps.isTrusted
+  });
+  const scannerAdmission = createScannerAdmissionGate({
+    isTrusted: deps.isTrusted,
+    hasPrimacy: deps.hasPrimacy,
+    resolveScannerExecutable: async (_scanner, env) =>
+      resolveCodexSecurityExecutable(spawnEnvOf(deps.environmentPolicy, env), process.platform),
+    observeScannerVersion: (_scanner, resolvedPath, binaryDigest, env, signal) =>
+      deps.observeScannerVersion !== undefined
+        ? deps.observeScannerVersion(resolvedPath, binaryDigest, env, signal)
+        : (scannerVersionProbe.observeScanner?.(resolvedPath, binaryDigest, env, signal) ?? Promise.resolve(null)),
+    grantedScanners: deps.grantedScanners ?? (() => EMPTY_SCANNER_GRANTS),
+    bindings: scannerBindings,
+    platform: { os: process.platform, arch: process.arch },
+    environmentPolicyDigest: () => environmentPolicyDigestOf(deps.environmentPolicy),
+    logger: deps.logger
+  });
   const spawnGate = createSpawnAdmissionGate({
     isTrusted: deps.isTrusted,
     hasPrimacy: deps.hasPrimacy,
@@ -71,6 +132,7 @@ export function wireContainmentAdmission(deps: ContainmentAdmissionWiringDeps): 
     platform: { os: process.platform, arch: process.arch },
     environmentPolicyDigest: () => environmentPolicyDigestOf(deps.environmentPolicy),
     identityCache,
+    scannerAdmission,
     logger: deps.logger
   });
   return Object.freeze({
@@ -80,6 +142,18 @@ export function wireContainmentAdmission(deps: ContainmentAdmissionWiringDeps): 
       bindingOf: (kind: BackendRunnerKind) => bindings.read(kind)
     }),
     recordAcceptance: (kind: BackendRunnerKind, fingerprint: FingerprintRecord) =>
-      bindings.bind(kind, fingerprint, 'consent')
+      bindings.bind(kind, fingerprint, 'consent'),
+    recordScannerAcceptance: (scanner: ReviewScannerId, fingerprint: FingerprintRecord) =>
+      scannerBindings.bind(scanner, fingerprint, 'consent'),
+    inspectScannerForConsent: (
+      scanner: ReviewScannerId,
+      env?: Readonly<Record<string, string>>,
+      cancellationSignal?: AbortSignal
+    ) =>
+      scannerAdmission.inspectScannerForConsent({
+        scanner,
+        ...(env !== undefined ? { env } : {}),
+        ...(cancellationSignal !== undefined ? { cancellationSignal } : {})
+      })
   });
 }
