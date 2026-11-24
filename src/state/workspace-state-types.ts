@@ -244,6 +244,69 @@ export class QueueMutationRejected extends Error {
   }
 }
 
+export type StateSchemaVersionErrorCode =
+  | 'UNSUPPORTED_NUMERIC_STATE_VERSION'
+  | 'MALFORMED_NUMERIC_STATE_VERSION'
+  | 'UNSUPPORTED_LEGACY_STATE_VERSION'
+  | 'MALFORMED_LEGACY_STATE_VERSION';
+
+export class UnsupportedStateSchemaVersionError extends Error {
+  public readonly code: StateSchemaVersionErrorCode;
+  public readonly persistedVersion: unknown;
+  public readonly supportedVersion: number | string;
+
+  constructor(
+    code: StateSchemaVersionErrorCode,
+    persistedVersion: unknown,
+    supportedVersion: number | string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'UnsupportedStateSchemaVersionError';
+    this.code = code;
+    this.persistedVersion = persistedVersion;
+    this.supportedVersion = supportedVersion;
+  }
+}
+
+export function describeMalformedVersionValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return 'NaN';
+    if (!Number.isFinite(value)) return 'non-finite number';
+    if (value < 0) return 'negative number';
+    if (!Number.isInteger(value)) return 'non-integer number';
+    return 'number';
+  }
+  if (typeof value === 'string') return 'malformed string';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+export function assertPersistedStateSchemaVersionSupported(persistedNumeric: unknown): void {
+  if (persistedNumeric === undefined) return;
+  if (
+    typeof persistedNumeric !== 'number'
+    || !Number.isInteger(persistedNumeric)
+    || persistedNumeric < 0
+  ) {
+    throw new UnsupportedStateSchemaVersionError(
+      'MALFORMED_NUMERIC_STATE_VERSION',
+      persistedNumeric,
+      STATE_SCHEMA_VERSION,
+      `Schegent state schemaVersion (${describeMalformedVersionValue(persistedNumeric)}) is malformed (expected non-negative integer <= ${STATE_SCHEMA_VERSION}). Run "Schegent: Reset Workspace State" to clear.`
+    );
+  }
+  if (persistedNumeric > STATE_SCHEMA_VERSION) {
+    throw new UnsupportedStateSchemaVersionError(
+      'UNSUPPORTED_NUMERIC_STATE_VERSION',
+      persistedNumeric,
+      STATE_SCHEMA_VERSION,
+      `Schegent state schemaVersion ${persistedNumeric} exceeds runtime ${STATE_SCHEMA_VERSION}. Update the extension before opening this workspace.`
+    );
+  }
+}
+
 export function isRunRaceRefusal(error: unknown): error is QueueMutationRejected {
   return (
     error instanceof QueueMutationRejected &&

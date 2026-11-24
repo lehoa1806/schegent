@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -25,7 +25,6 @@ import { SanitizedLogger } from '../../../src/lib/logger';
  */
 
 const LEGACY_ROWS = 100;
-const SETTLE_MS = 8;
 
 interface ChainedRow {
   readonly file: string;
@@ -65,8 +64,6 @@ const formAFirstRow = (): string =>
     digestAlg: 'sha256'
   });
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 describe('both legacy transition forms verify with the real writer (SC-001)', () => {
   let root: string;
   const auditDir = (): string => path.join(root, '.schegent');
@@ -77,6 +74,7 @@ describe('both legacy transition forms verify with the real writer (SC-001)', ()
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -90,14 +88,35 @@ describe('both legacy transition forms verify with the real writer (SC-001)', ()
   const newWriter = (overrides: Record<string, number> = {}): AuditLogWriter =>
     new AuditLogWriter({ workspaceRoot: root, ...overrides }, new SanitizedLogger());
 
-  const appendRows = async (writer: AuditLogWriter, count: number, pause = false): Promise<void> => {
-    for (let n = 0; n < count; n += 1) {
-      await writer.append({
-        eventType: 'phase-start',
-        runId: `run-${n}`,
-        payload: { phase: 'p' }
-      } as never);
-      if (pause) await sleep(SETTLE_MS);
+  const appendRows = async (writer: AuditLogWriter, count: number, stepClock = false): Promise<void> => {
+    if (!stepClock) {
+      for (let n = 0; n < count; n += 1) {
+        await writer.append({
+          eventType: 'phase-start',
+          runId: `run-${n}`,
+          payload: { phase: 'p' }
+        } as never);
+      }
+      return;
+    }
+    // Step system Date and explicit file mtimes so every rotation produces strictly-ordered stamps and mtimes without sleeping.
+    const baseTimeMs = 1_750_000_000_000;
+    const legacyStamp = new Date(baseTimeMs - 1_000);
+    await fs.utimes(logFile(), legacyStamp, legacyStamp);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      for (let n = 0; n < count; n += 1) {
+        const stamp = new Date(baseTimeMs + n * 1_000);
+        vi.setSystemTime(stamp);
+        await writer.append({
+          eventType: 'phase-start',
+          runId: `run-${n}`,
+          payload: { phase: 'p' }
+        } as never);
+        await fs.utimes(logFile(), stamp, stamp);
+      }
+    } finally {
+      vi.useRealTimers();
     }
   };
 

@@ -43,10 +43,25 @@ the second install the build fails. This page previously said the root install a
 The build compiles the Svelte webviews and bundles the extension host. `test:integration` is the
 repository-defined automated Extension Development Host path.
 
+**Standalone execution clone vs nested workspace.** Cloning `lehoa1806/schegent.git` directly gives
+a standalone `repo/` checkout: it builds, tests, and passes `npm run gate` self-contained, but
+lacks the parent planning envelope's `docs/hard-rules.md` and workspace `scripts/hooks/`. In a
+nested workspace (`<workspace>/repo/`), both repositories travel together.
+
 **There IS an interactive F5 launch configuration**: `.vscode/launch.json`, added by
-`FR-R3-073`. This page previously denied it. What is genuinely absent is
-`.vscode/tasks.json` — the launch configuration names a `preLaunchTask`, and VS Code satisfies
-it from its auto-detected npm tasks rather than from a checked-in task file.
+`FR-R3-073` (defining **Run Extension** and **Debug Current Host Test File**). This page previously
+denied it. What is genuinely absent is `.vscode/tasks.json` — the launch configuration names a
+`preLaunchTask`, and VS Code satisfies it from its auto-detected npm tasks rather than from a
+checked-in task file. In a nested workspace, open `repo/` itself as a VS Code workspace folder
+(directly or in a multi-root workspace) so VS Code discovers `repo/.vscode/launch.json`; opening
+only the parent planning envelope will not expose either F5 configuration.
+
+For fast single-test CLI runs from `repo/`:
+
+```bash
+npm run test:host -- tests/unit/<area>/<file>.test.ts          # single host test (or: npx vitest run <path>)
+npm --prefix webview-ui run test -- src/<area>/<file>.test.ts  # single webview test
+```
 
 <!-- Source: ../../.nvmrc -->
 <!-- Source: ../../package.json -->
@@ -81,6 +96,18 @@ boundary.
 Then read [Contributing](../../CONTRIBUTING.md). It defines the supported lint
 wrappers, generated-contract workflow, pull-request base, verification gates,
 and evidence expected in a review.
+
+**Activate local Git hooks before committing.** Hooks are opt-in in both repositories: run
+`git config core.hooksPath scripts/hooks` inside `repo/` (enabling the pre-commit staged secret
+scan), and in a nested workspace also run `git config core.hooksPath scripts/hooks` from the
+workspace root (enabling `prepare-commit-msg` and `pre-push`) and verify both with
+`bash scripts/hooks-preflight.sh` from the workspace root. Passing `--no-verify` bypasses these
+protections — `git commit --no-verify` skips the staged secret scan in `repo/` and omits the
+`Repo-head:` trailer in the workspace, and `git push --no-verify` skips workspace nested-sync
+(`scripts/sync-status.sh --verify`) and merge-record (`scripts/merge-record-status.sh`) checks.
+Recover and verify manually from the workspace root with `bash scripts/hooks-preflight.sh`,
+`scripts/sync-status.sh --verify`, `scripts/sync-status.sh --pr-block`, and
+`scripts/merge-record-status.sh --verify <remote_sha> <local_sha>`.
 
 ## 3. Learn only the shared product model
 
@@ -173,8 +200,11 @@ npm run contracts:generate
 npm run contracts:check
 ```
 
-Before handoff, run the gates proportional to the change. The repository-wide
-baseline is:
+Before handoff, run the verification tier proportional to the change (`test:gates` → `verify:edit`
+→ `verify:push` → `verify:release`, or `npm run gate` for the full local pre-merge gate; see
+[Verification tiers](../development/verification-tiers.md)). Run heavy suites and tiers
+**sequentially on an idle machine** rather than concurrently to avoid CPU, port `4173`, and
+Electron contention. The repository-wide baseline commands are:
 
 ```bash
 npm run verify:all

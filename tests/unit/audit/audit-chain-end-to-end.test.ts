@@ -7,7 +7,7 @@
 // hand-built arrays passed while the script silently read one file. So these cases use
 // `AuditLogWriter` for the writing and `verifyAuditChainAt` for the reading, and touch the
 // bytes on disk when the point is that a tampered log is caught.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -28,6 +28,7 @@ describe('the chain the product writes is the chain the verifier reads', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await removeTempRoot(workspaceRoot);
   });
 
@@ -54,6 +55,22 @@ describe('the chain the product writes is the chain the verifier reads', () => {
     });
   };
 
+  /** Append `count` rotating rows with deterministic strictly-increasing archive stamps and mtimes. */
+  const appendRotating = async (writer: AuditLogWriter, count: number): Promise<void> => {
+    const baseTimeMs = 1_750_000_000_000;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      for (let i = 0; i < count; i++) {
+        const stamp = new Date(baseTimeMs + i * 1_000);
+        vi.setSystemTime(stamp);
+        await append(writer, i);
+        await fs.utimes(writer.logPath, stamp, stamp);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
   it('verifies a single untouched file end to end', async () => {
     const writer = writerWith();
     for (let i = 0; i < 6; i++) await append(writer, i);
@@ -70,10 +87,7 @@ describe('the chain the product writes is the chain the verifier reads', () => {
     // boundary. This is the case the integer-suffix bug would have "passed" by reading only
     // the live file: the entry count below is what makes that impossible.
     const writer = writerWith({ rotationSizeBytes: 1 });
-    for (let i = 0; i < 5; i++) {
-      await append(writer, i);
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await appendRotating(writer, 5);
     const checked = verifyAuditChainAt(auditDir);
     expect(checked!.files.ordered.length, 'archives must actually exist').toBeGreaterThan(3);
     expect(checked!.files.unrecognized, 'every file the writer made must be readable').toEqual([]);
@@ -103,10 +117,7 @@ describe('the chain the product writes is the chain the verifier reads', () => {
 
   it('FR-126a — a pruned set verifies via its cut record', async () => {
     const writer = writerWith({ rotationSizeBytes: 1, retentionMaxArchives: 1 });
-    for (let i = 0; i < 5; i++) {
-      await append(writer, i);
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await appendRotating(writer, 5);
     const cuts = await fs.readFile(path.join(auditDir, 'audit.log.cuts'), 'utf8');
     expect(cuts.trim().length, 'the prune must have recorded its cut').toBeGreaterThan(0);
     const verdict = verifyAuditChainAt(auditDir)!.verdict;
@@ -118,10 +129,7 @@ describe('the chain the product writes is the chain the verifier reads', () => {
     // The load-bearing direction. If a discontinuity verified with or without the record,
     // the record would be decoration and a deletion would be indistinguishable from a prune.
     const writer = writerWith({ rotationSizeBytes: 1, retentionMaxArchives: 1 });
-    for (let i = 0; i < 5; i++) {
-      await append(writer, i);
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await appendRotating(writer, 5);
     expect(verifyAuditChainAt(auditDir)!.verdict.ok).toBe(true);
     await fs.unlink(path.join(auditDir, 'audit.log.cuts'));
     const verdict = verifyAuditChainAt(auditDir)!.verdict;

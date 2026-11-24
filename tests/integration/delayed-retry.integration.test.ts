@@ -43,6 +43,7 @@ import {
 } from '../../src/contracts/retry-bounds';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { removeTempRoot } from '../temp-root-cleanup';
+import { waitForCondition } from '../wait-for-condition';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -230,10 +231,24 @@ describe('Feature 011 — delayed retry end-to-end', () => {
     const result = await harness.controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    // setImmediate-driven resumeExisting fires on the next tick. Allow
-    // a generous slack for CI runners; the contract is "within 1s".
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 20));
+    // setImmediate-driven resumeExisting fires on the next tick; wait for both
+    // the resumed CLI invocation and the retry-manual audit entry to land.
+    const invokeSpy = harness.runner.invoke as unknown as ReturnType<typeof vi.fn>;
+    await waitForCondition(
+      async () => {
+        if (invokeSpy.mock.calls.length < 2) return false;
+        try {
+          const content = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
+          return content.includes('"retry-manual"');
+        } catch {
+          return false;
+        }
+      },
+      {
+        timeoutMs: 2_000,
+        label: 'retryPhaseNow to start resumed CLI invocation and persist retry-manual audit'
+      }
+    );
     const elapsed = Date.now() - before;
     expect(elapsed).toBeLessThan(1000);
 

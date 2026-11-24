@@ -1,4 +1,4 @@
-import type { SidebarCommand } from './messages';
+import { CMD_CONTINUE_WORKFLOW, type SidebarCommand } from './messages';
 import type { CommandAuthority } from '../../contracts/sidebar-command-metadata';
 import {
   MUTATING_COMMAND_TYPES,
@@ -22,6 +22,53 @@ export type {
 } from './commands/router-types';
 
 export const MUTATING_COMMANDS: ReadonlySet<string> = new Set(MUTATING_COMMAND_TYPES);
+
+function hasControlCommandService(deps: RouterDeps): boolean {
+  const extended = deps as RouterDeps & {
+    readonly controlCommandService?: unknown;
+    readonly controlCommandServiceDeps?: unknown;
+  };
+  return (
+    extended.controlCommandService !== undefined ||
+    extended.controlCommandServiceDeps !== undefined
+  );
+}
+
+/**
+ * FR-R7-18 (`N01`, FR-001, Contract 1) — payload-scoped concurrency check for
+ * `CMD_CONTINUE_WORKFLOW`. Only a validated cancellation payload bypasses the
+ * global mutation serialization chain (`serialize: false`); all other workflow
+ * continuations and control actions remain serialized.
+ *
+ * When a `controlCommand` envelope is present, `continueConnectedRun` routes
+ * exclusively to `controlCommandService` (failing closed when unwired), so only
+ * `controlServiceWired && controlCommand.action.kind === 'cancel'` qualifies; a
+ * mixed payload carrying a non-cancel `controlCommand` or an unserviced
+ * `controlCommand` remains serialized.
+ */
+function isWorkflowCancelCommand(
+  command: SidebarCommand,
+  controlServiceWired: boolean
+): boolean {
+  if (command.type !== CMD_CONTINUE_WORKFLOW) return false;
+  const payload = (command as { payload?: unknown }).payload;
+  if (typeof payload !== 'object' || payload === null) return false;
+  const { operation, controlCommand } = payload as {
+    operation?: unknown;
+    controlCommand?: unknown;
+  };
+  if (controlCommand !== undefined) {
+    if (!controlServiceWired) return false;
+    if (typeof controlCommand !== 'object' || controlCommand === null) return false;
+    const action = (controlCommand as { action?: unknown }).action;
+    return (
+      typeof action === 'object' &&
+      action !== null &&
+      (action as { kind?: unknown }).kind === 'cancel'
+    );
+  }
+  return operation === 'cancel';
+}
 
 /**
  * Sidebar IPC message router. Decomposed into per-command handler files
@@ -82,13 +129,16 @@ export class MessageRouter {
       await this.dispatchValidated(command, postAck, authority);
       return;
     }
+    const shouldSerialize =
+      authority.execution === 'serialized' &&
+      !isWorkflowCancelCommand(command, hasControlCommandService(this.deps));
     await this.mutations.execute(
       command.correlationId,
       postAck,
       async (captureAck) => {
         await this.dispatchValidated(command, captureAck, authority);
       },
-      { serialize: authority.execution === 'serialized' }
+      { serialize: shouldSerialize }
     );
   }
 

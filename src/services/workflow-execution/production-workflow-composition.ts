@@ -959,7 +959,48 @@ export function registerProductionWorkflowComposition(
   storeKey: object,
   composition: ProductionWorkflowComposition
 ): void {
+  const existing = compositionCacheByStore.get(storeKey);
   compositionCacheByStore.set(storeKey, composition);
+  if (existing !== undefined && existing !== composition && typeof existing.dispose === 'function') {
+    try {
+      existing.dispose();
+    } catch {
+      /* best-effort disposal when replacing a cached composition */
+    }
+  }
+}
+
+/**
+ * FR-R7-18 (`N08`) — Evicts and best-effort disposes any cached `ProductionWorkflowComposition`
+ * registered for `store` so Stage 2 resets and store teardowns never retain stale coordinators,
+ * planners, or ledgers across re-wiring. When `expected` is provided, evicts only if the cached
+ * instance matches `expected` by identity so a stale coordinator cannot evict a newer one.
+ * Returns `true` iff an entry was evicted.
+ */
+export function unregisterProductionWorkflowComposition(
+  store: object,
+  expected?: ProductionWorkflowComposition
+): boolean {
+  const existing = compositionCacheByStore.get(store);
+  if (existing === undefined) return false;
+  if (expected !== undefined && existing !== expected) return false;
+  compositionCacheByStore.delete(store);
+  if (typeof existing.dispose === 'function') {
+    try {
+      existing.dispose();
+    } catch {
+      /* best-effort disposal during cache eviction */
+    }
+  }
+  return true;
+}
+
+/**
+ * FR-R7-18 (`N08`) — Reports whether `store` currently holds a cached
+ * `ProductionWorkflowComposition` entry in `compositionCacheByStore`.
+ */
+export function hasRegisteredProductionWorkflowComposition(store: object): boolean {
+  return compositionCacheByStore.has(store);
 }
 
 export function getOrCreateProductionWorkflowComposition(

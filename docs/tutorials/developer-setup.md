@@ -16,22 +16,23 @@ Install these tools before cloning:
 <!-- Source: package.json -->
 <!-- Source: .nvmrc -->
 
-No `Dockerfile`, Docker Compose file, or `Makefile` exists in this repository. The supported development path is the npm script surface in `package.json`.
-<!-- Absence verified: repository tree contains no Dockerfile, Docker Compose file, or Makefile. -->
+No application container, Docker Compose file, or `Makefile` is required for normal local development; the supported development path is the npm script surface in `package.json`. (`scripts/linux-leg/Dockerfile` exists only for the optional release-tier local Linux container unit leg, `npm run verify:linux`, which requires a running Docker or OrbStack daemon.)
 <!-- Source: package.json -->
+<!-- Source: scripts/linux-leg/Dockerfile -->
 
-To execute real workflow phases after setup, make one supported backend CLI available on `PATH`, or configure its path in VS Code. The default runner is `claude`; `codex` and `agy` are also accepted runner kinds, with default executable names `codex` and `agy`.
+To execute real Workflow Phases after setup, make one supported backend CLI available on `PATH`, or configure its path in VS Code. The default runner is `claude`; `codex` and `agy` are also accepted runner kinds, with default executable names `codex` and `agy`.
 <!-- Source: package.json -->
 
 ## 2. Clone the repository
 
-The package manifest identifies the canonical repository URL:
+The package manifest identifies the canonical execution-repository URL:
 
 ```bash
 git clone https://github.com/lehoa1806/schegent.git
 cd schegent
 ```
 
+A **standalone execution clone** builds, tests, and passes `npm run gate` self-contained, but does not include the parent planning envelope's `docs/hard-rules.md` or workspace `scripts/hooks/`. In a **nested workspace**, this checkout sits at `<workspace>/repo/` inside the parent planning envelope; obtain the planning envelope before editing any hard-rule surface rather than guessing at a rule.
 <!-- Source: package.json -->
 
 ## 3. Select the checked-in Node.js version
@@ -72,10 +73,21 @@ npx playwright install chromium
 ```
 
 **Re-run it after any Playwright version bump** — the browser is pinned to a revision the installed Playwright resolves, so a bump moves the target and a previously working cache stops satisfying it. Without it, `npm run test:visual` and `npm run ci:fast` stop at a preflight that names this command; see [Visual gate preflight observations](../operations/visual-gate-preflight-observations.md).
+
+### Activate local Git hooks
+
+Hooks are local and opt-in; nothing installs them during `npm ci`. Inside this execution repository (`repo/`), activate the pre-commit secret scan (`scripts/hooks/pre-commit`):
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+In a nested workspace, also activate the parent workspace hooks from the workspace root (`git config core.hooksPath scripts/hooks` for `prepare-commit-msg` and `pre-push`) and confirm both repositories with `bash scripts/hooks-preflight.sh` (run from the workspace root). Passing `--no-verify` bypasses these local checks — `git commit --no-verify` skips the staged secret scan in `repo/` and omits the `Repo-head:` trailer in the workspace, while `git push --no-verify` skips the workspace nested-sync (`scripts/sync-status.sh --verify`) and merge-record (`scripts/merge-record-status.sh`) checks; see [Contributing](../../CONTRIBUTING.md#activate-local-git-hooks) for manual recovery commands.
 <!-- Source: package-lock.json -->
 <!-- Source: package.json -->
 <!-- Source: webview-ui/package.json -->
 <!-- Source: scripts/check-playwright-browser.mjs -->
+<!-- Source: scripts/hooks/pre-commit -->
 
 ## 5. Build the extension
 
@@ -126,6 +138,18 @@ Extension** — is the local Extension Development Host workflow this checkout d
 window to click through. A second configuration, **Debug Current Host Test File**, runs the host
 test file open in the editor under the debugger with the root vitest config; tests under
 `webview-ui/` have their own config and are not covered by it.
+
+**Nested-workspace VS Code folder caveat:** `.vscode/launch.json` lives at `repo/.vscode/launch.json`.
+VS Code discovers **Run Extension** and **Debug Current Host Test File** only when `repo/` itself
+is opened as a VS Code workspace folder (directly or inside a multi-root workspace); opening the
+parent planning-envelope directory alone will not expose either launch configuration.
+
+To run a single test file from the terminal (inside `repo/`):
+
+```bash
+npm run test:host -- tests/unit/<area>/<file>.test.ts          # single host test (or: npx vitest run <path>)
+npm --prefix webview-ui run test -- src/<area>/<file>.test.ts  # single webview test
+```
 <!-- Source: .vscode/launch.json -->
 <!-- Source: package.json -->
 

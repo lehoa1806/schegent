@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { diagnoseWait } from './wait-diagnosis';
 
 // Feature 058 (T023) — multi-root semantics integration test.
 //
@@ -37,6 +38,7 @@ const AUDIT_RELATIVE = path.join('.schegent', 'audit.log');
 const SCHEGENT_DIR = '.schegent';
 const WARNING_EVENT = 'multi-root.warning-shown';
 const WARNING_DEADLINE_MS = 5_000;
+const POLL_INTERVAL_MS = 100;
 
 interface AuditRecord {
   readonly eventType?: string;
@@ -61,8 +63,10 @@ function readAuditRecords(auditPath: string): readonly AuditRecord[] {
  */
 async function waitForWarningEvent(auditPath: string): Promise<AuditRecord> {
   const startedAt = Date.now();
+  let rounds = 0;
   let diagnosis = `no audit log at ${auditPath}`;
   for (;;) {
+    rounds += 1;
     if (fs.existsSync(auditPath)) {
       const records = readAuditRecords(auditPath);
       const match = records.find((record) => record.eventType === WARNING_EVENT);
@@ -71,10 +75,16 @@ async function waitForWarningEvent(auditPath: string): Promise<AuditRecord> {
         `audit log holds ${records.length} record(s), none of type '${WARNING_EVENT}': ` +
         `${records.map((r) => r.eventType ?? '<untyped>').join(', ')}`;
     }
-    if (Date.now() - startedAt >= WARNING_DEADLINE_MS) {
-      throw new Error(`'${WARNING_EVENT}' not recorded within ${WARNING_DEADLINE_MS}ms — ${diagnosis}`);
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= WARNING_DEADLINE_MS) {
+      const waitDiagnosis = diagnoseWait({ elapsedMs, rounds, floorMs: POLL_INTERVAL_MS });
+      throw new Error(
+        `'${WARNING_EVENT}' not recorded within ${WARNING_DEADLINE_MS}ms ` +
+          `(elapsed=${elapsedMs}ms, rounds=${rounds}; ${waitDiagnosis.text}) — ${diagnosis}`
+      );
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Real-host file poll: waiting for async fire-and-forget activation audit append in VS Code host.
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
 }
 

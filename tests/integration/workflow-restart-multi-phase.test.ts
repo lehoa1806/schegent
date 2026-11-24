@@ -44,6 +44,7 @@ import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import type { Notifier } from '../../src/ui/notifications';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
+import { waitForCondition } from '../wait-for-condition';
 
 class SharedMemento implements Memento {
   private readonly raw = new Map<string, unknown>();
@@ -171,14 +172,12 @@ function createDeferred(): Deferred {
   return { promise, resolve };
 }
 
-async function waitUntil(predicate: () => boolean, timeoutMs = 4_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline) {
-      throw new Error('Timed out waiting for expected workflow state');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+async function waitUntil(
+  predicate: () => boolean,
+  label = 'expected workflow state',
+  timeoutMs = 4_000
+): Promise<void> {
+  await waitForCondition(predicate, { timeoutMs, label });
 }
 
 interface SessionRig {

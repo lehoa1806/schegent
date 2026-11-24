@@ -177,15 +177,14 @@ export async function continueConnectedRun(
       : undefined);
 
   if (input.payload.controlCommand !== undefined) {
-    if (commandService !== undefined) {
-      const acknowledgement = await commandService.executeControlCommand(
-        input.payload.controlCommand
-      );
-      return {
-        outcome: 'control-acknowledged',
-        acknowledgement
-      };
-    }
+    if (commandService === undefined) return LAUNCHER_UNAVAILABLE;
+    const acknowledgement = await commandService.executeControlCommand(
+      input.payload.controlCommand
+    );
+    return {
+      outcome: 'control-acknowledged',
+      acknowledgement
+    };
   }
 
   const runs = deps.connectedRuns;

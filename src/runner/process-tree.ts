@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { spawnCommandFor } from '../lib/spawn-command';
 import type {
   MonitorSidecarEvent,
   RunnerLabel,
@@ -156,16 +157,63 @@ export function processTreeIsGone(child: ChildProcess): boolean {
   }
 }
 
+function nonEmptyEnvIgnoreCase(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const target = name.toUpperCase();
+  const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === target);
+  if (key === undefined) return undefined;
+  const value = env[key];
+  return value !== undefined && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Resolve `taskkill` along strictly-absolute Windows `PATH` entries via `spawnCommandFor` so
+ * libuv/CreateProcessW never falls back to searching `cwd` (review gap GC-24 / FR-R7-18 N10).
+ *
+ * When `PATH` is stripped or omits System32, falls back to the explicit absolute System32 path
+ * (also validated through `spawnCommandFor`), never to a bare name.
+ */
+function resolveWindowsTaskkillCommand(env: NodeJS.ProcessEnv): string | null {
+  try {
+    return spawnCommandFor('taskkill', env, 'win32');
+  } catch {
+    const systemRoot =
+      nonEmptyEnvIgnoreCase(env, 'SystemRoot') ??
+      nonEmptyEnvIgnoreCase(env, 'WINDIR') ??
+      'C:\\Windows';
+    const trimmedRoot = systemRoot.replace(/[\\/]+$/, '');
+    if (!trimmedRoot.includes('..')) {
+      try {
+        return spawnCommandFor(`${trimmedRoot}\\System32\\taskkill.exe`, env, 'win32');
+      } catch {
+        // Fall through to canonical default below.
+      }
+    }
+    try {
+      return spawnCommandFor('C:\\Windows\\System32\\taskkill.exe', env, 'win32');
+    } catch {
+      return null;
+    }
+  }
+}
+
 /**
  * `taskkill /T` walks the child tree by parent-pid. `/F` is used only for the
  * final, non-graceful step: a SIGTERM-equivalent request is sent without it so a
  * CLI that handles shutdown still gets the chance to.
  */
 async function killWindowsTree(pid: number, signal: NodeJS.Signals): Promise<void> {
+  const command = resolveWindowsTaskkillCommand(process.env);
+  if (command === null) return;
   const args = ['/pid', String(pid), '/T'];
   if (signal === 'SIGKILL') args.push('/F');
   await new Promise<void>((resolve) => {
-    const killer = spawn('taskkill', args, { stdio: 'ignore', shell: false });
+    let killer: ChildProcess;
+    try {
+      killer = spawn(command, args, { stdio: 'ignore', shell: false });
+    } catch {
+      resolve();
+      return;
+    }
     killer.once('exit', () => resolve());
     killer.once('error', () => resolve());
   });

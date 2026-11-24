@@ -50,6 +50,8 @@ Three separate host components read or display spend and usage. Each has a disti
 
 **CLI-reported spend is not an authenticated provider billing statement.** Every dollar or token number Schegent displays comes from CLI stdout/ACP usage payloads emitted by the local backend process. It may omit cache-pricing adjustments, enterprise/subscription discounts, failed requests outside the bridge, or provider-side billing corrections. Any claim about actual billed spend requires an authenticated provider invoice or billing API measurement outside Schegent.
 
+**No daily or workspace-wide cross-run aggregate spend cap ships today (explicit open product decision).** Alongside GC-10 tighten-only per-run bounds (`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`) and GC-25 post-turn phase-end overshoot, Schegent does not enforce a calendar-day or workspace-wide cross-run aggregate spend stop. F06 usage accounting aggregates historical totals across runs for reporting only and does not gate new run admission on a cross-run budget; see [Autonomy bounds disclosure](autonomy-bounds-disclosure.md#open-product-decision-daily-and-workspace-wide-aggregate-spend-caps).
+
 ## Operator walkthrough: priced vs incomplete/unmeasurable runs
 
 ### 1. Priced run (e.g., `claude` reporting USD cost)

@@ -60,14 +60,16 @@ simply not an entry path.
 
 ## Start with the governing context
 
+Schegent is developed in two supported checkout layouts:
+
+- **Nested workspace** (`<workspace>/` containing this execution repository at `<workspace>/repo/`): includes parent `docs/hard-rules.md`, workspace `AGENTS.md`, and workspace `scripts/hooks/` (`prepare-commit-msg` and `pre-push`). Keep both repositories' branches and recorded execution-repository hash synchronized as required by `../AGENTS.md`; do not reset, rebase, force-push, or discard either repository without explicit approval.
+- **Standalone execution clone** (this `repo/` repository cloned on its own): installs, builds, tests, and passes `npm run gate` self-contained, but **does not contain** parent `docs/hard-rules.md` or workspace `scripts/hooks/`. Obtain the planning envelope before editing any hard-rule surface rather than guessing at a rule.
+
 Before changing code, read `docs/hard-rules.md` in the planning envelope (one directory above this checkout), the source of truth for host-code invariants; `../AGENTS.md` is the orientation file that points at it. The rules in it are especially important for IPC mutations, audit and redaction behavior, workspace/window locks, forward-only state migration, process execution, catalog publication, and run-plan validation.
 
 If a change alters host structure or IPC contracts, update the architecture documentation in the same pull request. If it adds text rendered to an operator, follow the English-only decision recorded in `docs/concepts/english-only-not-localizable.md`: keep the literal at its render site and do not add a localization boundary.
 <!-- Source: ../AGENTS.md -->
 <!-- Source: AGENTS.md -->
-
-The Master Workspace and this execution repository may be separate Git repositories. When they are, keep their branches and recorded execution-repository hash synchronized as required by `../AGENTS.md`; do not reset, rebase, force-push, or discard either repository without explicit approval.
-<!-- Source: ../AGENTS.md -->
 
 ## Prepare a checkout
 
@@ -146,11 +148,28 @@ npx playwright install chromium
 Without it, `npm run test:visual` — and therefore `npm run ci:fast` — fails its preflight with one message naming this command. **Re-run it after any Playwright version bump**: the browser is pinned to a revision the installed Playwright resolves, so a bump moves the target and a cache that worked yesterday stops satisfying it. That is a stale cache, not a broken test, and the preflight says which. The recorded fail/install/pass sequence and what the preflight does not cover are in [Visual gate preflight observations](docs/operations/visual-gate-preflight-observations.md).
 
 See [Developer setup](docs/tutorials/developer-setup.md) for the complete build and Extension Development Host check.
+
+### Activate local Git hooks
+
+Git hooks are local and opt-in; nothing installs them automatically. Inside this execution repository (`repo/`), activate the tracked pre-commit hook (`scripts/hooks/pre-commit`, which runs `node scripts/scan-secrets.mjs --staged`):
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+In a nested workspace, also activate the parent workspace hooks from the workspace root (`git config core.hooksPath scripts/hooks` for `prepare-commit-msg` and `pre-push`) and verify both repositories with the read-only preflight from the workspace root:
+
+```bash
+bash scripts/hooks-preflight.sh
+```
+
+**`--no-verify` consequences and manual recovery.** In `repo/`, `git commit --no-verify` skips `scripts/hooks/pre-commit` (bypassing the staged secret scan — run `npm run security:secrets:staged` or `npm run security:secrets` manually). In a nested workspace, `git commit --no-verify` skips workspace `prepare-commit-msg` (omitting the `Repo-head:` trailer), and `git push --no-verify` skips workspace `pre-push` (bypassing `scripts/sync-status.sh --verify`, `scripts/merge-record-status.sh`, and the remaining workspace push gates). After a bypass, verify manually from the workspace root with `bash scripts/hooks-preflight.sh`, `scripts/sync-status.sh --verify`, `scripts/sync-status.sh --pr-block`, and `scripts/merge-record-status.sh --verify <remote_sha> <local_sha>`.
 <!-- Source: .nvmrc -->
 <!-- Source: package.json -->
 <!-- Source: .npmrc -->
 <!-- Source: docs/release/actions-terminal-record.md -->
 <!-- Source: scripts/check-playwright-browser.mjs -->
+<!-- Source: scripts/hooks/pre-commit -->
 
 ## Keep the change scoped
 
@@ -182,7 +201,7 @@ Important configured conventions include:
 - empty `catch` blocks are permitted by ESLint only because a separate lint test requires a comment declaring why the error is discarded;
 - unused `eslint-disable` directives are errors.
 
-There is no `format` script or checked-in Prettier configuration. Prettier is a development dependency, not evidence of a repository-wide formatting command; retain the surrounding file's style and let the supported lint and type gates arbitrate.
+There is no `format` script or checked-in Prettier configuration (`.prettierrc*`). `prettier` sits in `devDependencies` strictly as a tooling dependency (for developer tooling and test-fixture invocations), not as a repository-wide formatting command; do not run an ad-hoc repo-wide write pass — retain the surrounding file's style and let the supported lint and type gates arbitrate.
 <!-- Source: scripts/lint-config.mjs -->
 <!-- Source: scripts/lint.mjs -->
 <!-- Source: tests/lint/eslint-baseline.json -->
@@ -272,6 +291,19 @@ enforcement. It writes nothing.
 <!-- Source: package.json -->
 <!-- Source: scripts/review-due-report.mjs -->
 
+### Run heavy tiers sequentially
+
+Run heavy suites and tiers one at a time on an idle machine — never concurrently in parallel terminals: `test:host`, `test:coverage`, `test:perf`, `test:soak`, `test:visual`, `a11y`, `test:e2e`, `test:integration`, and `verify:linux`. Concurrent runs trigger false failures from CPU/worker-pool saturation, single-threaded perf budgets, shared Playwright fixture port `4173` and webview rebuilds, or competing VS Code Electron instances. See [Run heavy tiers sequentially (avoid contention)](docs/development/verification-tiers.md#run-heavy-tiers-sequentially-avoid-contention) for each suite's contention mechanism.
+
+### Interactive debugging and single-test CLI commands
+
+For fast single-file iteration from the terminal (inside `repo/`):
+
+```bash
+npm run test:host -- tests/unit/<area>/<file>.test.ts          # single host test (or: npx vitest run <path>)
+npm --prefix webview-ui run test -- src/<area>/<file>.test.ts  # single webview test
+```
+
 **`.vscode/launch.json` exists** — `FR-R3-073` added it, and this sentence denied it until
 2026-08-26 (`FR-R3-101`). Its `Run Extension` configuration is the interactive F5 path,
 and its `outFiles` names `dist/**` because that is where `esbuild.config.mjs` bundles the host;
@@ -279,6 +311,11 @@ it named `out/**` until the same date, which is the integration-test compile tar
 breakpoints bound against the wrong artifact and never hit. Its second configuration, `Debug
 Current Host Test File`, runs the host test file open in the editor under the debugger with the
 root vitest config (`webview-ui/` tests have their own config and are not covered by it).
+
+**Nested-workspace VS Code folder caveat:** `.vscode/launch.json` lives at `repo/.vscode/launch.json`
+and is discovered by VS Code **only when `repo/` itself is opened as a VS Code workspace folder**
+(directly or as a folder in a multi-root workspace). Opening only the parent planning-envelope
+directory will not expose `Run Extension` or `Debug Current Host Test File`.
 
 **`.vscode/tasks.json` genuinely does not exist**, and the launch configuration names a
 `preLaunchTask` of `npm: build` anyway. That works because VS Code auto-detects npm scripts as

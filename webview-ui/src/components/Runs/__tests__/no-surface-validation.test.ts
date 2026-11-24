@@ -34,6 +34,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildSnapshot } from './launch-fixture';
 
@@ -141,7 +142,8 @@ describe('the Run control is never withheld for want of a value (FR-011)', () =>
       revision: 1,
       queueItemId: 'queue-item-3'
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
+    await tick();
     expect(submit.disabled).toBe(false);
   });
 

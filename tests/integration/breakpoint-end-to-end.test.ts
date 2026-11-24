@@ -44,6 +44,7 @@ import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
 import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { findQueue } from '../../src/queue/queue-registry';
+import { waitForCondition } from '../wait-for-condition';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -108,12 +109,24 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
     const queue = new QueueManager(store);
 
     const invokedPhases: string[] = [];
+    let markPlanStarted!: () => void;
+    const planStarted = new Promise<void>((resolve) => {
+      markPlanStarted = resolve;
+    });
+    let releasePlan!: () => void;
+    const planGate = new Promise<void>((resolve) => {
+      releasePlan = resolve;
+    });
     const invoke = vi.fn(
       async (req: InvocationRequest): Promise<RawInvocationOutput> => {
         invokedPhases.push(req.phase);
-        // Yield to the macrotask queue between phases so the test's polling
-        // loop can observe intermediate states and intervene.
-        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        // Pause deterministically once speckit-plan begins (after speckit-clarify
+        // has completed) so the test can attach the future-phase breakpoint without
+        // racing a fixed sleep.
+        if (req.phase === 'speckit-plan') {
+          markPlanStarted();
+          await planGate;
+        }
         return {
         stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(cleanStdout(req.phase)); b.finalize(); return b; })(),
         stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.finalize(); return b; })(),exitCode: 0,
@@ -165,34 +178,17 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
     const taskA = await queue.enqueue('feature with breakpoint');
     const runPromise = controller.startNew(taskA, 'specs/001-existing');
 
-    // Wait for clarify (phase A) to complete so the controller has an
-    // in-flight run id to attach the breakpoint to.
-    // Bounded by elapsed time rather than by a round count. Each round
-    // sleeps 10ms, so the old cap was ~2000ms of sleep plus however long the
-    // scheduler took to come back — which under load is the larger term.
-    // On exhaustion this used to `break` and fall through to an assertion
-    // that reported the wrong thing: the run's status, rather than the fact
-    // that nobody had waited long enough to see it.
-    const phaseADoneBy = Date.now() + 25_000;
-    while (Date.now() < phaseADoneBy) {
-      const r = store.getRun(DEFAULT_QUEUE_ID);
-      if (
-        r &&
-        (r.phasesCompleted.some((p) => p.phase === 'speckit-clarify') ||
-          r.status === 'paused' ||
-          r.status === 'completed' ||
-          r.status === 'failed')
-      ) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
+    // Wait deterministically for clarify (phase A) to complete and plan to enter
+    // its gate so the controller has an in-flight run id to attach the breakpoint to.
+    await planStarted;
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
+    expect(run.phasesCompleted.some((p) => p.phase === 'speckit-clarify')).toBe(true);
 
     // While the run is mid-pipeline (post-clarify, pre-implement), set a
     // breakpoint on speckit-implement (phase C in the walkthrough).
-    const run = store.getRun(DEFAULT_QUEUE_ID)!;
     const setResult = await controller.setPhaseBreakpoint(run.id, 'speckit-implement');
     expect(setResult).toEqual({ ok: true });
+    releasePlan();
 
     // Wait for the breakpoint to fire (run reaches the marked phase) and
     // for the runPromise to settle (driveRun has broken out of its loop).
@@ -219,20 +215,13 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
 
     // Resume: invokes the marked phase and completes the pipeline.
     await controller.resumeActivePhase();
-    // Bounded by elapsed time rather than by a round count. Each round
-    // sleeps 10ms, so the old cap was ~5000ms of sleep plus however long the
-    // scheduler took to come back — which under load is the larger term.
-    // On exhaustion this used to `break` and fall through to an assertion
-    // that reported the wrong thing: the run's status, rather than the fact
-    // that nobody had waited long enough to see it.
-    const resumedDoneBy = Date.now() + 25_000;
-    while (Date.now() < resumedDoneBy) {
-      const r = store.getRun(DEFAULT_QUEUE_ID);
-      if (r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled')) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForCondition(
+      () => {
+        const r = store.getRun(DEFAULT_QUEUE_ID);
+        return Boolean(r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled'));
+      },
+      { timeoutMs: 25_000, label: 'resumed breakpoint run to reach terminal status' }
+    );
 
     const resumed = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(resumed.status).toBe('completed');

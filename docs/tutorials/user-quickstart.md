@@ -59,8 +59,8 @@ with observed editor-host and backend qualification evidence; Linux desktop edit
 and Remote hosts (Remote SSH, Dev Container, WSL) remain **unqualified** (and remote hosts refuse ACP
 launch before spawn). See [the qualification matrix](../release/qualification-matrix.md).
 
-The workflow used here — `Spec-kit Bugfix` — declares **no** `sideEffects: git` on any phase. That is
-why it is the one this tutorial uses. `Spec-kit New Feature` does, on two phases, and is not a first
+The Workflow used here — `Spec-kit Bugfix` — declares **no** `sideEffects: git` on any Phase. That is
+why it is the one this tutorial uses. `Spec-kit New Feature` does, on two Phases, and is not a first
 run.
 <!-- Source: examples/speckit-bugfix.workflow.yaml -->
 <!-- Source: examples/speckit-bugfix.workflow.yaml -->
@@ -148,7 +148,7 @@ The dashboard opens on **Queues** and also exposes **History**, **Metrics**, **S
 5. Review the preflight result. It must identify a Workflow with ID `speckit-bugfix` and name `Spec-kit Bugfix`.
 6. Select **Confirm import**.
 
-The document is a package: it defines the Workflow and includes all five phase definitions it references. A successful confirmed import publishes the complete set so that the Workflow is launchable; the implementation first stages draft records and then publishes them as one import operation.
+The document is a package: it defines the Workflow and includes all five Phase definitions it references. A successful confirmed import publishes the complete set so that the Workflow is launchable; the implementation first stages draft records and then publishes them as one import operation.
 
 **The other files in that folder** (`FR-R3-132`, `FR-R5-F07`): `examples/speckit-new-feature.workflow.yaml` is the
 same shape for the feature process, and `examples/model-catalog.yaml` lists model identifiers for
@@ -196,7 +196,7 @@ Success at this step means the host created the connected run and enqueued its e
 3. Select that task to open its run detail.
 4. Watch **Phase log** as execution advances. The same view also exposes **Run outputs** and **Context**.
 
-The repository's deterministic integration test, `tests/integration/bugfix-pipeline-end-to-end.test.ts`, drives the five bugfix phases, in the order listed above, to `completed` with `currentPhase` equal to `done`. That test uses a scripted CLI runner in place of the Claude CLI; a real completion additionally depends on the installed CLI, credentials, model availability, workspace contents, and the commands performed by each phase.
+The repository's deterministic integration test, `tests/integration/bugfix-pipeline-end-to-end.test.ts`, drives the five bugfix Phases, in the order listed above, to `completed` with `currentPhase` equal to `done`. That test uses a scripted CLI runner in place of the Claude CLI; a real completion additionally depends on the installed CLI, credentials, model availability, workspace contents, and the commands performed by each Phase.
 <!-- Source: webview-ui/src/dashboard/routes.ts -->
 <!-- Source: webview-ui/src/components/drilldown/QueuesTier.svelte -->
 <!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
@@ -219,6 +219,8 @@ The repository's deterministic integration test, `tests/integration/bugfix-pipel
 - **Trigger is disabled:** use the VS Code window whose header says **Workspace Connected**.
 - **Validation feedback appears:** correct the named field and submit again. The extension host, rather than the webview, is authoritative for run-request validation.
 - **The queue or runner fails after admission:** open the task's run detail and **System Log**. Adding the task only proves the host created the run and enqueued its entry node.
+
+For operator first-recovery reading — including future-schema refusal, quarantined workspace-state writers, and stuck execution lanes — start with the [Operations index](../operations/README.md) and the rehearsed [Operator Incident Recovery Guide](../operations/incident-recovery-guide.md).
 
 <!-- Source: webview-ui/src/components/PipelineBuilder.svelte -->
 <!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->

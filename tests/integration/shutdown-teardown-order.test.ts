@@ -12,6 +12,7 @@ import { closeStage2Resources } from '../../src/activation/stage2-teardown';
 import { createHostTeardown } from '../../src/controller/host-teardown-recorder';
 import { BackendRunnerRegistry } from '../../src/runner/backend-runner-registry';
 import { TEARDOWN_BOUND_MS } from '../../src/runner/process-tree';
+import { waitForCondition } from '../wait-for-condition';
 
 // The variants differ in what builds the runner: the first uses the real factory (a real
 // `CodexCliRunner` over a real `ProcessLifecycleRunner` spawning a real script), the second a
@@ -79,6 +80,7 @@ const recordedPids: number[] = [];
 let scratch: string | undefined;
 
 afterEach(async () => {
+  vi.useRealTimers();
   injected.spawnFn = undefined;
   for (const pid of recordedPids.splice(0)) {
     try {
@@ -103,8 +105,6 @@ function strayCount(): number {
     throw error;
   }
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * The wiring's own teardown (`createHostTeardown`, the function `backend-execution-wiring.ts`
@@ -216,7 +216,10 @@ describe.skipIf(process.platform === 'win32')('shutdown waits for the teardown b
         cliPath: script,
         cwd: scratch
       });
-      for (let waited = 0; waited < 3_000 && !existsSync(ready); waited += 25) await sleep(25);
+      await waitForCondition(() => existsSync(ready), {
+        timeoutMs: 3_000,
+        label: 'fixture child SIGTERM handler ready marker'
+      });
       expect(existsSync(ready), 'the fixture child must have installed its SIGTERM handler').toBe(true);
       expect(childPid, 'the fixture child must have started').toBeDefined();
       expect(strayCount(), 'control: the tagged child is alive before the teardown').toBeGreaterThan(0);
@@ -244,78 +247,94 @@ describe.skipIf(process.platform === 'win32')('shutdown waits for the teardown b
   it(
     'releases within the bound plus 100 ms for a child that never exits, with the evidence row first',
     async () => {
-      const order: string[] = [];
-      const rows: Array<{ eventType: string; runId: string; payload: Record<string, unknown> }> = [];
-      vi.spyOn(process, 'kill').mockImplementation(((_target: number, signal?: string | number) => {
-        if (signal === 0) return true; // the group never goes away
-        return true;
-      }) as unknown as typeof process.kill);
+      vi.useFakeTimers();
+      try {
+        const order: string[] = [];
+        const rows: Array<{ eventType: string; runId: string; payload: Record<string, unknown> }> = [];
+        vi.spyOn(process, 'kill').mockImplementation(((_target: number, signal?: string | number) => {
+          if (signal === 0) return true; // the group never goes away
+          return true;
+        }) as unknown as typeof process.kill);
 
-      const child = new EventEmitter() as EventEmitter & {
-        stdout: Readable;
-        stderr: Readable;
-        stdin: Writable;
-        pid: number;
-        killed: boolean;
-        exitCode: number | null;
-        signalCode: string | null;
-        kill: () => boolean;
-      };
-      child.stdout = new Readable({ read() {} });
-      child.stderr = new Readable({ read() {} });
-      child.stdin = new Writable({ write: (_c, _e, cb) => cb() });
-      child.pid = 424_242;
-      child.killed = false;
-      child.exitCode = null;
-      child.signalCode = null;
-      child.kill = () => true; // the injected kill: it never ends the child
-      injected.spawnFn = () => child as unknown as ChildProcess;
+        const child = new EventEmitter() as EventEmitter & {
+          stdout: Readable;
+          stderr: Readable;
+          stdin: Writable;
+          pid: number;
+          killed: boolean;
+          exitCode: number | null;
+          signalCode: string | null;
+          kill: () => boolean;
+        };
+        child.stdout = new Readable({ read() {} });
+        child.stderr = new Readable({ read() {} });
+        child.stdin = new Writable({ write: (_c, _e, cb) => cb() });
+        child.pid = 424_242;
+        child.killed = false;
+        child.exitCode = null;
+        child.signalCode = null;
+        child.kill = () => true; // the injected kill: it never ends the child
+        let markSpawned!: () => void;
+        const spawned = new Promise<void>((resolve) => {
+          markSpawned = resolve;
+        });
+        injected.spawnFn = () => {
+          markSpawned();
+          return child as unknown as ChildProcess;
+        };
 
-      const registry = new BackendRunnerRegistry(
-        { uncontainedGranted: () => new Set() },
-        'codex',
-        INJECTED_BOUND_MS
-      );
-      const runner = registry.getOrCreate('codex');
-      const invocation = runner.invoke({
-        runId: RUN_ID,
-        phase: 'speckit-implement',
-        iteration: 1,
-        prompt: 'work',
-        timeoutMs: 60_000,
-        cliPath: 'codex',
-        cwd: tmpdir()
-      });
-      await sleep(25);
-      expect(runner.hasActiveProcess).toBe(true);
+        const registry = new BackendRunnerRegistry(
+          { uncontainedGranted: () => new Set() },
+          'codex',
+          INJECTED_BOUND_MS
+        );
+        const runner = registry.getOrCreate('codex');
+        const invocation = runner.invoke({
+          runId: RUN_ID,
+          phase: 'speckit-implement',
+          iteration: 1,
+          prompt: 'work',
+          timeoutMs: 60_000,
+          cliPath: 'codex',
+          cwd: tmpdir()
+        });
+        await spawned;
+        expect(runner.hasActiveProcess).toBe(true);
 
-      const thunk = teardownThunk(registry, order, rows);
-      const startedAt = performance.now();
-      await closeStage2Resources(stageDeps(order, thunk));
-      await releaseOwnership(order);
-      const releasedAfterMs = performance.now() - startedAt;
+        const thunk = teardownThunk(registry, order, rows);
+        const startedAt = performance.now();
+        const teardownDone = (async () => {
+          await closeStage2Resources(stageDeps(order, thunk));
+          await releaseOwnership(order);
+        })();
+        await vi.advanceTimersByTimeAsync(INJECTED_BOUND_MS);
+        await teardownDone;
+        const releasedAfterMs = performance.now() - startedAt;
 
-      console.log(
-        `T23 never-exiting variant: released ${Math.round(releasedAfterMs)} ms after the call ` +
-          `(injected bound ${INJECTED_BOUND_MS} ms, margin ${RELEASE_MARGIN_MS} ms)`
-      );
-      expect(releasedAfterMs).toBeLessThan(INJECTED_BOUND_MS + RELEASE_MARGIN_MS);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        eventType: 'host-teardown-unconfirmed',
-        runId: RUN_ID,
-        payload: { runner: 'codex-cli', pid: 424_242, result: 'bound-elapsed', boundMs: INJECTED_BOUND_MS }
-      });
-      expect(order.indexOf('evidence-appended')).toBeLessThan(order.indexOf('leases-released'));
-      expect(order.indexOf('leases-released')).toBeLessThan(order.indexOf('primacy-released'));
+        console.log(
+          `T23 never-exiting variant: released ${Math.round(releasedAfterMs)} ms after the call ` +
+            `(injected bound ${INJECTED_BOUND_MS} ms, margin ${RELEASE_MARGIN_MS} ms)`
+        );
+        expect(releasedAfterMs).toBeLessThan(INJECTED_BOUND_MS + RELEASE_MARGIN_MS);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({
+          eventType: 'host-teardown-unconfirmed',
+          runId: RUN_ID,
+          payload: { runner: 'codex-cli', pid: 424_242, result: 'bound-elapsed', boundMs: INJECTED_BOUND_MS }
+        });
+        expect(order.indexOf('evidence-appended')).toBeLessThan(order.indexOf('leases-released'));
+        expect(order.indexOf('leases-released')).toBeLessThan(order.indexOf('primacy-released'));
 
-      // Let the ladder run out against the stubbed kill, then end the child so nothing is left
-      // pending when the stub comes off.
-      await sleep(LADDER_SETTLE_MS);
-      child.signalCode = 'SIGKILL';
-      child.emit('exit', null, 'SIGKILL');
-      child.emit('close', null, 'SIGKILL');
-      await invocation;
+        // Advance the fake clock past the ladder's remaining timers against the stubbed kill,
+        // then end the child so nothing is left pending when the stub comes off.
+        await vi.advanceTimersByTimeAsync(LADDER_SETTLE_MS);
+        child.signalCode = 'SIGKILL';
+        child.emit('exit', null, 'SIGKILL');
+        child.emit('close', null, 'SIGKILL');
+        await invocation;
+      } finally {
+        vi.useRealTimers();
+      }
     },
     CASE_TIMEOUT_MS
   );

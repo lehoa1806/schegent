@@ -471,7 +471,29 @@ describe('BackendAvailabilityService & D7 contracts (FR-R5-F28 / SPEC-06)', () =
     );
   });
 
-  it('enforces 3-check concurrency, 10s abort without blocking other slots, deduplication, and D6 sponsorship', async () => {
+  interface Deferred<T = void> {
+    readonly promise: Promise<T>;
+    resolve(value: T | PromiseLike<T>): void;
+  }
+
+  function createDeferred<T = void>(): Deferred<T> {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  interface PendingControllableSleep {
+    readonly durationMs: number;
+    readonly triggerTimeout: () => void;
+    readonly isSettled: () => boolean;
+  }
+
+  async function createControllableCheckHarness(options?: {
+    readonly gatedQuotaIds?: readonly string[];
+    readonly hungQuotaIds?: readonly string[];
+  }) {
     const memento = new InMemoryMemento();
     const ledgerStore = new ControlLedgerStore(memento);
     const clock = new FakeAvailabilityClock();
@@ -490,9 +512,47 @@ describe('BackendAvailabilityService & D7 contracts (FR-R5-F28 / SPEC-06)', () =
       }
     }));
 
+    const gatedSet = new Set(options?.gatedQuotaIds ?? []);
+    const hungSet = new Set(options?.hungQuotaIds ?? []);
+    const gatesByQuotaId = new Map<string, Deferred<void>>();
+    const exitedByQuotaId = new Map<string, Deferred<void>>();
+    const signalByQuotaId = new Map<string, AbortSignal>();
+    const sleepBySignal = new Map<AbortSignal, PendingControllableSleep>();
+    const startedWaiters: Array<{
+      readonly targetCount: number;
+      readonly deferred: Deferred<void>;
+    }> = [];
+
     const startedOrder: string[] = [];
     let maxActive = 0;
     let currentActive = 0;
+
+    function getGate(quotaId: string): Deferred<void> {
+      let gate = gatesByQuotaId.get(quotaId);
+      if (gate === undefined) {
+        gate = createDeferred<void>();
+        gatesByQuotaId.set(quotaId, gate);
+      }
+      return gate;
+    }
+
+    function getExited(quotaId: string): Deferred<void> {
+      let exited = exitedByQuotaId.get(quotaId);
+      if (exited === undefined) {
+        exited = createDeferred<void>();
+        exitedByQuotaId.set(quotaId, exited);
+      }
+      return exited;
+    }
+
+    function waitForStartedCount(targetCount: number): Promise<void> {
+      if (startedOrder.length >= targetCount) {
+        return Promise.resolve();
+      }
+      const deferred = createDeferred<void>();
+      startedWaiters.push({ targetCount, deferred });
+      return deferred.promise;
+    }
 
     const service = new BackendAvailabilityService({
       ledgerStore,
@@ -503,20 +563,31 @@ describe('BackendAvailabilityService & D7 contracts (FR-R5-F28 / SPEC-06)', () =
         nowWallMs: () => clock.nowWallMs(),
         nowMonotonicMs: () => clock.nowMonotonicMs(),
         sleepMs: async (durationMs, signal) => {
-          await new Promise<void>((resolve) => {
-            const t = setTimeout(() => {
+          const sleepDeferred = createDeferred<void>();
+          let settled = false;
+          const finish = (advanceClock: boolean) => {
+            if (settled) return;
+            settled = true;
+            if (advanceClock) {
               clock.advance(durationMs);
-              resolve();
-            }, 15);
-            signal?.addEventListener(
-              'abort',
-              () => {
-                clearTimeout(t);
-                resolve();
-              },
-              { once: true }
-            );
+            }
+            sleepDeferred.resolve();
+          };
+          if (signal?.aborted) {
+            finish(false);
+            return sleepDeferred.promise;
+          }
+          signal?.addEventListener('abort', () => finish(false), {
+            once: true
           });
+          if (signal !== undefined) {
+            sleepBySignal.set(signal, {
+              durationMs,
+              triggerTimeout: () => finish(true),
+              isSettled: () => settled
+            });
+          }
+          await sleepDeferred.promise;
         }
       },
       getAdapter: (kind) => ({
@@ -536,18 +607,35 @@ describe('BackendAvailabilityService & D7 contracts (FR-R5-F28 / SPEC-06)', () =
         }),
         checkAvailability: async (ctx, signal) => {
           const qId = ctx.quotaIds.at(0)!;
+          signalByQuotaId.set(qId, signal);
           startedOrder.push(qId);
           currentActive += 1;
           if (currentActive > maxActive) maxActive = currentActive;
+
+          for (let i = startedWaiters.length - 1; i >= 0; i -= 1) {
+            const waiter = startedWaiters.at(i)!;
+            if (startedOrder.length >= waiter.targetCount) {
+              startedWaiters.splice(i, 1);
+              waiter.deferred.resolve();
+            }
+          }
+
           try {
-            if (qId === 'quota-hung') {
-              // Hang until abortSignal fires
+            if (hungSet.has(qId)) {
               await new Promise<void>((resolve) => {
-                signal.addEventListener('abort', () => resolve(), { once: true });
+                if (signal.aborted) {
+                  resolve();
+                  return;
+                }
+                signal.addEventListener('abort', () => resolve(), {
+                  once: true
+                });
               });
               throw new Error('aborted');
             }
-            await new Promise<void>((resolve) => setTimeout(resolve, 5));
+            if (gatedSet.has(qId)) {
+              await getGate(qId).promise;
+            }
             return {
               version: 1,
               adapterId: ctx.adapterId,
@@ -556,73 +644,191 @@ describe('BackendAvailabilityService & D7 contracts (FR-R5-F28 / SPEC-06)', () =
             };
           } finally {
             currentActive -= 1;
+            getExited(qId).resolve();
           }
         }
       })
     });
 
-    const batchOutcomes = await service.runDueChecks([
-      {
-        candidateOccurrenceId: 'occ-c',
-        frozenPhase: makePhase('c', 'claude', 'quota-c'),
-        generation: 1,
-        dueAt: 2_000,
-        subscribers: [
-          { rootRunId: 'root-seq-2', sequence: 2, generation: 1 },
-          { rootRunId: 'root-seq-1', sequence: 1, generation: 1 }
-        ]
-      },
-      {
-        candidateOccurrenceId: 'occ-hung',
-        frozenPhase: makePhase('hung', 'claude', 'quota-hung'),
-        generation: 1,
-        dueAt: 1_000,
-        subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
-      },
-      {
-        candidateOccurrenceId: 'occ-b',
-        frozenPhase: makePhase('b', 'codex', 'quota-b'),
-        generation: 1,
-        dueAt: 1_000,
-        subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
-      },
-      {
-        candidateOccurrenceId: 'occ-a',
-        frozenPhase: makePhase('a', 'agy', 'quota-a'),
-        generation: 1,
-        dueAt: 1_000,
-        subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
-      }
-    ]);
+    function buildStandardBatchRequests() {
+      return [
+        {
+          candidateOccurrenceId: 'occ-c',
+          frozenPhase: makePhase('c', 'claude', 'quota-c'),
+          generation: 1,
+          dueAt: 2_000,
+          subscribers: [
+            { rootRunId: 'root-seq-2', sequence: 2, generation: 1 },
+            { rootRunId: 'root-seq-1', sequence: 1, generation: 1 }
+          ]
+        },
+        {
+          candidateOccurrenceId: 'occ-hung',
+          frozenPhase: makePhase('hung', 'claude', 'quota-hung'),
+          generation: 1,
+          dueAt: 1_000,
+          subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
+        },
+        {
+          candidateOccurrenceId: 'occ-b',
+          frozenPhase: makePhase('b', 'codex', 'quota-b'),
+          generation: 1,
+          dueAt: 1_000,
+          subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
+        },
+        {
+          candidateOccurrenceId: 'occ-a',
+          frozenPhase: makePhase('a', 'agy', 'quota-a'),
+          generation: 1,
+          dueAt: 1_000,
+          subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
+        }
+      ] as const;
+    }
 
-    // Tie-break at dueAt=1000 is UTF-8 byte order: quota-a, quota-b, quota-hung, then dueAt=2000 quota-c
-    expect(startedOrder).toEqual([
+    function getPendingSleepFor(quotaId: string): PendingControllableSleep {
+      const signal = signalByQuotaId.get(quotaId);
+      if (signal === undefined) {
+        throw new Error(`No active AbortSignal recorded for ${quotaId}`);
+      }
+      const pending = sleepBySignal.get(signal);
+      if (pending === undefined) {
+        throw new Error(`No controllable sleep recorded for ${quotaId}`);
+      }
+      return pending;
+    }
+
+    return {
+      ledgerStore,
+      clock,
+      service,
+      startedOrder,
+      getCurrentActive: () => currentActive,
+      getMaxActive: () => maxActive,
+      waitForStartedCount,
+      releaseGate: (quotaId: string) => getGate(quotaId).resolve(),
+      waitForExited: (quotaId: string) => getExited(quotaId).promise,
+      getSignalFor: (quotaId: string) => signalByQuotaId.get(quotaId),
+      getPendingSleepFor,
+      buildStandardBatchRequests
+    };
+  }
+
+  it('enforces the 3-check concurrency cap and schedules due checks by dueAt then UTF-8 quotaId', async () => {
+    const h = await createControllableCheckHarness({
+      gatedQuotaIds: ['quota-a', 'quota-b', 'quota-hung', 'quota-c']
+    });
+
+    const batchPromise = h.service.runDueChecks(h.buildStandardBatchRequests());
+
+    // Exactly 3 slots start first, ordered by dueAt=1000 then UTF-8 quotaId
+    await h.waitForStartedCount(3);
+    expect(h.startedOrder).toEqual(['quota-a', 'quota-b', 'quota-hung']);
+    expect(h.getCurrentActive()).toBe(3);
+    expect(h.getMaxActive()).toBe(3);
+
+    // Releasing one slot admits the 4th check (dueAt=2000 quota-c) without exceeding cap 3
+    h.releaseGate('quota-a');
+    await h.waitForStartedCount(4);
+    expect(h.startedOrder).toEqual([
       'quota-a',
       'quota-b',
       'quota-hung',
       'quota-c'
     ]);
-    expect(maxActive).toBeLessThanOrEqual(3);
+    expect(h.getMaxActive()).toBeLessThanOrEqual(3);
+
+    h.releaseGate('quota-b');
+    h.releaseGate('quota-hung');
+    h.releaseGate('quota-c');
+
+    const batchOutcomes = await batchPromise;
+    expect(batchOutcomes).toHaveLength(4);
+  });
+
+  it('aborts a hung check at 10,000 ms into unreachable without blocking other concurrency slots', async () => {
+    const h = await createControllableCheckHarness({
+      gatedQuotaIds: ['quota-a', 'quota-b', 'quota-c'],
+      hungQuotaIds: ['quota-hung']
+    });
+
+    const batchPromise = h.service.runDueChecks(h.buildStandardBatchRequests());
+
+    await h.waitForStartedCount(3);
+    h.releaseGate('quota-a');
+    h.releaseGate('quota-b');
+
+    // quota-c enters and finishes while quota-hung is still hung on its slot
+    await h.waitForStartedCount(4);
+    h.releaseGate('quota-c');
+    await h.waitForExited('quota-c');
+    expect(h.getSignalFor('quota-hung')?.aborted).toBe(false);
+
+    // Trigger the 10,000 ms absolute timeout for quota-hung deterministically
+    const hungSleep = h.getPendingSleepFor('quota-hung');
+    expect(hungSleep.durationMs).toBe(AVAILABILITY_CHECK_TIMEOUT_MS);
+    expect(AVAILABILITY_CHECK_TIMEOUT_MS).toBe(10_000);
+    hungSleep.triggerTimeout();
+
+    const batchOutcomes = await batchPromise;
     expect(batchOutcomes).toHaveLength(4);
 
-    // quota-hung aborted into unreachable while quota-c still completed ready!
-    const hungObs = service.getObservation('quota-hung');
+    const hungObs = h.service.getObservation('quota-hung');
     expect(hungObs?.status).toBe('unreachable');
-    expect(hungObs?.nextCheckAt).toBeGreaterThan(clock.nowWallMs());
+    expect(hungObs?.nextCheckAt).toBeGreaterThan(h.clock.nowWallMs());
 
-    const cObs = service.getObservation('quota-c');
+    const cObs = h.service.getObservation('quota-c');
     expect(cObs?.status).toBe('ready');
+  });
 
-    // Lowest-sequence eligible subscriber (root-seq-1) sponsored the checks once; no Phase attempts consumed
-    const root1 = ledgerStore.getRoot('root-seq-1')!;
-    const root2 = ledgerStore.getRoot('root-seq-2')!;
-    expect(root1.dispatchedAttempts).toBe(0);
-    expect(root2.dispatchedAttempts).toBe(0);
-    expect(root1.settledMicrousd).toBe(225); // 3 successful checks * 75 microusd
-    expect(root2.settledMicrousd).toBe(0);
+  it('deduplicates concurrent in-flight availability checks for the same observationId', async () => {
+    const h = await createControllableCheckHarness({
+      gatedQuotaIds: ['quota-c']
+    });
 
-    // Immediate re-check within 60,000 ms is rate-limited
-    const rateLimited = await service.checkCandidateAvailability({
+    const firstPromise = h.service.checkCandidateAvailability({
+      candidateOccurrenceId: 'occ-c-1',
+      frozenPhase: makePhase('c', 'claude', 'quota-c'),
+      generation: 1,
+      subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
+    });
+    const secondPromise = h.service.checkCandidateAvailability({
+      candidateOccurrenceId: 'occ-c-2',
+      frozenPhase: makePhase('c', 'claude', 'quota-c'),
+      generation: 1,
+      subscribers: [{ rootRunId: 'root-seq-2', sequence: 2, generation: 1 }]
+    });
+
+    await h.waitForStartedCount(1);
+    h.releaseGate('quota-c');
+
+    const [firstOutcome, secondOutcome] = await Promise.all([
+      firstPromise,
+      secondPromise
+    ]);
+    expect(h.startedOrder).toEqual(['quota-c']);
+    expect(firstOutcome.ok).toBe(true);
+    expect(secondOutcome.ok).toBe(true);
+    if (firstOutcome.ok && secondOutcome.ok) {
+      expect(firstOutcome.deduplicated).toBe(false);
+      expect(secondOutcome.deduplicated).toBe(true);
+      expect(secondOutcome.checkId).toBe(firstOutcome.checkId);
+    }
+    expect(h.ledgerStore.getRoot('root-seq-1')?.settledMicrousd).toBe(75);
+  });
+
+  it('rate-limits immediate availability re-checks within the 60,000 ms minimum interval', async () => {
+    const h = await createControllableCheckHarness();
+
+    const initial = await h.service.checkCandidateAvailability({
+      candidateOccurrenceId: 'occ-c',
+      frozenPhase: makePhase('c', 'claude', 'quota-c'),
+      generation: 1,
+      subscribers: [{ rootRunId: 'root-seq-1', sequence: 1, generation: 1 }]
+    });
+    expect(initial.ok).toBe(true);
+
+    const rateLimited = await h.service.checkCandidateAvailability({
       candidateOccurrenceId: 'occ-c',
       frozenPhase: makePhase('c', 'claude', 'quota-c'),
       generation: 1,
@@ -632,6 +838,33 @@ describe('BackendAvailabilityService & D7 contracts (FR-R5-F28 / SPEC-06)', () =
     if (!rateLimited.ok) {
       expect(rateLimited.reason).toBe('check-rate-limited');
     }
-    expect(AVAILABILITY_CHECK_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it('charges check sponsorship to the lowest-sequence eligible subscriber under D6 without consuming Phase attempts', async () => {
+    const h = await createControllableCheckHarness({
+      hungQuotaIds: ['quota-hung']
+    });
+
+    const batchPromise = h.service.runDueChecks(h.buildStandardBatchRequests());
+    await h.waitForStartedCount(4);
+    await h.waitForExited('quota-c');
+    h.getPendingSleepFor('quota-hung').triggerTimeout();
+
+    const batchOutcomes = await batchPromise;
+    expect(batchOutcomes).toHaveLength(4);
+    const cOutcome = batchOutcomes.at(0);
+    expect(cOutcome?.ok).toBe(true);
+    if (cOutcome?.ok) {
+      expect(cOutcome.sponsorRootRunId).toBe('root-seq-1');
+      expect(cOutcome.sharedSubscriberRootIds).toEqual(['root-seq-2']);
+    }
+
+    // Lowest-sequence eligible subscriber (root-seq-1) sponsored the 3 successful checks once; no Phase attempts consumed
+    const root1 = h.ledgerStore.getRoot('root-seq-1')!;
+    const root2 = h.ledgerStore.getRoot('root-seq-2')!;
+    expect(root1.dispatchedAttempts).toBe(0);
+    expect(root2.dispatchedAttempts).toBe(0);
+    expect(root1.settledMicrousd).toBe(225); // 3 successful checks * 75 microusd
+    expect(root2.settledMicrousd).toBe(0);
   });
 });

@@ -137,7 +137,13 @@ export const COMMAND_AUTHORITY = Object.freeze({
   [CMD_RESUME_QUEUE]: gated('queue pause state'),
   [CMD_RERUN_FROM_HISTORY]: gated('queue enqueue from history'),
   [CMD_START]: gated('workflow start'),
-  [CMD_CANCEL]: gated('workflow cancellation'),
+  // FR-R7-18 (`N01`, FR-001) — operator cancellation must not be starved behind
+  // slow serialized starts (`CMD_START_QUEUE` lane provisioning / git approval)
+  // or teardowns (`CMD_CLEAR_QUEUE` runner-stop wait, `CMD_REMOVE_QUEUE_ITEM`
+  // session cleanup). Staying `gated` keeps workspace trust and window primacy;
+  // `concurrent` keeps correlation-ID in-flight join and first-ACK replay in
+  // `MutationCommandExecutor` while skipping the global serialization chain.
+  [CMD_CANCEL]: gatedConcurrent('workflow cancellation'),
   [CMD_RETRY_PHASE_NOW]: gated('phase retry'),
   [CMD_PAUSE_PHASE]: gated('phase pause'),
   [CMD_RESUME_PHASE]: gated('phase resume'),
@@ -197,6 +203,9 @@ export const COMMAND_AUTHORITY = Object.freeze({
   // Both create durable state, and neither name carries a mutating verb prefix,
   // so the naming-convention lint would not have caught an omission here.
   [CMD_LAUNCH_WORKFLOW]: gated('connected run enqueue'),
+  // FR-R7-18 (`N01`, FR-001) — serialized by default; `MessageRouter` applies a
+  // payload-scoped concurrency bypass (`serialize: false`) strictly for validated
+  // cancellation payloads (`operation === 'cancel'` or `controlCommand.action.kind === 'cancel'`).
   [CMD_CONTINUE_WORKFLOW]: gated('connected run enqueue and workflow control'),
   // Feature 092 (T030, US1, FR-021) — the seven reinstated multi-queue
   // commands. Only four of the names carry a verb the

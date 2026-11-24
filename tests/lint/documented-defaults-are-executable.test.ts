@@ -35,14 +35,16 @@
 //   3. the gate does not normalise prose into agreement. A row saying
 //      `model-token` where the resolver returns `exit-code` is the finding.
 //
-// WHAT THIS GATE DOES NOT DO, and FR-007 requires it to say so: it checks the four
+// WHAT THIS GATE DOES NOT DO, and FR-007 requires it to say so: it checks the five
 // named blocks and NOTHING else. It makes no claim about any other sentence in any
 // document. Prose truth in general is not verified here and the audit recommends
 // against attempting it.
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type * as vscode from 'vscode';
 
+import { readProcessEnvironmentPolicy } from '../../src/activation/uncached-settings-accessors';
 import { resolveHostVerification } from '../../src/config/phase-runner-policy';
 import { judgeBackendContainment } from '../../src/services/backend-containment-policy';
 import { resolveCapabilityDecision } from '../../src/state/capability-trust-decision';
@@ -120,7 +122,7 @@ function readBlock(relPath: string, id: string): readonly Row[] {
 const ABSENT = new Set(['(omitted)', '(unset)']);
 
 /**
- * The four blocks, their documents, and the module each is fed through.
+ * The five blocks, their documents, and the module each is fed through.
  *
  * The unit is the DEFAULT, not the document: a default is what a reader gets
  * wrong, and one document may own more than one.
@@ -129,20 +131,22 @@ const BLOCKS = [
   'phase-verdict-basis',
   'uncontained-grant-scope',
   'trust-deny-precedence',
-  'session-retention-defaults'
+  'session-retention-defaults',
+  'env-policy-precedence'
 ] as const;
 
 describe('documented security-critical defaults are executable (FR-R3-126)', () => {
-  it('declares four blocks and finds every owning document on disk', () => {
+  it('declares five blocks and finds every owning document on disk', () => {
     // Vacuity control. Every assertion below reads a block from this list, so a
     // list that silently shrank — a renamed id, a moved document — would assert
     // over nothing and pass.
-    expect(BLOCKS).toHaveLength(4);
+    expect(BLOCKS).toHaveLength(5);
     const documents = [
       'docs/security/threat-model.md',
       'docs/operations/untrusted-repositories.md',
       'docs/reference/settings.md',
-      'docs/concepts/sessions-and-logs.md'
+      'docs/concepts/sessions-and-logs.md',
+      'docs/reference/system-config.md'
     ];
     expect(documents.filter((rel) => !existsSync(resolve(REPO_ROOT, rel)))).toEqual([]);
   });
@@ -273,6 +277,81 @@ describe('documented security-critical defaults are executable (FR-R3-126)', () 
     expect(rows.length).toBe(2);
   });
 
+  it('the environment policy precedence resolves as system-config.md says it does', () => {
+    const rows = readBlock('docs/reference/system-config.md', 'env-policy-precedence');
+    const parseScalar = (cell: string): unknown => {
+      if (ABSENT.has(cell)) return undefined;
+      if (cell === 'null') return null;
+      if (cell === 'true') return true;
+      if (cell === 'false') return false;
+      if (cell.startsWith('"') && cell.endsWith('"')) return JSON.parse(cell) as string;
+      if (/^-?\d+$/.test(cell)) return Number(cell);
+      return cell;
+    };
+    const parseAllowlist = (cell: string): unknown => {
+      if (ABSENT.has(cell)) return undefined;
+      if (cell === '(none)' || cell === '(empty)') return [];
+      return cell.split(',').map((entry) => entry.trim());
+    };
+    const disagreements: string[] = [];
+    for (const row of rows) {
+      const [
+        inheritCell,
+        modeCell,
+        allowlistCell,
+        expectedMode,
+        expectedInherit,
+        expectedAllowlist
+      ] = row.cells;
+      const values: Record<string, unknown> = {
+        'cli.inheritEnvironment': parseScalar(inheritCell!),
+        'cli.environmentMode': parseScalar(modeCell!),
+        'cli.environmentAllowlist': parseAllowlist(allowlistCell!)
+      };
+      const configStub: vscode.WorkspaceConfiguration = {
+        get<T>(key: string, defaultValue?: T): T {
+          const val = values[key];
+          return (val !== undefined ? val : defaultValue) as T;
+        },
+        has(key: string): boolean {
+          return values[key] !== undefined;
+        },
+        inspect() {
+          return undefined;
+        },
+        async update() {
+          return undefined;
+        }
+      };
+      const actual = readProcessEnvironmentPolicy('/workspace', configStub);
+      const actualInherit = actual.inheritProcessEnv ? 'yes' : 'no';
+      const actualAllowlist =
+        actual.processEnvAllowlist === undefined
+          ? '(omitted)'
+          : actual.processEnvAllowlist.length === 0
+            ? '(empty)'
+            : actual.processEnvAllowlist.join(',');
+      if (
+        actual.mode !== expectedMode ||
+        actualInherit !== expectedInherit ||
+        actualAllowlist !== expectedAllowlist
+      ) {
+        disagreements.push(
+          `system-config.md:${row.lineNumber}: the document says ` +
+            `(inherit=${inheritCell}, mode=${modeCell}, allowlist=${allowlistCell}) -> ` +
+            `(${expectedMode}, inheritProcessEnv=${expectedInherit}, allowlist=${expectedAllowlist}); ` +
+            `readProcessEnvironmentPolicy returns (${actual.mode}, inheritProcessEnv=${actualInherit}, allowlist=${actualAllowlist})`
+        );
+      }
+    }
+    expect(
+      disagreements,
+      'docs/reference/system-config.md and src/activation/uncached-settings-accessors.ts disagree ' +
+        'about process-environment policy precedence (FR-R7-18 N07).'
+    ).toEqual([]);
+    expect(rows.length).toBeGreaterThanOrEqual(8);
+  });
+
   /**
    * FR-R3-126, corrected during implementation.
    *
@@ -374,7 +453,7 @@ describe('documented security-critical defaults are executable (FR-R3-126)', () 
       resolve(__dirname, 'documented-defaults-are-executable.test.ts'),
       'utf8'
     ).replace(/\s+/g, ' ');
-    expect(self).toContain('checks the four named blocks and NOTHING else');
+    expect(self).toContain('checks the five named blocks and NOTHING else');
     expect(self).toContain('Prose truth in general is not verified here');
   });
 });

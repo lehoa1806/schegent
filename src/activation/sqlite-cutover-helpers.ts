@@ -392,15 +392,18 @@ function runBestEffortDispose(fn: (() => void) | undefined): void {
 export function disposeSqliteRuntimeResources(resources: {
   readonly operationalMemento?: SwitchableOperationalMemento | undefined;
   readonly catalogFs?: SwitchableCatalogFsAdapter | undefined;
+  readonly clearDetachedWriter?: boolean | undefined;
   readonly disposeTelemetryConfig?: (() => void) | undefined;
   readonly usageWiring?: UsageAccountingWiring | null | undefined;
   readonly workflowComposition?: ProductionWorkflowComposition | null | undefined;
   readonly telemetryHost?: TelemetryHostService | null | undefined;
   readonly sqliteStore: SqliteApplicationStore;
 }): void {
-  runBestEffortDispose(() => resources.operationalMemento?.configureDetachedTrustedSqliteWriter(null));
-  runBestEffortDispose(() => resources.operationalMemento?.detachSqlite());
-  runBestEffortDispose(() => resources.catalogFs?.detachSqlite());
+  if (resources.clearDetachedWriter !== false) {
+    runBestEffortDispose(() => resources.operationalMemento?.configureDetachedTrustedSqliteWriter(null));
+  }
+  runBestEffortDispose(() => resources.operationalMemento?.detachSqlite(resources.sqliteStore));
+  runBestEffortDispose(() => resources.catalogFs?.detachSqlite(resources.sqliteStore));
   runBestEffortDispose(resources.disposeTelemetryConfig);
   runBestEffortDispose(() => resources.usageWiring?.dispose());
   runBestEffortDispose(() => resources.workflowComposition?.dispose());

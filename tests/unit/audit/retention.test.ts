@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -24,8 +24,31 @@ describe('AuditLogWriter retention pruning', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await removeTempRoot(workspaceRoot);
   });
+
+  const appendRotating = async (writer: AuditLogWriter, count: number): Promise<void> => {
+    const baseTimeMs = 1_750_000_000_000;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      for (let i = 0; i < count; i++) {
+        const stamp = new Date(baseTimeMs + i * 1_000);
+        vi.setSystemTime(stamp);
+        await writer.append({
+          runId: `r${i}`,
+          phase: 'speckit-specify',
+          iteration: 1,
+          eventType: 'cli-invocation',
+          payload: { i },
+          outcome: 'info'
+        });
+        await fs.utimes(writer.logPath, stamp, stamp);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  };
 
   it('prunes archives beyond the retentionMaxArchives count', async () => {
     const writer = new AuditLogWriter(
@@ -37,18 +60,7 @@ describe('AuditLogWriter retention pruning', () => {
       },
       logger
     );
-    for (let i = 0; i < 5; i++) {
-      await writer.append({
-        runId: `r${i}`,
-        phase: 'speckit-specify',
-        iteration: 1,
-        eventType: 'cli-invocation',
-        payload: { i },
-        outcome: 'info'
-      });
-      // ensure mtime stamps are distinct so the sort is stable
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    await appendRotating(writer, 5);
     const dir = path.dirname(writer.logPath);
     const entries = await fs.readdir(dir);
     // FR-R3-112 — `audit.log.cuts` sits beside the archives and is not one: it is the record
@@ -71,17 +83,7 @@ describe('AuditLogWriter retention pruning', () => {
       },
       logger
     );
-    for (let i = 0; i < 4; i++) {
-      await writer.append({
-        runId: `r${i}`,
-        phase: 'speckit-specify',
-        iteration: 1,
-        eventType: 'cli-invocation',
-        payload: { i },
-        outcome: 'info'
-      });
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    await appendRotating(writer, 4);
     const cuts = await fs.readFile(`${writer.logPath}.cuts`, 'utf8');
     const records = cuts
       .split('\n')
@@ -98,15 +100,17 @@ describe('AuditLogWriter retention pruning', () => {
   });
 
   it('prunes archives older than retentionMaxArchiveAgeMs', async () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
     const writer = new AuditLogWriter(
       {
         workspaceRoot,
         rotationSizeBytes: 1,
         retentionMaxArchives: 100,
-        retentionMaxArchiveAgeMs: 50 // 50 ms
+        retentionMaxArchiveAgeMs: 50 // clamped internally to the 7-day compliance floor
       },
       logger
     );
+    const dir = path.dirname(writer.logPath);
     await writer.append({
       runId: 'r1',
       phase: 'speckit-specify',
@@ -115,8 +119,7 @@ describe('AuditLogWriter retention pruning', () => {
       payload: {},
       outcome: 'info'
     });
-    // wait long enough for the first archive to age out
-    await new Promise((r) => setTimeout(r, 120));
+    // Second append rotates r1 into the first archive.
     await writer.append({
       runId: 'r2',
       phase: 'speckit-plan',
@@ -125,11 +128,30 @@ describe('AuditLogWriter retention pruning', () => {
       payload: {},
       outcome: 'info'
     });
-    const dir = path.dirname(writer.logPath);
+    const beforePrune = (await fs.readdir(dir)).filter(
+      (n) => n.startsWith('audit.log.') && n !== 'audit.log.cuts'
+    );
+    expect(beforePrune).toHaveLength(1);
+    const agedArchive = beforePrune[0]!;
+    // Backdate the first archive beyond the 7-day retention floor with fs.utimes instead of sleeping.
+    const expiredStamp = new Date(Date.now() - 8 * DAY_MS);
+    await fs.utimes(path.join(dir, agedArchive), expiredStamp, expiredStamp);
+
+    // Third append rotates r2 into a fresh archive and prunes the expired first archive by age.
+    await writer.append({
+      runId: 'r3',
+      phase: 'speckit-tasks',
+      iteration: 1,
+      eventType: 'cli-invocation',
+      payload: {},
+      outcome: 'info'
+    });
     const entries = await fs.readdir(dir);
-    const archives = entries.filter((n) => n.startsWith('audit.log.'));
-    // The first archive should have been pruned by age; only the most recent remains.
+    const archives = entries.filter((n) => n.startsWith('audit.log.') && n !== 'audit.log.cuts');
+    // The first archive was pruned by age; only the most recent archive remains.
+    expect(archives).not.toContain(agedArchive);
     expect(archives.length).toBeLessThanOrEqual(1);
+    expect(archives).toHaveLength(1);
   });
 
   it('FR-R5-F13 (FR-001) — prunes multiple archives in chronological (oldest-first) order so verifyAuditChainAt succeeds', async () => {

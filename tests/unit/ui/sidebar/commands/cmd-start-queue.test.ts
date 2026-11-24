@@ -147,10 +147,14 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
 
   it('does not ack before executeCommand resolves', async () => {
     let execResolved = false;
+    let releaseExec!: (outcome: { outcome: 'accepted' }) => void;
+    const execGate = new Promise<{ outcome: 'accepted' }>((resolve) => {
+      releaseExec = resolve;
+    });
     const executeCommandSpy = vi.fn(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      const result = await execGate;
       execResolved = true;
-      return { outcome: 'accepted' } as const;
+      return result;
     });
     const acks: CommandAckMessage[] = [];
     const ctx = {
@@ -167,7 +171,11 @@ describe('cmd-start-queue handler (BUG-002, FR-012a, T082)', () => {
       },
       correlationId: 'test-ordering'
     } as any;
-    await startQueueHandler(ctx, makeCmd());
+    const pending = startQueueHandler(ctx, makeCmd());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(acks).toHaveLength(0);
+    releaseExec({ outcome: 'accepted' });
+    await pending;
     expect(acks).toHaveLength(1);
   });
 

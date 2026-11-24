@@ -12,15 +12,40 @@ import {
 export const SIDEBAR_IPC_SCHEMA_VERSION = 3;
 
 const snapshotSyncModes = ['full', 'routine'];
-const snapshotSyncMeta = d.obj(
+const suppressibleSliceList = d.arr(d.enum(SUPPRESSIBLE_SNAPSHOT_SLICES));
+const snapshotSyncFull = d.obj({
+  mode: d.lit('full'),
+  revision: d.int({ min: 0 })
+});
+const snapshotSyncRoutine = d.obj({
+  mode: d.lit('routine'),
+  revision: d.int({ min: 0 }),
+  baseRevision: d.int({ min: 0 }),
+  omittedSlices: suppressibleSliceList
+});
+const snapshotSyncMeta = d.discUnion(
+  'mode',
   {
-    mode: d.enum(snapshotSyncModes),
-    revision: d.int({ min: 0 }),
-    baseRevision: d.field(d.int({ min: 0 }), { optional: true }),
-    omittedSlices: d.field(d.arr(d.enum(SUPPRESSIBLE_SNAPSHOT_SLICES)), { optional: true })
+    full: d.obj({
+      mode: d.lit('full'),
+      revision: d.int({ min: 0 }),
+      baseRevision: d.field(d.unknown({ tsType: 'never' }), { optional: true }),
+      omittedSlices: d.field(d.unknown({ tsType: 'never' }), { optional: true })
+    }),
+    routine: snapshotSyncRoutine
   },
   {
     doc: "Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision; routine mode reconstructs omittedSlices from baseRevision."
+  }
+);
+const snapshotSyncMetaJson = d.discUnion(
+  'mode',
+  {
+    full: snapshotSyncFull,
+    routine: snapshotSyncRoutine
+  },
+  {
+    doc: "Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision (forbidding baseRevision and omittedSlices); routine mode reconstructs omittedSlices from baseRevision (requiring both)."
   }
 );
 
@@ -36,9 +61,17 @@ function snapshotWireSchema(mode) {
   return d.obj({
     ...fields,
     payload: mode === 'routine' ? d.ref('WorkflowSnapshotRoutinePayload') : fields.payload,
-    sync: d.obj({ ...snapshotSyncMeta.fields, mode: d.lit(mode) })
+    sync: mode === 'routine' ? snapshotSyncRoutine : snapshotSyncFull
   });
 }
+
+const commandAckOutcomeField = d.field(
+  d.enum(COMMAND_ACK_OUTCOMES, {
+    refName: 'CommandAckOutcome',
+    refImport: '../command-outcome'
+  }),
+  { optional: true }
+);
 
 export const HOST_MESSAGES = Object.freeze([
   d.hostMessage({
@@ -50,7 +83,7 @@ export const HOST_MESSAGES = Object.freeze([
     jsonSchema: d.oneOf(
       [snapshotWireSchema(), ...snapshotSyncModes.map(snapshotWireSchema)],
       {
-        doc: 'Host pushes an authoritative WorkflowSnapshot envelope; mode=routine permits omitting unchanged SUPPRESSIBLE_SNAPSHOT_SLICES.'
+        doc: 'Host pushes an authoritative WorkflowSnapshot envelope; mode=routine permits omitting unchanged SUPPRESSIBLE_SNAPSHOT_SLICES and requires baseRevision and omittedSlices, while mode=full forbids them.'
       }
     )
   }),
@@ -63,16 +96,32 @@ export const HOST_MESSAGES = Object.freeze([
       type: d.lit('CMD_ACK'),
       correlationId: d.str({ minLen: 1, maxLen: 64 }),
       status: d.enum(['accepted', 'rejected']),
-      outcome: d.field(
-        d.enum(COMMAND_ACK_OUTCOMES, {
-          refName: 'CommandAckOutcome',
-          refImport: '../command-outcome'
-        }),
-        { optional: true }
-      ),
+      outcome: commandAckOutcomeField,
       reason: d.field(d.str(), { optional: true }),
       result: d.field(d.unknown(), { optional: true })
-    })
+    }),
+    jsonSchema: d.oneOf(
+      [
+        d.obj({
+          type: d.lit('CMD_ACK'),
+          correlationId: d.str({ minLen: 1, maxLen: 64 }),
+          status: d.lit('accepted'),
+          outcome: d.field(d.lit('accepted'), { optional: true }),
+          result: d.field(d.unknown(), { optional: true })
+        }),
+        d.obj({
+          type: d.lit('CMD_ACK'),
+          correlationId: d.str({ minLen: 1, maxLen: 64 }),
+          status: d.lit('rejected'),
+          outcome: d.field(d.enum(['no-op', 'refused', 'failed']), { optional: true }),
+          reason: d.field(d.str(), { optional: true }),
+          result: d.field(d.unknown(), { optional: true })
+        })
+      ],
+      {
+        doc: 'Host acknowledges acceptance or rejection of a correlated webview command; accepted acknowledgements forbid reason (T28) and pair wire status with matching CommandAckOutcome values.'
+      }
+    )
   }),
 
   d.hostMessage({
@@ -142,6 +191,7 @@ export const HOST_MESSAGE_DEFINITIONS = Object.freeze({
 
 export const SHARED_IPC_DEFS = Object.freeze({
   ...HOST_MESSAGE_DEFINITIONS,
+  SnapshotSyncMeta: snapshotSyncMetaJson,
 
   EnqueueStartIntent: d.discUnion('startMode', {
     now: d.obj({

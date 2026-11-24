@@ -126,3 +126,12 @@ The export includes only parseable schema-v3 entries. It retains the entry ident
 <!-- Source: package.json -->
 <!-- Source: src/commands/export-audit.ts -->
 <!-- Source: src/parser/audit-log-parser.ts -->
+
+## 6. Recover from storage, writer, or execution-lane incidents
+
+When an extension upgrade refuses to open the operational SQLite database, workspace state writes time out and enter writer quarantine, or an isolated execution lane stops mid-flight:
+
+- Start with the rehearsed, symptom-first [Incident recovery guide](../operations/incident-recovery-guide.md) for exact diagnostics, non-destructive recovery steps, surviving files, and resumption checks.
+- Use the [SQLite rollback runbook](../operations/sqlite-rollback-runbook.md) before upgrading Schegent (to take and verify a pre-upgrade backup) or when executing an online restore or cross-version downgrade rollback.
+<!-- Source: docs/operations/incident-recovery-guide.md -->
+<!-- Source: docs/operations/sqlite-rollback-runbook.md -->

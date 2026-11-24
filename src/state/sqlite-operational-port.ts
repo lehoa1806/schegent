@@ -70,7 +70,7 @@ export interface SqliteOperationalStorePort {
 export interface DetachedSqliteWriterConfig {
   readonly databasePath: string;
   readonly scopeId: string;
-  readonly canWrite: () => boolean;
+  readonly canWrite: () => boolean | Promise<boolean>;
   readonly openStore: (databasePath: string) => SqliteOperationalStorePort;
 }
 

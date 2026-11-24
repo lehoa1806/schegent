@@ -33,168 +33,323 @@ function makeFence(rootGeneration = 1): ExecutionFence {
   };
 }
 
-describe('Candidate block recovery integration tests (FR-R5-F30 / SPEC-08)', () => {
-  it('executes transient retry, cooldown switch to fallback, waiting when all unavailable, recovery after polling, and single return commit', async () => {
-    const memento = makeMemoryMemento();
-    let wallMs = 5_000_000;
-    let monoMs = 50_000;
-    const hostEpoch = 'epoch-int-1';
+async function makeSeededRecoveryHarness() {
+  const memento = makeMemoryMemento();
+  let wallMs = 5_000_000;
+  let monoMs = 50_000;
+  const hostEpoch = 'epoch-int-1';
 
-    const clock = {
-      nowWallMs: () => wallMs,
-      nowMonotonicMs: () => monoMs,
-      hostEpoch,
-      advance(ms: number) {
-        wallMs += ms;
-        monoMs += ms;
-      }
-    };
+  const clock = {
+    nowWallMs: () => wallMs,
+    nowMonotonicMs: () => monoMs,
+    hostEpoch,
+    advance(ms: number) {
+      wallMs += ms;
+      monoMs += ms;
+    }
+  };
 
-    const ledgerStore = new ControlLedgerStore(memento);
-    const admissionService = new ControlAttemptAdmissionService({
-      ledgerStore,
-      clock
-    });
-    const availabilityService = new BackendAvailabilityService({
-      ledgerStore,
-      clock,
-      getAdapter: (kind) => ({
-        adapterId: `adapter-${kind}`,
+  const ledgerStore = new ControlLedgerStore(memento);
+  const admissionService = new ControlAttemptAdmissionService({
+    ledgerStore,
+    clock
+  });
+  const availabilityService = new BackendAvailabilityService({
+    ledgerStore,
+    clock,
+    getAdapter: (kind) => ({
+      adapterId: `adapter-${kind}`,
+      adapterVersion: 1,
+      backend: kind,
+      statusCheck: 'supported',
+      resolveQuotaContext: (target: FrozenPhaseQuotaTarget) => ({
+        version: 1,
+        adapterId: `adapter-${target.runner}`,
         adapterVersion: 1,
-        backend: kind,
-        statusCheck: 'supported',
-        resolveQuotaContext: (target: FrozenPhaseQuotaTarget) => ({
-          version: 1,
-          adapterId: `adapter-${target.runner}`,
-          adapterVersion: 1,
-          quotaIds: [`quota:${target.runner}`],
-          identity: 'qualified',
-          statusCheck: 'supported'
-        }),
-        checkAvailability: async (context) => ({
-          version: 1,
-          adapterId: context.adapterId,
-          outcomes: context.quotaIds.map((quotaId) => ({
-            quotaId,
-            status: 'ready' as const
-          })),
-          costMicrousd: 0
-        })
+        quotaIds: [`quota:${target.runner}`],
+        identity: 'qualified',
+        statusCheck: 'supported'
+      }),
+      checkAvailability: async (context) => ({
+        version: 1,
+        adapterId: context.adapterId,
+        outcomes: context.quotaIds.map((quotaId) => ({
+          quotaId,
+          status: 'ready' as const
+        })),
+        costMicrousd: 0
       })
-    });
-    const permitArbiter = new QuotaPermitArbiter({
-      ledgerStore,
-      clock
-    });
-    const notificationService = new ControlNotificationService({
-      ledgerStore,
-      clock
-    });
-    const executor = new CandidateBlockExecutor({
-      ledgerStore,
-      admissionService,
-      availabilityService,
-      permitArbiter,
-      notificationService,
-      clock
-    });
+    })
+  });
+  const permitArbiter = new QuotaPermitArbiter({
+    ledgerStore,
+    clock
+  });
+  const notificationService = new ControlNotificationService({
+    ledgerStore,
+    clock
+  });
+  const executor = new CandidateBlockExecutor({
+    ledgerStore,
+    admissionService,
+    availabilityService,
+    permitArbiter,
+    notificationService,
+    clock
+  });
 
-    const fence = makeFence(1);
-    await admissionService.prepareRootLink({
-      ledgerRunId: 'root-rec',
-      connectedRunId: 'run-rec',
-      rootWorkflowId: 'wf-rec',
-      queueId: 'default',
-      fence
-    });
-    await admissionService.activateRootLink({
-      ledgerRunId: 'root-rec',
-      connectedRunId: 'run-rec',
-      fence
-    });
+  const fence = makeFence(1);
+  await admissionService.prepareRootLink({
+    ledgerRunId: 'root-rec',
+    connectedRunId: 'run-rec',
+    rootWorkflowId: 'wf-rec',
+    queueId: 'default',
+    fence
+  });
+  await admissionService.activateRootLink({
+    ledgerRunId: 'root-rec',
+    connectedRunId: 'run-rec',
+    fence
+  });
 
-    const claudeTarget: FrozenPhaseQuotaTarget = {
-      phaseId: 'phase-claude',
-      runner: 'claude'
-    };
-    const codexTarget: FrozenPhaseQuotaTarget = {
-      phaseId: 'phase-codex',
-      runner: 'codex'
-    };
+  const claudeTarget: FrozenPhaseQuotaTarget = {
+    phaseId: 'phase-claude',
+    runner: 'claude'
+  };
+  const codexTarget: FrozenPhaseQuotaTarget = {
+    phaseId: 'phase-codex',
+    runner: 'codex'
+  };
 
-    // Seed initial ready observations for both backends
-    await availabilityService.checkCandidateAvailability({
-      candidateOccurrenceId: 'seed-claude',
-      frozenPhase: claudeTarget,
-      generation: 1,
-      subscribers: [{ rootRunId: 'root-rec', sequence: 1, generation: 1 }]
-    });
-    clock.advance(61_000);
-    await availabilityService.checkCandidateAvailability({
-      candidateOccurrenceId: 'seed-codex',
-      frozenPhase: codexTarget,
-      generation: 1,
-      subscribers: [{ rootRunId: 'root-rec', sequence: 1, generation: 1 }]
-    });
+  // Seed initial ready observations for both backends
+  await availabilityService.checkCandidateAvailability({
+    candidateOccurrenceId: 'seed-claude',
+    frozenPhase: claudeTarget,
+    generation: 1,
+    subscribers: [{ rootRunId: 'root-rec', sequence: 1, generation: 1 }]
+  });
+  clock.advance(61_000);
+  await availabilityService.checkCandidateAvailability({
+    candidateOccurrenceId: 'seed-codex',
+    frozenPhase: codexTarget,
+    generation: 1,
+    subscribers: [{ rootRunId: 'root-rec', sequence: 1, generation: 1 }]
+  });
 
-    await executor.initializeCandidateBlock({
+  await executor.initializeCandidateBlock({
+    rootRunId: 'root-rec',
+    workflowId: 'wf-rec',
+    frameKey: 'frame:cand',
+    invocationId: 'inv-cand',
+    nodeId: 'node-cand',
+    selectionPolicy: 'first-ready',
+    candidates: [
+      {
+        candidateId: 'cand-claude',
+        nodeId: 'phase-claude',
+        backend: 'claude',
+        priority: 1,
+        authoredOrder: 0,
+        maxAttempts: 3,
+        quotaTarget: claudeTarget
+      },
+      {
+        candidateId: 'cand-codex',
+        nodeId: 'phase-codex',
+        backend: 'codex',
+        priority: 2,
+        authoredOrder: 1,
+        maxAttempts: 2,
+        quotaTarget: codexTarget
+      }
+    ],
+    fence
+  });
+
+  return {
+    clock,
+    ledgerStore,
+    admissionService,
+    availabilityService,
+    executor,
+    fence,
+    claudeTarget,
+    codexTarget
+  };
+}
+
+async function driveBothCandidatesIntoCooldown(
+  h: Awaited<ReturnType<typeof makeSeededRecoveryHarness>>
+): Promise<void> {
+  const step1 = await h.executor.stepCandidateBlock({
+    rootRunId: 'root-rec',
+    frameKey: 'frame:cand',
+    fence: h.fence
+  });
+  await h.executor.settleCandidateAttempt({
+    rootRunId: 'root-rec',
+    frameKey: 'frame:cand',
+    attemptId: step1.attempt!.attemptId,
+    candidateId: 'cand-claude',
+    fence: h.fence,
+    outcome: 'retryable-availability',
+    failureCode: 'rate_limit',
+    resetsAtMs: h.clock.nowWallMs() + 120_000,
+    quotaTarget: h.claudeTarget
+  });
+
+  const step2 = await h.executor.stepCandidateBlock({
+    rootRunId: 'root-rec',
+    frameKey: 'frame:cand',
+    fence: h.fence
+  });
+  await h.executor.settleCandidateAttempt({
+    rootRunId: 'root-rec',
+    frameKey: 'frame:cand',
+    attemptId: step2.attempt!.attemptId,
+    candidateId: 'cand-codex',
+    fence: h.fence,
+    outcome: 'retryable-availability',
+    failureCode: 'rate_limit',
+    resetsAtMs: h.clock.nowWallMs() + 180_000,
+    quotaTarget: h.codexTarget
+  });
+}
+
+describe('Candidate block recovery integration tests (FR-R5-F30 / SPEC-08)', () => {
+  it('switches to ready fallback candidate when primary enters rate-limit cooldown', async () => {
+    const h = await makeSeededRecoveryHarness();
+
+    const step1 = await h.executor.stepCandidateBlock({
       rootRunId: 'root-rec',
-      workflowId: 'wf-rec',
       frameKey: 'frame:cand',
-      invocationId: 'inv-cand',
-      nodeId: 'node-cand',
-      selectionPolicy: 'first-ready',
-      candidates: [
-        {
-          candidateId: 'cand-claude',
-          nodeId: 'phase-claude',
-          backend: 'claude',
-          priority: 1,
-          authoredOrder: 0,
-          maxAttempts: 3,
-          quotaTarget: claudeTarget
-        },
-        {
-          candidateId: 'cand-codex',
-          nodeId: 'phase-codex',
-          backend: 'codex',
-          priority: 2,
-          authoredOrder: 1,
-          maxAttempts: 2,
-          quotaTarget: codexTarget
-        }
-      ],
-      fence
-    });
-
-    // 1. Dispatch cand-claude attempt 1 -> fails with rate_limit cooldown
-    const step1 = await executor.stepCandidateBlock({
-      rootRunId: 'root-rec',
-      frameKey: 'frame:cand',
-      fence
+      fence: h.fence
     });
     expect(step1.action.kind).toBe('dispatch-candidate');
     if (step1.action.kind === 'dispatch-candidate') {
       expect(step1.action.candidate.candidateId).toBe('cand-claude');
     }
 
-    await executor.settleCandidateAttempt({
+    await h.executor.settleCandidateAttempt({
       rootRunId: 'root-rec',
       frameKey: 'frame:cand',
       attemptId: step1.attempt!.attemptId,
       candidateId: 'cand-claude',
-      fence,
+      fence: h.fence,
       outcome: 'retryable-availability',
       failureCode: 'rate_limit',
-      resetsAtMs: clock.nowWallMs() + 120_000,
-      quotaTarget: claudeTarget
+      resetsAtMs: h.clock.nowWallMs() + 120_000,
+      quotaTarget: h.claudeTarget
     });
 
-    // 2. Next step switches to ready fallback cand-codex!
-    const step2 = await executor.stepCandidateBlock({
+    const step2 = await h.executor.stepCandidateBlock({
       rootRunId: 'root-rec',
       frameKey: 'frame:cand',
-      fence
+      fence: h.fence
+    });
+    expect(step2.action.kind).toBe('dispatch-candidate');
+    if (step2.action.kind === 'dispatch-candidate') {
+      expect(step2.action.candidate.candidateId).toBe('cand-codex');
+      expect(step2.action.switchedFromCandidateId).toBe('cand-claude');
+    }
+  });
+
+  it('enters waiting-availability without consuming an attempt when all candidates are in cooldown', async () => {
+    const h = await makeSeededRecoveryHarness();
+    await driveBothCandidatesIntoCooldown(h);
+
+    const attemptsBeforeWait =
+      h.ledgerStore.getRoot('root-rec')!.dispatchedAttempts;
+
+    const waitStep = await h.executor.stepCandidateBlock({
+      rootRunId: 'root-rec',
+      frameKey: 'frame:cand',
+      fence: h.fence
+    });
+    expect(waitStep.action.kind).toBe('wait-availability');
+    expect(waitStep.frame?.status).toBe('waiting-availability');
+    expect(h.ledgerStore.getRoot('root-rec')?.dispatchedAttempts).toBe(
+      attemptsBeforeWait
+    );
+  });
+
+  it('recovers from waiting-availability after polling restores primary readiness and commits a single return', async () => {
+    const h = await makeSeededRecoveryHarness();
+    await driveBothCandidatesIntoCooldown(h);
+
+    const waitStep = await h.executor.stepCandidateBlock({
+      rootRunId: 'root-rec',
+      frameKey: 'frame:cand',
+      fence: h.fence
+    });
+    expect(waitStep.frame?.status).toBe('waiting-availability');
+
+    // Advance past claude cooldown + 60s buffer and poll readiness
+    h.clock.advance(185_000);
+    await h.availabilityService.checkCandidateAvailability({
+      candidateOccurrenceId: 'poll-claude',
+      frozenPhase: h.claudeTarget,
+      generation: 1,
+      subscribers: [{ rootRunId: 'root-rec', sequence: 1, generation: 1 }]
+    });
+
+    const recoveredStep = await h.executor.stepCandidateBlock({
+      rootRunId: 'root-rec',
+      frameKey: 'frame:cand',
+      fence: h.fence
+    });
+    expect(recoveredStep.action.kind).toBe('dispatch-candidate');
+    if (recoveredStep.action.kind === 'dispatch-candidate') {
+      expect(recoveredStep.action.candidate.candidateId).toBe('cand-claude');
+      expect(recoveredStep.action.attemptOrdinal).toBe(2);
+    }
+
+    const settledWin = await h.executor.settleCandidateAttempt({
+      rootRunId: 'root-rec',
+      frameKey: 'frame:cand',
+      attemptId: recoveredStep.attempt!.attemptId,
+      candidateId: 'cand-claude',
+      fence: h.fence,
+      outcome: 'succeeded',
+      validatedOutputs: { summary: 'done.md' },
+      decisionResults: { readyToMerge: true }
+    });
+    expect(settledWin.returnCommitted).toBe(true);
+    expect(settledWin.frame?.status).toBe('completed');
+    expect(settledWin.frame?.winningCandidateId).toBe('cand-claude');
+    expect(settledWin.frame?.winningOutputs).toEqual({ summary: 'done.md' });
+    expect(settledWin.frame?.decisionResults).toEqual({ readyToMerge: true });
+  });
+
+  it('preserves state handoff end-to-end across primary cooldown, fallback switch, all-unavailable wait, polling recovery, and single return commit', async () => {
+    const h = await makeSeededRecoveryHarness();
+
+    const step1 = await h.executor.stepCandidateBlock({
+      rootRunId: 'root-rec',
+      frameKey: 'frame:cand',
+      fence: h.fence
+    });
+    expect(step1.action.kind).toBe('dispatch-candidate');
+    if (step1.action.kind === 'dispatch-candidate') {
+      expect(step1.action.candidate.candidateId).toBe('cand-claude');
+    }
+
+    await h.executor.settleCandidateAttempt({
+      rootRunId: 'root-rec',
+      frameKey: 'frame:cand',
+      attemptId: step1.attempt!.attemptId,
+      candidateId: 'cand-claude',
+      fence: h.fence,
+      outcome: 'retryable-availability',
+      failureCode: 'rate_limit',
+      resetsAtMs: h.clock.nowWallMs() + 120_000,
+      quotaTarget: h.claudeTarget
+    });
+
+    const step2 = await h.executor.stepCandidateBlock({
+      rootRunId: 'root-rec',
+      frameKey: 'frame:cand',
+      fence: h.fence
     });
     expect(step2.action.kind).toBe('dispatch-candidate');
     if (step2.action.kind === 'dispatch-candidate') {
@@ -202,48 +357,43 @@ describe('Candidate block recovery integration tests (FR-R5-F30 / SPEC-08)', () 
       expect(step2.action.switchedFromCandidateId).toBe('cand-claude');
     }
 
-    // cand-codex hits rate_limit too
-    await executor.settleCandidateAttempt({
+    await h.executor.settleCandidateAttempt({
       rootRunId: 'root-rec',
       frameKey: 'frame:cand',
       attemptId: step2.attempt!.attemptId,
       candidateId: 'cand-codex',
-      fence,
+      fence: h.fence,
       outcome: 'retryable-availability',
       failureCode: 'rate_limit',
-      resetsAtMs: clock.nowWallMs() + 180_000,
-      quotaTarget: codexTarget
+      resetsAtMs: h.clock.nowWallMs() + 180_000,
+      quotaTarget: h.codexTarget
     });
 
-    // 3. Now both candidates are in cooldown -> enters waiting-availability without consuming an attempt
-    const rootBeforeWait = ledgerStore.getRoot('root-rec')!;
-    const attemptsBeforeWait = rootBeforeWait.dispatchedAttempts;
-
-    const step3 = await executor.stepCandidateBlock({
+    const attemptsBeforeWait =
+      h.ledgerStore.getRoot('root-rec')!.dispatchedAttempts;
+    const step3 = await h.executor.stepCandidateBlock({
       rootRunId: 'root-rec',
       frameKey: 'frame:cand',
-      fence
+      fence: h.fence
     });
     expect(step3.action.kind).toBe('wait-availability');
     expect(step3.frame?.status).toBe('waiting-availability');
-    expect(ledgerStore.getRoot('root-rec')?.dispatchedAttempts).toBe(
+    expect(h.ledgerStore.getRoot('root-rec')?.dispatchedAttempts).toBe(
       attemptsBeforeWait
     );
 
-    // 4. Advance past claude cooldown + 60s buffer and run availability check -> claude becomes ready again
-    clock.advance(185_000);
-    await availabilityService.checkCandidateAvailability({
+    h.clock.advance(185_000);
+    await h.availabilityService.checkCandidateAvailability({
       candidateOccurrenceId: 'poll-claude',
-      frozenPhase: claudeTarget,
+      frozenPhase: h.claudeTarget,
       generation: 1,
       subscribers: [{ rootRunId: 'root-rec', sequence: 1, generation: 1 }]
     });
 
-    // 5. Step dispatches cand-claude attempt 2 and succeeds -> commits returnCommitId once
-    const step4 = await executor.stepCandidateBlock({
+    const step4 = await h.executor.stepCandidateBlock({
       rootRunId: 'root-rec',
       frameKey: 'frame:cand',
-      fence
+      fence: h.fence
     });
     expect(step4.action.kind).toBe('dispatch-candidate');
     if (step4.action.kind === 'dispatch-candidate') {
@@ -251,12 +401,12 @@ describe('Candidate block recovery integration tests (FR-R5-F30 / SPEC-08)', () 
       expect(step4.action.attemptOrdinal).toBe(2);
     }
 
-    const settledWin = await executor.settleCandidateAttempt({
+    const settledWin = await h.executor.settleCandidateAttempt({
       rootRunId: 'root-rec',
       frameKey: 'frame:cand',
       attemptId: step4.attempt!.attemptId,
       candidateId: 'cand-claude',
-      fence,
+      fence: h.fence,
       outcome: 'succeeded',
       validatedOutputs: { summary: 'done.md' },
       decisionResults: { readyToMerge: true }

@@ -16,6 +16,14 @@ for budget, by operator decision**, and all eight workflow files are deleted fro
 > does](#what-a-release-no-longer-does), because a maintainer who remembers the old process needs to
 > know which parts are gone rather than merely to stop finding them.
 
+## Quick navigation
+
+Skip past the unreleased breaking-change log straight to the local release procedure or current release records:
+
+- **Procedure**: [Release boundary](#release-boundary) · [1. Version](#1-choose-and-record-the-version) · [2. Attested gate](#2-run-the-attested-gate) ([2a local gate](#2a-bind-the-release-to-a-gate-result-for-this-commit-local-path) / [2b backend qualification](#2b-the-second-binding-backend-qualification-fr-r3-104)) · [3. Prepare candidate](#3-prepare-the-release-candidate) · [4. Optional tag](#4-tag-if-you-want-the-bookkeeping) · [5. Retired steps](#5-what-a-release-no-longer-does) · [6. Verify build](#6-verify-what-you-built) · [7. Marketplace](#7-marketplace-publication-is-manual-and-unspecified) · [Failure policy](#failure-and-rerun-policy)
+- **Unreleased changes**: [Breaking changes not yet released](#breaking-changes-not-yet-released)
+- **Release records & controls**: [Release documentation index](docs/release/README.md) · [Qualification matrix](docs/release/qualification-matrix.md) · [Current release controls](docs/release/current-release-controls.md)
+
 ## Breaking changes not yet released
 
 ### FR-R3-117 — a Phase is judged on its exit status by default (2026-08-27)
@@ -185,9 +193,15 @@ current commit:
 1. **A gate attestation** naming `HEAD` over a clean tree, at the current schema version, whose
    recorded argument vector witnesses the command it names (`FR-R3-095`, widened by `FR-R3-100`,
    made truthful by `FR-R3-135`).
-2. **A backend qualification record** that is fresh, taken against the installed CLI versions, and
-   not older than the last change under `src/runner/`, `src/parser/` or
-   `src/contracts/backend-kinds.ts` (`FR-R3-104`).
+2. **A backend qualification record** that is fresh, taken in live mode against the installed CLI
+   versions over the shipped ACP transports, and whose source/build fingerprint and git history
+   match the current tree across `QUALIFICATION_PATHS` (`src/runner/`, `src/parser/`,
+   `src/contracts/backend-kinds.ts`, `src/contracts/backend-descriptors.ts`,
+   `src/contracts/acp-runtime.ts`, `src/services/acp-runtime/`,
+   `src/services/containment-qualification/acp-authority-gate.ts`,
+   `src/activation/acp-execution-wiring.ts`, and `esbuild.config.mjs`) and
+   `QUALIFICATION_BUILD_OUTPUTS` (`dist/acp-stdio-bridge.js`) (`FR-R3-104`, widened by
+   `FR-R7-14` `14-10` and `FR-R7-17` `R7-17-05`).
 3. **Manifest and tag agreement** — the six version sites across the four manifests agree, and any
    `v*` tag on `HEAD` agrees with them (`FR-R3-120`). Two disagreeing `v*` tags refuse as ambiguous
    rather than picking one.
@@ -361,7 +375,10 @@ for any advertised backend (`claude`, `codex`, `agy`), taken over the wrong tran
 against a different CLI version than the one installed, mismatched on its source/build fingerprint,
 or taken before a change under `src/runner/`, `src/parser/`, `src/contracts/backend-kinds.ts`,
 `src/contracts/backend-descriptors.ts`, `src/contracts/acp-runtime.ts`,
-`src/services/acp-runtime/`, or `esbuild.config.mjs`. The bound and the reasoning for its
+`src/services/acp-runtime/`, `src/services/containment-qualification/acp-authority-gate.ts`,
+`src/activation/acp-execution-wiring.ts`, `esbuild.config.mjs`, or the built bridge bundle
+`dist/acp-stdio-bridge.js` (`QUALIFICATION_PATHS` and `QUALIFICATION_BUILD_OUTPUTS` in
+`scripts/backend-qualification.mjs`). The bound and the reasoning for its
 value live beside the constant; the operator-facing statement of it is in
 [the qualification log](docs/release/backend-qualification-log.md), derived from that constant rather
 than restated.
@@ -587,8 +604,12 @@ git tag -a v<version> -m "v<version>"
 ```
 
 Both occurrences of `<version>` must equal `package.json`'s version without the `v` prefix. **The tag
-triggers nothing.** It is a marker for humans reading history. Pushing it is an outward action on a
-remote; this workspace has never pushed, and nothing in the tree depends on the tag existing.
+triggers nothing.** It is a marker for humans reading history. Pushing a tag is an outward action on
+the remote requiring explicit operator intent; no hosted workflow responds to a pushed tag because
+hosted GitHub Actions workflows were retired on 2026-08-26 (see the 2026-08-27 push-history
+correction in
+[`docs/architecture/release-posture-engineering-preview.md`](../docs/architecture/release-posture-engineering-preview.md)),
+and nothing in the tree depends on the tag existing.
 
 The repository encodes no signing requirement for Git tags. If maintainers require signed tags
 operationally, that policy lives outside this repository.

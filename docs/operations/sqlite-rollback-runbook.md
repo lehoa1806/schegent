@@ -6,7 +6,7 @@ Schema migrations in Schegent's embedded SQLite application store are **forward-
 
 Because an older build cannot downgrade an upgraded database in place, **a verified pre-upgrade backup is the only supported path to roll back from schema `N` to schema `N-1`**.
 
-For store internals, pragmas, and storage location rules, see [`sqlite-application-store.md`](sqlite-application-store.md).
+For store internals, pragmas, and storage location rules, see [`sqlite-application-store.md`](sqlite-application-store.md). For symptom-first triage across schema refusal, quarantined workspace-state writers, and stuck execution lanes, see [`incident-recovery-guide.md`](incident-recovery-guide.md).
 
 ---
 
@@ -57,10 +57,17 @@ Use this procedure when the installed extension build can still open the databas
 
 ## 5. Cross-Version Downgrade Rollback (Schema `N` → Schema `N-1`)
 
-Use this procedure after a failed migration or an undesirable upgrade where schema `N` raised `min_reader_version` (for example, rolling back from schema `9` to schema `8`):
+Use this procedure after a failed migration or an undesirable upgrade where schema `N` raised `min_reader_version` (for example, rolling back from schema `9` to schema `8`).
+
+> **No-backup hard boundary**: Schema migrations are forward-only. **Without a verified pre-upgrade schema-`(N-1)` backup (`schemaVersion <= 8` for a schema-8 rollback), in-place downgrade is impossible.** Your only supported path without a pre-upgrade backup is to upgrade Schegent to a build supporting schema `N`.
 
 1. **Confirm downgrade refusal symptom (if you already downgraded first)**:
-   An older schema-`(N-1)` build opening a schema-`N` database fails closed at open with `UNSUPPORTED_MIN_READER_VERSION` (`database min_reader_version=N exceeds this build's maxSupportedVersion=N-1`) and leaves the database file untouched.
+   An older schema-`(N-1)` build inspecting or opening a schema-`N` database fails closed and leaves the live database file untouched:
+   - Bootstrap error (`SqliteUnsupportedSchemaError` in `src/services/sqlite-store/schema-bootstrap.ts`):
+     - `UNSUPPORTED_MIN_READER_VERSION: database requires a reader of schema <N> or later; this build reads up to <M>` (or `UNSUPPORTED_MIN_READER_VERSION: database records an unreadable reader floor`), or
+     - `UNSUPPORTED_FUTURE_SCHEMA_VERSION: database schema_version=<N> exceeds supported max=<M>` (or `UNSUPPORTED_FUTURE_SCHEMA_VERSION: applied migration version=<N> exceeds supported max=<M>`).
+   - Activation warning toast (`src/activation/sqlite-cutover-wiring.ts`):
+     `Schegent refused to open or relocate the operational SQLite database (<reason>). Update Schegent before opening this workspace.`
 2. **Stop all Runs and close all VS Code windows for this workspace**:
    Close every VS Code window that has this workspace open (and stop any headless reader/writer process using the same `--state-dir`) so no SQLite writer or read-pool handle remains open on `schegent-state.db`.
 3. **Locate the store directory and pre-upgrade backup** (`<storageRoot>` is canonical `<globalStorageUri>`, or legacy `storageUri` only if the store remained on fallback):
@@ -72,6 +79,7 @@ Use this procedure after a failed migration or an undesirable upgrade where sche
    - Recompute the SHA-256 of `<backupId>.db` (`shasum -a 256 <backupId>.db` on macOS/Linux) and verify it matches `databaseSha256` and exact byte size `databaseBytes` in `<backupId>.db.manifest.json`.
    - Confirm `schemaVersion` in the manifest is `<= N-1` (supported by the target older build).
    - If you have not already verified the backup with **Schegent: Verify Store Backup**, do not proceed with an unverified image.
+   - **External artifact bytes caveat**: Unlike online verify/restore (where lifecycle-deleted tombstones `deleted`/`expired`/fallback `evicted` pass cleanly and genuinely missing or corrupt *live* external bytes refuse pre-commit with `EXTERNAL_DEPENDENCY_MISSING_OR_CORRUPT`), an **offline file swap bypasses external-dependency verification**. If live workspace or CAS artifact files referenced by the pre-upgrade backup were removed or altered after the backup was taken, the rolled-back store will contain dangling live locators until those files are restored on disk or reconciled on startup.
 5. **Preserve the failed/upgraded database for diagnostics (optional but recommended)**:
    Move `schegent-state.db` (and any `-wal`/`-shm` sidecars) to a private owner-only archive folder outside the live path (for example `schegent-state.db.failed-vN`).
 6. **Remove stale SQLite sidecars at the live path**:

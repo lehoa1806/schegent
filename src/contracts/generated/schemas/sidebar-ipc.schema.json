@@ -5985,45 +5985,64 @@
       ]
     },
     "SnapshotSyncMeta": {
-      "description": "Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision; routine mode reconstructs omittedSlices from baseRevision.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "type": "string",
-          "enum": [
-            "full",
-            "routine"
+      "description": "Synchronizes STATE_SNAPSHOT with the consumer's baseline. Full mode resets the baseline to revision (forbidding baseRevision and omittedSlices); routine mode reconstructs omittedSlices from baseRevision (requiring both).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "full"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "mode",
+            "revision"
           ]
         },
-        "revision": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "baseRevision": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "omittedSlices": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "history",
-              "phaseCatalog",
-              "pipelineCatalog",
-              "workflowCatalog",
-              "availablePhases",
-              "availablePipelines",
-              "auditTail",
-              "debugLogTail"
-            ]
-          }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "routine"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "baseRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "omittedSlices": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "history",
+                  "phaseCatalog",
+                  "pipelineCatalog",
+                  "workflowCatalog",
+                  "availablePhases",
+                  "availablePipelines",
+                  "auditTail",
+                  "debugLogTail"
+                ]
+              }
+            }
+          },
+          "required": [
+            "mode",
+            "revision",
+            "baseRevision",
+            "omittedSlices"
+          ]
         }
-      },
-      "required": [
-        "mode",
-        "revision"
       ]
     },
     "StartQueueIntent": {
@@ -12526,7 +12545,7 @@
       }
     },
     "HostMessage_STATE_SNAPSHOT": {
-      "description": "Host pushes an authoritative WorkflowSnapshot envelope; mode=routine permits omitting unchanged SUPPRESSIBLE_SNAPSHOT_SLICES.",
+      "description": "Host pushes an authoritative WorkflowSnapshot envelope; mode=routine permits omitting unchanged SUPPRESSIBLE_SNAPSHOT_SLICES and requires baseRevision and omittedSlices, while mode=full forbids them.",
       "oneOf": [
         {
           "type": "object",
@@ -12564,26 +12583,6 @@
                 "revision": {
                   "type": "integer",
                   "minimum": 0
-                },
-                "baseRevision": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "omittedSlices": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "enum": [
-                      "history",
-                      "phaseCatalog",
-                      "pipelineCatalog",
-                      "workflowCatalog",
-                      "availablePhases",
-                      "availablePipelines",
-                      "auditTail",
-                      "debugLogTail"
-                    ]
-                  }
                 }
               },
               "required": [
@@ -12642,7 +12641,9 @@
               },
               "required": [
                 "mode",
-                "revision"
+                "revision",
+                "baseRevision",
+                "omittedSlices"
               ]
             }
           },
@@ -12655,42 +12656,68 @@
       ]
     },
     "HostMessage_CMD_ACK": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "type": {
-          "const": "CMD_ACK"
-        },
-        "correlationId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 64
-        },
-        "status": {
-          "type": "string",
-          "enum": [
-            "accepted",
-            "rejected"
+      "description": "Host acknowledges acceptance or rejection of a correlated webview command; accepted acknowledgements forbid reason (T28) and pair wire status with matching CommandAckOutcome values.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "CMD_ACK"
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "status": {
+              "const": "accepted"
+            },
+            "outcome": {
+              "const": "accepted"
+            },
+            "result": {}
+          },
+          "required": [
+            "type",
+            "correlationId",
+            "status"
           ]
         },
-        "outcome": {
-          "type": "string",
-          "enum": [
-            "accepted",
-            "no-op",
-            "refused",
-            "failed"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "CMD_ACK"
+            },
+            "correlationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "status": {
+              "const": "rejected"
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "no-op",
+                "refused",
+                "failed"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "result": {}
+          },
+          "required": [
+            "type",
+            "correlationId",
+            "status"
           ]
-        },
-        "reason": {
-          "type": "string"
-        },
-        "result": {}
-      },
-      "required": [
-        "type",
-        "correlationId",
-        "status"
+        }
       ]
     },
     "HostMessage_MSG_PHASE_LOG_BATCH": {

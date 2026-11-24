@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { MUTATING_COMMAND_ID_LIST, READ_ONLY_COMMAND_ID_LIST } from '../../src/contracts/entry-point-dispositions';
+import { diagnoseWait, type WaitDiagnosis } from './wait-diagnosis';
 
 /**
  * FR-R3-136 (T1527) — what the two trust launches share.
@@ -75,17 +76,49 @@ interface ResolvedManifest {
   readonly restricted: readonly string[];
 }
 
+export interface WaitUntilResult {
+  readonly ok: boolean;
+  readonly rounds: number;
+  readonly elapsedMs: number;
+  readonly diagnosis: WaitDiagnosis | null;
+}
+
+/**
+ * Poll a predicate to a deadline, recording poll rounds and elapsed time so timeouts carry
+ * structured starvation vs stall diagnostics (`diagnoseWait`).
+ */
+export async function waitUntilWithStats(
+  predicate: () => boolean,
+  budgetMs: number = EVIDENCE_BUDGET_MS
+): Promise<WaitUntilResult> {
+  const startedAt = Date.now();
+  const deadline = startedAt + budgetMs;
+  let rounds = 0;
+  for (;;) {
+    rounds += 1;
+    if (predicate()) {
+      return { ok: true, rounds, elapsedMs: Date.now() - startedAt, diagnosis: null };
+    }
+    const elapsedMs = Date.now() - startedAt;
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        rounds,
+        elapsedMs,
+        diagnosis: diagnoseWait({ elapsedMs, rounds, floorMs: POLL_INTERVAL_MS })
+      };
+    }
+    // Real-host poll interval while waiting for extension host activation / async disk evidence.
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+}
+
 /** Poll a predicate to a deadline. Returns whether it ever held. */
 export async function waitUntil(
   predicate: () => boolean,
   budgetMs: number = EVIDENCE_BUDGET_MS
 ): Promise<boolean> {
-  const deadline = Date.now() + budgetMs;
-  for (;;) {
-    if (predicate()) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-  }
+  return (await waitUntilWithStats(predicate, budgetMs)).ok;
 }
 
 /**
@@ -122,13 +155,14 @@ export async function enterTrustLeg(expected: {
 
   const ext = vscode.extensions.getExtension(EXTENSION_ID);
   assert.ok(ext, `extension '${EXTENSION_ID}' not found in test host`);
-  const activated = await waitUntil(() => ext.isActive, ACTIVATION_BUDGET_MS);
+  const activation = await waitUntilWithStats(() => ext.isActive, ACTIVATION_BUDGET_MS);
   assert.ok(
-    activated,
+    activation.ok,
     `extension did not activate within ${ACTIVATION_BUDGET_MS}ms in a workspace containing ` +
-      `.specify/. In an untrusted window that is a manifest problem, not a timing one: ` +
-      `capabilities.untrustedWorkspaces.supported must stay 'limited' for activation to happen ` +
-      `at all.`
+      `.specify/ (elapsed=${activation.elapsedMs}ms, rounds=${activation.rounds}; ` +
+      `${activation.diagnosis?.text ?? 'no diagnosis'}). In an untrusted window that is a manifest ` +
+      `problem, not a timing one: capabilities.untrustedWorkspaces.supported must stay 'limited' ` +
+      `for activation to happen at all.`
   );
 
   const manifest = readResolvedManifest(ext.packageJSON);

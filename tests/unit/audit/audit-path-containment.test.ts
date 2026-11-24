@@ -71,4 +71,78 @@ describe('the audit append stays inside the workspace (H-02)', () => {
 
     expect(await fs.readFile(target, 'utf8')).toBe('');
   });
+
+  it('refuses to rotate a symlinked audit.log even when its external target exceeds rotationSizeBytes (FR-R7-18 / N11)', async () => {
+    const dir = path.join(workspace, '.schegent');
+    await fs.mkdir(dir);
+    const externalTarget = path.join(outside, 'large-external.log');
+    await fs.writeFile(externalTarget, 'x'.repeat(2048));
+    await fs.symlink(externalTarget, path.join(dir, 'audit.log'));
+
+    const writer = new AuditLogWriter(
+      { workspaceRoot: workspace, rotationSizeBytes: 64 },
+      new SanitizedLogger()
+    );
+    await expect(writer.append(entry())).rejects.toThrow();
+
+    // The symlink must still be in place (not renamed to an archive) and outside must be untouched.
+    expect((await fs.lstat(path.join(dir, 'audit.log'))).isSymbolicLink()).toBe(true);
+    const schegentEntries = await listing(dir);
+    expect(schegentEntries.filter((name) => name.startsWith('audit.log.'))).toEqual([]);
+    expect(await fs.readFile(externalTarget, 'utf8')).toBe('x'.repeat(2048));
+  });
+
+  it('skips symlinked archive slots during retention pruning without following or unlinking them (FR-R7-18 / N11)', async () => {
+    const dir = path.join(workspace, '.schegent');
+    await fs.mkdir(dir);
+    const externalArchive = path.join(outside, 'external-archive.log');
+    await fs.writeFile(externalArchive, 'do-not-delete\n');
+
+    // Create 1 real archive and 2 symlinked archive slots with newer mtimes; with
+    // retentionMaxArchives=1, symlinks must be ignored (neither unlinked nor counted
+    // against retentionMaxArchives so the legitimate real archive stays preserved).
+    const realArchive = path.join(dir, 'audit.log.20260801-000001-000-aaaaaaaa');
+    await fs.writeFile(realArchive, '{"id":"1"}\n');
+    const symlinkNewer1 = path.join(dir, 'audit.log.20260802-000001-000-bbbbbbbb');
+    const symlinkNewer2 = path.join(dir, 'audit.log.20260803-000001-000-cccccccc');
+    await fs.symlink(externalArchive, symlinkNewer1);
+    await fs.symlink(externalArchive, symlinkNewer2);
+
+    const writer = new AuditLogWriter(
+      { workspaceRoot: workspace, retentionMaxArchives: 1 },
+      new SanitizedLogger()
+    );
+    expect(await writer.runArchiveMaintenance()).toBe('ran');
+
+    expect(await fs.readFile(externalArchive, 'utf8')).toBe('do-not-delete\n');
+    expect((await fs.lstat(symlinkNewer1)).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(symlinkNewer2)).isSymbolicLink()).toBe(true);
+    expect(await fs.readFile(realArchive, 'utf8')).toBe('{"id":"1"}\n');
+  });
+
+  it('rotates and prunes legitimate regular audit files using canonical resolved paths under a symlinked workspace alias', async () => {
+    const workspaceAlias = path.join(root, 'workspace-alias');
+    await fs.symlink(workspace, workspaceAlias);
+
+    const writer = new AuditLogWriter(
+      {
+        workspaceRoot: workspaceAlias,
+        rotationSizeBytes: 120,
+        retentionMaxArchives: 1
+      },
+      new SanitizedLogger()
+    );
+
+    // Three appends exceed 120 bytes each time, triggering two rotations and pruning the oldest archive.
+    await writer.append(entry());
+    await writer.append(entry());
+    await writer.append(entry());
+
+    const schegentEntries = await listing(path.join(workspace, '.schegent'));
+    const rotated = schegentEntries.filter((name) => /^audit\.log\.\d{8}-/.test(name));
+    expect(rotated).toHaveLength(1);
+    expect(schegentEntries).toContain('audit.log');
+    expect(schegentEntries).toContain('audit.log.cuts');
+    expect(await listing(outside)).toEqual([]);
+  });
 });

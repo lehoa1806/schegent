@@ -74,6 +74,8 @@ function makeWin32Probe(entries: Record<string, 'file' | 'dir'>): ExecutableAcce
 
 const WIN32_PROBE = makeWin32Probe({
   'C:\\workspace\\claude.exe': 'file',
+  'C:\\workspace\\taskkill.exe': 'file',
+  'C:\\workspace\\powershell.exe': 'file',
   'C:\\binA\\claude.cmd': 'file',
   'C:\\binA\\claude.bat': 'file',
   'C:\\binB\\claude.exe': 'file',
@@ -83,6 +85,8 @@ const WIN32_PROBE = makeWin32Probe({
   'C:\\binA\\codex.exe': 'dir',
   'C:\\binB\\codex.exe': 'file',
   'C:\\binA\\onlydir.exe': 'dir',
+  'C:\\Windows\\System32\\taskkill.exe': 'file',
+  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe': 'file',
   '\\\\server\\share\\bin\\agy.exe': 'file'
 });
 
@@ -209,6 +213,38 @@ describe('GC-24 & 16-16 — win32 bare names resolve along strictly absolute PAT
     }
     expect(spyProbe).not.toHaveBeenCalled();
   });
+
+  it('FR-R7-18 (N10): resolves Windows system utilities taskkill and powershell.exe from strictly absolute PATH entries only (never cwd)', () => {
+    const sysPath = winEnv(
+      '',
+      '.',
+      '.\\workspace',
+      'C:workspace',
+      '\\workspace',
+      'C:\\Windows\\System32',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0'
+    );
+    expect(spawnCommandFor('taskkill', sysPath, 'win32', WIN32_PROBE)).toBe(
+      'C:\\Windows\\System32\\taskkill.exe'
+    );
+    expect(spawnCommandFor('powershell.exe', sysPath, 'win32', WIN32_PROBE)).toBe(
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
+    );
+
+    for (const command of ['taskkill', 'powershell.exe'] as const) {
+      expect(() =>
+        spawnCommandFor(
+          command,
+          winEnv('', '.', '.\\workspace', 'C:workspace', '\\workspace'),
+          'win32',
+          WIN32_PROBE
+        )
+      ).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+      expect(() => spawnCommandFor(command, {}, 'win32', WIN32_PROBE)).toThrow(
+        expect.objectContaining({ code: 'ENOENT' })
+      );
+    }
+  });
 });
 
 describe('16-16 — POSIX bare names resolve along strictly absolute PATH entries only', () => {
@@ -305,11 +341,13 @@ describe('16-16 — POSIX bare names resolve along strictly absolute PATH entrie
   });
 });
 
-describe('GC-24 — every agent CLI and git spawn site resolves through it', () => {
+describe('GC-24 & N10 — every agent CLI, git, and Windows utility spawn site resolves through it', () => {
   const SITES = [
     'src/runner/claude-cli.ts',
     'src/runner/process-lifecycle-runner.ts',
     'src/runner/cli-version-probe.ts',
+    'src/runner/process-tree.ts',
+    'src/telemetry/platform/platform-windows.ts',
     'src/services/acp-runtime/stdio-transport.ts',
     'src/services/backend-capability-service.ts',
     'src/services/execution-lanes/git-runner.ts',
