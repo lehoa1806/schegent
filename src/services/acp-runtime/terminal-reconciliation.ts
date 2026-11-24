@@ -62,7 +62,22 @@ export type BridgeTurnReconciliationDecision =
       readonly message: string;
     };
 
-/** Stable RPC error message prefixes parsed by `AcpBackedRunner` into structured reconciliation codes. */
+/**
+ * Closed numeric JSON-RPC 2.0 server error codes (`-32000..-32099`) used by maintained ACP
+ * bridges to convey structured reconciliation failures without propagating untrusted error text.
+ */
+export const BRIDGE_RPC_ERROR_CODES = Object.freeze({
+  missingTerminalRecord: -32011,
+  contradictoryExit: -32012,
+  contradictoryTerminalRecord: -32013,
+  backendReportedError: -32014,
+  processFailedWithoutTerminalRecord: -32015,
+  streamOverflow: -32016
+} as const);
+
+const RPC_INTERNAL_ERROR = -32603;
+
+/** Stable RPC error message prefixes for human-readable bridge error payloads. */
 export const BRIDGE_ERROR_PREFIXES = Object.freeze({
   missingTerminalRecord: 'ACP_BRIDGE_MISSING_TERMINAL_RECORD',
   contradictoryExit: 'ACP_BRIDGE_CONTRADICTORY_EXIT',
@@ -72,6 +87,48 @@ export const BRIDGE_ERROR_PREFIXES = Object.freeze({
   streamOverflow: 'ACP_BRIDGE_STREAM_OVERFLOW',
   launchFailed: 'ACP_BRIDGE_LAUNCH_FAILED'
 } as const);
+
+export function rpcCodeForBridgeErrorStatus(
+  status: Exclude<TerminalReconciliationStatus, 'clean' | 'cancelled' | 'refusal'>
+): number {
+  switch (status) {
+    case 'missing-terminal-record':
+      return BRIDGE_RPC_ERROR_CODES.missingTerminalRecord;
+    case 'contradictory-exit':
+      return BRIDGE_RPC_ERROR_CODES.contradictoryExit;
+    case 'contradictory-terminal-record':
+      return BRIDGE_RPC_ERROR_CODES.contradictoryTerminalRecord;
+    case 'backend-reported-error':
+      return BRIDGE_RPC_ERROR_CODES.backendReportedError;
+    case 'process-failed-without-terminal-record':
+      return BRIDGE_RPC_ERROR_CODES.processFailedWithoutTerminalRecord;
+    case 'stream-overflow':
+      return BRIDGE_RPC_ERROR_CODES.streamOverflow;
+    default:
+      return RPC_INTERNAL_ERROR;
+  }
+}
+
+export function classifyBridgeErrorCode(
+  code: number
+): Exclude<TerminalReconciliationStatus, 'clean' | 'cancelled' | 'refusal'> {
+  switch (code) {
+    case BRIDGE_RPC_ERROR_CODES.missingTerminalRecord:
+      return 'missing-terminal-record';
+    case BRIDGE_RPC_ERROR_CODES.contradictoryExit:
+      return 'contradictory-exit';
+    case BRIDGE_RPC_ERROR_CODES.contradictoryTerminalRecord:
+      return 'contradictory-terminal-record';
+    case BRIDGE_RPC_ERROR_CODES.backendReportedError:
+      return 'backend-reported-error';
+    case BRIDGE_RPC_ERROR_CODES.processFailedWithoutTerminalRecord:
+      return 'process-failed-without-terminal-record';
+    case BRIDGE_RPC_ERROR_CODES.streamOverflow:
+      return 'stream-overflow';
+    default:
+      return 'rejected';
+  }
+}
 
 export function formatBridgeErrorMessage(
   status: Exclude<TerminalReconciliationStatus, 'clean' | 'cancelled' | 'refusal'>,

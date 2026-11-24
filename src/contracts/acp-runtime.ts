@@ -230,7 +230,7 @@ export type AcpPromptOutcome =
   | { readonly kind: 'uncertain'; readonly turnId: string; readonly reason: AcpFailureReason }
   | { readonly kind: 'not-dispatched'; readonly reason: AcpFailureReason }
   | { readonly kind: 'refused'; readonly reason: AcpRefusalReason; readonly detail?: string }
-  | { readonly kind: 'rejected'; readonly turnId: string; readonly code: number; readonly detail?: string };
+  | { readonly kind: 'rejected'; readonly turnId: string; readonly code: number };
 
 export type AcpObservationOrigin = 'live' | 'history';
 

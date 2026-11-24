@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   BRIDGE_ERROR_PREFIXES,
+  BRIDGE_RPC_ERROR_CODES,
+  classifyBridgeErrorCode,
   classifyBridgeErrorStatus,
   formatBridgeErrorMessage,
   reconcileBridgeTurnOutcome,
+  rpcCodeForBridgeErrorStatus,
   warningCodeForReconciliation,
   type BridgeTurnReconciliationInput
 } from '../../../../src/services/acp-runtime/terminal-reconciliation';
@@ -164,6 +167,18 @@ describe('reconcileBridgeTurnOutcome (FR-R8-02 / 02-04)', () => {
     expect(
       classifyBridgeErrorStatus(formatBridgeErrorMessage('stream-overflow', 'exceeded'))
     ).toBe('stream-overflow');
+    expect(rpcCodeForBridgeErrorStatus('stream-overflow')).toBe(BRIDGE_RPC_ERROR_CODES.streamOverflow);
+    expect(classifyBridgeErrorCode(BRIDGE_RPC_ERROR_CODES.streamOverflow)).toBe('stream-overflow');
+    expect(classifyBridgeErrorCode(BRIDGE_RPC_ERROR_CODES.missingTerminalRecord)).toBe('missing-terminal-record');
+    expect(classifyBridgeErrorCode(BRIDGE_RPC_ERROR_CODES.contradictoryExit)).toBe('contradictory-exit');
+    expect(classifyBridgeErrorCode(BRIDGE_RPC_ERROR_CODES.contradictoryTerminalRecord)).toBe(
+      'contradictory-terminal-record'
+    );
+    expect(classifyBridgeErrorCode(BRIDGE_RPC_ERROR_CODES.backendReportedError)).toBe('backend-reported-error');
+    expect(classifyBridgeErrorCode(BRIDGE_RPC_ERROR_CODES.processFailedWithoutTerminalRecord)).toBe(
+      'process-failed-without-terminal-record'
+    );
+    expect(classifyBridgeErrorCode(-32603)).toBe('rejected');
   });
 });
 
