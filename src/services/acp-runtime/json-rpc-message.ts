@@ -18,7 +18,7 @@ export type ClassifiedMessage =
   | { readonly kind: 'request'; readonly id: RpcId; readonly method: string; readonly params: unknown }
   | { readonly kind: 'notification'; readonly method: string; readonly params: unknown }
   | { readonly kind: 'response'; readonly id: RpcId; readonly result: unknown }
-  | { readonly kind: 'error-response'; readonly id: RpcId; readonly code: number; readonly message?: string }
+  | { readonly kind: 'error-response'; readonly id: RpcId; readonly code: number }
   | { readonly kind: 'invalid' };
 
 const INVALID: ClassifiedMessage = Object.freeze({ kind: 'invalid' });
@@ -28,13 +28,12 @@ function isRpcId(value: unknown): value is RpcId {
   return typeof value === 'string' && value.length > 0 && value.length <= ACP_RUNTIME_LIMITS.identifierMaxLength;
 }
 
-function errorDetails(value: unknown): { readonly code: number; readonly message: string } | null {
+function errorCode(value: unknown): number | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const error = value as Record<string, unknown>;
   const code = error['code'];
-  const message = error['message'];
-  if (typeof code !== 'number' || !Number.isSafeInteger(code) || typeof message !== 'string') return null;
-  return { code, message: message.slice(0, 256) };
+  if (typeof code !== 'number' || !Number.isSafeInteger(code) || typeof error['message'] !== 'string') return null;
+  return code;
 }
 
 function classifyCall(message: Record<string, unknown>): ClassifiedMessage {
@@ -52,8 +51,8 @@ function classifyAnswer(message: Record<string, unknown>): ClassifiedMessage {
   const hasError = 'error' in message;
   if (!isRpcId(id) || hasResult === hasError) return INVALID;
   if (hasResult) return { kind: 'response', id, result: message['result'] };
-  const details = errorDetails(message['error']);
-  return details === null ? INVALID : { kind: 'error-response', id, code: details.code, message: details.message };
+  const code = errorCode(message['error']);
+  return code === null ? INVALID : { kind: 'error-response', id, code };
 }
 
 /** Classifies one decoded JSON value. */

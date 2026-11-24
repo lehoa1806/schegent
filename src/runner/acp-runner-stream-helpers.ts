@@ -20,7 +20,7 @@ import {
 } from '../lib/protected-path-match';
 import type { AcpAuthorityGate } from '../services/containment-qualification/acp-authority-gate';
 import {
-  classifyBridgeErrorStatus,
+  classifyBridgeErrorCode,
   warningCodeForReconciliation,
   type AcpTerminalReconciliation
 } from '../services/acp-runtime/terminal-reconciliation';
@@ -239,7 +239,7 @@ export function mergeLiveUsageObservation(params: {
   readonly currentTokens: AcpBillableTokens | null;
   readonly currentClaudeCostUsd: number | undefined;
   readonly observedTokens: AcpBillableTokens | undefined;
-  readonly observedCost: { readonly amount: string; readonly currency?: string } | undefined;
+  readonly observedCost: { readonly amount: string; readonly currency?: string | undefined } | undefined;
 }): {
   readonly billableTokens: AcpBillableTokens | null;
   readonly claudeCostUsd: number | undefined;
@@ -625,7 +625,7 @@ export function reconcileAcpPromptOutcome(params: {
     };
   }
   if (outcome.kind === 'rejected') {
-    const recStatus = isBridgeProfile ? classifyBridgeErrorStatus(outcome.detail) : 'rejected';
+    const recStatus = isBridgeProfile ? classifyBridgeErrorCode(outcome.code) : 'rejected';
     const recWarning = warningCodeForReconciliation(recStatus);
     return {
       emitUsageLine: false,

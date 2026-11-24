@@ -59,6 +59,7 @@ import {
 import {
   formatBridgeErrorMessage,
   reconcileBridgeTurnOutcome,
+  rpcCodeForBridgeErrorStatus,
   type BridgeStopReason,
   type BridgeTerminalEvent
 } from '../terminal-reconciliation';
@@ -796,7 +797,7 @@ export function startAcpStdioBridgeServer(
         return;
       }
       if (decision.outcome === 'error') {
-        sendFramedLine(errorLine(rpcId, RPC_INTERNAL_ERROR, decision.message));
+        sendFramedLine(errorLine(rpcId, rpcCodeForBridgeErrorStatus(decision.status), decision.message));
         return;
       }
       sendFramedLine(resultLine(rpcId, { stopReason: decision.stopReason, ...resultMeta }));

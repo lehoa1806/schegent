@@ -373,8 +373,8 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         cwd: root,
         timeoutMs: 15_000,
         sessionReuse: true,
-        resumeSessionId: out1.cliSessionId,
-        resumeSessionCostUsd: out1.cliSessionCostUsd,
+        ...(out1.cliSessionId !== undefined ? { resumeSessionId: out1.cliSessionId } : {}),
+        ...(out1.cliSessionCostUsd !== undefined ? { resumeSessionCostUsd: out1.cliSessionCostUsd } : {}),
         phaseDef: { id: 'implement', name: 'Implement', runner: 'claude', instruction: 'run' }
       });
       expect(out2.outcome).toBe('clean');
@@ -396,8 +396,8 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         cwd: root,
         timeoutMs: 15_000,
         sessionReuse: true,
-        resumeSessionId: out1.cliSessionId,
-        resumeSessionCostUsd: out1.cliSessionCostUsd,
+        ...(out1.cliSessionId !== undefined ? { resumeSessionId: out1.cliSessionId } : {}),
+        ...(out1.cliSessionCostUsd !== undefined ? { resumeSessionCostUsd: out1.cliSessionCostUsd } : {}),
         phaseDef: { id: 'implement', name: 'Implement', runner: 'claude', instruction: 'run' }
       });
       expect(failedCostOut.outcome).toBe('failed');

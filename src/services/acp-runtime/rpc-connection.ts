@@ -31,7 +31,7 @@ import {
 
 export type RpcSettlement =
   | { readonly kind: 'result'; readonly value: unknown }
-  | { readonly kind: 'error'; readonly code: number; readonly message?: string }
+  | { readonly kind: 'error'; readonly code: number }
   | { readonly kind: 'lost'; readonly reason: AcpFailureReason }
   | { readonly kind: 'not-dispatched'; readonly reason: AcpFailureReason };
 
@@ -154,11 +154,7 @@ export class RpcConnection {
         this.settleResponse(message.id, { kind: 'result', value: message.result });
         return;
       case 'error-response':
-        this.settleResponse(message.id, {
-          kind: 'error',
-          code: message.code,
-          ...(message.message !== undefined ? { message: message.message } : {})
-        });
+        this.settleResponse(message.id, { kind: 'error', code: message.code });
     }
   }
 

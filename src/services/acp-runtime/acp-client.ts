@@ -362,14 +362,7 @@ class AcpClientConnection implements AcpConnection {
   }
 
   private finishTurn(sessionId: string, turn: TurnState, settlement: RpcSettlement): AcpPromptOutcome {
-    if (settlement.kind === 'error') {
-      return {
-        kind: 'rejected',
-        turnId: turn.turnId,
-        code: settlement.code,
-        ...(settlement.message !== undefined ? { detail: settlement.message } : {})
-      };
-    }
+    if (settlement.kind === 'error') return { kind: 'rejected', turnId: turn.turnId, code: settlement.code };
     if (settlement.kind !== 'result') return { kind: 'uncertain', turnId: turn.turnId, reason: settlement.reason };
     const stopReason = stopReasonOf(settlement.value);
     if (stopReason === null) {

@@ -115,23 +115,11 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
-/** Maximum finite cost magnitude accepted before decimal serialization rejects out-of-range figures. */
-const MAX_SERIALIZABLE_COST = 1e12;
-
 /** The cost as a non-negative decimal string, or undefined when it cannot be read exactly. */
 function costOf(value: unknown): UsageReading['cost'] {
   if (!isRecord(value)) return undefined;
   const raw = value['amount'];
-  let amount: unknown;
-  if (typeof raw === 'number') {
-    if (!Number.isFinite(raw) || raw < 0 || raw > MAX_SERIALIZABLE_COST) return undefined;
-    // Avoid scientific notation for small floats (e.g. 1e-7) and never collapse positive values to '0'.
-    const formatted = raw === 0 ? '0' : raw.toFixed(12).replace(/\.?0+$/, '');
-    if (raw > 0 && formatted === '0') return undefined;
-    amount = formatted;
-  } else {
-    amount = raw;
-  }
+  const amount = typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : raw;
   if (typeof amount !== 'string' || !DECIMAL.test(amount)) return undefined;
   const currency = value['currency'];
   return typeof currency === 'string' ? { amount, currency } : { amount };
