@@ -444,7 +444,14 @@ export function releaseCandidate(deps) {
   const qualificationText = tryText('.backend-qualification.json');
   const unqualifiedOverride = deps.unqualifiedOverride === true;
   let backendQualification = null;
-  if (qualificationText !== undefined) {
+  if (qualificationText === undefined) {
+    if (!unqualifiedOverride) {
+      return refuse(
+        'backend-qualification-invalid',
+        '.backend-qualification.json is missing. Run `npm run canary` to produce a valid v2 live qualification record.'
+      );
+    }
+  } else {
     let parsed;
     let parseFailed = false;
     try {
@@ -470,10 +477,13 @@ export function releaseCandidate(deps) {
       const expectedFingerprint = deps.computeQualificationFingerprint
         ? deps.computeQualificationFingerprint()
         : undefined;
+      const installedVersions = deps.probeInstalledVersions
+        ? deps.probeInstalledVersions()
+        : (deps.installedVersions ?? {});
       const qualVerdict = decideQualification({
         record: parsed,
         head,
-        installedVersions: {},
+        installedVersions,
         changedPaths,
         ...(expectedFingerprint !== undefined ? { expectedFingerprint } : {}),
         now: new Date(evaluatedMs).toISOString(),

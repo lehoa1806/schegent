@@ -56,6 +56,7 @@
   let queryGen = 0;
   let activeQueryGen = 0;
   let cancelRequestedGen = 0;
+  let drillDownGen = 0;
 
   const availableSorts = $derived.by((): readonly ReportSort[] => {
     const shape = VIEW_SHAPES[view];
@@ -83,6 +84,7 @@
     });
     return () => untrack(() => {
       queryGen += 1;
+      drillDownGen += 1;
       activeQueryGen = 0;
       const activeId = page?.reportId ?? null;
       page = null;
@@ -121,6 +123,7 @@
     rows = nextPage.rows;
     nextCursor = nextPage.cursor;
     appliedSort = nextSort;
+    drillDownGen += 1;
     drillDown = null;
     if (previousReportId !== null && previousReportId !== nextPage.reportId) {
       void requestReadReport({ op: 'close', reportId: previousReportId });
@@ -217,9 +220,13 @@
   }
 
   async function openDrillDown(rootId: string, triggerDomId: string): Promise<void> {
-    if (page === null) return;
+    const activePage = currentPage();
+    if (activePage === null) return;
+    const expectedReportId = activePage.reportId;
+    const gen = ++drillDownGen;
     lastTriggerId = triggerDomId;
-    const env = await requestReadReport({ op: 'drillDown', reportId: page.reportId, rootId });
+    const env = await requestReadReport({ op: 'drillDown', reportId: expectedReportId, rootId });
+    if (gen !== drillDownGen || currentPage()?.reportId !== expectedReportId) return;
     if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
     if (env.response.op === 'drillDown') {
       if (env.response.result.ok) {
@@ -232,6 +239,7 @@
   }
 
   function closeDrillDown(): void {
+    drillDownGen += 1;
     drillDown = null;
     const targetId = lastTriggerId;
     if (targetId !== null) queueMicrotask(() => document.getElementById(targetId)?.focus());
@@ -306,6 +314,8 @@
     if (env.response.op === 'deleteSaved' && env.response.result.ok) {
       statusNotice = `Deleted saved report ${reportId}.`;
       await loadSavedList();
+    } else if (env.response.op === 'deleteSaved' && !env.response.result.ok) {
+      statusNotice = `Could not delete saved report: ${failureCode(env.response.result)}.`;
     }
   }
 
@@ -476,20 +486,9 @@
   .results .titlerow { margin-bottom: var(--schegent-space-2); }
   .results .titlerow h2 { font-size: var(--schegent-text-subheading); }
   .more { margin-top: var(--schegent-space-2); }
-  .coverage {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: var(--schegent-space-2) var(--schegent-space-4);
-    margin: var(--schegent-space-2) 0 0;
-    font-size: var(--schegent-text-secondary);
-  }
+  .coverage { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--schegent-space-2) var(--schegent-space-4); margin: var(--schegent-space-2) 0 0; font-size: var(--schegent-text-secondary); }
   .coverage dt { color: var(--schegent-muted-fg); }
   .coverage dd { margin: 0; overflow-wrap: anywhere; }
-  .omissions {
-    margin: var(--schegent-space-2) 0 0;
-    padding-left: var(--schegent-space-4-5);
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-secondary);
-  }
+  .omissions { margin: var(--schegent-space-2) 0 0; padding-left: var(--schegent-space-4-5); color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
   .csv-note, .retention-note { margin: var(--schegent-space-2) 0 0; }
 </style>

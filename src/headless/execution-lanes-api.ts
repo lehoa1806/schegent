@@ -1,4 +1,5 @@
-// FR-R6-F10 (contract execution-lanes.md §7, spec US6) — the headless execution-lanes port.
+// FR-R6-F10 (live reconciled contract: docs/operations/execution-lanes.md; original historical
+// filing: specs/309-isolated-workspace-lanes/contracts/execution-lanes.md §7, spec US6) — the headless execution-lanes port.
 //
 // One function per service operation. Each validates plain prototypes once and deep-snapshots its
 // input (freezing objects and arrays, including nested verification profiles and `argv`) before

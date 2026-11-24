@@ -137,7 +137,7 @@ const catalogStore = createHostCatalogStore(
   logger,
   // Feature 254 (FR-038, TA7): the claim on this catalog directory is released with the rest of Stage 2.
   disposables,
-  (switchableFs) => registerCatalogFsForStore(store, switchableFs)
+  (switchableFs) => registerCatalogFsForStore(store, switchableFs, { strictOrder: true })
 );
 // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
 // before anything is composed, and the session owns that snapshot together with
@@ -178,6 +178,7 @@ store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir },
 // scheduler are the manager's own defaults, passed positionally to reach it.
 const lock = new WorkspaceLockManager(store, ownerId, systemClock, systemScheduler, logger);
 registerWorkspaceLockForStore(store, lock, disposables, {
+  strictOrder: true,
   allowMissingCatalogFs: catalogStore === null
 });
 disposables.push({

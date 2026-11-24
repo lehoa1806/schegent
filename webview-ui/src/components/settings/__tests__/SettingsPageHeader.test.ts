@@ -444,4 +444,34 @@ describe('SettingsPageHeader, a refused save at the button boundary (W01)', () =
     expect(unhandled).toEqual([]);
     expect(save).toHaveBeenCalledTimes(4);
   });
+
+  it('clears settings-save-error when unsaved edits return to zero without clicking Save or Revert (W01)', async () => {
+    let dirty = true;
+    const page = new SettingsPage();
+    page.register({
+      changes: () => (dirty ? { execution: 1 } : {}),
+      canSave: () => dirty,
+      save: vi.fn(() => Promise.reject(new Error('future-gate'))),
+      revert: vi.fn()
+    });
+    const { getByTestId, queryByTestId } = mount(page);
+
+    await fireEvent.click(getByTestId('settings-save'));
+    await waitFor(() => expect(getByTestId('settings-save-error')).toBeTruthy());
+
+    // Simulate the operator manually editing the field back to its saved value (or a snapshot
+    // reconciling the draft cleanly): both Revert and Save become aria-disabled and the alert clears.
+    dirty = false;
+    page.register({
+      changes: () => ({}),
+      canSave: () => false,
+      save: vi.fn(() => Promise.resolve()),
+      revert: vi.fn()
+    });
+    await tick();
+
+    await waitFor(() => expect(queryByTestId('settings-save-error')).toBeNull());
+    expect(getByTestId('settings-revert').getAttribute('aria-disabled')).toBe('true');
+    expect(getByTestId('settings-save').getAttribute('aria-disabled')).toBe('true');
+  });
 });

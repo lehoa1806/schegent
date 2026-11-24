@@ -97,8 +97,18 @@ function extractNormalizedPrefix(raw: string, maxVisibleChars: number): Extracte
   let pendingSpace = false;
   let truncatedMidToken = false;
   let i = 0;
+  // FR-R7-16 (16-09): hard raw-code-unit scan ceiling so multi-MiB invisible/ANSI-only
+  // padding stays strictly O(1) bounded on the extension host thread while still scanning past
+  // multi-KiB secret-evasion padding vectors (SR-312-2).
+  const maxScanChars = Math.max(maxVisibleChars * 8, 32_768);
 
   while (i < raw.length) {
+    if (i >= maxScanChars) {
+      if (collected > 0) {
+        truncatedMidToken = true;
+      }
+      break;
+    }
     if (raw.charCodeAt(i) === ANSI_ESC_CODE) {
       let nextIdx = matchSticky(ANSI_CSI_Y, raw, i);
       if (nextIdx === -1) nextIdx = matchSticky(ANSI_OSC_Y, raw, i);

@@ -1043,4 +1043,51 @@ describe('SQLite backup, verify, and restore operator commands (FR-R7-03)', () =
       sha256Digest: ''
     });
   });
+
+  it('returns an actionable path-free refusal message when backup creation exceeds external dependency bounds (FR-R7-14 14-02)', async () => {
+    const h = await setupHarness();
+    try {
+      const ui = createStubUi({ confirmResult: true });
+      const created = await h.api.createBackup({
+        backupId: 'bkp-over-limit-msg',
+        maxExternalDependencies: 0
+      });
+      expect(created.status).toBe('created');
+
+      // Seed one live external workspace artifact in SQLite so count 1 exceeds maxExternalDependencies: 0.
+      const extRel = '.schegent/transcripts/over-limit-1.log';
+      const extBytes = Buffer.from('live-dependency\n', 'utf8');
+      await fs.mkdir(path.dirname(path.join(h.workspaceRoot, extRel)), { recursive: true });
+      await fs.writeFile(path.join(h.workspaceRoot, extRel), extBytes, { mode: 0o600 });
+      const digest = createHash('sha256').update(extBytes).digest('hex');
+      h.store.writerConnection.run(
+        `INSERT INTO artifacts (artifact_id, content_sha256, byte_length, media_type, kind, created_at_ms)
+         VALUES ('art-over-1', ?, ?, 'text/plain', 'transcript', 1763720000000)`,
+        digest,
+        extBytes.byteLength
+      );
+      h.store.writerConnection.run(
+        `INSERT INTO artifact_locations (location_id, artifact_id, storage_tier, uri_or_relpath, verified_at_ms)
+         VALUES ('loc-over-1', 'art-over-1', 'workspace_file', ?, 1763720000000)`,
+        extRel
+      );
+
+      const refused = await runBackupStore(
+        { api: h.api, ui: ui.ui },
+        { backupId: 'bkp-over-limit-refused', maxExternalDependencies: 0 }
+      );
+      expect(refused.status).toBe('failed');
+      if (refused.status === 'failed') {
+        expect(refused.errorCode).toBe('EXTERNAL_DEPENDENCY_BOUND_EXCEEDED');
+        expect(refused.message).toContain('EXTERNAL_DEPENDENCY_BOUND_EXCEEDED');
+        expect(refused.message).toContain('verification ceiling');
+        expect(refused.message).toContain('artifact retention');
+        expect(refused.message).not.toContain(h.workspaceRoot);
+        expect(refused.message).not.toContain(h.storageRoot);
+      }
+      expect(ui.errors.at(-1)).toContain('verification ceiling');
+    } finally {
+      h.store.close();
+    }
+  });
 });

@@ -31,7 +31,8 @@ import { escapeForTerminal } from './advisory-report.mjs';
 import {
   DRIFT_OVERRIDE_ENV,
   changedQualificationPaths,
-  computeQualificationSourceFingerprint
+  computeQualificationSourceFingerprint,
+  probeInstalledVersions
 } from './backend-qualification.mjs';
 import { GATE_COMMAND_SPEC, REPO_ROOT, readTreeState } from './gate-attestation.mjs';
 import { invokedAsScript } from './invoked-as-script.mjs';
@@ -147,6 +148,7 @@ export function makeRealDeps(advisoryCaptures) {
     writeExclusive: (path, text, mode) => writeExclusiveFile(resolveInsideRoot(root, path), text, mode),
     changedQualificationPaths,
     computeQualificationFingerprint: () => computeQualificationSourceFingerprint(root),
+    probeInstalledVersions,
     unqualifiedOverride: process.env[DRIFT_OVERRIDE_ENV] === '1',
     now: () => Date.now(),
     log: (line) => console.log(line),

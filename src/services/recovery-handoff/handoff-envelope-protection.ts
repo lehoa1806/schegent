@@ -166,8 +166,13 @@ function assessManifest(
       ambiguous = true;
     } else {
       for (const ref of references) {
-        if (!isPlainObject(ref) || typeof ref['artifactId'] !== 'string') continue;
-        record(classifyPair(handoff.root_execution_id, ref['artifactId'], runSegment, handoverSegment));
+        if (!isPlainObject(ref) || typeof ref['artifactId'] !== 'string' || ref['artifactId'].length === 0) {
+          ambiguous = true;
+          continue;
+        }
+        const refId = ref['artifactId'];
+        record(classifyPair(handoff.root_execution_id, refId, runSegment, handoverSegment));
+        record(assessLocationsForArtifact(conn, refId, handoff.root_execution_id, runSegment, handoverSegment));
       }
     }
   }

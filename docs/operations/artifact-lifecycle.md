@@ -25,12 +25,17 @@ For the retention classes themselves, see [Data retention and deletion](data-ret
 
 ## Production status
 
-The service and its schema ship in this release, but production constructs no lifecycle service
-until the application store is opened in the extension host (the F01-B cutover). Until then:
+The service and its schema are wired into extension-host activation through the SQLite cutover
+coordinator (`src/activation/sqlite-cutover-wiring.ts`):
 
-- the sidebar's storage-details view answers `unavailable`;
-- the existing sweepers keep their own protection (see the [sweeper census](#sweeper-census));
-- the one live change is the run-checkpoint sweeper, which spares every run pinned for recovery.
+- when the primary trusted window opens the folder-scoped SQLite store, activation constructs
+  `ArtifactLifecycleService`, runs `reconcileAfterRestart()`, and serves storage details from the
+  SQLite-backed service (secondary or untrusted windows fall back to `unavailable` when no store is
+  attached);
+- the run-checkpoint sweeper and `RunCheckpointService` consult authoritative SQLite recovery-handoff
+  protection (`assessRecoveryEnvelopeProtection` / `assessRunSegmentProtection`) and F05 pins;
+- existing sweepers keep their own protection (see the [sweeper census](#sweeper-census)) and
+  coordinate with `querySqliteProtectedRunIds`.
 
 ## Availability states
 
@@ -134,9 +139,11 @@ Each target passes a pinned effect-boundary sequence before any bytes are unlink
 3. canonical parent containment via `resolveContainedLink`;
 4. non-following regular-file leaf verification via `lstat` (refusing symlinks, directories, and
    special files);
-5. workspace sweep-lease / primacy fence check;
-6. durable `executing` intent write;
-7. path-based `unlink` of the canonical resolved path.
+5. canonical resolved-path sharer and final protective-standing re-check (refusing removal if any
+   other registered artifact resolves to the same canonical file and holds protective standing);
+6. workspace sweep-lease / primacy fence check;
+7. durable `executing` intent write;
+8. path-based `unlink` of the canonical resolved path.
 
 **Residual path-based removal limit.** Node's `node:fs/promises` exposes pathname-based `unlink`
 rather than descriptor-relative `openat`/`unlinkat`, so an irreducible TOCTOU window remains between

@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { link, unlink } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
+  MAX_BACKUP_EXTERNAL_DEPENDENCIES,
   SQLITE_SCHEMA_CURRENT_VERSION,
   type BackupDependencyManifest,
   type BackupExternalDependency,
@@ -627,7 +628,7 @@ export class BackupRestoreService {
    */
   public collectExternalDependencies(
     auditLogDependencies: readonly BackupExternalDependency[] = [],
-    limit = -1
+    limit = MAX_BACKUP_EXTERNAL_DEPENDENCIES + 1
   ): readonly BackupExternalDependency[] {
     return collectExternalDependenciesFromConn(this.conn, auditLogDependencies, limit);
   }

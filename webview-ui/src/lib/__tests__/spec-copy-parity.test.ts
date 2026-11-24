@@ -26,10 +26,14 @@ import PhaseLogSelectors from '../../components/PhaseLogFeed/PhaseLogSelectors.s
 import { makeNewPhaseDraft } from '../../components/PipelineBuilderEditors/phase-catalog-state';
 import {
   ACTION_COPY,
+  CLEAN_ALL_LOCK_CONTENTION_TOAST,
+  CLEAN_ALL_PERSISTENCE_ERROR_TOAST,
+  CLEAN_ALL_RUNNER_STILL_PENDING_TOAST,
   SUPPRESSION_CHECKBOX_LABEL,
   renderActionBody,
   type ActionKey
 } from '../action-copy';
+import { boundaryRefusalText } from '../boundary-refusal-text';
 import type { FailureRecordPanelState } from '../failure-record-ipc';
 import { lifecycleRefusalText } from '../lifecycle-control-ipc';
 import { OFF_TARGET_TITLE } from '../phase-control-titles';
@@ -167,17 +171,65 @@ const HISTORICAL_QUOTATION_INVENTORY = [
     reason: 'Original research note predating commit 104 product-noun capitalization'
   },
   {
+    spec: '020-phase-level-logs/checklists/quality.md',
+    quotation: 'No in-flight phase',
+    marker: 'BUG-006',
+    reason: 'Original quality checklist CHK018 explicitly marked historical and reconciled in BUG-006'
+  },
+  {
+    spec: '020-phase-level-logs/spec.md',
+    quotation: 'Phase logs require verbose diagnostics.',
+    marker: 'Verbose diagnostics is OFF at the workspace level',
+    reason: 'Pre-feature-203 verbose-diagnostics-off edge-case quote superseded by feature 203 empty-state copy'
+  },
+  {
+    spec: '020-phase-level-logs/tasks.md',
+    quotation: 'the selection does not match a Task, pipeline or',
+    marker: 'T079',
+    reason: 'Completed T079 implementation record predating Workflow/Phase terminology alignment'
+  },
+  {
     spec: '061-phase-name-editing/bugs/BUG-001.md',
     quotation: 'Describe the phase objective here.',
     marker: '# Bug Report:',
     reason: 'Historical bug report predating BUG-017 starter-text capitalization'
   },
   {
+    spec: '061-phase-name-editing/tasks.md',
+    quotation: 'Describe the phase objective here.',
+    marker: 'BUG-017',
+    reason: 'Completed T020 record annotated with BUG-017 starter-text capitalization'
+  },
+  {
     spec: '063-clean-all-confirmations/contracts/action-copy-table.md',
     quotation: 'Wipes all Schegent state for this workspace',
     marker: 'Authoritative for v1',
     reason:
-      'v1 workspace.reset body later expanded by FR-R3-006 (multi-queue/transcript preservation); queue.clean-all and queue.clear-done bodies likewise gained {queueName}/{scheduleSummary} in feature 092'
+      'v1 workspace.reset body later expanded by FR-R3-006 (multi-queue/transcript preservation)'
+  },
+  {
+    spec: '063-clean-all-confirmations/contracts/action-copy-table.md',
+    quotation: 'You are about to remove **{pendingCount}** pending',
+    marker: 'Authoritative copy (v1, English)',
+    reason: 'v1 queue.clean-all body later expanded with {queueName} and {scheduleSummary} in feature 092'
+  },
+  {
+    spec: '063-clean-all-confirmations/contracts/action-copy-table.md',
+    quotation: 'Removes **{completedCount}** completed tasks from the queue.',
+    marker: 'Authoritative copy (v1, English)',
+    reason: 'v1 queue.clear-done body later expanded with {queueName} in feature 092'
+  },
+  {
+    spec: '203-phase-log-kinds-of-nothing/tasks.md',
+    quotation: 'This phase has not run',
+    marker: 'BUG-001',
+    reason: 'Completed T055/T060 evidence notes annotated with BUG-001 commit-104 Phase capitalization'
+  },
+  {
+    spec: '248-failed-run-skip-contract/tasks.md',
+    quotation: "That phase is not part of this Run's pipeline.",
+    marker: 'BUG-001',
+    reason: 'Completed T040 record annotated with BUG-001 Workflow/Phase wording update'
   }
 ] as const;
 
@@ -224,13 +276,26 @@ describe.skipIf(!HAS_SPECS_ENVELOPE)(
         stripStrikethrough(readSpec('020-phase-level-logs/spec.md'))
       );
 
-      expect(specText).toContain('"Live"');
+      // Extract directly from FR-021 in spec.md (not just tasks.md) so spec-side drift cannot hide.
+      const fr021Section = /- \*\*FR-021\*\*:[\s\S]*?(?=- \*\*FR-022\*\*:)/u.exec(specText)?.[0] ?? '';
+      expect(fr021Section).toContain('"Live"');
+      const specDisabledTooltip = /tooltip `?"(No in-flight Phase \(click to enable Live Mode\))"`?/u.exec(
+        fr021Section
+      );
+      const specActiveTooltip = /tooltip `?"(Jump to the currently executing Phase)"`?/u.exec(
+        fr021Section
+      );
+      expect(specDisabledTooltip, 'FR-021 idle tooltip in spec.md').not.toBeNull();
+      expect(specActiveTooltip, 'FR-021 active tooltip in spec.md').not.toBeNull();
+
       const disabledTooltipMatch = /"(No in-flight Phase \(click to enable Live Mode\))"/u.exec(
         tasksText
       );
       const activeTooltipMatch = /"(Jump to the currently executing Phase)"/u.exec(tasksText);
       expect(disabledTooltipMatch).not.toBeNull();
       expect(activeTooltipMatch).not.toBeNull();
+      expect(specDisabledTooltip![1]).toBe(disabledTooltipMatch![1]);
+      expect(specActiveTooltip![1]).toBe(activeTooltipMatch![1]);
 
       const emptyRender = render(PhaseLogSelectors, {
         props: {
@@ -345,10 +410,23 @@ describe.skipIf(!HAS_SPECS_ENVELOPE)(
       }
 
       const activeContract = stripStrikethrough(contract);
+      const inflightSummaryMatch = /`\{inflightSummary\}`:[\s\S]*?If `inflightTitle` is non-null:\s*`([^`]+)`/u.exec(
+        activeContract
+      );
+      const pauseSummaryMatch = /`\{pauseSummary\}`:[\s\S]*?If `pauseSource` is non-null:\s*`([^`]+)`/u.exec(
+        activeContract
+      );
       const runSummaryMatch = /`\{runSummary\}`:[\s\S]*?If `hasActiveRun` is true:\s*`([^`]+)`/u.exec(
         activeContract
       );
+      const runningSuffixMatch = /`\{runningSuffix\}`:[\s\S]*?If `isRunning` is true:\s*`([^`]+)`/u.exec(
+        activeContract
+      );
+      expect(inflightSummaryMatch, 'active {inflightSummary} clause present in spec 063').not.toBeNull();
+      expect(pauseSummaryMatch, 'active {pauseSummary} clause present in spec 063').not.toBeNull();
       expect(runSummaryMatch, 'active {runSummary} clause present in spec 063').not.toBeNull();
+      expect(runningSuffixMatch, 'active {runningSuffix} clause present in spec 063').not.toBeNull();
+
       const renderedCleanAll = renderActionBody('queue.clean-all', {
         queueId: 'default',
         queueName: 'Default',
@@ -356,16 +434,38 @@ describe.skipIf(!HAS_SPECS_ENVELOPE)(
         completedCount: 0,
         failedCount: 0,
         canceledCount: 0,
-        inflightTitle: null,
-        pauseSource: null,
+        inflightTitle: 'Auth Task',
+        pauseSource: 'operator',
         hasActiveRun: true,
         hasSchedule: false
       });
+      expect(renderedCleanAll).toContain(
+        inflightSummaryMatch![1].replace('{inflightTitle}', 'Auth Task')
+      );
+      expect(renderedCleanAll).toContain(
+        pauseSummaryMatch![1].replace('{pauseSource}', 'operator')
+      );
       expect(renderedCleanAll).toContain(runSummaryMatch![1]);
 
-      const checkboxMatch = /SUPPRESSION_CHECKBOX_LABEL\s*=\s*"([^"]+)"/u.exec(contract);
-      expect(checkboxMatch).not.toBeNull();
-      expect(SUPPRESSION_CHECKBOX_LABEL).toBe(checkboxMatch![1]);
+      const renderedCancelItem = renderActionBody('queue.cancel-item', {
+        taskTitle: 'Build API',
+        isRunning: true
+      });
+      expect(renderedCancelItem).toContain(runningSuffixMatch![1]);
+
+      const staticConstants: ReadonlyArray<readonly [string, string]> = [
+        ['SUPPRESSION_CHECKBOX_LABEL', SUPPRESSION_CHECKBOX_LABEL],
+        ['CLEAN_ALL_RUNNER_STILL_PENDING_TOAST', CLEAN_ALL_RUNNER_STILL_PENDING_TOAST],
+        ['CLEAN_ALL_LOCK_CONTENTION_TOAST', CLEAN_ALL_LOCK_CONTENTION_TOAST],
+        ['CLEAN_ALL_PERSISTENCE_ERROR_TOAST', CLEAN_ALL_PERSISTENCE_ERROR_TOAST]
+      ];
+      for (const [name, liveValue] of staticConstants) {
+        const match = new RegExp(`${name}\\s*=\\s*"([^"]+)"`, 'u').exec(
+          normalizeWhitespace(contract)
+        );
+        expect(match, `${name} present in spec 063`).not.toBeNull();
+        expect(liveValue, name).toBe(match![1]);
+      }
     });
 
     it('spec 243 failure-panel.md P3 answer rows and issueState lines match FailureRecordPanel.svelte', () => {
@@ -434,6 +534,50 @@ describe.skipIf(!HAS_SPECS_ENVELOPE)(
         expect(getByTestId('failure-record-panel-run-1').textContent).toContain(match![1]);
         cleanup();
       }
+
+      // Static labels from P3 items 9 and 11 (Last metrics heading & agent-tags disclaimer)
+      const metricsHeadingMatch = /When metrics are present:\s*`([^`]+)`/u.exec(activeContract);
+      const agentTagDisclaimerMatch = /When any entry has source `agent`:\s*`([^`]+)`/u.exec(
+        activeContract
+      );
+      expect(metricsHeadingMatch, 'Last metrics heading present in spec 243').not.toBeNull();
+      expect(agentTagDisclaimerMatch, 'agent-tags disclaimer present in spec 243').not.toBeNull();
+      const { getByTestId: getListed } = render(FailureRecordPanel, {
+        props: {
+          itemId: 'run-listed',
+          label: 'Task listed',
+          state: {
+            kind: 'answer',
+            answer: {
+              outcome: 'available',
+              queueId: 'default',
+              taskId: 'run-listed',
+              record: {
+                ...makeFailureRecord('listed'),
+                entries: [{ kind: 'issue', tag: 'unclassified', summary: 'Lint failure', source: 'agent' }],
+                metrics: [{ key: 'failedTests', value: 2 }]
+              },
+              recordCount: 1
+            }
+          }
+        }
+      });
+      const listedText = normalizeWhitespace(getListed('failure-record-panel-run-listed').textContent);
+      expect(listedText).toContain(metricsHeadingMatch![1]);
+      expect(listedText).toContain(agentTagDisclaimerMatch![1]);
+      cleanup();
+    });
+
+    it('spec 252 data-model.md §5 (BUG-001 / W04) plain-text refusal template matches boundaryRefusalText', () => {
+      const dm = normalizeWhitespace(
+        stripStrikethrough(readSpec('252-trusted-commands-acknowledgements/data-model.md'))
+      );
+      const match = /"(The host refused this action \(<code>\)\.)"/u.exec(dm);
+      expect(match, 'plain-text refusal template present in spec 252 data-model.md').not.toBeNull();
+      expect(boundaryRefusalText('future-gate')).toBe(
+        match![1].replace('<code>', 'future-gate')
+      );
+      expect(boundaryRefusalText('future-gate')).not.toContain('`');
     });
 
     it('spec 248 webview.md W3 refusal sentences and W4 OFF_TARGET_TITLE match live modules', () => {

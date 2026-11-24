@@ -512,6 +512,52 @@ describe('FR-R7-17 (R7-17-05) — authority-gate/wiring fingerprint sensitivity,
       const afterWiringEdit = q.computeQualificationSourceFingerprint(sandbox);
       expect(afterWiringEdit).not.toBe(baseline);
       expect(afterWiringEdit).not.toBe(afterGateEdit);
+
+      // FR-R7-14 (14-10): mutating a descriptor, profile, or built bridge individually invalidates
+      // a previously qualified live record via decideQualification (`fingerprint-mismatch`).
+      write('src/activation/acp-execution-wiring.ts', 'export const w = 1;\n');
+      write('src/services/acp-runtime/profiles.ts', 'export const profiles = 1;\n');
+      const fullBaseline = q.computeQualificationSourceFingerprint(sandbox);
+      const baselineRecord = q.buildQualificationRecord({
+        versions: installed,
+        states: { claude: 'ok', codex: 'ok', agy: 'ok' },
+        commit: 'abc123',
+        platform: 'darwin arm64 node 24.19.0',
+        now: FRESH,
+        sourceFingerprint: fullBaseline
+      });
+      expect(
+        q.decideQualification({
+          record: baselineRecord,
+          head: 'abc123',
+          installedVersions: installed,
+          changedPaths: [],
+          expectedFingerprint: fullBaseline,
+          now: NOW
+        }).ok
+      ).toBe(true);
+
+      const mutations: ReadonlyArray<readonly [string, string, string]> = [
+        ['src/contracts/backend-descriptors.ts', 'export const d = 1;\n', 'export const d = 2;\n'],
+        ['src/services/acp-runtime/profiles.ts', 'export const profiles = 1;\n', 'export const profiles = 2;\n'],
+        ['dist/acp-stdio-bridge.js', '// bridge bundle\n', '// mutated bridge bundle\n']
+      ];
+      for (const [relPath, original, mutated] of mutations) {
+        write(relPath, mutated);
+        const mutatedFp = q.computeQualificationSourceFingerprint(sandbox);
+        expect(mutatedFp, relPath).not.toBe(fullBaseline);
+        const rejected = q.decideQualification({
+          record: baselineRecord,
+          head: 'abc123',
+          installedVersions: installed,
+          changedPaths: [],
+          expectedFingerprint: mutatedFp,
+          now: NOW
+        });
+        expect(rejected.ok, relPath).toBe(false);
+        expect(rejected.reason, relPath).toBe('fingerprint-mismatch');
+        write(relPath, original);
+      }
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

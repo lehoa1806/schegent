@@ -701,4 +701,130 @@ describe('FR-R7-14 BackupRestoreService unit suite (14-01, 14-02, 14-03)', () =>
       store.close();
     }
   });
+
+  it('14-02: exercises actual default ceilings (10,000 dependencies and 512 MiB external bytes) immediately below, at, and above each limit', async () => {
+    const rootDir = await makeTempDir('schegent-14-02-real-limits-');
+    const scopeId = 'scope-real-limits';
+    const backupSegments = ['sqlite', scopeId, 'backups'] as const;
+    const backupsDir = path.join(rootDir, ...backupSegments);
+    const store = new SqliteApplicationStore({
+      databasePath: path.join(rootDir, 'live.db'),
+      journalMode: 'wal'
+    });
+    try {
+      const digest = sha256Hex(Buffer.from('default-limit-probe'));
+      const makeDep = (i: number, byteSize = 16) => ({
+        dependencyKind: 'audit_log' as const,
+        referenceId: `dep-${String(i).padStart(5, '0')}`,
+        relativePath: `.schegent/transcripts/dep-${String(i).padStart(5, '0')}.log`,
+        byteLength: byteSize,
+        sha256Digest: digest
+      });
+      const matchingInspector = (_relPath: string) => ({
+        exists: true,
+        byteLength: 16,
+        sha256Digest: digest
+      });
+
+      // 1. Default dependency count ceiling (10,000): 9,999 (below), 10,000 (at), 10,001 (above) — zero bound overrides!
+      const deps9999 = Array.from({ length: 9_999 }, (_, i) => makeDep(i));
+      const belowCount = await store.backupRestore.createOnlineBackup({
+        backupId: 'bkp-default-cnt-9999',
+        scopeId,
+        trustedRootDir: rootDir,
+        relativeBackupDirSegments: backupSegments,
+        auditLogDependencies: deps9999
+      });
+      expect(belowCount.manifest.externalDependencies).toHaveLength(9_999);
+      expect(
+        await verifyBackupStandaloneAsync({
+          backupDatabasePath: belowCount.backupDatabasePath,
+          manifest: belowCount.manifest,
+          trustedRootDir: rootDir,
+          inspectExternalDependency: matchingInspector
+        })
+      ).toMatchObject({ status: 'verified', verifiedExternalDependencies: 9_999 });
+
+      const deps10000 = [...deps9999, makeDep(9_999)];
+      const atCount = await store.backupRestore.createOnlineBackup({
+        backupId: 'bkp-default-cnt-10000',
+        scopeId,
+        trustedRootDir: rootDir,
+        relativeBackupDirSegments: backupSegments,
+        auditLogDependencies: deps10000
+      });
+      expect(atCount.manifest.externalDependencies).toHaveLength(10_000);
+      expect(
+        await verifyBackupStandaloneAsync({
+          backupDatabasePath: atCount.backupDatabasePath,
+          manifest: atCount.manifest,
+          trustedRootDir: rootDir,
+          inspectExternalDependency: matchingInspector
+        })
+      ).toMatchObject({ status: 'verified', verifiedExternalDependencies: 10_000 });
+
+      const deps10001 = [...deps10000, makeDep(10_000)];
+      await expect(
+        store.backupRestore.createOnlineBackup({
+          backupId: 'bkp-default-cnt-10001',
+          scopeId,
+          trustedRootDir: rootDir,
+          relativeBackupDirSegments: backupSegments,
+          auditLogDependencies: deps10001
+        })
+      ).rejects.toThrow(/EXTERNAL_DEPENDENCY_BOUND_EXCEEDED/);
+      expect((await fs.readdir(backupsDir)).filter((f) => f.includes('bkp-default-cnt-10001'))).toEqual([]);
+
+      // 2. Default external dependency byte ceiling (512 MiB = 536,870,912): -1, exact, +1 — zero bound overrides!
+      const LIMIT_512_MIB = 512 * 1024 * 1024;
+      const chunk = 256 * 1024 * 1024;
+      const bytesByPath = new Map<string, number>();
+      const sizedInspector = (relPath: string) => ({
+        exists: true,
+        byteLength: bytesByPath.get(relPath) ?? 0,
+        sha256Digest: digest
+      });
+
+      const runByteCase = async (backupId: string, totalBytes: number) => {
+        const second = totalBytes - chunk;
+        const deps = [makeDep(1, chunk), makeDep(2, second)];
+        bytesByPath.set(deps[0]!.relativePath, chunk);
+        bytesByPath.set(deps[1]!.relativePath, second);
+        return store.backupRestore.createOnlineBackup({
+          backupId,
+          scopeId,
+          trustedRootDir: rootDir,
+          relativeBackupDirSegments: backupSegments,
+          auditLogDependencies: deps
+        });
+      };
+
+      const belowBytes = await runByteCase('bkp-default-bytes-below', LIMIT_512_MIB - 1);
+      expect(
+        await verifyBackupStandaloneAsync({
+          backupDatabasePath: belowBytes.backupDatabasePath,
+          manifest: belowBytes.manifest,
+          trustedRootDir: rootDir,
+          inspectExternalDependency: sizedInspector
+        })
+      ).toMatchObject({ status: 'verified' });
+
+      const atBytes = await runByteCase('bkp-default-bytes-exact', LIMIT_512_MIB);
+      expect(
+        await verifyBackupStandaloneAsync({
+          backupDatabasePath: atBytes.backupDatabasePath,
+          manifest: atBytes.manifest,
+          trustedRootDir: rootDir,
+          inspectExternalDependency: sizedInspector
+        })
+      ).toMatchObject({ status: 'verified' });
+
+      await expect(runByteCase('bkp-default-bytes-over', LIMIT_512_MIB + 1)).rejects.toThrow(
+        /EXTERNAL_DEPENDENCY_BOUND_EXCEEDED/
+      );
+      expect((await fs.readdir(backupsDir)).filter((f) => f.includes('bkp-default-bytes-over'))).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
 });

@@ -494,7 +494,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       // FR-R7-14 (14-14) — F15-B phase-context staged/immutable results and cross-root materialized copies.
       store: 'Phase-context handoff publications and materialized copies',
       location:
-        '.schegent/results/<rootAlias>/<attemptAlias>/<file> .schegent/immutable-results/<attemptAlias>/<file> .schegent/handoff-materialized/<attemptAlias>/<file>',
+        '.schegent/results/<rootAlias>/<attemptAlias>/<file> .schegent/immutable-results/<attemptAlias>/<file> .schegent/handoff-materialized/<attemptAlias>/<file> .schegent/foreach-results/<file>',
       contentClass: 'unredacted content',
       redacted: false,
       bounds:

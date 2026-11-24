@@ -34,6 +34,7 @@ import {
   createPhaseHandoffCoordinator,
   createPreparationAdmission,
   createSqliteHandoffStore,
+  materializedCopyArtifactId,
   materializeHandoffArtifacts,
   verifyNegotiatedHandoffCapabilities,
   type MaterializationSource
@@ -1922,7 +1923,7 @@ describe('FR-R6-F15 (F15-B) — End-to-End Phase Context Handoff Integration', (
       expect(del1.ok).toBe(true);
       if (!del1.ok) return;
 
-      const matCopyArtifactId = `mat-${artId}-${firstAttemptId}`.slice(0, 120);
+      const matCopyArtifactId = materializedCopyArtifactId(artId, firstAttemptId, artDigest);
       expect(lifecycle1.isProtected(artId).protected).toBe(true);
       expect(lifecycle1.isProtected(matCopyArtifactId).protected).toBe(true);
 
@@ -2734,7 +2735,7 @@ rl.on('line', (line) => {
       admission: sharedAdmission
     });
     expect(reusedCopy.ok).toBe(true);
-    const reuseCopyId = 'mat-reuse-a-att-reuse';
+    const reuseCopyId = materializedCopyArtifactId('reuse-a', 'att-reuse', reuseSrc.ref.digestHex);
     expect(lifecycle.isProtected(reuseCopyId).protected).toBe(true);
     // Release copy pin -> original source pin (`enospc-a`) stays completely intact!
     lifecycle.releaseReference({

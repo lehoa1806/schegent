@@ -197,6 +197,7 @@ export type SettleForEachItemOutcome =
       readonly resultIndex: OrderedForEachResultIndex;
       readonly resultIndexJson: string;
       readonly resultIndexRef: string;
+      readonly artifactRelativePath?: string;
       readonly frame: ControlFrame;
     }
   | { readonly ok: true; readonly action: 'paused'; readonly pauseCause: string; readonly frame: ControlFrame }
@@ -776,6 +777,9 @@ export class ForEachExecutor {
       resultIndex: builtIndex.resultIndex,
       resultIndexJson: builtIndex.resultIndexJson,
       resultIndexRef: builtIndex.resultIndexRef,
+      ...(builtIndex.artifactRelativePath !== undefined
+        ? { artifactRelativePath: builtIndex.artifactRelativePath }
+        : {}),
       frame
     };
   }
@@ -930,7 +934,10 @@ export async function handleForEachChildSettlement(input: {
     const declaredOutputs = buildForEachDeclaredOutputs({
       parentWorkflow: input.parentWorkflow,
       nodeId: input.parentNode.nodeId,
-      resultIndexJson: settled.resultIndexJson
+      resultIndexJson: settled.resultIndexJson,
+      ...(settled.artifactRelativePath !== undefined
+        ? { artifactRelativePath: settled.artifactRelativePath }
+        : {})
     });
     const completedParentAttempt: NodeAttemptRecord = Object.freeze({
       ...latestParentAttempt,

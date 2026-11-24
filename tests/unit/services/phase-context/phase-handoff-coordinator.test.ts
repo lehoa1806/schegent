@@ -22,13 +22,15 @@ import {
 } from '../../../../src/services/artifact-lifecycle';
 import {
   allocateAttemptStagingPaths,
+  createAcceptanceService,
   createFindingLedger,
   createPhaseHandoffCoordinator,
   createPreparationAdmission,
   createSqliteHandoffStore,
   HandoffStoreCorruptionError,
   materializedCopyArtifactId,
-  normalizeNodePathForHandoff
+  normalizeNodePathForHandoff,
+  prepareHandoff
 } from '../../../../src/services/phase-context';
 import { readBoundedBytesFromHandle } from '../../../../src/services/phase-context/phase-context-helpers';
 import {
@@ -2600,5 +2602,67 @@ describe('FR-R7-17 (R7-17-07) — PhaseHandoffCoordinator admission, observation
     }
 
     sqlite.close();
+  });
+
+  it('FR-R7-17 (R7-17-07 GAP-05): SqliteHandoffStore.save() without bindRunMetadata falls back to rootExecutionId, not workspaceId', () => {
+    const sqlite = SqliteApplicationStore.openInMemory();
+    try {
+      const store = createSqliteHandoffStore(sqlite.writerConnection, () => 1_700_000_000_000);
+      const acceptance = createAcceptanceService(store);
+      const acceptedFrom = { nodePath: 'plan', occurrenceId: 'occ-1', attemptId: 'att-plan' };
+      const prepared = prepareHandoff({
+        policy: {
+          version: 1,
+          approval: 'automatic',
+          session: 'fresh',
+          selectors: [
+            { selectorId: 'sel-plan', sourceNodePath: 'plan', required: true, priority: 0 }
+          ]
+        },
+        identity: {
+          workspaceId: 'ws-distinct-id',
+          rootExecutionId: 'run-actual-root-id',
+          sourceInvocationId: 'inv-1',
+          targetNodePath: 'implement',
+          targetOccurrenceId: 'occ-2',
+          inputEnvelopeRevision: 1,
+          sourceAttempts: [acceptedFrom]
+        },
+        cutoffSequence: 1,
+        candidates: [
+          {
+            acceptedFrom,
+            acceptedSequence: 1,
+            contribution: {
+              schemaVersion: 1,
+              producer: acceptedFrom,
+              coverage: 'complete',
+              outcomes: ['audit-gap-05'],
+              decisions: [],
+              constraints: [],
+              unresolvedIssues: [],
+              summary: null,
+              artifacts: []
+            }
+          }
+        ],
+        boundInputs: [],
+        targetInstructions: 'Implement.',
+        profile: { profileId: 'profile-1', profileRevision: 1, qualifiedContextBytes: 65_536 }
+      });
+      expect(prepared.kind).toBe('prepared');
+      if (prepared.kind !== 'prepared') return;
+
+      // Persist directly through AcceptanceService without calling store.bindRunMetadata():
+      // deriveRowColumns must fall back to manifest.identity.rootExecutionId, never workspaceId.
+      const accepted = acceptance.accept(prepared);
+      expect(accepted.ok).toBe(true);
+      expect(store.listHandoffIdsForRun('run-actual-root-id')).toContain(
+        prepared.manifest.handoffId
+      );
+      expect(store.listHandoffIdsForRun('ws-distinct-id')).toEqual([]);
+    } finally {
+      sqlite.close();
+    }
   });
 });

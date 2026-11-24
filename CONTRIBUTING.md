@@ -276,9 +276,12 @@ What each one did, and what did and did not replace it, is the subject of
 [the terminal record](docs/release/actions-terminal-record.md) and
 [withdrawn CI controls](docs/release/withdrawn-ci-controls.md).
 
-The practical consequence for a contributor: the three-OS matrix is gone and single-platform is a
-stated permanent limit, so a Windows-only or macOS-only regression will reach `develop`. Run
-`npm run gate` locally; it is the only gate there is.
+The practical consequence for a contributor: the hosted three-OS matrix is permanently retired,
+and while `npm run verify:linux` exercises the Linux arm64 unit-tier container leg locally,
+Windows and Linux desktop editor host verification remain unobserved under the dated decline in
+[platform-observation-record.md](docs/operations/platform-observation-record.md) — so a
+Windows-only or Linux-host-only regression can reach `develop`. Run `npm run gate` locally; it is
+the only gate there is.
 <!-- Source: docs/release/actions-terminal-record.md -->
 
 **Dated obligations.** Two lint gates fail on a date: a held major upgrade more than 90 days after

@@ -96,9 +96,11 @@
         class="icon-btn refresh"
         aria-label="Refresh runtime posture"
         title="Refresh"
-        disabled={loading}
+        aria-disabled={loading ? 'true' : undefined}
         data-testid="runtime-health-refresh"
-        onclick={() => void refreshPosture()}
+        onclick={() => {
+          if (!loading) void refreshPosture();
+        }}
       ><svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg></button>
     </div>
   </div>

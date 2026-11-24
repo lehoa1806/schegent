@@ -2,19 +2,13 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import { WorkspaceStateStore } from './state/workspace-state';
 import { createSwitchableOperationalMemento } from './state/sqlite-operational-backing';
-import { getOperationalMementoForStore, registerOperationalMementoForStore } from './activation/sqlite-cutover-wiring';
-import {
-  getCanonicalWorkspaceRoot,
-  disposeWorkspaceFolderPicker
-} from './state/workspace-folder-picker';
+import { disposeCutoverStore, getOperationalMementoForStore, registerOperationalMementoForStore } from './activation/sqlite-cutover-wiring';
+import { getCanonicalWorkspaceRoot, disposeWorkspaceFolderPicker } from './state/workspace-folder-picker';
 import { resolveCliPath } from './config/cli-path-accessor';
 import { SchegentWorkflowController } from './controller/workflow-controller';
 import { SanitizedLogger } from './lib/logger';
 import { singleFlight } from './lib/single-flight';
-import {
-  createRuntimeEvidenceWiring,
-  type RuntimeEvidenceWiring
-} from './activation/backend-wiring';
+import { createRuntimeEvidenceWiring, type RuntimeEvidenceWiring } from './activation/backend-wiring';
 import { registerStage2Ui } from './activation/ui-wiring';
 import { registerGuardedCommand } from './activation/guarded-command-registration';
 import { Notifier } from './ui/notifications';
@@ -102,7 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const operationalMemento = createSwitchableOperationalMemento(context.workspaceState, logger, { requireDurableBatch: true });
   const store = new WorkspaceStateStore(operationalMemento, logger);
-  registerOperationalMementoForStore(store, operationalMemento);
+  registerOperationalMementoForStore(store, operationalMemento, { strictOrder: true });
 
   let stage2: Stage2Wiring | null = null;
   let activeOutput: SchegentOutputChannel | null = null;
@@ -239,6 +233,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } finally {
       // F6 — settled, never rethrown: a failure belongs to the path that began it.
       await Promise.allSettled(stage2Disposals);
+      disposeCutoverStore(store);
       await runtimeLogSink.flushAndDispose(); // never rejects
       if (hostTeardown === teardownOnce) hostTeardown = null;
     }

@@ -335,7 +335,9 @@ export class LaneStore {
 
   /**
    * Prunes non-pending `lane_operations` beyond `maxPerLane` per lane in `workspaceId`, keeping
-   * the newest rows and never removing `pending` operations. Call inside `fenced(...)`.
+   * `provision` operations first (so `isProvisionFailureWithoutSuccess()` remains authoritative)
+   * followed by the newest non-pending rows, and never removing `pending` operations. Call inside
+   * `fenced(...)`.
    */
   public pruneExcessOperations(workspaceId: string, maxPerLane: number): number {
     return inImmediateTransaction(this.conn, () => {
@@ -355,7 +357,7 @@ export class LaneStore {
              AND rowid NOT IN (
                SELECT rowid FROM lane_operations
                WHERE lane_id = ? AND status <> 'pending'
-               ORDER BY started_at DESC, rowid DESC
+               ORDER BY CASE WHEN kind = 'provision' THEN 0 ELSE 1 END ASC, started_at DESC, rowid DESC
                LIMIT ?
              )`,
           lane_id,

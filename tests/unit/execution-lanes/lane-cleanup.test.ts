@@ -857,4 +857,47 @@ describe('FR-R7-16 (16-19): deduplicated keeps, retention, locked worktrees, cra
     expect(operationsOf(h, first.lane.laneId, 'cleanup')).toEqual(['kept:lane-pinned']);
     expect(h.lanes.getLane(HARNESS_WS, sibling.lane.laneId)?.state).toBe('removed');
   });
+
+  it('preserves provision:failed operation rows across pruneExcessOperations so unregistered absent preparation-failed lanes still settle to removed (16-19)', async () => {
+    const failWorktreeAdd: GitWrapper = (real) => ({
+      run: (args, opts) =>
+        args.at(0) === 'worktree' && args.at(1) === 'add'
+          ? Promise.resolve({ ok: false, exitCode: 128, code: 'exit' })
+          : real.run(args, opts)
+    });
+    const h = createLaneHarness({ label: 'clean-prep-prune', wrapGit: failWorktreeAdd });
+    const provisioned = await h.service.provisionLane({
+      rootExecutionId: 'root-exec-prune-1',
+      sourceRevision: 'HEAD',
+      dependencyRecipe: 'none'
+    });
+    expect(provisioned).toEqual({ ok: false, refusal: { reason: 'provisioning-git-failed' } });
+    const failed = h.lanes.lanesInStates(HARNESS_WS, ['preparation-failed']).at(0);
+    if (failed === undefined) throw new Error('no preparation-failed lane');
+
+    // Add 4 non-pending cleanup operations (total 5 non-pending including provision:failed)
+    // and prune aggressively with maxPerLane = 2 -> removes 3, keeps provision:failed + newest cleanup.
+    for (let i = 1; i <= 4; i += 1) {
+      const opId = `${String(i).padStart(2, '0')}${'c'.repeat(30)}`;
+      const ts = new Date(Date.UTC(2026, 10, 10, 12, 0, i)).toISOString();
+      h.lanes.beginOperation({
+        operationId: opId,
+        laneId: failed.laneId,
+        workspaceId: HARNESS_WS,
+        kind: 'cleanup',
+        generation: 1,
+        now: ts
+      });
+      h.lanes.endOperation(opId, 'kept', `reason-${i}`, ts);
+    }
+    expect(h.lanes.pruneExcessOperations(HARNESS_WS, 2)).toBe(3);
+    expect(h.lanes.listOperations(failed.laneId).length).toBe(2);
+    expect(h.lanes.isProvisionFailureWithoutSuccess(failed.laneId)).toBe(true);
+
+    valueOf(h.service.releaseLane({ laneId: failed.laneId, disposition: 'eligible' }));
+    const reconciled = valueOf(await h.service.reconcile());
+    expect(reconciled.lanes).toEqual([]);
+    expect(await cleanup(h)).toEqual({ removed: [failed.laneId], kept: [] });
+    expect(valueOf(h.service.getLane({ laneId: failed.laneId })).state).toBe('removed');
+  });
 });

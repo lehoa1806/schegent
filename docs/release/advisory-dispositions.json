@@ -35,7 +35,7 @@
       "owner": "maintainer",
       "decidedOn": "2026-11-23",
       "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): glob@13.0.7 and nested glob@10.5.0 are transitive devDependencies of @vscode/vsce and test-exclude/@vitest/coverage-v8. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major @vscode/vsce@3.9.1 / vitest@5.x upgrades tracked in docs/release/held-major-upgrades.md."
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): glob@13.0.7 and nested glob@10.5.0 are transitive devDependencies of @vscode/vsce and test-exclude/@vitest/coverage-v8. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major @vscode/vsce@4.x / vitest@5.x upgrades tracked in docs/release/held-major-upgrades.md."
     },
     {
       "advisory": "GHSA-g3hv-75wg-m249",
@@ -47,7 +47,7 @@
       "owner": "maintainer",
       "decidedOn": "2026-11-23",
       "expiresOn": "2027-02-21",
-      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): minimatch@10.2.6 and nested minimatch@9.0.9 are transitive devDependencies of @vscode/vsce, glob, and test-exclude. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major @vscode/vsce@3.9.1 / vitest@5.x upgrades."
+      "rationale": "Builder-only (registry severity: moderate; shipped runtime impact: none): minimatch@10.2.6 and nested minimatch@9.0.9 are transitive devDependencies of @vscode/vsce, glob, and test-exclude. Verified absent from dist/module-graph/host.json (0 bundled packages) and schegent-sbom.cdx.json shipped runtime set on 2026-11-23 (FR-R7-14 14-12). Remediation requires semver-major @vscode/vsce@4.x / vitest@5.x upgrades."
     },
     {
       "advisory": "GHSA-5gmw-xhrv-c9v3",

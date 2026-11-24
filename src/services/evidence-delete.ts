@@ -99,6 +99,7 @@ const KEPT_SCHEGENT_SUBDIRS: ReadonlySet<string> = new Set([
   'results',
   'immutable-results',
   'handoff-materialized',
+  'foreach-results',
   'transcripts',
   'diagnostics',
   'reports',

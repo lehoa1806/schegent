@@ -390,13 +390,20 @@ describe('FR-R4-F04 T7 — deletion removes directories and the checkpoint, and 
     expect(result.checkpoint).toBe('absent');
   });
 
-  it('never deletes F05/F15 external artifact or handoff staging subtrees declared in keptStores (FR-R7-14 14-14)', async () => {
+  it('never deletes any F05/F15/kept subtree declared in KEPT_SCHEGENT_SUBDIRS (FR-R7-14 14-14)', async () => {
     await seedNested(RUN);
     const keptPaths = [
       path.join(workspace, '.schegent', 'results', RUN, 'att-1', 'output.json'),
       path.join(workspace, '.schegent', 'immutable-results', `${RUN}-att-1`, 'output.json'),
       path.join(workspace, '.schegent', 'handoff-materialized', `${RUN}-att-1`, 'handoff.txt'),
-      path.join(workspace, '.schegent', 'transcripts', `${RUN}.log`)
+      path.join(workspace, '.schegent', 'foreach-results', `fe-idx-${RUN}.json`),
+      path.join(workspace, '.schegent', 'transcripts', `${RUN}.log`),
+      path.join(workspace, '.schegent', 'diagnostics', `${RUN}.diag.json`),
+      path.join(workspace, '.schegent', 'reports', `${RUN}.report.json`),
+      path.join(workspace, '.schegent', 'catalog', `${RUN}.json`),
+      path.join(workspace, '.schegent', 'ownership', `${RUN}.owner.json`),
+      path.join(workspace, '.schegent', 'telemetry', `${RUN}.spool.json`),
+      path.join(workspace, '.schegent', 'sqlite', `${RUN}.marker`)
     ];
     for (const file of keptPaths) {
       await fsp.mkdir(path.dirname(file), { recursive: true });

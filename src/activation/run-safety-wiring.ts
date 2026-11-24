@@ -65,7 +65,9 @@ import {
 import type { DurableAttemptEvidenceResult } from '../services/workflow-execution/workflow-recovery-service';
 import { createBackendAvailabilityWiring } from './backend-wiring';
 import {
+  assertCutoverRegistrationOrder,
   createSqliteCutoverCoordinator,
+  EXPECTED_CUTOVER_REGISTRATION_ORDER,
   getSqliteCutoverCoordinator,
   getWorkspaceLockForStore,
   sweepWithReadableProtection
@@ -367,6 +369,14 @@ export async function createRunSafetyWiring(input: {
         disposables: lockRegistration.disposables
       })
     : undefined;
+  if (sqliteCutover) {
+    assertCutoverRegistrationOrder(
+      input.store,
+      vscode.workspace.isTrusted
+        ? EXPECTED_CUTOVER_REGISTRATION_ORDER
+        : ['operationalMemento', 'workspaceLock', 'coordinator']
+    );
+  }
   await sqliteCutover?.probePassiveSnapshots();
   const provisionRunLane = async (rootExecutionId: string, aliasRunId?: string) => {
     if (!readLanesEnabled(input.workspaceRoot)) return null;

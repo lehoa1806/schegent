@@ -24,6 +24,7 @@ import type { ReviewDescriptor, ReviewOpened } from '../../../../src/contracts/c
 import type { HandoffExplanation } from '../../../../src/contracts/phase-context/context-manifest';
 import ChangeReviewPanel from '../ChangeReviewPanel.svelte';
 import ExecutionVisibilityPanel from '../ExecutionVisibilityPanel.svelte';
+import HistoryDashboard from '../HistoryDashboard.svelte';
 import HistoryRunDetail from '../HistoryRunDetail.svelte';
 import HistoricalReportsPanel from '../MetricsDashboard/HistoricalReportsPanel.svelte';
 import ReportDrillDownPanel from '../MetricsDashboard/ReportDrillDownPanel.svelte';
@@ -3235,5 +3236,217 @@ describe('TelemetryRuntimeHealthPanel (FR-R6-F14 & F10 / R7-17-06)', () => {
       expect(callCount).toBe(4);
       expect(getByTestId('otlp-health-card').textContent).toContain('77 exported');
     });
+  });
+
+  it('FR-R7-17 (R7-17-01 GAP-01): ReportDrillDownPanel never substitutes numeric 0 for unknown zero-coverage usage and preserves reported/estimated lanes', () => {
+    const { getByTestId } = render(ReportDrillDownPanel, {
+      drillDown: {
+        reportId: 'rep-drill-unknown',
+        root: {
+          kind: 'root',
+          rootId: 'run-unknown-usage',
+          workflowId: 'wf-deploy',
+          frozenDefinitionId: null,
+          outcome: 'succeeded',
+          createdUtc: '2026-11-11T00:30:00.000Z',
+          durationMs: 4200,
+          attempts: 1
+        },
+        attempts: [],
+        frozenDefinitionId: null,
+        outcomeLineage: [],
+        usage: [
+          {
+            kind: 'usage',
+            key: { backend: 'claude' },
+            roots: 1,
+            attempts: 1,
+            invocations: 'not-recorded',
+            measures: [
+              {
+                measure: 'cost',
+                unit: 'USD',
+                total: '0.000000',
+                completeness: 'unknown',
+                coverage: { known: 0, denominator: 1 }
+              },
+              {
+                measure: 'input_tokens',
+                unit: 'tokens',
+                total: '1200',
+                reportedTotal: '1000',
+                estimatedTotal: '200',
+                completeness: 'partial',
+                coverage: { known: 1, denominator: 2 }
+              }
+            ]
+          }
+        ],
+        omissions: []
+      },
+      onClose: () => undefined
+    });
+
+    const usageBlock = getByTestId('report-drilldown-usage').textContent;
+    expect(usageBlock).toContain('cost: Unknown: not measured (unknown)');
+    expect(usageBlock).not.toContain('0.000000');
+    expect(usageBlock).not.toContain('cost=0');
+    expect(usageBlock).toContain('reported 1000');
+    expect(usageBlock).toContain('estimated 200');
+  });
+
+  it('FR-R7-17 (R7-17-01 GAP-02): HistoricalReportsPanel discards stale openDrillDown responses and surfaces deleteSaved refusals', async () => {
+    const staleDrill = createDeferred<ReportCallEnvelope<ReadReportResponse>>();
+    let runCount = 0;
+    mockReadReport.mockImplementation((req) => {
+      if (req.op === 'listSaved') {
+        return Promise.resolve({
+          boundaryRefusal: null,
+          response: {
+            op: 'listSaved',
+            result: { ok: true, value: { items: [makeSavedReport()], cursor: null } }
+          }
+        });
+      }
+      if (req.op === 'run') {
+        runCount += 1;
+        return Promise.resolve({
+          boundaryRefusal: null,
+          response: {
+            op: 'run',
+            result: {
+              ok: true,
+              value: makeRootPage({
+                reportId: runCount === 1 ? 'rep-old' : 'rep-new',
+                rows: [
+                  {
+                    kind: 'root',
+                    rootId: runCount === 1 ? 'run-old' : 'run-new',
+                    workflowId: 'wf-deploy',
+                    frozenDefinitionId: null,
+                    outcome: 'succeeded',
+                    createdUtc: '2026-11-11T00:30:00.000Z',
+                    durationMs: 1000,
+                    attempts: 1
+                  }
+                ]
+              })
+            }
+          }
+        });
+      }
+      if (req.op === 'drillDown') {
+        return staleDrill.promise;
+      }
+      return Promise.resolve({
+        boundaryRefusal: null,
+        response: { op: 'close', result: { ok: true, value: { released: true } } }
+      });
+    });
+
+    mockMutateReport.mockResolvedValue({
+      boundaryRefusal: null,
+      response: {
+        op: 'deleteSaved',
+        result: { ok: false, outcome: 'refused', reason: 'workspace-untrusted' }
+      }
+    });
+
+    const { findByTestId, getByTestId, queryByTestId } = render(HistoricalReportsPanel);
+    await findByTestId('report-drilldown-open-run-old');
+
+    // Start drill-down for old report, then run a replacement report before drill-down resolves.
+    await fireEvent.click(getByTestId('report-drilldown-open-run-old'));
+    await fireEvent.click(getByTestId('report-run-button'));
+    await findByTestId('report-drilldown-open-run-new');
+
+    // Now resolve the stale drill-down from rep-old: it MUST be ignored.
+    staleDrill.resolve({
+      boundaryRefusal: null,
+      response: {
+        op: 'drillDown',
+        result: {
+          ok: true,
+          value: {
+            reportId: 'rep-old',
+            root: {
+              kind: 'root',
+              rootId: 'run-old',
+              workflowId: 'wf-deploy',
+              frozenDefinitionId: null,
+              outcome: 'succeeded',
+              createdUtc: '2026-11-11T00:30:00.000Z',
+              durationMs: 1000,
+              attempts: 1
+            },
+            attempts: [],
+            frozenDefinitionId: null,
+            outcomeLineage: [],
+            usage: null,
+            omissions: []
+          }
+        }
+      }
+    });
+    await tick();
+    expect(queryByTestId('report-drilldown-panel')).toBeNull();
+
+    // Deleting a saved report whose host mutation returns !ok MUST surface a refusal notice.
+    await fireEvent.click(getByTestId('saved-delete-rep-saved-1'));
+    await fireEvent.click(await findByTestId('saved-confirm-delete-rep-saved-1'));
+    await vi.waitFor(() => {
+      expect(getByTestId('report-status-notice').textContent).toContain(
+        'Could not delete saved report: workspace-untrusted.'
+      );
+    });
+  });
+
+  it('FR-R7-17 (R7-17-03 GAP-04): HistoryDashboard propagates snapshot.isPrimary=false to HistoryRunDetail even when snapshotStore.isPrimary is true', async () => {
+    // Store says primary=true, but prop snapshot says isPrimary=false (secondary window).
+    triggerSnapshotResync(1, true);
+    const baseSnap = makeSnapshot({ isPrimary: false });
+    const snap: WorkflowSnapshot = {
+      ...baseSnap,
+      history: [
+        {
+          runId: 'run-hist-prop-1',
+          featureId: 'secondary-prop',
+          descriptionPreview: 'Secondary window prop check',
+          terminalStatus: 'failed',
+          startedAt: '2026-11-11T00:00:00.000Z',
+          completedAt: '2026-11-11T00:05:00.000Z',
+          durationMs: 300_000,
+          lastErrorSummary: null,
+          auditLogPointer: '.schegent/audit.log',
+          queueId: 'default'
+        }
+      ]
+    };
+
+    mockExecVisibility.mockResolvedValue({
+      boundaryRefusal: null,
+      response: {
+        op: 'attemptDetail',
+        detail: makeVisibilityDetail({
+          rootExecutionId: 'run-hist-prop-1',
+          handoffs: [makeWaitingHandoff('ho-sec-1', 'run-hist-prop-1')]
+        })
+      }
+    });
+
+    const { getByTestId, findByTestId, queryByTestId } = render(HistoryDashboard, {
+      props: {
+        snapshot: snap
+      }
+    });
+
+    await fireEvent.click(getByTestId('history-item-open-details-run-hist-prop-1'));
+    await findByTestId('history-run-detail');
+    // Rerun is hidden because HistoryDashboard passes onRerun=undefined when !isPrimary,
+    // AND HistoryRunDetail receives isPrimary=false so ExecutionVisibilityPanel hides/blocks primary-only handoff actions.
+    expect(queryByTestId('history-detail-rerun')).toBeNull();
+    const visPanel = await findByTestId('execution-visibility-panel');
+    expect(visPanel).toBeTruthy();
+    expect(queryByTestId('handoff-approve-ho-sec-1')).toBeNull();
   });
 });

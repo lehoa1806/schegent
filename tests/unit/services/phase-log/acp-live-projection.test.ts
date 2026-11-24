@@ -722,4 +722,29 @@ describe('FR-R7-16 (16-09) — ACP projection metadata grammar and pre-allocatio
       expect(Buffer.byteLength(JSON.stringify(item.entry), 'utf8')).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
     }
   });
+
+  it('16-09: bounds host CPU work on multi-MiB invisible/ANSI-only toolName payloads', () => {
+    const invisibleDoS = '\x1b[31m\u200b'.repeat(400_000); // ~2.4 MiB of alternating ANSI + ZWSP
+    const started = performance.now();
+    const { items } = projectAcpEvents(
+      initialAcpProjectionState(),
+      [
+        {
+          connectionGeneration: 'g1',
+          attemptId: 'attempt-dos',
+          sourceEventId: 'ev-dos-1',
+          origin: 'live',
+          kind: 'tool-call',
+          toolName: `${invisibleDoS}sk-ant-api03-SHOULDNOTSURFACE`,
+          toolArgs: { ok: true }
+        }
+      ],
+      OPTIONS
+    );
+    const elapsedMs = performance.now() - started;
+    expect(elapsedMs).toBeLessThan(250);
+    expect(items).toHaveLength(1);
+    expect(items.at(0)?.entry.body.toolName).toBe('tool');
+    expect(JSON.stringify(items)).not.toContain('SHOULDNOTSURFACE');
+  });
 });
