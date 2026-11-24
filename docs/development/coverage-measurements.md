@@ -73,6 +73,35 @@ The ratchet never edits configuration. Lowering a floor remains a deliberate cod
 
 `npm run verify:all` includes the default host tests and webview coverage. `npm run ci` runs the host `test:coverage` target, and since hosted CI was retired on 2026-08-26 (`FR-R3-099`) that local run is the only one — the Linux job that also ran it is gone, so these figures are measured on whatever platform the operator used. Evaluation, performance, browser-visual, E2E, and Extension Host integration suites are separate targets; running them does not add their execution to the V8 coverage sets above.
 
+## Lazy-route teardown stabilization (`FR-R8-04` `04-06`)
+
+In addition to awaiting lazy route landmarks in `App.nav.test.ts`, `RouteOutlet.svelte` now resolves its internal expiry race with `ROUTE_LOAD_CANCELLED` inside its `$effect` cleanup, `route-loader.ts` tracks in-flight lazy imports (`whenSettled()` / `dispose()`), and `App.svelte` cancels pending focus/scroll animation loops and calls `loader.dispose()` on unmount. This removes the dangling timer/microtask teardown window when a component unmounts mid-import.
+
+## Conditional skip inventory (`FR-R8-04` `04-06`)
+
+Unconditional `describe.skip` suites are forbidden by `tests/lint/no-unconditional-describe-skip.test.ts` (zero unconditional skips exist across `tests/` and `webview-ui/src/`). Every skipped test observed in a macOS local `npm run gate` run (`14` skipped across `5` files out of `24,210+` host tests) is an explicit environment guard:
+
+| Guard Condition | Affected Suites | Reason |
+|---|---|---|
+| `process.platform === 'win32'` / `!IS_WINDOWS` | `tests/unit/platform/windows-*.test.ts` | Windows-only reparse-point, CWD executable, and sentinel tests skip on darwin/linux; conversely POSIX permission/symlink/signal tests skip on `win32`. |
+| `!IS_LINUX` | `tests/unit/platform/linux-case-sensitivity.test.ts` | Linux-only case-sensitivity filesystem checks skip on macOS/Windows. |
+| `process.getuid() === 0` (`isRoot`) | `tests/unit/audit/audit-append-*.test.ts`, `evidence-delete.test.ts`, `failure-record-store.test.ts` | `chmod 0o500` permission-refusal tests cannot fail under root uid `0`. |
+| `!envelopePresent()` / `!HAS_SPECS_ENVELOPE` | Envelope governance lint tests (`agents-claude-parity`, `spec-traceability-governance`, etc.) | Skipped only in standalone `repo/` checkouts without the planning envelope; execute in full inside a paired checkout. |
+| `!ENABLED` (`SCHEGENT_MATRIX_C_REAL_CLI`) | `tests/integration/matrix-c-real-cli.test.ts` | Paid live-CLI matrix is opt-in and never executed during offline local gates. |
+| `!hasLocalAgy` / `!hasBuiltBridge` / `existsSync(BUNDLE_HTML)` | `profiles-and-bridges.test.ts`, `csp-end-to-end.test.ts`, `bundle-size.test.ts` | Require optional local `agy` binary or built `dist/` artifacts (built automatically before `npm run ci` / `npm run gate`). |
+
+## Focused regression commands and fixture requirements (`FR-R8-04` `04-06`)
+
+| Verification Tier | Command (run inside `repo/`) | Fixtures / Prerequisites |
+|---|---|---|
+| **Round 8 defect reproducers** | `npx vitest run tests/integration/round8-defect-reproducers.test.ts` | Self-contained disposable temp dirs and SQLite stores (`node:sqlite`); no network or paid CLI. |
+| **Workflow capability effects & desktop composition types** | `npx vitest run tests/integration/workflow-capability-effects.test.ts tests/unit/services/workflow-execution/production-workflow-composition-types.test.ts` | Disposable SQLite WAL stores; `npm run typecheck:tests` verifies `@ts-expect-error` assertions. |
+| **Dependency acyclicity & layer direction** | `npx vitest run tests/lint/import-graph-acyclic.test.ts tests/lint/layer-dependency-direction.test.ts tests/lint/dependency-direction.test.ts` | Hermetic AST scan over `src/` and `webview-ui/src/`. |
+| **Boundary compatibility & extension seams** | `npx vitest run tests/integration/boundary-compatibility-matrix.test.ts tests/integration/extension-point-exercise.test.ts` | Disposable SQLite stores and in-test fixtures under `tests/`. |
+| **Packaged ACP bridge E2E** | `npm run build && npm run test:e2e` | Built `dist/acp-stdio-bridge.js` and fake deterministic CLI fixtures (no paid provider). |
+| **Webview navigation & teardown stress** | `npm --prefix webview-ui run test:coverage` | Locked `webview-ui/node_modules` install. |
+| **Full clean-tree candidate gate** | `npm run gate:record` | Clean git tree, both locked `node_modules` trees, Playwright Chromium, and VS Code test binary cache. |
+
 <!-- Source: package.json -->
 <!-- Source: ../release/actions-terminal-record.md -->
 <!-- Source: vitest.config.ts -->

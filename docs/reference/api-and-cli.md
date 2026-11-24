@@ -372,13 +372,30 @@ Two internal calls also pass through the selected adapter:
 <!-- Source: src/runner/backend-runner-registry.ts -->
 <!-- Source: src/extension.ts -->
 
-## Source-only headless adapters
+## Source-only headless adapters and test-only registries (`FR-R8-04` `04-04`)
 
-The repository contains in-process adapters for parity tests and non-editor callers: `validateProcessDefinition`, `previewProcessDocument`, `importProcessDocument`, `exportProcessDefinitions`, `launchPipelineRun`, and `continueWorkflowRun`. They accept typed JavaScript values and dependency ports; they are not HTTP endpoints, are not listed in `package.json.exports`, are not separate build entries, and TypeScript source is excluded from the VSIX. Consequently they are not a supported installed-extension API.
+**Installed VSIX actions vs source adapters:** The installed extension exposes **only** the 33 contributed Command Palette commands, 11 registered-only `vscode.commands.executeCommand` IDs, and 71 webview IPC commands (`SIDEBAR_IPC_SCHEMA_VERSION = 3`) listed above. There is no HTTP server, shell CLI, or `package.json.exports` entry point, and TypeScript source is excluded from the VSIX (`.vscodeignore`).
 
+The repository also retains **7 source-only headless facades** (`src/headless/`) and **1 test-only IPC discriminator registry** (`COMMAND_GUARDS` in `src/contracts/sidebar-ipc.ts`) for in-process parity tests and non-editor callers. Each has an explicit supported audience, owner, caller set, and verification or retirement condition (cross-linked with [`docs/architecture/high-coupling-ownership-and-facades.md`](../architecture/high-coupling-ownership-and-facades.md#4-headless-facade-compatibility-caller-inventory-dated-2026-11-24)):
+
+| Surface (`repo/src/`) | Installed Action? | Supported Audience | Owner | Callers | Verification or Retirement Condition |
+|---|---|---|---|---|---|
+| `COMMAND_GUARDS` (`src/contracts/sidebar-ipc.ts`) | **No** (production ingress is `validateInboundMessage`) | Host IPC contract tests | Sidebar IPC & contracts | `tests/unit/contracts/sidebar-ipc-drift.test.ts`, `tests/contract/catalog-version-not-accepted.test.ts`, `tests/integration/command-authority-routing.test.ts` (0 production readers) | Kept as compile-time exhaustiveness witness over all 71 `COMMAND_TYPES`; retire only if descriptor-generated `validateInboundMessage` replaces every discriminator test without losing coverage. |
+| `src/headless/backend-qualification-api.ts` | **No** | Source-level containment/qualification parity tests | Containment & qualification | 3 test suites (0 production callers) | Verified by unit/qualification tests; retire only when qualification reads migrate solely to installed command/snapshot projections. |
+| `src/headless/execution-lanes-api.ts` | **No** (installed recovery uses `schegent.inspectExecutionLanes` and `schegent.recoverExecutionLane`) | Source-level lane port parity tests | Execution lanes | 4 test suites (0 production callers) | Verified by lane integration suites; operator runbooks no longer depend on it (`FR-R8-01` `01-07`). Retire after one release cycle if no non-editor consumer is adopted. |
+| `src/headless/pipeline-run-api.ts` | **No** | Legacy `Pipeline` launch compatibility tests | Legacy compatibility & migration | 4 test suites (0 production callers) | Retire together with legacy `Pipeline` compatibility callers once persisted Run/history deserializers no longer require `startPipelineRun` parity (`legacy-pipeline-caller-inventory.md` §5). |
+| `src/headless/process-definition-api.ts` | **No** | Source-level definition validation parity tests | Catalog & process definitions | 2 test suites (0 production callers) | Verified against `Phase`/`Workflow` validators; retain while Feature 089 headless validation parity contract stands. |
+| `src/headless/process-yaml-api.ts` | **No** (installed YAML import/export uses `CMD_PREFLIGHT_PROCESS_YAML` / `CMD_EXPORT_PROCESS_YAML`) | Portable process-YAML byte-in/byte-out parity tests | Process-YAML exchange | 5 test suites (0 production callers) | Governed by `docs/hard-rules.md` portable YAML rules; retain as zero-`vscode` parity harness unless superseded by a direct service-level contract test. |
+| `src/headless/telemetry-export-api.ts` | **No** | Source-level OTLP exporter parity tests | Telemetry & observability | 1 test suite (0 production callers) | Verified by telemetry export unit suite; retire only if external non-editor OTLP embedding is explicitly declined. |
+| `src/headless/workflow-run-api.ts` | **No** (installed launch/control uses `CMD_LAUNCH_WORKFLOW` / `CMD_CONTINUE_WORKFLOW`) | Source-level composable workflow parity & acceptance tests | Workflow runtime | 11 test suites + `entry-point-wiring-census.ts` metadata string (0 runtime production imports) | Verified continuously by `production-workflow-integration.test.ts` and `workflow-capability-effects.test.ts`; retain as the zero-`vscode` parity boundary for composable workflows. |
+
+<!-- Source: src/contracts/sidebar-ipc.ts -->
+<!-- Source: src/headless/backend-qualification-api.ts -->
+<!-- Source: src/headless/execution-lanes-api.ts -->
 <!-- Source: src/headless/process-definition-api.ts -->
 <!-- Source: src/headless/process-yaml-api.ts -->
 <!-- Source: src/headless/pipeline-run-api.ts -->
+<!-- Source: src/headless/telemetry-export-api.ts -->
 <!-- Source: src/headless/workflow-run-api.ts -->
 <!-- Source: package.json -->
 <!-- Source: esbuild.config.mjs -->

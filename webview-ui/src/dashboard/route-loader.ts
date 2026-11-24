@@ -43,6 +43,10 @@ export type RouteLoader = {
   preload(next: DashboardRoute): void;
   /** Drop a cache entry. The only removal path — see `createRouteLoader`. */
   evict(next: LazyRoute): void;
+  /** FR-R8-04 (04-06) — await settlement of all in-flight lazy imports tracked by this loader. */
+  whenSettled(): Promise<void>;
+  /** FR-R8-04 (04-06) — mark loader disposed on shell unmount so late preloads/cache entries stop cleanly. */
+  dispose(): void;
 };
 
 const routeLoaders: Record<LazyRoute, () => Promise<unknown>> = {
@@ -74,34 +78,61 @@ export function routeErrorMessage(next: DashboardRoute): string {
  */
 export function createRouteLoader(): RouteLoader {
   const routeCache = new Map<LazyRoute, Promise<LazyRouteComponent>>();
+  const inFlight = new Set<Promise<unknown>>();
+  let disposed = false;
 
   function evict(next: LazyRoute): void {
     routeCache.delete(next);
   }
 
   function load(next: LazyRoute): Promise<LazyRouteComponent> {
+    if (disposed) {
+      return Promise.reject(new Error(`Route loader disposed before loading ${next}`));
+    }
     const cached = routeCache.get(next);
     if (cached) return cached;
     const pending = routeLoaders[next]()
       .then((module) => {
         const loaded = module as { default: LazyRouteComponent };
+        if (disposed) {
+          evict(next);
+        }
         return loaded.default;
       })
       .catch((cause: unknown) => {
         evict(next);
         throw cause;
       });
+    const tracked = pending.then(
+      () => undefined,
+      () => undefined
+    );
+    inFlight.add(tracked);
+    void tracked.finally(() => {
+      inFlight.delete(tracked);
+    });
     routeCache.set(next, pending);
     return pending;
   }
 
   function preload(next: DashboardRoute): void {
-    if (!isLazyRoute(next)) return;
+    if (disposed || !isLazyRoute(next)) return;
     // The rejection is already handled by `load`'s eviction; this `catch` exists
     // so a hover over a broken route is not an unhandled rejection. A preload has
     // no surface to report to — the navigation that follows does.
     void load(next).catch(() => {});
   }
 
-  return { load, preload, evict };
+  async function whenSettled(): Promise<void> {
+    while (inFlight.size > 0) {
+      await Promise.allSettled([...inFlight]);
+    }
+  }
+
+  function dispose(): void {
+    disposed = true;
+    routeCache.clear();
+  }
+
+  return { load, preload, evict, whenSettled, dispose };
 }

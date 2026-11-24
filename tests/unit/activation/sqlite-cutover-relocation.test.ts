@@ -99,11 +99,19 @@ function createSpyLogger(): {
 }
 
 function createMinimalStore(): WorkspaceStateStore {
+  let controlLedger: unknown;
   return {
     getRunMap: () => ({}),
     getConnectedRuns: () => ({}),
     getQueueMap: () => ({}),
-    getQueueRegistry: () => ({ activeQueueId: 'default', queues: [] })
+    getQueueRegistry: () => ({ activeQueueId: 'default', queues: [] }),
+    getRawControlLedger: () => controlLedger,
+    transactControlLedger: async <T>(
+      op: (raw: unknown, write: (next: unknown) => Promise<void>) => Promise<T>
+    ): Promise<T> =>
+      op(controlLedger, async (next) => {
+        controlLedger = next;
+      })
   } as unknown as WorkspaceStateStore;
 }
 
