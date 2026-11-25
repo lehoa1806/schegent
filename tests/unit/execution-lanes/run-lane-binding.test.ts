@@ -390,4 +390,89 @@ describe('FR-R8-01 (01-06) retryable isolated lane preservation on freeze failur
       value: { state: 'completed', stateReason: null }
     });
   });
+
+  it('resumes a paused lane before freezing on run completion and preserves active retryable state on freeze failure', async () => {
+    const h = createLaneHarness({ label: 'coord-paused-lane-freeze' });
+    const coord = createRunLaneCoordinator({
+      getLaneService: () => h.service,
+      isLanesEnabled: () => true,
+      primaryWorkspaceRoot: h.fixture.root
+    });
+
+    const bound = await coord.provisionForRun('run-paused-complete');
+    if (bound === null) throw new Error('expected lane binding');
+    const laneRoot = await coord.resolveExecutionRoot({ runId: 'run-paused-complete', laneId: bound.laneId });
+    fs.writeFileSync(path.join(laneRoot, 'src', 'paused-work.txt'), 'must-not-skip-freeze\n');
+
+    // Pause the lane (simulating a prior run pause whose resume did not unpause the lane).
+    coord.onRunPaused(bound.laneId);
+    expect(h.service.getLane({ laneId: bound.laneId })).toMatchObject({
+      ok: true,
+      value: { state: 'paused' }
+    });
+
+    // Freeze failure on a paused lane MUST NOT skip freeze and close the lane to `completed`.
+    const failSpy = vi.spyOn(h.service, 'freezeCandidate').mockResolvedValueOnce({
+      ok: false,
+      refusal: { reason: 'lane-busy' }
+    });
+    await coord.onRunTerminal({ runId: 'run-paused-complete', laneId: bound.laneId, status: 'completed' });
+    failSpy.mockRestore();
+
+    expect(h.service.getLane({ laneId: bound.laneId })).toMatchObject({
+      ok: true,
+      value: { state: 'active', stateReason: 'freeze-failed:lane-busy', currentCandidate: null }
+    });
+
+    // Re-running completion after fixing the fault freezes the work and completes the lane.
+    await coord.onRunTerminal({ runId: 'run-paused-complete', laneId: bound.laneId, status: 'completed' });
+    const finalLane = h.service.getLane({ laneId: bound.laneId });
+    expect(finalLane.ok).toBe(true);
+    if (!finalLane.ok) throw new Error('expected lane');
+    expect(finalLane.value.state).toBe('completed');
+    expect(finalLane.value.stateReason).toBeNull();
+    expect(finalLane.value.currentCandidate).not.toBeNull();
+    expect(h.fixture.git(['show', `${finalLane.value.currentCandidate!.commit}:src/paused-work.txt`])).toBe(
+      'must-not-skip-freeze\n'
+    );
+  });
+
+  it('serializes concurrent onRunTerminal calls for the same lane so freezeCandidate never races', async () => {
+    const h = createLaneHarness({ label: 'coord-concurrent-terminal' });
+    const coord = createRunLaneCoordinator({
+      getLaneService: () => h.service,
+      isLanesEnabled: () => true,
+      primaryWorkspaceRoot: h.fixture.root
+    });
+
+    const bound = await coord.provisionForRun('run-race-lane');
+    if (bound === null) throw new Error('expected lane binding');
+    const laneRoot = await coord.resolveExecutionRoot({ runId: 'run-race-lane', laneId: bound.laneId });
+    fs.writeFileSync(path.join(laneRoot, 'src', 'race.txt'), 'serialized-freeze\n');
+
+    let inFlight = 0;
+    let maxConcurrency = 0;
+    const origFreeze = h.service.freezeCandidate.bind(h.service);
+    vi.spyOn(h.service, 'freezeCandidate').mockImplementation(async (args) => {
+      inFlight += 1;
+      maxConcurrency = Math.max(maxConcurrency, inFlight);
+      await new Promise((r) => setTimeout(r, 25));
+      try {
+        return await origFreeze(args);
+      } finally {
+        inFlight -= 1;
+      }
+    });
+
+    await Promise.all([
+      coord.onRunTerminal({ runId: 'run-race-lane', laneId: bound.laneId, status: 'completed' }),
+      coord.onRunTerminal({ runId: 'run-race-lane', laneId: bound.laneId, status: 'completed' })
+    ]);
+
+    expect(maxConcurrency).toBe(1);
+    expect(h.service.getLane({ laneId: bound.laneId })).toMatchObject({
+      ok: true,
+      value: { state: 'completed', stateReason: null }
+    });
+  });
 });

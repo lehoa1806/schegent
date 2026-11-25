@@ -973,7 +973,14 @@ export class WorkflowControlService {
           return {};
         }
       }
-      if (leafAttempt === undefined || leafAttempt.status === 'paused') {
+      const deepestWorkflow =
+        staging.current().frozenClosure?.workflowsById[deepestLeafFrame.workflowId];
+      const isCandidateBlockFrame = deepestWorkflow?.control?.kind === 'candidate-block';
+      if (
+        leafAttempt === undefined ||
+        leafAttempt.status === 'paused' ||
+        (isCandidateBlockFrame && leafAttempt.status !== 'in-flight')
+      ) {
         const dispatched = await dispatchComposableNode(
           this.coordinatorDeps(staging.writer),
           {

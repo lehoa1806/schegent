@@ -314,6 +314,41 @@ describe('applyPhaseTerminalReconciliation (FR-R8-02 / 02-04)', () => {
     expect(notDispatchedCancel.exitCode).toBe(130);
     expect(notDispatchedCancel.terminalReconciliation.status).toBe('cancelled');
 
+    // Native ACP abnormal process exit after `end_turn` fails closed as contradictory-exit.
+    const nativeAbnormal = reconcileAcpPromptOutcome({
+      outcome: { kind: 'completed', turnId: 't-native', stopReason: 'end_turn', hostValidationRequired: true },
+      isNativeReview: false,
+      isBridgeProfile: false,
+      hasOpenWork: false,
+      killed: false,
+      timedOut: false,
+      deadlineExceeded: false,
+      nativeAbnormalExit: { code: 1, signal: null }
+    });
+    expect(nativeAbnormal.exitCode).toBe(1);
+    expect(nativeAbnormal.acpTurnSettled).toBe(false);
+    expect(nativeAbnormal.emitUsageLine).toBe(false);
+    expect(nativeAbnormal.terminalReconciliation.status).toBe('contradictory-exit');
+    expect(nativeAbnormal.warnings).toContain('acp-contradictory-exit');
+
+    // Bridged async stdin EPIPE (`stdinDeliveryFailed`) fails closed even with exit 0 + success.
+    const stdinBroken = reconcileBridgeTurnOutcome({
+      backend: 'codex',
+      isNativeReview: false,
+      isSecurityReview: false,
+      cancelled: false,
+      exit: { code: 0, signal: null, launchFailed: false },
+      terminalEvents: [{ kind: 'success', stopReason: 'end_turn' }],
+      streamErrorText: null,
+      lineOverflowed: false,
+      pendingBacklogOverflowed: false,
+      stdinDeliveryFailed: true
+    });
+    expect(stdinBroken.outcome).toBe('error');
+    if (stdinBroken.outcome === 'error') {
+      expect(stdinBroken.status).toBe('backend-reported-error');
+    }
+
     const step1 = mergeLiveUsageObservation({
       kind: 'agy',
       currentTokens: null,

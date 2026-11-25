@@ -621,7 +621,7 @@ export async function settleCandidateBlockStep(input: {
   });
   const rootRunId = run.controlState?.ledgerRunId ?? run.connectedRunId;
   const retryDelayMs =
-    outcome === 'retryable-transient'
+    outcome === 'retryable-transient' || outcome === 'retryable-availability'
       ? computeCandidateRetryDelayMs(resolvedById[candidateId], settledAttempt.attemptIndex)
       : undefined;
   const validatedOutputs = extractValidatedOutputStrings(input.declaredOutputs);

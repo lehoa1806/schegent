@@ -321,6 +321,7 @@ export class GuardedRunService {
     readonly req: GuardedScheduleRequest;
     readonly queueItemId?: string;
     readonly connectedRun: ConnectedWorkflowRun;
+    readonly rebindConnectedRun?: AtomicComposableLaunchInput['rebindConnectedRun'];
     readonly mutateControlLedger: AtomicComposableLaunchInput['mutateControlLedger'];
   }): Promise<GuardedScheduleResult> {
     if (this.deps.store.admitComposableWorkflowLaunchAtomically === undefined) {
@@ -376,6 +377,9 @@ export class GuardedRunService {
       outcome = await this.deps.store.admitComposableWorkflowLaunchAtomically({
         queueId: targetQueueId,
         connectedRun: input.connectedRun,
+        ...(input.rebindConnectedRun !== undefined
+          ? { rebindConnectedRun: input.rebindConnectedRun }
+          : {}),
         mutateControlLedger: input.mutateControlLedger,
         mutateQueue: (queue) => {
           preCommitSnapshot.queueLifecycle = queue.queueLifecycle;

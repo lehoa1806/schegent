@@ -929,6 +929,11 @@ async function executeRetryFreeze(
   try {
     const frozen = await service.freezeCandidate({ laneId: targetLane.laneId });
     if (!frozen.ok && frozen.refusal.reason !== 'candidate-empty') {
+      try {
+        service.recordFreezeFailure({ laneId: targetLane.laneId, reason: frozen.refusal.reason });
+      } catch {
+        // Keep lane active even if updating state_reason fails.
+      }
       return refuseOutcome(deps, 'retry-freeze', frozen.refusal.reason, disclosure, `Schegent: candidate freeze retry refused (${frozen.refusal.reason}). Lane remains active.`);
     }
     const candidateEmpty = !frozen.ok;
@@ -970,6 +975,15 @@ async function executeRetryFreeze(
       candidateEmpty
     };
   } catch (error) {
+    const code =
+      error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
+        ? (error as NodeJS.ErrnoException).code!
+        : 'freeze-exception';
+    try {
+      service.recordFreezeFailure({ laneId: targetLane.laneId, reason: code });
+    } catch {
+      // Keep lane active even if updating state_reason fails.
+    }
     return errorOutcome(deps, 'retry-freeze', error, disclosure, 'execution-lane recovery: retry-freeze failed', 'Schegent: candidate freeze retry failed; lane remains active', { laneId: laneToken });
   }
 }

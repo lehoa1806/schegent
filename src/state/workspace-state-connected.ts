@@ -316,8 +316,10 @@ export async function deleteUnstartedConnectedRun(
 export interface AtomicComposableLaunchInput {
   readonly queueId: string;
   readonly connectedRun: ConnectedWorkflowRun;
+  readonly rebindConnectedRun?: (queueItemId: string) => ConnectedWorkflowRun;
   readonly mutateControlLedger: (
-    rawLedger: unknown
+    rawLedger: unknown,
+    queueItemId?: string
   ) => Promise<
     | { readonly ok: true; readonly nextLedger: unknown }
     | { readonly ok: false; readonly code: string; readonly message: string }
@@ -465,7 +467,8 @@ export async function admitComposableWorkflowLaunchAtomically(
       });
 
       const rawLedger = ctx.memento.get<unknown>(KEYS.controlLedger);
-      const ledgerMutation = await input.mutateControlLedger(rawLedger);
+      const committedQueueItemId = queueMutation.request.id;
+      const ledgerMutation = await input.mutateControlLedger(rawLedger, committedQueueItemId);
       if (!ledgerMutation.ok) {
         result = {
           outcome: 'rejected',
@@ -475,14 +478,19 @@ export async function admitComposableWorkflowLaunchAtomically(
         return;
       }
 
-      assertConnectedRunInvariants(input.connectedRun, {
+      const committedConnectedRun =
+        input.rebindConnectedRun !== undefined
+          ? input.rebindConnectedRun(committedQueueItemId)
+          : input.connectedRun;
+
+      assertConnectedRunInvariants(committedConnectedRun, {
         knownQueueIds: new Set(registry.entries.map((entry) => entry.id))
       });
 
       const nextConnectedRuns = {
         ...refused,
         ...runs,
-        [input.connectedRun.connectedRunId]: input.connectedRun
+        [committedConnectedRun.connectedRunId]: committedConnectedRun
       };
       const nextQueueMap = {
         ...ctx.readQueueMap(),
@@ -525,8 +533,8 @@ export async function admitComposableWorkflowLaunchAtomically(
       txState.didCommit = true;
       result = {
         outcome: 'committed',
-        run: input.connectedRun,
-        queueItemId: queueMutation.request.id,
+        run: committedConnectedRun,
+        queueItemId: committedQueueItemId,
         idempotent: false
       };
     }

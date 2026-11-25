@@ -893,6 +893,13 @@ export function createSwitchableOperationalMemento(
         await writeViaDetachedOrThrow(postCutoverScopeId, key, (b) => b.update(key, value));
         return;
       }
+      if (durableBatchRequired && key === KEYS.controlLedger) {
+        const detail = durableBatchUnavailableReason ? ` (${durableBatchUnavailableReason})` : '';
+        throw new QueueMutationRejected(
+          'durable-store-unavailable',
+          `Refused operational write for ${key}: durable SQLite store is unavailable${detail}.`
+        );
+      }
       await legacyMemento.update(key, value);
     },
 

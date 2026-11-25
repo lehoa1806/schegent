@@ -146,6 +146,7 @@ export type ChildRunSettledProbe = (queueItemId: string) => boolean;
 
 /** The compare-and-set write path (FR-046). Structurally the workspace store. */
 export interface ConnectedRunWriter {
+  get?(connectedRunId: string): ConnectedWorkflowRun | null | undefined;
   getConnectedRun?(connectedRunId: string): ConnectedWorkflowRun | null;
   compareAndSetConnectedRun(
     next: ConnectedWorkflowRun,
@@ -793,7 +794,16 @@ async function launchComposableWorkflowLocked(
 
     // FR-R8-01 (01-02): Deduplicate repeated delivery of an already-persisted `connectedRunId`
     // before mutating ControlLedger or creating rollback reservations.
-    const existingConnectedRun = deps.connectedRuns.getConnectedRun?.(input.connectedRunId) ?? null;
+    const existingCandidate =
+      deps.connectedRuns.getConnectedRun !== undefined
+        ? deps.connectedRuns.getConnectedRun(input.connectedRunId)
+        : deps.connectedRuns.get?.(input.connectedRunId);
+    const existingConnectedRun =
+      existingCandidate !== null &&
+      existingCandidate !== undefined &&
+      existingCandidate.connectedRunId === input.connectedRunId
+        ? existingCandidate
+        : null;
     if (existingConnectedRun !== null) {
       let existingQueueItemId: string | null = null;
       for (const frame of Object.values(existingConnectedRun.invocations ?? {})) {
@@ -896,8 +906,23 @@ async function launchComposableWorkflowLocked(
                   req,
                   queueItemId: allocatedId,
                   connectedRun: finalRun,
-                  mutateControlLedger: async (rawLedger: unknown) =>
-                    stampQueueItemOnRawLedger(rawLedger, ledgerRunId, phaseInput.attemptId, allocatedId)
+                  rebindConnectedRun: (resolvedQueueItemId: string) =>
+                    resolvedQueueItemId === allocatedId
+                      ? finalRun
+                      : bindQueueItemOnStagedRun(
+                          pendingRun,
+                          phaseInput.frame.invocationId,
+                          phaseInput.node.nodeId,
+                          phaseInput.attemptId,
+                          resolvedQueueItemId
+                        ),
+                  mutateControlLedger: async (rawLedger: unknown, resolvedQueueItemId?: string) =>
+                    stampQueueItemOnRawLedger(
+                      rawLedger,
+                      ledgerRunId,
+                      phaseInput.attemptId,
+                      resolvedQueueItemId ?? allocatedId
+                    )
                 });
                 if (res.outcome === 'enqueued' && res.queueItemId !== undefined) {
                   launchState.atomicCommittedRun =
@@ -918,6 +943,7 @@ async function launchComposableWorkflowLocked(
           const started = await startPhaseAttempt(atomicDeps, phaseInput, input.workspaceRoot);
           if (started.outcome === 'enqueued') {
             launchState.firstQueueItemId = started.queueItemId;
+            launchState.lastFailure = null;
           } else {
             launchState.lastFailure = refusalOf(started);
           }
@@ -928,6 +954,7 @@ async function launchComposableWorkflowLocked(
         if (started.outcome === 'enqueued') {
           launchState.firstQueueItemId = started.queueItemId;
           launchState.unstartedParentRevision = null;
+          launchState.lastFailure = null;
         } else {
           launchState.lastFailure = refusalOf(started);
         }

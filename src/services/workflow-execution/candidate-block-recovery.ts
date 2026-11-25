@@ -82,30 +82,41 @@ export async function tryReconcileCandidateBlockFrames(input: {
         frame: cbFrame,
         selectedCandidateId: cbState.winningCandidateId
       });
-      const completedFrame: WorkflowInvocationFrame = {
-        ...cbFrame,
-        activeNodeId: null,
-        status: 'completed',
-        completedAt: now,
-        resolvedOutputs: publicOutputs.ok ? publicOutputs.resolvedByPort : Object.freeze({})
-      };
-      staged = upsertInvocationFrame(staged, completedFrame);
-      if (cbFrame.parentInvocationId !== null && cbFrame.parentCallNodeId !== null) {
-        const parentFrame = staged.invocations?.[cbFrame.parentInvocationId];
-        const parentAttempt = attemptsForNode(parentFrame, cbFrame.parentCallNodeId).find(
-          (a) => a.childInvocationId === cbFrame.invocationId
-        );
-        if (parentFrame !== undefined && parentAttempt !== undefined) {
-          await input.completeParent({
-            writer,
-            run: staged,
-            invocationId: parentFrame.invocationId,
-            nodeId: parentAttempt.nodeId,
-            attemptIndex: parentAttempt.attemptIndex,
-            completedAt: now,
-            declaredOutputs: completedFrame.resolvedOutputs,
-            decisionResults: cbState.decisionResults
-          });
+      if (!publicOutputs.ok) {
+        const failedFrame: WorkflowInvocationFrame = {
+          ...cbFrame,
+          activeNodeId: null,
+          status: 'failed',
+          completedAt: now,
+          failureCode: publicOutputs.code
+        };
+        staged = upsertInvocationFrame(staged, failedFrame);
+      } else {
+        const completedFrame: WorkflowInvocationFrame = {
+          ...cbFrame,
+          activeNodeId: null,
+          status: 'completed',
+          completedAt: now,
+          resolvedOutputs: publicOutputs.resolvedByPort
+        };
+        staged = upsertInvocationFrame(staged, completedFrame);
+        if (cbFrame.parentInvocationId !== null && cbFrame.parentCallNodeId !== null) {
+          const parentFrame = staged.invocations?.[cbFrame.parentInvocationId];
+          const parentAttempt = attemptsForNode(parentFrame, cbFrame.parentCallNodeId).find(
+            (a) => a.childInvocationId === cbFrame.invocationId
+          );
+          if (parentFrame !== undefined && parentAttempt !== undefined) {
+            await input.completeParent({
+              writer,
+              run: staged,
+              invocationId: parentFrame.invocationId,
+              nodeId: parentAttempt.nodeId,
+              attemptIndex: parentAttempt.attemptIndex,
+              completedAt: now,
+              declaredOutputs: completedFrame.resolvedOutputs,
+              decisionResults: cbState.decisionResults
+            });
+          }
         }
       }
     } else {

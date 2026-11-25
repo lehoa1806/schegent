@@ -390,7 +390,9 @@ describe('publishing past an accepted run leaves it where it was (invariant 2, F
       'services/workflow-execution/workflow-control-projector.ts',
       'ui/sidebar/connected-run-projector.ts',
       // Feature 103 (FR-040) — pinning versions a retained run still names.
-      'activation/run-provenance-enumeration.ts'
+      'activation/run-provenance-enumeration.ts',
+      // R9 structural invariant validator (validates frozenClosure.catalogVersionsById shapes; never mints).
+      'state/connected-run-invariants.ts'
     ]);
 
     // Comments are stripped first. The claim is about what the code does, and a

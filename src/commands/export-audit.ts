@@ -3,6 +3,11 @@ import * as os from 'os';
 import * as path from 'path';
 import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
 import { ATTEMPT_ID_RE, CAP_EXHAUSTED_CAUSE, PRE_SPAWN_REFUSAL_CAUSE } from '../audit/audit-payload';
+import {
+  AUDIT_CONTAINMENT_POSTURES,
+  AUDIT_EXECUTABLE_TARGETS,
+  AUDIT_PERMISSION_MODES
+} from '../audit/audit-payload-acp-vocab';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import { exportOutcomePayload, type ExportOutcome } from '../contracts/evidence-export-outcome';
 import { isFailureCause } from '../contracts/failure-cause';
@@ -58,7 +63,16 @@ const COUNT_KEYS = new Set([
   // text, so it fits this allowlist's purpose; but it gets a value check below for the reason `cause`
   // does: this function parses whatever bytes are on disk, including a line a build wrote before the
   // projection constrained the field, and a free-form fatal-signature text must not leave through it.
-  'failureCause'
+  'failureCause',
+  // FR-R8-02 / FR-R8-03 (02-02, 03-02) — closed-vocabulary scanner/process authority fields on
+  // `cli-invocation` and bounded stream high-water metrics on `monitor-invocation-summary`.
+  'executableTarget',
+  'containmentPosture',
+  'permissionMode',
+  'streamHighWaterBytes',
+  'streamObservedBytes',
+  'streamPendingHighWaterBytes',
+  'streamTruncated'
 ]);
 
 /**
@@ -151,6 +165,34 @@ function guardedPayloadValue(eventType: string, key: string, value: unknown): un
   // did not write, and exports as `null` rather than being filtered (a rejection is not an absence).
   if (key === 'failureCause') {
     const ok = eventType === 'task-execution-ended' && isFailureCause(value);
+    return ok ? value : null;
+  }
+  if (key === 'executableTarget') {
+    const ok = eventType === 'cli-invocation' && typeof value === 'string' && AUDIT_EXECUTABLE_TARGETS.has(value);
+    return ok ? value : null;
+  }
+  if (key === 'containmentPosture') {
+    const ok = eventType === 'cli-invocation' && typeof value === 'string' && AUDIT_CONTAINMENT_POSTURES.has(value);
+    return ok ? value : null;
+  }
+  if (key === 'permissionMode') {
+    const ok = eventType === 'cli-invocation' && typeof value === 'string' && AUDIT_PERMISSION_MODES.has(value);
+    return ok ? value : null;
+  }
+  if (
+    key === 'streamHighWaterBytes' ||
+    key === 'streamObservedBytes' ||
+    key === 'streamPendingHighWaterBytes'
+  ) {
+    const ok =
+      eventType === 'monitor-invocation-summary' &&
+      typeof value === 'number' &&
+      Number.isSafeInteger(value) &&
+      value >= 0;
+    return ok ? value : null;
+  }
+  if (key === 'streamTruncated') {
+    const ok = eventType === 'monitor-invocation-summary' && typeof value === 'boolean';
     return ok ? value : null;
   }
   return value;

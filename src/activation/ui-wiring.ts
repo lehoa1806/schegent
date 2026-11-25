@@ -148,6 +148,7 @@ export interface Stage2UiWiring {
  * router (which mutates) and the projector (which reads).
  */
 export interface ConnectedRunService extends ConnectedRunPort {
+  getConnectedRun?(connectedRunId: string): ConnectedWorkflowRun | null;
   /** Every connected run, already folded to the shape the snapshot carries. */
   listProjections(): readonly ConnectedRunProjection[];
 }
@@ -274,6 +275,7 @@ export function createConnectedRunService(
     readChildState(store, history, queueItemId);
   return {
     get: (connectedRunId) => store.getConnectedRun(connectedRunId),
+    getConnectedRun: (connectedRunId) => store.getConnectedRun(connectedRunId),
     compareAndSetConnectedRun: (next, expectedRevision) =>
       store.compareAndSetConnectedRun(next, expectedRevision),
     readChildState: reader,

@@ -384,6 +384,9 @@ const monitorHook: MonitorSidecarHook = (event) => {
         ...(event.attemptId !== undefined ? { attemptId: event.attemptId } : {}),
         ...(event.streamHighWaterBytes !== undefined ? { streamHighWaterBytes: event.streamHighWaterBytes } : {}),
         ...(event.streamObservedBytes !== undefined ? { streamObservedBytes: event.streamObservedBytes } : {}),
+        ...(event.streamPendingHighWaterBytes !== undefined
+          ? { streamPendingHighWaterBytes: event.streamPendingHighWaterBytes }
+          : {}),
         ...(event.streamTruncated !== undefined ? { streamTruncated: event.streamTruncated } : {})
       },
       // Feature 093 BUG-001 (T103) — which child exited, so the monitor can

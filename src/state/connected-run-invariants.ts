@@ -61,6 +61,8 @@ const AGGREGATE_KEYS: ReadonlySet<string> = new Set([
   'graph',
   'inputEnvelopes',
   'invocations',
+  'laneId',
+  'laneRootRef',
   'launchContext',
   'nodes',
   'pendingHandoff',
@@ -448,6 +450,27 @@ function assertInvocationFrame(invId: string, frame: unknown): void {
       if (!isNonEmptyString(attempt.attemptId)) {
         fail(`invocation frame ${invId} attempt in ${nodeKey} must have a non-empty string attemptId`);
       }
+      if (attempt.nodeId !== undefined && (!isNonEmptyString(attempt.nodeId) || !isSafeNodeKey(attempt.nodeId))) {
+        fail(`invocation frame ${invId} attempt ${attempt.attemptId} has invalid nodeId`);
+      }
+      if (attempt.nodeKind !== undefined && attempt.nodeKind !== 'phase' && attempt.nodeKind !== 'workflow') {
+        fail(`invocation frame ${invId} attempt ${attempt.attemptId} has invalid nodeKind`);
+      }
+      if (
+        attempt.attemptIndex !== undefined &&
+        (typeof attempt.attemptIndex !== 'number' || !Number.isInteger(attempt.attemptIndex) || attempt.attemptIndex < 1)
+      ) {
+        fail(`invocation frame ${invId} attempt ${attempt.attemptId} attemptIndex must be a positive integer`);
+      }
+      if (attempt.startedAt !== undefined && !isFiniteNumber(attempt.startedAt)) {
+        fail(`invocation frame ${invId} attempt ${attempt.attemptId} startedAt must be a finite number`);
+      }
+      if (attempt.declaredOutputs !== undefined && !isPlainRecord(attempt.declaredOutputs)) {
+        fail(`invocation frame ${invId} attempt ${attempt.attemptId} declaredOutputs must be a plain object`);
+      }
+      if (attempt.inputEnvelope !== undefined && !isPlainRecord(attempt.inputEnvelope)) {
+        fail(`invocation frame ${invId} attempt ${attempt.attemptId} inputEnvelope must be a plain object`);
+      }
       if (typeof attempt.status !== 'string' || !VALID_NODE_ATTEMPT_STATUSES.has(attempt.status)) {
         fail(`invocation frame ${invId} attempt ${attempt.attemptId} has invalid status`);
       }
@@ -532,10 +555,37 @@ function assertOptionalFields(
       ) {
         fail(`frozenClosure.workflowsById.${wfKey} must be a valid workflow definition object`);
       }
+      for (const wfNode of wf.nodes) {
+        if (!isPlainRecord(wfNode) || !isNonEmptyString(wfNode.nodeId) || !isSafeNodeKey(wfNode.nodeId)) {
+          fail(`frozenClosure.workflowsById.${wfKey}.nodes entries must be plain objects with a safe non-empty string nodeId`);
+        }
+      }
+      for (const wfConn of wf.connections) {
+        if (!isPlainRecord(wfConn)) {
+          fail(`frozenClosure.workflowsById.${wfKey}.connections entries must be plain objects`);
+        }
+      }
+    }
+    if (run.frozenClosure.catalogVersionsById !== undefined) {
+      if (!isPlainRecord(run.frozenClosure.catalogVersionsById)) {
+        fail('frozenClosure.catalogVersionsById must be a plain object');
+      }
+      assertSafeRecordKeys(run.frozenClosure.catalogVersionsById, 'frozenClosure.catalogVersionsById');
+      for (const [verKey, verRef] of Object.entries(run.frozenClosure.catalogVersionsById)) {
+        if (!isPlainRecord(verRef) || !isNonEmptyString(verRef.versionId)) {
+          fail(`frozenClosure.catalogVersionsById.${verKey} must be a plain object with a non-empty string versionId`);
+        }
+      }
     }
     for (const [phaseKey, phase] of Object.entries(run.frozenClosure.phasesById)) {
       if (!isPlainRecord(phase)) fail(`frozenClosure.phasesById.${phaseKey} must be a plain object`);
     }
+  }
+  if (run.laneId !== undefined && !isNonEmptyString(run.laneId)) {
+    fail('laneId must be a non-empty string when present');
+  }
+  if (run.laneRootRef !== undefined && !isNonEmptyString(run.laneRootRef)) {
+    fail('laneRootRef must be a non-empty string when present');
   }
   if (run.invocations !== undefined) {
     if (!isObjectWithFreeze(run.invocations, requireFrozen)) {
@@ -556,7 +606,8 @@ function assertOptionalFields(
         !isNonEmptyString(env.envelopeId) ||
         !isNonEmptyString(env.invocationId) ||
         !isNonEmptyString(env.targetNodeId) ||
-        !isFiniteNumber(env.acceptedAt)
+        !isFiniteNumber(env.acceptedAt) ||
+        (env.inputsByPort !== undefined && !isPlainRecord(env.inputsByPort))
       ) {
         fail('inputEnvelopes entries must be valid envelope objects');
       }

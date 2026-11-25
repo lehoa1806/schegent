@@ -195,11 +195,13 @@ export function accumulateSpend(
     usage.outputTokens.kind === 'rejected' ||
     usage.cacheCreationInputTokens.kind === 'rejected' ||
     usage.cacheReadInputTokens.kind === 'rejected';
+  const missingPrimaryTokens =
+    usage.inputTokens.kind !== 'present' && usage.outputTokens.kind !== 'present';
   const missingUsdRows =
     prev.missingUsdRows === true || (!nonInvocationRow && usage.costUsd.kind !== 'present');
   const missingTokenRows =
     prev.missingTokenRows === true ||
-    (!nonInvocationRow && (rowTokens === undefined || anyRejectedTokenField));
+    (!nonInvocationRow && (rowTokens === undefined || anyRejectedTokenField || missingPrimaryTokens));
   return {
     costUsd,
     totalTokens: tokens,

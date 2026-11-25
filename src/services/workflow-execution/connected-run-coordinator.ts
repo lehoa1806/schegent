@@ -315,6 +315,9 @@ async function dispatchNodeInternal(
         `Workflow '${frame.workflowId}' control '${workflow.control.kind}' execution is not supported on this path.`
       );
     }
+    if (deps.candidateBlockExecutor === undefined && (deps.controlAdmission !== undefined || workflow.connections.length === 0)) {
+      return failFrameAndPropagate(deps, run, expectedRevision, frame, startedAt, 'missing-collaborator', `Workflow '${frame.workflowId}' requires candidateBlockExecutor.`);
+    }
     if (deps.candidateBlockExecutor !== undefined) {
       return orchestrateCandidateBlockDispatch<ComposableWorkflowStepResult>(
         {
@@ -873,24 +876,29 @@ async function settleAttemptInternal(
   });
   const frameWithAttempt = recordNodeAttempt(frame, settledAttempt);
 
-  if (workflow.control?.kind === 'candidate-block' && deps.candidateBlockExecutor !== undefined) {
-    return orchestrateCandidateBlockSettlement<ComposableWorkflowStepResult>(
-      {
-        executor: deps.candidateBlockExecutor, resolveExecutionFence: deps.resolveExecutionFence, resolveCandidateSpec: deps.resolveCandidateSpec,
-        onCompleted: (r, outputs) => ({ outcome: 'workflow-completed', run: r, outputs }),
-        onPaused: (r, invId, pauseCause) => ({ outcome: 'workflow-paused', run: r, invocationId: invId, pauseCause }),
-        persistRunStep: (next, rev, build, releasePins) =>
-          persistRunStep(deps.connectedRuns, next, rev, build, releasePins ? terminalPinCommitCallback(deps) : undefined),
-        cancelFrameAndPropagate: (r, rev, f, at) => cancelFrameAndPropagate(deps, r, rev, f, at),
-        failFrameAndPropagate: (r, rev, f, at, code, detail) => failFrameAndPropagate(deps, r, rev, f, at, code, detail),
-        dispatchNext: (r, rev, invId, entry, at) => dispatchNodeInternal(deps, r, rev, invId, entry, at),
-        settleParent: (r, rev, pInv, pNode, pIdx, at, outputs, decs) =>
-          settleAttemptInternal(deps, r, rev, pInv, pNode, pIdx, 'completed', at, outputs, undefined, undefined, decs),
-        markRootCompleted: (r, at) => notifyRootControlTerminal(deps, r, 'completed', at),
-        onStale: (r, reason) => ({ outcome: 'rejected-stale', current: r, reason })
-      },
-      { run, expectedRevision, frame: frameWithAttempt, workflow, control: workflow.control, nodeId, settledAttempt, status, completedAt, declaredOutputs, decisionResults, verdict, failureCode, extras: candidateExtras }
-    );
+  if (workflow.control?.kind === 'candidate-block') {
+    if (deps.candidateBlockExecutor === undefined && (deps.controlAdmission !== undefined || workflow.connections.length === 0)) {
+      return failFrameAndPropagate(deps, run, expectedRevision, frameWithAttempt, completedAt, 'missing-collaborator', `Workflow '${frame.workflowId}' requires candidateBlockExecutor.`);
+    }
+    if (deps.candidateBlockExecutor !== undefined) {
+      return orchestrateCandidateBlockSettlement<ComposableWorkflowStepResult>(
+        {
+          executor: deps.candidateBlockExecutor, resolveExecutionFence: deps.resolveExecutionFence, resolveCandidateSpec: deps.resolveCandidateSpec,
+          onCompleted: (r, outputs) => ({ outcome: 'workflow-completed', run: r, outputs }),
+          onPaused: (r, invId, pauseCause) => ({ outcome: 'workflow-paused', run: r, invocationId: invId, pauseCause }),
+          persistRunStep: (next, rev, build, releasePins) =>
+            persistRunStep(deps.connectedRuns, next, rev, build, releasePins ? terminalPinCommitCallback(deps) : undefined),
+          cancelFrameAndPropagate: (r, rev, f, at) => cancelFrameAndPropagate(deps, r, rev, f, at),
+          failFrameAndPropagate: (r, rev, f, at, code, detail) => failFrameAndPropagate(deps, r, rev, f, at, code, detail),
+          dispatchNext: (r, rev, invId, entry, at) => dispatchNodeInternal(deps, r, rev, invId, entry, at),
+          settleParent: (r, rev, pInv, pNode, pIdx, at, outputs, decs) =>
+            settleAttemptInternal(deps, r, rev, pInv, pNode, pIdx, 'completed', at, outputs, undefined, undefined, decs),
+          markRootCompleted: (r, at) => notifyRootControlTerminal(deps, r, 'completed', at),
+          onStale: (r, reason) => ({ outcome: 'rejected-stale', current: r, reason })
+        },
+        { run, expectedRevision, frame: frameWithAttempt, workflow, control: workflow.control, nodeId, settledAttempt, status, completedAt, declaredOutputs, decisionResults, verdict, failureCode, extras: candidateExtras }
+      );
+    }
   }
 
   if (

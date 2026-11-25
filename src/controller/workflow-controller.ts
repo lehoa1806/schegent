@@ -179,6 +179,7 @@ export class SchegentWorkflowController {
   private readonly terminalTransitions: WorkflowControllerDeps['terminalTransitions'];
   private readonly requestGitApproval: WorkflowControllerDeps['requestGitApproval'];
   private readonly spendWatcher: WorkflowControllerDeps['spendWatcher'];
+  private readonly onRunLaneResumed: WorkflowControllerDeps['onRunLaneResumed'];
   /** FR-R3-146 — window-lived, because its bound is one grant per kind per window. */
   private readonly consent: UncontainedConsentGate;
   private readonly runFactory: WorkflowRunFactory;
@@ -208,6 +209,7 @@ export class SchegentWorkflowController {
     this.terminalTransitions = deps.terminalTransitions;
     this.requestGitApproval = deps.requestGitApproval;
     this.spendWatcher = deps.spendWatcher;
+    this.onRunLaneResumed = deps.onRunLaneResumed;
     this.consent = new UncontainedConsentGate(deps.requestUncontainedConsent, (r) => logger.sanitize(r), deps.recordContainmentAcceptance);
     this.runFactory = new WorkflowRunFactory({
       getCatalog: () => this.catalog,
@@ -788,6 +790,7 @@ export class SchegentWorkflowController {
     if (next === 'ineligible') return NOT_RESUMED_INELIGIBLE;
     if (next === null) return NOT_RESUMED;
     this.spendWatcher?.onRunResumed(next.id);
+    this.onRunLaneResumed?.(next.id);
     await this.queue.markInFlight(feature.id, next.id, true);
     // Admitted. `driveSession` carries its own `finally` disposal, so the drive
     // is handed back rather than awaited (T049a). FR-R3-146 (FR-002, FR-005): a

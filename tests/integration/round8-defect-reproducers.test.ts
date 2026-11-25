@@ -29,13 +29,15 @@ import {
   reconcileBridgeTurnOutcome,
   rpcCodeForBridgeErrorStatus
 } from '../../src/services/acp-runtime/terminal-reconciliation';
+import { parseStrictBillableTokens } from '../../src/services/acp-runtime/bridges/acp-stdio-bridge-helpers';
 import { createRunLaneCoordinator, type LaneService } from '../../src/services/execution-lanes';
 import { GuardedRunService } from '../../src/services/guarded-run-service';
 import { parseDocumentBytes } from '../../src/services/process-yaml/yaml-parser';
 import { parseWorkflowPackage } from '../../src/services/process-yaml/workflow-document';
 import { phaseDefinitionFromDocument } from '../../src/services/process-yaml/phase-yaml-mapper';
-import { evaluateSpend } from '../../src/services/spend-bound';
+import { accumulateSpend, evaluateSpend, NO_SPEND_OBSERVED } from '../../src/services/spend-bound';
 import { SqliteApplicationStore } from '../../src/services/sqlite-store';
+import { dispatchComposableNode } from '../../src/services/workflow-execution/connected-run-coordinator';
 import {
   createProductionWorkflowComposition,
   registerProductionWorkflowComposition,
@@ -43,11 +45,13 @@ import {
 } from '../../src/services/workflow-execution/production-workflow-composition';
 import { createWorkflowLeafControlHooks } from '../../src/services/workflow-execution/workflow-leaf-control';
 import { launchWorkflow } from '../../src/services/workflow-execution/workflow-launcher';
+import { KEYS } from '../../src/state/workspace-state-types';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { WorkspaceLockManager, type Scheduler } from '../../src/state/lock';
 import { createDiskOwnershipFs } from '../../src/state/ownership-fs';
 import { createSwitchableOperationalMemento } from '../../src/state/sqlite-operational-backing';
 import type { WorkflowRun } from '../../src/state/workflow-run';
+import { pauseInvocationControlMarkers } from '../../src/state/connected-workflow-run';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { removeTempRoot } from '../temp-root-cleanup';
 
@@ -622,5 +626,346 @@ describe('FR-R8-04 (04-06) — controlled-regression-vs-fix reproducers for all 
       pendingBacklogOverflowed: false
     });
     expect(clean).toEqual({ outcome: 'completed', stopReason: 'end_turn' });
+  });
+
+  it('7. Follow-up regressions (R1/R3/R7): duplicate connectedRunId via .get(), requireDurableBatch controlLedger, cache-only tokens, quota-free candidate fallback, resume, and missing executor fail-closed', async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-repro-followup-'));
+    const dbPath = path.join(tmpRoot, 'state.db');
+    const ownershipDir = path.join(tmpRoot, '.schegent', 'ownership');
+    const sqlite = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+    const memento = createSwitchableOperationalMemento(createMemoryMemento());
+    memento.attachSqlite(sqlite, 'repro-followup');
+    const store = new WorkspaceStateStore(memento);
+    store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot: tmpRoot, ownershipDir }), ownershipDir);
+    await store.initialize();
+    const lock = new WorkspaceLockManager(store, 'win-followup', { now: () => Date.now() }, noopScheduler);
+    expect((await lock.tryAcquire()).acquired).toBe(true);
+    store.bindPrimacyClaimSource(lock);
+    const lease = new ExecutionLeaseManager(store, 'win-followup', { now: () => Date.now() }, noopScheduler);
+    expect((await lease.tryAcquire('default')).acquired).toBe(true);
+    store.bindRunClaimSource(lease);
+    const queue = new QueueManager(store);
+    const logger = new SanitizedLogger();
+    const guardedRun = new GuardedRunService({
+      isWorkspaceTrusted: () => true,
+      lock,
+      queue,
+      controller: { getCatalog: makeEmptyCatalog },
+      logger,
+      store,
+      catalogProvider: makeEmptyCatalog
+    });
+    const composition = createProductionWorkflowComposition({
+      store,
+      workspaceRoot: tmpRoot,
+      isWorkspaceTrusted: () => true,
+      ...createDesktopOwnershipFenceForStore(store),
+      requireLiveFenceVerifier: true
+    });
+    registerProductionWorkflowComposition(store, composition);
+    disposers.push(async () => {
+      unregisterProductionWorkflowComposition(store, composition);
+      composition.dispose();
+      await lock.release();
+      memento.detachSqlite();
+      sqlite.close();
+      await removeTempRoot(tmpRoot);
+    });
+
+    // R1-a: requireDurableBatch refuses KEYS.controlLedger writes before touching legacyMemento.
+    const rawMem = createMemoryMemento();
+    const switchable = createSwitchableOperationalMemento(rawMem, undefined, { requireDurableBatch: true });
+    await expect(switchable.update(KEYS.controlLedger, { version: 1, roots: {} })).rejects.toMatchObject({
+      reason: 'durable-store-unavailable'
+    });
+    expect(rawMem.get(KEYS.controlLedger)).toBeUndefined();
+
+    // R1-b: Duplicate connectedRunId through a `.get()`-only ConnectedRunWriter deduplicates
+    // cleanly without marking the live ControlLedger root terminal/failed.
+    const simplePhase: PhaseDefinition = { phaseId: 'phase-dup-r1', version: 1, name: 'Dup R1', runner: 'claude', instruction: 'Run dup' };
+    const simpleWorkflow: WorkflowDefinition = {
+      workflowId: 'wf-dup-r1',
+      version: 1,
+      name: 'Dup WF',
+      startNodeIds: ['n1'],
+      nodes: [{ nodeId: 'n1', kind: 'phase', phaseId: 'phase-dup-r1' }],
+      connections: [{ from: { nodeId: 'n1' }, to: { nodeId: '', kind: 'return' }, handoff: 'auto', priority: 0 }]
+    };
+    const first = await launchWorkflow(
+      {
+        connectedRuns: {
+          get: (id) => store.getConnectedRun(id),
+          compareAndSetConnectedRun: (next, rev) => store.compareAndSetConnectedRun(next, rev)
+        },
+        isChildSettled: () => false,
+        guardedRun,
+        logger,
+        productionComposition: composition
+      },
+      {
+        connectedRunId: 'conn-dup-live',
+        workflow: simpleWorkflow,
+        catalog: makeEmptyCatalog(),
+        effectiveWorkflows: [simpleWorkflow],
+        effectivePhases: [simplePhase],
+        startNodeId: 'n1',
+        request: { pipelineId: simpleWorkflow.workflowId, inputs: [], supplemental: [], outputs: [] },
+        workspaceRoot: tmpRoot,
+        startedAt: 20_000,
+        queueId: 'default'
+      }
+    );
+    expect(first.outcome).toBe('started');
+    const dup = await launchWorkflow(
+      {
+        connectedRuns: {
+          get: (id) => store.getConnectedRun(id),
+          compareAndSetConnectedRun: (next, rev) => store.compareAndSetConnectedRun(next, rev)
+        },
+        isChildSettled: () => false,
+        guardedRun,
+        logger,
+        productionComposition: composition
+      },
+      {
+        connectedRunId: 'conn-dup-live',
+        workflow: simpleWorkflow,
+        catalog: makeEmptyCatalog(),
+        effectiveWorkflows: [simpleWorkflow],
+        effectivePhases: [simplePhase],
+        startNodeId: 'n1',
+        request: { pipelineId: simpleWorkflow.workflowId, inputs: [], supplemental: [], outputs: [] },
+        workspaceRoot: tmpRoot,
+        startedAt: 20_100,
+        queueId: 'default'
+      }
+    );
+    expect(dup.outcome).toBe('started');
+    expect(composition.ledgerStore.getRoot('conn-dup-live')?.status).not.toBe('failed');
+    expect(store.getQueue('default').requests.filter((r) => r.status !== 'canceled')).toHaveLength(1);
+
+    // R3-a: Cache-only token subset (missing both input_tokens and output_tokens) never evaluates `within`.
+    expect(
+      parseStrictBillableTokens({
+        inputTokens: undefined,
+        outputTokens: undefined,
+        cacheCreationInputTokens: undefined,
+        cacheReadInputTokens: 0
+      })
+    ).toBeUndefined();
+    const cacheOnlySpend = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { cacheReadInputTokens: 0 } },
+      'row-cache-only'
+    );
+    expect(
+      evaluateSpend(cacheOnlySpend, { limitUsd: null, limitTokens: 1_000 }, 'tokens')
+    ).toEqual({ kind: 'incomplete', denomination: 'tokens', reason: 'missing-usage' });
+
+    // R7-a: Rate-limited primary with NO external quotaIds and NO resetsAtMs immediately cools
+    // down and falls back to Candidate 2 instead of re-dispatching Candidate 1.
+    const candPhase1: PhaseDefinition = { phaseId: 'p-cand-1', version: 1, name: 'Cand 1', runner: 'claude', instruction: 'Run 1' };
+    const candPhase2: PhaseDefinition = { phaseId: 'p-cand-2', version: 1, name: 'Cand 2', runner: 'codex', instruction: 'Run 2' };
+    const candWorkflow: WorkflowDefinition = {
+      workflowId: 'wf-cand-no-quota',
+      name: 'No-Quota Candidate Fallback',
+      version: 1,
+      inputs: [],
+      outputs: [],
+      nodes: [
+        { nodeId: 'n-c1', kind: 'phase', phaseId: 'p-cand-1' },
+        { nodeId: 'n-c2', kind: 'phase', phaseId: 'p-cand-2' }
+      ],
+      connections: [],
+      startNodeIds: ['n-c1', 'n-c2'],
+      control: {
+        version: 1,
+        kind: 'candidate-block',
+        availabilityPolicy: 'first-ready',
+        maxDispatches: 4,
+        candidates: [
+          {
+            candidateId: 'cand-1',
+            nodeId: 'n-c1',
+            priority: 1,
+            maxAttempts: 3,
+            retry: { initialDelayMs: 5_000, multiplier: 2, maxDelayMs: 30_000 },
+            allowUnverifiedTrial: true
+          },
+          {
+            candidateId: 'cand-2',
+            nodeId: 'n-c2',
+            priority: 2,
+            maxAttempts: 2,
+            allowUnverifiedTrial: true
+          }
+        ]
+      }
+    };
+    const candLaunch = await launchWorkflow(
+      {
+        connectedRuns: store,
+        isChildSettled: () => false,
+        guardedRun,
+        logger,
+        productionComposition: composition
+      },
+      {
+        connectedRunId: 'conn-cand-no-quota',
+        workflow: candWorkflow,
+        catalog: makeEmptyCatalog(),
+        effectiveWorkflows: [candWorkflow],
+        effectivePhases: [candPhase1, candPhase2],
+        startNodeId: 'n-c1',
+        request: { pipelineId: candWorkflow.workflowId, inputs: [], supplemental: [], outputs: [] },
+        workspaceRoot: tmpRoot,
+        startedAt: 21_000,
+        queueId: 'default'
+      }
+    );
+    expect(candLaunch.outcome).toBe('started');
+    if (candLaunch.outcome !== 'started') return;
+
+    const failedRateLimit: WorkflowRun = {
+      id: `leaf-${candLaunch.queueItemId}`,
+      featureId: candLaunch.queueItemId,
+      featureDir: `specs/${candLaunch.queueItemId}`,
+      status: 'failed',
+      currentPhase: 'p-cand-1',
+      currentIteration: 1,
+      startedAt: 21_100,
+      lastTransitionAt: 21_200,
+      phasesCompleted: [],
+      lastError: { code: 'rate-limit', message: '429', phase: 'p-cand-1', iteration: 1, at: 21_200 },
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      creditPause: null,
+      delayedRetryCount: 0,
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseOverrides: [],
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun('default', failedRateLimit, store.runClaimFor('default')!);
+    await recordConnectedWorkflowTransition(
+      {
+        store,
+        getGuardedRun: () => guardedRun,
+        logger,
+        workspaceRoot: tmpRoot,
+        productionComposition: composition
+      },
+      failedRateLimit
+    );
+    const afterRateLimit = store.getConnectedRun('conn-cand-no-quota')!;
+    const candRootFrame = Object.values(afterRateLimit.invocations ?? {}).find(
+      (f) => f.parentInvocationId === null
+    )!;
+    expect(candRootFrame.attemptsByNodeId['n-c1']).toHaveLength(1);
+    expect(candRootFrame.attemptsByNodeId['n-c2']).toHaveLength(1);
+
+    // R7-b: Missing candidateBlockExecutor in dispatchComposableNode fails closed (`missing-collaborator`).
+    const missingExecRes = await dispatchComposableNode(
+      {
+        connectedRuns: store,
+        dispatchPhase: async () => ({ outcome: 'dispatched', queueItemId: 'should-not-run' })
+      },
+      {
+        run: afterRateLimit,
+        invocationId: candRootFrame.invocationId,
+        nodeId: 'n-c1',
+        startedAt: 22_000
+      }
+    );
+    expect(missingExecRes.outcome).toBe('workflow-failed');
+    if (missingExecRes.outcome === 'workflow-failed') {
+      expect(missingExecRes.failureCode).toBe('missing-collaborator');
+    }
+
+    // R7-c: Resuming a paused candidate-block frame whose latest leaf attempt is `failed`
+    // steps into dispatchComposableNode instead of wedging in `in-flight`.
+    const pausedLaunch = await launchWorkflow(
+      {
+        connectedRuns: store,
+        isChildSettled: () => false,
+        guardedRun,
+        logger,
+        productionComposition: composition
+      },
+      {
+        connectedRunId: 'conn-cand-resume',
+        workflow: candWorkflow,
+        catalog: makeEmptyCatalog(),
+        effectiveWorkflows: [candWorkflow],
+        effectivePhases: [candPhase1, candPhase2],
+        startNodeId: 'n-c1',
+        request: { pipelineId: candWorkflow.workflowId, inputs: [], supplemental: [], outputs: [] },
+        workspaceRoot: tmpRoot,
+        startedAt: 23_000,
+        queueId: 'default'
+      }
+    );
+    expect(pausedLaunch.outcome).toBe('started');
+    if (pausedLaunch.outcome !== 'started') return;
+    const pausedRun0 = store.getConnectedRun('conn-cand-resume')!;
+    const pausedFrame0 = Object.values(pausedRun0.invocations ?? {}).find(
+      (f) => f.parentInvocationId === null
+    )!;
+    const firstAttempt = pausedFrame0.attemptsByNodeId['n-c1']![0]!;
+    await composition.candidateBlockExecutor.settleCandidateAttempt({
+      rootRunId: 'conn-cand-resume',
+      frameKey: pausedFrame0.invocationId,
+      attemptId: firstAttempt.attemptId,
+      candidateId: 'cand-1',
+      fence: composition.ledgerStore.getRoot('conn-cand-resume')!.fence,
+      outcome: 'permanent-failure',
+      failureCode: 'auth-failed'
+    });
+    const pausedRun = Object.freeze({
+      ...pausedRun0,
+      revision: pausedRun0.revision + 1,
+      invocations: Object.freeze({
+        ...pausedRun0.invocations!,
+        [pausedFrame0.invocationId]: Object.freeze({
+          ...pausedFrame0,
+          status: 'paused' as const,
+          controlMarkers: pauseInvocationControlMarkers(pausedFrame0.controlMarkers, 23_100, 'operator-pause'),
+          attemptsByNodeId: Object.freeze({
+            ...pausedFrame0.attemptsByNodeId,
+            'n-c1': Object.freeze([
+              Object.freeze({ ...firstAttempt, status: 'failed' as const, completedAt: 23_100 })
+            ])
+          })
+        })
+      })
+    });
+    const pausedWrite = await store.compareAndSetConnectedRun(pausedRun, pausedRun0.revision);
+    expect(pausedWrite.outcome).toBe('written');
+
+    let resumedDispatches = 0;
+    const controlService = composition.createControlService({
+      workspaceRoot: tmpRoot,
+      connectedRuns: {
+        get: (id) => store.getConnectedRun(id),
+        compareAndSetConnectedRun: (next, rev) => store.compareAndSetConnectedRun(next, rev)
+      },
+      dispatchPhase: async () => {
+        resumedDispatches += 1;
+        return { outcome: 'dispatched', queueItemId: `resumed-q-${resumedDispatches}` };
+      }
+    });
+    const resumed = await controlService.executeCommand({
+      commandId: 'cmd-resume-cand-1',
+      runId: 'conn-cand-resume',
+      operation: 'resume',
+      targetInvocationId: pausedFrame0.invocationId,
+      expectedRevision: pausedRun.revision,
+      now: 23_200
+    });
+    expect(resumed.accepted).toBe(true);
+    expect(resumedDispatches).toBe(1);
+    const afterResumeFrame = store.getConnectedRun('conn-cand-resume')?.invocations?.[pausedFrame0.invocationId];
+    expect(afterResumeFrame?.attemptsByNodeId['n-c2']).toHaveLength(1);
   });
 });

@@ -20,17 +20,23 @@ export const ACP_RECORDABLE_PHASE_END_WARNINGS: readonly string[] = Object.freez
   'acp-verbose-tee-overflow'
 ]);
 
-const EXECUTABLE_TARGETS: ReadonlySet<string> = new Set([
+export const AUDIT_EXECUTABLE_TARGETS: ReadonlySet<string> = new Set([
   'claude',
   'codex',
   'agy',
   'codex-security'
 ]);
 
-const CONTAINMENT_POSTURES: ReadonlySet<string> = new Set([
+export const AUDIT_CONTAINMENT_POSTURES: ReadonlySet<string> = new Set([
   'contained',
   'accepted-uncontained',
   'accepted-unqualified'
+]);
+
+export const AUDIT_PERMISSION_MODES: ReadonlySet<string> = new Set([
+  'unrestricted',
+  'workspace-write',
+  'read-only'
 ]);
 
 export function projectExecutableTargetAndPosture(
@@ -45,7 +51,7 @@ export function projectExecutableTargetAndPosture(
   if (payload.executableTarget !== undefined) {
     if (
       typeof payload.executableTarget !== 'string' ||
-      !EXECUTABLE_TARGETS.has(payload.executableTarget)
+      !AUDIT_EXECUTABLE_TARGETS.has(payload.executableTarget)
     ) {
       throw new AuditPayloadValidationError('invalid-executable-target');
     }
@@ -55,7 +61,7 @@ export function projectExecutableTargetAndPosture(
   if (payload.containmentPosture !== undefined) {
     if (
       typeof payload.containmentPosture !== 'string' ||
-      !CONTAINMENT_POSTURES.has(payload.containmentPosture)
+      !AUDIT_CONTAINMENT_POSTURES.has(payload.containmentPosture)
     ) {
       throw new AuditPayloadValidationError('invalid-containment-posture');
     }

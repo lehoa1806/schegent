@@ -152,12 +152,8 @@ function billableTokensOf(update: Fields): AcpBillableTokens | undefined {
   const outputTokens = raw['outputTokens'] as number | undefined;
   const cacheCreationInputTokens = raw['cacheCreationInputTokens'] as number | undefined;
   const cacheReadInputTokens = raw['cacheReadInputTokens'] as number | undefined;
-  if (
-    inputTokens === undefined &&
-    outputTokens === undefined &&
-    cacheCreationInputTokens === undefined &&
-    cacheReadInputTokens === undefined
-  ) {
+  // Require at least one primary input/output counter so cache-only subsets never spoof `within`.
+  if (inputTokens === undefined && outputTokens === undefined) {
     return undefined;
   }
   return Object.freeze({

@@ -187,6 +187,8 @@ export type MonitorSidecarEvent =
       readonly streamHighWaterBytes?: number;
       /** FR-R8-03 (03-02) — total raw stream bytes observed across stdout/stderr buffers. */
       readonly streamObservedBytes?: number;
+      /** Peak unconsumed/pending stream bytes observed under ACP backpressure. */
+      readonly streamPendingHighWaterBytes?: number;
       /** FR-R8-03 (03-02) — whether either bounded stream buffer truncated output. */
       readonly streamTruncated?: boolean;
     }

@@ -515,9 +515,49 @@ export function reconcileAcpPromptOutcome(params: {
   readonly killed: boolean;
   readonly timedOut: boolean;
   readonly deadlineExceeded: boolean;
+  readonly nativeAbnormalExit?: {
+    readonly code: number | null;
+    readonly signal: NodeJS.Signals | null;
+  } | null;
 }): ReconciledAcpPromptOutcome {
-  const { outcome, isNativeReview, isBridgeProfile, hasOpenWork, killed, timedOut, deadlineExceeded } = params;
+  const {
+    outcome,
+    isNativeReview,
+    isBridgeProfile,
+    hasOpenWork,
+    killed,
+    timedOut,
+    deadlineExceeded,
+    nativeAbnormalExit
+  } = params;
   if (outcome.kind === 'completed') {
+    const hasNativeAbnormalExit =
+      !isBridgeProfile &&
+      nativeAbnormalExit !== undefined &&
+      nativeAbnormalExit !== null &&
+      ((nativeAbnormalExit.code !== null && nativeAbnormalExit.code !== 0) ||
+        nativeAbnormalExit.signal !== null);
+    if (hasNativeAbnormalExit) {
+      return {
+        emitUsageLine: false,
+        sawTerminalResult: true,
+        acpTurnSettled: false,
+        backgroundWorkOpenAtResult: false,
+        markKilled: false,
+        exitCode:
+          nativeAbnormalExit.code !== null && nativeAbnormalExit.code !== 0
+            ? nativeAbnormalExit.code
+            : 1,
+        warnings: ['acp-contradictory-exit'],
+        terminalReconciliation: {
+          status: 'contradictory-exit',
+          stopReason: outcome.stopReason,
+          processExitCode: nativeAbnormalExit.code,
+          processSignal: nativeAbnormalExit.signal,
+          warningCode: 'acp-contradictory-exit'
+        }
+      };
+    }
     if (outcome.stopReason === 'refusal') {
       return {
         emitUsageLine: true,
