@@ -858,13 +858,9 @@ export class AcpBackedRunner implements BackendRunner {
 
               obsBridge.recordPromptOutcome(activeSessionId, outcome);
               const rec = reconcileAcpPromptOutcome({
-                outcome,
-                isNativeReview: request.review !== undefined,
-                isBridgeProfile,
-                hasOpenWork: openWorkTracker.hasOpenWork,
-                killed,
-                timedOut,
-                deadlineExceeded
+                outcome, isNativeReview: request.review !== undefined, isBridgeProfile,
+                hasOpenWork: openWorkTracker.hasOpenWork, killed, timedOut, deadlineExceeded,
+                nativeAbnormalExit: !isBridgeProfile ? (transport?.getExitInfo?.() ?? null) : null
               });
               if (rec.emitUsageLine) {
                 emittedUsageLine = true;
@@ -918,6 +914,7 @@ export class AcpBackedRunner implements BackendRunner {
           ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
           streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
           streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+          streamPendingHighWaterBytes: backpressure.streamPendingHighWaterBytes,
           streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
         });
       }

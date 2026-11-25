@@ -892,6 +892,79 @@ describe('connected run — structural guards never throw raw TypeError (FR-R8-0
             )
           })
         }
+      ],
+      [
+        'frozenClosure workflow nodes contains null element',
+        {
+          ...base,
+          frozenClosure: Object.freeze({
+            workflowsById: Object.freeze({
+              'wf-triage': Object.freeze({
+                workflowId: 'wf-triage',
+                nodes: Object.freeze([null]),
+                connections: Object.freeze([])
+              })
+            }),
+            phasesById: Object.freeze({})
+          })
+        }
+      ],
+      [
+        'frozenClosure catalogVersionsById entry is null',
+        {
+          ...base,
+          frozenClosure: Object.freeze({
+            workflowsById: Object.freeze({}),
+            phasesById: Object.freeze({}),
+            catalogVersionsById: Object.freeze({ 'wf-triage': null })
+          })
+        }
+      ],
+      [
+        'invocation attempt declaredOutputs is null',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root': Object.freeze({
+              ...validFrame,
+              attemptsByNodeId: Object.freeze({
+                'n-triage': Object.freeze([
+                  Object.freeze({
+                    attemptId: 'att-1',
+                    nodeId: 'n-triage',
+                    nodeKind: 'phase',
+                    attemptIndex: 1,
+                    status: 'completed',
+                    startedAt: 1_000,
+                    declaredOutputs: null
+                  })
+                ])
+              })
+            })
+          })
+        }
+      ],
+      [
+        'inputEnvelopes inputsByPort is null',
+        {
+          ...base,
+          inputEnvelopes: Object.freeze([
+            Object.freeze({
+              envelopeId: 'env-1',
+              invocationId: 'inv-root',
+              targetNodeId: 'n-triage',
+              acceptedAt: 1_000,
+              inputsByPort: null
+            })
+          ])
+        }
+      ],
+      [
+        'empty laneId string',
+        {
+          ...base,
+          laneId: ''
+        }
       ]
     ];
 

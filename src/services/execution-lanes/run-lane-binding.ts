@@ -226,6 +226,7 @@ export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneC
       }
     }
   };
+  const terminalOpsByLane = new Map<string, Promise<void>>();
 
   return {
     async provisionForRun(
@@ -349,36 +350,59 @@ export function createRunLaneCoordinator(deps: RunLaneCoordinatorDeps): RunLaneC
     async onRunTerminal(params): Promise<void> {
       const service = deps.getLaneService();
       if (service === null) return;
-      const lane = findLaneForRun(service, params.runId, params.laneId);
-      if (lane === null) return;
-      if (params.status === 'completed') {
-        if (lane.state === 'active') {
-          let freezeFailureCode: string | null = null;
-          try {
-            const frozen = await service.freezeCandidate({ laneId: lane.laneId });
-            if (!frozen.ok && frozen.refusal.reason !== 'candidate-empty') {
-              freezeFailureCode = frozen.refusal.reason;
+      const initialLane = findLaneForRun(service, params.runId, params.laneId);
+      if (initialLane === null) return;
+      const laneKey = initialLane.laneId;
+      const prev = terminalOpsByLane.get(laneKey) ?? Promise.resolve();
+      const runSerialized = prev.catch(() => undefined).then(async () => {
+        const currentService = deps.getLaneService();
+        if (currentService === null) return;
+        let lane = findLaneForRun(currentService, params.runId, laneKey);
+        if (lane === null) return;
+        if (params.status === 'completed') {
+          // A lane paused during an earlier run pause (e.g. unattended or composable resume) must
+          // resume to `active` and attempt candidate freeze before completion — never skip freeze
+          // and close a `paused` lane with uncommitted work left unfrozen.
+          if (lane.state === 'paused') {
+            const resumed = currentService.resumeLane({ laneId: lane.laneId });
+            if (resumed.ok) {
+              lane = resumed.value;
             }
-          } catch (error) {
-            freezeFailureCode = classifyFreezeThrownError(error);
           }
-          if (freezeFailureCode !== null) {
+          if (lane.state === 'active') {
+            let freezeFailureCode: string | null = null;
             try {
-              service.recordFreezeFailure({ laneId: lane.laneId, reason: freezeFailureCode });
-            } catch {
-              // Storage also failed while persisting state_reason; keep the lane active so its
-              // worktree remains live and retryable rather than closing to completed.
+              const frozen = await currentService.freezeCandidate({ laneId: lane.laneId });
+              if (!frozen.ok && frozen.refusal.reason !== 'candidate-empty') {
+                freezeFailureCode = frozen.refusal.reason;
+              }
+            } catch (error) {
+              freezeFailureCode = classifyFreezeThrownError(error);
             }
-            return;
+            if (freezeFailureCode !== null) {
+              try {
+                currentService.recordFreezeFailure({ laneId: lane.laneId, reason: freezeFailureCode });
+              } catch {
+                // Storage also failed while persisting state_reason; keep the lane active so its
+                // worktree remains live and retryable rather than closing to completed.
+              }
+              return;
+            }
+            currentService.completeLane({ laneId: lane.laneId });
+          }
+        } else {
+          cancelPendingRequestsForLane(currentService, lane.laneId);
+          if (lane.state === 'active' || lane.state === 'paused') {
+            currentService.completeLane({ laneId: lane.laneId });
           }
         }
-        if (lane.state === 'active' || lane.state === 'paused') {
-          service.completeLane({ laneId: lane.laneId });
-        }
-      } else {
-        cancelPendingRequestsForLane(service, lane.laneId);
-        if (lane.state === 'active' || lane.state === 'paused') {
-          service.completeLane({ laneId: lane.laneId });
+      });
+      terminalOpsByLane.set(laneKey, runSerialized);
+      try {
+        await runSerialized;
+      } finally {
+        if (terminalOpsByLane.get(laneKey) === runSerialized) {
+          terminalOpsByLane.delete(laneKey);
         }
       }
     },

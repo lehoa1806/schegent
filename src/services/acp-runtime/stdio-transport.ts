@@ -55,6 +55,8 @@ export interface StdioLaunch {
 export interface AcpStdioTransport extends AcpTransport {
   readonly pid: number | undefined;
   isProcessTreeGone(): boolean;
+  /** Returns observed child `(code, signal)` once exited, or `null` while still alive. */
+  getExitInfo?(): { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null;
 }
 
 export interface ManagedCliExit {
@@ -69,6 +71,8 @@ export interface ManagedCliChild {
   readonly exited: Promise<ManagedCliExit>;
   writeStdin(text: string): boolean;
   endStdin(): void;
+  onStdinBroken?(listener: () => void): void;
+  isStdinBroken?(): boolean;
   onStdout(listener: (chunk: Uint8Array) => void): void;
   onStderr(listener: (chunk: Uint8Array) => void): void;
   pauseStdout?(): void;
@@ -126,13 +130,17 @@ class StdioTransport implements AcpStdioTransport {
   private readonly channel: StdinLineChannel;
   private closeReported = false;
   private closing: Promise<void> | null = null;
+  private exitInfo: { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null = null;
 
   constructor(private readonly child: ChildProcess) {
     let markExited: () => void = () => undefined;
     this.exited = new Promise<void>((resolve) => {
       markExited = resolve;
     });
-    child.once('exit', () => markExited());
+    child.once('exit', (code, signal) => {
+      this.exitInfo = { code, signal };
+      markExited();
+    });
     child.once('error', () => {
       markExited();
       this.reportClose();
@@ -149,6 +157,10 @@ class StdioTransport implements AcpStdioTransport {
 
   isProcessTreeGone(): boolean {
     return processTreeIsGone(this.child);
+  }
+
+  getExitInfo(): { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null {
+    return this.exitInfo;
   }
 
   write(line: string): void {
@@ -207,9 +219,11 @@ class StdioTransport implements AcpStdioTransport {
 class ManagedCliChildImpl implements ManagedCliChild {
   private readonly stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
   private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly stdinBrokenListeners: (() => void)[] = [];
   private readonly channel: StdinLineChannel;
   readonly exited: Promise<ManagedCliExit>;
   private terminating: Promise<void> | null = null;
+  private stdinBroken = false;
 
   constructor(private readonly child: ChildProcess) {
     let settleExit: (value: ManagedCliExit) => void = () => undefined;
@@ -227,7 +241,11 @@ class ManagedCliChildImpl implements ManagedCliChild {
     child.once('exit', (code, signal) => {
       if (!child.stdout && !child.stderr) finish({ code, signal, launchFailed: false });
     });
-    this.channel = openStdinLineChannel(child, () => undefined);
+    this.channel = openStdinLineChannel(child, () => {
+      if (this.stdinBroken) return;
+      this.stdinBroken = true;
+      for (const listener of this.stdinBrokenListeners) listener();
+    });
     child.stdout?.on('data', (chunk: Buffer) => this.emit(this.stdoutListeners, chunk));
     child.stderr?.on('data', (chunk: Buffer) => this.emit(this.stderrListeners, chunk));
   }
@@ -242,6 +260,18 @@ class ManagedCliChildImpl implements ManagedCliChild {
 
   endStdin(): void {
     this.channel.end();
+  }
+
+  onStdinBroken(listener: () => void): void {
+    if (this.stdinBroken) {
+      listener();
+      return;
+    }
+    this.stdinBrokenListeners.push(listener);
+  }
+
+  isStdinBroken(): boolean {
+    return this.stdinBroken;
   }
 
   onStdout(listener: (chunk: Uint8Array) => void): void {

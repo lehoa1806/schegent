@@ -614,7 +614,7 @@ export class ClaudeCliMonitor {
    */
   public onExit(
     runId: string | null,
-    args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean; attemptId?: string; streamHighWaterBytes?: number; streamObservedBytes?: number; streamTruncated?: boolean },
+    args: { exitCode: number | null; signal: string | null; killed: boolean; timedOut: boolean; attemptId?: string; streamHighWaterBytes?: number; streamObservedBytes?: number; streamPendingHighWaterBytes?: number; streamTruncated?: boolean },
     invocationId?: string | null
   ): void {
     const state = this.resolve(runId);
@@ -686,6 +686,7 @@ export class ClaudeCliMonitor {
       ...(args.attemptId !== undefined ? { attemptId: args.attemptId } : {}),
       ...(args.streamHighWaterBytes !== undefined ? { streamHighWaterBytes: args.streamHighWaterBytes } : {}),
       ...(args.streamObservedBytes !== undefined ? { streamObservedBytes: args.streamObservedBytes } : {}),
+      ...(args.streamPendingHighWaterBytes !== undefined ? { streamPendingHighWaterBytes: args.streamPendingHighWaterBytes } : {}),
       ...(args.streamTruncated !== undefined ? { streamTruncated: args.streamTruncated } : {})
     }, nextStatus === 'completed' ? 'success' : 'info');
     this.evictSettledStates();

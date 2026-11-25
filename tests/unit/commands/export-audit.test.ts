@@ -618,6 +618,66 @@ describe('FR-R5-F19 FR-026 — the counts-only export allowlist', () => {
     const leaked = createCountsOnlyAuditExport(row(3, { ...ADMITTED_PAYLOAD, terminationReason: sentinelFor('x') }));
     expect(leaked).toContain(sentinelFor('x'));
   });
+
+  it('preserves scanner authority on cli-invocation and stream high-water marks on monitor-invocation-summary while rejecting off-family/invalid values', () => {
+    const cliRow = JSON.stringify({
+      id: 'ev-cli-1',
+      timestamp: '2026-11-25T00:00:00.000Z',
+      runId: 'run-1',
+      correlationId: 'corr-1',
+      phase: 'review',
+      iteration: 1,
+      eventType: 'cli-invocation',
+      outcome: 'info',
+      schemaVersion: 3,
+      payload: {
+        attemptId: '3f2a5c18-9d4e-4b07-8a61-2c5f0e7d1b93',
+        executableTarget: 'codex-security',
+        containmentPosture: 'accepted-uncontained',
+        permissionMode: 'unrestricted',
+        streamPendingHighWaterBytes: 1234
+      }
+    });
+    const monitorRow = JSON.stringify({
+      id: 'ev-mon-1',
+      timestamp: '2026-11-25T00:00:01.000Z',
+      runId: 'run-1',
+      correlationId: 'corr-1',
+      phase: 'review',
+      iteration: 1,
+      eventType: 'monitor-invocation-summary',
+      outcome: 'success',
+      schemaVersion: 3,
+      payload: {
+        attemptId: '3f2a5c18-9d4e-4b07-8a61-2c5f0e7d1b93',
+        streamHighWaterBytes: 8192,
+        streamObservedBytes: 16384,
+        streamPendingHighWaterBytes: 4096,
+        streamTruncated: false,
+        executableTarget: 'codex-security'
+      }
+    });
+    const exported = createCountsOnlyAuditExport(`${cliRow}\n${monitorRow}`)
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { eventType: string; payload: Record<string, unknown> });
+
+    expect(exported[0]?.payload).toEqual({
+      attemptId: '3f2a5c18-9d4e-4b07-8a61-2c5f0e7d1b93',
+      executableTarget: 'codex-security',
+      containmentPosture: 'accepted-uncontained',
+      permissionMode: 'unrestricted',
+      streamPendingHighWaterBytes: null
+    });
+    expect(exported[1]?.payload).toEqual({
+      attemptId: '3f2a5c18-9d4e-4b07-8a61-2c5f0e7d1b93',
+      streamHighWaterBytes: 8192,
+      streamObservedBytes: 16384,
+      streamPendingHighWaterBytes: 4096,
+      streamTruncated: false,
+      executableTarget: null
+    });
+  });
 });
 
 describe('FR-R5-F19 FR-024 — a failed row the operator accepted is not completed work', () => {

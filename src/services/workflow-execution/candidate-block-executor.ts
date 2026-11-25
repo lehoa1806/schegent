@@ -1338,11 +1338,18 @@ export class CandidateBlockExecutor {
             });
           }
 
+          const hasQuotaObservations = (s.observationIds ?? s.quotaIds ?? []).length > 0;
+          const availabilityNextEligibleAt =
+            input.resetsAtMs !== undefined && input.resetsAtMs !== null
+              ? input.resetsAtMs
+              : !hasQuotaObservations
+                ? nowWallMs + Math.max(1, input.retryDelayMs ?? 1_000)
+                : undefined;
           return Object.freeze({
             ...s,
             status: 'waiting-availability' as const,
-            ...(input.resetsAtMs !== undefined && input.resetsAtMs !== null
-              ? { nextEligibleAt: input.resetsAtMs }
+            ...(availabilityNextEligibleAt !== undefined
+              ? { nextEligibleAt: availabilityNextEligibleAt }
               : {}),
             lastAttemptId: input.attemptId,
             ...(input.failureCode !== undefined

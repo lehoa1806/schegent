@@ -1228,7 +1228,7 @@ export class PhaseRunner {
   }
 
   private invocationMetricPayload(
-    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode' | 'sessionCostBaselineUsd'>,
+    raw: Pick<RawInvocationOutput, 'stdoutBuffer' | 'stderrBuffer' | 'durationMs' | 'exitCode' | 'sessionCostBaselineUsd' | 'streamPendingHighWaterBytes'>,
     backend: BackendRunnerKind
   ): Record<string, unknown> {
     const hasStreamPeak = Number.isFinite(raw.stdoutBuffer.highWaterRetainedBytes) && Number.isFinite(raw.stderrBuffer.highWaterRetainedBytes);
@@ -1238,6 +1238,7 @@ export class PhaseRunner {
       ...(raw.stdoutBuffer.truncated ? { stdoutTruncated: true } : {}),
       ...(raw.stderrBuffer.truncated ? { stderrTruncated: true } : {}),
       ...(hasStreamPeak ? { streamHighWaterBytes: raw.stdoutBuffer.highWaterRetainedBytes + raw.stderrBuffer.highWaterRetainedBytes, streamObservedBytes: raw.stdoutBuffer.totalBytes + raw.stderrBuffer.totalBytes } : {}),
+      ...(raw.streamPendingHighWaterBytes !== undefined && Number.isFinite(raw.streamPendingHighWaterBytes) ? { streamPendingHighWaterBytes: raw.streamPendingHighWaterBytes } : {}),
       ...(extractInvocationUsageMetrics(raw.stdoutBuffer, backend, raw.sessionCostBaselineUsd) ?? {}),
       ...(this.observedCliVersion === null ? {} : { cliVersion: this.observedCliVersion })
     };

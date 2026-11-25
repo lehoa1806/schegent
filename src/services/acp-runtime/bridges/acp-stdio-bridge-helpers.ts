@@ -59,12 +59,9 @@ export function parseStrictBillableTokens(raw: {
     cacheReadInputTokens = safeNonNegativeInt(raw.cacheReadInputTokens);
     if (cacheReadInputTokens === undefined) return undefined;
   }
-  if (
-    inputTokens === undefined &&
-    outputTokens === undefined &&
-    cacheCreationInputTokens === undefined &&
-    cacheReadInputTokens === undefined
-  ) {
+  // Require at least one primary input/output token counter so cache-only subsets
+  // (e.g. `{ cached_input_tokens: 0 }` with input/output omitted) cannot spoof a full reading.
+  if (inputTokens === undefined && outputTokens === undefined) {
     return undefined;
   }
   return {

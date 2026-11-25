@@ -287,6 +287,8 @@ export interface MonitorInvocationSummaryPayloadV3 {
   readonly streamHighWaterBytes?: number;
   /** FR-R8-03 (03-02): optional total raw stream bytes observed across stdout/stderr. */
   readonly streamObservedBytes?: number;
+  /** Peak unconsumed/pending stream bytes observed under ACP backpressure. */
+  readonly streamPendingHighWaterBytes?: number;
   /** FR-R8-03 (03-02): optional flag recording whether bounded stream retention truncated output. */
   readonly streamTruncated?: boolean;
 }
@@ -617,7 +619,7 @@ function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   // for most of it — see `PHASE_END_OUTCOMES`.
   const outcome: PhaseEndOutcome = PHASE_END_OUTCOME_SET.has(rawOutcome) ? (rawOutcome as PhaseEndOutcome) : 'malformed';
   const legacyMetrics: Record<string, number> = { ...projectMetrics(payload.metrics) };
-  for (const key of ['durationMs', 'cliDurationMs', 'numTurns', 'totalCostUsd', 'inputTokens', 'outputTokens', 'cacheCreationInputTokens', 'cacheReadInputTokens', 'streamHighWaterBytes', 'streamObservedBytes']) {
+  for (const key of ['durationMs', 'cliDurationMs', 'numTurns', 'totalCostUsd', 'inputTokens', 'outputTokens', 'cacheCreationInputTokens', 'cacheReadInputTokens', 'streamHighWaterBytes', 'streamObservedBytes', 'streamPendingHighWaterBytes']) {
     const value = payload[key];
     if (typeof value === 'number' && Number.isFinite(value)) legacyMetrics[key] = value;
   }
@@ -774,6 +776,7 @@ function projectMonitorInvocationSummary(payload: Record<string, unknown>): Moni
   const attemptId = projectAttemptId(payload.attemptId);
   const streamHighWaterBytes = nonNegativeIntOrUndefined(payload.streamHighWaterBytes);
   const streamObservedBytes = nonNegativeIntOrUndefined(payload.streamObservedBytes);
+  const streamPendingHighWaterBytes = nonNegativeIntOrUndefined(payload.streamPendingHighWaterBytes);
   const streamTruncated = typeof payload.streamTruncated === 'boolean' ? payload.streamTruncated : undefined;
   return Object.freeze({
     status: boundedMetadataString(payload.status, 'unknown'),
@@ -790,6 +793,7 @@ function projectMonitorInvocationSummary(payload: Record<string, unknown>): Moni
     ...(attemptId !== undefined ? { attemptId } : {}),
     ...(streamHighWaterBytes !== undefined ? { streamHighWaterBytes } : {}),
     ...(streamObservedBytes !== undefined ? { streamObservedBytes } : {}),
+    ...(streamPendingHighWaterBytes !== undefined ? { streamPendingHighWaterBytes } : {}),
     ...(streamTruncated !== undefined ? { streamTruncated } : {})
   });
 }

@@ -284,13 +284,18 @@ export function startAcpStdioBridgeServer(
     const textBytes = Buffer.byteLength(text, 'utf8');
     const currentPending = io.stderrWritableLength?.() ?? estimatedPendingStderrBytes;
     if (currentPending + textBytes > ACP_MAX_BRIDGE_PENDING_STDOUT_BYTES) {
-      if (activeChild !== undefined) {
-        activeChild.pauseStderr?.();
-        pausedStderrChildren.add(activeChild);
-      }
-      if (!stderrDrainRegistered && io.onStderrDrain !== undefined) {
-        stderrDrainRegistered = true;
-        io.onStderrDrain(() => resumePausedStderrChildren());
+      // Only pause & await `drain` when stderr actually has pending buffered bytes; dropping a
+      // single oversized chunk at `currentPending === 0` must not deadlock waiting for a drain
+      // event that will never fire.
+      if (currentPending > 0) {
+        if (activeChild !== undefined) {
+          activeChild.pauseStderr?.();
+          pausedStderrChildren.add(activeChild);
+        }
+        if (!stderrDrainRegistered && io.onStderrDrain !== undefined) {
+          stderrDrainRegistered = true;
+          io.onStderrDrain(() => resumePausedStderrChildren());
+        }
       }
       return;
     }
@@ -731,10 +736,20 @@ export function startAcpStdioBridgeServer(
       writeBridgeStderr(stderrDecoder.decode(chunk, { stream: true }), child);
     });
 
+    let stdinDeliveryFailed = false;
+    if (securityReview === undefined) {
+      child.onStdinBroken?.(() => {
+        if (turn.cancelled) return;
+        stdinDeliveryFailed = true;
+        void child.terminate();
+      });
+    }
+
     const wrote = securityReview !== undefined ||
       child.writeStdin(promptText.endsWith('\n') ? promptText : `${promptText}\n`);
     child.endStdin();
     if (!wrote) {
+      stdinDeliveryFailed = true;
       void child.terminate();
     }
 
@@ -786,7 +801,9 @@ export function startAcpStdioBridgeServer(
         terminalEvents,
         streamErrorText,
         lineOverflowed,
-        pendingBacklogOverflowed
+        pendingBacklogOverflowed,
+        stdinDeliveryFailed:
+          securityReview === undefined && (stdinDeliveryFailed || child.isStdinBroken?.() === true)
       });
 
       if (decision.outcome === 'cancelled') {
@@ -968,9 +985,21 @@ export function startAcpStdioBridgeServer(
     await Promise.allSettled(terminations);
   };
 
+  const isServerClosing = (): boolean => closing;
   io.onStdin((chunk) => {
+    if (isServerClosing()) return;
+    if (
+      Buffer.byteLength(pendingStdin, 'utf8') + chunk.byteLength >
+      ACP_RUNTIME_LIMITS.maxPendingBytes
+    ) {
+      pendingStdin = '';
+      io.writeStderr('[acp-bridge] stdin pending bytes exceeded limit\n');
+      void closeAll();
+      return;
+    }
     pendingStdin += decoder.decode(chunk, { stream: true });
     if (Buffer.byteLength(pendingStdin, 'utf8') > ACP_RUNTIME_LIMITS.maxPendingBytes) {
+      pendingStdin = '';
       io.writeStderr('[acp-bridge] stdin pending bytes exceeded limit\n');
       void closeAll();
       return;
@@ -980,6 +1009,10 @@ export function startAcpStdioBridgeServer(
       const line = pendingStdin.slice(0, idx);
       pendingStdin = pendingStdin.slice(idx + 1);
       handleRawLine(line);
+      if (isServerClosing()) {
+        pendingStdin = '';
+        return;
+      }
       idx = pendingStdin.indexOf('\n');
     }
   });

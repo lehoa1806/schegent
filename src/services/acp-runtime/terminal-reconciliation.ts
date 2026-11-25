@@ -51,6 +51,7 @@ export interface BridgeTurnReconciliationInput {
   readonly streamErrorText: string | null;
   readonly lineOverflowed: boolean;
   readonly pendingBacklogOverflowed: boolean;
+  readonly stdinDeliveryFailed?: boolean;
 }
 
 export type BridgeTurnReconciliationDecision =
@@ -217,6 +218,17 @@ export function reconcileBridgeTurnOutcome(
       outcome: 'error',
       status: 'stream-overflow',
       message: formatBridgeErrorMessage('stream-overflow', detail)
+    };
+  }
+
+  if (input.stdinDeliveryFailed === true) {
+    return {
+      outcome: 'error',
+      status: 'backend-reported-error',
+      message: formatBridgeErrorMessage(
+        'backend-reported-error',
+        'Prompt could not be delivered to backend stdin'
+      )
     };
   }
 
