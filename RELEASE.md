@@ -560,7 +560,7 @@ the separate check above compares) is stated in the document's own metadata.
 <!-- Source: scripts/generate-sbom.mjs -->
 
 The packaging policy requires exactly one VSIX, a closed entry allowlist, safe archive paths, at most
-2 MiB compressed, and at most 5 MiB uncompressed. It includes the extension manifest, license, root
+2 MiB compressed, and at most 8 MiB uncompressed. It includes the extension manifest, license, root
 README/RELEASE/SECURITY documents, branding assets, built host/webview files, and every file in
 `examples/`; `.vscodeignore` excludes source, tests, implementation docs, maps, local state, the
 module graphs under `dist/module-graph/`, `.release/`, and the repository's own tooling

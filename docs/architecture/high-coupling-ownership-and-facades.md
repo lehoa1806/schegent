@@ -28,13 +28,13 @@ Two Round 7 deliverables already set the structural guardrails that `N08` builds
 
 ## 2. High-Coupling Core Hotspots & Layer Ownership
 
-Measured on `2026-11-24` using `tests/lint/code-lines.ts` (`countFileCodeLines`) and raw line counts:
+Measured on `2026-11-25` using `tests/lint/code-lines.ts` (`countFileCodeLines`) and raw line counts:
 
 | Hotspot Module | Owning Layer | Size (raw / code lines) | Budget State (`source-loc-budget.test.ts`) | Owned Responsibilities & Collaborator Direction | Next-Change Rule (`N08`) |
 |---|---|---|---|---|---|
 | `src/queue/queue-manager.ts` | `queue/` | 2,469 / 1,477 | Waived (`highWaterMark` ratchet, `2026-05-22` decision) | Per-queue task lifecycle, pause/resume (`operator`/`cascade`/`retry-cap`), reorder/modify/remove, multi-queue CRUD, `clearCompleted`/`clearFailed`/`clearQueue`/`clearAll`, and drain/admission helpers (`peekNextPending`, `markInFlight`, `admitRun`, `finish`). Delegates pure rules to `task-transition-decision.ts`, `queue-lifecycle-refresh.ts`, `queue-reset-settle.ts`, `queue-registry.ts`, and persistence to `WorkspaceStateStore` (`state/`). | Owned by `FR-R7-14` (`14-21`) change-driven rule: extract only the single affected scheduling, retry, clearing, or Run responsibility when modifying it, and test through `QueueManager`'s existing public entry point. |
-| `src/controller/phase-runner.ts` | `controller/` | 1,446 / 871 | Waived (`highWaterMark` ratchet, `2026-10-01` decision) | Single-phase CLI/ACP invocation lifecycle: pre-spawn runner policy, capability/consent/agent-config-ack gates, stdout/stream-json parsing, audit & raw-transcript evidence recording, session compaction, and native review collection. Already delegates leaf recorders (`phase-attempt-recorder.ts`, `backend-posture-recorder.ts`, `phase-sidecar-reader.ts`, `phase-retry-evaluator.ts`, `phase-outcome-mapper.ts`, `session-compactor.ts`, `native-review.ts`). | Keep evidence/policy decisions in single-purpose leaves; pass read-only ports from `services/` (`capability-refusal`, `backend-containment-policy`, `agent-config-ack-refusal`) rather than pulling store or UI state into `PhaseRunner`. |
-| `src/services/run-driver.ts` | `services/` | 1,318 / 942 | Plain ceiling (`maxLines: 990` code lines) | Per-Run phase execution loop, cancellation `AbortController`, fence-loss abort, `PhaseSequencer` advancement, retry scheduling, checkpoint & mutation-ledger bracketing, and terminal transition funnel. | Keep terminal outcome handlers (`completed`, `failed`, probe-failure) as extraction targets when touched; avoid adding new `services/ → controller/` value imports (see Section 2.1). |
+| `src/controller/phase-runner.ts` | `controller/` | 1,434 / 866 | Waived (`highWaterMark` ratchet, `2026-10-01` decision) | Single-phase CLI/ACP invocation lifecycle: pre-spawn runner policy, capability/consent/agent-config-ack gates, stdout/stream-json parsing, audit & raw-transcript evidence recording, session compaction, and native review collection. Already delegates leaf recorders (`phase-attempt-recorder.ts`, `backend-posture-recorder.ts`, `phase-sidecar-reader.ts`, `phase-retry-evaluator.ts`, `phase-outcome-mapper.ts`, `session-compactor.ts`, `native-review.ts`). | Keep evidence/policy decisions in single-purpose leaves; pass read-only ports from `services/` (`capability-refusal`, `backend-containment-policy`, `agent-config-ack-refusal`) rather than pulling store or UI state into `PhaseRunner`. |
+| `src/services/run-driver.ts` | `services/` | 1,323 / 947 | Plain ceiling (`maxLines: 990` code lines) | Per-Run phase execution loop, cancellation `AbortController`, fence-loss abort, `PhaseSequencer` advancement, retry scheduling, checkpoint & mutation-ledger bracketing, and terminal transition funnel. | Keep terminal outcome handlers (`completed`, `failed`, probe-failure) as extraction targets when touched; avoid adding new `services/ → controller/` value imports (see Section 2.1). |
 | `src/activation/sqlite-cutover-wiring.ts` | `activation/` | 1,095 / 1,006 | Plain ceiling (`maxLines: 1,075` code lines) | Composition root for SQLite cutover: folder-scoped DB path resolution, passive read-only snapshot attachment, relocation, primary service graph construction (`SqliteCutoverServices`), explicit store lifecycle via `SqliteCutoverStoreRegistry` (`14-21`), and store-keyed `ProductionWorkflowComposition` registration/eviction (`N08`). | Pure activation wiring only; keep policy, containment helpers, and resource disposal in `sqlite-cutover-helpers.ts` and `sqlite-cutover-registry.ts`. |
 
 ### 2.1 The `controller/` ↔ `services/` Bidirectional Boundary & Candidate Graph Counts (`FR-R8-04` `04-03`)
@@ -69,17 +69,17 @@ At the directory-layer level, `FR-R8-04` (`04-03`) enrolled `services/` into `LA
 
 ### 2.2 Large `src/services/workflow-execution/` Modules (10 Modules ≥ 990 Raw Lines)
 
-Every module in `src/services/workflow-execution/` lives in the `services/` layer and participates in composable connected-workflow execution. Ten modules measure ≥ 990 raw lines on `2026-11-24`:
+Every module in `src/services/workflow-execution/` lives in the `services/` layer and participates in composable connected-workflow execution. Ten modules measure ≥ 990 raw lines on `2026-11-25`:
 
 | Module (`src/services/workflow-execution/`) | Raw Lines | Code Lines | Ceiling (`source-loc-budget.test.ts`) | Owned Responsibility |
 |---|---:|---:|---:|---|
-| `candidate-block-executor.ts` | 1,921 | 1,752 | 1,840 | Multi-candidate block fan-out, scoring, selection, cancellation, and recovery settlement |
+| `candidate-block-executor.ts` | 1,861 | 1,692 | 1,840 | Multi-candidate block fan-out, scoring, selection, cancellation, and recovery settlement |
 | `control-attempt-admission.ts` | 1,833 | 1,704 | 1,780 | Pre-admission authority, execution fence verification, and quota-permit admission gating |
 | `quota-permit-arbiter.ts` | 1,780 | 1,587 | 1,670 | Per-backend concurrency/quota permit arbitration, contention queuing, and lease accounting |
-| `connected-run-coordinator.ts` | 1,450 | 1,298 | 1,330 | Connected-workflow graph traversal, invocation-frame dispatch, and handoff advancement |
+| `connected-run-coordinator.ts` | 1,402 | 1,301 | 1,330 | Connected-workflow graph traversal, invocation-frame dispatch, and handoff advancement |
 | `control-command-service.ts` | 1,326 | 1,231 | 1,295 | Operator control commands (`pause`, `resume`, `cancel`, `retry-phase`) over connected runs |
 | `control-wakeup-planner.ts` | 1,273 | 1,124 | 1,185 | Cooldown and availability wakeup timer planning, reconciliation, and disposal |
-| `workflow-control-service.ts` | 1,230 | 1,066 | 1,125 | Evidence-aware resume, leaf-phase control orchestration, and invocation-frame transitions |
+| `workflow-control-service.ts` | 1,258 | 1,092 | 1,125 | Evidence-aware resume, leaf-phase control orchestration, and invocation-frame transitions |
 | `control-usage-accounting.ts` | 1,167 | 1,019 | 1,075 | Composable workflow usage ledger rollups and control-ledger spend accounting |
 | `workflow-recovery-service.ts` | 1,151 | 1,060 | 1,160 | Restart reconciliation, orphan cancellation, and recovery fence validation for connected runs |
 | `production-workflow-composition.ts` | 1,084 | 986 | `< 1,000` entry condition | Composition factory wiring workflow-execution collaborators and the store-keyed `compositionCacheByStore` registry (`registerProductionWorkflowComposition`, `unregisterProductionWorkflowComposition`, `hasRegisteredProductionWorkflowComposition`, `getOrCreateProductionWorkflowComposition`, `createDesktopWorkflowComposition`) |
