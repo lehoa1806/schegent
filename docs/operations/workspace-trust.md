@@ -73,7 +73,7 @@ unaffected.
 
 ## What refuses untrusted
 
-**36 commands refuse.** Every mutating command id in
+**40 commands refuse.** Every mutating command id in
 `src/contracts/entry-point-dispositions.ts` is wrapped by `registerGuardedCommand`, which — when the
 window is untrusted — shows a warning, records `command refused: workspace not trusted` with the
 `commandId`, and returns without calling the handler.
@@ -132,7 +132,7 @@ Three cases, which the host legs assert side by side because operators conflate 
 |---|---|---|
 | Restricted, set by the workspace (e.g. `schegent.trust.allowCustomPhases`) | Default; the workspace value is ignored | The workspace value applies |
 | Not restricted, set by the workspace (e.g. `schegent.loop.maxIterations`) | The workspace value applies | The workspace value applies |
-| **17 application-scoped keys** (e.g. `schegent.cli.path`, `schegent.backend.uncontainedBackends`, `schegent.telemetry.export.*`) | The workspace value is ignored | **Still ignored** |
+| **18 application-scoped keys** (e.g. `schegent.cli.path`, `schegent.backend.uncontainedBackends`, `schegent.backend.uncontainedScanners`, `schegent.telemetry.export.*`) | The workspace value is ignored | **Still ignored** |
 
 The third row is the strongest of the three and does not depend on trust at all: an
 `application`-scoped setting has no workspace scope to read, so a repository cannot point Schegent at

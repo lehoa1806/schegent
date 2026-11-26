@@ -219,9 +219,15 @@ When the queue is full, the oldest batch that is not being sent is dropped
 drop the open batch and every queued batch; a batch is only ever sent under the authorization
 it was sealed under. `shutdown()` ends the request in flight and resolves within 250 ms.
 
-The credential value is read from the secret store at most once per authorization, held only in
-memory, and must be non-empty printable ASCII of at most 8,192 characters. A missing value drops
-the batch `credential-unavailable`; a value outside the rule drops it `credential-invalid`.
+The credential value is read from VS Code `SecretStorage` on demand, held only in memory, and
+must be non-empty printable ASCII of at most 8,192 characters. Operators store, rotate, or remove
+the secret via the Command Palette commands `Schegent: Set Telemetry Export Credential`
+(`schegent.setTelemetryCredential`) and `Schegent: Clear Telemetry Export Credential`
+(`schegent.clearTelemetryCredential`); storing, rotating, or clearing a secret (or any
+`SecretStorage.onDidChange` event matching the active key) immediately calls
+`invalidateCredential` so the next batch re-reads `SecretStorage` without reloading VS Code. A
+missing value drops the batch `credential-unavailable`; a value outside the rule drops it
+`credential-invalid`.
 
 ## Bounds
 

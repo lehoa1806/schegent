@@ -188,11 +188,10 @@ updated changes.
 | Backend | Code Review | Security Review |
 |---|---|---|
 | Claude | Starts `/code-review --max-findings all` in a new headless Claude Code session. | Starts `/security-review` when the committed scope matches the default branch comparison for `origin`. Claude uses a scoped security review turn for a different base or local changes. |
-| Codex | Runs `codex exec --json --sandbox read-only review -` with the scoped review instructions on stdin. | Runs the separate `codex-security scan` CLI against the working tree and resolved base. |
+| Codex | Runs `codex exec --json --sandbox read-only review -` with the scoped review instructions on stdin. | Runs the separate `codex-security scan` CLI against the working tree and resolved base **only after explicit operator consent** via `Schegent: Grant Native Review Scanner` (`schegent.backend.uncontainedScanners` + workspace fingerprint binding); refused by default with zero subprocess spawns. |
 | Agy | Runs a dedicated Antigravity ACP turn for correctness findings. | Runs a dedicated Antigravity ACP turn for security findings and defensive fixes. |
 
-Claude Code 2.1.288 or newer supports the `--max-findings` option. Codex Security needs
-`codex-security` on the extension host's PATH and its own configured credentials.
+Claude Code 2.1.288 or newer supports the `--max-findings` option. Codex Security (`codex-security`) is a standalone executable with **no observed OS containment sandbox** (`mechanism: 'none'`); granting `codex` alone never admits it. It needs `codex-security` on the extension host's sanitized PATH, its own configured credentials, and explicit opt-in via `Schegent: Grant Native Review Scanner` (and can be revoked at any time with `Schegent: Revoke Native Review Scanner`, returning to fail-closed zero-spawn refusal).
 [Claude Code review](https://code.claude.com/docs/en/code-review-local),
 [Claude Code commands](https://code.claude.com/docs/en/commands),
 [Codex Security CLI](https://learn.chatgpt.com/docs/security/cli/reference).

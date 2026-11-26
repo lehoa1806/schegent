@@ -58,6 +58,7 @@ literals into these families:
 | Operator evidence acts | `evidence-exported`, `evidence-deleted`, `operator-pseudonym-reset` | An operator taking evidence out of the workspace (a Run export, the metadata-only audit export, a diagnostics bundle), removing one Run's evidence, or replacing their pseudonym. |
 | Backend trees and resume | `process-tree-unconfirmed`, `host-teardown-unconfirmed`, `run-resumed`, `run-resume-declined-orphan-alive` | A backend process group that survived SIGKILL, a tree shutdown could not answer for, and the decision to resume or decline a Run whose previous backend might still be alive. |
 | SQLite store backup and restore | `store-backup`, `store-restore` | Metadata-only records of operator SQLite store backup and full-authority restore attempts (`operation`, `outcome`, opaque `backupId`, optional `errorCode`, `schemaVersion`, `databaseBytes`, `restoredTableCount`, `restoredRowCount`, `verifiedExternalDependencies`; zero raw filesystem paths; System scope). |
+| Operator security and credentials | `scanner-consent-changed`, `telemetry-credential-changed` | Metadata-only records of standalone native review scanner consent/revocation (`scanner`, `action`, optional 16-hex `fingerprintDigestPrefix`, optional `removedSetting`/`clearedBinding`) and OTLP `SecretStorage` credential store/clear actions (`action`, 16-hex `secretKeyDigestPrefix`, optional `matchesConfiguredKey`). Zero raw paths, secret values, or raw key names; System scope. |
 
 <!-- Source: src/contracts/audit-events.ts -->
 
