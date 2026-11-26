@@ -46,7 +46,7 @@ The whole-tree first-party import graph (`src/` + `webview-ui/src/`, AST-parsed 
 - **2,641** distinguished type-only edges (excluded from runtime cycle checks)
 - **7** distinguished dynamic lazy `import()` edges (deferred route chunks, excluded from static cycle checks)
 
-At the directory-layer level, `FR-R8-04` (`04-03`) enrolled `services/` into `LAYER_ALLOWED_VALUE_IMPORTS` (`tests/lint/architecture-layers.ts`, enforced by `tests/lint/layer-dependency-direction.test.ts`) so **any new unowned reverse value import from `services/` into `controller/`, `commands/`, `ui/`, `activation/`, `headless/`, or `root` fails the gate immediately**. The existing **11** `services/ → controller/` edges plus **2** `services/ → commands|ui` edges are reconciled under an exact-target, owner-attributed, shrink-only allowlist (`LAYER_IMPORT_ALLOWLIST`):
+At the directory-layer level, `FR-R8-04` (`04-03`) enrolled `services/` into `LAYER_ALLOWED_VALUE_IMPORTS` (`tests/lint/architecture-layers.ts`, enforced by `tests/lint/layer-dependency-direction.test.ts`) so **any new unowned reverse value import from `services/` into `controller/`, `commands/`, `ui/`, `activation/`, `headless/`, or `root` fails the gate immediately**. After extracting `countsOnlyAuditExport` from `src/commands/export-audit.ts` into `src/audit/counts-only-export.ts` (retiring the `services/diagnostics-bundle/bundle-collect.ts -> commands/export-audit.ts` reverse edge), the remaining **11** `services/ → controller/` edges plus **1** `services/ → ui` edge (**12** total, shrunk from 13) are reconciled under an exact-target, owner-attributed, shrink-only allowlist (`LAYER_IMPORT_ALLOWLIST`):
 
 - **`controller/ → services/` (37 static value edges)**: allowed top-down orchestration (`workflow-controller.ts`, `phase-runner.ts`, gates, and recorders delegating to application services).
 - **`services/ → controller/` (11 reconciled shrink-only edges, each owned in `LAYER_IMPORT_ALLOWLIST`)**:
@@ -61,9 +61,8 @@ At the directory-layer level, `FR-R8-04` (`04-03`) enrolled `services/` into `LA
   9. `src/services/phase-context/attempt-result-publisher.ts` → `src/controller/phase-sidecar-reader.ts` (owner: `phase-handoff`; move pure sidecar reader to `services/phase-log/` or `lib/`).
   10. `src/services/run-planned-total.ts` → `src/controller/phase.ts` (owner: `workflow-runtime`; move pure phase ordering constants to `contracts/`).
   11. `src/services/runtime-resource-budgets/resource-inventory.ts` → `src/controller/backend-posture-recorder.ts` (owner: `resource-budgets`; move posture cache bound constant to `contracts/`).
-- **`services/ → commands|ui` (2 reconciled shrink-only edges, owned in `LAYER_IMPORT_ALLOWLIST`)**:
-  12. `src/services/diagnostics-bundle/bundle-collect.ts` → `src/commands/export-audit.ts` (owner: `operator-evidence`; extract shared counts-only audit sanitizer into `audit/`).
-  13. `src/services/workflow-execution/workflow-control-projector.ts` → `src/ui/sidebar/phase-projector.ts` (owner: `workflow-runtime`; relocate pure phase-tile helper to `contracts/`).
+- **`services/ → ui` (1 remaining shrink-only edge, owned in `LAYER_IMPORT_ALLOWLIST`; `services/diagnostics-bundle/bundle-collect.ts → commands/export-audit.ts` retired into `src/audit/counts-only-export.ts`)**:
+  12. `src/services/workflow-execution/workflow-control-projector.ts` → `src/ui/sidebar/phase-projector.ts` (owner: `workflow-runtime`; relocate pure phase-tile helper to `contracts/`).
 
 **Boundary decision**: Every existing reverse edge is pinned by exact `(from, fromLayer, intoLayer, target)` in `LAYER_IMPORT_ALLOWLIST`, stale entries fail automatically as edges are retired, and any new unowned `services/` reverse import fails `tests/lint/layer-dependency-direction.test.ts` (verified by a seeded synthetic fixture). `src/state/` remains zero-exception (`0` allowlist entries) with transitive isolation from `queue/`, `parser/`, `services/`, `controller/`, and `ui/`.
 

@@ -328,10 +328,16 @@ passes through these hops, in order. Files are under
 
 The enqueue boundary persists the frozen snapshot, and execution consumes that
 frozen value instead of re-reading a changed live catalog. For composable
-Workflows, `admitComposableWorkflowLaunchAtomically` commits the connected run
-parent, the first queue task, and the linked control-ledger root together
-under the live ownership fence so an interruption before dispatch leaves zero
-unrecoverable orphans (`FR-R8-01` `01-02`, `01-09`):
+Workflows, launch first prepares the unstarted control-ledger root (`prepareRootLink`
+/ `activateRootLink`) and admits the initial attempt (`prepareAttempt` / `commitAttempt`),
+then `admitComposableWorkflowLaunchAtomically` publishes the connected run parent,
+the first queue task, and the linked active control-ledger transition in one
+atomic SQLite batch under the live ownership fence (`FR-R8-01` `01-02`, `01-09`).
+On restart, recovery classifies each ledger root's parent with tri-state presence
+(`present` | `unreadable-refused` | `absent`): only genuinely `absent` unstarted
+roots are eligible for orphan cleanup, while `unreadable-refused` (e.g. corrupt or
+future-schema) parents and their linked permits/waiters are preserved untouched and
+surfaced via metadata-only diagnostics:
 
 ```mermaid
 flowchart TD
@@ -339,8 +345,8 @@ flowchart TD
     B --> C["Launch via CMD_LAUNCH_WORKFLOW or headless API"]
     C --> D{"Validate IPC v3, trust, primacy, live fence, inputs and 20-root cap"}
     D -->|refused| N["Return typed refusal + CMD_ACK rejected (0 effects)"]
-    D -->|accepted| E["Freeze FrozenWorkflowClosure + ExecutionEnvelope"]
-    E --> F["Atomic SQLite commit: connected parent + first queue item + control root"]
+    D -->|accepted| E["Freeze FrozenWorkflowClosure + prepare unstarted control root & attempt"]
+    E --> F["Atomic SQLite publication batch: connected parent + first queue item + active ledger root"]
     F --> G{"Primary drain, queue lease, consent, handoff eligibility and quota"}
     G -->|deferred| W["Wait on queue, retry deadline or quota wakeup (spawnedDirectly: false)"]
     W --> G

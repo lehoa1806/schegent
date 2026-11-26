@@ -19,10 +19,10 @@ predicted it: its author sampled the set and found every gate well motivated.
 
 | Figure | Value | Date | Method |
 |---|---|---|---|
-| Gate files | **240** | 2026-11-23 | `*.test.ts` under `tests/lint/` recursively |
-| Marked `unique` | 215 | 2026-11-23 | hand verdict |
-| Marked `partially redundant` | 25 | 2026-11-23 | hand verdict |
-| Marked `redundant` | 0 | 2026-11-23 | hand verdict |
+| Gate files | **241** | 2026-11-25 | `*.test.ts` under `tests/lint/` recursively |
+| Marked `unique` | 216 | 2026-11-25 | hand verdict |
+| Marked `partially redundant` | 25 | 2026-11-25 | hand verdict |
+| Marked `redundant` | 0 | 2026-11-25 | hand verdict |
 
 <!-- census:prose -->
 The three verdict rows sum to the gate-file count, so they are one measurement and carry one
@@ -420,6 +420,7 @@ is decided about this one entry.
 | `gate-integrity/zero-offender-census.test.ts` | FR-R3-088 — gates with no in-tree offender, enumerated | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `halt-policy-default-parity.test.ts` | the queue failure-policy default reads identically in package.json, the operator doc, and the closure record | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `held-major-staleness.test.ts` | FR-R3-090 — every held major upgrade carries a reason and a fresh review date | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method FR-R4-F09 moved the arithmetic to `held-major-staleness.ts` (`isOverdue`) and tests its 90-day boundary with an injected clock. |
+| `host-build-precedes-bridge-suites.test.ts` | every npm chain reaching bridge-consuming suites builds the host first (Finding 9) | `tests/unit/build/test-gates-parity.test.ts` (declared manifest parity only, not ordering of ad-hoc npm chains) | unique | `test-gates-parity.test.ts` verifies generated scripts match `scripts/verification-steps.json`, whereas this gate walks `package.json` npm script chains recursively and proves `build:host` strictly precedes every bridge-consuming suite (`test:host`, `test:coverage`, `test:perf`, `test:e2e`, `package:smoke`, `test:integration`) across all aggregates and standalone `test`, plus a mutation control proving swapped ordering is caught |
 | `import-graph-acyclic.test.ts` | FR-R3-128 — the whole first-party import graph has no cycles | `dependency-direction.test.ts` (leaf->acting edges only), `backend-kind-placement.test.ts` (one directional assertion) | unique | neither sibling walks the graph. `dependency-direction` checks two leaf layers against a list of acting ones and cannot see a cycle that stays inside one layer; `backend-kind-placement` asserts one edge's direction. `ARCHITECTURE.md` admitted the gap in its own words until this gate replaced the admission. It found a real cycle on its first run — `ui/sidebar/state-projector.ts` and `state-projector-runtime.ts` over one constant, invisible to both siblings because both files are in `ui/` |
 | `import-presence-sees-drafts.test.ts` | Feature 100 T512 — the two halves of the stored-definition selectors | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |
 | `install-flag-parity.test.ts` | FR-R3-090 — the install hardening, and the documents that teach it | — | unique | no sibling gate, type, generated contract or compiler flag was found asserting this; see Method |

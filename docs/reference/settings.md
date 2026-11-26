@@ -19,6 +19,7 @@ Schegent contributes the settings below to VS Code under the `schegent.*` namesp
 | `schegent.codex.path` | string | `codex` | application | Codex executable path. |
 | `schegent.agy.path` | string | `agy` | application | Agy executable path. |
 | `schegent.backend.uncontainedBackends` | array of unique `claude`, `codex`, or `agy` | `[]` | application | Backends allowed to run with no OS-enforced bound on what they can reach, named one at a time. See [The capability posture setting](#the-capability-posture-setting). |
+| `schegent.backend.uncontainedScanners` | array of unique `codex-security` | `[]` | application | Standalone native review scanners allowed to run with no OS-enforced containment sandbox (`mechanism: 'none'`). Defaults to `[]` (fail-closed, zero subprocess spawns) and requires both this setting and a matching workspace fingerprint binding recorded via `Schegent: Grant Native Review Scanner`. |
 | `schegent.models` | object keyed by `claude`, `codex`, and `agy` | `{ "claude": [], "codex": [], "agy": [] }` | resource | Adds operator-supplied model identifiers to the Model Catalog. |
 
 <!-- Source: package.json -->

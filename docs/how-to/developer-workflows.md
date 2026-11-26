@@ -75,7 +75,7 @@ Despite its name, `dev:webview` is `vite build --watch`; the repository does not
 | Visual regression | `npm run test:visual` | Browser preflight, webview build, then serial Chromium Playwright specs in `tests/visual/`. **Prerequisite:** `npx playwright install chromium`, re-run after a Playwright version bump — the preflight fails with one setup message if the build is absent or stale. A local run reuses a server already on port 4173 only when it is this checkout's fixture server; any other stops the run with one message naming the port |
 | VS Code host integration | `npm run test:integration` | Full build, integration TypeScript emit, then a downloaded VS Code Extension Development Host |
 
-The root coverage floors in `vitest.config.ts` are 84% statements, 81% branches, 88% functions, and 84% lines (`npm run coverage:headroom` checks host headroom). The webview floors in `webview-ui/vitest.config.ts` are 88% statements, 75% branches, 83% functions, and 88% lines; `npm run test:webview:coverage` also checks that those floors retain the configured headroom.
+The root coverage floors in `vitest.config.ts` are 84% statements, 81% branches, 88% functions, and 84% lines (`npm run coverage:headroom` checks host headroom). The webview floors in `webview-ui/vitest.config.ts` are 88% statements, 75% branches, 85% functions, and 88% lines; `npm run test:webview:coverage` also checks that those floors retain the configured headroom.
 
 To run or debug a single test file without running a full suite:
 
