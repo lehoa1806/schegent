@@ -59,8 +59,10 @@ import { NodeSqliteConnection, SchemaBootstrapService } from '../../src/services
 import { sourceIdentityOf } from '../../src/services/usage-accounting/acp-usage-mapping';
 import type { WorkspaceStateStore } from '../../src/state/workspace-state';
 import { removeTempRoot } from '../temp-root-cleanup';
+import { assertFreshBuiltBridgeIdentity } from '../helpers/verify-built-bridge';
 
-const BUILT_BRIDGE_PATH = path.resolve(__dirname, '..', '..', 'dist', 'acp-stdio-bridge.js');
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const BUILT_BRIDGE_PATH = path.resolve(REPO_ROOT, 'dist', 'acp-stdio-bridge.js');
 const QUALIFIED_PLATFORM = { os: 'darwin', arch: 'arm64', locality: 'local' } as const;
 const WAIT_MS = 20_000;
 
@@ -227,6 +229,7 @@ describe('FR-R7-14 (14-04) — cross-process ACP bridge session continuity and f
   ] as const)(
     '%s: resumes original provider conversation across two sequential dist/acp-stdio-bridge.js processes and refuses mismatched root / missing / ephemeral / cross-backend bindings before spawn',
     async (backend, expectedProviderId) => {
+      assertFreshBuiltBridgeIdentity(REPO_ROOT);
       const root = await mkdtemp(path.join(os.tmpdir(), `schegent-1404-${backend}-`));
       tempRoots.push(root);
       const workspaceDir = path.join(root, 'workspace-a');

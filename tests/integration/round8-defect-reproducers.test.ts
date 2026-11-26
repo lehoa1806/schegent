@@ -753,6 +753,7 @@ describe('FR-R8-04 (04-06) — controlled-regression-vs-fix reproducers for all 
         cacheReadInputTokens: 0
       })
     ).toBeUndefined();
+    // Omitted backend fails closed to `unknown` cache relation -> cache-zero-only stays unmeasurable.
     const cacheOnlySpend = accumulateSpend(
       NO_SPEND_OBSERVED,
       { metrics: { cacheReadInputTokens: 0 } },
@@ -760,6 +761,16 @@ describe('FR-R8-04 (04-06) — controlled-regression-vs-fix reproducers for all 
     );
     expect(
       evaluateSpend(cacheOnlySpend, { limitUsd: null, limitTokens: 1_000 }, 'tokens')
+    ).toEqual({ kind: 'unmeasurable', denomination: 'tokens', reason: 'value-absent' });
+    // Explicit disjoint backend (`claude`) with cache-zero-only still refuses `within` (`incomplete / missing-usage`).
+    const cacheOnlyDisjointSpend = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { cacheReadInputTokens: 0 } },
+      'row-cache-only-disjoint',
+      { backend: 'claude' }
+    );
+    expect(
+      evaluateSpend(cacheOnlyDisjointSpend, { limitUsd: null, limitTokens: 1_000 }, 'tokens')
     ).toEqual({ kind: 'incomplete', denomination: 'tokens', reason: 'missing-usage' });
 
     // R7-a: Rate-limited primary with NO external quotaIds and NO resetsAtMs immediately cools

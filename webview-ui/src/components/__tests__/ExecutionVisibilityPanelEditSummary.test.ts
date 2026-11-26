@@ -196,4 +196,154 @@ describe('ExecutionVisibilityPanel — narrow editSummary submission (Finding 4)
       'Saved edited handoff revision 2.'
     );
   });
+
+  it('preserves draft on refusal, clears draft on toggle, and keys duplicate attemptIds by full producer tuple', async () => {
+    mockVisibility.mockResolvedValue({
+      boundaryRefusal: null,
+      response: {
+        op: 'attemptDetail',
+        detail: {
+          available: true,
+          hierarchy: {
+            rootExecutionId: 'root-ui-2',
+            invocationCount: 1,
+            attemptCount: 2,
+            dataQuality: 'complete',
+            attempts: []
+          },
+          evidence: [],
+          liveLog: { streamState: 'absent', segmentCount: 0, gapCount: 0 },
+          recovery: {
+            disposition: null,
+            uncertainEffectCount: 0,
+            hasUncertainEffects: false,
+            requiresOperatorAction: false
+          },
+          acp: {
+            runtimeState: 'idle',
+            profileId: null,
+            backendKind: null,
+            modelId: null,
+            sessionReused: false,
+            liveObservations: 0,
+            streamDegraded: false
+          },
+          lane: {
+            mode: 'shared-workspace',
+            laneId: null,
+            laneState: null,
+            candidateId: null,
+            integrationState: null,
+            targetRef: null,
+            comparisonRevision: null,
+            requestId: null
+          },
+          handoffs: [
+            {
+              handoffId: 'ho-ui-2',
+              identity: {
+                handoffId: 'ho-ui-2',
+                rootExecutionId: 'root-ui-2',
+                workflowId: 'wf-2',
+                targetInvocationId: 'inv-target',
+                targetNodePath: 'wf-2/implement',
+                targetPhaseId: 'implement'
+              },
+              revision: 1,
+              approval: 'manual',
+              session: 'fresh',
+              revisions: [
+                {
+                  revision: 1,
+                  origin: 'prepared',
+                  state: 'waiting-approval',
+                  manifestDigest: 'a'.repeat(64),
+                  renderedBytes: 256
+                }
+              ],
+              sources: [
+                {
+                  producer: {
+                    nodePath: 'wf-2/specify',
+                    occurrenceId: 'occ-1',
+                    attemptId: 'attempt-1'
+                  },
+                  coverage: 'complete',
+                  required: true,
+                  selectedBy: { kind: 'selector', id: 'sel-a' },
+                  outcomeCount: 1,
+                  decisionCount: 0,
+                  constraintCount: 0,
+                  unresolvedIssueCount: 0,
+                  artifactCount: 0
+                },
+                {
+                  producer: {
+                    nodePath: 'wf-2/plan',
+                    occurrenceId: 'occ-2',
+                    attemptId: 'attempt-1'
+                  },
+                  coverage: 'complete',
+                  required: true,
+                  selectedBy: { kind: 'selector', id: 'sel-b' },
+                  outcomeCount: 1,
+                  decisionCount: 0,
+                  constraintCount: 0,
+                  unresolvedIssueCount: 0,
+                  artifactCount: 0
+                }
+              ],
+              omissions: [],
+              omissionsUnlisted: 0
+            }
+          ],
+          reviewLoops: []
+        }
+      } as unknown as ReadExecutionVisibilityResponse
+    });
+
+    mockDecide.mockResolvedValue({
+      boundaryRefusal: null,
+      response: {
+        op: 'editSummary',
+        result: {
+          ok: false,
+          failure: 'invalid-source',
+          detail: 'edit-summary'
+        }
+      } as unknown as DecidePhaseHandoffResponse
+    });
+
+    const view = render(ExecutionVisibilityPanel, {
+      props: { rootExecutionId: 'root-ui-2', isPrimary: true }
+    });
+    await tick();
+    flushSync();
+
+    // Renders both options cleanly even though both sources share `attempt-1`.
+    await fireEvent.click(view.getByTestId('ev-handoff-edit-ho-ui-2'));
+    flushSync();
+    expect(view.getByTestId('ev-handoff-source-ho-ui-2').querySelectorAll('option')).toHaveLength(2);
+
+    const input = view.getByTestId('ev-handoff-input-ho-ui-2') as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: 'Draft preserved on refusal' } });
+    await fireEvent.click(view.getByTestId('ev-handoff-save-ho-ui-2'));
+    await tick();
+    flushSync();
+
+    // Refusal preserves the form open and keeps the operator's draft text.
+    expect(view.getByTestId('execution-visibility-notice').textContent).toContain(
+      'Could not edit handoff: invalid-source.'
+    );
+    expect((view.getByTestId('ev-handoff-input-ho-ui-2') as HTMLInputElement).value).toBe(
+      'Draft preserved on refusal'
+    );
+
+    // Closing and reopening clears the draft cleanly.
+    await fireEvent.click(view.getByTestId('ev-handoff-edit-ho-ui-2'));
+    flushSync();
+    await fireEvent.click(view.getByTestId('ev-handoff-edit-ho-ui-2'));
+    flushSync();
+    expect((view.getByTestId('ev-handoff-input-ho-ui-2') as HTMLInputElement).value).toBe('');
+  });
 });

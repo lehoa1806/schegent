@@ -146,7 +146,8 @@ function gateRefusal(reason: string | undefined): string | null {
   if (
     reason === 'untrusted-workspace' ||
     reason === 'workspace-not-trusted' ||
-    reason === 'secondary-window-readonly'
+    reason === 'secondary-window-readonly' ||
+    reason === 'command-dispatch-failed'
   ) {
     return boundaryRefusalText(reason);
   }
@@ -223,6 +224,7 @@ function correlatedRequest<T>(
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let unsubscribe: (() => void) | null = null;
+    let correlationId: string | null = null;
 
     const finalise = (result: T): void => {
       if (settled) return;
@@ -239,16 +241,25 @@ function correlatedRequest<T>(
         }
         unsubscribe = null;
       }
+      if (correlationId !== null) {
+        snapshotStore.clearPending(correlationId);
+        correlationId = null;
+      }
       resolve(result);
     };
 
-    untrack(() => {
-      const correlationId = post();
-      snapshotStore.markPending(correlationId);
-      unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-        finalise(project(ack));
+    try {
+      untrack(() => {
+        correlationId = post();
+        snapshotStore.markPending(correlationId);
+        unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
+          finalise(project(ack));
+        });
       });
-    });
+    } catch {
+      finalise(onTimeout);
+      return;
+    }
 
     timer = setTimeout(() => {
       finalise(onTimeout);

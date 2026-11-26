@@ -138,7 +138,7 @@ export async function readSpendReplay(
   };
 
   const newestFirst: AuditEntry[] = [];
-  const invocationBackendByKey = new Map<string, string>();
+  const chronologicalEventsNewestFirst: AuditEntry[] = [];
   const invocationBackendByAttempt = new Map<string, string>();
   let remaining = maxBytes;
   let budgetStopped = false;
@@ -169,7 +169,10 @@ export async function readSpendReplay(
       if (entry.eventType === PHASE_END_EVENT) {
         if ((entry.schemaVersion ?? 0) > AUDIT_SCHEMA_VERSION) markOpen('unknown-row-schema', inSpanOf);
         const owner = tracked.get(entry.runId);
-        if (owner !== undefined && inSpanOf(owner)) newestFirst.push(entry);
+        if (owner !== undefined && inSpanOf(owner)) {
+          newestFirst.push(entry);
+          chronologicalEventsNewestFirst.push(entry);
+        }
       } else if (entry.eventType === 'cli-invocation') {
         const owner = tracked.get(entry.runId);
         const runner = entry.payload.runner;
@@ -185,10 +188,7 @@ export async function readSpendReplay(
           if (typeof attemptId === 'string' && attemptId.length > 0 && !invocationBackendByAttempt.has(attemptId)) {
             invocationBackendByAttempt.set(attemptId, runner);
           }
-          const key = `${entry.runId}\u0000${entry.phase}\u0000${entry.iteration}`;
-          if (!invocationBackendByKey.has(key)) {
-            invocationBackendByKey.set(key, runner);
-          }
+          chronologicalEventsNewestFirst.push(entry);
         }
       }
       if (Number.isFinite(at)) {
@@ -203,14 +203,24 @@ export async function readSpendReplay(
   }
 
   const orderedRows = newestFirst.reverse();
+  const orderedEvents = chronologicalEventsNewestFirst.reverse();
+  const latestInvocationBackendByKey = new Map<string, string>();
   const backendByRowId = new Map<string, string>();
-  for (const row of orderedRows) {
-    const attemptId = row.payload.attemptId;
+  for (const event of orderedEvents) {
+    const key = `${event.runId}\u0000${event.phase}\u0000${event.iteration}`;
+    if (event.eventType === 'cli-invocation') {
+      const runner = event.payload.runner;
+      if (typeof runner === 'string' && runner.length > 0) {
+        latestInvocationBackendByKey.set(key, runner);
+      }
+      continue;
+    }
+    const attemptId = event.payload.attemptId;
     const byAttempt =
       typeof attemptId === 'string' ? invocationBackendByAttempt.get(attemptId) : undefined;
-    const byKey = invocationBackendByKey.get(`${row.runId}\u0000${row.phase}\u0000${row.iteration}`);
+    const byKey = latestInvocationBackendByKey.get(key);
     const resolved = byAttempt ?? byKey;
-    if (resolved !== undefined) backendByRowId.set(row.id, resolved);
+    if (resolved !== undefined) backendByRowId.set(event.id, resolved);
   }
 
   const completeness = new Map<string, Completeness>();

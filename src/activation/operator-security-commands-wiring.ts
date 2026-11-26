@@ -112,6 +112,7 @@ export function registerOperatorSecurityCommands(
   const invalidateTelemetryCredential = (reference?: string): void => {
     getSqliteCutoverCoordinator(deps.store)?.getTelemetryHost()?.invalidateCredential(reference);
   };
+  const primacy = guard.isOwner !== undefined ? { hasPrimacy: guard.isOwner } : {};
 
   return [
     registerGuardedCommand(guard, 'schegent.grantNativeReviewScanner', (rawArg?: unknown) =>
@@ -121,7 +122,9 @@ export function registerOperatorSecurityCommands(
           consent: deps.scannerConsent,
           ui: scannerUi,
           logger: deps.logger,
-          auditWriter: deps.auditWriter
+          auditWriter: deps.auditWriter,
+          isWorkspaceTrusted: guard.isWorkspaceTrusted,
+          ...primacy
         },
         rawArg
       )
@@ -133,7 +136,9 @@ export function registerOperatorSecurityCommands(
           consent: deps.scannerConsent,
           ui: scannerUi,
           logger: deps.logger,
-          auditWriter: deps.auditWriter
+          auditWriter: deps.auditWriter,
+          isWorkspaceTrusted: guard.isWorkspaceTrusted,
+          ...primacy
         },
         rawArg
       )
@@ -146,7 +151,8 @@ export function registerOperatorSecurityCommands(
           invalidateTelemetryCredential,
           ui: telemetryUi,
           logger: deps.logger,
-          auditWriter: deps.auditWriter
+          auditWriter: deps.auditWriter,
+          ...primacy
         },
         rawArg
       )
@@ -159,7 +165,8 @@ export function registerOperatorSecurityCommands(
           invalidateTelemetryCredential,
           ui: telemetryUi,
           logger: deps.logger,
-          auditWriter: deps.auditWriter
+          auditWriter: deps.auditWriter,
+          ...primacy
         },
         rawArg
       )

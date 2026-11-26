@@ -956,23 +956,30 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
         );
 
         switchable1.reloadSqliteCache();
-        const reloaded = switchable1.get<Record<string, ConnectedWorkflowRun>>(KEYS.connectedRuns);
+        const reloaded = switchable1.get<Record<string, unknown>>(KEYS.connectedRuns);
         expect(reloaded).toBeDefined();
-        expect(Object.keys(reloaded!)).toEqual(['cr-healthy-sibling']);
+        expect(Object.keys(reloaded!).sort()).toEqual(['cr-healthy-sibling', 'cr-over-depth']);
         expect(Object.isFrozen(reloaded!['cr-healthy-sibling'])).toBe(true);
+        // Over-depth entry is replaced with a frozen opaque tombstone (zero raw payload) so
+        // `getConnectedRunPresence('cr-over-depth')` stays `'unreadable-refused'` instead of `'absent'`.
+        expect(reloaded!['cr-over-depth']).toEqual({ __schegentQuarantined: 'unfreezable' });
+        expect(Object.isFrozen(reloaded!['cr-over-depth'])).toBe(true);
+        expect(JSON.stringify(reloaded)).not.toContain('SECRET_OVER_DEPTH_PAYLOAD');
         expect(warn).toHaveBeenCalledWith(
           'quarantined unfreezable connectedRuns entries on reload',
           expect.objectContaining({ count: 1, keys: ['cr-over-depth'] })
         );
         expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET_OVER_DEPTH_PAYLOAD');
 
-        // Read-only snapshot reopen also isolates the over-depth entry and keeps healthy sibling readable
+        // Read-only snapshot reopen also isolates the over-depth entry behind the opaque tombstone
+        // and keeps the healthy sibling readable
         const follower = createSwitchableOperationalMemento(createMemoryMemento());
         expect(follower.attachReadOnlySnapshotIfPresent(dbPath, scopeId)).toBe(true);
-        const followerRuns = follower.get<Record<string, ConnectedWorkflowRun>>(KEYS.connectedRuns);
-        expect(Object.keys(followerRuns ?? {})).toEqual(['cr-healthy-sibling']);
+        const followerRuns = follower.get<Record<string, unknown>>(KEYS.connectedRuns);
+        expect(Object.keys(followerRuns ?? {}).sort()).toEqual(['cr-healthy-sibling', 'cr-over-depth']);
+        expect(followerRuns?.['cr-over-depth']).toEqual({ __schegentQuarantined: 'unfreezable' });
 
-        // Subsequent writes to healthy siblings succeed cleanly
+        // Subsequent writes to healthy siblings succeed cleanly while preserving the quarantine tombstone
         const secondHealthy = makeValidActiveConnectedRun('cr-healthy-second', now, now);
         await switchable1.update(KEYS.connectedRuns, {
           ...reloaded!,
@@ -980,7 +987,8 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
         });
         expect(Object.keys(switchable1.get<Record<string, unknown>>(KEYS.connectedRuns)!).sort()).toEqual([
           'cr-healthy-second',
-          'cr-healthy-sibling'
+          'cr-healthy-sibling',
+          'cr-over-depth'
         ]);
       } finally {
         sqlite1.close();

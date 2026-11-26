@@ -181,6 +181,50 @@ describe('Principal review Finding 4 — host-side handoff summary patch', () =>
       expect(rendered.text).toContain('specify-issue-preserved');
       expect(rendered.text).toContain('art-specify');
       expect(rendered.text).toContain('plan-outcome-preserved');
+
+      // 4. Negative controls: forbidden control/bidi/line-separator/surrogate characters MUST be
+      //    refused before persistence so SQLite can never be self-bricked!
+      for (const hostileSummary of [
+        'Windows\r\nCRLF paste',
+        'Null\u0000byte',
+        'Ansi\u001b[31mred',
+        'Bidi\u202eoverride',
+        'LineSep\u2028break',
+        'Lone\ud800surrogate'
+      ]) {
+        const refused = api.editHandoffSummary(
+          manifest.handoffId,
+          2,
+          hostileSummary,
+          'att-spec-7'
+        );
+        expect(refused.ok).toBe(false);
+        if (!refused.ok) {
+          expect(refused.failure).toBe('invalid-source');
+          expect(refused.detail).toBe('edit-summary');
+        }
+      }
+
+      // 5. Negative control: omitting `producerAttemptId` on a multi-producer handoff must fail
+      //    closed instead of clobbering every source's summary.
+      const ambiguous = api.editHandoffSummary(
+        manifest.handoffId,
+        2,
+        'Would overwrite all sources'
+      );
+      expect(ambiguous.ok).toBe(false);
+      if (!ambiguous.ok) {
+        expect(ambiguous.failure).toBe('invalid-source');
+        expect(ambiguous.detail).toBe('edit-ambiguous-source');
+      }
+
+      // 6. Handoff remains intact, readable, and approvable after all refused edits.
+      const approved = api.approveHandoff(
+        manifest.handoffId,
+        2,
+        'dec-approve-after-refusals'
+      );
+      expect(approved.ok).toBe(true);
     } finally {
       sqlite.close();
       rmSync(tmp, { recursive: true, force: true });

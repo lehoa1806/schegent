@@ -157,7 +157,7 @@ function isPreSortedFlatRecord(record: Record<string, unknown>): boolean {
     if (prev !== null && prev > key) return false;
     prev = key;
     const inner = record[key];
-    if (inner !== null && typeof inner === 'object') return false;
+    if ((inner !== null && typeof inner === 'object') || typeof inner === 'function') return false;
   }
   return true;
 }

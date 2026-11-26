@@ -333,6 +333,67 @@ describe('FR-122 — the token denomination behaves identically', () => {
     expect(evaluateSpend(agyNoCache, { limitUsd: null, limitTokens: 1_200 }, 'tokens')).toEqual({
       kind: 'within'
     });
+
+    // Omitted backend fails closed to `unknown` (never silently assumes `disjoint`).
+    const omittedBackend = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { inputTokens: 400, outputTokens: 100, cacheReadInputTokens: 25 } },
+      'row-omitted-backend'
+    );
+    expect(omittedBackend.totalTokens).toBe(500);
+    expect(omittedBackend.missingTokenRows).toBe(true);
+    expect(evaluateSpend(omittedBackend, { limitUsd: null, limitTokens: 510 }, 'tokens')).toEqual({
+      kind: 'incomplete',
+      denomination: 'tokens',
+      reason: 'missing-usage'
+    });
+
+    // Monotonic lower bound when cache > input: observing input=100 beside cacheRead=500 must
+    // preserve a lower bound >= 600 (not drop to 200) and mark ambiguous.
+    const cacheExceedsInput = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { inputTokens: 100, outputTokens: 100, cacheReadInputTokens: 500 } },
+      'row-cache-gt-input',
+      { backend: 'codex' }
+    );
+    expect(cacheExceedsInput.totalTokens).toBe(600);
+    expect(cacheExceedsInput.missingTokenRows).toBe(true);
+    expect(evaluateSpend(cacheExceedsInput, { limitUsd: null, limitTokens: 500 }, 'tokens')).toEqual({
+      kind: 'exceeded',
+      denomination: 'tokens',
+      observed: 600,
+      limit: 500
+    });
+
+    // Subset contradiction when cacheRead + cacheCreate > inputTokens.
+    const cacheSumExceedsInput = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      {
+        metrics: {
+          inputTokens: 400,
+          outputTokens: 100,
+          cacheReadInputTokens: 300,
+          cacheCreationInputTokens: 250
+        }
+      },
+      'row-cache-sum-gt-input',
+      { backend: 'codex' }
+    );
+    expect(cacheSumExceedsInput.missingTokenRows).toBe(true);
+
+    // Cache-zero-only row without primary counters stays unmeasurable (not synthetic 0).
+    const cacheZeroOnly = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { cacheReadInputTokens: 0 } },
+      'row-cache-zero-only',
+      { backend: 'codex' }
+    );
+    expect(cacheZeroOnly.totalTokens).toBeUndefined();
+    expect(evaluateSpend(cacheZeroOnly, { limitUsd: null, limitTokens: 500 }, 'tokens')).toEqual({
+      kind: 'unmeasurable',
+      denomination: 'tokens',
+      reason: 'value-absent'
+    });
   });
 
   it('reports unmeasurable spend as its own verdict, not as compliance', () => {
@@ -348,11 +409,14 @@ describe('FR-122 — the token denomination behaves identically', () => {
     let spend = accumulateSpend(
       NO_SPEND_OBSERVED,
       { inputTokens: 1, outputTokens: 2, cacheCreationInputTokens: 4, cacheReadInputTokens: 8 },
-      'row-1'
+      'row-1',
+      { backend: 'claude' }
     );
     expect(spend.totalTokens).toBe(15);
     expect(spend.costUsd).toBeUndefined();
-    spend = accumulateSpend(spend, { totalCostUsd: -1, inputTokens: 'lots' }, 'row-2');
+    spend = accumulateSpend(spend, { totalCostUsd: -1, inputTokens: 'lots' }, 'row-2', {
+      backend: 'claude'
+    });
     expect(spend.totalTokens, 'a non-numeric field contributes nothing').toBe(15);
     expect(spend.costUsd, 'a negative cost is not spend').toBeUndefined();
   });

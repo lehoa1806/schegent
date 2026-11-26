@@ -58,7 +58,11 @@ export interface TelemetryCredentialCommandDeps {
   readonly ui: TelemetryCredentialCommandUi;
   readonly logger: Pick<SanitizedLogger, 'info' | 'warn'>;
   readonly auditWriter?: Pick<AuditLogWriter, 'append'> | undefined;
+  readonly hasPrimacy?: () => Promise<boolean> | boolean;
 }
+
+const OPERATOR_SECURITY_AUDIT_RUN_ID = 'operator-security';
+const ALLOWED_SCHEGENT_TELEMETRY_PREFIXES = ['schegent.telemetry.', 'schegent.otlp.'] as const;
 
 function hashSecretKeyPrefix(secretKey: string): string {
   return createHash('sha256').update(secretKey, 'utf8').digest('hex').slice(0, 16);
@@ -73,9 +77,13 @@ async function appendTelemetryCredentialAudit(
   }
 ): Promise<void> {
   if (deps.auditWriter === undefined) return;
+  if (deps.hasPrimacy !== undefined && !(await deps.hasPrimacy())) {
+    deps.logger.info('telemetry.credential audit-skipped reason=secondary-window');
+    return;
+  }
   try {
     await deps.auditWriter.append({
-      runId: '',
+      runId: OPERATOR_SECURITY_AUDIT_RUN_ID,
       phase: 'operator',
       iteration: 0,
       eventType: 'telemetry-credential-changed',
@@ -99,7 +107,10 @@ export type ClearTelemetryCredentialResult =
   | { readonly outcome: 'invalid-input' }
   | { readonly outcome: 'write-failed' };
 
-export function validateTelemetrySecretKey(candidate: string): string | undefined {
+export function validateTelemetrySecretKey(
+  candidate: string,
+  configuredKey?: string
+): string | undefined {
   if (candidate.length === 0) return 'SecretStorage key name cannot be empty.';
   if (candidate.length > CREDENTIAL_REFERENCE_CHARS_MAX) {
     return `SecretStorage key name must be at most ${CREDENTIAL_REFERENCE_CHARS_MAX} characters.`;
@@ -109,6 +120,15 @@ export function validateTelemetrySecretKey(candidate: string): string | undefine
     if (code < FIRST_KEY_PRINTABLE || code > LAST_PRINTABLE) {
       return 'SecretStorage key name must contain only printable non-whitespace ASCII characters.';
     }
+  }
+  // Protect non-telemetry internal `schegent.*` SecretStorage namespaces from cross-feature
+  // overwrite or deletion unless the operator explicitly configured that exact key in User settings.
+  if (
+    candidate.startsWith('schegent.') &&
+    candidate !== configuredKey &&
+    !ALLOWED_SCHEGENT_TELEMETRY_PREFIXES.some((prefix) => candidate.startsWith(prefix))
+  ) {
+    return 'Keys under the "schegent." namespace must start with "schegent.telemetry." or "schegent.otlp." (or match schegent.telemetry.export.credentialSecretKey).';
   }
   return undefined;
 }
@@ -157,13 +177,13 @@ export async function runSetTelemetryCredential(
         'Enter the VS Code SecretStorage key referenced by schegent.telemetry.export.credentialSecretKey.',
       value: configuredKey,
       placeHolder: 'e.g. schegent.otlp.token',
-      validateInput: validateTelemetrySecretKey
+      validateInput: (candidate) => validateTelemetrySecretKey(candidate, configuredKey)
     });
     if (secretKey === undefined) return { outcome: 'cancelled' };
     secretKey = secretKey.trim();
   }
 
-  const keyError = validateTelemetrySecretKey(secretKey);
+  const keyError = validateTelemetrySecretKey(secretKey, configuredKey);
   if (keyError !== undefined) {
     deps.ui.warn(`Schegent: invalid telemetry credential key (${keyError})`);
     return { outcome: 'invalid-input', field: 'secretKey' };
@@ -172,7 +192,7 @@ export async function runSetTelemetryCredential(
   const secretValue = await deps.ui.promptSecretValue({
     title: 'Schegent: Set Telemetry Export Credential (2/2)',
     prompt:
-      'Enter the HTTP header credential value to store in VS Code SecretStorage (e.g. "Bearer <token>"). The value is never written to settings or logs.',
+      `Enter the HTTP header credential value to store under SecretStorage key "${secretKey}" (e.g. "Bearer <token>"). The value is never written to settings or logs.`,
     placeHolder: 'Bearer <token>',
     validateInput: validateTelemetrySecretValue
   });
@@ -230,13 +250,13 @@ export async function runClearTelemetryCredential(
       prompt: 'Enter the VS Code SecretStorage key to remove.',
       value: configuredKey,
       placeHolder: 'e.g. schegent.otlp.token',
-      validateInput: validateTelemetrySecretKey
+      validateInput: (candidate) => validateTelemetrySecretKey(candidate, configuredKey)
     });
     if (secretKey === undefined) return { outcome: 'cancelled' };
     secretKey = secretKey.trim();
   }
 
-  const keyError = validateTelemetrySecretKey(secretKey);
+  const keyError = validateTelemetrySecretKey(secretKey, configuredKey);
   if (keyError !== undefined) {
     deps.ui.warn(`Schegent: invalid telemetry credential key (${keyError})`);
     return { outcome: 'invalid-input' };
@@ -245,8 +265,8 @@ export async function runClearTelemetryCredential(
   let confirmed = false;
   try {
     confirmed = await deps.ui.confirmModal(
-      'Remove telemetry export credential from SecretStorage?',
-      'Deleting this SecretStorage entry immediately invalidates any cached credential in the OTLP telemetry exporter. Future authenticated exports referencing this key will drop batches with credential-unavailable until a new secret is stored.',
+      `Remove telemetry export credential "${secretKey}" from SecretStorage?`,
+      `Deleting SecretStorage key "${secretKey}" immediately invalidates any cached credential in the OTLP telemetry exporter. Future authenticated exports referencing this key will drop batches with credential-unavailable until a new secret is stored.`,
       'Remove Credential'
     );
   } catch (error) {

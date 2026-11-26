@@ -575,17 +575,43 @@ export function releaseCandidate(deps) {
     } catch (err) {
       rollbackError = err;
     }
+    const probeExists = (targetPath) => {
+      if (typeof deps.pathExists !== 'function') return null;
+      try {
+        return deps.pathExists(targetPath);
+      } catch {
+        return null;
+      }
+    };
+    const candidateExists = probeExists(paths.candidate);
+    const stagingExists = probeExists(paths.staging);
+    const recordExists = probeExists(paths.record);
+    const observedLines = [];
+    if (candidateExists !== null) {
+      observedLines.push(`  candidate ${paths.candidate}: ${candidateExists ? 'EXISTS (unrecorded)' : 'absent'}`);
+    }
+    if (stagingExists !== null) {
+      observedLines.push(`  staging   ${paths.staging}: ${stagingExists ? 'exists' : 'absent'}`);
+    }
+    if (recordExists === true) {
+      observedLines.push(`  record    ${paths.record}: EXISTS (pre-existing or partial; inspect before retrying)`);
+    }
+    const observedDetail = observedLines.length > 0 ? `\nObserved paths:\n${observedLines.join('\n')}` : '';
     if (rollbackError !== null) {
       return refuse(
         'record-failed',
         `The release record could not be written (${cause?.message ?? cause}), and moving the candidate back to ${paths.staging} also failed (${rollbackError?.message ?? rollbackError}).\n` +
-          `An unrecorded candidate file may still exist at ${paths.candidate} (staging path: ${paths.staging}). Inspect or remove ${paths.candidate} before retrying; do not hand off an unrecorded archive.`
+          `An unrecorded candidate file may still exist at ${paths.candidate} (staging path: ${paths.staging}). Inspect or remove ${paths.candidate} before retrying; do not hand off an unrecorded archive.${observedDetail}`
       );
     }
+    const recordWarning =
+      recordExists === true
+        ? ` Warning: ${paths.record} still exists on disk and must be inspected before retrying.`
+        : '';
     return refuse(
       'record-failed',
       `The release record could not be written (${cause?.message ?? cause}).\n` +
-        `The candidate was moved back to ${paths.staging}; no candidate exists. Remove the cause, then run this again.`
+        `The candidate was moved back to ${paths.staging}; no candidate exists.${recordWarning} Remove the cause, then run this again.${observedDetail}`
     );
   }
 
@@ -610,7 +636,7 @@ export function releaseCandidate(deps) {
  * Verify that an on-disk candidate archive matches the SHA-256 digest and byte length recorded
  * in its release record before any hand-off.
  */
-export function verifyCandidateArchiveDigest({ recordPath, readFile }) {
+export function verifyCandidateArchiveDigest({ recordPath, readFile, repoRoot }) {
   let rawRecord;
   try {
     rawRecord = readFile(recordPath);
@@ -636,6 +662,7 @@ export function verifyCandidateArchiveDigest({ recordPath, readFile }) {
     candidate && typeof candidate === 'object' ? candidate : {};
   if (
     typeof candidatePath !== 'string' ||
+    candidatePath.trim().length === 0 ||
     typeof expectedDigest !== 'string' ||
     !/^[0-9a-f]{64}$/.test(expectedDigest) ||
     typeof expectedBytes !== 'number' ||
@@ -647,6 +674,18 @@ export function verifyCandidateArchiveDigest({ recordPath, readFile }) {
       reason: 'record-invalid',
       message: `Release record ${recordPath} does not declare a valid candidate path, sha256, and byte count.`
     };
+  }
+  if (repoRoot !== undefined) {
+    try {
+      resolveInsideRoot(repoRoot, candidatePath);
+    } catch (cause) {
+      return {
+        ok: false,
+        reason: 'record-invalid',
+        candidatePath,
+        message: `Release record ${recordPath} declares a candidate path outside repository root: ${cause?.message ?? cause}`
+      };
+    }
   }
   let archiveBytes;
   try {

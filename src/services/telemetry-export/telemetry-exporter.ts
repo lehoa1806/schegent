@@ -330,12 +330,27 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
     try {
       const reference = target.resolved.credential;
       let held = credential;
-      if (reference !== null && held.kind === 'unread') {
-        const readVersion = credentialVersion;
-        held = await readCredential(secrets, reference.reference);
-        if (epoch !== sendEpoch) return;
-        if (credentialVersion === readVersion) {
-          credential = held;
+      if (reference !== null) {
+        // Bounded re-read loop: if `invalidateCredential` fires while `readCredential` is in
+        // flight, never transmit the revoked/stale value or drop on a stale failure; re-read
+        // against the latest SecretStorage state.
+        const MAX_CREDENTIAL_REREADS = 3;
+        let attempts = 0;
+        while (held.kind === 'unread') {
+          if (attempts >= MAX_CREDENTIAL_REREADS) {
+            held = { kind: 'failed', reason: 'credential-unavailable' };
+            break;
+          }
+          attempts += 1;
+          const readVersion = credentialVersion;
+          const fresh = await readCredential(secrets, reference.reference);
+          if (epoch !== sendEpoch) return;
+          if (credentialVersion === readVersion) {
+            credential = fresh;
+            held = fresh;
+            break;
+          }
+          held = credential;
         }
       }
       if (held.kind === 'failed') {

@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { projectAuditPayload } from '../../src/audit/audit-payload';
 import { SanitizedLogger } from '../../src/lib/logger';
+import { parseAuditLogLineDetailed } from '../../src/parser/audit-log-parser';
+import { countsOnlyAuditExport } from '../../src/services/audit-export/counts-only-export';
 import {
   runGrantNativeReviewScanner,
   runRevokeNativeReviewScanner
@@ -122,14 +124,17 @@ describe('Principal Review Findings 5 & 6 — installed scanner consent and OTLP
     tempDirs.push(auditDir);
     const auditWriter = new AuditLogWriter({ workspaceRoot: auditDir }, new SanitizedLogger([]));
 
+    const consentPort = {
+      inspectScannerForConsent: (scanner: 'codex-security') =>
+        admission.inspectScannerForConsent(scanner, scannerEnv),
+      recordScannerAcceptance: admission.recordScannerAcceptance,
+      revokeScannerAcceptance: admission.revokeScannerAcceptance,
+      readScannerBinding: admission.readScannerBinding
+    };
+
     const grantResult = await runGrantNativeReviewScanner({
       config,
-      consent: {
-        inspectScannerForConsent: (scanner) => admission.inspectScannerForConsent(scanner, scannerEnv),
-        recordScannerAcceptance: admission.recordScannerAcceptance,
-        revokeScannerAcceptance: admission.revokeScannerAcceptance,
-        readScannerBinding: admission.readScannerBinding
-      },
+      consent: consentPort,
       ui,
       logger,
       auditWriter
@@ -187,14 +192,17 @@ describe('Principal Review Findings 5 & 6 — installed scanner consent and OTLP
     ).rejects.toThrow();
     expect(versionProbes).toBe(probesBeforeRefusal);
 
-    // Raw paths must never be written to logs or structured audit entries.
+    // Raw paths must never be written to logs or structured audit entries, AND every audit row
+    // MUST parse cleanly via `parseAuditLogLineDetailed` and survive `countsOnlyAuditExport`!
     expect(logs.join('\n')).not.toContain(binDir);
     const auditText = readFileSync(join(auditDir, '.schegent', 'audit.log'), 'utf8');
     expect(auditText).not.toContain(binDir);
-    const auditEntries = auditText
+    const parsedDetailed = auditText
       .trim()
       .split('\n')
-      .map((line) => JSON.parse(line) as { eventType: string; payload: Record<string, unknown> });
+      .map((line) => parseAuditLogLineDetailed(line));
+    expect(parsedDetailed.every((r) => r.entry !== null && r.warning === undefined)).toBe(true);
+    const auditEntries = parsedDetailed.map((r) => r.entry!);
     expect(auditEntries.map((e) => e.eventType)).toEqual([
       'scanner-consent-changed',
       'scanner-consent-changed'
@@ -210,6 +218,62 @@ describe('Principal Review Findings 5 & 6 — installed scanner consent and OTLP
       removedSetting: true,
       clearedBinding: true
     });
+    const countsExport = countsOnlyAuditExport(auditText);
+    expect(countsExport.included).toBe(2);
+    expect(countsExport.omitted).toBe(0);
+    const exportedRows = countsExport.text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { eventType: string; payload: Record<string, unknown> });
+    expect(exportedRows[0]!.payload).toMatchObject({ scanner: 'codex-security', action: 'granted' });
+    expect(exportedRows[1]!.payload).toEqual({
+      scanner: 'codex-security',
+      action: 'revoked',
+      removedSetting: true,
+      clearedBinding: true
+    });
+
+    // Fail-closed partial revocation: even when global config.update throws (e.g. read-only
+    // settings.json), workspace binding IS still cleared so admission immediately fails closed.
+    await runGrantNativeReviewScanner({
+      config,
+      consent: consentPort,
+      ui: { confirmModal: async () => true, info: () => {}, warn: () => {}, error: () => {} },
+      logger,
+      auditWriter
+    });
+    expect(admission.readScannerBinding('codex-security')).not.toBeNull();
+    const throwingGlobalConfig: UncontainedConsentConfig = {
+      get: <T>(k: string) => config.get<T>(k),
+      update: async () => {
+        throw new Error('EROFS: read-only settings.json');
+      }
+    };
+    const partialRevoke = await runRevokeNativeReviewScanner({
+      config: throwingGlobalConfig,
+      consent: consentPort,
+      ui: { confirmModal: async () => true, info: () => {}, warn: () => {}, error: () => {} },
+      logger,
+      auditWriter
+    });
+    expect(partialRevoke.outcome).toBe('write-failed');
+    expect(admission.readScannerBinding('codex-security')).toBeNull();
+
+    // Post-modal primacy loss refuses grant with zero persisted mutations.
+    await config.update(ALLOW_UNCONTAINED_SCANNER_SETTING, [], 1);
+    const lostPrimacyGrant = await runGrantNativeReviewScanner({
+      config,
+      consent: consentPort,
+      ui: { confirmModal: async () => true, info: () => {}, warn: () => {}, error: () => {} },
+      logger,
+      auditWriter,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => false
+    });
+    expect(lostPrimacyGrant.outcome).toBe('denied');
+    expect(admission.readScannerBinding('codex-security')).toBeNull();
+    expect(config.get(ALLOW_UNCONTAINED_SCANNER_SETTING)).toEqual([]);
+
     expect(() =>
       projectAuditPayload('scanner-consent-changed', {
         scanner: 'codex-security',
@@ -368,7 +432,8 @@ describe('Principal Review Findings 5 & 6 — installed scanner consent and OTLP
       expect(receivedAuthHeaders).toEqual([SECRET_V1, SECRET_V2]);
       expect(telemetryHost.getStatus().health.dropReasons['credential-unavailable']).toBe(2);
 
-      // Secret values and raw key names must NEVER appear in logs or audit rows.
+      // Secret values and raw key names must NEVER appear in logs or audit rows, AND every audit
+      // row MUST parse cleanly via `parseAuditLogLineDetailed` and survive `countsOnlyAuditExport`!
       const combinedLogs = logs.join('\n');
       expect(combinedLogs).not.toContain(SECRET_V1);
       expect(combinedLogs).not.toContain(SECRET_V2);
@@ -376,10 +441,12 @@ describe('Principal Review Findings 5 & 6 — installed scanner consent and OTLP
       expect(auditText).not.toContain(SECRET_V1);
       expect(auditText).not.toContain(SECRET_V2);
       expect(auditText).not.toContain(SECRET_KEY);
-      const auditEntries = auditText
+      const parsedDetailed = auditText
         .trim()
         .split('\n')
-        .map((line) => JSON.parse(line) as { eventType: string; payload: Record<string, unknown> });
+        .map((line) => parseAuditLogLineDetailed(line));
+      expect(parsedDetailed.every((r) => r.entry !== null && r.warning === undefined)).toBe(true);
+      const auditEntries = parsedDetailed.map((r) => r.entry!);
       expect(auditEntries.map((e) => e.eventType)).toEqual([
         'telemetry-credential-changed',
         'telemetry-credential-changed',
@@ -401,6 +468,65 @@ describe('Principal Review Findings 5 & 6 — installed scanner consent and OTLP
         action: 'cleared',
         secretKeyDigestPrefix: digestPrefix
       });
+      const countsExport = countsOnlyAuditExport(auditText);
+      expect(countsExport.included).toBe(3);
+      expect(countsExport.omitted).toBe(0);
+
+      // Namespace protection & prompt transparency: non-telemetry `schegent.*` keys are refused,
+      // and password/clear prompts explicitly name the target `secretKey`.
+      const reservedKeyAttempt = await runSetTelemetryCredential(
+        {
+          secrets: secretPort,
+          readConfiguredSecretKey: () => SECRET_KEY,
+          invalidateTelemetryCredential: (ref) => telemetryHost.invalidateCredential(ref),
+          ui: makeUi('Bearer nope'),
+          logger,
+          auditWriter
+        },
+        'schegent.internal.auth'
+      );
+      expect(reservedKeyAttempt).toEqual({ outcome: 'invalid-input', field: 'secretKey' });
+
+      let seenValuePrompt = '';
+      let seenClearModal = '';
+      await runSetTelemetryCredential(
+        {
+          secrets: secretPort,
+          readConfiguredSecretKey: () => SECRET_KEY,
+          invalidateTelemetryCredential: (ref) => telemetryHost.invalidateCredential(ref),
+          ui: {
+            ...makeUi('Bearer visible-key-check'),
+            promptSecretValue: async (opts) => {
+              seenValuePrompt = opts.prompt;
+              return undefined;
+            }
+          },
+          logger,
+          auditWriter
+        },
+        SECRET_KEY
+      );
+      expect(seenValuePrompt).toContain(SECRET_KEY);
+
+      await runClearTelemetryCredential(
+        {
+          secrets: secretPort,
+          readConfiguredSecretKey: () => SECRET_KEY,
+          invalidateTelemetryCredential: (ref) => telemetryHost.invalidateCredential(ref),
+          ui: {
+            ...makeUi(''),
+            confirmModal: async (summary) => {
+              seenClearModal = summary;
+              return false;
+            }
+          },
+          logger,
+          auditWriter
+        },
+        SECRET_KEY
+      );
+      expect(seenClearModal).toContain(SECRET_KEY);
+
       expect(() =>
         projectAuditPayload('telemetry-credential-changed', {
           action: 'stored',

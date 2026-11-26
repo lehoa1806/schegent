@@ -62,12 +62,19 @@ export interface ReleaseCandidateDeps {
   readonly rename: (from: string, to: string) => void;
   /** Create the file, failing when it exists, with the given mode. */
   readonly writeExclusive: (path: string, text: string, mode: number) => void;
+  /** Optional disk existence probe for verified rollback reporting. */
+  readonly pathExists?: (path: string) => boolean;
   /** UTC milliseconds. */
   readonly now: () => number;
   readonly log: (line: string) => void;
   readonly error: (line: string) => void;
   readonly inspectVsixBytes?: (bytes: Buffer, label: string) => void;
   readonly assertSbomMatchesArchive?: (bytes: Buffer, label: string) => ArchiveSbom;
+  readonly unqualifiedOverride?: boolean;
+  readonly changedQualificationPaths?: () => readonly string[];
+  readonly computeQualificationFingerprint?: () => string;
+  readonly probeInstalledVersions?: () => Readonly<Record<string, string | null>>;
+  readonly installedVersions?: Readonly<Record<string, string | null>>;
 }
 
 export interface ReleaseCandidateResult {
@@ -109,4 +116,5 @@ export type VerifyCandidateArchiveDigestResult =
 export declare function verifyCandidateArchiveDigest(input: {
   readonly recordPath: string;
   readonly readFile: (path: string) => Buffer;
+  readonly repoRoot?: string;
 }): VerifyCandidateArchiveDigestResult;

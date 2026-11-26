@@ -822,12 +822,18 @@ export async function reconcileComposableWorkflowRuns(input: {
       }
     });
     await recovery.reconcileAllRuns(Date.now());
+    const summary = recovery.getLastReconcileSummary();
+    if (summary.isolatedFailureCount > 0 || summary.preservedRefusedParentCount > 0) {
+      input.logger.warn(
+        `run-safety-wiring: connected-workflow recovery summary (isolatedFailures=${summary.isolatedFailureCount}, preservedRefusedParents=${summary.preservedRefusedParentCount})`
+      );
+    }
   } catch (error) {
-    input.logger.warn(
-      `run-safety-wiring: connected-workflow recovery failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
+    const reasonCode =
+      error instanceof Error && /^(?:Error|[A-Z][A-Za-z0-9]{0,39}Error)$/.test(error.name)
+        ? error.name
+        : 'recovery-error';
+    input.logger.warn(`run-safety-wiring: connected-workflow recovery failed (reason=${reasonCode})`);
   }
 }
 

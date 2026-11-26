@@ -766,14 +766,22 @@ export class WorkflowControlService {
       for (const taskId of staging.dispatchedQueueItemIds) {
         await this.deps.cancelOrphanedQueueItem?.({ queueId, taskId });
       }
-      const isGuardRefusal =
-        written.reason === 'immutability-violation' || written.reason === 'ownership-lost';
+      const refusalCode: WorkflowControlRefusalCode =
+        written.reason === 'ownership-lost'
+          ? 'fence-lost'
+          : written.reason === 'immutability-violation'
+            ? 'invalid-state-for-operation'
+            : 'stale-revision';
+      const reason =
+        written.reason === 'ownership-lost'
+          ? 'Window lost workspace primacy or queue lease during command commit.'
+          : written.reason === 'immutability-violation'
+            ? 'Command commit refused by connected-run immutability guard.'
+            : 'Concurrent modification detected during command commit.';
       return {
         accepted: false,
-        refusalCode: isGuardRefusal ? 'invalid-state-for-operation' : 'stale-revision',
-        reason: isGuardRefusal
-          ? 'Command commit refused by connected-run immutability or ownership guard.'
-          : 'Concurrent modification detected during command commit.',
+        refusalCode,
+        reason,
         currentRevision: written.current?.revision ?? null,
         run: written.current,
         projection: written.current !== null ? buildWorkflowRunControlProjection(written.current) : null

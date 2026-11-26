@@ -347,8 +347,7 @@ export function createScannerAdmissionGate(deps: ScannerAdmissionDeps): ScannerA
     return new ContainmentAdmissionRefusedError({
       kind: 'codex',
       scannerTarget: scanner,
-      ...init,
-      consentable: false
+      ...init
     });
   };
 
@@ -414,6 +413,7 @@ export function createScannerAdmissionGate(deps: ScannerAdmissionDeps): ScannerA
     if (binding === 'future-schema') {
       throw refused(scanner, {
         reason: 'acceptance-fingerprint-changed',
+        consentable: false,
         fingerprint: preProbeFingerprint
       });
     }
@@ -492,6 +492,9 @@ export function createScannerAdmissionGate(deps: ScannerAdmissionDeps): ScannerA
   }) => {
     if (cancellationSignal?.aborted) throw new SpawnAdmissionCancelledError();
     if (!deps.isTrusted()) throw refused(scanner, { reason: 'workspace-untrusted-at-spawn' });
+    const primacy = await deps.hasPrimacy();
+    if (cancellationSignal?.aborted) throw new SpawnAdmissionCancelledError();
+    if (!primacy) throw refused(scanner, { reason: 'ownership-lost-at-spawn' });
     const resolved = await deps.resolveScannerExecutable(scanner, env);
     if (cancellationSignal?.aborted) throw new SpawnAdmissionCancelledError();
     if (!resolved.ok) return { ok: false, cause: resolved.cause };

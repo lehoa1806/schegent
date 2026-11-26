@@ -14,6 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { reconcileComposableWorkflowRuns } from '../../src/activation/run-safety-wiring';
+import { buildOwnerResolver } from '../../src/activation/sqlite-cutover-helpers';
 import { createDesktopOwnershipFenceForStore } from '../../src/activation/workflow-ownership-fence';
 import {
   CONTROL_LEDGER_VERSION,
@@ -23,6 +24,8 @@ import {
 } from '../../src/contracts/control-ledger';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { SqliteApplicationStore } from '../../src/services/sqlite-store';
+import { ControlCommandService } from '../../src/services/workflow-execution/control-command-service';
+import { ControlLedgerStore } from '../../src/services/workflow-execution/control-ledger-store';
 import {
   createProductionWorkflowComposition,
   registerProductionWorkflowComposition,
@@ -30,6 +33,7 @@ import {
 } from '../../src/services/workflow-execution/production-workflow-composition';
 import { WorkflowControlService } from '../../src/services/workflow-execution/workflow-control-service';
 import { WorkflowRecoveryService } from '../../src/services/workflow-execution/workflow-recovery-service';
+import { deepFreezeConnectedRunsDocument } from '../../src/state/connected-run-migrator';
 import {
   appendCommandReceipt,
   createConnectedRun,
@@ -165,8 +169,8 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
       if (seeded.outcome !== 'written') throw new Error('seed failed');
       run = seeded.run;
 
-      // Drive 70 distinct receipts (crossing the 64 -> 65 rollover boundary and beyond).
-      for (let i = 1; i <= 70; i += 1) {
+      // Drive 129 distinct receipts (crossing 64 -> 65 and 128 -> 129 rollover boundaries).
+      for (let i = 1; i <= 129; i += 1) {
         const receipt: CommittedCommandReceipt = Object.freeze({
           commandId: `cmd-${i}`,
           operation: i % 2 === 1 ? 'pause' : 'resume',
@@ -184,10 +188,11 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
       }
 
       expect(run.commandReceipts).toHaveLength(MAX_COMMAND_RECEIPTS);
-      expect(run.commandReceipts?.[0]?.commandId).toBe('cmd-7');
-      expect(run.commandReceipts?.[MAX_COMMAND_RECEIPTS - 1]?.commandId).toBe('cmd-70');
+      expect(run.commandReceipts?.[0]?.commandId).toBe('cmd-66');
+      expect(run.commandReceipts?.[MAX_COMMAND_RECEIPTS - 1]?.commandId).toBe('cmd-129');
 
-      // Negative control 1: tampering a retained receipt's operation/target must still be rejected.
+      // Negative control 1: tampering a retained receipt's operation/target must still be rejected
+      // with explicit `immutability-violation` reason.
       const tamperedReceipts = [...(run.commandReceipts ?? [])];
       tamperedReceipts[10] = Object.freeze({
         ...tamperedReceipts[10]!,
@@ -200,6 +205,9 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
       });
       const tamperResult = await host1.store.compareAndSetConnectedRun(tamperedRun, run.revision);
       expect(tamperResult.outcome).toBe('stale');
+      if (tamperResult.outcome === 'stale') {
+        expect(tamperResult.reason).toBe('immutability-violation');
+      }
 
       // Negative control 2: shrinking the receipt array must still be rejected.
       const shrunkRun: ConnectedWorkflowRun = Object.freeze({
@@ -209,17 +217,45 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
       });
       const shrinkResult = await host1.store.compareAndSetConnectedRun(shrunkRun, run.revision);
       expect(shrinkResult.outcome).toBe('stale');
+      if (shrinkResult.outcome === 'stale') {
+        expect(shrinkResult.reason).toBe('immutability-violation');
+      }
+
+      // Negative control 3: duplicate newly appended commandIds must be rejected.
+      const dupReceipt: CommittedCommandReceipt = Object.freeze({
+        commandId: 'cmd-dup-new',
+        operation: 'pause',
+        targetInvocationId: 'run-rollover-1:root',
+        committedRevision: run.revision + 1,
+        committedAt: 1_700_000_200_000,
+        resultingRunStatus: 'paused',
+        resultingInvocationStatus: 'paused'
+      });
+      const dupRun: ConnectedWorkflowRun = Object.freeze({
+        ...run,
+        commandReceipts: Object.freeze([
+          ...(run.commandReceipts ?? []).slice(2),
+          dupReceipt,
+          dupReceipt
+        ]),
+        revision: run.revision + 1
+      });
+      const dupResult = await host1.store.compareAndSetConnectedRun(dupRun, run.revision);
+      expect(dupResult.outcome).toBe('stale');
+      if (dupResult.outcome === 'stale') {
+        expect(dupResult.reason).toBe('immutability-violation');
+      }
     } finally {
       await host1.close();
     }
 
-    // Reopen SQLite store, verify all 64 retained receipts survive, execute idempotent replay and command 71 via WorkflowControlService.
+    // Reopen SQLite store, verify all 64 retained receipts survive, execute idempotent replay and command 130 via WorkflowControlService.
     const host2 = await openSqliteWorkspaceStore(tmpRoot, 'owner-2');
     try {
       const reloaded = host2.store.getConnectedRun('run-rollover-1');
       expect(reloaded).not.toBeNull();
       expect(reloaded?.commandReceipts).toHaveLength(MAX_COMMAND_RECEIPTS);
-      expect(reloaded?.commandReceipts?.[0]?.commandId).toBe('cmd-7');
+      expect(reloaded?.commandReceipts?.[0]?.commandId).toBe('cmd-66');
 
       const controlService = new WorkflowControlService({
         connectedRuns: {
@@ -229,54 +265,119 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
         dispatchPhase: async () => ({ outcome: 'dispatched', queueItemId: 'q-noop' })
       });
 
-      // Replay retained cmd-70 idempotently.
+      // Replay retained cmd-129 idempotently.
       const replay = await controlService.executeCommand({
         runId: 'run-rollover-1',
-        commandId: 'cmd-70',
-        operation: 'resume',
+        commandId: 'cmd-129',
+        operation: 'pause',
         expectedRevision: reloaded!.revision,
         targetInvocationId: 'run-rollover-1:root',
-        now: 1_700_000_090_000
+        now: 1_700_000_210_000
       });
       expect(replay.accepted).toBe(true);
       if (replay.accepted) {
         expect(replay.idempotentReplay).toBe(true);
       }
 
-      // Commit distinct command 71 (pause) through WorkflowControlService -> rolls cmd-7 out, keeps cmd-8..cmd-71.
-      const cmd71 = await controlService.executeCommand({
+      // Commit distinct command 130 (pause) through WorkflowControlService -> rolls cmd-66 out, keeps cmd-67..cmd-130.
+      const cmd130 = await controlService.executeCommand({
         runId: 'run-rollover-1',
-        commandId: 'cmd-71',
+        commandId: 'cmd-130',
         operation: 'pause',
         expectedRevision: reloaded!.revision,
         targetInvocationId: 'run-rollover-1:root',
-        now: 1_700_000_091_000
+        now: 1_700_000_211_000
       });
-      expect(cmd71.accepted).toBe(true);
-      if (cmd71.accepted) {
-        expect(cmd71.idempotentReplay).toBe(false);
-        expect(cmd71.run.commandReceipts).toHaveLength(MAX_COMMAND_RECEIPTS);
-        expect(cmd71.run.commandReceipts?.[0]?.commandId).toBe('cmd-8');
-        expect(cmd71.run.commandReceipts?.[MAX_COMMAND_RECEIPTS - 1]?.commandId).toBe('cmd-71');
+      expect(cmd130.accepted).toBe(true);
+      if (cmd130.accepted) {
+        expect(cmd130.idempotentReplay).toBe(false);
+        expect(cmd130.run.commandReceipts).toHaveLength(MAX_COMMAND_RECEIPTS);
+        expect(cmd130.run.commandReceipts?.[0]?.commandId).toBe('cmd-67');
+        expect(cmd130.run.commandReceipts?.[MAX_COMMAND_RECEIPTS - 1]?.commandId).toBe('cmd-130');
       }
 
-      // Candidate-retry idempotency when a concurrent revision bump happens between ledger commit and receipt CAS.
-      let concurrentBumped = false;
+      // Real ControlCommandService split-store crash-and-replay test:
+      // 1) `redirectLegacyRetryPhase` commits to `controlLedger` (incrementing `frameGeneration`
+      //    and exiting `paused`);
+      // 2) `connectedRuns` CAS fails with `ownership-lost` (`fence-lost` refusal, zero receipt);
+      // 3) Replaying the exact same `commandId` converges idempotently against the REAL
+      //    `ControlCommandService` without tripping `payloadDigest` drift!
+      const ledgerStore = new ControlLedgerStore(host2.store);
+      const seededSplitLedger: ControlLedger = {
+        ...createEmptyControlLedger(),
+        revision: 1,
+        roots: {
+          'run-rollover-1': {
+            version: CONTROL_LEDGER_VERSION,
+            ledgerRunId: 'run-rollover-1',
+            connectedRunId: 'run-rollover-1',
+            rootWorkflowId: 'wf-test',
+            queueId: 'default',
+            linkState: 'in-flight',
+            status: 'in-flight',
+            fence: { primacyClaim: 'primacy:run-rollover-1', queueClaim: 'queue:default', rootGeneration: 1 },
+            rootBudget: { maxDispatches: 50, spendMode: 'count-only' },
+            dispatchedAttempts: 1,
+            settledMicrousd: 0,
+            reservedMicrousd: 0,
+            framesByKey: {
+              'run-rollover-1:root': {
+                frameKey: 'run-rollover-1:root',
+                parentFrameKey: null,
+                invocationId: 'run-rollover-1:root',
+                workflowId: 'wf-test',
+                kind: 'candidate-block',
+                status: 'paused',
+                createdAt: 1_700_000_000_000,
+                updatedAt: 1_700_000_000_000,
+                dispatchedCount: 1,
+                frameGeneration: 1,
+                monitoringStartedAt: 1_700_000_000_000,
+                monitoringExpiresAt: 1_700_086_400_000,
+                selectedCandidateId: 'cand-primary',
+                candidateSlots: [
+                  {
+                    candidateId: 'cand-primary',
+                    priority: 1,
+                    targetType: 'phase',
+                    targetDefinitionId: 'step-1',
+                    backend: 'claude',
+                    maxAttempts: 3,
+                    dispatchedAttempts: 1,
+                    status: 'eligible'
+                  }
+                ]
+              }
+            },
+            attemptsById: {},
+            createdAt: 1_700_000_000_000,
+            updatedAt: 1_700_000_000_000
+          }
+        }
+      } as unknown as ControlLedger;
+      await host2.store.transactControlLedger(async (_raw, write) => {
+        await write(seededSplitLedger);
+      });
+
+      const realControlCommandService = new ControlCommandService({
+        ledgerStore,
+        isTrusted: () => true,
+        clock: {
+          nowWallMs: () => 1_700_000_220_000,
+          nowMonotonicMs: () => 220_000,
+          hostEpoch: 'epoch-test'
+        }
+      });
+
+      let simulateCrashOnce = true;
       let latest = host2.store.getConnectedRun('run-rollover-1')!;
-      let ledgerCalls = 0;
-      const candidateControlService = new WorkflowControlService({
+      const realSplitService = new WorkflowControlService({
         connectedRuns: {
           get: () => latest,
           compareAndSetConnectedRun: async (next, expectedRev) => {
-            if (!concurrentBumped) {
-              concurrentBumped = true;
-              const bumped = await host2.store.compareAndSetConnectedRun(
-                Object.freeze({ ...latest, revision: latest.revision + 1 }),
-                latest.revision
-              );
-              if (bumped.outcome !== 'written') throw new Error('bump failed');
-              latest = bumped.run;
-              return { outcome: 'stale', current: latest };
+            if (simulateCrashOnce) {
+              simulateCrashOnce = false;
+              return { outcome: 'stale', current: latest, reason: 'ownership-lost' };
             }
             const res = await host2.store.compareAndSetConnectedRun(next, expectedRev);
             if (res.outcome === 'written') latest = res.run;
@@ -284,27 +385,35 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
           }
         },
         dispatchPhase: async () => ({ outcome: 'dispatched', queueItemId: 'q-noop' }),
-        controlCommandService: {
-          hasCandidateFrame: () => true,
-          redirectLegacyRetryPhase: async () => {
-            ledgerCalls += 1;
-            return { version: 1, commandId: 'cmd-cand-retry-72', outcome: 'accepted', generation: 2 };
-          }
-        } as unknown as NonNullable<ConstructorParameters<typeof WorkflowControlService>[0]['controlCommandService']>
+        controlCommandService: realControlCommandService
       });
-      const candRes = await candidateControlService.executeCommand({
+
+      const firstAttempt = await realSplitService.executeCommand({
         runId: 'run-rollover-1',
-        commandId: 'cmd-cand-retry-72',
+        commandId: '11111111-1111-4111-8111-111111111131',
         operation: 'retry-phase',
         expectedRevision: latest.revision,
         targetInvocationId: 'run-rollover-1:root',
-        now: 1_700_000_092_000
+        now: 1_700_000_220_000
       });
-      expect(candRes.accepted).toBe(true);
-      expect(ledgerCalls).toBe(1);
-      if (candRes.accepted) {
-        expect(candRes.run.commandReceipts?.[MAX_COMMAND_RECEIPTS - 1]?.commandId).toBe(
-          'cmd-cand-retry-72'
+      expect(firstAttempt.accepted).toBe(false);
+      if (!firstAttempt.accepted) {
+        expect(firstAttempt.refusalCode).toBe('fence-lost');
+      }
+
+      // Replaying the exact same commandId now converges idempotently against the real ledger!
+      const replayAttempt = await realSplitService.executeCommand({
+        runId: 'run-rollover-1',
+        commandId: '11111111-1111-4111-8111-111111111131',
+        operation: 'retry-phase',
+        expectedRevision: latest.revision,
+        targetInvocationId: 'run-rollover-1:root',
+        now: 1_700_000_221_000
+      });
+      expect(replayAttempt.accepted).toBe(true);
+      if (replayAttempt.accepted) {
+        expect(replayAttempt.run.commandReceipts?.[MAX_COMMAND_RECEIPTS - 1]?.commandId).toBe(
+          '11111111-1111-4111-8111-111111111131'
         );
       }
     } finally {
@@ -463,12 +572,30 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
         });
         registerProductionWorkflowComposition(host.store, composition);
 
+        // Verify buildOwnerResolver fails closed (`unresolved`) for refused/future connected parents!
+        const resolveOwner = buildOwnerResolver(host.store);
+        expect(resolveOwner('run', refusedRunId)).toBe('unresolved');
+        expect(resolveOwner('run', healthyRunId)).toBe('live');
+        expect(resolveOwner('run', absentOrphanId)).toBe('settled');
+
+        const warnLogs: string[] = [];
+        const spyLogger = new SanitizedLogger();
+        const origWarn = spyLogger.warn.bind(spyLogger);
+        spyLogger.warn = (msg: string, ...args: unknown[]) => {
+          warnLogs.push(msg);
+          origWarn(msg, ...(args as []));
+        };
+
         await reconcileComposableWorkflowRuns({
           workspaceRoot: tmpRoot,
           store: host.store,
-          logger: new SanitizedLogger(),
+          logger: spyLogger,
           productionComposition: composition
         });
+
+        expect(
+          warnLogs.some((line) => line.includes('preservedRefusedParents=1'))
+        ).toBe(true);
 
         // 1. Refused future parent's control root, permit, and waiter MUST survive both restarts!
         const rawLedger = host.store.getRawControlLedger() as ControlLedger;
@@ -519,5 +646,15 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
     const summary = recovery.getLastReconcileSummary();
     expect(summary.isolatedFailureCount).toBe(1);
     expect(summary.isolatedFailures).toEqual(isolatedFailures);
+
+    // Over-depth connected-run quarantine preserves an opaque tombstone so presence is
+    // `unreadable-refused` instead of `absent`.
+    let deep: Record<string, unknown> = { leaf: 1 };
+    for (let depth = 0; depth < 140; depth += 1) deep = { child: deep };
+    const frozen = deepFreezeConnectedRunsDocument({ 'run-over-depth': deep });
+    expect(frozen.quarantinedCount).toBe(1);
+    expect(
+      Object.hasOwn(frozen.value as Record<string, unknown>, 'run-over-depth')
+    ).toBe(true);
   });
 });

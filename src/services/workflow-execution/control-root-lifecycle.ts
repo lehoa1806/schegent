@@ -56,6 +56,11 @@ export async function reconcileOrphanedControlLedgerRoots(input: {
     readonly connectedRunId: string;
     readonly queueId: string;
   }) => void;
+  readonly onIsolatedOrphanFailure?: (ref: {
+    readonly ledgerRunId: string;
+    readonly connectedRunId: string;
+    readonly error: unknown;
+  }) => void;
   readonly resolveOrphanFence?: (ref: {
     readonly ledgerRunId: string;
     readonly connectedRunId: string;
@@ -65,46 +70,65 @@ export async function reconcileOrphanedControlLedgerRoots(input: {
   readonly processEvidencePort?: import('../../contracts/control-ledger').ProcessEvidencePort | undefined;
 }): Promise<void> {
   if (input.controlAdmission.listRootRunIds === undefined) return;
-  for (const rootRef of input.controlAdmission.listRootRunIds()) {
-    const presence: ControlRootParentPresence =
-      input.lookupParentPresence !== undefined
-        ? input.lookupParentPresence(rootRef.connectedRunId)
-        : input.knownRunIds.has(rootRef.connectedRunId)
-          ? 'present'
-          : 'absent';
-    if (presence !== 'absent') {
-      if (presence === 'unreadable-refused') {
-        input.onPreservedRefusedParent?.({
-          ledgerRunId: rootRef.ledgerRunId,
-          connectedRunId: rootRef.connectedRunId,
-          queueId: rootRef.queueId
-        });
+  let rootRefs: ReturnType<NonNullable<typeof input.controlAdmission.listRootRunIds>>;
+  try {
+    rootRefs = input.controlAdmission.listRootRunIds();
+  } catch (error) {
+    input.onIsolatedOrphanFailure?.({
+      ledgerRunId: '<list-roots>',
+      connectedRunId: '<list-roots>',
+      error
+    });
+    return;
+  }
+  for (const rootRef of rootRefs) {
+    try {
+      const presence: ControlRootParentPresence =
+        input.lookupParentPresence !== undefined
+          ? input.lookupParentPresence(rootRef.connectedRunId)
+          : input.knownRunIds.has(rootRef.connectedRunId)
+            ? 'present'
+            : 'absent';
+      if (presence !== 'absent') {
+        if (presence === 'unreadable-refused') {
+          input.onPreservedRefusedParent?.({
+            ledgerRunId: rootRef.ledgerRunId,
+            connectedRunId: rootRef.connectedRunId,
+            queueId: rootRef.queueId
+          });
+        }
+        continue;
       }
-      continue;
+      const newFence: ExecutionFence =
+        input.resolveOrphanFence !== undefined
+          ? input.resolveOrphanFence(rootRef)
+          : {
+              primacyClaim: `primacy:${rootRef.connectedRunId}`,
+              queueClaim: `queue:${rootRef.queueId}`,
+              rootGeneration: Math.max(1, rootRef.rootGeneration ?? 1)
+            };
+      const released = await input.controlAdmission.releaseUnstartedRootLink?.({
+        ledgerRunId: rootRef.ledgerRunId,
+        connectedRunId: rootRef.connectedRunId,
+        fence: newFence,
+        allowRecoveryTakeover: true
+      });
+      if (released === true) continue;
+      await input.controlAdmission.reconcileControlRoot({
+        ledgerRunId: rootRef.ledgerRunId,
+        connectedRun: null,
+        newFence,
+        ...(input.processEvidencePort !== undefined
+          ? { processEvidencePort: input.processEvidencePort }
+          : {})
+      });
+    } catch (error) {
+      input.onIsolatedOrphanFailure?.({
+        ledgerRunId: rootRef.ledgerRunId,
+        connectedRunId: rootRef.connectedRunId,
+        error
+      });
     }
-    const newFence: ExecutionFence =
-      input.resolveOrphanFence !== undefined
-        ? input.resolveOrphanFence(rootRef)
-        : {
-            primacyClaim: `primacy:${rootRef.connectedRunId}`,
-            queueClaim: `queue:${rootRef.queueId}`,
-            rootGeneration: Math.max(1, rootRef.rootGeneration ?? 1)
-          };
-    const released = await input.controlAdmission.releaseUnstartedRootLink?.({
-      ledgerRunId: rootRef.ledgerRunId,
-      connectedRunId: rootRef.connectedRunId,
-      fence: newFence,
-      allowRecoveryTakeover: true
-    });
-    if (released === true) continue;
-    await input.controlAdmission.reconcileControlRoot({
-      ledgerRunId: rootRef.ledgerRunId,
-      connectedRun: null,
-      newFence,
-      ...(input.processEvidencePort !== undefined
-        ? { processEvidencePort: input.processEvidencePort }
-        : {})
-    });
   }
 }
 

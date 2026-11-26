@@ -5,7 +5,7 @@ import type { AuditLogWriter } from '../audit/audit-log-writer';
 import {
   countsOnlyAuditExport,
   createCountsOnlyAuditExport
-} from '../audit/counts-only-export';
+} from '../services/audit-export/counts-only-export';
 import { exportOutcomePayload, type ExportOutcome } from '../contracts/evidence-export-outcome';
 import { openWithinRoot } from '../lib/safe-open';
 import { resolveContainedLink, resolveWritableAnchor } from '../lib/path-containment';

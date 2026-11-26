@@ -82,6 +82,9 @@ function hasAnyInFlightRun(deps: SqliteBackupCommandsWiringDeps): boolean {
   if (Object.values(queues).some((q) => q.inFlightId !== null)) {
     return true;
   }
+  if (deps.store.hasUnreadableConnectedRuns()) {
+    return true;
+  }
   const connectedRuns = deps.store.getConnectedRuns();
   for (const connected of Object.values(connectedRuns)) {
     if (connected.pendingHandoff !== undefined && connected.pendingHandoff !== null) {

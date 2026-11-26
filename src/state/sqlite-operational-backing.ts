@@ -519,6 +519,11 @@ export class SqliteOperationalBacking {
             nextCache.set(row.doc_key, deepFreezeValue(parsed));
           }
         } catch {
+          if (row.doc_key === KEYS.connectedRuns) {
+            // Preserve a non-plain-object sentinel so `getConnectedRunPresence` fails closed as
+            // `'unreadable-refused'` instead of `'absent'` while keeping startup non-fatal.
+            nextCache.set(row.doc_key, '__schegent_corrupt_connected_runs_json__');
+          }
           this.logger?.warn('corrupt operational_kv_documents payload skipped', { key: row.doc_key });
         }
       }

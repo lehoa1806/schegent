@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { assertFreshBuiltBridgeIdentity } from '../../helpers/verify-built-bridge';
 
 import type { AcpObservation, AcpTransport } from '../../../src/contracts/acp-runtime';
 import {
@@ -541,12 +542,14 @@ describe('FR-R6-F13 (F13-B) — credential-free local real-binary handshake on d
     }
   );
 
-  const builtBridgePath = path.resolve(__dirname, '..', '..', '..', 'dist', 'acp-stdio-bridge.js');
-  const hasBuiltBridge = process.platform === 'darwin' && process.arch === 'arm64' && fs.existsSync(builtBridgePath);
+  const repoRoot = path.resolve(__dirname, '..', '..', '..');
+  const builtBridgePath = path.resolve(repoRoot, 'dist', 'acp-stdio-bridge.js');
+  const isQualifiedMacArm64 = process.platform === 'darwin' && process.arch === 'arm64';
 
-  it.skipIf(!hasBuiltBridge)(
+  it.skipIf(!isQualifiedMacArm64)(
     'spawns bundled dist/acp-stdio-bridge.js subprocess and completes credential-free handshake + synthetic CLI turn',
     async () => {
+      assertFreshBuiltBridgeIdentity(repoRoot);
       const workDir = makeTempDir('schegent-bridge-subproc-');
       const fakeClaudePath = path.join(workDir, 'fake-claude.mjs');
       fs.writeFileSync(

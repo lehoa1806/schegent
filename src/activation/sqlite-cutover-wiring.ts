@@ -388,8 +388,16 @@ async function openPrimarySqliteServices(
       catalogFs: input.catalogFs,
       clearDetachedWriter: ownedShared,
       disposeTelemetryConfig: () => {
-        configSub?.dispose();
-        secretSub?.dispose();
+        try {
+          configSub?.dispose();
+        } catch {
+          // Best-effort disposal must not prevent disposing sibling subscriptions.
+        }
+        try {
+          secretSub?.dispose();
+        } catch {
+          // Best-effort disposal.
+        }
       },
       usageAccounting: createdUsageAccounting,
       usageWiring,
@@ -471,6 +479,22 @@ async function openPrimarySqliteServices(
     });
     createdTelemetryHost = telemetryHost;
     telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+    // Subscribe immediately after initial configuration (before startup awaits) so settings or
+    // SecretStorage changes during activation are never missed.
+    configSub = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('schegent.telemetry.export')) {
+        telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
+      }
+    });
+    const boundConfigSub = configSub;
+    const secretsPort = deps.context.secrets;
+    secretSub =
+      secretsPort !== undefined && typeof secretsPort.onDidChange === 'function'
+        ? secretsPort.onDidChange((event) => {
+            telemetryHost.invalidateCredential(event.key);
+          })
+        : null;
+    const boundSecretSub = secretSub;
 
     usageWiring = createUsageAccountingWiring({
       service: usageAccounting,
@@ -590,20 +614,6 @@ async function openPrimarySqliteServices(
     registerProductionWorkflowComposition(deps.store, workflowComposition);
 
     void replayTelemetrySpoolAfterSettling(telemetryHost, input.reportSideEffectFailure);
-    configSub = vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('schegent.telemetry.export')) {
-        telemetryHost.configureFromUserSettings(readTelemetryExportUserSettings());
-      }
-    });
-    const boundConfigSub = configSub;
-    const secretsPort = deps.context.secrets;
-    secretSub =
-      secretsPort !== undefined && typeof secretsPort.onDidChange === 'function'
-        ? secretsPort.onDidChange((event) => {
-            telemetryHost.invalidateCredential(event.key);
-          })
-        : null;
-    const boundSecretSub = secretSub;
 
     input.operationalMemento?.configureDetachedTrustedSqliteWriter({
       databasePath: activeDatabasePath,
@@ -632,8 +642,16 @@ async function openPrimarySqliteServices(
       changeReviewService,
       workflowComposition,
       disposeTelemetryConfig: () => {
-        boundConfigSub.dispose();
-        boundSecretSub?.dispose();
+        try {
+          boundConfigSub.dispose();
+        } catch {
+          // Best-effort disposal must not leak `boundSecretSub`.
+        }
+        try {
+          boundSecretSub?.dispose();
+        } catch {
+          // Best-effort disposal.
+        }
       }
     };
   } catch (error) {

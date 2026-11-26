@@ -117,4 +117,26 @@ describe('FR-R6-F11 T021 — work slicer', () => {
     expect(result).toEqual({ ok: true, value: undefined });
     expect(slicer.sliceDurations()).toEqual([10, 10]);
   });
+
+  it('does not double-count a shared slice across sequential stages and resets after an external async gap', async () => {
+    const clock = fakeClock();
+    const slicer = createWorkSlicer({
+      monotonicMs: clock.now,
+      deadlineAtMs: 1_000,
+      sliceMs: 8,
+      yieldNow: () => Promise.resolve()
+    });
+
+    // Stage 1 uses 3 ms (under sliceMs=8), stage 2 continues in the same slice and uses 3 ms:
+    // the combined synchronous slice must be recorded once as [6], never double-counted as [3, 6].
+    expect(await slicer.forEach([1], () => clock.advance(3))).toEqual({ ok: true, value: undefined });
+    expect(await slicer.forEach([2], () => clock.advance(3))).toEqual({ ok: true, value: undefined });
+    expect(slicer.sliceDurations()).toEqual([6]);
+
+    // An external async gap (e.g. awaiting I/O for 50 ms) must start a fresh slice rather than
+    // attributing the external wait to synchronous CPU slice time.
+    clock.advance(50);
+    expect(await slicer.forEach([3], () => clock.advance(2))).toEqual({ ok: true, value: undefined });
+    expect(slicer.sliceDurations()).toEqual([6, 2]);
+  });
 });

@@ -23,8 +23,10 @@ import type { AcceptanceMementoPort } from '../../src/services/containment-quali
 import type { BackendRunner } from '../../src/contracts/backend-runner';
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 import { unwrapStreamJson } from '../../src/parser/stream-json-unwrapper';
+import { assertFreshBuiltBridgeIdentity } from '../helpers/verify-built-bridge';
 
-const BRIDGE_BUNDLE = resolve(__dirname, '..', '..', 'dist', 'acp-stdio-bridge.js');
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const BRIDGE_BUNDLE = resolve(REPO_ROOT, 'dist', 'acp-stdio-bridge.js');
 const QUALIFIED_PLATFORM = { os: 'darwin' as const, arch: 'arm64' as const, locality: 'local' as const };
 
 class InMemoryMemento implements AcceptanceMementoPort {
@@ -117,6 +119,7 @@ function initDisposableGitRepo(dir: string): string {
 
 describe('FR-R8-02 (02-02) — standalone codex-security scanner admission and truthful audit posture', () => {
   it('refuses codex-security without explicit scanner consent, in Restricted Mode, on binary/version change, and after revocation, while admitting consented tuple with exact path handoff and honest audit posture', async () => {
+    assertFreshBuiltBridgeIdentity(REPO_ROOT);
     expect(existsSync(BRIDGE_BUNDLE)).toBe(true);
     const root = mkdtempSync(join(tmpdir(), 'schegent-scanner-adm-'));
     try {

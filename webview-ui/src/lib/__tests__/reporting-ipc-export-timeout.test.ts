@@ -4,7 +4,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CMD_ACK } from '../messages';
-import { requestMutateReport, requestReadReport } from '../reporting-ipc';
+import { OUTCOME_NOT_YET_KNOWN_TEXT } from '../boundary-refusal-text';
+import { EXPORT_ACK_TIMEOUT_MS, requestMutateReport, requestReadReport } from '../reporting-ipc';
 import { snapshotStore } from '../snapshot-store.svelte';
 
 let lastCorrelationId = '';
@@ -86,7 +87,8 @@ describe('reporting-ipc — interactive Save-dialog export survives > 10 s delay
     snapshotStore.apply({
       type: CMD_ACK,
       correlationId: corr,
-      status: 'accepted',
+      status: 'rejected',
+      reason: 'canceled',
       result: {
         op: 'export',
         exportOutcome: { outcome: 'dialog-canceled' }
@@ -99,15 +101,56 @@ describe('reporting-ipc — interactive Save-dialog export survives > 10 s delay
     if (env.response.op === 'export') {
       expect(env.response.exportOutcome.outcome).toBe('dialog-canceled');
     }
+    expect(snapshotStore.isPending(corr)).toBe(false);
   });
 
-  it('still bounds non-interactive read requests at 10 seconds', async () => {
+  it('bounds unanswered exports at EXPORT_ACK_TIMEOUT_MS with outcome-not-yet-known text and clears pending', async () => {
+    const promise = requestMutateReport({ op: 'export', reportId: 'rep-stuck', format: 'json' });
+    const corr = lastCorrelationId;
+    expect(snapshotStore.isPending(corr)).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(EXPORT_ACK_TIMEOUT_MS + 100);
+    const env = await promise;
+    expect(env.boundaryRefusal).toBe(OUTCOME_NOT_YET_KNOWN_TEXT);
+    expect(snapshotStore.isPending(corr)).toBe(false);
+  });
+
+  it('cleans up listener and pending state when aborted via AbortSignal', async () => {
+    const controller = new AbortController();
+    const promise = requestMutateReport(
+      { op: 'export', reportId: 'rep-abort', format: 'csv' },
+      { signal: controller.signal }
+    );
+    const corr = lastCorrelationId;
+    expect(snapshotStore.isPending(corr)).toBe(true);
+    controller.abort();
+    const env = await promise;
+    expect(env.boundaryRefusal).toBe(OUTCOME_NOT_YET_KNOWN_TEXT);
+    expect(snapshotStore.isPending(corr)).toBe(false);
+  });
+
+  it('maps command-dispatch-failed to boundary refusal copy instead of accounting-unavailable', async () => {
+    const promise = requestMutateReport({ op: 'export', reportId: 'rep-dispatch-err', format: 'csv' });
+    const corr = lastCorrelationId;
+    snapshotStore.apply({
+      type: CMD_ACK,
+      correlationId: corr,
+      status: 'rejected',
+      reason: 'command-dispatch-failed'
+    } as never);
+    const env = await promise;
+    expect(env.boundaryRefusal).toContain('The action could not be carried out.');
+  });
+
+  it('still bounds non-interactive read requests at 10 seconds and clears pending', async () => {
     const promise = requestReadReport({ op: 'listSaved' });
+    const corr = lastCorrelationId;
     await vi.advanceTimersByTimeAsync(10_500);
     const env = await promise;
     expect(env.response.op).toBe('listSaved');
     if (env.response.op === 'listSaved') {
       expect(env.response.result.ok).toBe(false);
     }
+    expect(snapshotStore.isPending(corr)).toBe(false);
   });
 });

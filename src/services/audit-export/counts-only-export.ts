@@ -1,20 +1,22 @@
 /**
  * Counts-only metadata audit export projection (`schemaVersion === 3`).
  *
- * Extracted from `src/commands/export-audit.ts` into `src/audit/` so both the
- * `schegent.exportAuditLog` command and `src/services/diagnostics-bundle/bundle-collect.ts`
- * share one sanitizer without a `services/ -> commands/` reverse dependency.
+ * Lives in `src/services/audit-export/` so both `src/commands/export-audit.ts` and
+ * `src/services/diagnostics-bundle/bundle-collect.ts` share one sanitizer without a
+ * `services/ -> commands/` reverse edge AND without introducing an `audit/ -> parser/`
+ * runtime value edge beneath `state/` (`tests/lint/architecture-layers.ts`).
  *
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
-import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
-import { ATTEMPT_ID_RE, CAP_EXHAUSTED_CAUSE, PRE_SPAWN_REFUSAL_CAUSE } from './audit-payload';
+import { parseAuditLogLineDetailed } from '../../parser/audit-log-parser';
+import { ATTEMPT_ID_RE, CAP_EXHAUSTED_CAUSE, PRE_SPAWN_REFUSAL_CAUSE } from '../../audit/audit-payload';
 import {
   AUDIT_CONTAINMENT_POSTURES,
   AUDIT_EXECUTABLE_TARGETS,
   AUDIT_PERMISSION_MODES
-} from './audit-payload-acp-vocab';
-import { isFailureCause } from '../contracts/failure-cause';
+} from '../../audit/audit-payload-acp-vocab';
+import { REVIEW_SCANNERS } from '../../contracts/containment-qualification';
+import { isFailureCause } from '../../contracts/failure-cause';
 
 const COUNT_KEYS = new Set([
   'exitCode',
@@ -42,11 +44,22 @@ const COUNT_KEYS = new Set([
   'streamHighWaterBytes',
   'streamObservedBytes',
   'streamPendingHighWaterBytes',
-  'streamTruncated'
+  'streamTruncated',
+  // Principal Review F5/F6 — closed metadata-only operator security & credential events.
+  'scanner',
+  'action',
+  'fingerprintDigestPrefix',
+  'removedSetting',
+  'clearedBinding',
+  'secretKeyDigestPrefix',
+  'matchesConfiguredKey'
 ]);
 
 /** Closed-vocabulary short lowercase cause token (no spaces, paths, or free-form prose). */
 const CLOSED_CAUSE_TOKEN = /^[a-z][a-z0-9_-]{0,31}$/;
+const DIGEST_PREFIX_16_RE = /^[0-9a-f]{16}$/;
+const SCANNER_CONSENT_ACTIONS = new Set(['granted', 'denied', 'revoked']);
+const TELEMETRY_CREDENTIAL_ACTIONS = new Set(['stored', 'cleared']);
 
 /**
  * Value checks for the allowlist above, scoped by `(eventType, key)`.
@@ -116,6 +129,45 @@ function guardedPayloadValue(eventType: string, key: string, value: unknown): un
   }
   if (key === 'streamTruncated') {
     const ok = eventType === 'monitor-invocation-summary' && typeof value === 'boolean';
+    return ok ? value : null;
+  }
+  if (key === 'scanner') {
+    const ok =
+      eventType === 'scanner-consent-changed' &&
+      typeof value === 'string' &&
+      (REVIEW_SCANNERS as readonly string[]).includes(value);
+    return ok ? value : null;
+  }
+  if (key === 'action') {
+    const ok =
+      (eventType === 'scanner-consent-changed' &&
+        typeof value === 'string' &&
+        SCANNER_CONSENT_ACTIONS.has(value)) ||
+      (eventType === 'telemetry-credential-changed' &&
+        typeof value === 'string' &&
+        TELEMETRY_CREDENTIAL_ACTIONS.has(value));
+    return ok ? value : null;
+  }
+  if (key === 'fingerprintDigestPrefix') {
+    const ok =
+      eventType === 'scanner-consent-changed' &&
+      typeof value === 'string' &&
+      DIGEST_PREFIX_16_RE.test(value);
+    return ok ? value : null;
+  }
+  if (key === 'removedSetting' || key === 'clearedBinding') {
+    const ok = eventType === 'scanner-consent-changed' && typeof value === 'boolean';
+    return ok ? value : null;
+  }
+  if (key === 'secretKeyDigestPrefix') {
+    const ok =
+      eventType === 'telemetry-credential-changed' &&
+      typeof value === 'string' &&
+      DIGEST_PREFIX_16_RE.test(value);
+    return ok ? value : null;
+  }
+  if (key === 'matchesConfiguredKey') {
+    const ok = eventType === 'telemetry-credential-changed' && typeof value === 'boolean';
     return ok ? value : null;
   }
   return value;

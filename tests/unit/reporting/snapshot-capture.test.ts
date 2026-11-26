@@ -218,4 +218,61 @@ describe('FR-R6-F11 T012 — run snapshot capture', () => {
       expect(conn.scalar<number>('SELECT 1')).toBe(1);
     });
   });
+
+  it('captures ACP attributions for populated observation ledgers without scanning out-of-window attempts', () => {
+    withStore((conn) => {
+      seedRun(conn, { runId: 'r-in', createdAtMs: 1_500 });
+      seedRun(conn, { runId: 'r-out', createdAtMs: 500 });
+      seedAttempt(conn, { attemptId: 'a-live', runId: 'r-in', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_510 });
+      seedAttempt(conn, { attemptId: 'a-meta', runId: 'r-in', stepIndex: 1, attemptNumber: 1, startedAtMs: 1_520 });
+      seedAttempt(conn, { attemptId: 'a-empty', runId: 'r-in', stepIndex: 2, attemptNumber: 1, startedAtMs: 1_530 });
+      seedAttempt(conn, { attemptId: 'a-out', runId: 'r-out', stepIndex: 0, attemptNumber: 1, startedAtMs: 510 });
+      conn.run(`UPDATE attempts SET backend_kind = 'claude', model_id = 'claude-sonnet' WHERE attempt_id = ?`, 'a-meta');
+
+      const sha = 'a'.repeat(64);
+      const insertObs = (key: string, attemptId: string, origin: 'live' | 'history', observedAtMs: number, seq: number) => {
+        conn.run(
+          `INSERT INTO acp_observation_ledger (
+             observation_key, profile_id, connection_generation, host_receive_seq,
+             acp_session_id, turn_id, attempt_id, origin, kind, payload_sha256, observed_at_ms
+           ) VALUES (?, 'prof-1', 1, ?, 'sess-1', 'turn-1', ?, ?, 'agent_message_chunk', ?, ?)`,
+          key,
+          seq,
+          attemptId,
+          origin,
+          sha,
+          observedAtMs
+        );
+      };
+      // Two live in-window observations + one history + one after cutoff on a-live.
+      insertObs('k1', 'a-live', 'live', 1_600, 1);
+      insertObs('k2', 'a-live', 'live', 1_700, 2);
+      insertObs('k3', 'a-live', 'history', 1_800, 3);
+      insertObs('k4', 'a-live', 'live', 6_000, 4);
+      // Out-of-window attempt observations must be ignored.
+      insertObs('k5', 'a-out', 'live', 600, 5);
+
+      const result = captured(conn, request({ range: { startMs: 1_000, endMs: 5_000 }, cutoffMs: 5_000 }));
+      expect(result.acpAttributions).toEqual([
+        {
+          attemptId: 'a-live',
+          rootId: 'r-in',
+          backendKind: null,
+          modelId: null,
+          profileId: null,
+          laneId: null,
+          liveObservations: 2
+        },
+        {
+          attemptId: 'a-meta',
+          rootId: 'r-in',
+          backendKind: 'claude',
+          modelId: 'claude-sonnet',
+          profileId: null,
+          laneId: null,
+          liveObservations: 0
+        }
+      ]);
+    });
+  });
 });

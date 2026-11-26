@@ -53,12 +53,18 @@ export interface NativeReviewScannerConsentPort {
 }
 
 export interface NativeReviewScannerCommandDeps {
-  readonly config: UncontainedConsentConfig;
+  readonly config: UncontainedConsentConfig & {
+    readonly inspect?: <T>(key: string) => { readonly globalValue?: T } | undefined;
+  };
   readonly consent: NativeReviewScannerConsentPort;
   readonly ui: NativeReviewScannerConsentUi;
   readonly logger: Pick<SanitizedLogger, 'info' | 'warn'>;
   readonly auditWriter?: Pick<AuditLogWriter, 'append'> | undefined;
+  readonly isWorkspaceTrusted?: () => boolean;
+  readonly hasPrimacy?: () => Promise<boolean> | boolean;
 }
+
+const OPERATOR_SECURITY_AUDIT_RUN_ID = 'operator-security';
 
 async function appendScannerConsentAudit(
   deps: NativeReviewScannerCommandDeps,
@@ -74,7 +80,7 @@ async function appendScannerConsentAudit(
   if (deps.auditWriter === undefined) return;
   try {
     await deps.auditWriter.append({
-      runId: '',
+      runId: OPERATOR_SECURITY_AUDIT_RUN_ID,
       phase: 'operator',
       iteration: 0,
       eventType: 'scanner-consent-changed',
@@ -115,8 +121,11 @@ function parseScannerArg(rawArg: unknown): ReviewScannerId | null {
     : null;
 }
 
-function readGrantedScannersList(config: UncontainedConsentConfig): readonly string[] {
-  const raw = config.get<unknown>(ALLOW_UNCONTAINED_SCANNER_SETTING);
+function readGrantedScannersList(config: NativeReviewScannerCommandDeps['config']): readonly string[] {
+  const raw =
+    typeof config.inspect === 'function'
+      ? config.inspect<unknown>(ALLOW_UNCONTAINED_SCANNER_SETTING)?.globalValue
+      : config.get<unknown>(ALLOW_UNCONTAINED_SCANNER_SETTING);
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry): entry is string => typeof entry === 'string');
 }
@@ -188,7 +197,26 @@ export async function runGrantNativeReviewScanner(
     return { outcome: 'denied', scanner };
   }
 
+  // Re-verify trust and authoritative window primacy after awaiting the modal so a window that
+  // lost trust or ownership while the dialog was open cannot mutate global settings or bindings.
+  if (deps.isWorkspaceTrusted !== undefined && !deps.isWorkspaceTrusted()) {
+    deps.logger.warn(`scanner.consent refused-post-modal scanner=${scanner} reason=workspace-untrusted`);
+    deps.ui.warn(`Schegent: workspace trust was lost before granting '${scanner}'; no changes were saved.`);
+    return { outcome: 'denied', scanner };
+  }
+  if (deps.hasPrimacy !== undefined && !(await deps.hasPrimacy())) {
+    deps.logger.warn(`scanner.consent refused-post-modal scanner=${scanner} reason=ownership-lost`);
+    deps.ui.warn(`Schegent: this window lost workspace primacy before granting '${scanner}'; no changes were saved.`);
+    return { outcome: 'denied', scanner };
+  }
+
+  // Write the workspace binding BEFORE updating the global setting, and roll back the binding if
+  // the global write fails so a persistence fault never leaks a global uncontained scanner grant.
+  const previousBinding = deps.consent.readScannerBinding(scanner);
+  let recordedBinding = false;
   try {
+    await deps.consent.recordScannerAcceptance(scanner, inspected.fingerprint);
+    recordedBinding = true;
     const current = readGrantedScannersList(deps.config);
     if (!current.includes(scanner)) {
       await deps.config.update(
@@ -197,8 +225,20 @@ export async function runGrantNativeReviewScanner(
         CONFIGURATION_TARGET_GLOBAL
       );
     }
-    await deps.consent.recordScannerAcceptance(scanner, inspected.fingerprint);
   } catch (error) {
+    if (recordedBinding) {
+      try {
+        if (previousBinding !== null && previousBinding !== 'future-schema') {
+          await deps.consent.recordScannerAcceptance(scanner, previousBinding.fingerprint);
+        } else {
+          await deps.consent.revokeScannerAcceptance(scanner);
+        }
+      } catch (rollbackError) {
+        deps.logger.warn(
+          `scanner.consent rollback-failed scanner=${scanner} reason=${errorMessage(rollbackError)}`
+        );
+      }
+    }
     deps.logger.warn(`scanner.consent write-failed scanner=${scanner} reason=${errorMessage(error)}`);
     deps.ui.error(
       `Schegent: could not persist consent for '${scanner}' (see the Schegent log for details).`
@@ -243,10 +283,27 @@ export async function runRevokeNativeReviewScanner(
     return { outcome: 'already-absent', scanner };
   }
 
+  // Fail-closed revocation: clear the workspace binding and remove the global setting in
+  // independent try/catch blocks (binding first) so a read-only settings.json or future-schema
+  // binding cannot prevent the other revocation half from taking effect.
   let removedSetting = false;
   let clearedBinding = false;
-  try {
-    if (hasSetting) {
+  let bindingError: unknown;
+  let settingError: unknown;
+
+  if (hasBinding) {
+    try {
+      clearedBinding = await deps.consent.revokeScannerAcceptance(scanner);
+    } catch (error) {
+      bindingError = error;
+      deps.logger.warn(
+        `scanner.consent revoke-binding-failed scanner=${scanner} reason=${errorMessage(error)}`
+      );
+    }
+  }
+
+  if (hasSetting) {
+    try {
       const next = current.filter((entry) => entry !== scanner);
       await deps.config.update(
         ALLOW_UNCONTAINED_SCANNER_SETTING,
@@ -254,25 +311,33 @@ export async function runRevokeNativeReviewScanner(
         CONFIGURATION_TARGET_GLOBAL
       );
       removedSetting = true;
+    } catch (error) {
+      settingError = error;
+      deps.logger.warn(
+        `scanner.consent revoke-setting-failed scanner=${scanner} reason=${errorMessage(error)}`
+      );
     }
-    clearedBinding = await deps.consent.revokeScannerAcceptance(scanner);
-  } catch (error) {
-    deps.logger.warn(`scanner.consent revoke-failed scanner=${scanner} reason=${errorMessage(error)}`);
+  }
+
+  if (removedSetting || clearedBinding) {
+    deps.logger.info(
+      `scanner.consent revoked scanner=${scanner} removedSetting=${removedSetting} clearedBinding=${clearedBinding}`
+    );
+    await appendScannerConsentAudit(deps, 'success', {
+      scanner,
+      action: 'revoked',
+      removedSetting,
+      clearedBinding
+    });
+  }
+
+  if (bindingError !== undefined || settingError !== undefined) {
     deps.ui.error(
-      `Schegent: could not revoke consent for '${scanner}' (see the Schegent log for details).`
+      `Schegent: could not fully revoke consent for '${scanner}' (removedSetting=${removedSetting}, clearedBinding=${clearedBinding}; see the Schegent log for details).`
     );
     return { outcome: 'write-failed', scanner };
   }
 
-  deps.logger.info(
-    `scanner.consent revoked scanner=${scanner} removedSetting=${removedSetting} clearedBinding=${clearedBinding}`
-  );
-  await appendScannerConsentAudit(deps, 'success', {
-    scanner,
-    action: 'revoked',
-    removedSetting,
-    clearedBinding
-  });
   deps.ui.info(
     `Schegent: revoked '${scanner}' consent and cleared its workspace fingerprint binding.`
   );

@@ -51,8 +51,21 @@ export function createWorkSlicer(options: WorkSlicerOptions): WorkSlicer {
   const yieldNow = options.yieldNow ?? yieldToEventLoop;
   const durations: number[] = [];
   // Carry the active slice start across sequential `forEach` stages so back-to-back loops on one
-  // slicer share the same event-loop budget instead of summing into a 2x stall between yields.
+  // slicer share the same event-loop budget instead of summing into a 2x stall between yields,
+  // while updating (rather than double-pushing) the active slice entry and resetting after any
+  // external async gap.
   let activeSliceStart: number | null = null;
+  let activeSliceRecordedIndex: number | null = null;
+  let activeSliceLastEnd: number | null = null;
+
+  function recordSlice(elapsed: number): void {
+    if (activeSliceRecordedIndex !== null) {
+      durations[activeSliceRecordedIndex] = elapsed;
+    } else {
+      activeSliceRecordedIndex = durations.length;
+      durations.push(elapsed);
+    }
+  }
 
   function interruption(): ReportResult<undefined> | undefined {
     if (options.signal?.aborted === true) {
@@ -67,8 +80,12 @@ export function createWorkSlicer(options: WorkSlicerOptions): WorkSlicer {
       return before;
     }
     const callStart = options.monotonicMs();
-    if (activeSliceStart === null) {
+    if (
+      activeSliceStart === null ||
+      (activeSliceLastEnd !== null && callStart - activeSliceLastEnd >= sliceMs)
+    ) {
       activeSliceStart = callStart;
+      activeSliceRecordedIndex = null;
     }
     let sliceStart = activeSliceStart;
     let pending = false;
@@ -79,19 +96,24 @@ export function createWorkSlicer(options: WorkSlicerOptions): WorkSlicer {
       if (elapsed < sliceMs) {
         continue;
       }
-      durations.push(elapsed);
+      recordSlice(elapsed);
+      activeSliceRecordedIndex = null;
       pending = false;
       const stop = interruption();
       if (stop !== undefined) {
         activeSliceStart = null;
+        activeSliceLastEnd = null;
         return stop;
       }
       await yieldNow();
       sliceStart = options.monotonicMs();
       activeSliceStart = sliceStart;
+      activeSliceLastEnd = null;
     }
     if (pending) {
-      durations.push(options.monotonicMs() - sliceStart);
+      const endMs = options.monotonicMs();
+      recordSlice(endMs - sliceStart);
+      activeSliceLastEnd = endMs;
     }
     return interruption() ?? reportOk(undefined);
   }

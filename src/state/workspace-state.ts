@@ -819,6 +819,7 @@ export class WorkspaceStateStore {
   public getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>> { return connectedFamily.getConnectedRuns(this.familyContext, this.connectedRunsWarned); }
   public getConnectedRun(connectedRunId: string): ConnectedWorkflowRun | null { return connectedFamily.getConnectedRun(this.familyContext, this.connectedRunsWarned, connectedRunId); }
   public getConnectedRunPresence(connectedRunId: string): connectedFamily.ConnectedRunPresence { return connectedFamily.getConnectedRunPresence(this.familyContext, this.connectedRunsWarned, connectedRunId); }
+  public hasUnreadableConnectedRuns(): boolean { return connectedFamily.hasUnreadableConnectedRuns(this.familyContext, this.connectedRunsWarned); }
   public compareAndSetConnectedRun(next: ConnectedWorkflowRun, expectedRevision: number): Promise<ConnectedRunWriteResult> { return connectedFamily.compareAndSetConnectedRun(this.familyContext, this.connectedRunsWarned, next, expectedRevision); }
   public deleteConnectedRuns(connectedRunIds: readonly string[]): Promise<number> { return connectedFamily.deleteConnectedRuns(this.familyContext, this.connectedRunsWarned, connectedRunIds); }
   public deleteUnstartedConnectedRun(connectedRunId: string, expectedRevision: number): Promise<boolean> { return connectedFamily.deleteUnstartedConnectedRun(this.familyContext, this.connectedRunsWarned, connectedRunId, expectedRevision); }

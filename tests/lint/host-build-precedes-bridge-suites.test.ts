@@ -35,6 +35,7 @@ function localRunTarget(command: string): string | undefined {
 }
 
 function isBridgeConsumingCommand(command: string): boolean {
+  if (/^node\s+scripts\/package-vsix-smoke\.mjs\b/.test(command)) return true;
   const tokens = command.split(/\s+/);
   const vitest = tokens.indexOf('vitest');
   if (vitest === -1 || tokens[vitest + 1] !== 'run') return false;
