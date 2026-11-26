@@ -23,7 +23,8 @@
 // into the operator disclosure; its default is "no bound", and the disclosure says so.
 
 import type { SpendDenomination } from '../contracts/backend-spend-denomination';
-import { readPhaseEndUsage, totalTokens } from './usage-reader';
+import type { CacheRelation } from '../contracts/usage-accounting/accounting-types';
+import { qualifiedTotalTokens, readPhaseEndUsage } from './usage-reader';
 
 /**
  * What a backend reports, so the bound knows which denomination applies. Re-exported from the
@@ -177,14 +178,26 @@ export function spendPauseMessage(verdict: Extract<SpendVerdict, { kind: 'exceed
  * first, flat second, absent never zero. A row id already counted changes nothing (contract S2
  * G5), which is what makes a row the seed and the live notice both deliver count once.
  */
+export interface AccumulateSpendOptions {
+  /** Backend that executed the ended phase (resolved via `qualificationFor(backend).cacheRelation`). */
+  readonly backend?: string | undefined;
+  /** Explicit cache-vs-input relation override when already resolved by caller. */
+  readonly cacheRelation?: CacheRelation | undefined;
+}
+
 export function accumulateSpend(
   prev: RunSpendTotal,
   payload: Readonly<Record<string, unknown>>,
-  rowId: string
+  rowId: string,
+  options?: AccumulateSpendOptions
 ): RunSpendTotal {
   if (prev.countedRowIds.has(rowId)) return prev;
   const usage = readPhaseEndUsage(payload);
-  const rowTokens = totalTokens(usage);
+  const relationOrBackend =
+    options?.cacheRelation ??
+    options?.backend ??
+    (typeof payload.runner === 'string' ? payload.runner : undefined);
+  const { total: rowTokens, cacheRelationAmbiguous } = qualifiedTotalTokens(usage, relationOrBackend);
   const costUsd =
     usage.costUsd.kind === 'present' ? (prev.costUsd ?? 0) + usage.costUsd.value : prev.costUsd;
   const tokens = rowTokens === undefined ? prev.totalTokens : (prev.totalTokens ?? 0) + rowTokens;
@@ -195,13 +208,20 @@ export function accumulateSpend(
     usage.outputTokens.kind === 'rejected' ||
     usage.cacheCreationInputTokens.kind === 'rejected' ||
     usage.cacheReadInputTokens.kind === 'rejected';
+  // Principal review Finding 3: BOTH primary token counters (`inputTokens` AND `outputTokens`) must
+  // be present to certify a turn's token usage complete. Partial reporting (e.g., input only) stays
+  // a lower bound (`incomplete` below limit; still `exceeded` if the lower bound crosses the cap).
   const missingPrimaryTokens =
-    usage.inputTokens.kind !== 'present' && usage.outputTokens.kind !== 'present';
+    usage.inputTokens.kind !== 'present' || usage.outputTokens.kind !== 'present';
   const missingUsdRows =
     prev.missingUsdRows === true || (!nonInvocationRow && usage.costUsd.kind !== 'present');
   const missingTokenRows =
     prev.missingTokenRows === true ||
-    (!nonInvocationRow && (rowTokens === undefined || anyRejectedTokenField || missingPrimaryTokens));
+    (!nonInvocationRow &&
+      (rowTokens === undefined ||
+        anyRejectedTokenField ||
+        missingPrimaryTokens ||
+        cacheRelationAmbiguous));
   return {
     costUsd,
     totalTokens: tokens,

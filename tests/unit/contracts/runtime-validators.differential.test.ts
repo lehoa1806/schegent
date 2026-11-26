@@ -868,7 +868,14 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
     { label: 'approve bad decisionId', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'approve', handoffId: 'h-1', expectedRevision: 1, decisionId: '../d' }), expected: { ok: false, reason: 'invalid-decisionId' } },
     { label: 'edit bad handoffId', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'edit', handoffId: '../h', baseRevision: 1, replacementSources: [] }), expected: { ok: false, reason: 'invalid-handoffId' } },
     { label: 'edit baseRevision 0 rejected', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'edit', handoffId: 'h-1', baseRevision: 0, replacementSources: [] }), expected: { ok: false, reason: 'invalid-baseRevision' } },
-    { label: 'non-array replacementSources', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'edit', handoffId: 'h-1', baseRevision: 1, replacementSources: 'bad' }), expected: { ok: false, reason: 'invalid-replacementSources' } }
+    { label: 'non-array replacementSources', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'edit', handoffId: 'h-1', baseRevision: 1, replacementSources: 'bad' }), expected: { ok: false, reason: 'invalid-replacementSources' } },
+    { label: 'valid editSummary min boundaries with producerAttemptId', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'editSummary', handoffId: 'h-1', baseRevision: 1, summary: 's', producerAttemptId: 'att-1' }), expected: { ok: true, payload: { op: 'editSummary', handoffId: 'h-1', baseRevision: 1, summary: 's', producerAttemptId: 'att-1' } } },
+    { label: 'valid editSummary max summary 8192 without producerAttemptId', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'editSummary', handoffId: 'h-1', baseRevision: 2, summary: 's'.repeat(8192) }), expected: { ok: true, payload: { op: 'editSummary', handoffId: 'h-1', baseRevision: 2, summary: 's'.repeat(8192) } } },
+    { label: 'editSummary bad handoffId', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'editSummary', handoffId: '../h', baseRevision: 1, summary: 'ok' }), expected: { ok: false, reason: 'invalid-handoffId' } },
+    { label: 'editSummary baseRevision 0 rejected', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'editSummary', handoffId: 'h-1', baseRevision: 0, summary: 'ok' }), expected: { ok: false, reason: 'invalid-baseRevision' } },
+    { label: 'editSummary empty summary rejected', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'editSummary', handoffId: 'h-1', baseRevision: 1, summary: '' }), expected: { ok: false, reason: 'invalid-summary' } },
+    { label: 'editSummary over-length summary 8193 rejected', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'editSummary', handoffId: 'h-1', baseRevision: 1, summary: 's'.repeat(8193) }), expected: { ok: false, reason: 'invalid-summary' } },
+    { label: 'editSummary bad producerAttemptId', raw: msg('CMD_DECIDE_PHASE_HANDOFF', { op: 'editSummary', handoffId: 'h-1', baseRevision: 1, summary: 'ok', producerAttemptId: '../att' }), expected: { ok: false, reason: 'invalid-producerAttemptId' } }
   ]
 };
 

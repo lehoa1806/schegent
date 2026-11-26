@@ -227,6 +227,21 @@
           ]
         },
         {
+          "key": "schegent.backend.uncontainedScanners",
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "enum": null,
+          "minimum": null,
+          "maximum": null,
+          "pattern": null,
+          "itemType": "string",
+          "itemPattern": null,
+          "itemEnum": [
+            "codex-security"
+          ]
+        },
+        {
           "key": "schegent.claude.autoCompactPctOverride",
           "type": "integer|null",
           "default": null,

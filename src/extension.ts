@@ -614,7 +614,9 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     runtimeLogAccessor, // FR-R4-F04 (T171): the diagnostics bundle reads the runtime log
     getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
     queueStartFailures,
-    transportRouter: backend.transportRouter
+    transportRouter: backend.transportRouter,
+    secrets: context.secrets,
+    scannerConsent: backend.scannerConsent
   });
   phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);

@@ -219,7 +219,9 @@ export const AUDIT_EVENT_TYPES = [
   "artifact-lifecycle-mutation",
   "agent-config-acknowledged",
   "store-backup",
-  "store-restore"
+  "store-restore",
+  "scanner-consent-changed",
+  "telemetry-credential-changed"
 ] as const;
 
 export const SETTINGS_KEYS = [
@@ -230,6 +232,7 @@ export const SETTINGS_KEYS = [
   "schegent.backend.probeTimeoutSeconds",
   "schegent.backend.runner",
   "schegent.backend.uncontainedBackends",
+  "schegent.backend.uncontainedScanners",
   "schegent.claude.autoCompactPctOverride",
   "schegent.cli.environmentAllowlist",
   "schegent.cli.environmentMode",

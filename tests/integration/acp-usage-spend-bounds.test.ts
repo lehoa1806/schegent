@@ -43,6 +43,7 @@ import { NodeSqliteConnection, SchemaBootstrapService } from '../../src/services
 import { PhaseEndCorrelator } from '../../src/services/usage-accounting/phase-end-ingestion';
 import { createUsageAccountingService } from '../../src/services/usage-accounting/usage-accounting-service';
 import { WORKFLOW_CONTROL_SCHEMA_VERSION } from '../../src/contracts/workflow-controls';
+import { assertFreshBuiltBridgeIdentity } from '../helpers/verify-built-bridge';
 import type { WorkflowRun } from '../../src/state/workflow-run';
 
 const BRIDGE_BUNDLE = resolve(__dirname, '..', '..', 'dist', 'acp-stdio-bridge.js');
@@ -157,6 +158,7 @@ process.stdin.on('data', (d) => { prompt += d; });
 process.stdin.on('end', () => {
   const mode = prompt.includes('MODE:ZERO') ? 'zero'
     : prompt.includes('MODE:ABSENT') ? 'absent'
+    : prompt.includes('MODE:PARTIAL') ? 'partial'
     : prompt.includes('MODE:HIGH') ? 'high'
     : 'measured';
   process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'thr_1234567890' }) + '\\n');
@@ -168,6 +170,11 @@ process.stdin.on('end', () => {
     process.stdout.write(JSON.stringify({
       type: 'turn.completed',
       usage: { input_tokens: 400, output_tokens: 100, cached_input_tokens: 25 }
+    }) + '\\n');
+  } else if (mode === 'partial') {
+    process.stdout.write(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 400 }
     }) + '\\n');
   } else if (mode === 'high') {
     process.stdout.write(JSON.stringify({
@@ -207,6 +214,7 @@ rl.on('line', (line) => {
     const text = (msg.params?.prompt ?? []).map((b) => b.text ?? '').join('\\n');
     const mode = text.includes('MODE:CONTEXT_ONLY') ? 'context-only'
       : text.includes('MODE:ZERO') ? 'zero'
+      : text.includes('MODE:CLEAN_NO_CACHE') ? 'clean-no-cache'
       : 'measured';
     send({
       jsonrpc: '2.0',
@@ -233,6 +241,15 @@ rl.on('line', (line) => {
         params: {
           sessionId: msg.params.sessionId,
           update: { sessionUpdate: 'usage_update', used: 1000, size: 200_000, _meta: { billableTokens: { inputTokens: 0, outputTokens: 0 } } }
+        }
+      });
+    } else if (mode === 'clean-no-cache') {
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: msg.params.sessionId,
+          update: { sessionUpdate: 'usage_update', used: 12000, size: 200_000, _meta: { billableTokens: { inputTokens: 700, outputTokens: 250 } } }
         }
       });
     } else {
@@ -286,6 +303,7 @@ function makeRun(runId: string, backend: 'claude' | 'codex' | 'agy', startedAt: 
 describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound enforcement', () => {
   it('propagates real Claude USD (with session baseline subtraction), distinguishes genuine 0 from absent/invalid, and pauses on USD threshold crossing', async () => {
     expect(existsSync(BRIDGE_BUNDLE)).toBe(true);
+    assertFreshBuiltBridgeIdentity(resolve(__dirname, '..', '..'));
     const root = mkdtempSync(join(tmpdir(), 'schegent-usage-claude-'));
     try {
       const cliPath = join(root, 'fake-claude');
@@ -571,7 +589,7 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         if (snap !== undefined) accounting.ingestPhaseEnd(snap);
       });
 
-      // Codex turn 1: measured 525 tokens (400 + 100 + 25 cached, below 1200)
+      // Codex turn 1: measured 400 input (including 25 cached subset) + 100 output = 500 tokens!
       await codexPhaseRunner.run({
         runId: runCodex.id,
         phase: 'implement',
@@ -584,6 +602,15 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         timeoutMs: 15_000,
         phaseDef: { id: 'implement', name: 'Implement', runner: 'codex', instruction: 'run' }
       });
+      await new Promise((r) => setTimeout(r, 20));
+      // Principal review Finding 3: Codex cached_input_tokens (25) is a subset of input_tokens (400),
+      // so total MUST be 500 (within 510), NEVER double-counted as 525!
+      const afterTurn1 = watcher.observedFor(runCodex.id);
+      expect(afterTurn1.totalTokens).toBe(500);
+      expect(evaluateSpend(afterTurn1, { limitUsd: null, limitTokens: 510 }, 'tokens')).toEqual({
+        kind: 'within'
+      });
+
       // Codex turn 2: absent usage -> mixed run MUST be incomplete (`missing-usage`), NEVER `within`!
       await codexPhaseRunner.run({
         runId: runCodex.id,
@@ -599,7 +626,7 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
       });
       await new Promise((r) => setTimeout(r, 20));
       const mixedTotal = watcher.observedFor(runCodex.id);
-      expect(mixedTotal.totalTokens).toBe(525);
+      expect(mixedTotal.totalTokens).toBe(500);
       expect(mixedTotal.missingTokenRows).toBe(true);
       expect(watcher.trustFor(runCodex.id, 'tokens')).toBe('not-trustworthy');
       const mixedVerdict = evaluateSpend(mixedTotal, { limitUsd: null, limitTokens: 1_200 }, 'tokens');
@@ -609,21 +636,23 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
       }
       expect(pauses).toHaveLength(0);
 
-      // Simulate host reopen via `readSpendReplay`: missing-usage lower-bound incompleteness MUST survive!
+      // Simulate host reopen via `readSpendReplay`: backend-qualified total (500) and incompleteness MUST match live!
       const replay = await readSpendReplay(root, logger, [{ runId: runCodex.id, startedAt }]);
       let replayedTotal = NO_SPEND_OBSERVED;
       for (const row of replay.rows) {
         if (row.runId === runCodex.id) {
-          replayedTotal = accumulateSpend(replayedTotal, row.payload, row.id);
+          replayedTotal = accumulateSpend(replayedTotal, row.payload, row.id, {
+            backend: replay.backendByRowId?.get(row.id) ?? 'codex'
+          });
         }
       }
-      expect(replayedTotal.totalTokens).toBe(525);
+      expect(replayedTotal.totalTokens).toBe(500);
       expect(replayedTotal.missingTokenRows).toBe(true);
       expect(evaluateSpend(replayedTotal, { limitUsd: null, limitTokens: 1_200 }, 'tokens').kind).toBe(
         'incomplete'
       );
 
-      // Codex turn 3: measured 1000 tokens -> lower bound 1525 >= 1200 -> MUST STILL PAUSE!
+      // Codex turn 3: measured 1000 tokens -> lower bound 1500 >= 1200 -> MUST STILL PAUSE!
       await codexPhaseRunner.run({
         runId: runCodex.id,
         phase: 'implement',
@@ -639,6 +668,31 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
       await new Promise((r) => setTimeout(r, 20));
       expect(pauses).toEqual([{ runId: runCodex.id, cause: 'spend-bound-reached' }]);
 
+      // Codex partial turn (input_tokens: 400 only, no output_tokens) -> MUST be `incomplete`, NEVER `within`!
+      const runCodexPartial = makeRun('run-codex-partial', 'codex', startedAt);
+      runs.set(runCodexPartial.id, runCodexPartial);
+      await codexPhaseRunner.run({
+        runId: runCodexPartial.id,
+        phase: 'implement',
+        iteration: 1,
+        iterationCap: 5,
+        featureDir: root,
+        featureDescription: 'MODE:PARTIAL',
+        cliPath: codexCli,
+        cwd: root,
+        timeoutMs: 15_000,
+        phaseDef: { id: 'implement', name: 'Implement', runner: 'codex', instruction: 'run' }
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      const partialTotal = watcher.observedFor(runCodexPartial.id);
+      expect(partialTotal.totalTokens).toBe(400);
+      expect(partialTotal.missingTokenRows).toBe(true);
+      expect(evaluateSpend(partialTotal, { limitUsd: null, limitTokens: 510 }, 'tokens')).toEqual({
+        kind: 'incomplete',
+        denomination: 'tokens',
+        reason: 'missing-usage'
+      });
+
       // Agy context-only (`used: 95000`, NO `billableTokens`) -> NEVER billed as 95000 or 0!
       const agyCtxOut = await agyPhaseRunner.run({
         runId: runAgyCtx.id,
@@ -653,7 +707,8 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         phaseDef: { id: 'implement', name: 'Implement', runner: 'agy', instruction: 'run' }
       });
       expect(agyCtxOut.outcome).toBe('clean');
-      // Agy measured (`billableTokens: 700 + 250 + 40 = 990`) -> recorded accurately!
+      // Agy measured with ambiguous cache (`inputTokens: 700, outputTokens: 250, cacheReadInputTokens: 40`,
+      // cacheRelation: 'unknown') -> confirmed lower bound 950, marked `not-trustworthy` below limit!
       const agyMeasuredOut = await agyPhaseRunner.run({
         runId: runAgyMeasured.id,
         phase: 'implement',
@@ -667,11 +722,29 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         phaseDef: { id: 'implement', name: 'Implement', runner: 'agy', instruction: 'run' }
       });
       expect(agyMeasuredOut.outcome).toBe('clean');
+      // Agy measured without ambiguous cache (`700 + 250 = 950`) -> enforced complete!
+      const runAgyClean = makeRun('run-agy-clean', 'agy', startedAt);
+      runs.set(runAgyClean.id, runAgyClean);
+      const agyCleanOut = await agyPhaseRunner.run({
+        runId: runAgyClean.id,
+        phase: 'implement',
+        iteration: 1,
+        iterationCap: 5,
+        featureDir: root,
+        featureDescription: 'MODE:CLEAN_NO_CACHE',
+        cliPath: agyCli,
+        cwd: root,
+        timeoutMs: 15_000,
+        phaseDef: { id: 'implement', name: 'Implement', runner: 'agy', instruction: 'run' }
+      });
+      expect(agyCleanOut.outcome).toBe('clean');
       await new Promise((r) => setTimeout(r, 20));
       expect(watcher.observedFor(runAgyCtx.id).totalTokens).toBeUndefined();
       expect(watcher.trustFor(runAgyCtx.id, 'tokens')).toBe('not-trustworthy');
-      expect(watcher.observedFor(runAgyMeasured.id).totalTokens).toBe(990);
-      expect(watcher.trustFor(runAgyMeasured.id, 'tokens')).toBe('enforced');
+      expect(watcher.observedFor(runAgyMeasured.id).totalTokens).toBe(950);
+      expect(watcher.trustFor(runAgyMeasured.id, 'tokens')).toBe('not-trustworthy');
+      expect(watcher.observedFor(runAgyClean.id).totalTokens).toBe(950);
+      expect(watcher.trustFor(runAgyClean.id, 'tokens')).toBe('enforced');
 
       // Verify F06 SQLite usage-accounting completeness across measured (`known`), mixed (`partial`),
       // and context-only (`unknown`) runs!

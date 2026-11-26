@@ -419,6 +419,40 @@ export function validateDecidePhaseHandoff(
       const command: DecidePhaseHandoffCommand = { type: CMD_DECIDE_PHASE_HANDOFF, correlationId, payload: { op: 'edit', handoffId: arm_handoffId, baseRevision: arm_baseRevision, replacementSources: arm_replacementSources } };
       return ok(command);
     }
+    case 'editSummary': {
+      if (hasUnexpectedKeys(pObj, ['op', 'handoffId', 'baseRevision', 'summary', 'producerAttemptId'])) {
+        return fail('unexpected-payload-fields', { type: CMD_DECIDE_PHASE_HANDOFF, correlationId });
+      }
+      const arm_handoffIdRaw: unknown = pObj['handoffId'];
+      if (!isBoundedIdentifier(arm_handoffIdRaw)) {
+        return fail('invalid-handoffId', { type: CMD_DECIDE_PHASE_HANDOFF, correlationId });
+      }
+      const arm_handoffId: string = arm_handoffIdRaw;
+      const arm_baseRevisionRaw: unknown = pObj['baseRevision'];
+      if (typeof arm_baseRevisionRaw !== 'number' || !Number.isSafeInteger(arm_baseRevisionRaw) || arm_baseRevisionRaw < 1) {
+        return fail('invalid-baseRevision', { type: CMD_DECIDE_PHASE_HANDOFF, correlationId });
+      }
+      const arm_baseRevision: number = arm_baseRevisionRaw;
+      const arm_summaryRaw: unknown = pObj['summary'];
+      if (typeof arm_summaryRaw !== 'string') {
+        return fail('invalid-summary', { type: CMD_DECIDE_PHASE_HANDOFF, correlationId });
+      }
+      if (arm_summaryRaw.length < 1 || arm_summaryRaw.length > 8192) {
+        return fail('invalid-summary', { type: CMD_DECIDE_PHASE_HANDOFF, correlationId });
+      }
+      const arm_summary: string = arm_summaryRaw;
+      const arm_producerAttemptIdRaw: unknown = pObj['producerAttemptId'];
+      let arm_producerAttemptId: string | undefined;
+      if (arm_producerAttemptIdRaw !== undefined) {
+        if (!isBoundedIdentifier(arm_producerAttemptIdRaw)) {
+          return fail('invalid-producerAttemptId', { type: CMD_DECIDE_PHASE_HANDOFF, correlationId });
+        }
+        const arm_producerAttemptIdChecked: string = arm_producerAttemptIdRaw;
+        arm_producerAttemptId = arm_producerAttemptIdChecked;
+      }
+      const command: DecidePhaseHandoffCommand = { type: CMD_DECIDE_PHASE_HANDOFF, correlationId, payload: { op: 'editSummary', handoffId: arm_handoffId, baseRevision: arm_baseRevision, summary: arm_summary, ...(arm_producerAttemptId === undefined ? {} : { producerAttemptId: arm_producerAttemptId }) } };
+      return ok(command);
+    }
     default:
       return fail('invalid-op', { type: CMD_DECIDE_PHASE_HANDOFF, correlationId });
   }

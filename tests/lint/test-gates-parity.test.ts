@@ -250,6 +250,7 @@ describe('FR-R7-08 — test:gates parity and single verification step list', () 
           command: 'echo hi',
           firstTier: 'release' as const,
           requiresWebviewBuild: false,
+          requiresHostBuild: false,
           category: 'test'
         }
       ]
@@ -257,6 +258,26 @@ describe('FR-R7-08 — test:gates parity and single verification step list', () 
     expect(
       generator.validateStepList(unsafeSpec, scripts).some((e) => e.includes('unsafe script name'))
     ).toBe(true);
+
+    // 1b. Running a requiresHostBuild step before build:host in a composite aggregate must fail.
+    const ciAgg = spec.aggregates.ci;
+    if (ciAgg && ciAgg.kind === 'composite') {
+      const staleHostSpec = {
+        ...spec,
+        aggregates: {
+          ...spec.aggregates,
+          ci: {
+            ...ciAgg,
+            steps: ciAgg.steps.filter((s) => s !== 'build:host')
+          }
+        }
+      };
+      expect(
+        generator
+          .validateStepList(staleHostSpec, scripts)
+          .some((e) => e.includes('requiresHostBuild: true'))
+      ).toBe(true);
+    }
 
     // 2. Placing a release-tier step inside verify:edit must fail firstTier validation.
     const editAgg = spec.aggregates['verify:edit'];

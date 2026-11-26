@@ -40,8 +40,10 @@ import { ContainmentAdmissionRefusedError } from '../../src/services/containment
 import { unwrapStreamJson } from '../../src/parser/stream-json-unwrapper';
 import type { AcceptanceMementoPort } from '../../src/services/containment-qualification/acceptance-bindings';
 import { buildCspMeta } from '../../src/ui/sidebar/csp';
+import { assertFreshBuiltBridgeIdentity } from '../helpers/verify-built-bridge';
 
-const BRIDGE_BUNDLE = resolve(__dirname, '..', '..', 'dist', 'acp-stdio-bridge.js');
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const BRIDGE_BUNDLE = resolve(REPO_ROOT, 'dist', 'acp-stdio-bridge.js');
 const MANIFEST_PATH = resolve(__dirname, '..', 'evals', 'fixtures', 'backend-behavior', 'manifest.json');
 const QUALIFIED_PLATFORM = { os: 'darwin' as const, arch: 'arm64' as const, locality: 'local' as const };
 
@@ -341,6 +343,7 @@ rl.on('line', (line) => {
 describe('FR-R8-02 (02-05) — real-process E2E across all 3 packaged ACP profiles', () => {
   it('binds fixture digest and PROMPT_COMPOSITION_VERSION, runs all 4 representative tasks + paired negative checks across Claude/Codex/Agy packaged profiles, and verifies CSP/IPC + codex-security consent gates', async () => {
     expect(existsSync(BRIDGE_BUNDLE)).toBe(true);
+    assertFreshBuiltBridgeIdentity(REPO_ROOT, { checkWebview: true });
     expect(existsSync(MANIFEST_PATH)).toBe(true);
     const manifestBytes = readFileSync(MANIFEST_PATH);
     const manifestDigest = createHash('sha256').update(manifestBytes).digest('hex');

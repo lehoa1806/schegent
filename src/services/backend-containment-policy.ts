@@ -3,6 +3,7 @@ import {
   findBackendDescriptor,
   type BackendContainmentMechanism
 } from '../contracts/backend-descriptors';
+import { REVIEW_SCANNERS, type ReviewScannerId } from '../contracts/containment-qualification';
 
 export type { BackendContainmentMechanism };
 
@@ -98,6 +99,9 @@ export type ContainmentVerdict =
 /** The setting an operator sets to accept the uncontained posture, per backend. */
 export const ALLOW_UNCONTAINED_SETTING = 'schegent.backend.uncontainedBackends';
 
+/** The application-scoped setting an operator grants via consent to run standalone uncontained review scanners. */
+export const ALLOW_UNCONTAINED_SCANNER_SETTING = 'schegent.backend.uncontainedScanners';
+
 /** The key this replaced. Named so the refusal message can say what changed. */
 export const REMOVED_ALLOW_UNCONTAINED_SETTING = 'schegent.backend.allowUncontainedBackends';
 
@@ -187,6 +191,49 @@ export function resolveUncontainedGrant(raw: unknown): GrantedUncontainedBackend
       continue;
     }
     granted.add(kind);
+  }
+  return { granted, problems };
+}
+
+export interface GrantedUncontainedScanners {
+  /** Entries that name a supported standalone native review scanner. */
+  readonly granted: ReadonlySet<ReviewScannerId>;
+  /** Entries that grant nothing, each with why. Empty in the ordinary case. */
+  readonly problems: readonly UncontainedEntryProblem[];
+}
+
+export function resolveUncontainedScannerGrant(raw: unknown): GrantedUncontainedScanners {
+  const granted = new Set<ReviewScannerId>();
+  const problems: UncontainedEntryProblem[] = [];
+  if (!Array.isArray(raw)) return { granted, problems };
+  for (const value of raw) {
+    const report = problems.length < MAX_REPORTED_ENTRIES;
+    if (typeof value !== 'string') {
+      if (report) {
+        problems.push({
+          entry: echo(typeof value === 'symbol' ? value.toString() : String(value)),
+          problem: 'unsupported',
+          message:
+            `'${ALLOW_UNCONTAINED_SCANNER_SETTING}' entries must be scanner ids; supported ids are ` +
+            `${REVIEW_SCANNERS.join(', ')}. This entry grants nothing.`
+        });
+      }
+      continue;
+    }
+    const scanner = REVIEW_SCANNERS.find((supported: ReviewScannerId) => supported === value);
+    if (scanner === undefined) {
+      if (report) {
+        problems.push({
+          entry: echo(value),
+          problem: 'unsupported',
+          message:
+            `'${echo(value)}' is not a review scanner id. Supported ids are ` +
+            `${REVIEW_SCANNERS.join(', ')}. This entry grants nothing.`
+        });
+      }
+      continue;
+    }
+    granted.add(scanner);
   }
   return { granted, problems };
 }

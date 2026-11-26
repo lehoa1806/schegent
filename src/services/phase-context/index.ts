@@ -65,7 +65,7 @@ export {
 } from './preparation-admission';
 export { renderContext } from './renderer';
 export { parseFixClaims, parseReviewReport, type FixClaimsResult, type ReviewReportResult } from './review-report';
-export { editRevision, preparedOf, type EditResult } from './revision-edit';
+export { editRevision, editRevisionSummary, preparedOf, type EditResult } from './revision-edit';
 export { selectSources, type SelectionInput, type SelectionResult, type SourceCost, type ValidCandidate } from './selection';
 export { parseSourceContribution, type ContributionParse } from './source-contribution';
 export {

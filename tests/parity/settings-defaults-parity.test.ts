@@ -322,7 +322,12 @@ describe('Feature 056 Track 3 (FR-016) — every schegent.* key has a host-side 
       // `resolveUncontainedGrant`, which validates entries rather than filtering
       // them and fails closed on anything that is not a list of strings — a stale
       // `true` from the removed key therefore grants nothing.
-      'backend.uncontainedBackends'
+      'backend.uncontainedBackends',
+      // Principal Review F5 — application-scoped list of standalone uncontained native review
+      // scanners (`codex-security`). Read strictly from application/global scope via
+      // `resolveUncontainedScannerGrant` and mutated only through the modal-confirmed
+      // `schegent.grantNativeReviewScanner` / `schegent.revokeNativeReviewScanner` commands.
+      'backend.uncontainedScanners'
     ]);
     // Application-scoped CLI keys.
     //

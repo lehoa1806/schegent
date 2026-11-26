@@ -17,7 +17,9 @@ export const handler: CommandHandler<DecidePhaseHandoffCommand> = async (ctx, co
     const response: DecidePhaseHandoffResponse =
       command.payload.op === 'approve'
         ? { op: 'approve', result: unavailable }
-        : { op: 'edit', result: unavailable };
+        : command.payload.op === 'editSummary'
+          ? { op: 'editSummary', result: unavailable }
+          : { op: 'edit', result: unavailable };
     await ack(ctx, 'rejected', 'storage-unavailable', response);
     return;
   }
@@ -30,6 +32,24 @@ export const handler: CommandHandler<DecidePhaseHandoffCommand> = async (ctx, co
         command.payload.decisionId
       );
       const response: DecidePhaseHandoffResponse = { op: 'approve', result };
+      await ack(ctx, result.ok ? 'accepted' : 'rejected', result.ok ? undefined : result.failure, response);
+      return;
+    }
+    if (command.payload.op === 'editSummary') {
+      const result =
+        api.editHandoffSummary !== undefined
+          ? api.editHandoffSummary(
+              command.payload.handoffId,
+              command.payload.baseRevision,
+              command.payload.summary,
+              command.payload.producerAttemptId
+            )
+          : {
+              ok: false as const,
+              failure: 'storage-unavailable' as const,
+              detail: 'handoff-summary-edit-unavailable'
+            };
+      const response: DecidePhaseHandoffResponse = { op: 'editSummary', result };
       await ack(ctx, result.ok ? 'accepted' : 'rejected', result.ok ? undefined : result.failure, response);
       return;
     }

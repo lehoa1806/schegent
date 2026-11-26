@@ -210,16 +210,7 @@ export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
     filing: 'FR-R8-04',
     reason: 'Resource inventory reads posture cache bound constant from controller/backend-posture-recorder.ts; relocate constant to contracts/ on next touch.'
   },
-  // ---- 2 reconciled non-controller upper-layer service edges discovered by FR-R8-04 AST census
-  {
-    from: 'src/services/diagnostics-bundle/bundle-collect.ts',
-    fromLayer: 'services',
-    intoLayer: 'commands',
-    target: 'src/commands/export-audit.ts',
-    owner: 'operator-evidence',
-    filing: 'FR-R8-04',
-    reason: 'Diagnostics bundle shares single counts-only audit export sanitizer currently declared in commands/export-audit.ts; extract sanitizer into audit/ on next touch.'
-  },
+  // ---- 1 remaining non-controller upper-layer service edge (bundle-collect -> export-audit retired into src/audit/counts-only-export.ts)
   {
     from: 'src/services/workflow-execution/workflow-control-projector.ts',
     fromLayer: 'services',

@@ -58,6 +58,7 @@ import type { DurableAttemptEvidence } from './workflow-recovery-service';
 import type { ConnectedRunWriter } from './workflow-launcher';
 import type { ControlCommandAcknowledgement } from '../../contracts/sidebar-ipc/workflow-run';
 import type { PhaseHandoffCoordinator } from '../phase-context/phase-handoff-coordinator';
+import { commitCandidateRetryReceipt } from './candidate-retry-receipt';
 import { validateAndApproveContinueHandoff } from './phase-handoff-execution-bridge';
 import type { CandidateBlockExecutor } from './candidate-block-executor';
 import type {
@@ -594,30 +595,12 @@ export class WorkflowControlService {
           currentRevision: run.revision, run, projection: buildWorkflowRunControlProjection(run)
         };
       }
-      const rootId = resolveRootInvocationId(run);
-      const rootStatus = run.invocations?.[rootId]?.status ?? 'in-flight';
-      const targetStatus = run.invocations?.[candidateTargetFrameId]?.status ?? rootStatus;
-      const receipt: CommittedCommandReceipt = Object.freeze({
-        commandId: request.commandId, operation: request.operation,
-        targetInvocationId: candidateTargetFrameId,
-        ...(request.targetNodeId !== undefined ? { targetNodeId: request.targetNodeId } : {}),
-        committedRevision: run.revision + 1, committedAt: request.now,
-        resultingRunStatus: rootStatus, resultingInvocationStatus: targetStatus
+      return commitCandidateRetryReceipt({
+        run,
+        request,
+        candidateTargetFrameId,
+        writer: this.deps.connectedRuns
       });
-      const withReceipt = appendCommandReceipt({ ...run, revision: run.revision }, receipt);
-      const written = await this.deps.connectedRuns.compareAndSetConnectedRun(withReceipt, run.revision);
-      if (written.outcome === 'stale') {
-        return {
-          accepted: false, refusalCode: 'stale-revision',
-          reason: 'Concurrent modification detected during command commit.',
-          currentRevision: written.current?.revision ?? null, run: written.current,
-          projection: written.current !== null ? buildWorkflowRunControlProjection(written.current) : null
-        };
-      }
-      return {
-        accepted: true, idempotentReplay: false, run: written.run, receipt,
-        projection: buildWorkflowRunControlProjection(written.run)
-      };
     }
 
     // 6. Evaluate control transition table.
@@ -783,10 +766,16 @@ export class WorkflowControlService {
       for (const taskId of staging.dispatchedQueueItemIds) {
         await this.deps.cancelOrphanedQueueItem?.({ queueId, taskId });
       }
+      const isGuardRefusal =
+        written.reason === 'immutability-violation' || written.reason === 'ownership-lost';
       return {
-        accepted: false, refusalCode: 'stale-revision',
-        reason: 'Concurrent modification detected during command commit.',
-        currentRevision: written.current?.revision ?? null, run: written.current,
+        accepted: false,
+        refusalCode: isGuardRefusal ? 'invalid-state-for-operation' : 'stale-revision',
+        reason: isGuardRefusal
+          ? 'Command commit refused by connected-run immutability or ownership guard.'
+          : 'Concurrent modification detected during command commit.',
+        currentRevision: written.current?.revision ?? null,
+        run: written.current,
         projection: written.current !== null ? buildWorkflowRunControlProjection(written.current) : null
       };
     }

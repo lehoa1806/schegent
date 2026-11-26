@@ -37,6 +37,7 @@ import { drillIntoRoot } from './report-drill-down';
 import { canonicalQueryJson, queryDigest, validateReportQuery } from './report-query-validator';
 import {
   measurePopulation,
+  measureWorkingBytes,
   ReportSnapshots,
   type LiveReport,
   type ReportResources,
@@ -54,6 +55,8 @@ export type { ReportingLogger } from './report-capture';
 export const DEFAULT_SNAPSHOT_CAP = 100_000;
 /** The query deadline (research R9). */
 export const DEFAULT_QUERY_DEADLINE_MS = 5_000;
+/** Per-slice work target inside the report engine so host event-loop gaps stay comfortably under 10 ms p95. */
+const DEFAULT_REPORT_SLICE_MS = 4;
 
 const INVALID_QUERY = reportRefused('invalid-query');
 
@@ -179,7 +182,7 @@ export function createReportEngine(options: ReportEngineOptions): ReportEngine {
       monotonicMs: options.monotonicMs,
       deadlineAtMs: options.monotonicMs() + deadlineMs,
       ...(signal !== undefined ? { signal } : {}),
-      ...(bounds.sliceMs !== undefined ? { sliceMs: bounds.sliceMs } : {})
+      sliceMs: bounds.sliceMs ?? DEFAULT_REPORT_SLICE_MS
     });
   }
 
@@ -220,11 +223,11 @@ export function createReportEngine(options: ReportEngineOptions): ReportEngine {
       return built;
     }
     // The usage view's rows are the captured rows, already reserved with the population.
-    const measured = await measurePopulation(capture.value.usage === undefined ? [built.value.rows] : [], slicer);
+    const measured = await measureWorkingBytes(capture.value.usage === undefined ? [built.value.rows] : [], slicer);
     if (!measured.ok) {
       return measured;
     }
-    const heldRows = snapshots.reserve(tally, measured.value.bytes);
+    const heldRows = snapshots.reserve(tally, measured.value);
     if (!heldRows.ok) {
       return heldRows;
     }

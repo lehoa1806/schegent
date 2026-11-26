@@ -198,6 +198,13 @@ export type DecidePhaseHandoffRequest =
       readonly handoffId: string;
       readonly baseRevision: number;
       readonly replacementSources: readonly unknown[];
+    }
+  | {
+      readonly op: 'editSummary';
+      readonly handoffId: string;
+      readonly baseRevision: number;
+      readonly summary: string;
+      readonly producerAttemptId?: string;
     };
 
 export type DecidePhaseHandoffResponse =
@@ -207,6 +214,12 @@ export type DecidePhaseHandoffResponse =
     }
   | {
       readonly op: 'edit';
+      readonly result:
+        | { readonly ok: true; readonly revision: AcceptedRevision }
+        | PhaseContextRefusal;
+    }
+  | {
+      readonly op: 'editSummary';
       readonly result:
         | { readonly ok: true; readonly revision: AcceptedRevision }
         | PhaseContextRefusal;

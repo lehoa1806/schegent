@@ -421,6 +421,19 @@ const EXEMPTIONS: ReadonlyMap<string, Exemption> = new Map<string, Exemption>([
       reviewBy: '2026-12-31'
     }
   ],
+  [
+    'backend.uncontainedScanners',
+    {
+      owner: 'Principal Review F5 — Command Palette grant/revoke commands and native VS Code User Settings UI',
+      reason:
+        'User-only (`application`-scoped) standalone native review scanner consent (`codex-security`), ' +
+        'read uncached from `inspect()?.globalValue` and written via `schegent.grantNativeReviewScanner` / ' +
+        '`schegent.revokeNativeReviewScanner` after modal binary-digest disclosure. Deliberately excluded ' +
+        'from `KEY_SPECS` and `GeneralSettingsTab.svelte` so workspace-scoped IPC draft saves can never ' +
+        'grant uncontained scanner execution.',
+      reviewBy: PERMANENT
+    }
+  ],
 
   // ── Owned by FR-R3-156 (feature 195): the queue failure-policy default. ──
   [

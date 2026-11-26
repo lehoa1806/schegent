@@ -159,29 +159,31 @@ export function mapFailureCause(terminalReason: string | null): string {
 }
 
 function toRoot(record: RootRecord): SnapshotRoot {
+  // Keys emitted in sorted order so `canonicalLine` takes the zero-allocation fast path.
   return Object.freeze({
-    rootId: record.run_id,
-    workflowId: record.workflow_id,
-    frozenDefinitionId: record.frozen_closure_id,
-    status: record.status,
-    startedAtMs: record.started_at_ms,
     completedAtMs: record.completed_at_ms,
     createdAtMs: record.created_at_ms,
-    failureCause: mapFailureCause(record.terminal_reason)
+    failureCause: mapFailureCause(record.terminal_reason),
+    frozenDefinitionId: record.frozen_closure_id,
+    rootId: record.run_id,
+    startedAtMs: record.started_at_ms,
+    status: record.status,
+    workflowId: record.workflow_id
   });
 }
 
 function toAttempt(record: AttemptRecord): SnapshotAttempt {
+  // Keys emitted in sorted order so `canonicalLine` takes the zero-allocation fast path.
   return Object.freeze({
     attemptId: record.attempt_id,
-    rootId: record.run_id,
-    stepIndex: record.step_index,
-    phaseId: record.phase_id,
     attemptNumber: record.attempt_number,
-    status: record.status,
+    completedAtMs: record.completed_at_ms,
     exitCode: record.exit_code,
+    phaseId: record.phase_id,
+    rootId: record.run_id,
     startedAtMs: record.started_at_ms,
-    completedAtMs: record.completed_at_ms
+    status: record.status,
+    stepIndex: record.step_index
   });
 }
 
@@ -287,11 +289,23 @@ function readAuxiliaryMetadata(
        COALESCE(a.model_id, r.model_id) AS model_id,
        COALESCE(a.profile_id, r.profile_id) AS profile_id,
        COALESCE(a.lane_id, r.lane_id) AS lane_id,
-       (SELECT COUNT(*) FROM acp_observation_ledger obs
-          WHERE obs.attempt_id = a.attempt_id AND obs.origin = 'live' AND obs.observed_at_ms < ?) AS live_observations
+       COALESCE(obs.live_observations, 0) AS live_observations
      FROM attempts a
      JOIN runs r ON r.run_id = a.run_id
+     LEFT JOIN (
+       SELECT attempt_id, COUNT(*) AS live_observations
+       FROM acp_observation_ledger
+       WHERE origin = 'live' AND observed_at_ms < ?
+       GROUP BY attempt_id
+     ) obs ON obs.attempt_id = a.attempt_id
      WHERE ${ROOT_RANGE} ${filter.sql}
+       AND (
+         a.backend_kind IS NOT NULL OR r.backend_kind IS NOT NULL
+         OR a.model_id IS NOT NULL OR r.model_id IS NOT NULL
+         OR a.profile_id IS NOT NULL OR r.profile_id IS NOT NULL
+         OR a.lane_id IS NOT NULL OR r.lane_id IS NOT NULL
+         OR obs.live_observations IS NOT NULL
+       )
      ORDER BY a.run_id, a.attempt_id LIMIT ?`,
     endMs,
     ...head,

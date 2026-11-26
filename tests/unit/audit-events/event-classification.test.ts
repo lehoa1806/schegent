@@ -67,6 +67,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // FR-R7-03 — SQLite store backup and restore have no run; System tab only.
   'store-backup': 'system',
   'store-restore': 'system',
+  // Principal Review F5/F6 — standalone scanner consent and OTLP credential actions have no run; System tab only.
+  'scanner-consent-changed': 'system',
+  'telemetry-credential-changed': 'system',
   // Retry-condition decision (task)
   'phase.retry_evaluated': 'task',
   // Delayed retry (system)
@@ -451,7 +454,9 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'control-notice':
         case 'control-command':
         case 'store-backup':
-        case 'store-restore': {
+        case 'store-restore':
+        case 'scanner-consent-changed':
+        case 'telemetry-credential-changed': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

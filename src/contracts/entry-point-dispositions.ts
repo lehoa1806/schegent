@@ -120,7 +120,18 @@ export const MUTATING_COMMAND_IDS = Object.freeze({
   // FR-R8-01 (01-07) — guarded execution lane recovery (freeze retry, uncertain request
   // acknowledgment, complete/retain/pin, safe cleanup, reconcile). Mutates SQLite lane state
   // and/or Git worktrees and refs, so it is mutating and owner-only.
-  'schegent.recoverExecutionLane': 'execution lane recovery'
+  'schegent.recoverExecutionLane': 'execution lane recovery',
+
+  // Principal Review F5 — explicit installed-editor consent and revocation for standalone
+  // uncontained native review scanners (`codex-security`). Inspects/binds scanner fingerprint in
+  // workspace state and updates application-scoped `schegent.backend.uncontainedScanners`.
+  'schegent.grantNativeReviewScanner': 'standalone native review scanner consent grant and fingerprint binding',
+  'schegent.revokeNativeReviewScanner': 'standalone native review scanner consent revocation',
+
+  // Principal Review F6 — writes or deletes OTLP telemetry export credentials in VS Code
+  // `SecretStorage` and invalidates any cached credential held by the telemetry exporter.
+  'schegent.setTelemetryCredential': 'telemetry export credential storage in SecretStorage',
+  'schegent.clearTelemetryCredential': 'telemetry export credential removal from SecretStorage'
 } as const);
 
 /**
@@ -210,7 +221,9 @@ export const OWNER_ONLY_COMMAND_IDS = Object.freeze({
   'schegent.createDiagnosticsBundle': 'records the export',
   'schegent.backupStore': 'writes a backup and records the audit entry',
   'schegent.restoreStoreBackup': 'replaces authoritative store state and records the audit entry',
-  'schegent.recoverExecutionLane': 'mutates execution lane state and Git worktrees'
+  'schegent.recoverExecutionLane': 'mutates execution lane state and Git worktrees',
+  'schegent.grantNativeReviewScanner': 'binds standalone review scanner consent fingerprint in workspace state',
+  'schegent.revokeNativeReviewScanner': 'revokes standalone review scanner consent binding in workspace state'
 } as const satisfies Partial<Record<ExtensionCommandId, string>>);
 
 export type OwnerOnlyCommandId = keyof typeof OWNER_ONLY_COMMAND_IDS;

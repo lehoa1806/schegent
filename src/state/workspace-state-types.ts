@@ -214,7 +214,11 @@ export interface Memento {
 
 export type ConnectedRunWriteResult =
   | { readonly outcome: 'written'; readonly run: ConnectedWorkflowRun }
-  | { readonly outcome: 'stale'; readonly current: ConnectedWorkflowRun | null };
+  | {
+      readonly outcome: 'stale';
+      readonly current: ConnectedWorkflowRun | null;
+      readonly reason?: 'revision-mismatch' | 'immutability-violation' | 'ownership-lost';
+    };
 
 export type QueueMutationRejectReason =
   | 'unknown-queue-id'

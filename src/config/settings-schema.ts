@@ -51,6 +51,7 @@ import {
   BACKEND_DESCRIPTOR_LIST,
   emptyBackendModels
 } from '../contracts/backend-descriptors';
+import { REVIEW_SCANNERS } from '../contracts/containment-qualification';
 import { MAX_UNCHANGED_COMPARISONS } from '../contracts/unchanged-comparison-bound';
 
 /** Setting value-shape category, mirroring JSON Schema vocabulary. */
@@ -162,6 +163,15 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     itemEnum: SUPPORTED_BACKENDS,
     scope: 'application',
     docLabel: 'Backends allowed to run with no OS-enforced bound'
+  },
+  'schegent.backend.uncontainedScanners': {
+    key: 'schegent.backend.uncontainedScanners',
+    type: 'array',
+    default: [],
+    itemType: 'string',
+    itemEnum: REVIEW_SCANNERS,
+    scope: 'application',
+    docLabel: 'Standalone native review scanners allowed to run with no OS-enforced bound'
   },
   'schegent.backend.probeTimeoutSeconds': {
     key: 'schegent.backend.probeTimeoutSeconds',
