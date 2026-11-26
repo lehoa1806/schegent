@@ -569,10 +569,18 @@ export function releaseCandidate(deps) {
   try {
     deps.writeExclusive(paths.record, `${JSON.stringify(record, null, 2)}\n`, OWNER_ONLY_FILE);
   } catch (cause) {
+    let rollbackError = null;
     try {
       deps.rename(paths.candidate, paths.staging);
-    } catch {
-      // The record is the thing that failed; the candidate being left where it is is reported below.
+    } catch (err) {
+      rollbackError = err;
+    }
+    if (rollbackError !== null) {
+      return refuse(
+        'record-failed',
+        `The release record could not be written (${cause?.message ?? cause}), and moving the candidate back to ${paths.staging} also failed (${rollbackError?.message ?? rollbackError}).\n` +
+          `An unrecorded candidate file may still exist at ${paths.candidate} (staging path: ${paths.staging}). Inspect or remove ${paths.candidate} before retrying; do not hand off an unrecorded archive.`
+      );
     }
     return refuse(
       'record-failed',
@@ -596,4 +604,90 @@ export function releaseCandidate(deps) {
     NOTHING_PUBLISHED
   ]);
   return { exitCode: 0, reason: 'accepted', record };
+}
+
+/**
+ * Verify that an on-disk candidate archive matches the SHA-256 digest and byte length recorded
+ * in its release record before any hand-off.
+ */
+export function verifyCandidateArchiveDigest({ recordPath, readFile }) {
+  let rawRecord;
+  try {
+    rawRecord = readFile(recordPath);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: 'record-missing',
+      message: `Could not read release record ${recordPath}: ${cause?.message ?? cause}`
+    };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(rawRecord.toString('utf8'));
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: 'record-unparseable',
+      message: `Release record ${recordPath} is not valid JSON: ${cause?.message ?? cause}`
+    };
+  }
+  const candidate = parsed?.candidate;
+  const { path: candidatePath, sha256: expectedDigest, bytes: expectedBytes } =
+    candidate && typeof candidate === 'object' ? candidate : {};
+  if (
+    typeof candidatePath !== 'string' ||
+    typeof expectedDigest !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(expectedDigest) ||
+    typeof expectedBytes !== 'number' ||
+    !Number.isSafeInteger(expectedBytes) ||
+    expectedBytes < 0
+  ) {
+    return {
+      ok: false,
+      reason: 'record-invalid',
+      message: `Release record ${recordPath} does not declare a valid candidate path, sha256, and byte count.`
+    };
+  }
+  let archiveBytes;
+  try {
+    archiveBytes = readFile(candidatePath);
+  } catch (cause) {
+    return {
+      ok: false,
+      reason: 'candidate-missing',
+      candidatePath,
+      message: `Recorded candidate archive ${candidatePath} could not be read: ${cause?.message ?? cause}`
+    };
+  }
+  const actualSha256 = sha256Hex(archiveBytes);
+  if (archiveBytes.length !== expectedBytes) {
+    return {
+      ok: false,
+      reason: 'size-mismatch',
+      candidatePath,
+      expectedBytes,
+      actualBytes: archiveBytes.length,
+      expectedSha256: expectedDigest,
+      actualSha256,
+      message: `Candidate archive ${candidatePath} size ${archiveBytes.length} does not match recorded ${expectedBytes}.`
+    };
+  }
+  if (actualSha256 !== expectedDigest) {
+    return {
+      ok: false,
+      reason: 'digest-mismatch',
+      candidatePath,
+      expectedBytes,
+      actualBytes: archiveBytes.length,
+      expectedSha256: expectedDigest,
+      actualSha256,
+      message: `Candidate archive ${candidatePath} SHA-256 ${actualSha256} does not match recorded ${expectedDigest}.`
+    };
+  }
+  return {
+    ok: true,
+    candidatePath,
+    sha256: actualSha256,
+    bytes: archiveBytes.length
+  };
 }

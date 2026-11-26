@@ -217,6 +217,16 @@ export const EXECUTION_WORKFLOW_COMMANDS = Object.freeze([
           handoffId: d.str({ format: 'boundedIdentifier', err: 'invalid-handoffId' }),
           baseRevision: d.int({ safe: true, min: 1, err: 'invalid-baseRevision' }),
           replacementSources: d.arr(d.unknown(), { err: 'invalid-replacementSources' })
+        }),
+        editSummary: d.obj({
+          op: d.lit('editSummary'),
+          handoffId: d.str({ format: 'boundedIdentifier', err: 'invalid-handoffId' }),
+          baseRevision: d.int({ safe: true, min: 1, err: 'invalid-baseRevision' }),
+          summary: d.str({ minLen: 1, maxLen: 8192, err: 'invalid-summary' }),
+          producerAttemptId: d.field(
+            d.str({ format: 'boundedIdentifier', err: 'invalid-producerAttemptId' }),
+            { optional: true }
+          )
         })
       },
       { invalidDiscErr: 'invalid-op' }

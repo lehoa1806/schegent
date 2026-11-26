@@ -100,6 +100,10 @@ export function requestMutateReport(
     response: defaultMutateFallback(payload),
     boundaryRefusal: null
   };
+  // Principal review Finding 7: `op: 'export'` opens a native OS Save dialog on the host whose
+  // duration is governed by the user, not an RPC timeout. Dropping the listener at 10 s caused
+  // a false "Export failed" notice after the file was actually written.
+  const timeoutMs = payload.op === 'export' ? null : ACK_TIMEOUT_MS;
   return correlatedRequest(
     () => postCommand(CMD_MUTATE_REPORT, payload).correlationId,
     (ack) => {
@@ -109,7 +113,8 @@ export function requestMutateReport(
         : defaultMutateFallback(payload);
       return { response, boundaryRefusal: refusal };
     },
-    fallback
+    fallback,
+    timeoutMs
   );
 }
 
@@ -120,7 +125,8 @@ function correlatedRequest<T>(
     readonly reason?: string;
     readonly result?: unknown;
   }) => T,
-  onTimeout: T
+  onTimeout: T,
+  timeoutMs: number | null = ACK_TIMEOUT_MS
 ): Promise<T> {
   return new Promise<T>((resolve) => {
     let settled = false;
@@ -153,8 +159,10 @@ function correlatedRequest<T>(
       });
     });
 
-    timer = setTimeout(() => {
-      finalise(onTimeout);
-    }, ACK_TIMEOUT_MS);
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => {
+        finalise(onTimeout);
+      }, timeoutMs);
+    }
   });
 }

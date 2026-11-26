@@ -80,6 +80,11 @@ import type { CatalogKind } from './catalog-store';
 //
 // Feature 318 (FR-R7-04) — additive task-scoped `agent-config-acknowledged`; closed metadata-only payload
 // (`backend`, `fileCount`, `decision`) in `./agent-config-acknowledgement`. Additive — no schema bump.
+//
+// Principal Review F5/F6 — additive system-scoped `scanner-consent-changed` and
+// `telemetry-credential-changed`; closed metadata-only payloads in
+// `../audit/operator-security-audit-payload` (zero paths, zero secret values or raw key names).
+// Additive — no `AUDIT_SCHEMA_VERSION` bump.
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
@@ -1020,6 +1025,12 @@ export const ARTIFACT_LIFECYCLE_EVENT_TYPES = ['artifact-lifecycle-mutation'] as
 /** FR-R7-03 (FR-004, FR-005) — metadata-only SQLite backup and restore events; zero raw paths. */
 export const STORE_BACKUP_RESTORE_EVENT_TYPES = ['store-backup', 'store-restore'] as const;
 
+/** Principal Review F5/F6 — metadata-only standalone scanner consent and telemetry credential events. */
+export const OPERATOR_SECURITY_EVENT_TYPES = [
+  'scanner-consent-changed',
+  'telemetry-credential-changed'
+] as const;
+
 /** FR-R5-F30 (SPEC-08, D7) — metadata-only workflow control-flow events (IDs, enums, counts, generation, timestamps only). */
 export const CONTROL_FLOW_EVENT_TYPES = [
   'control-decision',
@@ -1090,7 +1101,9 @@ export const ALL_AUDIT_EVENT_TYPES = [
   // FR-R7-04 — per-workspace repository agent config acknowledgement (backend, fileCount, decision).
   ...AGENT_CONFIG_ACK_EVENT_TYPES,
   // FR-R7-03 — SQLite store backup and restore operator actions (metadata-only, zero paths).
-  ...STORE_BACKUP_RESTORE_EVENT_TYPES
+  ...STORE_BACKUP_RESTORE_EVENT_TYPES,
+  // Principal Review F5/F6 — standalone scanner consent and OTLP credential actions (metadata-only).
+  ...OPERATOR_SECURITY_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -1619,6 +1632,9 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     // FR-R7-03 — workspace SQLite store backup/restore has no run; System tab only.
     'store-backup',
     'store-restore',
+    // Principal Review F5/F6 — installation/workspace security & credential changes have no run; System tab only.
+    'scanner-consent-changed',
+    'telemetry-credential-changed',
     // State migration / repair
     'state-migrated',
     'workflow-run-repaired',

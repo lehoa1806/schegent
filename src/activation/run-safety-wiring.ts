@@ -581,6 +581,7 @@ export async function reconcileComposableWorkflowRuns(input: {
   readonly workspaceRoot: string;
   readonly store: {
     getConnectedRuns(): Readonly<Record<string, ConnectedWorkflowRun>>;
+    getConnectedRunPresence?(connectedRunId: string): 'present' | 'unreadable-refused' | 'absent';
     getRunMap(): Readonly<Record<string, WorkflowRun | undefined>>;
     compareAndSetConnectedRun(
       next: ConnectedWorkflowRun,
@@ -673,8 +674,25 @@ export async function reconcileComposableWorkflowRuns(input: {
           Object.values(input.store.getConnectedRuns()).filter(
             (run) => run.invocations !== undefined
           ),
+        getPresence: (id) => {
+          if (input.store.getConnectedRunPresence !== undefined) {
+            return input.store.getConnectedRunPresence(id);
+          }
+          const runs = input.store.getConnectedRuns();
+          return Object.hasOwn(runs, id) ? 'present' : 'absent';
+        },
         compareAndSetConnectedRun: (next, rev) =>
           input.store.compareAndSetConnectedRun(next, rev)
+      },
+      onIsolatedFailure: (failure) => {
+        input.logger.warn(
+          `run-safety-wiring: isolated connected-run recovery failure (runId=${failure.runId}, reason=${failure.reasonCode})`
+        );
+      },
+      onPreservedRefusedParent: (ref) => {
+        input.logger.warn(
+          `run-safety-wiring: preserved control ledger root for unreadable/refused parent (ledgerRunId=${ref.ledgerRunId}, connectedRunId=${ref.connectedRunId}, queueId=${ref.queueId})`
+        );
       },
       dispatchPhase: makePhaseDispatcher({
         ...input,

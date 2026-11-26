@@ -50,6 +50,9 @@ export function createWorkSlicer(options: WorkSlicerOptions): WorkSlicer {
   const deadlineLimit = options.deadlineLimit ?? 'deadline-exceeded';
   const yieldNow = options.yieldNow ?? yieldToEventLoop;
   const durations: number[] = [];
+  // Carry the active slice start across sequential `forEach` stages so back-to-back loops on one
+  // slicer share the same event-loop budget instead of summing into a 2x stall between yields.
+  let activeSliceStart: number | null = null;
 
   function interruption(): ReportResult<undefined> | undefined {
     if (options.signal?.aborted === true) {
@@ -63,7 +66,11 @@ export function createWorkSlicer(options: WorkSlicerOptions): WorkSlicer {
     if (before !== undefined) {
       return before;
     }
-    let sliceStart = options.monotonicMs();
+    const callStart = options.monotonicMs();
+    if (activeSliceStart === null) {
+      activeSliceStart = callStart;
+    }
+    let sliceStart = activeSliceStart;
     let pending = false;
     for (const item of items) {
       visit(item);
@@ -76,10 +83,12 @@ export function createWorkSlicer(options: WorkSlicerOptions): WorkSlicer {
       pending = false;
       const stop = interruption();
       if (stop !== undefined) {
+        activeSliceStart = null;
         return stop;
       }
       await yieldNow();
       sliceStart = options.monotonicMs();
+      activeSliceStart = sliceStart;
     }
     if (pending) {
       durations.push(options.monotonicMs() - sliceStart);

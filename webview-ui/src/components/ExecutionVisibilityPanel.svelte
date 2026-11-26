@@ -33,6 +33,7 @@
   let selectedAttemptId = $state<string | null>(null);
   let notice = $state('');
   let editingHandoffId = $state<string | null>(null);
+  let editingProducerAttemptId = $state<string | null>(null);
   let editedNote = $state('');
 
   let requestGen = 0;
@@ -51,6 +52,7 @@
       detail = null;
       notice = '';
       editingHandoffId = null;
+      editingProducerAttemptId = null;
       editedNote = '';
       void loadVisibility(targetRoot, null);
     });
@@ -151,32 +153,26 @@
   }
 
   async function submitEditedHandoff(h: HandoffExplanation): Promise<void> {
-    const replacementSources = h.sources.map((src, idx) => ({
-      producer: src.producer,
-      acceptedSequence: idx + 1,
-      coverage: src.coverage,
-      required: src.required,
-      selectedBy: src.selectedBy,
-      outcomes: [],
-      decisions: [],
-      constraints: [],
-      unresolvedIssues: [],
-      summary: editedNote.trim() || 'Operator-curated handoff summary',
-      artifacts: []
-    }));
+    const summary = editedNote.trim();
+    if (summary === '') return;
+    const targetAttemptId =
+      editingProducerAttemptId ??
+      (h.sources.length > 0 ? h.sources[0].producer.attemptId : undefined);
     const env = await requestDecidePhaseHandoff({
-      op: 'edit',
+      op: 'editSummary',
       handoffId: h.handoffId,
       baseRevision: h.revision,
-      replacementSources
+      summary,
+      ...(targetAttemptId !== undefined ? { producerAttemptId: targetAttemptId } : {})
     });
     editingHandoffId = null;
+    editingProducerAttemptId = null;
     editedNote = '';
     if (env.boundaryRefusal !== null) {
       notice = env.boundaryRefusal;
       return;
     }
-    if (env.response.op === 'edit') {
+    if (env.response.op === 'editSummary' || env.response.op === 'edit') {
       notice = env.response.result.ok
         ? `Saved edited handoff revision ${env.response.result.revision.revision}.`
         : `Could not edit handoff: ${env.response.result.failure}.`;
@@ -339,7 +335,14 @@
                           class="btn btn-secondary btn-sm"
                           data-testid={`ev-handoff-edit-${h.handoffId}`}
                           onclick={() => {
-                            editingHandoffId = editingHandoffId === h.handoffId ? null : h.handoffId;
+                            if (editingHandoffId === h.handoffId) {
+                              editingHandoffId = null;
+                              editingProducerAttemptId = null;
+                            } else {
+                              editingHandoffId = h.handoffId;
+                              editingProducerAttemptId =
+                                h.sources.length > 0 ? h.sources[0].producer.attemptId : null;
+                            }
                           }}
                         >
                           Edit summary
@@ -359,8 +362,24 @@
                         void submitEditedHandoff(h);
                       }}
                     >
+                      {#if h.sources.length > 1}
+                        <label>
+                          <span>Target source producer</span>
+                          <select
+                            class="input"
+                            bind:value={editingProducerAttemptId}
+                            data-testid={`ev-handoff-source-${h.handoffId}`}
+                          >
+                            {#each h.sources as src (src.producer.attemptId)}
+                              <option value={src.producer.attemptId}>
+                                {src.producer.nodePath} ({src.producer.attemptId})
+                              </option>
+                            {/each}
+                          </select>
+                        </label>
+                      {/if}
                       <label>
-                        <span>Replacement summary note</span>
+                        <span>Updated summary note (preserves outcomes, decisions, constraints, issues &amp; artifacts)</span>
                         <input
                           type="text"
                           class="input"

@@ -52,6 +52,8 @@ export interface SpendReplay {
   /** The `phase-end` rows of the named Runs, inside their spans, in file order, oldest first. */
   readonly rows: readonly AuditEntry[];
   readonly completeness: ReadonlyMap<string, Completeness>;
+  /** Optional backend runner correlated from `cli-invocation` rows for each replayed `phase-end` row id. */
+  readonly backendByRowId?: ReadonlyMap<string, string>;
 }
 
 export interface ReplayRun {
@@ -136,6 +138,8 @@ export async function readSpendReplay(
   };
 
   const newestFirst: AuditEntry[] = [];
+  const invocationBackendByKey = new Map<string, string>();
+  const invocationBackendByAttempt = new Map<string, string>();
   let remaining = maxBytes;
   let budgetStopped = false;
 
@@ -166,6 +170,26 @@ export async function readSpendReplay(
         if ((entry.schemaVersion ?? 0) > AUDIT_SCHEMA_VERSION) markOpen('unknown-row-schema', inSpanOf);
         const owner = tracked.get(entry.runId);
         if (owner !== undefined && inSpanOf(owner)) newestFirst.push(entry);
+      } else if (entry.eventType === 'cli-invocation') {
+        const owner = tracked.get(entry.runId);
+        const runner = entry.payload.runner;
+        const operation = entry.payload.operation;
+        if (
+          owner !== undefined &&
+          inSpanOf(owner) &&
+          typeof runner === 'string' &&
+          runner.length > 0 &&
+          (operation === undefined || operation === 'phase')
+        ) {
+          const attemptId = entry.payload.attemptId;
+          if (typeof attemptId === 'string' && attemptId.length > 0 && !invocationBackendByAttempt.has(attemptId)) {
+            invocationBackendByAttempt.set(attemptId, runner);
+          }
+          const key = `${entry.runId}\u0000${entry.phase}\u0000${entry.iteration}`;
+          if (!invocationBackendByKey.has(key)) {
+            invocationBackendByKey.set(key, runner);
+          }
+        }
       }
       if (Number.isFinite(at)) {
         for (const run of open()) if (at < run.startedAt) run.bounded = true;
@@ -178,10 +202,21 @@ export async function readSpendReplay(
     }
   }
 
+  const orderedRows = newestFirst.reverse();
+  const backendByRowId = new Map<string, string>();
+  for (const row of orderedRows) {
+    const attemptId = row.payload.attemptId;
+    const byAttempt =
+      typeof attemptId === 'string' ? invocationBackendByAttempt.get(attemptId) : undefined;
+    const byKey = invocationBackendByKey.get(`${row.runId}\u0000${row.phase}\u0000${row.iteration}`);
+    const resolved = byAttempt ?? byKey;
+    if (resolved !== undefined) backendByRowId.set(row.id, resolved);
+  }
+
   const completeness = new Map<string, Completeness>();
   for (const [runId, run] of tracked) {
     const reason = run.reason ?? (run.bounded ? null : budgetStopped ? 'budget' : 'archive-missing');
     completeness.set(runId, reason === null ? { kind: 'complete' } : { kind: 'incomplete', reason });
   }
-  return { rows: newestFirst.reverse(), completeness };
+  return { rows: orderedRows, completeness, backendByRowId };
 }

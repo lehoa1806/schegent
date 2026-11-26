@@ -214,6 +214,10 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
     //
     // FR-R8-01 (01-07) — `lane-recovery-commands-wiring.ts` joins it, the sixth, registering
     // read-only lane inspection and owner-only lane recovery out of `registerStage2Ui()`.
+    //
+    // Principal Review F5/F6 — `operator-security-commands-wiring.ts` joins it, the seventh,
+    // registering standalone native scanner consent/revocation and OTLP SecretStorage credential
+    // management out of `registerStage2Ui()`.
     const stage2 =
       guardedIn('src/activation/ui-wiring.ts') +
       guardedIn('src/activation/queue-failure-policy-wiring.ts') +
@@ -222,7 +226,8 @@ describe('a document may not name a command that does not exist (FR-R3-127)', ()
       guardedIn('src/activation/evidence-commands-wiring.ts') +
       guardedIn('src/activation/agent-config-commands-wiring.ts') +
       guardedIn('src/activation/sqlite-backup-commands-wiring.ts') +
-      guardedIn('src/activation/lane-recovery-commands-wiring.ts');
+      guardedIn('src/activation/lane-recovery-commands-wiring.ts') +
+      guardedIn('src/activation/operator-security-commands-wiring.ts');
     const stage1 = guardedIn('src/extension.ts');
     expect(stage1, 'Stage 1 registers no command through the guard helper').toBeGreaterThan(0);
     expect(stage2, 'Stage 2 registers no command through the guard helper').toBeGreaterThan(15);

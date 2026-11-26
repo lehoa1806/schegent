@@ -651,6 +651,13 @@ export interface DecidePhaseHandoffCommand extends GeneratedCommandBase<'CMD_DEC
         readonly handoffId: string;
         readonly baseRevision: number;
         readonly replacementSources: readonly unknown[];
+      }
+    | {
+        readonly op: 'editSummary';
+        readonly handoffId: string;
+        readonly baseRevision: number;
+        readonly summary: string;
+        readonly producerAttemptId?: string;
       };
 }
 

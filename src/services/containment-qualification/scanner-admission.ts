@@ -170,6 +170,7 @@ function parseScannerAcceptanceBinding(value: unknown, scanner: ReviewScannerId)
 export interface ScannerAdmissionBindings {
   read(scanner: ReviewScannerId): BindingInput;
   bind(scanner: ReviewScannerId, fingerprint: FingerprintRecord, origin: AcceptanceOrigin): Promise<void>;
+  clear?(scanner: ReviewScannerId): Promise<boolean>;
 }
 
 /** Workspace-scoped acceptance binding store for standalone review scanners. */
@@ -206,6 +207,24 @@ export class ScannerAcceptanceBindingStore implements ScannerAdmissionBindings {
       schemaVersion: ACCEPTANCE_BINDINGS_SCHEMA_VERSION,
       bindings
     });
+  }
+
+  public async clear(scanner: ReviewScannerId): Promise<boolean> {
+    const parsed = this.parse();
+    if (parsed.state === 'future-schema') throw new AcceptanceBindingsFutureSchemaError();
+    if (!parsed.bindings.has(scanner)) return false;
+    const next = new Map(parsed.bindings);
+    next.delete(scanner);
+    const bindings: Record<string, AcceptanceBinding> = {};
+    for (const id of REVIEW_SCANNERS) {
+      const binding = next.get(id);
+      if (binding !== undefined) bindings[id] = binding;
+    }
+    await this.memento.update(SCANNER_ACCEPTANCE_BINDINGS_KEY, {
+      schemaVersion: ACCEPTANCE_BINDINGS_SCHEMA_VERSION,
+      bindings
+    });
+    return true;
   }
 
   private parse():

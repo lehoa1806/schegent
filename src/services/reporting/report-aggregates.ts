@@ -61,11 +61,15 @@ function codePointRank(unit: number): number {
 
 /** Compares two strings by Unicode code point. */
 export function compareCodePoints(left: string, right: string): number {
+  if (left === right) return 0;
   const length = Math.min(left.length, right.length);
   for (let index = 0; index < length; index += 1) {
     const a = left.charCodeAt(index);
     const b = right.charCodeAt(index);
     if (a !== b) {
+      if (a < SURROGATE_FIRST && b < SURROGATE_FIRST) {
+        return a - b;
+      }
       return codePointRank(a) - codePointRank(b);
     }
   }
@@ -118,8 +122,14 @@ async function populationOf(
 }
 
 function coverageOf(population: Population): ReportCoverage {
-  const unknownRoots = population.roots.filter((root) => rootDurationMs(root) === null).length;
-  const unknownAttempts = population.attempts.filter((attempt) => attemptDurationMs(attempt) === null).length;
+  let unknownRoots = 0;
+  for (const root of population.roots) {
+    if (rootDurationMs(root) === null) unknownRoots += 1;
+  }
+  let unknownAttempts = 0;
+  for (const attempt of population.attempts) {
+    if (attemptDurationMs(attempt) === null) unknownAttempts += 1;
+  }
   return Object.freeze({
     roots: population.roots.length,
     attempts: population.attempts.length,
@@ -152,6 +162,42 @@ export function toRootRow(root: SnapshotRoot, attempts: number): RootRow {
   });
 }
 
+/** Returns true when `rows` is already ordered ascending by `(createdUtc, rootId)`. */
+function isOrderedByCreatedAsc(rows: readonly RootRow[]): boolean {
+  for (let i = 1; i < rows.length; i += 1) {
+    const prev = rows[i - 1]!;
+    const curr = rows[i]!;
+    const cmp = compareCodePoints(prev.createdUtc, curr.createdUtc);
+    if (cmp > 0) return false;
+    if (cmp === 0 && compareCodePoints(prev.rootId, curr.rootId) > 0) return false;
+  }
+  return true;
+}
+
+/**
+ * Reorders an array already sorted by `(createdUtc ASC, rootId ASC)` into
+ * `(createdUtc DESC, rootId ASC)` in linear O(N) time without blocking the event loop on an
+ * O(N log N) comparator sort.
+ */
+function reverseCreatedGroups(rows: RootRow[]): RootRow[] {
+  const out: RootRow[] = new Array(rows.length);
+  let write = 0;
+  let end = rows.length;
+  while (end > 0) {
+    const ts = rows[end - 1]!.createdUtc;
+    let start = end - 1;
+    while (start > 0 && rows[start - 1]!.createdUtc === ts) {
+      start -= 1;
+    }
+    for (let i = start; i < end; i += 1) {
+      out[write] = rows[i]!;
+      write += 1;
+    }
+    end = start;
+  }
+  return out;
+}
+
 async function rootRows(query: ReportQuery, population: Population, slicer: RowSlicer): Promise<ReportResult<ReportRow[]>> {
   const rows: RootRow[] = [];
   const built = await slicer.forEach(population.roots, (root) => {
@@ -159,6 +205,12 @@ async function rootRows(query: ReportQuery, population: Population, slicer: RowS
   });
   if (!built.ok) {
     return built;
+  }
+  if (
+    (query.sort === 'root-created-asc' || query.sort === 'root-created-desc') &&
+    isOrderedByCreatedAsc(rows)
+  ) {
+    return reportOk(query.sort === 'root-created-asc' ? rows : reverseCreatedGroups(rows));
   }
   const primary = ROOT_SORTS[query.sort] ?? byCreatedDesc;
   return reportOk(rows.sort((a, b) => primary(a, b) || compareCodePoints(a.rootId, b.rootId)));

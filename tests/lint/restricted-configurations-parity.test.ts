@@ -193,10 +193,13 @@ describe('restrictedConfigurations parity (FR-R3-136 T1526c)', () => {
     // FR-R6-F14 (F14-FR-01, F14-FR-02, F14-FR-09) — executable-authority list 10 -> 17 with
     // `schegent.telemetry.export.*` (`application` scope so workspace settings cannot enable,
     // redirect, or attach credentials to outbound OTLP telemetry export).
+    // Principal Review F5 — executable-authority list 17 -> 18 with
+    // `schegent.backend.uncontainedScanners` (`application` scope so workspace settings cannot
+    // grant standalone uncontained scanner authority).
     expect(workspaceSettableKeys()).toHaveLength(34);
     expect(Object.keys(CONFIGURATION_SENSITIVITY)).toHaveLength(34);
     expect(derivedRestrictedConfigurations()).toHaveLength(15);
-    expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(17);
+    expect(EXECUTABLE_AUTHORITY_PROPERTIES).toHaveLength(18);
 
     const histogram = new Map<SensitivityClass, number>();
     for (const entry of Object.values(CONFIGURATION_SENSITIVITY)) {

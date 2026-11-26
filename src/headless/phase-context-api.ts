@@ -35,6 +35,12 @@ export interface PhaseContextApi {
     baseRevision: number,
     replacementSources: unknown
   ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal;
+  editHandoffSummary?(
+    handoffId: string,
+    baseRevision: number,
+    summary: string,
+    producerAttemptId?: string
+  ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal;
   approveHandoff(
     handoffId: string,
     revision: number,
@@ -91,6 +97,12 @@ export function createPhaseContextApi(
     editHandoff(handoffId, baseRevision, replacementSources) {
       const coord = getCoordinator();
       return coord === null ? unavailable() : coord.editHandoff(handoffId, baseRevision, replacementSources);
+    },
+    editHandoffSummary(handoffId, baseRevision, summary, producerAttemptId) {
+      const coord = getCoordinator();
+      return coord === null
+        ? unavailable()
+        : coord.editHandoffSummary(handoffId, baseRevision, summary, producerAttemptId);
     },
     approveHandoff(handoffId, revision, decisionId) {
       const coord = getCoordinator();

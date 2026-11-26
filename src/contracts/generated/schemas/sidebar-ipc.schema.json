@@ -12539,6 +12539,43 @@
                 "baseRevision",
                 "replacementSources"
               ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "op": {
+                  "const": "editSummary"
+                },
+                "handoffId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                },
+                "baseRevision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192
+                },
+                "producerAttemptId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^(?!\\.$)(?!\\.\\.$)[A-Za-z0-9._:-]+$"
+                }
+              },
+              "required": [
+                "op",
+                "handoffId",
+                "baseRevision",
+                "summary"
+              ]
             }
           ]
         }

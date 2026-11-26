@@ -228,22 +228,111 @@ describe('FR-120 / FR-120a / FR-121 — crossing the bound pauses the run', () =
 });
 
 describe('FR-122 — the token denomination behaves identically', () => {
-  it('pauses a token-only backend on a token bound', async () => {
-    // FR-R4-F02 (D8): the denomination is the ended phase's BACKEND, so this run is a `codex` run.
+  it('pauses a token-only backend on a token bound without double-counting subset cached input', async () => {
+    // FR-R4-F02 (D8) + Principal review Finding 3: `codex` declares `cacheRelation: 'subset-of-input'`,
+    // so `cacheReadInputTokens` is already included in `inputTokens` and MUST NOT be added twice.
     const { writes, notices, watcher } = watcherOver(
       { limitUsd: 10, limitTokens: 1_000 },
       runFixture({ defaultRunnerKind: 'codex' })
     );
-    // Shaped like `codex`: tokens, and NO cost field at all — FR-R3-098 left cost
-    // absent there rather than derived, so this is the payload the bound really sees.
+    // 400 input (including 400 cached) + 300 output = 700 tokens (< 1,000 -> stays within!).
     watcher.onAuditEntry(
       phaseEnd({ inputTokens: 400, outputTokens: 300, cacheReadInputTokens: 400 })
+    );
+    await settle();
+    expect(writes).toHaveLength(0);
+    expect(watcher.observedFor('run-1').totalTokens).toBe(700);
+    expect(watcher.trustFor('run-1', 'tokens')).toBe('enforced');
+
+    // Second turn: 300 input (including 100 cached) + 100 output = 400 -> cumulative 1,100 >= 1,000!
+    watcher.onAuditEntry(
+      phaseEnd({ inputTokens: 300, outputTokens: 100, cacheReadInputTokens: 100 })
     );
     await settle();
     expect(writes).toHaveLength(1);
     expect(writes[0]!.run.manualPauseCause).toBe('spend-bound-reached');
     expect(notices[0]).toContain('1,100 tokens');
     expect(notices[0]).toContain('1,000 tokens');
+  });
+
+  it('Finding 3: treats Codex subset cached input truthfully and marks partial primary token reports incomplete', () => {
+    // Codex subset-of-input: 400 input (including 25 cached) + 100 output = 500 -> within 510.
+    const codexComplete = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { inputTokens: 400, outputTokens: 100, cacheReadInputTokens: 25 } },
+      'row-codex-1',
+      { backend: 'codex' }
+    );
+    expect(codexComplete.totalTokens).toBe(500);
+    expect(codexComplete.missingTokenRows).toBeUndefined();
+    expect(evaluateSpend(codexComplete, { limitUsd: null, limitTokens: 510 }, 'tokens')).toEqual({
+      kind: 'within'
+    });
+
+    // Claude disjoint: 400 input + 100 output + 25 cacheRead = 525 -> exceeded 510.
+    const claudeDisjoint = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { inputTokens: 400, outputTokens: 100, cacheReadInputTokens: 25 } },
+      'row-claude-1',
+      { backend: 'claude' }
+    );
+    expect(claudeDisjoint.totalTokens).toBe(525);
+    expect(evaluateSpend(claudeDisjoint, { limitUsd: null, limitTokens: 510 }, 'tokens')).toEqual({
+      kind: 'exceeded',
+      denomination: 'tokens',
+      observed: 525,
+      limit: 510
+    });
+
+    // Partial primary tokens (inputTokens only, outputTokens absent): NEVER certified `within`!
+    const inputOnly = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { inputTokens: 400 } },
+      'row-partial-1',
+      { backend: 'codex' }
+    );
+    expect(inputOnly.totalTokens).toBe(400);
+    expect(inputOnly.missingTokenRows).toBe(true);
+    expect(evaluateSpend(inputOnly, { limitUsd: null, limitTokens: 510 }, 'tokens')).toEqual({
+      kind: 'incomplete',
+      denomination: 'tokens',
+      reason: 'missing-usage'
+    });
+    // Lower bound already >= limit still trips `exceeded`.
+    expect(evaluateSpend(inputOnly, { limitUsd: null, limitTokens: 350 }, 'tokens')).toEqual({
+      kind: 'exceeded',
+      denomination: 'tokens',
+      observed: 400,
+      limit: 350
+    });
+
+    // Agy unknown cache relation: positive cache counter marks total as lower bound (`incomplete`),
+    // while cache-free/zero-cache turns remain complete (`within`).
+    const agyWithCache = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { inputTokens: 700, outputTokens: 250, cacheReadInputTokens: 40 } },
+      'row-agy-cache',
+      { backend: 'agy' }
+    );
+    expect(agyWithCache.totalTokens).toBe(950);
+    expect(agyWithCache.missingTokenRows).toBe(true);
+    expect(evaluateSpend(agyWithCache, { limitUsd: null, limitTokens: 1_200 }, 'tokens')).toEqual({
+      kind: 'incomplete',
+      denomination: 'tokens',
+      reason: 'missing-usage'
+    });
+
+    const agyNoCache = accumulateSpend(
+      NO_SPEND_OBSERVED,
+      { metrics: { inputTokens: 700, outputTokens: 250 } },
+      'row-agy-clean',
+      { backend: 'agy' }
+    );
+    expect(agyNoCache.totalTokens).toBe(950);
+    expect(agyNoCache.missingTokenRows).toBeUndefined();
+    expect(evaluateSpend(agyNoCache, { limitUsd: null, limitTokens: 1_200 }, 'tokens')).toEqual({
+      kind: 'within'
+    });
   });
 
   it('reports unmeasurable spend as its own verdict, not as compliance', () => {

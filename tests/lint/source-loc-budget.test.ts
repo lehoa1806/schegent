@@ -1774,7 +1774,11 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
       // Feature 318 (FR-R7-04, 2026-11-19) — `AGENT_CONFIG_ACK_EVENT_TYPES` (`agent-config-acknowledged`)
       // and its spread into `ALL_AUDIT_EVENT_TYPES`.
       // FR-R7-08 (2026-11-19) — migrated to code lines (combined 317 + 318: 612 code lines).
-      highWaterMark: 612
+      // Principal Review F5/F6 (2026-11-26) — 612 → 619 (+7 code lines): `OPERATOR_SECURITY_EVENT_TYPES`
+      // (`'scanner-consent-changed'`, `'telemetry-credential-changed'`), its spread into
+      // `ALL_AUDIT_EVENT_TYPES`, and both system-scoped entries in `SYSTEM_SCOPED_EVENT_TYPES`.
+      // The closed payload types and projectors live in `src/audit/operator-security-audit-payload.ts`.
+      highWaterMark: 619
     }
   },
   // Feature 317 + 324 (FR-R7-03 / FR-R7-10, 2026-11-19) — `sqlite-cutover-wiring.ts` (1,017 code

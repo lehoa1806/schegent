@@ -115,3 +115,69 @@ export function editRevision(base: HandoffManifest, replacementSources: unknown)
   if (rendered.bytes > base.renderedBytesMax) return refuse('capacity-exceeded', 'rendered-bytes');
   return { ok: true, prepared: { manifest, serialized, manifestDigest: manifestDigestOf(serialized), rendered } };
 }
+
+/**
+ * Principal review Finding 4: narrow host-side summary patch against a stored base revision.
+ * Updates ONLY the summary text (on the targeted producer when `producerAttemptId` is given,
+ * otherwise across the stored sources), while preserving every source's authentic
+ * `acceptedSequence`, `coverage`, `required`, `selectedBy`, `outcomes`, `decisions`,
+ * `constraints`, `unresolvedIssues`, and `artifacts` from host-owned state.
+ */
+export function editRevisionSummary(
+  base: HandoffManifest,
+  summary: unknown,
+  producerAttemptId?: string
+): EditResult {
+  if (typeof summary !== 'string') return refuse('invalid-source', 'edit-summary');
+  const trimmed = summary.trim();
+  if (trimmed.length === 0) return refuse('invalid-source', 'edit-summary');
+  if (utf8Bytes(trimmed) > PHASE_CONTEXT_LIMITS.summaryBytesMax) {
+    return refuse('capacity-exceeded', 'summary-bytes');
+  }
+  if (base.sources.length === 0) return refuse('invalid-source', 'edit-unknown-source');
+
+  let matched = false;
+  const sources: ManifestSource[] = [];
+  for (const original of base.sources) {
+    const shouldPatch =
+      producerAttemptId === undefined || original.producer.attemptId === producerAttemptId;
+    if (!shouldPatch) {
+      sources.push(original);
+      continue;
+    }
+    matched = true;
+    sources.push({
+      ...original,
+      summary: trimmed
+    });
+  }
+  if (!matched) return refuse('invalid-source', 'edit-unknown-source');
+
+  const fault = sourcesFault(sources, base.identity);
+  if (fault !== null) {
+    return refuse(CAPACITY_FAULTS.includes(fault) ? 'capacity-exceeded' : 'invalid-source', fault);
+  }
+
+  const manifest = buildManifest({
+    revision: base.revision + 1,
+    previousRevision: base.revision,
+    origin: 'edited',
+    identity: base.identity,
+    policyDigest: base.policyDigest,
+    approval: base.approval,
+    session: base.session,
+    cutoffSequence: base.cutoffSequence,
+    targetInstructionsDigest: base.targetInstructionsDigest,
+    renderedBytesMax: base.renderedBytesMax,
+    sources,
+    omissions: base.omissions,
+    omissionsUnlisted: base.omissionsUnlisted
+  });
+  const serialized = serializeManifest(manifest);
+  if (utf8Bytes(serialized) > PHASE_CONTEXT_LIMITS.manifestBytesMax) {
+    return refuse('capacity-exceeded', 'manifest-bytes');
+  }
+  const rendered = renderContext(manifest);
+  if (rendered.bytes > base.renderedBytesMax) return refuse('capacity-exceeded', 'rendered-bytes');
+  return { ok: true, prepared: { manifest, serialized, manifestDigest: manifestDigestOf(serialized), rendered } };
+}

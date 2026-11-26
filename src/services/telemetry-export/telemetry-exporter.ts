@@ -175,6 +175,8 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
   let inFlight: InFlight | null = null;
   let retryTimer: TimerSlot | null = null;
   let credential: CredentialState = CREDENTIAL_UNREAD;
+  /** Bumped on every credential invalidation or teardown so an in-flight read cannot repopulate stale state. */
+  let credentialVersion = 0;
   /** Raised by every teardown, so a continuation can tell that its batch is gone. */
   let epoch = 0;
   /** Aborted requests that have not ended yet; nothing new is sent until they have. */
@@ -227,6 +229,7 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
     if (intake.discard()) finishDropped(randomUUID(), reason);
     for (const batch of batches.drain()) finishDropped(batch.batchId, reason);
     credential = CREDENTIAL_UNREAD;
+    credentialVersion += 1;
     resolveIdle();
     if (aborted === null) return null;
     unwinding += 1;
@@ -328,9 +331,12 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
       const reference = target.resolved.credential;
       let held = credential;
       if (reference !== null && held.kind === 'unread') {
+        const readVersion = credentialVersion;
         held = await readCredential(secrets, reference.reference);
         if (epoch !== sendEpoch) return;
-        credential = held;
+        if (credentialVersion === readVersion) {
+          credential = held;
+        }
       }
       if (held.kind === 'failed') {
         // Saturation may have dropped the batch while the credential was read.
@@ -411,6 +417,12 @@ export function createTelemetryExporter(options: TelemetryExporterOptions): Tele
       if (destination !== null) void teardown(evaluation.kind === 'disabled' ? 'disabled' : 'authorization-changed');
       destination = next;
       counters.destinationChanged();
+    },
+    invalidateCredential(reference) {
+      if (shutDown) return;
+      if (reference !== undefined && destination?.resolved.credential?.reference !== reference) return;
+      credential = CREDENTIAL_UNREAD;
+      credentialVersion += 1;
     },
     offer(records): OfferResult {
       const list = listOf(records);

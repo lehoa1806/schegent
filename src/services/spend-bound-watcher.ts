@@ -254,11 +254,17 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     if (seeded.delete(entry.id)) return;
     liveDuringSeed?.add(entry.id);
 
-    const spend = accumulateSpend(baseTotal(runId), entry.payload, entry.id);
+    const found = deps.findRunById(runId);
+    const endedPhase = found?.run.pipeline?.phases.find((phase) => phase.id === entry.phase);
+    const backend =
+      found !== null
+        ? effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind)
+        : undefined;
+
+    const spend = accumulateSpend(baseTotal(runId), entry.payload, entry.id, { backend });
     remember(runId, spend);
     if (paused.has(runId)) return;
 
-    const found = deps.findRunById(runId);
     if (found === null) return;
     // Already pausing for some other reason: an operator pause, a breakpoint, a
     // delayed retry. Stamping over it would replace the cause the resume path reads
@@ -267,7 +273,6 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
 
     // The phase whose `phase-end` this is, not the one the Run reads now: the Run may already have
     // advanced to a phase on another backend, and the figures belong to the one that just ended.
-    const endedPhase = found.run.pipeline?.phases.find((phase) => phase.id === entry.phase);
     const denomination = spendDenominationOf(
       effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind)
     );
@@ -321,7 +326,14 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
       const found = deps.findRunById(entry.runId);
       if (found === null) continue;
 
-      remember(entry.runId, accumulateSpend(baseTotal(entry.runId), entry.payload, entry.id));
+      const endedPhase = found.run.pipeline?.phases.find((phase) => phase.id === entry.phase);
+      const backend =
+        read.backendByRowId?.get(entry.id) ??
+        effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind);
+      remember(
+        entry.runId,
+        accumulateSpend(baseTotal(entry.runId), entry.payload, entry.id, { backend })
+      );
       seeded.add(entry.id);
       if (found.run.manualPauseCause === 'spend-bound-reached') paused.add(entry.runId);
     }

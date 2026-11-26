@@ -50,6 +50,10 @@ import { registerAuditChainCommands } from './audit-commands-wiring';
 import { registerEvidenceCommands } from './evidence-commands-wiring';
 import { registerSqliteBackupCommands } from './sqlite-backup-commands-wiring';
 import { registerLaneRecoveryCommands } from './lane-recovery-commands-wiring';
+import {
+  registerOperatorSecurityCommands,
+  type OperatorSecurityCommandsWiringDeps
+} from './operator-security-commands-wiring';
 import type { TransportRouter } from '../monitor/transport/transport-router';
 import type { OperatorAttribution } from '../lib/operator-attribution';
 import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
@@ -130,6 +134,9 @@ interface Stage2UiWiringDeps {
   readonly operatorAttribution: Pick<OperatorAttribution, 'reset'>;
   /** FR-R4-F04 (B3) — where the runtime log is, for the diagnostics bundle's lines for one Run. */
   readonly runtimeLogAccessor: Pick<RuntimeLogAccessor, 'read'>;
+  /** Principal Review F5/F6 — SecretStorage and standalone scanner consent seam for operator commands. */
+  readonly secrets: OperatorSecurityCommandsWiringDeps['secrets'];
+  readonly scannerConsent: OperatorSecurityCommandsWiringDeps['scannerConsent'];
 }
 
 export interface Stage2UiWiring {
@@ -567,6 +574,10 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       store: deps.store,
       notifier: deps.notifier,
       logger: deps.logger
+    }),
+    // Principal Review F5/F6 — Standalone native scanner consent/revocation & OTLP SecretStorage commands.
+    ...registerOperatorSecurityCommands(guard, {
+      store: deps.store, secrets: deps.secrets, scannerConsent: deps.scannerConsent, auditWriter: deps.auditWriter, notifier: deps.notifier, logger: deps.logger
     }),
     // Feature 195 (T064) — retry and attested completion, the two queue-item
     // exits that must offer the queue a drain; extracted together for the

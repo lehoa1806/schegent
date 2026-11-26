@@ -19,6 +19,9 @@
 //
 // It imports nothing from the host (no `vscode`), so the webview-free tiers can use it.
 
+import type { CacheRelation } from '../contracts/usage-accounting/accounting-types';
+import { qualificationFor } from '../contracts/usage-accounting/provider-qualifications';
+
 /** One usage figure as the row carries it. */
 export type UsageValue =
   | { readonly kind: 'present'; readonly value: number }
@@ -80,18 +83,89 @@ export function readPhaseEndUsage(payload: Readonly<Record<string, unknown>>): P
   };
 }
 
-/**
- * The sum of the PRESENT token fields, or `undefined` when none is present, never 0. All four count
- * against a bound: cache reads are cheaper than fresh input and are not free, and a bound that
- * ignored them would be defeated by the workload that grows fastest, a long conversation re-reading
- * a large cached context. A rejected field contributes nothing and does not make the others
- * unusable.
- */
-export function totalTokens(usage: PhaseEndUsage): number | undefined {
-  let total: number | undefined;
-  for (const key of TOKEN_KEYS) {
-    const value = usage[key];
-    if (value.kind === 'present') total = (total ?? 0) + value.value;
+export interface QualifiedTokenTotal {
+  /** Confirmed billable token sum (or lower bound when partial/ambiguous), or `undefined` if no token field is present. */
+  readonly total: number | undefined;
+  /** True when cache tokens are present with an unknown or contradictory cache-vs-input relation. */
+  readonly cacheRelationAmbiguous: boolean;
+}
+
+function resolveCacheRelation(relationOrBackend?: CacheRelation | string): CacheRelation {
+  if (relationOrBackend === undefined) return 'disjoint';
+  if (
+    relationOrBackend === 'disjoint' ||
+    relationOrBackend === 'subset-of-input' ||
+    relationOrBackend === 'unknown'
+  ) {
+    return relationOrBackend;
   }
-  return total;
+  return qualificationFor(relationOrBackend).cacheRelation;
+}
+
+/**
+ * Provider-qualified billable token sum for one `phase-end` usage row.
+ *
+ * - `'disjoint'` (e.g. `claude`): cache read/creation counters are disjoint from `inputTokens`,
+ *   so all four present counters sum additively.
+ * - `'subset-of-input'` (e.g. `codex`): cache counters are a subset of `inputTokens` and MUST NOT
+ *   be double-counted on top of `inputTokens` (if `cacheRead > input`, marks `cacheRelationAmbiguous`).
+ * - `'unknown'` (e.g. `agy` or unlisted adapters): sums confirmed primary counters (`input + output`)
+ *   without inventing a disjoint assumption for positive cache counters; marks `cacheRelationAmbiguous`
+ *   whenever a positive cache counter is present so an operator bound is not falsely certified `within`.
+ */
+export function qualifiedTotalTokens(
+  usage: PhaseEndUsage,
+  cacheRelationOrBackend?: CacheRelation | string
+): QualifiedTokenTotal {
+  const relation = resolveCacheRelation(cacheRelationOrBackend);
+  if (relation === 'disjoint') {
+    let total: number | undefined;
+    for (const key of TOKEN_KEYS) {
+      const value = usage[key];
+      if (value.kind === 'present') total = (total ?? 0) + value.value;
+    }
+    return { total, cacheRelationAmbiguous: false };
+  }
+
+  let total: number | undefined;
+  if (usage.inputTokens.kind === 'present') total = (total ?? 0) + usage.inputTokens.value;
+  if (usage.outputTokens.kind === 'present') total = (total ?? 0) + usage.outputTokens.value;
+
+  const cacheRead = usage.cacheReadInputTokens.kind === 'present' ? usage.cacheReadInputTokens.value : undefined;
+  const cacheCreate =
+    usage.cacheCreationInputTokens.kind === 'present' ? usage.cacheCreationInputTokens.value : undefined;
+
+  if (relation === 'subset-of-input') {
+    if (usage.inputTokens.kind === 'present') {
+      const inconsistent =
+        (cacheRead !== undefined && cacheRead > usage.inputTokens.value) ||
+        (cacheCreate !== undefined && cacheCreate > usage.inputTokens.value);
+      return { total, cacheRelationAmbiguous: inconsistent };
+    }
+    // `inputTokens` absent: any present cache counter still contributes a lower bound.
+    const cacheLower = Math.max(cacheRead ?? 0, cacheCreate ?? 0);
+    if (cacheRead !== undefined || cacheCreate !== undefined) {
+      total = (total ?? 0) + cacheLower;
+    }
+    return { total, cacheRelationAmbiguous: false };
+  }
+
+  // `relation === 'unknown'`: never double-count positive cache tokens onto `inputTokens`;
+  // if positive cache tokens exist, mark ambiguous so below-limit totals read as `incomplete`.
+  const hasPositiveCache = (cacheRead !== undefined && cacheRead > 0) || (cacheCreate !== undefined && cacheCreate > 0);
+  if (usage.inputTokens.kind !== 'present' && (cacheRead !== undefined || cacheCreate !== undefined)) {
+    total = (total ?? 0) + Math.max(cacheRead ?? 0, cacheCreate ?? 0);
+  }
+  return { total, cacheRelationAmbiguous: hasPositiveCache };
+}
+
+/**
+ * The sum of the PRESENT token fields under the given provider qualification (defaults to
+ * `'disjoint'` when omitted for direct callers), or `undefined` when none is present, never 0.
+ */
+export function totalTokens(
+  usage: PhaseEndUsage,
+  cacheRelationOrBackend?: CacheRelation | string
+): number | undefined {
+  return qualifiedTotalTokens(usage, cacheRelationOrBackend).total;
 }

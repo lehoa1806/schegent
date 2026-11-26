@@ -154,6 +154,9 @@ export function validateStepList(spec, manifestScripts) {
     if (typeof step.requiresWebviewBuild !== 'boolean') {
       errors.push(`step "${step.name}" must declare boolean requiresWebviewBuild`);
     }
+    if (typeof step.requiresHostBuild !== 'boolean') {
+      errors.push(`step "${step.name}" must declare boolean requiresHostBuild`);
+    }
     if (REPORT_ONLY_SCRIPTS.has(step.name)) {
       errors.push(`report-only script "${step.name}" must not appear in verification-steps.json`);
     }
@@ -218,15 +221,21 @@ export function validateStepList(spec, manifestScripts) {
       }
     }
 
-    // Enforce requiresWebviewBuild ordering in every generated aggregate.
+    // Enforce requiresWebviewBuild and requiresHostBuild ordering in every generated aggregate.
     const order = readOrder(aggName);
     orders.set(aggName, order);
-    const buildIdx = order.indexOf('build:webview');
+    const buildWebviewIdx = order.indexOf('build:webview');
+    const buildHostIdx = order.indexOf('build:host');
     for (let idx = 0; idx < order.length; idx += 1) {
       const step = stepsByName.get(order[idx]);
-      if (step?.requiresWebviewBuild && (buildIdx === -1 || buildIdx > idx)) {
+      if (step?.requiresWebviewBuild && (buildWebviewIdx === -1 || buildWebviewIdx > idx)) {
         errors.push(
           `aggregate "${aggName}" runs "${step.name}" (requiresWebviewBuild: true) without an earlier build:webview`
+        );
+      }
+      if (step?.requiresHostBuild && (buildHostIdx === -1 || buildHostIdx > idx)) {
+        errors.push(
+          `aggregate "${aggName}" runs "${step.name}" (requiresHostBuild: true) without an earlier build:host`
         );
       }
     }

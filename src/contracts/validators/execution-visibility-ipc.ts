@@ -102,7 +102,7 @@ export function isValidDecidePhaseHandoffResponse(
 ): value is DecidePhaseHandoffResponse {
   if (!isPlain(value)) return false;
   const op = value['op'];
-  if (op !== 'approve' && op !== 'edit') return false;
+  if (op !== 'approve' && op !== 'edit' && op !== 'editSummary') return false;
   const result = value['result'];
   if (!isPlain(result)) return false;
   if (result['ok'] === true) {

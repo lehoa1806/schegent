@@ -165,6 +165,7 @@ interface Options {
   agreementThrows?: string;
   archiveSbom?: (honest: unknown) => unknown;
   writeThrows?: boolean;
+  rollbackRenameThrows?: boolean;
   version?: string;
   seedFiles?: Array<[string, Buffer]>;
   releaseDirectory?: string;
@@ -295,6 +296,9 @@ function world(options: Options = {}) {
     },
     rename: (from: string, to: string) => {
       events.push(`rename:${from}->${to}`);
+      if (options.rollbackRenameThrows && from === CANDIDATE && to === STAGING) {
+        throw new Error('EACCES: cannot move candidate back to staging');
+      }
       const bytes = files.get(from);
       if (!bytes) throw new Error(`ENOENT: ${from}`);
       files.delete(from);
@@ -982,6 +986,78 @@ describe('refusals (RP4)', () => {
     expect(renames).toEqual([`rename:${STAGING}->${CANDIDATE}`, `rename:${CANDIDATE}->${STAGING}`]);
     expect(outcome.files.has(CANDIDATE)).toBe(false);
     expect(outcome.files.has(STAGING)).toBe(true);
+  });
+
+  it('record-failed (Finding 8): when rollback rename also fails, reports surviving candidate path honestly instead of claiming no candidate exists', async () => {
+    const outcome = await run({ writeThrows: true, rollbackRenameThrows: true });
+    expectRefused(outcome, 'record-failed');
+    const diagnostic = outcome.errors.join('\n');
+    expect(diagnostic).toContain('EACCES: cannot move candidate back to staging');
+    expect(diagnostic).toContain(CANDIDATE);
+    expect(diagnostic).toContain(STAGING);
+    expect(diagnostic).not.toContain('no candidate exists');
+    expect(outcome.files.has(CANDIDATE)).toBe(true);
+    expect(outcome.files.has(STAGING)).toBe(false);
+  });
+
+  it('verifyCandidateArchiveDigest (Finding 8): verifies on-disk archive SHA-256 and byte size against the release record', async () => {
+    const driver = await loadDriver();
+    const accepted = await run();
+    expect(accepted.result.exitCode).toBe(0);
+    const readFile = (p: string): Buffer => {
+      const found = accepted.files.get(p);
+      if (!found) throw new Error(`ENOENT: ${p}`);
+      return found;
+    };
+
+    const ok = driver.verifyCandidateArchiveDigest({ recordPath: RECORD, readFile });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.candidatePath).toBe(CANDIDATE);
+      expect(ok.bytes).toBe(VSIX_BYTES.length);
+    }
+
+    // Tamper bytes (same length) -> digest-mismatch
+    const tampered = new Map(accepted.files);
+    tampered.set(CANDIDATE, Buffer.from('X' + VSIX_BYTES.toString('utf8').slice(1)));
+    const badDigest = driver.verifyCandidateArchiveDigest({
+      recordPath: RECORD,
+      readFile: (p: string) => {
+        const found = tampered.get(p);
+        if (!found) throw new Error(`ENOENT: ${p}`);
+        return found;
+      }
+    });
+    expect(badDigest.ok).toBe(false);
+    if (!badDigest.ok) expect(badDigest.reason).toBe('digest-mismatch');
+
+    // Truncated archive -> size-mismatch
+    const truncated = new Map(accepted.files);
+    truncated.set(CANDIDATE, Buffer.from('short'));
+    const badSize = driver.verifyCandidateArchiveDigest({
+      recordPath: RECORD,
+      readFile: (p: string) => {
+        const found = truncated.get(p);
+        if (!found) throw new Error(`ENOENT: ${p}`);
+        return found;
+      }
+    });
+    expect(badSize.ok).toBe(false);
+    if (!badSize.ok) expect(badSize.reason).toBe('size-mismatch');
+
+    // Missing archive -> candidate-missing
+    const missing = new Map(accepted.files);
+    missing.delete(CANDIDATE);
+    const missingRes = driver.verifyCandidateArchiveDigest({
+      recordPath: RECORD,
+      readFile: (p: string) => {
+        const found = missing.get(p);
+        if (!found) throw new Error(`ENOENT: ${p}`);
+        return found;
+      }
+    });
+    expect(missingRes.ok).toBe(false);
+    if (!missingRes.ok) expect(missingRes.reason).toBe('candidate-missing');
   });
 
   it('passes the advisory reasons through, before any build work', async () => {

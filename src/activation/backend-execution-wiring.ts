@@ -22,7 +22,9 @@ import { PromptBuilder } from '../runner/prompt-builder';
 import type { ProcessEnvironmentPolicy } from '../runner/spawn-env';
 import {
   resolveUncontainedGrant,
-  type GrantedUncontainedBackends
+  resolveUncontainedScannerGrant,
+  type GrantedUncontainedBackends,
+  type GrantedUncontainedScanners
 } from '../services/backend-containment-policy';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type { MonitorSidecarHook } from '../contracts/backend-runner';
@@ -167,6 +169,11 @@ export interface BackendExecutionWiring {
   /** FR-R6-F09 -- what the sidebar reads, and what the consent modal records an acceptance through. */
   readonly backendQualification: ContainmentAdmissionWiring['qualification'];
   readonly recordContainmentAcceptance: ContainmentAdmissionWiring['recordAcceptance'];
+  /** Principal Review F5 -- explicit operator consent & revocation seam for standalone scanners (`codex-security`). */
+  readonly scannerConsent: Pick<
+    ContainmentAdmissionWiring,
+    'inspectScannerForConsent' | 'recordScannerAcceptance' | 'revokeScannerAcceptance' | 'readScannerBinding'
+  >;
   /** Late binding — see the docblock. Without these the closures keep `null`. */
   readonly bindLivenessRecorder: (r: {
     recordRunActivity: (o: RunActivityObservation) => void;
@@ -309,6 +316,15 @@ const readUncontainedGrant = (): GrantedUncontainedBackends =>
   resolveUncontainedGrant(
     vscode.workspace.getConfiguration('schegent.backend').get<unknown>('uncontainedBackends')
   );
+// Principal Review F5 — application-scoped grant for standalone uncontained native review
+// scanners (`codex-security`). Reads strictly from `inspect()?.globalValue` when available so
+// workspace settings can never grant scanner authority; falls back to empty (fail-closed).
+const readUncontainedScannerGrant = (): GrantedUncontainedScanners => {
+  const cfg = vscode.workspace.getConfiguration('schegent.backend');
+  const inspected = typeof cfg.inspect === 'function' ? cfg.inspect<unknown>('uncontainedScanners') : undefined;
+  const raw = inspected !== undefined ? inspected.globalValue : cfg.get<unknown>('uncontainedScanners');
+  return resolveUncontainedScannerGrant(raw);
+};
 // FR-R3-083 — a runner reports; this records. Gate: tree-degradation-emission-funnel.
 const treeDegradationRecorder = new ProcessTreeDegradationRecorder((e) => auditWriter.append(e));
 const spawnIdentityRecorder = createSpawnIdentityRecorder({
@@ -326,6 +342,7 @@ const spawnIdentityRecorder = createSpawnIdentityRecorder({
 // stood at activation; repeating it per phase would turn one misconfiguration
 // into a log entry on every run.
 for (const problem of readUncontainedGrant().problems) logger.warn(problem.message);
+for (const problem of readUncontainedScannerGrant().problems) logger.warn(problem.message);
 // Feature 093 (T046) — forward each event to the Run that produced it.
 // The hook stays one window-level function; only the addressing changes.
 //
@@ -423,6 +440,7 @@ const containment = wireContainmentAdmission({
   hasPrimacy: deps.hasPrimacy,
   environmentPolicy: processEnvironmentPolicy,
   granted: () => readUncontainedGrant().granted,
+  grantedScanners: () => readUncontainedScannerGrant().granted,
   observeVersion: (path) => runnerRegistry.observedCliVersion(path)
 });
 const runnerRegistry = new BackendRunnerRegistry({
@@ -516,6 +534,12 @@ const verboseAccessor = {
     verboseAccessor,
     backendQualification: containment.qualification,
     recordContainmentAcceptance: containment.recordAcceptance,
+    scannerConsent: Object.freeze({
+      inspectScannerForConsent: containment.inspectScannerForConsent,
+      recordScannerAcceptance: containment.recordScannerAcceptance,
+      revokeScannerAcceptance: containment.revokeScannerAcceptance,
+      readScannerBinding: containment.readScannerBinding
+    }),
     bindLivenessRecorder: (r) => {
       livenessRecorder = r;
     },

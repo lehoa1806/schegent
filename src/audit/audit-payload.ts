@@ -8,6 +8,10 @@ import {
 import { projectEvidenceExported } from './evidence-lifecycle-payload';
 import { projectAgentConfigAckPayload } from './agent-config-ack-payload';
 import { projectStoreBackupRestorePayload } from './store-backup-restore-payload';
+import {
+  projectScannerConsentChangedPayload,
+  projectTelemetryCredentialChangedPayload
+} from './operator-security-audit-payload';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
 import {
@@ -1032,6 +1036,10 @@ export function projectAuditPayload(
     projected = { ...projectAgentConfigAckPayload(payload) };
   } else if (eventType === 'store-backup' || eventType === 'store-restore') {
     projected = { ...projectStoreBackupRestorePayload(payload, eventType) };
+  } else if (eventType === 'scanner-consent-changed') {
+    projected = { ...projectScannerConsentChangedPayload(payload) };
+  } else if (eventType === 'telemetry-credential-changed') {
+    projected = { ...projectTelemetryCredentialChangedPayload(payload) };
   } else {
     projected = projectValue(payload, 0) as Record<string, unknown>;
   }

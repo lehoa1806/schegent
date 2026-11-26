@@ -159,7 +159,9 @@
           "artifact-lifecycle-mutation",
           "agent-config-acknowledged",
           "store-backup",
-          "store-restore"
+          "store-restore",
+          "scanner-consent-changed",
+          "telemetry-credential-changed"
         ]
       },
       "uniqueItems": true

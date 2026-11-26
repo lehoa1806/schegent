@@ -355,6 +355,7 @@ export interface TelemetryExporterOptions {
 /** The exporter surface (contracts/telemetry-export.md). No method throws to its caller. */
 export interface TelemetryExporter {
   configure(evaluation: ProfileEvaluation, authorizationGeneration: number): void;
+  invalidateCredential(reference?: string): void;
   offer(records: readonly unknown[]): OfferResult;
   flush(): void;
   disable(): void;

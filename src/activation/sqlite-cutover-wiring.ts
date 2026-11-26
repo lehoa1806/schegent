@@ -223,7 +223,7 @@ export interface SqliteCutoverCoordinator {
 
 export interface CreateSqliteCutoverCoordinatorDeps {
   readonly context: Pick<vscode.ExtensionContext, 'storageUri' | 'globalStorageUri' | 'subscriptions'> & {
-    readonly secrets?: Pick<vscode.SecretStorage, 'get'> | undefined;
+    readonly secrets?: (Pick<vscode.SecretStorage, 'get'> & Partial<Pick<vscode.SecretStorage, 'onDidChange'>>) | undefined;
   };
   readonly workspaceRoot: string;
   readonly store: WorkspaceStateStore;
@@ -379,6 +379,7 @@ async function openPrimarySqliteServices(
   let usageWiring: UsageAccountingWiring | null = null;
   let workflowComposition: ProductionWorkflowComposition | null = null;
   let configSub: vscode.Disposable | null = null;
+  let secretSub: vscode.Disposable | null = null;
   const cleanupPartial = (): void => {
     const ownedShared = !input.isClosed();
     if (workflowComposition !== null) unregisterProductionWorkflowComposition(deps.store, workflowComposition);
@@ -386,7 +387,10 @@ async function openPrimarySqliteServices(
       operationalMemento: input.operationalMemento,
       catalogFs: input.catalogFs,
       clearDetachedWriter: ownedShared,
-      disposeTelemetryConfig: () => configSub?.dispose(),
+      disposeTelemetryConfig: () => {
+        configSub?.dispose();
+        secretSub?.dispose();
+      },
       usageAccounting: createdUsageAccounting,
       usageWiring,
       workflowComposition,
@@ -592,6 +596,14 @@ async function openPrimarySqliteServices(
       }
     });
     const boundConfigSub = configSub;
+    const secretsPort = deps.context.secrets;
+    secretSub =
+      secretsPort !== undefined && typeof secretsPort.onDidChange === 'function'
+        ? secretsPort.onDidChange((event) => {
+            telemetryHost.invalidateCredential(event.key);
+          })
+        : null;
+    const boundSecretSub = secretSub;
 
     input.operationalMemento?.configureDetachedTrustedSqliteWriter({
       databasePath: activeDatabasePath,
@@ -619,7 +631,10 @@ async function openPrimarySqliteServices(
       reportingService,
       changeReviewService,
       workflowComposition,
-      disposeTelemetryConfig: () => boundConfigSub.dispose()
+      disposeTelemetryConfig: () => {
+        boundConfigSub.dispose();
+        boundSecretSub?.dispose();
+      }
     };
   } catch (error) {
     if (!input.isClosed()) input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-init-failed');

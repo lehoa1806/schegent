@@ -137,7 +137,9 @@ function defaultHandoffFallback(payload: DecidePhaseHandoffRequest): DecidePhase
   };
   return payload.op === 'approve'
     ? { op: 'approve', result: refusal }
-    : { op: 'edit', result: refusal };
+    : payload.op === 'editSummary'
+      ? { op: 'editSummary', result: refusal }
+      : { op: 'edit', result: refusal };
 }
 
 function gateRefusal(reason: string | undefined): string | null {

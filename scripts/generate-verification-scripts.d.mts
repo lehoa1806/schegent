@@ -5,6 +5,7 @@ export interface VerificationStepSpec {
   readonly command: string;
   readonly firstTier: VerificationTierName;
   readonly requiresWebviewBuild: boolean;
+  readonly requiresHostBuild: boolean;
   readonly category: string;
   readonly precondition?: string;
 }

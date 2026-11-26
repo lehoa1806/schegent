@@ -54,7 +54,7 @@ import {
 import type { CandidateBlockExecutor } from './candidate-block-executor';
 import type { CandidateSpecResolver } from './candidate-block-coordinator';
 import { tryReconcileCandidateBlockFrames } from './candidate-block-recovery';
-import { reconcileOrphanedControlLedgerRoots } from './control-root-lifecycle';
+import type { ControlRootParentPresence } from './control-root-lifecycle';
 import {
   handleRepeatChildCompletion,
   type RepeatExecutor
@@ -83,6 +83,15 @@ import {
   releaseTerminalHandoffPinsIfConfirmed
 } from './phase-handoff-execution-bridge';
 
+import {
+  EMPTY_RECONCILE_SUMMARY,
+  runReconcileAllConnectedRuns,
+  type IsolatedRecoveryFailure,
+  type ReconcileAllRunsSummary
+} from './recovery-diagnostics';
+
+export type { IsolatedRecoveryFailure, ReconcileAllRunsSummary };
+
 export interface DurableAttemptEvidenceResult {
   readonly completed?: boolean;
   readonly settled?: boolean;
@@ -99,6 +108,7 @@ export type DurableAttemptEvidence = DurableAttemptEvidenceResult;
 export interface WorkflowRecoveryStore extends ConnectedRunWriter {
   get(connectedRunId: string): ConnectedWorkflowRun | null;
   list?(): readonly ConnectedWorkflowRun[];
+  getPresence?(connectedRunId: string): ControlRootParentPresence;
 }
 
 export interface WorkflowRecoveryServiceDeps {
@@ -142,6 +152,12 @@ export interface WorkflowRecoveryServiceDeps {
   readonly usageAccounting?: ControlUsageAccountingService | undefined;
   readonly resolveRecoveryFence?: (run: ConnectedWorkflowRun, queueId: string) => ExecutionFence;
   readonly resolveOrphanFence?: (ref: { readonly ledgerRunId: string; readonly connectedRunId: string; readonly queueId: string; readonly rootGeneration?: number | undefined }) => ExecutionFence;
+  readonly onIsolatedFailure?: (failure: IsolatedRecoveryFailure) => void;
+  readonly onPreservedRefusedParent?: (ref: {
+    readonly ledgerRunId: string;
+    readonly connectedRunId: string;
+    readonly queueId: string;
+  }) => void;
 }
 
 export interface ReconcileConnectedRunResult {
@@ -910,20 +926,7 @@ export class WorkflowRecoveryService {
           reconciledAt: now,
           reasonCode: 'repeat-post-pass-reconciled'
         });
-        const withDisposition = setRecoveryDisposition(
-          { ...staging.current(), revision: run.revision },
-          disposition
-        );
-        const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
-          this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
-        );
-        return {
-          runId: finalRun.connectedRunId,
-          mutated: true,
-          disposition,
-          run: finalRun,
-          projection: buildWorkflowRunControlProjection(finalRun)
-        };
+        return this.commitRecoveredDisposition(staging.current(), run.revision, disposition);
       }
     }
 
@@ -1003,20 +1006,7 @@ export class WorkflowRecoveryService {
               reconciledAt: now,
               reasonCode: 'foreach-slot-advance-recovered'
             });
-            const withDisposition = setRecoveryDisposition(
-              { ...staging.current(), revision: run.revision },
-              disposition
-            );
-            const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
-              this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
-            );
-            return {
-              runId: finalRun.connectedRunId,
-              mutated: true,
-              disposition,
-              run: finalRun,
-              projection: buildWorkflowRunControlProjection(finalRun)
-            };
+            return this.commitRecoveredDisposition(staging.current(), run.revision, disposition);
           }
         }
 
@@ -1053,20 +1043,7 @@ export class WorkflowRecoveryService {
             reconciledAt: now,
             reasonCode: 'foreach-child-admission-recovered'
           });
-          const withDisposition = setRecoveryDisposition(
-            { ...staging.current(), revision: run.revision },
-            disposition
-          );
-          const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
-            this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
-          );
-          return {
-            runId: finalRun.connectedRunId,
-            mutated: true,
-            disposition,
-            run: finalRun,
-            projection: buildWorkflowRunControlProjection(finalRun)
-          };
+          return this.commitRecoveredDisposition(staging.current(), run.revision, disposition);
         }
 
         // Case C: Crash after child settlement, after slot commit, or before final export
@@ -1138,20 +1115,7 @@ export class WorkflowRecoveryService {
           reconciledAt: now,
           reasonCode: 'foreach-post-item-reconciled'
         });
-        const withDisposition = setRecoveryDisposition(
-          { ...staging.current(), revision: run.revision },
-          disposition
-        );
-        const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
-          this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, run.revision
-        );
-        return {
-          runId: finalRun.connectedRunId,
-          mutated: true,
-          disposition,
-          run: finalRun,
-          projection: buildWorkflowRunControlProjection(finalRun)
-        };
+        return this.commitRecoveredDisposition(staging.current(), run.revision, disposition);
       }
     }
 
@@ -1190,25 +1154,43 @@ export class WorkflowRecoveryService {
     };
   }
 
-  /**
-   * Reconcile all persisted `ConnectedWorkflowRun` records on host startup.
-   */
+  private async commitRecoveredDisposition(
+    stagedRun: ConnectedWorkflowRun,
+    expectedRevision: number,
+    disposition: RecoveryDispositionRecord
+  ): Promise<ReconcileConnectedRunResult> {
+    const withDisposition = setRecoveryDisposition({ ...stagedRun, revision: expectedRevision }, disposition);
+    const finalRun = await commitRecoveredRunAndReleaseTerminalPins(
+      this.deps.connectedRuns, this.deps.phaseHandoffCoordinator, withDisposition, expectedRevision
+    );
+    return {
+      runId: finalRun.connectedRunId,
+      mutated: true,
+      disposition,
+      run: finalRun,
+      projection: buildWorkflowRunControlProjection(finalRun)
+    };
+  }
+
+  private lastReconcileSummary: ReconcileAllRunsSummary = EMPTY_RECONCILE_SUMMARY;
+
+  public getLastReconcileSummary(): ReconcileAllRunsSummary {
+    return this.lastReconcileSummary;
+  }
+
   public async reconcileAllRuns(now: number): Promise<readonly ReconcileConnectedRunResult[]> {
-    const list = this.deps.connectedRuns.list?.() ?? [];
-    const results: ReconcileConnectedRunResult[] = [];
-    for (const run of list) {
-      try {
-        const reconciled = await this.reconcileRun(run.connectedRunId, now);
-        if (reconciled !== undefined) results.push(reconciled);
-      } catch { /* isolate malformed run so sibling recovery proceeds */ }
-    }
-    if (this.deps.controlAdmission !== undefined) {
-      await reconcileOrphanedControlLedgerRoots({
-        controlAdmission: this.deps.controlAdmission, knownRunIds: new Set(list.map((r) => r.connectedRunId)),
-        ...(this.deps.resolveOrphanFence !== undefined ? { resolveOrphanFence: this.deps.resolveOrphanFence } : {}),
-        processEvidencePort: this.deps.processEvidencePort
-      });
-    }
-    return Object.freeze(results);
+    const out = await runReconcileAllConnectedRuns<ReconcileConnectedRunResult>({
+      list: this.deps.connectedRuns.list?.() ?? [],
+      reconcileOne: (runId) => this.reconcileRun(runId, now),
+      getRun: (runId) => this.deps.connectedRuns.get(runId),
+      getPresence: this.deps.connectedRuns.getPresence,
+      controlAdmission: this.deps.controlAdmission,
+      ...(this.deps.resolveOrphanFence !== undefined ? { resolveOrphanFence: this.deps.resolveOrphanFence } : {}),
+      processEvidencePort: this.deps.processEvidencePort,
+      onIsolatedFailure: this.deps.onIsolatedFailure,
+      onPreservedRefusedParent: this.deps.onPreservedRefusedParent
+    });
+    this.lastReconcileSummary = out.summary;
+    return out.results;
   }
 }

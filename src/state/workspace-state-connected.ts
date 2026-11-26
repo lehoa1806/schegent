@@ -16,6 +16,8 @@ import {
 } from './connected-run-migrator';
 import {
   assertConnectedRunInvariants,
+  MAX_COMMAND_RECEIPTS,
+  type CommittedCommandReceipt,
   type ConnectedWorkflowRun
 } from './connected-workflow-run';
 import { STALENESS_THRESHOLD_MS } from './lock';
@@ -47,8 +49,11 @@ export function createConnectedRunsWarningState(): ConnectedRunsWarningState {
   return { connectedRunDropsWarned: null };
 }
 
-function staleConnectedRunWrite(current: ConnectedWorkflowRun | null): ConnectedRunWriteResult {
-  return { outcome: 'stale', current };
+function staleConnectedRunWrite(
+  current: ConnectedWorkflowRun | null,
+  reason?: 'revision-mismatch' | 'immutability-violation' | 'ownership-lost'
+): ConnectedRunWriteResult {
+  return { outcome: 'stale', current, ...(reason !== undefined ? { reason } : {}) };
 }
 
 function readConnectedRunCollection(
@@ -71,6 +76,8 @@ export function getConnectedRuns(
   return readConnectedRunCollection(ctx, warned).runs;
 }
 
+export type ConnectedRunPresence = 'present' | 'unreadable-refused' | 'absent';
+
 export function getConnectedRun(
   ctx: WorkspaceStateFamilyContext,
   warned: ConnectedRunsWarningState,
@@ -78,6 +85,37 @@ export function getConnectedRun(
 ): ConnectedWorkflowRun | null {
   const runs = getConnectedRuns(ctx, warned);
   return Object.hasOwn(runs, connectedRunId) ? runs[connectedRunId]! : null;
+}
+
+/**
+ * Tri-state lookup distinguishing a valid persisted parent (`'present'`), an opaque/refused
+ * parent record (`'unreadable-refused'`), and a genuinely missing parent (`'absent'`).
+ * Startup orphan-root cleanup MUST only remove roots whose parent is `'absent'`.
+ */
+export function getConnectedRunPresence(
+  ctx: WorkspaceStateFamilyContext,
+  warned: ConnectedRunsWarningState,
+  connectedRunId: string
+): ConnectedRunPresence {
+  const { runs, refused } = readConnectedRunCollection(ctx, warned);
+  if (Object.hasOwn(runs, connectedRunId)) return 'present';
+  if (Object.hasOwn(refused, connectedRunId)) return 'unreadable-refused';
+  return 'absent';
+}
+
+function sameImmutableReceipt(a: CommittedCommandReceipt, b: CommittedCommandReceipt): boolean {
+  return (
+    a.commandId === b.commandId &&
+    a.operation === b.operation &&
+    a.targetInvocationId === b.targetInvocationId &&
+    a.targetNodeId === b.targetNodeId &&
+    a.committedRevision === b.committedRevision &&
+    a.committedAt === b.committedAt &&
+    a.resultingRunStatus === b.resultingRunStatus &&
+    a.resultingInvocationStatus === b.resultingInvocationStatus &&
+    a.spawnedInvocationId === b.spawnedInvocationId &&
+    a.spawnedAttemptId === b.spawnedAttemptId
+  );
 }
 
 function violatesCrossRevisionImmutability(
@@ -96,15 +134,28 @@ function violatesCrossRevisionImmutability(
   const curReceipts = current.commandReceipts ?? [];
   const nextReceipts = next.commandReceipts ?? [];
   if (curReceipts.length > 0) {
-    if (curReceipts.length < 64 && nextReceipts.length < curReceipts.length) return true;
-    // Every retained receipt id must preserve its operation and target.
-    const nextById = new Map(nextReceipts.map((r) => [r.commandId, r]));
-    const retainedStart = Math.max(0, curReceipts.length - nextReceipts.length);
-    for (let i = retainedStart; i < curReceipts.length; i += 1) {
-      const prev = curReceipts.at(i);
-      if (prev === undefined) continue;
-      const match = nextById.get(prev.commandId);
-      if (match === undefined || match.operation !== prev.operation) return true;
+    if (nextReceipts.length < curReceipts.length || nextReceipts.length > MAX_COMMAND_RECEIPTS) {
+      return true;
+    }
+    const firstNext = nextReceipts[0]!;
+    const evictedCount = curReceipts.findIndex((r) => r.commandId === firstNext.commandId);
+    if (evictedCount < 0) return true;
+    // FIFO eviction is legal only when the bounded receipt window is completely full.
+    if (evictedCount > 0 && nextReceipts.length < MAX_COMMAND_RECEIPTS) return true;
+    const retainedCount = curReceipts.length - evictedCount;
+    if (retainedCount > nextReceipts.length) return true;
+    const curIds = new Set(curReceipts.map((r) => r.commandId));
+    for (let j = 0; j < retainedCount; j += 1) {
+      const prev = curReceipts[evictedCount + j]!;
+      const kept = nextReceipts[j]!;
+      if (!sameImmutableReceipt(prev, kept)) {
+        return true;
+      }
+    }
+    // Newly appended receipts past the retained prefix must introduce fresh command IDs.
+    for (let j = retainedCount; j < nextReceipts.length; j += 1) {
+      const added = nextReceipts[j]!;
+      if (curIds.has(added.commandId)) return true;
     }
   }
   if (current.invocations !== undefined) {
@@ -141,7 +192,7 @@ export async function compareAndSetConnectedRun(
       return;
     }
     if (current !== null && violatesCrossRevisionImmutability(current, next)) {
-      result = staleConnectedRunWrite(current);
+      result = staleConnectedRunWrite(current, 'immutability-violation');
       return;
     }
     const boundQueueId = current?.queueId ?? next.queueId;
@@ -150,7 +201,7 @@ export async function compareAndSetConnectedRun(
       boundQueueId !== undefined &&
       claimSource?.tenureOf?.(boundQueueId).state === 'lost'
     ) {
-      result = staleConnectedRunWrite(current);
+      result = staleConnectedRunWrite(current, 'ownership-lost');
       return;
     }
     if (boundQueueId !== undefined && claimSource !== null) {
@@ -170,20 +221,20 @@ export async function compareAndSetConnectedRun(
               claimSource.markLost?.(boundQueueId, 'superseded');
             }
           }
-          result = staleConnectedRunWrite(current);
+          result = staleConnectedRunWrite(current, 'ownership-lost');
           return;
         }
       } else {
         const foreignHeld = await isFreshForeignQueueOwner(ctx, boundQueueId);
         if (foreignHeld) {
-          result = staleConnectedRunWrite(current);
+          result = staleConnectedRunWrite(current, 'ownership-lost');
           return;
         }
       }
     }
     const primacySource = ctx.getPrimacyClaimSource();
     if (primacySource !== null && !(await primacySource.canCommitConnectedRun())) {
-      result = staleConnectedRunWrite(current);
+      result = staleConnectedRunWrite(current, 'ownership-lost');
       return;
     }
     assertConnectedRunInvariants(next, {

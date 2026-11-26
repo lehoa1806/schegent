@@ -30,6 +30,8 @@ export function listControlRootRefs(
   }));
 }
 
+export type ControlRootParentPresence = 'present' | 'unreadable-refused' | 'absent';
+
 export async function reconcileOrphanedControlLedgerRoots(input: {
   readonly controlAdmission: Pick<
     import('../../contracts/control-ledger').ControlAdmissionPort,
@@ -43,6 +45,17 @@ export async function reconcileOrphanedControlLedgerRoots(input: {
     }): Promise<unknown>;
   };
   readonly knownRunIds: ReadonlySet<string>;
+  /**
+   * Explicit tri-state parent presence lookup. When provided, only `'absent'` parents are
+   * eligible for orphan cleanup/reconciliation; `'present'` and `'unreadable-refused'` parents
+   * preserve their linked control ledger state, permits, and waiters.
+   */
+  readonly lookupParentPresence?: (connectedRunId: string) => ControlRootParentPresence;
+  readonly onPreservedRefusedParent?: (ref: {
+    readonly ledgerRunId: string;
+    readonly connectedRunId: string;
+    readonly queueId: string;
+  }) => void;
   readonly resolveOrphanFence?: (ref: {
     readonly ledgerRunId: string;
     readonly connectedRunId: string;
@@ -53,7 +66,22 @@ export async function reconcileOrphanedControlLedgerRoots(input: {
 }): Promise<void> {
   if (input.controlAdmission.listRootRunIds === undefined) return;
   for (const rootRef of input.controlAdmission.listRootRunIds()) {
-    if (input.knownRunIds.has(rootRef.connectedRunId)) continue;
+    const presence: ControlRootParentPresence =
+      input.lookupParentPresence !== undefined
+        ? input.lookupParentPresence(rootRef.connectedRunId)
+        : input.knownRunIds.has(rootRef.connectedRunId)
+          ? 'present'
+          : 'absent';
+    if (presence !== 'absent') {
+      if (presence === 'unreadable-refused') {
+        input.onPreservedRefusedParent?.({
+          ledgerRunId: rootRef.ledgerRunId,
+          connectedRunId: rootRef.connectedRunId,
+          queueId: rootRef.queueId
+        });
+      }
+      continue;
+    }
     const newFence: ExecutionFence =
       input.resolveOrphanFence !== undefined
         ? input.resolveOrphanFence(rootRef)

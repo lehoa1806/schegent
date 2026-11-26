@@ -130,14 +130,43 @@ function stringUnits(value: unknown): number {
     return 0;
   }
   let units = 0;
-  for (const inner of Object.values(value)) {
-    units += stringUnits(inner);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      units += stringUnits(value[i]);
+    }
+    return units;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    const inner = record[key];
+    if (typeof inner === 'string') {
+      units += inner.length;
+    } else if (inner !== null && typeof inner === 'object') {
+      units += stringUnits(inner);
+    }
   }
   return units;
 }
 
+/** True when `record` is a flat primitive-valued plain object whose own keys are already sorted. */
+function isPreSortedFlatRecord(record: Record<string, unknown>): boolean {
+  let prev: string | null = null;
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    if (prev !== null && prev > key) return false;
+    prev = key;
+    const inner = record[key];
+    if (inner !== null && typeof inner === 'object') return false;
+  }
+  return true;
+}
+
 /** The JSON of `value` with every object's keys in sorted order. */
 export function canonicalLine(value: unknown): string {
+  if (isPlainRecord(value) && isPreSortedFlatRecord(value)) {
+    return JSON.stringify(value);
+  }
   return JSON.stringify(value, (_key, inner: unknown) => {
     if (!isPlainRecord(inner)) {
       return inner;
@@ -150,6 +179,8 @@ export function canonicalLine(value: unknown): string {
   });
 }
 
+const HASH_BATCH_LINES = 128;
+
 /**
  * The population digest (R10) and working-data estimate (R11) of `groups`, visited in order
  * through the slicer: one canonical line per item is hashed, and each row is estimated at its
@@ -161,18 +192,44 @@ export async function measurePopulation(
 ): Promise<ReportResult<PopulationMeasure>> {
   const hash = createHash('sha256');
   let bytes = 0;
+  const lineBatch: string[] = [];
+  const flushBatch = (): void => {
+    if (lineBatch.length === 0) return;
+    hash.update(`${lineBatch.join('\n')}\n`, 'utf8');
+    lineBatch.length = 0;
+  };
   for (const items of groups) {
     const visited = await slicer.forEach(items, (item) => {
-      const line = canonicalLine(item);
-      hash.update(line, 'utf8');
-      hash.update('\n', 'utf8');
+      lineBatch.push(canonicalLine(item));
+      if (lineBatch.length >= HASH_BATCH_LINES) flushBatch();
+      bytes += stringUnits(item) * UTF16_BYTES + ROW_OVERHEAD_BYTES;
+    });
+    flushBatch();
+    if (!visited.ok) {
+      return visited;
+    }
+  }
+  return reportOk(Object.freeze({ digest: hash.digest('hex'), bytes }));
+}
+
+/**
+ * Working-data byte estimate (R11) without computing a SHA-256 digest, used for derived row
+ * arrays whose digest is never exposed or compared.
+ */
+export async function measureWorkingBytes(
+  groups: readonly (readonly unknown[])[],
+  slicer: RowSlicer
+): Promise<ReportResult<number>> {
+  let bytes = 0;
+  for (const items of groups) {
+    const visited = await slicer.forEach(items, (item) => {
       bytes += stringUnits(item) * UTF16_BYTES + ROW_OVERHEAD_BYTES;
     });
     if (!visited.ok) {
       return visited;
     }
   }
-  return reportOk(Object.freeze({ digest: hash.digest('hex'), bytes }));
+  return reportOk(bytes);
 }
 
 /** The live reports of one workspace, with the admission, budget and lease bounds they share. */

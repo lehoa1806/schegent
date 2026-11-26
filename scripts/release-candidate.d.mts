@@ -81,3 +81,32 @@ export interface ReleaseCandidateResult {
 
 /** Prepare a release candidate. Never exits the process and never throws for a refusal. */
 export declare function releaseCandidate(deps: ReleaseCandidateDeps): ReleaseCandidateResult;
+
+export type VerifyCandidateArchiveDigestResult =
+  | {
+      readonly ok: true;
+      readonly candidatePath: string;
+      readonly sha256: string;
+      readonly bytes: number;
+    }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | 'record-missing'
+        | 'record-unparseable'
+        | 'record-invalid'
+        | 'candidate-missing'
+        | 'size-mismatch'
+        | 'digest-mismatch';
+      readonly candidatePath?: string;
+      readonly expectedBytes?: number;
+      readonly actualBytes?: number;
+      readonly expectedSha256?: string;
+      readonly actualSha256?: string;
+      readonly message: string;
+    };
+
+export declare function verifyCandidateArchiveDigest(input: {
+  readonly recordPath: string;
+  readonly readFile: (path: string) => Buffer;
+}): VerifyCandidateArchiveDigestResult;

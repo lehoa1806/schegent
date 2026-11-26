@@ -250,6 +250,12 @@ export interface PhaseHandoffCoordinator {
     baseRevision: number,
     replacementSources: unknown
   ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal;
+  editHandoffSummary(
+    handoffId: string,
+    baseRevision: number,
+    summary: string,
+    producerAttemptId?: string
+  ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal;
   approveHandoff(
     handoffId: string,
     revision: number,
@@ -901,21 +907,12 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
       return refuse('storage-unavailable', 'store-failure');
     }
     if (txOutcome.ok && params.delivered && this.deps.lifecycle) {
-      releasePhaseContextOwnerReferences(
-        this.deps.lifecycle,
-        this.store,
-        params.handoffId,
-        'attempt',
-        normalizedAttemptId
-      );
-      if (params.targetAttemptId !== normalizedAttemptId) {
-        releasePhaseContextOwnerReferences(
-          this.deps.lifecycle,
-          this.store,
-          params.handoffId,
-          'attempt',
-          params.targetAttemptId
-        );
+      const attemptIds =
+        params.targetAttemptId !== normalizedAttemptId
+          ? [normalizedAttemptId, params.targetAttemptId]
+          : [normalizedAttemptId];
+      for (const attemptId of attemptIds) {
+        releasePhaseContextOwnerReferences(this.deps.lifecycle, this.store, params.handoffId, 'attempt', attemptId);
       }
     }
     return txOutcome;
@@ -1016,14 +1013,16 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
     return out;
   }
 
-  public editHandoff(
+  private runEditTransaction(
     handoffId: string,
     baseRevision: number,
-    replacementSources: unknown
+    perform: () =>
+      | { readonly ok: true; readonly prepared: Parameters<typeof observePrepared>[0]; readonly revision: AcceptedRevision }
+      | Refusal
   ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal {
     try {
       return this.store.runInImmediateTransaction(() => {
-        const edited = this.acceptance.edit(handoffId, baseRevision, replacementSources);
+        const edited = perform();
         if (!edited.ok) return edited;
         this.emitObservation(observePrepared(edited.prepared));
         const record = this.store.load(handoffId);
@@ -1037,6 +1036,27 @@ class PhaseHandoffCoordinatorImpl implements PhaseHandoffCoordinator {
       // Fail closed on SQLite/corruption failures during handoff edit.
       return refuse('storage-unavailable', 'store-failure');
     }
+  }
+
+  public editHandoff(
+    handoffId: string,
+    baseRevision: number,
+    replacementSources: unknown
+  ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal {
+    return this.runEditTransaction(handoffId, baseRevision, () =>
+      this.acceptance.edit(handoffId, baseRevision, replacementSources)
+    );
+  }
+
+  public editHandoffSummary(
+    handoffId: string,
+    baseRevision: number,
+    summary: string,
+    producerAttemptId?: string
+  ): { readonly ok: true; readonly revision: AcceptedRevision } | Refusal {
+    return this.runEditTransaction(handoffId, baseRevision, () =>
+      this.acceptance.editSummary(handoffId, baseRevision, summary, producerAttemptId)
+    );
   }
 
   public approveHandoff(

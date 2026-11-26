@@ -248,6 +248,7 @@
   async function exportActive(format: 'json' | 'csv'): Promise<void> {
     if (mutating || page === null) return;
     mutating = true;
+    statusNotice = `Choose ${format.toUpperCase()} export destination…`;
     const env = await requestMutateReport({ op: 'export', reportId: page.reportId, format });
     mutating = false;
     if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }

@@ -111,6 +111,7 @@ export interface TelemetryHostService {
     profiles: readonly unknown[],
     previewPolicy?: string
   ): ProfileEvaluation;
+  invalidateCredential(reference?: string): void;
   offerRecords(records: readonly unknown[]): OfferResult;
   offerAcceptedObservationById(observationId: string): OfferResult;
   offerAcceptedAttemptOutcome(params: {
@@ -496,6 +497,15 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
     configureFromRawProfiles(profiles, previewPolicy = 'metadata-only') {
       lastPreviewPolicy = normalizeContentPolicy(previewPolicy);
       return applyEvaluation(evaluateProfiles(profiles, evaluationContext()));
+    },
+
+    invalidateCredential(reference) {
+      if (shutDown) return;
+      try {
+        exporter?.invalidateCredential(reference);
+      } catch {
+        // Exporter never throws; defensive host boundary guard.
+      }
     },
 
     offerRecords(records) {

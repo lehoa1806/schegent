@@ -16,6 +16,7 @@
 
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type {
+  BindingInput,
   FingerprintRecord,
   ReviewScannerId,
   SpawnGate
@@ -77,6 +78,10 @@ export interface ContainmentAdmissionWiring {
   readonly recordAcceptance: (kind: BackendRunnerKind, fingerprint: FingerprintRecord) => Promise<void>;
   /** Records explicit operator consent for a standalone scanner fingerprint (`codex-security`). */
   readonly recordScannerAcceptance: (scanner: ReviewScannerId, fingerprint: FingerprintRecord) => Promise<void>;
+  /** Revokes the stored workspace fingerprint binding for a standalone scanner (`codex-security`). */
+  readonly revokeScannerAcceptance: (scanner: ReviewScannerId) => Promise<boolean>;
+  /** Reads the stored workspace fingerprint binding for a standalone scanner (`codex-security`). */
+  readonly readScannerBinding: (scanner: ReviewScannerId) => BindingInput;
   /** Explicit operator-initiated inspection helper returning the full scanner fingerprint for consent. */
   readonly inspectScannerForConsent: (
     scanner: ReviewScannerId,
@@ -145,6 +150,8 @@ export function wireContainmentAdmission(deps: ContainmentAdmissionWiringDeps): 
       bindings.bind(kind, fingerprint, 'consent'),
     recordScannerAcceptance: (scanner: ReviewScannerId, fingerprint: FingerprintRecord) =>
       scannerBindings.bind(scanner, fingerprint, 'consent'),
+    revokeScannerAcceptance: (scanner: ReviewScannerId) => scannerBindings.clear(scanner),
+    readScannerBinding: (scanner: ReviewScannerId) => scannerBindings.read(scanner),
     inspectScannerForConsent: (
       scanner: ReviewScannerId,
       env?: Readonly<Record<string, string>>,

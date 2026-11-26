@@ -119,10 +119,16 @@ export default defineConfig({
       // 310–314), whose HistoricalReportsPanel and ChangeReviewPanel tests
       // measured 93.05% statements / 93.05% lines (branches and functions
       // stayed within the 1-point headroom tolerance).
+      //
+      // Functions raised 83 → 85 on Principal Review F4/F7 remediation
+      // (2026-11-26), whose ExecutionVisibilityPanelEditSummary and
+      // reporting-ipc-export-timeout tests measured 93.32% statements /
+      // 81.55% branches / 90.20% functions / 93.32% lines; only functions
+      // crossed the 1-point headroom tolerance.
       thresholds: {
         statements: 88,
         branches: 75,
-        functions: 83,
+        functions: 85,
         lines: 88
       }
     }

@@ -34,7 +34,7 @@ import { DIGEST_PATTERN, IDENTIFIER_PATTERN, PHASE_CONTEXT_LIMITS, type Refusal 
 import { manifestDigestOf, parseManifest, serializeManifest } from './manifest';
 import { isOneOf, isWholeNumber, listOf, matchesPattern, plainRecord, refuse } from './primitives';
 import { renderContext } from './renderer';
-import { editRevision } from './revision-edit';
+import { editRevision, editRevisionSummary } from './revision-edit';
 import { utf8Bytes } from './text-bounds';
 
 export type AcceptResult = { readonly ok: true; readonly revision: AcceptedRevision; readonly created: boolean } | Refusal;
@@ -52,6 +52,12 @@ export interface DispatchIntentOptions {
 export interface AcceptanceService {
   accept(prepared: PreparedHandoff): AcceptResult;
   edit(handoffId: string, baseRevision: number, replacementSources: unknown): EditOutcome;
+  editSummary(
+    handoffId: string,
+    baseRevision: number,
+    summary: unknown,
+    producerAttemptId?: string
+  ): EditOutcome;
   approve(handoffId: string, revision: number, decisionId: string): ApproveResult;
   inspect(handoffId: string): InspectResult;
   recordDispatchIntent(
@@ -282,6 +288,24 @@ function placeEdit(record: HandoffRecord | null, baseRevision: number, replaceme
   return { result: { ok: true, revision, prepared: edited.prepared }, write: withRevision(record, record.handoffId, revision) };
 }
 
+function placeEditSummary(
+  record: HandoffRecord | null,
+  baseRevision: number,
+  summary: unknown,
+  producerAttemptId?: string
+): Step<EditOutcome> {
+  if (record === null) return { result: refuse('stale-revision', 'unknown-handoff') };
+  const current = record.revisions.at(-1);
+  if (current?.revision !== baseRevision) return { result: refuse('stale-revision', 'revision-not-current') };
+  if (record.revisions.length >= PHASE_CONTEXT_LIMITS.revisionsMax) return { result: refuse('capacity-exceeded', 'revision-count') };
+  const baseRead = readStoredManifest(current);
+  if (baseRead.kind !== 'valid') return { result: storedManifestRefusal(baseRead) };
+  const edited = editRevisionSummary(baseRead.manifest, summary, producerAttemptId);
+  if (!edited.ok) return { result: edited };
+  const revision = revisionOf(edited.prepared);
+  return { result: { ok: true, revision, prepared: edited.prepared }, write: withRevision(record, record.handoffId, revision) };
+}
+
 function placeApproval(record: HandoffRecord | null, revision: number, decisionId: string): Step<ApproveResult> {
   if (record === null) return { result: refuse('stale-revision', 'unknown-handoff') };
   const named = record.revisions.find((entry) => entry.revision === revision);
@@ -397,6 +421,15 @@ export function createAcceptanceService(store: HandoffStorePort): AcceptanceServ
       const fault = inputFault(handoffId, baseRevision);
       if (fault !== null) return refuse('invalid-source', fault);
       return mutate(handoffId, (record) => placeEdit(record, baseRevision, replacementSources));
+    },
+    editSummary(handoffId, baseRevision, summary, producerAttemptId) {
+      const fault =
+        inputFault(handoffId, baseRevision) ??
+        (producerAttemptId !== undefined && !matchesPattern(IDENTIFIER_PATTERN, producerAttemptId)
+          ? 'producer-attempt-id'
+          : null);
+      if (fault !== null) return refuse('invalid-source', fault);
+      return mutate(handoffId, (record) => placeEditSummary(record, baseRevision, summary, producerAttemptId));
     },
     approve(handoffId, revision, decisionId) {
       const fault = inputFault(handoffId, revision) ?? (matchesPattern(IDENTIFIER_PATTERN, decisionId) ? null : 'decision-id');

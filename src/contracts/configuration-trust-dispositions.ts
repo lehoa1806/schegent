@@ -282,6 +282,7 @@ export const EXECUTABLE_AUTHORITY_PROPERTIES: readonly string[] = Object.freeze(
   'schegent.backend.probeTimeoutSeconds',
   'schegent.backend.runner',
   'schegent.backend.uncontainedBackends',
+  'schegent.backend.uncontainedScanners',
   'schegent.cli.environmentAllowlist',
   'schegent.cli.environmentMode',
   'schegent.cli.inheritEnvironment',
