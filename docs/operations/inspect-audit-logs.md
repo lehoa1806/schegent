@@ -46,10 +46,15 @@ own the workspace, refuses it, because the row it records needs an owner to writ
 <!-- Source: src/commands/export-audit.ts -->
 
 The metadata-only export removes `runId`, `correlationId`, and all payload keys
-except `attemptId`, `cause`, `exitCode`, `failureCause`, `fileChangeCounts`, `metrics`,
+except `action`, `attemptId`, `cause`, `clearedBinding`, `containmentPosture`,
+`executableTarget`, `exitCode`, `failureCause`, `fileChangeCounts`,
+`fingerprintDigestPrefix`, `matchesConfiguredKey`, `metrics`,
 `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`,
-`resultEnvelope`, `stalled`, `terminationReason`, and `toolCategoryCounts`. Five
-of those are also
+`permissionMode`, `removedSetting`, `resultEnvelope`, `scanner`,
+`secretKeyDigestPrefix`, `stalled`, `streamHighWaterBytes`,
+`streamObservedBytes`, `streamPendingHighWaterBytes`, `streamTruncated`,
+`terminationReason`, and `toolCategoryCounts` (enforced by
+`src/services/audit-export/counts-only-export.ts`). Guarded fields are also
 value-checked on the way out, because the export reads whatever bytes are on disk
 rather than what the current writer produces. The check is scoped by event type:
 on `phase-end` only the literals `cap_exhausted` and `pre_spawn_refusal` survive
@@ -58,13 +63,17 @@ that carry a `cause` — `phase-breakpoint-cleared`, `task-reordered`,
 `monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses — keep
 their own vocabularies, admitted by shape as a short lowercase token. `stalled`
 must be a positive whole number, `attemptId` must be the UUID shape the writer
-mints, `resultEnvelope` must be `received` or `absent`, and `failureCause` must be
-one of the nine closed codes and appears only on `task-execution-ended`. A rejected value
+mints, `resultEnvelope` must be `received` or `absent`, `failureCause` must be
+one of the ten closed codes and appears only on `task-execution-ended`,
+process-authority and stream metrics are scoped to `cli-invocation` /
+`monitor-invocation-summary`, and operator security fields are scoped to
+`scanner-consent-changed` / `telemetry-credential-changed`. A rejected value
 exports as `null` rather than
 being dropped, so a field that was on disk never reads as one that was never
 recorded. It retains the audit event ID,
 timestamp, event type, phase, iteration, outcome, and schema version. Rows from
 other schema versions or with invalid envelopes are omitted.
+<!-- Source: src/services/audit-export/counts-only-export.ts -->
 <!-- Source: src/commands/export-audit.ts -->
 <!-- Source: tests/unit/commands/export-audit.test.ts -->
 

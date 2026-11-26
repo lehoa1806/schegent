@@ -200,6 +200,7 @@ subdirectories for larger subsystems. Features named `F<NN>` are Round 6 feature
 |---|---|
 | `src/services/acp-runtime/` | Agent Client Protocol client: connection, stdio transport and bridge, built-in agent profiles, and the fail-closed permission policy (F13). |
 | `src/services/artifact-lifecycle/` | Artifact records, pins, availability, deletion plans, and preservation of legacy artifacts (F05). |
+| `src/services/audit-export/` | Shared schema-v3 metadata-only counts-only audit export sanitizer used by audit export commands and diagnostics bundles. |
 | `src/services/change-review/` | Read-only review of the changes a Run made: diff inventory, comparison revisions, content handles, and the view-request gate (F12). |
 | `src/services/containment-qualification/` | Per-backend containment qualification, acceptance bindings, the spawn admission gate, and `AcpAuthorityGate` (F09). |
 | `src/services/decision-record/` | Opens a queue row's `decisions.md` through the root-bounded safe open for a read-only presenter. |
@@ -345,8 +346,9 @@ flowchart TD
     B --> C["Launch via CMD_LAUNCH_WORKFLOW or headless API"]
     C --> D{"Validate IPC v3, trust, primacy, live fence, inputs and 20-root cap"}
     D -->|refused| N["Return typed refusal + CMD_ACK rejected (0 effects)"]
-    D -->|accepted| E["Freeze FrozenWorkflowClosure + prepare unstarted control root & attempt"]
-    E --> F["Atomic SQLite publication batch: connected parent + first queue item + active ledger root"]
+    D -->|accepted| E["Freeze FrozenWorkflowClosure + prepareRootLink unstarted control root & attempt"]
+    E -->|crash or restart| R["Startup recovery: tri-state parent check preserves refused/future parents; cleans absent unstarted orphans"]
+    E --> F["Atomic SQLite publication batch: connected parent + first queue item + activateRootLink"]
     F --> G{"Primary drain, queue lease, consent, handoff eligibility and quota"}
     G -->|deferred| W["Wait on queue, retry deadline or quota wakeup (spawnedDirectly: false)"]
     W --> G
@@ -1189,9 +1191,11 @@ a test-only profile cannot register through `createBackendRunner` without a
 narrow test seam or union change (preventing accidental unreviewed backends at
 compile time, at the cost of testing production seams individually via
 composition/descriptor/admission/parser/bounds ports); and (b) `services/` still
-carries 11 owned `services/ -> controller/` static value edges plus 2
-`services/ -> commands|ui` edges now locked under `LAYER_IMPORT_ALLOWLIST` in
-`tests/lint/architecture-layers.ts` so no new reverse coupling can accumulate.
+carries 11 owned `services/ -> controller/` static value edges (0 `services/ -> commands|ui`
+edges remain after relocating counts-only audit export to `src/services/audit-export/`
+and `projectCandidatePhaseIdentity` to `src/contracts/candidate-phase-identity.ts`),
+all locked under `LAYER_IMPORT_ALLOWLIST` in `tests/lint/architecture-layers.ts` so no
+new reverse coupling can accumulate.
 
 ### Review obligations for existing boundaries
 
