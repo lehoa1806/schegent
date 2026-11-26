@@ -514,7 +514,10 @@ inspects the bytes it just wrote: the archive policy, then that the SBOM inside 
 the same files with the same SHA-256 digests, then that the SBOM's bundled set equals the one
 re-derived from this run's graphs. It re-reads the tree, and only then renames the file to
 `.release/schegent-<version>.vsix` and writes `.release/schegent-<version>.release.json`, owner-only,
-exclusively. The record's digest is the digest of the bytes that passed inspection. Output is never
+exclusively. The record's digest is the digest of the bytes that passed inspection, and an operator
+can re-verify any prepared `.release/schegent-<version>.release.json` archive digest against the
+on-disk candidate inside the repository root with
+`node scripts/prepare-release.mjs --verify <record-path>`. Output is never
 reused, so a `dist/` copied in from another tree, output touched after the build, or output built
 before a configuration change cannot become the candidate, and the mtime freshness check is not
 consulted. A refusal prints `prepare-release: REFUSED (<reason>)`, names the remedy, writes no

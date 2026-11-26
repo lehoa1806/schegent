@@ -152,11 +152,16 @@ Acceptance stores prepared handoffs in SQLite `phase_handoff_records` (`SqliteHa
 - Acceptance and approval are idempotent by identity: asking again returns what is stored and
   writes nothing. No exactly-once external delivery is claimed.
 - An edit is a compare-and-set on the current revision (`revision-not-current` on stale base).
-  Editing creates revision `N + 1` in `waiting-approval` and supersedes revision `N`. Approval of
-  a superseded revision is refused (`revision-not-current`), approval never carries across an edit,
-  and `compareHandoffRevisions(handoffId, fromRev, toRev)` returns a strictly metadata-only diff
-  (added/removed source and artifact identities, manifest digests, omission and byte deltas, zero
-  prose).
+  Editing creates revision `N + 1` in `waiting-approval` and supersedes revision `N`. The sidebar
+  and headless API support both full source replacement (`op: 'edit'` / `editHandoff`) and the
+  narrow host-owned summary patch (`op: 'editSummary'` / `editHandoffSummary`), which loads the
+  persisted manifest, enforces `textFault` control/bidi/UTF-16 and 8 KiB byte limits, requires an
+  explicit unambiguous `producerAttemptId` on multi-source handoffs (`edit-ambiguous-source`), and
+  preserves every outcome, decision, constraint, unresolved issue, artifact reference, and other
+  source intact. Approval of a superseded revision is refused (`revision-not-current`), approval
+  never carries across an edit, and `compareHandoffRevisions(handoffId, fromRev, toRev)` returns a
+  strictly metadata-only diff (added/removed source and artifact identities, manifest digests,
+  omission and byte deltas, zero prose).
 - `continue-handoff` (`approvePendingPhaseHandoffForContinue`) supports explicit revision binding
   (`expectedHandoffRevision`) and refuses approval if the handoff moved to a newer revision.
 - A record the store returns is checked before any operation reads it (`stored-record`); a stored

@@ -369,14 +369,21 @@ schema version. Payload export is restricted to counts, structural result
 fields, and a small set of closed-vocabulary classification strings — `metrics`,
 `fileChangeCounts`, `toolCategoryCounts`, `exitCode`, `terminationReason`,
 omitted-evidence counts, `outcome`, `cause` and `stalled` (both feature 194),
-`attemptId` and `resultEnvelope` (both feature 212), and `failureCause` (feature 242).
+`attemptId` and `resultEnvelope` (both feature 212), `failureCause` (feature 242),
+process-authority and stream high-water metrics (`executableTarget`,
+`containmentPosture`, `permissionMode`, `streamHighWaterBytes`,
+`streamObservedBytes`, `streamPendingHighWaterBytes`, `streamTruncated`), and
+operator security-lifecycle fields (`scanner`, `action`, `fingerprintDigestPrefix`,
+`removedSetting`, `clearedBinding`, `secretKeyDigestPrefix`, `matchesConfiguredKey`).
 Without the two feature-212 fields the
 counts-only export could answer neither question feature 212 exists to answer:
 which attempt a terminal row closes, and how many terminations produced no
 verdict.
 
-The feature-194 and feature-212 fields are value-checked by `createCountsOnlyAuditExport()` in
-`src/commands/export-audit.ts`, not merely allowlisted, because that function parses
+The guarded fields are value-checked by `countsOnlyAuditExport()` in
+`src/services/audit-export/counts-only-export.ts` (re-exported as
+`createCountsOnlyAuditExport()` from `src/commands/export-audit.ts`), not merely
+allowlisted, because that function parses
 whatever bytes are on disk rather than what the current writer produces — an entry a
 pre-feature-194 build wrote, or a future regression, can carry anything. The check is
 scoped by `(eventType, field)`: on `phase-end` only the literals `cap_exhausted`
@@ -391,9 +398,12 @@ carry their own `cause` vocabularies (`phase-breakpoint-cleared`, `task-reordere
 admitted by shape — a short lowercase token — rather than re-enumerated in the export.
 `stalled` must be a positive whole number. `attemptId` must match the UUID shape the
 writer mints, checked against the same exported pattern the projection uses rather than a
-second copy of it, `resultEnvelope` must be `received` or `absent`, and `failureCause`
-must be one of the nine closed codes, and only on `task-execution-ended` (on any other
-event it exports as `null`). **A rejected value
+second copy of it, `resultEnvelope` must be `received` or `absent`, `failureCause`
+must be one of the ten closed codes and only on `task-execution-ended` (on any other
+event it exports as `null`), process-authority and stream counters are restricted to
+`cli-invocation` / `monitor-invocation-summary`, and operator security fields are
+restricted to `scanner-consent-changed` / `telemetry-credential-changed` with closed
+action tokens, 16-hex digest prefixes, and booleans. **A rejected value
 exports as `null`, not as an absent field**: absence is load-bearing for these fields (a
 `phase-end` with no `cause` is a generic failure; an absent `stalled` means the stagnation
 rule did not apply; an absent `resultEnvelope` means UNKNOWN, permanently), so silently
@@ -403,6 +413,7 @@ reading.
 The export deliberately omits `runId`, `correlationId`, and every payload field not on this
 allowlist.
 
+<!-- Source: src/services/audit-export/counts-only-export.ts -->
 <!-- Source: src/commands/export-audit.ts -->
 <!-- Source: tests/unit/commands/export-audit.test.ts -->
 
