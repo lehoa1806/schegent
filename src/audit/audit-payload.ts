@@ -57,7 +57,7 @@ export const AUDIT_PAYLOAD_TRUNCATION_MARKER = '...';
  * is CLI-derived fatal-signature text, deliberately excluded — see
  * `projectPhaseEnd()` below. Exported so every consumer that needs to
  * recognize "the safe cause value" (this file's own projection, and
- * `src/commands/export-audit.ts`'s counts-only export) compares against the
+ * `src/services/audit-export/counts-only-export.ts`'s counts-only export) compares against the
  * same literal instead of each re-typing it.
  */
 export const CAP_EXHAUSTED_CAUSE = 'cap_exhausted';
@@ -603,7 +603,7 @@ const projectPhaseEndWarnings = (value: unknown) =>
  * `AuditEntry.id`.
  *
  * Admitted by shape rather than by type and length for the reason
- * `CLOSED_CAUSE_TOKEN` exists in src/commands/export-audit.ts -- a path has a
+ * `CLOSED_CAUSE_TOKEN` exists in src/services/audit-export/counts-only-export.ts -- a path has a
  * separator and a dot (AGENTS.md rule 22) -- and because `projectPhaseEnd` is a
  * bespoke projector: it builds its result field by field and so never runs the
  * `PATH_OR_ENDPOINT_RE` pass the generic projection applies to residual

@@ -3,38 +3,19 @@
   import { availabilityPhrase } from '../../../../src/contracts/change-review';
   import { CSV_STATEMENT, RETENTION_STATEMENT, type SavedReportView } from '../../../../src/contracts/reporting/report-manifest';
   import { DAY_MS, REPORT_VIEWS, VIEW_SHAPES, type ReportQueryInput, type ReportSort, type ReportView } from '../../../../src/contracts/reporting/report-query';
-  import type { ReportFailure } from '../../../../src/contracts/reporting/report-outcomes';
   import type { ReportPage, ReportRow, RootDrillDown } from '../../../../src/contracts/reporting/report-rows';
+  import {
+    SORT_LABELS,
+    VIEW_LABELS,
+    cutoffLabel,
+    failureCode,
+    formatExportOutcomeNotice
+  } from '../../lib/historical-reports-labels';
   import { requestMutateReport, requestReadReport } from '../../lib/reporting-ipc';
   import SgMenu from '../sg/SgMenu.svelte';
   import ReportDrillDownPanel from './ReportDrillDownPanel.svelte';
   import ReportRowsTable from './ReportRowsTable.svelte';
   import SavedReportsSection from './SavedReportsSection.svelte';
-
-  function failureCode(f: ReportFailure): string {
-    if (f.outcome === 'refused' || f.outcome === 'failed') return f.reason;
-    if (f.outcome === 'limited') return f.limit;
-    return f.outcome;
-  }
-
-  // The mockup's names for the views.
-  const VIEW_LABELS: Readonly<Record<ReportView, string>> = {
-    'execution-summary': 'Run summary',
-    'attempt-detail': 'Attempts',
-    'failure-cause': 'Failure causes',
-    'workflow-revision': 'Workflow versions',
-    'time-series': 'Daily totals',
-    usage: 'Usage and cost'
-  };
-
-  const SORT_LABELS: Readonly<Record<ReportSort, string>> = {
-    'root-created-desc': 'Newest first',
-    'root-created-asc': 'Oldest first',
-    'duration-desc': 'Longest first',
-    'outcome-asc': 'By outcome',
-    'key-asc': 'By group, A to Z',
-    'roots-desc': 'Most runs first'
-  };
 
   let view = $state<ReportView>('execution-summary');
   let rangeDays = $state<number>(30);
@@ -57,6 +38,8 @@
   let activeQueryGen = 0;
   let cancelRequestedGen = 0;
   let drillDownGen = 0;
+  let exportingReportId: string | null = null;
+  let activeMutationAbort: AbortController | null = null;
 
   const availableSorts = $derived.by((): readonly ReportSort[] => {
     const shape = VIEW_SHAPES[view];
@@ -86,9 +69,15 @@
       queryGen += 1;
       drillDownGen += 1;
       activeQueryGen = 0;
+      activeMutationAbort?.abort();
+      activeMutationAbort = null;
       const activeId = page?.reportId ?? null;
       page = null;
-      if (activeId !== null) void requestReadReport({ op: 'close', reportId: activeId });
+      // Preserve the live report lease if an interactive export Save dialog is still open on the
+      // host; closing it on tab-switch unmount would expire the snapshot before the file writes.
+      if (activeId !== null && activeId !== exportingReportId) {
+        void requestReadReport({ op: 'close', reportId: activeId });
+      }
     });
   });
 
@@ -247,34 +236,43 @@
 
   async function exportActive(format: 'json' | 'csv'): Promise<void> {
     if (mutating || page === null) return;
+    const targetReportId = page.reportId;
+    const controller = new AbortController();
+    activeMutationAbort = controller;
+    exportingReportId = targetReportId;
     mutating = true;
     statusNotice = `Choose ${format.toUpperCase()} export destination…`;
-    const env = await requestMutateReport({ op: 'export', reportId: page.reportId, format });
-    mutating = false;
-    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
-    if (env.response.op === 'export') {
-      if (env.response.exportOutcome.outcome === 'dialog-canceled') {
-        statusNotice = 'Export canceled before writing any file.';
-      } else if (env.response.exportOutcome.result.ok) {
-        const rec = env.response.exportOutcome.result.value;
-        statusNotice = `Exported ${rec.fileName} (${rec.rowCount} rows, sha256 ${rec.sha256.slice(0, 12)}…) plus ${rec.manifestFileName}.`;
-      } else {
-        statusNotice = `Export failed: ${failureCode(env.response.exportOutcome.result)}.`;
+    try {
+      const env = await requestMutateReport(
+        { op: 'export', reportId: targetReportId, format },
+        { signal: controller.signal }
+      );
+      if (controller.signal.aborted) return;
+      if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
+      if (env.response.op === 'export') {
+        statusNotice = formatExportOutcomeNotice(env.response.exportOutcome);
       }
+    } finally {
+      if (activeMutationAbort === controller) activeMutationAbort = null;
+      if (exportingReportId === targetReportId) exportingReportId = null;
+      mutating = false;
     }
   }
 
   async function saveActive(): Promise<void> {
     if (mutating || page === null) return;
     mutating = true;
-    const env = await requestMutateReport({ op: 'save', reportId: page.reportId });
-    mutating = false;
-    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
-    if (env.response.op === 'save' && env.response.result.ok) {
-      statusNotice = `Saved report ${env.response.result.value.reportId}.`;
-      await loadSavedList();
-    } else if (env.response.op === 'save' && !env.response.result.ok) {
-      statusNotice = `Could not save report: ${failureCode(env.response.result)}.`;
+    try {
+      const env = await requestMutateReport({ op: 'save', reportId: page.reportId });
+      if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
+      if (env.response.op === 'save' && env.response.result.ok) {
+        statusNotice = `Saved report ${env.response.result.value.reportId}.`;
+        await loadSavedList();
+      } else if (env.response.op === 'save' && !env.response.result.ok) {
+        statusNotice = `Could not save report: ${failureCode(env.response.result)}.`;
+      }
+    } finally {
+      mutating = false;
     }
   }
 
@@ -308,21 +306,19 @@
   async function confirmDeleteSaved(reportId: string): Promise<void> {
     if (mutating) return;
     mutating = true;
-    const env = await requestMutateReport({ op: 'deleteSaved', reportId, confirmed: true });
-    mutating = false;
-    confirmDeleteId = null;
-    if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
-    if (env.response.op === 'deleteSaved' && env.response.result.ok) {
-      statusNotice = `Deleted saved report ${reportId}.`;
-      await loadSavedList();
-    } else if (env.response.op === 'deleteSaved' && !env.response.result.ok) {
-      statusNotice = `Could not delete saved report: ${failureCode(env.response.result)}.`;
+    try {
+      const env = await requestMutateReport({ op: 'deleteSaved', reportId, confirmed: true });
+      confirmDeleteId = null;
+      if (env.boundaryRefusal !== null) { statusNotice = env.boundaryRefusal; return; }
+      if (env.response.op === 'deleteSaved' && env.response.result.ok) {
+        statusNotice = `Deleted saved report ${reportId}.`;
+        await loadSavedList();
+      } else if (env.response.op === 'deleteSaved' && !env.response.result.ok) {
+        statusNotice = `Could not delete saved report: ${failureCode(env.response.result)}.`;
+      }
+    } finally {
+      mutating = false;
     }
-  }
-
-  // "2026-11-11T01:00:00.000Z" reads "2026-11-11 01:00 UTC". The disclosure keeps the exact value.
-  function cutoffLabel(iso: string): string {
-    return iso.replace(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?Z$/, '$1 $2 UTC');
   }
 </script>
 

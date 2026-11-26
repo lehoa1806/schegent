@@ -227,13 +227,18 @@ export function buildOwnerResolver(
       }
     }
     if (ownerKind === 'run') {
-      const live = Object.values(store.getRunMap()).find((r) => r.id === ownerId);
-      if (live) {
-        return isTerminalRunStatus(live.status) ? 'settled' : 'live';
+      try {
+        const live = Object.values(store.getRunMap()).find((r) => r.id === ownerId);
+        if (live) {
+          return isTerminalRunStatus(live.status) ? 'settled' : 'live';
+        }
+        const presence = store.getConnectedRunPresence(ownerId);
+        if (presence === 'present') return 'live';
+        if (presence === 'unreadable-refused') return 'unresolved';
+        return 'settled';
+      } catch {
+        return 'unresolved';
       }
-      const connectedRuns: Readonly<Record<string, unknown>> = store.getConnectedRuns();
-      if (Object.hasOwn(connectedRuns, ownerId) && connectedRuns[ownerId] !== undefined) return 'live';
-      return 'settled';
     }
     return 'live';
   };
@@ -380,6 +385,17 @@ export function isChildOfActiveComposableRun(
           const status = rootFrame?.status;
           return status === 'in-flight' || status === 'waiting-for-handoff' || status === 'paused';
         }
+      }
+    }
+  }
+  // Fail closed when a child task belongs to a connected parent that is unreadable/refused so a
+  // child terminal event cannot prematurely close a shared isolated lane.
+  if (store.hasUnreadableConnectedRuns()) {
+    for (const queue of Object.values(store.getQueueStates())) {
+      const task = queue.requests.find((req) => req.id === featureId);
+      const rootRunId = task?.workflowOccurrence?.rootRunId;
+      if (rootRunId !== undefined && store.getConnectedRunPresence(rootRunId) === 'unreadable-refused') {
+        return true;
       }
     }
   }

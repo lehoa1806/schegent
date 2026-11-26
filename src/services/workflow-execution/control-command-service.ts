@@ -45,6 +45,7 @@ import {
   type ControlProjection
 } from '../../contracts/sidebar-ipc/workflow-run';
 import { MAX_ROOT_CONTROL_DISPATCHES } from '../../contracts/workflow-controls';
+import { tryReplayLegacyRetryPhase } from './control-command-replay';
 import { ControlLedgerStore, lookupRecord } from './control-ledger-store';
 import { checkStrictUsdAdmission } from './control-usage-accounting';
 
@@ -675,28 +676,46 @@ export class ControlCommandService {
     readonly candidateId?: string | undefined;
     readonly expectedGeneration?: number | undefined;
   }): Promise<ControlCommandAcknowledgement> {
-    const root = this.deps.ledgerStore.getRoot(input.rootRunId);
-    const frame = root !== null ? this.findFrame(root, input.invocationId) : undefined;
-    const currentGen =
-      input.expectedGeneration ??
-      frame?.frameGeneration ??
-      root?.fence.rootGeneration ??
-      0;
-    const targetCandidateId =
-      input.candidateId ??
-      frame?.selectedCandidateId ??
-      frame?.candidateSlots?.[0]?.candidateId ??
-      'default';
+    return this.serializeOnQueue(input.queueId, () => {
+      const replayed = tryReplayLegacyRetryPhase({
+        input,
+        ledgerStore: this.deps.ledgerStore,
+        findFrame: (r, invId) => this.findFrame(r, invId),
+        computeDigest: computeControlCommandDigest,
+        buildProjection: (r, f, ledger) => {
+          let trusted = true;
+          if (this.deps.isTrusted !== undefined) {
+            try { trusted = this.deps.isTrusted() === true; } catch { trusted = false; }
+          }
+          return buildControlProjection({
+            root: r, frame: f, ledger, nowWallMs: this.clock.nowWallMs(),
+            currentHostEpoch: this.clock.hostEpoch ?? 'default-epoch', isTrusted: trusted, sanitize: this.deps.sanitize
+          });
+        }
+      });
+      if (replayed !== null) return Promise.resolve(replayed);
 
-    // If the frame is paused/intervention/monitoring-expired, redirect to 'resume';
-    // otherwise redirect to 'try-now' so it must pass all candidate/block/root budget & trial gates.
-    const action: ControlAction =
-      frame !== undefined && PAUSED_FRAME_STATES.has(frame.status)
-        ? { kind: 'resume' }
-        : { kind: 'try-now', candidateId: targetCandidateId };
+      const root = this.deps.ledgerStore.getRoot(input.rootRunId);
+      const frame = root !== null ? this.findFrame(root, input.invocationId) : undefined;
+      const currentGen =
+        input.expectedGeneration ??
+        frame?.frameGeneration ??
+        root?.fence.rootGeneration ??
+        0;
+      const targetCandidateId =
+        input.candidateId ??
+        frame?.selectedCandidateId ??
+        frame?.candidateSlots?.[0]?.candidateId ??
+        'default';
 
-    return this.serializeOnQueue(input.queueId, () =>
-      this.executeValidatedLocked({
+      // If the frame is paused/intervention/monitoring-expired, redirect to 'resume';
+      // otherwise redirect to 'try-now' so it must pass all candidate/block/root budget & trial gates.
+      const action: ControlAction =
+        frame !== undefined && PAUSED_FRAME_STATES.has(frame.status)
+          ? { kind: 'resume' }
+          : { kind: 'try-now', candidateId: targetCandidateId };
+
+      return this.executeValidatedLocked({
         version: 1,
         commandId: input.commandId,
         rootRunId: input.rootRunId,
@@ -704,8 +723,8 @@ export class ControlCommandService {
         invocationId: input.invocationId,
         expectedGeneration: currentGen,
         action
-      })
-    );
+      });
+    });
   }
 
   public hasCandidateFrame(rootRunId: string, invocationId: string): boolean {

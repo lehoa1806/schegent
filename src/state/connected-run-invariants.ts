@@ -644,6 +644,7 @@ function assertOptionalFields(
     if (run.commandReceipts.length > maxCommandReceipts) {
       fail(`commandReceipts exceeds ${maxCommandReceipts} entries`);
     }
+    const seenCommandIds = new Set<string>();
     for (const receipt of run.commandReceipts) {
       if (
         !isPlainRecord(receipt) ||
@@ -653,6 +654,10 @@ function assertOptionalFields(
       ) {
         fail('commandReceipts entries must be valid receipt objects');
       }
+      if (seenCommandIds.has(receipt.commandId)) {
+        fail('commandReceipts entries must have unique commandId values');
+      }
+      seenCommandIds.add(receipt.commandId);
     }
   }
   if (run.decisionObservations !== undefined) {

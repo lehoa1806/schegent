@@ -991,4 +991,68 @@ describe('telemetry exporter: clock, timer and random exception safety (R7-17-06
       await expect(harness.exporter.shutdown()).resolves.toBeUndefined();
     });
   });
+
+  it('re-reads credential when invalidateCredential fires while secrets.read is in flight', async () => {
+    let readCount = 0;
+    let releaseFirstRead!: (value: string | null) => void;
+    const firstReadPending = new Promise<string | null>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    const harness = createHarness({
+      secrets: {
+        availability: () => 'available',
+        read: async () => {
+          readCount += 1;
+          if (readCount === 1) return firstReadPending;
+          return 'Bearer fresh-rotated-secret';
+        }
+      }
+    });
+    harness.authorize();
+    sealOne(harness, 'race-rotate-1');
+    await settle();
+    expect(readCount).toBe(1);
+    expect(harness.transport.requests).toHaveLength(0);
+
+    // Invalidate while the first secret read is still pending, then resolve the stale read.
+    harness.exporter.invalidateCredential();
+    releaseFirstRead('Bearer stale-revoked-secret');
+    await harness.exporter.idle();
+
+    expect(readCount).toBe(2);
+    expect(harness.transport.requests).toHaveLength(1);
+    expect(harness.transport.requests[0]!.headers[SYNTHETIC_HEADER]).toBe('Bearer fresh-rotated-secret');
+    await harness.exporter.shutdown();
+  });
+
+  it('drops batch without sending revoked secret if cleared while secrets.read is in flight', async () => {
+    let readCount = 0;
+    let releaseFirstRead!: (value: string | null) => void;
+    const firstReadPending = new Promise<string | null>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    const harness = createHarness({
+      secrets: {
+        availability: () => 'available',
+        read: async () => {
+          readCount += 1;
+          if (readCount === 1) return firstReadPending;
+          return null;
+        }
+      }
+    });
+    harness.authorize();
+    sealOne(harness, 'race-clear-1');
+    await settle();
+    expect(readCount).toBe(1);
+
+    harness.exporter.invalidateCredential();
+    releaseFirstRead('Bearer revoked-secret-must-never-send');
+    await harness.exporter.idle();
+
+    expect(readCount).toBe(2);
+    expect(harness.transport.requests).toHaveLength(0);
+    expect(harness.exporter.health().dropReasons['credential-unavailable']).toBe(1);
+    await harness.exporter.shutdown();
+  });
 });

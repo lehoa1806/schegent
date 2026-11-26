@@ -108,7 +108,7 @@ export function isValidDecidePhaseHandoffResponse(
   if (result['ok'] === true) {
     return op === 'approve'
       ? typeof result['revision'] === 'number'
-      : isPlain(result['revision']);
+      : isPlain(result['revision']) && typeof result['revision']['revision'] === 'number';
   }
   if (result['ok'] !== false) return false;
   return (

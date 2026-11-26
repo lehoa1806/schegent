@@ -60,6 +60,67 @@ export interface Round6VisibilityWiring {
   readonly disposable: vscode.Disposable;
 }
 
+function createExportReportWithDialog(deps: {
+  readonly workspaceRoot: string;
+  readonly isDisposed: () => boolean;
+  readonly isWorkspaceTrusted: () => boolean;
+  readonly checkPrimacy: () => Promise<boolean>;
+  readonly getLifecycleEpoch: () => number;
+  readonly isEpochInvalidated: (epoch: number) => boolean;
+  readonly getReportingApi: () => ReportingApi | null;
+}): Round6VisibilityWiring['exportReportWithDialog'] {
+  let exportDialogInFlight = false;
+  return async ({ reportId, format }) => {
+    if (deps.isDisposed()) return { outcome: 'completed', result: reportCancelled() };
+    if (!deps.isWorkspaceTrusted()) {
+      return { outcome: 'completed', result: reportRefused('workspace-untrusted') };
+    }
+    if (exportDialogInFlight) {
+      return { outcome: 'completed', result: reportRefused('export-busy') };
+    }
+    exportDialogInFlight = true;
+    try {
+      const epoch = deps.getLifecycleEpoch();
+      if (!(await deps.checkPrimacy()) || deps.isEpochInvalidated(epoch)) {
+        return { outcome: 'completed', result: reportCancelled() };
+      }
+      if (deps.getReportingApi() === null) {
+        return { outcome: 'completed', result: reportRefused('accounting-unavailable') };
+      }
+      const ext = format === 'csv' ? 'csv' : 'json';
+      const suggestedName = `schegent-report-${reportId.slice(0, 12)}.${ext}`;
+      const target = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(path.join(deps.workspaceRoot, suggestedName)),
+        filters: format === 'csv' ? { CSV: ['csv'] } : { JSON: ['json'] },
+        saveLabel: 'Export report'
+      });
+      if (!target) return { outcome: 'dialog-canceled' };
+      // SR-A2 #3: re-verify workspace trust, primacy, and lifecycle epoch after the Save dialog
+      // closes so trust or primacy loss during the dialog never proceeds to write an export file.
+      if (deps.isDisposed()) return { outcome: 'completed', result: reportCancelled() };
+      if (!deps.isWorkspaceTrusted()) {
+        return { outcome: 'completed', result: reportRefused('workspace-untrusted') };
+      }
+      if (!(await deps.checkPrimacy()) || deps.isEpochInvalidated(epoch)) {
+        return { outcome: 'completed', result: reportCancelled() };
+      }
+      const api = deps.getReportingApi();
+      if (api === null) {
+        return { outcome: 'completed', result: reportRefused('accounting-unavailable') };
+      }
+      const result = await api.exportReport({
+        reportId,
+        format,
+        destination: { scheme: target.scheme, fsPath: target.fsPath },
+        overwrite: true
+      });
+      return { outcome: 'completed', result };
+    } finally {
+      exportDialogInFlight = false;
+    }
+  };
+}
+
 export function createRound6VisibilityWiring(
   deps: Round6VisibilityWiringDeps
 ): Round6VisibilityWiring {
@@ -401,62 +462,15 @@ export function createRound6VisibilityWiring(
     }
   };
 
-  const exportReportWithDialog: Round6VisibilityWiring['exportReportWithDialog'] = async ({
-    reportId,
-    format
-  }) => {
-    if (isDisposed()) {
-      return { outcome: 'completed', result: reportCancelled() };
-    }
-    if (!isWorkspaceTrusted()) {
-      return { outcome: 'completed', result: reportRefused('workspace-untrusted') };
-    }
-    const epoch = lifecycleEpoch;
-    if (!(await checkPrimacy()) || isEpochInvalidated(epoch)) {
-      return { outcome: 'completed', result: reportCancelled() };
-    }
-    if (getReportingApi() === null) {
-      return {
-        outcome: 'completed',
-        result: reportRefused('accounting-unavailable')
-      };
-    }
-    const ext = format === 'csv' ? 'csv' : 'json';
-    const suggestedName = `schegent-report-${reportId.slice(0, 12)}.${ext}`;
-    const target = await vscode.window.showSaveDialog({
-      defaultUri: vscode.Uri.file(path.join(workspaceRoot, suggestedName)),
-      filters: format === 'csv' ? { CSV: ['csv'] } : { JSON: ['json'] },
-      saveLabel: 'Export report'
-    });
-    if (!target) {
-      return { outcome: 'dialog-canceled' };
-    }
-    // SR-A2 #3: re-verify workspace trust, primacy, and lifecycle epoch after the Save dialog
-    // closes so trust or primacy loss during the dialog never proceeds to write an export file.
-    if (isDisposed()) {
-      return { outcome: 'completed', result: reportCancelled() };
-    }
-    if (!isWorkspaceTrusted()) {
-      return { outcome: 'completed', result: reportRefused('workspace-untrusted') };
-    }
-    if (!(await checkPrimacy()) || isEpochInvalidated(epoch)) {
-      return { outcome: 'completed', result: reportCancelled() };
-    }
-    const api = getReportingApi();
-    if (api === null) {
-      return {
-        outcome: 'completed',
-        result: reportRefused('accounting-unavailable')
-      };
-    }
-    const result = await api.exportReport({
-      reportId,
-      format,
-      destination: { scheme: target.scheme, fsPath: target.fsPath },
-      overwrite: true
-    });
-    return { outcome: 'completed', result };
-  };
+  const exportReportWithDialog = createExportReportWithDialog({
+    workspaceRoot,
+    isDisposed,
+    isWorkspaceTrusted,
+    checkPrimacy,
+    getLifecycleEpoch: () => lifecycleEpoch,
+    isEpochInvalidated,
+    getReportingApi
+  });
 
   return {
     reportingApi: getReportingApi,

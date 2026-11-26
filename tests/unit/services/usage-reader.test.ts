@@ -8,6 +8,7 @@
 // that cannot be usage, and invents nothing: no price table, no conversion, no default 0.
 import { describe, expect, it } from 'vitest';
 import {
+  qualifiedTotalTokens,
   readPhaseEndUsage,
   totalTokens,
   type PhaseEndUsage,
@@ -143,5 +144,54 @@ describe('totalTokens (G2)', () => {
       Object.fromEntries(TOKEN_FIELDS.map((field) => [field, 1]))
     );
     expect(totalTokens(usage)).toBe(TOKEN_FIELDS.length);
+  });
+
+  it('fails closed on unknown/omitted backend, rejects non-safe-integers, and keeps monotonic lower bounds', () => {
+    // Omitted backend fails closed to `'unknown'` (never assumes `'disjoint'`).
+    const withCache = readPhaseEndUsage({
+      metrics: { inputTokens: 100, outputTokens: 20, cacheReadInputTokens: 40 }
+    });
+    expect(qualifiedTotalTokens(withCache)).toEqual({ total: 120, cacheRelationAmbiguous: true });
+    expect(qualifiedTotalTokens(withCache, 'claude')).toEqual({ total: 160, cacheRelationAmbiguous: false });
+    expect(qualifiedTotalTokens(withCache, 'codex')).toEqual({ total: 120, cacheRelationAmbiguous: false });
+    expect(qualifiedTotalTokens(withCache, 'agy')).toEqual({ total: 120, cacheRelationAmbiguous: true });
+
+    // Fractional / unsafe integer token counts must be rejected.
+    expect(readPhaseEndUsage({ metrics: { inputTokens: 12.5 } }).inputTokens).toEqual(REJECTED);
+    expect(
+      readPhaseEndUsage({ metrics: { inputTokens: Number.MAX_SAFE_INTEGER + 2 } }).inputTokens
+    ).toEqual(REJECTED);
+
+    // Unknown cache relation when cache > input takes monotonic lower bound max(input, cacheRead, cacheCreate) + output.
+    const agyLargeCache = readPhaseEndUsage({
+      metrics: { inputTokens: 100, outputTokens: 20, cacheReadInputTokens: 500 }
+    });
+    expect(qualifiedTotalTokens(agyLargeCache, 'unknown')).toEqual({
+      total: 520,
+      cacheRelationAmbiguous: true
+    });
+    expect(totalTokens(agyLargeCache, 'unknown')).toBe(520);
+
+    // Subset-of-input flags contradiction when cacheRead + cacheCreate > input while keeping monotonic lower bound.
+    const contradictoryCodex = readPhaseEndUsage({
+      metrics: { inputTokens: 100, outputTokens: 20, cacheReadInputTokens: 70, cacheCreationInputTokens: 50 }
+    });
+    expect(qualifiedTotalTokens(contradictoryCodex, 'subset-of-input')).toEqual({
+      total: 120,
+      cacheRelationAmbiguous: true
+    });
+
+    // Cache-zero-only rows without primary input/output remain unmeasurable under non-disjoint relations.
+    const cacheZeroOnly = readPhaseEndUsage({
+      metrics: { cacheReadInputTokens: 0 }
+    });
+    expect(qualifiedTotalTokens(cacheZeroOnly, 'subset-of-input')).toEqual({
+      total: undefined,
+      cacheRelationAmbiguous: false
+    });
+    expect(qualifiedTotalTokens(cacheZeroOnly, 'unknown')).toEqual({
+      total: undefined,
+      cacheRelationAmbiguous: false
+    });
   });
 });

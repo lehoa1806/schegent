@@ -1058,6 +1058,39 @@ describe('refusals (RP4)', () => {
     });
     expect(missingRes.ok).toBe(false);
     if (!missingRes.ok) expect(missingRes.reason).toBe('candidate-missing');
+
+    // Missing record -> record-missing
+    const noRecord = driver.verifyCandidateArchiveDigest({
+      recordPath: '.release/does-not-exist.release.json',
+      readFile: () => {
+        throw new Error('ENOENT');
+      }
+    });
+    expect(noRecord.ok).toBe(false);
+    if (!noRecord.ok) expect(noRecord.reason).toBe('record-missing');
+
+    // Unparseable JSON -> record-unparseable
+    const unparseable = driver.verifyCandidateArchiveDigest({
+      recordPath: RECORD,
+      readFile: () => Buffer.from('{not valid json', 'utf8')
+    });
+    expect(unparseable.ok).toBe(false);
+    if (!unparseable.ok) expect(unparseable.reason).toBe('record-unparseable');
+
+    // Empty or root-escaping candidate path -> record-invalid
+    const escaped = driver.verifyCandidateArchiveDigest({
+      recordPath: RECORD,
+      repoRoot: '/repo',
+      readFile: () =>
+        Buffer.from(
+          JSON.stringify({
+            candidate: { path: '../outside.vsix', sha256: 'a'.repeat(64), bytes: 10 }
+          }),
+          'utf8'
+        )
+    });
+    expect(escaped.ok).toBe(false);
+    if (!escaped.ok) expect(escaped.reason).toBe('record-invalid');
   });
 
   it('passes the advisory reasons through, before any build work', async () => {
@@ -1112,11 +1145,16 @@ describe('prepare-release (RP1, RP2, RP4)', () => {
     const { parseArguments } = await loadCli();
     expect(parseArguments(ARGS)).toEqual({
       ok: true,
+      mode: 'prepare',
       advisoryCaptures: { root: 'a.json', 'webview-ui': 'b.json' }
     });
     expect(
       parseArguments(['--advisory-capture', 'webview-ui=b.json', '--advisory-capture', 'root=a.json'])
-    ).toEqual({ ok: true, advisoryCaptures: { root: 'a.json', 'webview-ui': 'b.json' } });
+    ).toEqual({
+      ok: true,
+      mode: 'prepare',
+      advisoryCaptures: { root: 'a.json', 'webview-ui': 'b.json' }
+    });
   });
 
   it.each([

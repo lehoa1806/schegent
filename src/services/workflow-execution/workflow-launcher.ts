@@ -148,6 +148,7 @@ export type ChildRunSettledProbe = (queueItemId: string) => boolean;
 export interface ConnectedRunWriter {
   get?(connectedRunId: string): ConnectedWorkflowRun | null | undefined;
   getConnectedRun?(connectedRunId: string): ConnectedWorkflowRun | null;
+  getConnectedRunPresence?(connectedRunId: string): 'present' | 'unreadable-refused' | 'absent';
   compareAndSetConnectedRun(
     next: ConnectedWorkflowRun,
     expectedRevision: number
@@ -790,6 +791,16 @@ async function launchComposableWorkflowLocked(
     });
     if (snapshot.outcome === 'rejected') {
       return { outcome: 'rejected-definition', reason: 'workflow-invalid' };
+    }
+
+    // FR-R8-01 (01-02) & F2: Refuse an unreadable/refused `connectedRunId` BEFORE mutating
+    // ControlLedger or touching any prepared control root.
+    if (deps.connectedRuns.getConnectedRunPresence?.(input.connectedRunId) === 'unreadable-refused') {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: 'connected-run-refused'
+      };
     }
 
     // FR-R8-01 (01-02): Deduplicate repeated delivery of an already-persisted `connectedRunId`

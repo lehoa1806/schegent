@@ -180,6 +180,7 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
   let evaluation: ProfileEvaluation = Object.freeze({ kind: 'disabled' });
   let activeDestination: ResolvedDestination | null = null;
   let authorizationGeneration = 1;
+  let credentialGeneration = 0;
   try {
     authorizationGeneration = ledger.readAuthorizationGeneration();
   } catch {
@@ -501,6 +502,12 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
 
     invalidateCredential(reference) {
       if (shutDown) return;
+      if (
+        reference === undefined ||
+        activeDestination?.credential?.reference === reference
+      ) {
+        credentialGeneration += 1;
+      }
       try {
         exporter?.invalidateCredential(reference);
       } catch {
@@ -729,37 +736,64 @@ export function createTelemetryHostService(deps: TelemetryHostServiceDeps): Tele
 
           const net = ensureTransport();
           const headers: Record<string, string> = { 'content-type': 'application/json' };
-          if (target.credential !== null) {
-            if (deps.secrets === null || safeSecretAvailability() !== 'available') {
-              await dropRemainingEntries(kept, 0, 'credential-unavailable');
-              return { replayed: 0, acknowledged, dropped, expired };
+          let resolvedCredentialGen = -1;
+
+          const ensureReplayCredentialHeaders = async (
+            startIndex: number
+          ): Promise<'ok' | 'stopped'> => {
+            if (target.credential === null) return 'ok';
+            const MAX_REREADS = 3;
+            let attempts = 0;
+            while (resolvedCredentialGen !== credentialGeneration) {
+              if (attempts >= MAX_REREADS) {
+                await dropRemainingEntries(kept, startIndex, 'credential-unavailable');
+                return 'stopped';
+              }
+              attempts += 1;
+              const readGen = credentialGeneration;
+              if (deps.secrets === null || safeSecretAvailability() !== 'available') {
+                await dropRemainingEntries(kept, startIndex, 'credential-unavailable');
+                return 'stopped';
+              }
+              let secretValue: unknown = null;
+              let readFailed = false;
+              try {
+                secretValue = await deps.secrets.read(target.credential.reference);
+              } catch {
+                readFailed = true;
+              }
+              if (!isStillAuthorized()) {
+                await settleRevocationAndDrop(kept, startIndex);
+                return 'stopped';
+              }
+              if (credentialGeneration !== readGen) {
+                continue;
+              }
+              if (readFailed || secretValue === null || typeof secretValue !== 'string') {
+                await dropRemainingEntries(kept, startIndex, 'credential-unavailable');
+                return 'stopped';
+              }
+              if (!isHeaderValue(secretValue)) {
+                await dropRemainingEntries(kept, startIndex, 'credential-invalid');
+                return 'stopped';
+              }
+              headers[target.credential.headerName] = secretValue;
+              resolvedCredentialGen = readGen;
             }
-            let secretValue: unknown = null;
-            let readFailed = false;
-            try {
-              secretValue = await deps.secrets.read(target.credential.reference);
-            } catch {
-              readFailed = true;
-            }
-            if (!isStillAuthorized()) {
-              await settleRevocationAndDrop(kept, 0);
-              return { replayed: 0, acknowledged, dropped, expired };
-            }
-            if (readFailed || secretValue === null || typeof secretValue !== 'string') {
-              await dropRemainingEntries(kept, 0, 'credential-unavailable');
-              return { replayed: 0, acknowledged, dropped, expired };
-            }
-            if (!isHeaderValue(secretValue)) {
-              await dropRemainingEntries(kept, 0, 'credential-invalid');
-              return { replayed: 0, acknowledged, dropped, expired };
-            }
-            headers[target.credential.headerName] = secretValue;
+            return 'ok';
+          };
+
+          if ((await ensureReplayCredentialHeaders(0)) === 'stopped') {
+            return { replayed: 0, acknowledged, dropped, expired };
           }
 
           for (let i = 0; i < kept.length; i += 1) {
             const entry = kept[i]!;
             if (!isStillAuthorized()) {
               await settleRevocationAndDrop(kept, i);
+              break;
+            }
+            if ((await ensureReplayCredentialHeaders(i)) === 'stopped') {
               break;
             }
             let body: Uint8Array | null = null;

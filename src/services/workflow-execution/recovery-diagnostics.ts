@@ -35,7 +35,9 @@ export const EMPTY_RECONCILE_SUMMARY: ReconcileAllRunsSummary = Object.freeze({
 });
 
 export function classifyRecoveryFailure(err: unknown): string {
-  return err instanceof Error && /^[A-Za-z][A-Za-z0-9_-]{0,47}$/.test(err.name)
+  // Accept only canonical PascalCase `*Error` class names (e.g. `Error`, `TypeError`,
+  // `SqliteStoreError`) so arbitrary token-shaped strings can never leak into metadata diagnostics.
+  return err instanceof Error && /^(?:Error|[A-Z][A-Za-z0-9]{0,39}Error)$/.test(err.name)
     ? err.name
     : 'recovery-error';
 }
@@ -87,13 +89,18 @@ export async function runReconcileAllConnectedRuns<TResult>(params: {
   if (params.controlAdmission !== undefined) {
     const knownRunIds = new Set(params.list.map((r) => r.connectedRunId));
     const lookupParentPresence = (connectedRunId: string): ControlRootParentPresence => {
-      if (params.getPresence !== undefined) {
-        return params.getPresence(connectedRunId);
+      try {
+        if (params.getPresence !== undefined) {
+          return params.getPresence(connectedRunId);
+        }
+        if (knownRunIds.has(connectedRunId) || params.getRun(connectedRunId) !== null) {
+          return 'present';
+        }
+        return 'absent';
+      } catch {
+        // Fail closed when parent presence cannot be read so orphan cleanup never deletes live state.
+        return 'unreadable-refused';
       }
-      if (knownRunIds.has(connectedRunId) || params.getRun(connectedRunId) !== null) {
-        return 'present';
-      }
-      return 'absent';
     };
     await reconcileOrphanedControlLedgerRoots({
       controlAdmission: params.controlAdmission,
@@ -102,6 +109,14 @@ export async function runReconcileAllConnectedRuns<TResult>(params: {
       onPreservedRefusedParent: (ref) => {
         preservedRefusedParentCount += 1;
         params.onPreservedRefusedParent?.(ref);
+      },
+      onIsolatedOrphanFailure: ({ connectedRunId, error }) => {
+        const failure: IsolatedRecoveryFailure = Object.freeze({
+          runId: connectedRunId,
+          reasonCode: classifyRecoveryFailure(error)
+        });
+        isolatedFailures.push(failure);
+        params.onIsolatedFailure?.(failure);
       },
       ...(params.resolveOrphanFence !== undefined ? { resolveOrphanFence: params.resolveOrphanFence } : {}),
       processEvidencePort: params.processEvidencePort

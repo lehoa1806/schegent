@@ -51,9 +51,13 @@ export function createConnectedRunsWarningState(): ConnectedRunsWarningState {
 
 function staleConnectedRunWrite(
   current: ConnectedWorkflowRun | null,
-  reason?: 'revision-mismatch' | 'immutability-violation' | 'ownership-lost'
+  reason?: 'immutability-violation' | 'ownership-lost'
 ): ConnectedRunWriteResult {
   return { outcome: 'stale', current, ...(reason !== undefined ? { reason } : {}) };
+}
+
+function isPlainRecordValue(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function readConnectedRunCollection(
@@ -97,10 +101,34 @@ export function getConnectedRunPresence(
   warned: ConnectedRunsWarningState,
   connectedRunId: string
 ): ConnectedRunPresence {
+  const raw = ctx.memento.get<unknown>(KEYS.connectedRuns);
+  if (raw !== undefined && !isPlainRecordValue(raw)) {
+    return 'unreadable-refused';
+  }
   const { runs, refused } = readConnectedRunCollection(ctx, warned);
   if (Object.hasOwn(runs, connectedRunId)) return 'present';
   if (Object.hasOwn(refused, connectedRunId)) return 'unreadable-refused';
   return 'absent';
+}
+
+export function hasUnreadableConnectedRuns(
+  ctx: WorkspaceStateFamilyContext,
+  warned: ConnectedRunsWarningState
+): boolean {
+  const raw = ctx.memento.get<unknown>(KEYS.connectedRuns);
+  if (raw !== undefined && !isPlainRecordValue(raw)) return true;
+  const { refused } = readConnectedRunCollection(ctx, warned);
+  return Object.keys(refused).length > 0;
+}
+
+function isReceiptObject(value: unknown): value is CommittedCommandReceipt {
+  return (
+    isPlainRecordValue(value) &&
+    typeof value.commandId === 'string' &&
+    value.commandId.length > 0 &&
+    typeof value.operation === 'string' &&
+    value.operation.length > 0
+  );
 }
 
 function sameImmutableReceipt(a: CommittedCommandReceipt, b: CommittedCommandReceipt): boolean {
@@ -132,30 +160,48 @@ function violatesCrossRevisionImmutability(
     return true;
   }
   const curReceipts = current.commandReceipts ?? [];
-  const nextReceipts = next.commandReceipts ?? [];
-  if (curReceipts.length > 0) {
-    if (nextReceipts.length < curReceipts.length || nextReceipts.length > MAX_COMMAND_RECEIPTS) {
+  const rawNextReceipts: unknown = next.commandReceipts ?? [];
+  if (!Array.isArray(rawNextReceipts)) return true;
+  const nextReceipts: readonly unknown[] = rawNextReceipts;
+  if (nextReceipts.length > MAX_COMMAND_RECEIPTS) return true;
+  for (const entry of nextReceipts) {
+    if (!isReceiptObject(entry)) return true;
+  }
+  const typedNextReceipts = nextReceipts as readonly CommittedCommandReceipt[];
+  if (curReceipts.length === 0) {
+    const seen = new Set<string>();
+    for (const receipt of typedNextReceipts) {
+      if (seen.has(receipt.commandId)) return true;
+      seen.add(receipt.commandId);
+    }
+  } else {
+    if (typedNextReceipts.length < curReceipts.length) {
       return true;
     }
-    const firstNext = nextReceipts[0]!;
+    const firstNext = typedNextReceipts[0]!;
     const evictedCount = curReceipts.findIndex((r) => r.commandId === firstNext.commandId);
     if (evictedCount < 0) return true;
-    // FIFO eviction is legal only when the bounded receipt window is completely full.
-    if (evictedCount > 0 && nextReceipts.length < MAX_COMMAND_RECEIPTS) return true;
+    // FIFO eviction is legal only when the bounded receipt window is completely full and at most
+    // one receipt is evicted per revision increment.
+    const maxLegalEvictions = Math.max(1, next.revision - current.revision);
+    if (evictedCount > 0 && (typedNextReceipts.length < MAX_COMMAND_RECEIPTS || evictedCount > maxLegalEvictions)) {
+      return true;
+    }
     const retainedCount = curReceipts.length - evictedCount;
-    if (retainedCount > nextReceipts.length) return true;
-    const curIds = new Set(curReceipts.map((r) => r.commandId));
+    if (retainedCount > typedNextReceipts.length) return true;
+    const seenIds = new Set(curReceipts.map((r) => r.commandId));
     for (let j = 0; j < retainedCount; j += 1) {
       const prev = curReceipts[evictedCount + j]!;
-      const kept = nextReceipts[j]!;
+      const kept = typedNextReceipts[j]!;
       if (!sameImmutableReceipt(prev, kept)) {
         return true;
       }
     }
-    // Newly appended receipts past the retained prefix must introduce fresh command IDs.
-    for (let j = retainedCount; j < nextReceipts.length; j += 1) {
-      const added = nextReceipts[j]!;
-      if (curIds.has(added.commandId)) return true;
+    // Newly appended receipts past the retained prefix must introduce unique, fresh command IDs.
+    for (let j = retainedCount; j < typedNextReceipts.length; j += 1) {
+      const added = typedNextReceipts[j]!;
+      if (seenIds.has(added.commandId)) return true;
+      seenIds.add(added.commandId);
     }
   }
   if (current.invocations !== undefined) {

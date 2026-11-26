@@ -217,7 +217,7 @@ export type ConnectedRunWriteResult =
   | {
       readonly outcome: 'stale';
       readonly current: ConnectedWorkflowRun | null;
-      readonly reason?: 'revision-mismatch' | 'immutability-violation' | 'ownership-lost';
+      readonly reason?: 'immutability-violation' | 'ownership-lost';
     };
 
 export type QueueMutationRejectReason =

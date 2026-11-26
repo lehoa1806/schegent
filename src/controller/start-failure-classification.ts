@@ -105,14 +105,16 @@ export function classifyStartFailure(
     // refusal, so it is asked about FIRST: its reason is the code, and the status bar names
     // the reason rather than claiming "no OS-enforced bound", which is false for codex.
     const message = sanitize(err.message);
+    const targetLabel =
+      err.scannerTarget !== undefined ? `scanner '${err.scannerTarget}'` : `backend '${err.kind}'`;
     return {
       kind: 'containment-admission-refused',
       code: err.reason,
       message,
       level: 'warn',
       logLine: `workflow ${featureId} refused: ${message}`,
-      statusDetail: `backend '${err.kind}' refused: ${err.reason}`,
-      announcement: `Schegent: backend '${err.kind}' was refused — ${message}`
+      statusDetail: `${targetLabel} refused: ${err.reason}`,
+      announcement: `Schegent: ${targetLabel} was refused — ${message}`
     };
   }
 

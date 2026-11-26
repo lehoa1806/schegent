@@ -35,6 +35,7 @@
   let editingHandoffId = $state<string | null>(null);
   let editingProducerAttemptId = $state<string | null>(null);
   let editedNote = $state('');
+  let submittingDecision = $state(false);
 
   let requestGen = 0;
   let lastSeenResyncCount = snapshotStore.resyncCount;
@@ -133,50 +134,64 @@
   });
 
   async function approveHandoff(h: HandoffExplanation): Promise<void> {
-    const decisionId = `approve-${h.handoffId}-r${h.revision}`;
-    const env = await requestDecidePhaseHandoff({
-      op: 'approve',
-      handoffId: h.handoffId,
-      expectedRevision: h.revision,
-      decisionId
-    });
-    if (env.boundaryRefusal !== null) {
-      notice = env.boundaryRefusal;
-      return;
-    }
-    if (env.response.op === 'approve') {
-      notice = env.response.result.ok
-        ? `Approved handoff ${h.handoffId} revision ${env.response.result.revision}.`
-        : `Could not approve handoff: ${env.response.result.failure}.`;
-      await loadVisibility(wantedRootId, selectedAttemptId);
+    if (submittingDecision) return;
+    submittingDecision = true;
+    try {
+      const decisionId = `approve-${h.handoffId}-r${h.revision}`;
+      const env = await requestDecidePhaseHandoff({
+        op: 'approve',
+        handoffId: h.handoffId,
+        expectedRevision: h.revision,
+        decisionId
+      });
+      if (env.boundaryRefusal !== null) {
+        notice = env.boundaryRefusal;
+        return;
+      }
+      if (env.response.op === 'approve') {
+        notice = env.response.result.ok
+          ? `Approved handoff ${h.handoffId} revision ${env.response.result.revision}.`
+          : `Could not approve handoff: ${env.response.result.failure}.`;
+        await loadVisibility(wantedRootId, selectedAttemptId);
+      }
+    } finally {
+      submittingDecision = false;
     }
   }
 
   async function submitEditedHandoff(h: HandoffExplanation): Promise<void> {
+    if (submittingDecision) return;
     const summary = editedNote.trim();
     if (summary === '') return;
     const targetAttemptId =
       editingProducerAttemptId ??
       (h.sources.length > 0 ? h.sources[0].producer.attemptId : undefined);
-    const env = await requestDecidePhaseHandoff({
-      op: 'editSummary',
-      handoffId: h.handoffId,
-      baseRevision: h.revision,
-      summary,
-      ...(targetAttemptId !== undefined ? { producerAttemptId: targetAttemptId } : {})
-    });
-    editingHandoffId = null;
-    editingProducerAttemptId = null;
-    editedNote = '';
-    if (env.boundaryRefusal !== null) {
-      notice = env.boundaryRefusal;
-      return;
-    }
-    if (env.response.op === 'editSummary' || env.response.op === 'edit') {
-      notice = env.response.result.ok
-        ? `Saved edited handoff revision ${env.response.result.revision.revision}.`
-        : `Could not edit handoff: ${env.response.result.failure}.`;
-      await loadVisibility(wantedRootId, selectedAttemptId);
+    submittingDecision = true;
+    try {
+      const env = await requestDecidePhaseHandoff({
+        op: 'editSummary',
+        handoffId: h.handoffId,
+        baseRevision: h.revision,
+        summary,
+        ...(targetAttemptId !== undefined ? { producerAttemptId: targetAttemptId } : {})
+      });
+      if (env.boundaryRefusal !== null) {
+        notice = env.boundaryRefusal;
+        return;
+      }
+      if (env.response.op === 'editSummary' || env.response.op === 'edit') {
+        if (env.response.result.ok) {
+          editingHandoffId = null;
+          editingProducerAttemptId = null;
+          editedNote = '';
+          notice = `Saved edited handoff revision ${env.response.result.revision.revision}.`;
+          await loadVisibility(wantedRootId, selectedAttemptId);
+        } else {
+          notice = `Could not edit handoff: ${env.response.result.failure}.`;
+        }
+      }
+    } finally {
+      submittingDecision = false;
     }
   }
 </script>
@@ -338,10 +353,12 @@
                             if (editingHandoffId === h.handoffId) {
                               editingHandoffId = null;
                               editingProducerAttemptId = null;
+                              editedNote = '';
                             } else {
                               editingHandoffId = h.handoffId;
                               editingProducerAttemptId =
                                 h.sources.length > 0 ? h.sources[0].producer.attemptId : null;
+                              editedNote = '';
                             }
                           }}
                         >
@@ -370,7 +387,7 @@
                             bind:value={editingProducerAttemptId}
                             data-testid={`ev-handoff-source-${h.handoffId}`}
                           >
-                            {#each h.sources as src (src.producer.attemptId)}
+                            {#each h.sources as src (`${src.producer.nodePath}\0${src.producer.occurrenceId}\0${src.producer.attemptId}`)}
                               <option value={src.producer.attemptId}>
                                 {src.producer.nodePath} ({src.producer.attemptId})
                               </option>
@@ -385,11 +402,15 @@
                           class="input"
                           bind:value={editedNote}
                           required
-                          maxlength="500"
+                          maxlength="8192"
                           data-testid={`ev-handoff-input-${h.handoffId}`}
                         />
                       </label>
-                      <button type="submit" class="btn btn-secondary" data-testid={`ev-handoff-save-${h.handoffId}`}
+                      <button
+                        type="submit"
+                        class="btn btn-secondary"
+                        aria-disabled={submittingDecision ? 'true' : undefined}
+                        data-testid={`ev-handoff-save-${h.handoffId}`}
                         >Save &amp; supersede</button
                       >
                     </form>
@@ -421,79 +442,17 @@
 </details>
 
 <style>
-  /* The open disclosure's body: the bar, the readings, the lane and the handoffs, a step apart. */
-  .ev-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--schegent-space-3);
-    margin-top: var(--schegent-space-2);
-  }
-  /* The readings at the start, Refresh at the end of their row; below them when the row is tight. */
-  .ev-head {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--schegent-space-2) var(--schegent-space-4);
-  }
-  .ev-note,
-  .ev-notice {
-    margin: 0;
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-secondary);
-  }
+  .ev-body { display: flex; flex-direction: column; gap: var(--schegent-space-3); margin-top: var(--schegent-space-2); }
+  .ev-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--schegent-space-2) var(--schegent-space-4); }
+  .ev-note, .ev-notice { margin: 0; color: var(--schegent-muted-fg); font-size: var(--schegent-text-secondary); }
   /* Each reading's wrapper steps aside, so its term and value sit in the key and value columns. */
-  .ev-grid > div {
-    display: contents;
-  }
-  .ev-subblock {
-    display: flex;
-    flex-direction: column;
-    gap: var(--schegent-space-1-5);
-  }
-  /* The redesign's card heading. */
-  .ev-subblock h3 {
-    font-size: var(--schegent-text-body);
-    font-weight: 600;
-  }
-  .ev-attempt-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--schegent-space-1-5);
-  }
-  .ev-attempt-selected {
-    border-color: var(--schegent-focus-border);
-    font-weight: 600;
-  }
-  .ev-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--schegent-space-1-5);
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    font-size: var(--schegent-text-secondary);
-  }
-  .ev-list-row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--schegent-space-2);
-    padding: var(--schegent-space-2) var(--schegent-space-3);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius-sm);
-  }
-  .ev-actions,
-  .ev-edit-form {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: var(--schegent-space-1-5);
-  }
-  .ev-edit-form label {
-    display: flex;
-    flex: 1 1 16rem;
-    flex-direction: column;
-    gap: var(--schegent-space-1);
-    color: var(--schegent-muted-fg);
-  }
+  .ev-grid > div { display: contents; }
+  .ev-subblock { display: flex; flex-direction: column; gap: var(--schegent-space-1-5); }
+  .ev-subblock h3 { font-size: var(--schegent-text-body); font-weight: 600; }
+  .ev-attempt-list { display: flex; flex-wrap: wrap; gap: var(--schegent-space-1-5); }
+  .ev-attempt-selected { border-color: var(--schegent-focus-border); font-weight: 600; }
+  .ev-list { display: flex; flex-direction: column; gap: var(--schegent-space-1-5); margin: 0; padding: 0; list-style: none; font-size: var(--schegent-text-secondary); }
+  .ev-list-row { display: flex; flex-direction: column; gap: var(--schegent-space-2); padding: var(--schegent-space-2) var(--schegent-space-3); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm); }
+  .ev-actions, .ev-edit-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--schegent-space-1-5); }
+  .ev-edit-form label { display: flex; flex: 1 1 16rem; flex-direction: column; gap: var(--schegent-space-1); color: var(--schegent-muted-fg); }
 </style>

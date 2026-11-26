@@ -22,7 +22,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
-import { countsOnlyAuditExport } from '../../audit/counts-only-export';
+import { countsOnlyAuditExport } from '../audit-export/counts-only-export';
 import { AUDIT_CUTS_BASENAME, collectChainFiles } from '../../audit/audit-chain';
 import { parseRecordName } from '../../contracts/validators/failure-record';
 import { FAILURE_RECORD_DIR } from '../../contracts/failure-record';

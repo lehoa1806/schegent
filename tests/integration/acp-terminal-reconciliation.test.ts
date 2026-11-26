@@ -20,8 +20,10 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { AcpBackedRunner } from '../../src/runner/acp-backed-runner';
 import { PromptBuilder } from '../../src/runner/prompt-builder';
 import type { WorkflowRun } from '../../src/state/workflow-run';
+import { assertFreshBuiltBridgeIdentity } from '../helpers/verify-built-bridge';
 
-const BRIDGE_BUNDLE = resolve(__dirname, '..', '..', 'dist', 'acp-stdio-bridge.js');
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const BRIDGE_BUNDLE = resolve(REPO_ROOT, 'dist', 'acp-stdio-bridge.js');
 const QUALIFIED_PLATFORM = { os: 'darwin' as const, arch: 'arm64' as const, locality: 'local' as const };
 
 const CLEAN_MODEL_TEXT = [
@@ -207,6 +209,7 @@ process.stdin.on('end', () => {
 
 describe('FR-R8-02 (02-04) — end-to-end terminal reconciliation in PhaseRunner', () => {
   it('advances clean turns, cancels on real abort, and fails closed on every absent/contradictory/refusal scenario even when CLEAR is in stdout', async () => {
+    assertFreshBuiltBridgeIdentity(REPO_ROOT);
     expect(existsSync(BRIDGE_BUNDLE)).toBe(true);
     const root = mkdtempSync(join(tmpdir(), 'schegent-reconcile-'));
     try {

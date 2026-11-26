@@ -3,6 +3,7 @@ import {
   extractInvocationUsageMetrics,
   type InvocationUsageMetrics
 } from '../../../src/parser/invocation-usage';
+import { encodeUsageResultLine } from '../../../src/runner/acp-runner-stream-helpers';
 
 describe('extractInvocationUsageMetrics', () => {
   it('extracts numeric fields from the stream-json result rows, summed for claude (FR-R3-198)', () => {
@@ -74,6 +75,29 @@ describe('extractInvocationUsageMetrics', () => {
     const codexRow = '{"type":"turn.completed","usage":{"input_tokens":7}}';
     expect(extractInvocationUsageMetrics(codexRow, 'claude')).toBeNull();
     expect(extractInvocationUsageMetrics(codexRow, 'agy')).toBeNull();
+  });
+
+  it('round-trips agy cacheCreationInputTokens and cacheReadInputTokens through ACP stream encoding', () => {
+    const encoded = encodeUsageResultLine(
+      'agy',
+      'sess-agy-1',
+      450,
+      {
+        inputTokens: 120,
+        outputTokens: 30,
+        cacheCreationInputTokens: 45,
+        cacheReadInputTokens: 80
+      },
+      undefined
+    );
+    expect(extractInvocationUsageMetrics(encoded, 'agy')).toEqual({
+      cliDurationMs: 450,
+      numTurns: 1,
+      inputTokens: 120,
+      outputTokens: 30,
+      cacheCreationInputTokens: 45,
+      cacheReadInputTokens: 80
+    });
   });
 });
 

@@ -162,8 +162,13 @@ export function buildEncodedUsageObject(
     if (billableTokens.cacheReadInputTokens !== undefined) {
       out['cached_input_tokens'] = billableTokens.cacheReadInputTokens;
     }
-  } else if (billableTokens.cacheReadInputTokens !== undefined) {
-    out['cache_read_tokens'] = billableTokens.cacheReadInputTokens;
+  } else {
+    if (billableTokens.cacheCreationInputTokens !== undefined) {
+      out['cache_creation_tokens'] = billableTokens.cacheCreationInputTokens;
+    }
+    if (billableTokens.cacheReadInputTokens !== undefined) {
+      out['cache_read_tokens'] = billableTokens.cacheReadInputTokens;
+    }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

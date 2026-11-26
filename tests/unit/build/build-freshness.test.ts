@@ -42,6 +42,7 @@ const BUILD_TIME = SOURCE_TIME + 10;
 const BACKDATED = SOURCE_TIME - 10;
 
 const HOST_OUTPUT = 'dist/extension.js';
+const BRIDGE_OUTPUT = 'dist/acp-stdio-bridge.js';
 const WEBVIEW_OUTPUT = 'dist/webview/index.js';
 
 /**
@@ -110,6 +111,7 @@ beforeEach(() => {
   write(NAMED_TEST_FILE, 'test file\n', SOURCE_TIME);
   write(TEST_DIRECTORY_FILE, 'test file\n', SOURCE_TIME);
   write(HOST_OUTPUT, 'host bundle\n', BUILD_TIME);
+  write(BRIDGE_OUTPUT, 'bridge bundle\n', BUILD_TIME);
   write(WEBVIEW_OUTPUT, 'webview bundle\n', BUILD_TIME);
   write('dist/webview/chunks/RunsSurface.js', 'chunk\n', BUILD_TIME);
 });
@@ -161,6 +163,18 @@ describe('each half is compared on its own (SC-011)', () => {
     );
     expect(message).not.toContain('dist/extension.js newest');
     expect(message).not.toContain('webview build output');
+  });
+
+  it('refuses on a stale or absent ACP bridge bundle even when dist/extension.js is fresh', () => {
+    touch(BRIDGE_OUTPUT, BACKDATED);
+    expect(stateOf('host')).toBe('stale');
+    expect(refusal()).toContain('dist/acp-stdio-bridge.js');
+
+    rmSync(join(root, BRIDGE_OUTPUT));
+    expect(stateOf('host')).toBe('absent');
+    expect(refusal()).toContain(
+      'host build output is absent (dist/acp-stdio-bridge.js) — run npm run build:host'
+    );
   });
 
   it('refuses on a stale webview bundle while the host half is current', () => {
@@ -236,7 +250,7 @@ describe('the refusal does not repair (FR-021, SC-012)', () => {
   it('leaves the output tree byte-for-byte and mtime-for-mtime unchanged', () => {
     touch(HOST_OUTPUT, BACKDATED);
     const before = snapshot('dist');
-    expect(before.size).toBe(3);
+    expect(before.size).toBe(4);
 
     expect(() => freshness.assertBuildOutputIsFresh(root)).toThrow(/refusing to package/);
 

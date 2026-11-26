@@ -241,9 +241,42 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     return { ...NO_SPEND_OBSERVED, completeness: { kind: 'incomplete', reason: 'evicted' } };
   };
 
+  const liveBackendByAttempt = new Map<string, string>();
+  const liveBackendByKey = new Map<string, string>();
+  const MAX_LIVE_INVOCATION_BACKENDS = 256;
+  const rememberLiveBackend = (map: Map<string, string>, key: string, runner: string): void => {
+    map.delete(key);
+    map.set(key, runner);
+    if (map.size > MAX_LIVE_INVOCATION_BACKENDS) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
+  };
+
   const onAuditEntry = (entry: AuditEntry): void => {
     if (entry.eventType === 'phase-resumed' || entry.eventType === 'phase-restarted') {
       onRunResumed(entry.runId);
+      return;
+    }
+    if (entry.eventType === 'cli-invocation') {
+      const runner = entry.payload.runner;
+      const operation = entry.payload.operation;
+      if (
+        entry.runId !== '' &&
+        typeof runner === 'string' &&
+        runner.length > 0 &&
+        (operation === undefined || operation === 'phase')
+      ) {
+        const attemptId = entry.payload.attemptId;
+        if (typeof attemptId === 'string' && attemptId.length > 0) {
+          rememberLiveBackend(liveBackendByAttempt, attemptId, runner);
+        }
+        rememberLiveBackend(
+          liveBackendByKey,
+          `${entry.runId}\u0000${entry.phase}\u0000${entry.iteration}`,
+          runner
+        );
+      }
       return;
     }
     if (entry.eventType !== 'phase-end') return;
@@ -256,10 +289,15 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
 
     const found = deps.findRunById(runId);
     const endedPhase = found?.run.pipeline?.phases.find((phase) => phase.id === entry.phase);
+    const attemptId = entry.payload.attemptId;
+    const correlatedBackend =
+      (typeof attemptId === 'string' ? liveBackendByAttempt.get(attemptId) : undefined) ??
+      liveBackendByKey.get(`${runId}\u0000${entry.phase}\u0000${entry.iteration}`);
     const backend =
-      found !== null
+      correlatedBackend ??
+      (found !== null
         ? effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind)
-        : undefined;
+        : undefined);
 
     const spend = accumulateSpend(baseTotal(runId), entry.payload, entry.id, { backend });
     remember(runId, spend);

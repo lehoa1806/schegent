@@ -475,7 +475,14 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
   ): Promise<string | null> => {
     if (deps.isTrusted?.() === false || signal?.aborted) return null;
     const policy = currentPolicy();
-    const key = `${cliVersionCacheKey(cliPath, policy)}\u0000${binaryDigest}`;
+    const extraEnvKey =
+      extraEnv === undefined
+        ? ''
+        : Object.keys(extraEnv)
+            .sort()
+            .map((k) => `${k}=${extraEnv[k]}`)
+            .join('\u0001');
+    const key = `${cliVersionCacheKey(cliPath, policy)}\u0000${binaryDigest}\u0000${extraEnvKey}`;
     const cached = cache.get(key);
     if (cached !== undefined && now() - cached.observedAtMs < CLI_VERSION_TTL_MS) {
       return cached.version;
@@ -507,7 +514,9 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
       .then((stdout) => normalizeCliVersion(stdout))
       .catch(() => null)
       .then((version) => {
-        if (!signal?.aborted) {
+        // Do not cache transient null scanner probe failures for 10 min so a temporary timeout
+        // never poisons operator consent with `'unverified'` and later breaks fingerprint checks.
+        if (!signal?.aborted && version !== null) {
           cache.set(key, { version, observedAtMs: now() });
         }
         if (signal === undefined) {

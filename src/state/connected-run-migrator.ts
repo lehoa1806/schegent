@@ -390,6 +390,10 @@ export function deepFreezeConnectedRunsDocument(parsed: unknown): ConnectedRunsF
       setOwnProp(isolated, key, frozenEntry);
     } catch {
       quarantinedCount += 1;
+      // Preserve an opaque tombstone under `key` so `migrateConnectedRuns` classifies this run as
+      // `refused` (`unreadable-refused`) instead of `absent` and startup orphan cleanup preserves
+      // its linked control-ledger root.
+      setOwnProp(isolated, key, Object.freeze({ __schegentQuarantined: 'unfreezable' }));
       if (quarantinedKeys.length < CONNECTED_RUN_DIAGNOSTIC_CAP) {
         quarantinedKeys.push(sanitizeDiagnosticId(key));
       }

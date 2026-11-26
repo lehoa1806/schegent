@@ -283,35 +283,58 @@ function readAuxiliaryMetadata(
     endMs,
     cap
   );
-  const attributionRows = conn.all<AcpAttributionRecord>(
-    `SELECT a.attempt_id, a.run_id,
-       COALESCE(a.backend_kind, r.backend_kind) AS backend_kind,
-       COALESCE(a.model_id, r.model_id) AS model_id,
-       COALESCE(a.profile_id, r.profile_id) AS profile_id,
-       COALESCE(a.lane_id, r.lane_id) AS lane_id,
-       COALESCE(obs.live_observations, 0) AS live_observations
-     FROM attempts a
-     JOIN runs r ON r.run_id = a.run_id
-     LEFT JOIN (
-       SELECT attempt_id, COUNT(*) AS live_observations
-       FROM acp_observation_ledger
-       WHERE origin = 'live' AND observed_at_ms < ?
-       GROUP BY attempt_id
-     ) obs ON obs.attempt_id = a.attempt_id
-     WHERE ${ROOT_RANGE} ${filter.sql}
-       AND (
-         a.backend_kind IS NOT NULL OR r.backend_kind IS NOT NULL
-         OR a.model_id IS NOT NULL OR r.model_id IS NOT NULL
-         OR a.profile_id IS NOT NULL OR r.profile_id IS NOT NULL
-         OR a.lane_id IS NOT NULL OR r.lane_id IS NOT NULL
-         OR obs.live_observations IS NOT NULL
-       )
-     ORDER BY a.run_id, a.attempt_id LIMIT ?`,
-    endMs,
-    ...head,
-    ...filter.params,
-    cap
-  );
+  const hasObservations =
+    conn.all<{ readonly ok: number }>('SELECT 1 AS ok FROM acp_observation_ledger LIMIT 1').length > 0;
+  const attributionRows = hasObservations
+    ? conn.all<AcpAttributionRecord>(
+        `SELECT a.attempt_id, a.run_id,
+           COALESCE(a.backend_kind, r.backend_kind) AS backend_kind,
+           COALESCE(a.model_id, r.model_id) AS model_id,
+           COALESCE(a.profile_id, r.profile_id) AS profile_id,
+           COALESCE(a.lane_id, r.lane_id) AS lane_id,
+           (SELECT COUNT(*) FROM acp_observation_ledger obs
+              WHERE obs.attempt_id = a.attempt_id AND obs.origin = 'live' AND obs.observed_at_ms < ?) AS live_observations
+         FROM attempts a
+         JOIN runs r ON r.run_id = a.run_id
+         WHERE ${ROOT_RANGE} ${filter.sql}
+           AND (
+             a.backend_kind IS NOT NULL OR r.backend_kind IS NOT NULL
+             OR a.model_id IS NOT NULL OR r.model_id IS NOT NULL
+             OR a.profile_id IS NOT NULL OR r.profile_id IS NOT NULL
+             OR a.lane_id IS NOT NULL OR r.lane_id IS NOT NULL
+             OR EXISTS (
+               SELECT 1 FROM acp_observation_ledger obs
+               WHERE obs.attempt_id = a.attempt_id AND obs.origin = 'live' AND obs.observed_at_ms < ?
+             )
+           )
+         ORDER BY a.run_id, a.attempt_id LIMIT ?`,
+        endMs,
+        ...head,
+        ...filter.params,
+        endMs,
+        cap
+      )
+    : conn.all<AcpAttributionRecord>(
+        `SELECT a.attempt_id, a.run_id,
+           COALESCE(a.backend_kind, r.backend_kind) AS backend_kind,
+           COALESCE(a.model_id, r.model_id) AS model_id,
+           COALESCE(a.profile_id, r.profile_id) AS profile_id,
+           COALESCE(a.lane_id, r.lane_id) AS lane_id,
+           0 AS live_observations
+         FROM attempts a
+         JOIN runs r ON r.run_id = a.run_id
+         WHERE ${ROOT_RANGE} ${filter.sql}
+           AND (
+             a.backend_kind IS NOT NULL OR r.backend_kind IS NOT NULL
+             OR a.model_id IS NOT NULL OR r.model_id IS NOT NULL
+             OR a.profile_id IS NOT NULL OR r.profile_id IS NOT NULL
+             OR a.lane_id IS NOT NULL OR r.lane_id IS NOT NULL
+           )
+         ORDER BY a.run_id, a.attempt_id LIMIT ?`,
+        ...head,
+        ...filter.params,
+        cap
+      );
   const handoffRows = conn.all<HandoffSummaryRecord>(
     `SELECT phr.handoff_id, phr.run_id, phr.source_attempt_id, phr.target_phase_id,
        phr.revision, phr.status, phr.record_bytes

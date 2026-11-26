@@ -63,8 +63,8 @@ export const ACTING_LAYERS = [
  * `services` joins this map in FR-R8-04 (`04-03`) to prevent any new reverse
  * runtime value edge into `controller/`, `commands/`, `ui/`, `activation/`,
  * `headless/`, or top-level `root`, while holding all 11 reconciled
- * `services/ -> controller/` edges (plus 2 existing `commands`/`ui` projection
- * edges) under an exact-target, owner-attributed shrink-only allowlist below.
+ * `services/ -> controller/` edges under an exact-target, owner-attributed
+ * shrink-only allowlist below (0 `services/ -> commands|ui` edges remain).
  */
 export const LAYER_ALLOWED_VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
   state: ['state', 'contracts', 'lib', 'config', 'audit'],
@@ -106,8 +106,8 @@ export interface LayerImportAllowlistEntry {
 /**
  * FR-R7-07 (`state/`: 0 entries) & FR-R8-04 `04-03` (`services/`: exact-target
  * shrink-only registry of the 11 audited `services/ -> controller/` runtime
- * edges plus 2 existing `services/ -> commands|ui` edges). Any new reverse
- * value import from `services/` fails `layer-dependency-direction.test.ts`.
+ * edges; both prior `services/ -> commands|ui` edges have been retired). Any
+ * new reverse value import from `services/` fails `layer-dependency-direction.test.ts`.
  */
 export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
   // ---- 11 reconciled `services/ -> controller/` runtime edges (high-coupling-ownership-and-facades.md §2.1)
@@ -118,7 +118,7 @@ export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
     target: 'src/controller/phase-runner.ts',
     owner: 'workflow-runtime',
     filing: 'FR-R8-04',
-    reason: 'RunDriver was extracted from WorkflowController while PhaseRunner remains in controller/; invert via PhaseExecutionPort on next RunDriver refactor.'
+    reason: 'RunDriver value-imports composePhaseMessagePath (re-exported from controller/phase-sidecar-reader.ts); relocate sidecar path helper to services/ or lib/ on next touch.'
   },
   {
     from: 'src/services/run-driver.ts',
@@ -181,7 +181,7 @@ export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
     target: 'src/controller/phase-control-decision.ts',
     owner: 'operator-evidence',
     filing: 'FR-R8-04',
-    reason: 'Failed-phase notice reads pure decidePhaseControl classifier in controller/phase-control-decision.ts to ensure one eligibility oracle; relocate pure classifier to contracts/ on next touch.'
+    reason: 'Failed-phase notice reads pure isRestartExposed predicate in controller/phase-control-decision.ts to ensure one eligibility oracle; relocate pure classifier to contracts/ on next touch.'
   },
   {
     from: 'src/services/phase-context/attempt-result-publisher.ts',
@@ -199,7 +199,7 @@ export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
     target: 'src/controller/phase.ts',
     owner: 'workflow-runtime',
     filing: 'FR-R8-04',
-    reason: 'Planned phase count helper reads canonical phase ordering constants in controller/phase.ts; move pure ordering constants to contracts/ on next touch.'
+    reason: 'Planned phase count helper reads pure isLoopPhase predicate in controller/phase.ts; move pure phase predicate to contracts/ on next touch.'
   },
   {
     from: 'src/services/runtime-resource-budgets/resource-inventory.ts',
@@ -209,16 +209,6 @@ export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
     owner: 'resource-budgets',
     filing: 'FR-R8-04',
     reason: 'Resource inventory reads posture cache bound constant from controller/backend-posture-recorder.ts; relocate constant to contracts/ on next touch.'
-  },
-  // ---- 1 remaining non-controller upper-layer service edge (bundle-collect -> export-audit retired into src/audit/counts-only-export.ts)
-  {
-    from: 'src/services/workflow-execution/workflow-control-projector.ts',
-    fromLayer: 'services',
-    intoLayer: 'ui',
-    target: 'src/ui/sidebar/phase-projector.ts',
-    owner: 'workflow-runtime',
-    filing: 'FR-R8-04',
-    reason: 'WorkflowControlProjector shares pure phase-tile helper in ui/sidebar/phase-projector.ts to keep host/headless and UI projections identical; relocate pure helper to contracts/ on next touch.'
   }
 ];
 

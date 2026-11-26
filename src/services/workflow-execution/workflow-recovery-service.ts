@@ -84,6 +84,7 @@ import {
 } from './phase-handoff-execution-bridge';
 
 import {
+  classifyRecoveryFailure,
   EMPTY_RECONCILE_SUMMARY,
   runReconcileAllConnectedRuns,
   type IsolatedRecoveryFailure,
@@ -1179,8 +1180,19 @@ export class WorkflowRecoveryService {
   }
 
   public async reconcileAllRuns(now: number): Promise<readonly ReconcileConnectedRunResult[]> {
+    let list: readonly ConnectedWorkflowRun[] = [];
+    let listFailure: IsolatedRecoveryFailure | null = null;
+    try {
+      list = this.deps.connectedRuns.list?.() ?? [];
+    } catch (err) {
+      listFailure = Object.freeze({
+        runId: '<list-connected-runs>',
+        reasonCode: classifyRecoveryFailure(err)
+      });
+      this.deps.onIsolatedFailure?.(listFailure);
+    }
     const out = await runReconcileAllConnectedRuns<ReconcileConnectedRunResult>({
-      list: this.deps.connectedRuns.list?.() ?? [],
+      list,
       reconcileOne: (runId) => this.reconcileRun(runId, now),
       getRun: (runId) => this.deps.connectedRuns.get(runId),
       getPresence: this.deps.connectedRuns.getPresence,
@@ -1190,7 +1202,16 @@ export class WorkflowRecoveryService {
       onIsolatedFailure: this.deps.onIsolatedFailure,
       onPreservedRefusedParent: this.deps.onPreservedRefusedParent
     });
-    this.lastReconcileSummary = out.summary;
+    if (listFailure !== null) {
+      const combined = Object.freeze([listFailure, ...out.summary.isolatedFailures]);
+      this.lastReconcileSummary = Object.freeze({
+        isolatedFailureCount: combined.length,
+        isolatedFailures: combined,
+        preservedRefusedParentCount: out.summary.preservedRefusedParentCount
+      });
+    } else {
+      this.lastReconcileSummary = out.summary;
+    }
     return out.results;
   }
 }

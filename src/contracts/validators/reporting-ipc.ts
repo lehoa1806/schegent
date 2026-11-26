@@ -103,7 +103,9 @@ export function isValidMutateReportResponse(value: unknown): value is MutateRepo
           isPlain(v) &&
           typeof v['exportId'] === 'string' &&
           typeof v['fileName'] === 'string' &&
-          typeof v['manifestFileName'] === 'string'
+          typeof v['manifestFileName'] === 'string' &&
+          typeof v['sha256'] === 'string' &&
+          typeof v['rowCount'] === 'number'
       );
     }
     case 'save':

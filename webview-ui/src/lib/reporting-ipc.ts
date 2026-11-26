@@ -19,13 +19,23 @@ import {
   isValidMutateReportResponse,
   isValidReadReportResponse
 } from '../../../src/contracts/runtime-validators';
-import { boundaryRefusalText } from './boundary-refusal-text';
+import { boundaryRefusalText, OUTCOME_NOT_YET_KNOWN_TEXT } from './boundary-refusal-text';
 
 const ACK_TIMEOUT_MS = 10_000;
+/**
+ * Finite liveness backstop for interactive native Save dialogs (`op: 'export'`). Matches the
+ * process-YAML dialog backstop (`5 min`) and live-report lease lifetime so a long Save dialog
+ * never trips the 10 s RPC timer while a dead or dropped extension host still cannot wedge the UI.
+ */
+export const EXPORT_ACK_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface ReportCallEnvelope<T> {
   readonly response: T;
   readonly boundaryRefusal: string | null;
+}
+
+export interface ReportRequestOptions {
+  readonly signal?: AbortSignal;
 }
 
 function defaultReadFallback(request: ReadReportRequest): ReadReportResponse {
@@ -66,7 +76,8 @@ function gateRefusal(reason: string | undefined): string | null {
   if (
     reason === 'untrusted-workspace' ||
     reason === 'workspace-not-trusted' ||
-    reason === 'secondary-window-readonly'
+    reason === 'secondary-window-readonly' ||
+    reason === 'command-dispatch-failed'
   ) {
     return boundaryRefusalText(reason);
   }
@@ -74,7 +85,8 @@ function gateRefusal(reason: string | undefined): string | null {
 }
 
 export function requestReadReport(
-  payload: ReadReportRequest
+  payload: ReadReportRequest,
+  options?: ReportRequestOptions
 ): Promise<ReportCallEnvelope<ReadReportResponse>> {
   const fallback: ReportCallEnvelope<ReadReportResponse> = {
     response: defaultReadFallback(payload),
@@ -89,21 +101,22 @@ export function requestReadReport(
         : defaultReadFallback(payload);
       return { response, boundaryRefusal: refusal };
     },
-    fallback
+    fallback,
+    ACK_TIMEOUT_MS,
+    options?.signal
   );
 }
 
 export function requestMutateReport(
-  payload: MutateReportRequest
+  payload: MutateReportRequest,
+  options?: ReportRequestOptions
 ): Promise<ReportCallEnvelope<MutateReportResponse>> {
+  const isExport = payload.op === 'export';
   const fallback: ReportCallEnvelope<MutateReportResponse> = {
     response: defaultMutateFallback(payload),
-    boundaryRefusal: null
+    boundaryRefusal: isExport ? OUTCOME_NOT_YET_KNOWN_TEXT : null
   };
-  // Principal review Finding 7: `op: 'export'` opens a native OS Save dialog on the host whose
-  // duration is governed by the user, not an RPC timeout. Dropping the listener at 10 s caused
-  // a false "Export failed" notice after the file was actually written.
-  const timeoutMs = payload.op === 'export' ? null : ACK_TIMEOUT_MS;
+  const timeoutMs = isExport ? EXPORT_ACK_TIMEOUT_MS : ACK_TIMEOUT_MS;
   return correlatedRequest(
     () => postCommand(CMD_MUTATE_REPORT, payload).correlationId,
     (ack) => {
@@ -114,7 +127,8 @@ export function requestMutateReport(
       return { response, boundaryRefusal: refusal };
     },
     fallback,
-    timeoutMs
+    timeoutMs,
+    options?.signal
   );
 }
 
@@ -126,12 +140,21 @@ function correlatedRequest<T>(
     readonly result?: unknown;
   }) => T,
   onTimeout: T,
-  timeoutMs: number | null = ACK_TIMEOUT_MS
+  timeoutMs: number = ACK_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<T> {
+  if (signal?.aborted) {
+    return Promise.resolve(onTimeout);
+  }
   return new Promise<T>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let unsubscribe: (() => void) | null = null;
+    let correlationId: string | null = null;
+
+    const onAbort = (): void => {
+      finalise(onTimeout);
+    };
 
     const finalise = (result: T): void => {
       if (settled) return;
@@ -139,6 +162,9 @@ function correlatedRequest<T>(
       if (timer !== null) {
         clearTimeout(timer);
         timer = null;
+      }
+      if (signal !== undefined) {
+        signal.removeEventListener('abort', onAbort);
       }
       if (unsubscribe !== null) {
         try {
@@ -148,21 +174,32 @@ function correlatedRequest<T>(
         }
         unsubscribe = null;
       }
+      if (correlationId !== null) {
+        snapshotStore.clearPending(correlationId);
+        correlationId = null;
+      }
       resolve(result);
     };
 
-    untrack(() => {
-      const correlationId = post();
-      snapshotStore.markPending(correlationId);
-      unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-        finalise(project(ack));
-      });
-    });
-
-    if (timeoutMs !== null) {
-      timer = setTimeout(() => {
-        finalise(onTimeout);
-      }, timeoutMs);
+    if (signal !== undefined) {
+      signal.addEventListener('abort', onAbort, { once: true });
     }
+
+    try {
+      untrack(() => {
+        correlationId = post();
+        snapshotStore.markPending(correlationId);
+        unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
+          finalise(project(ack));
+        });
+      });
+    } catch {
+      finalise(onTimeout);
+      return;
+    }
+
+    timer = setTimeout(() => {
+      finalise(onTimeout);
+    }, timeoutMs);
   });
 }

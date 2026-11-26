@@ -125,6 +125,7 @@ const USAGE_VOCABULARIES: Readonly<Record<BackendRunnerKind, BackendUsageVocabul
       tokens: {
         inputTokens: 'input_tokens',
         outputTokens: 'output_tokens',
+        cacheCreationInputTokens: 'cache_creation_tokens',
         cacheReadInputTokens: 'cache_read_tokens'
       }
     }

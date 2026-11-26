@@ -15,7 +15,7 @@ import { buildManifest, manifestDigestOf, serializeManifest, sourcesFault } from
 import { parseManifestSource } from './manifest-parts';
 import { listOf, refuse } from './primitives';
 import { renderContext } from './renderer';
-import { utf8Bytes } from './text-bounds';
+import { textFault, utf8Bytes } from './text-bounds';
 
 export type EditResult = { readonly ok: true; readonly prepared: PreparedHandoff } | Refusal;
 
@@ -130,13 +130,19 @@ export function editRevisionSummary(
 ): EditResult {
   if (typeof summary !== 'string') return refuse('invalid-source', 'edit-summary');
   const trimmed = summary.trim();
-  if (trimmed.length === 0) return refuse('invalid-source', 'edit-summary');
-  if (utf8Bytes(trimmed) > PHASE_CONTEXT_LIMITS.summaryBytesMax) {
+  const summaryFault = textFault(trimmed, PHASE_CONTEXT_LIMITS.summaryBytesMax);
+  if (summaryFault === 'too-long') {
     return refuse('capacity-exceeded', 'summary-bytes');
   }
+  if (summaryFault !== null) {
+    return refuse('invalid-source', 'edit-summary');
+  }
   if (base.sources.length === 0) return refuse('invalid-source', 'edit-unknown-source');
+  if (producerAttemptId === undefined && base.sources.length > 1) {
+    return refuse('invalid-source', 'edit-ambiguous-source');
+  }
 
-  let matched = false;
+  let matchedCount = 0;
   const sources: ManifestSource[] = [];
   for (const original of base.sources) {
     const shouldPatch =
@@ -145,13 +151,14 @@ export function editRevisionSummary(
       sources.push(original);
       continue;
     }
-    matched = true;
+    matchedCount += 1;
     sources.push({
       ...original,
       summary: trimmed
     });
   }
-  if (!matched) return refuse('invalid-source', 'edit-unknown-source');
+  if (matchedCount === 0) return refuse('invalid-source', 'edit-unknown-source');
+  if (matchedCount > 1) return refuse('invalid-source', 'edit-ambiguous-source');
 
   const fault = sourcesFault(sources, base.identity);
   if (fault !== null) {

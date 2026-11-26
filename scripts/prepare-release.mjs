@@ -15,6 +15,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -36,19 +37,32 @@ import {
 } from './backend-qualification.mjs';
 import { GATE_COMMAND_SPEC, REPO_ROOT, readTreeState } from './gate-attestation.mjs';
 import { invokedAsScript } from './invoked-as-script.mjs';
-import { NOTHING_PUBLISHED, releaseCandidate, resolveInsideRoot } from './release-candidate.mjs';
+import {
+  NOTHING_PUBLISHED,
+  releaseCandidate,
+  resolveInsideRoot,
+  verifyCandidateArchiveDigest
+} from './release-candidate.mjs';
 
 const CAPTURE_FLAG = '--advisory-capture';
-const USAGE = `usage: npm run release -- ${CAPTURE_FLAG} root=<path> ${CAPTURE_FLAG} webview-ui=<path>`;
+const VERIFY_FLAG = '--verify';
+const USAGE = `usage: npm run release -- ${CAPTURE_FLAG} root=<path> ${CAPTURE_FLAG} webview-ui=<path> | node scripts/prepare-release.mjs ${VERIFY_FLAG} <record-path>`;
 
 /**
- * Parse the arguments: `--advisory-capture <tree>=<path>`, exactly once for each tree. Anything
- * else is a usage error, so a typo cannot silently drop the evidence a release needs.
+ * Parse the arguments: either `--verify <record-path>`, or `--advisory-capture <tree>=<path>`
+ * exactly once for each tree. Anything else is a usage error, so a typo cannot silently drop the
+ * evidence a release needs.
  *
  * @param {readonly string[]} argv
- * @returns {{ ok: true, advisoryCaptures: Record<string, string> } | { ok: false, message: string }}
+ * @returns {{ ok: true, mode: 'verify', verifyRecordPath: string } | { ok: true, mode: 'prepare', advisoryCaptures: Record<string, string> } | { ok: false, message: string }}
  */
 export function parseArguments(argv) {
+  if (argv.length > 0 && argv[0] === VERIFY_FLAG) {
+    if (argv.length !== 2 || argv[1].trim().length === 0) {
+      return { ok: false, message: `${VERIFY_FLAG} expects exactly one <record-path>` };
+    }
+    return { ok: true, mode: 'verify', verifyRecordPath: argv[1] };
+  }
   const advisoryCaptures = {};
   for (let at = 0; at < argv.length; at += 2) {
     if (argv[at] !== CAPTURE_FLAG) {
@@ -72,7 +86,7 @@ export function parseArguments(argv) {
   if (absent.length > 0) {
     return { ok: false, message: `${CAPTURE_FLAG} is required for the ${absent.join(' and ')} tree` };
   }
-  return { ok: true, advisoryCaptures };
+  return { ok: true, mode: 'prepare', advisoryCaptures };
 }
 
 /**
@@ -146,6 +160,7 @@ export function makeRealDeps(advisoryCaptures) {
       ),
     rename: (from, to) => renameSync(resolveInsideRoot(root, from), resolveInsideRoot(root, to)),
     writeExclusive: (path, text, mode) => writeExclusiveFile(resolveInsideRoot(root, path), text, mode),
+    pathExists: (path) => existsSync(resolveInsideRoot(root, path)),
     changedQualificationPaths,
     computeQualificationFingerprint: () => computeQualificationSourceFingerprint(root),
     probeInstalledVersions,
@@ -172,6 +187,26 @@ export function runCli(argv, io) {
       io.error(escapeForTerminal(line));
     }
     return 2;
+  }
+  if (parsed.mode === 'verify') {
+    const recordPath = resolve(process.cwd(), parsed.verifyRecordPath);
+    const verified = verifyCandidateArchiveDigest({
+      recordPath,
+      repoRoot: REPO_ROOT,
+      readFile: (targetPath) =>
+        readFileSync(isAbsolute(targetPath) ? targetPath : resolve(REPO_ROOT, targetPath))
+    });
+    if (!verified.ok) {
+      io.error(escapeForTerminal(`prepare-release: VERIFY FAILED (${verified.reason}) — ${verified.message}`));
+      return 1;
+    }
+    const { candidatePath, bytes, sha256: digest } = verified;
+    io.log(
+      escapeForTerminal(
+        `prepare-release: VERIFIED ${candidatePath} (${bytes} bytes, sha256 ${digest})`
+      )
+    );
+    return 0;
   }
   // Relative paths mean relative to where the operator typed them.
   const captures = Object.fromEntries(

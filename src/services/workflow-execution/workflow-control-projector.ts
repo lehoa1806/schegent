@@ -46,7 +46,7 @@ import {
   computeAllowedControlActions,
   findLatestLeafPhaseAttempt
 } from './workflow-control-transition-table';
-import { projectCandidatePhaseIdentity } from '../../ui/sidebar/phase-projector';
+import { projectCandidatePhaseIdentity } from '../../contracts/candidate-phase-identity';
 
 export {
   buildControlProjection,
