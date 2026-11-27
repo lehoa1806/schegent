@@ -146,6 +146,17 @@ describe('FR-051 / FR-054 — the record must describe the installed CLI surface
       decide({ installedVersions: { ...installed, claude: '2.1.246 (Claude Code, build 9)' } }).ok
     ).toBe(true);
   });
+
+  it('requires the prerelease and build used for the live turn', () => {
+    const version = '0.171.0-alpha.13.2+mac.1';
+    const qualified = record({ versions: { ...installed, codex: version } });
+    const verify = (codex: string) => decide({ record: qualified, installedVersions: { ...installed, codex } });
+    expect(verify(`codex-cli ${version}`).ok).toBe(true);
+    for (const changed of ['0.171.0-alpha.13.3+mac.1', '0.171.0-alpha.13.2+mac.2', '0.171.0']) {
+      expect(verify(changed).reason).toBe('version-drift');
+    }
+    expect(q.versionToken('codex-cli 0.171')).toBeNull();
+  });
 });
 
 describe('FR-053 — a runner-area change requires a fresh record', () => {

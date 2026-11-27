@@ -486,11 +486,11 @@ export function probeInstalledVersions(commands = { claude: 'claude', codex: 'co
   return observed;
 }
 
-/** Extract the comparable version token from a `--version` line. */
+/** Keep the exact release, prerelease and build identifiers and ignore surrounding vendor text. */
 export function versionToken(line) {
   if (typeof line !== 'string') return null;
-  const match = /(\d+\.\d+(?:\.\d+)?)/.exec(line);
-  return match === null ? null : match[1];
+  const match = /\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?/.exec(line);
+  return match?.[0] ?? null;
 }
 
 /**
