@@ -7,7 +7,7 @@ again (`FR-R5-F21`, FR-019). The next run replaces this record.
 
 ## Source-build minimum verified on 27 November 2026
 
-On macOS arm64, a clean export of execution revision `1e2b7d2a` used the official Node 22.13.0 release with its published SHA-256 verified. Both `npm ci --engine-strict` and `npm ci --prefix webview-ui --engine-strict` succeeded with the checked-in lifecycle-script settings. `npm run build` then produced the webviews, extension and ACP bridge. All dependency engine ranges in both lockfiles admit this patch. The extension-host test checks the bundled Node version against the complete manifest range, including its patch floor.
+On macOS arm64, clean exports of the reviewed source at `1e2b7d2a` and the remediation at `6f8cace6` used the official Node 22.13.0 release with its published SHA-256 verified. Both `npm ci --engine-strict` and `npm ci --prefix webview-ui --engine-strict` succeeded with the checked-in lifecycle-script settings. The remediation run used npm 10.9.2 in offline mode. `npm run build` produced the webviews, extension and ACP bridge. All dependency engine ranges in both lockfiles admit this patch. The extension-host test checks the bundled Node version against the complete manifest range, including its patch floor.
 
 ## The historical 22.23.2 run
 
