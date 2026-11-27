@@ -144,6 +144,11 @@ interface CoverageRow {
 
 const CAPTURE_MODES: ReadonlySet<string> = new Set(LIVE_LOG_CAPTURE_MODES);
 const COVERAGE_REASONS: ReadonlySet<string> = new Set(LIVE_LOG_COVERAGE_REASONS);
+// Some node:sqlite versions truncate TEXT at a NUL when returning it to JS.
+// Mark such stored references invalid in SQLite before the prefix can reach a file lookup.
+const SEGMENT_COLUMNS = `segment_seq,
+  CASE WHEN instr(artifact_ref, char(0)) > 0 THEN '' ELSE artifact_ref END AS artifact_ref,
+  start_offset, end_offset, record_count, durable`;
 
 function refused(reason: LiveLogIndexRefusal): LiveLogIndexRefused {
   return { outcome: 'refused', reason };
@@ -195,6 +200,7 @@ function validAppend(input: AppendSegmentInput): boolean {
     isGeneration(input.generation) &&
     isCount(input.segmentSeq) &&
     isText(input.artifactRef, LIVE_LOG_ARTIFACT_REF_MAX_LENGTH) &&
+    !input.artifactRef.includes('\0') &&
     isCount(input.startOffset) &&
     isCount(input.endOffset) &&
     input.endOffset >= input.startOffset &&
@@ -340,7 +346,7 @@ class SqliteLiveLogIndex implements LiveLogIndex {
       };
     }
     const segments = this.conn.all<SegmentRow>(
-      `SELECT segment_seq, artifact_ref, start_offset, end_offset, record_count, durable
+      `SELECT ${SEGMENT_COLUMNS}
        FROM live_log_segments WHERE stream_key = ? AND generation = ?
        ORDER BY segment_seq ASC LIMIT ?`,
       input.streamKey,
@@ -408,7 +414,7 @@ class SqliteLiveLogIndex implements LiveLogIndex {
 
   private segment(streamKey: string, generation: string, segmentSeq: number): SegmentRow | undefined {
     return this.conn.get<SegmentRow>(
-      `SELECT segment_seq, artifact_ref, start_offset, end_offset, record_count, durable
+      `SELECT ${SEGMENT_COLUMNS}
        FROM live_log_segments WHERE stream_key = ? AND generation = ? AND segment_seq = ?`,
       streamKey,
       generation,

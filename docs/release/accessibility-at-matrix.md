@@ -65,7 +65,7 @@ written out so that executing it is a session's work rather than a design exerci
 
 ### Review 2026-11-27
 
-The release decision remains private to the author. This review checked the candidate evidence, the four platform rows and the recovery procedure below. The recorded browser accessibility checks cover keyboard, focus and automated rules. A human VoiceOver session on the candidate is still owed. The maintainer owns that observation before any pilot. The next status review is 2026-12-11, or immediately when a candidate and tester are available.
+The release decision remains private to the author. This review checked the candidate evidence, the four platform rows and the recovery procedure below. The recorded browser accessibility checks cover keyboard, focus and automated rules. A human VoiceOver session on the candidate is still owed. Run it on a clean VS Code 1.125.0 profile on macOS arm64 and record the editor version with the results. The maintainer owns that observation before any pilot. The next status review is 2026-12-11, or immediately when a candidate and tester are available.
 
 ### Review 2026-11-06
 

@@ -4,6 +4,8 @@
 
 This reference documents the embedded SQLite application store (`F04-A`), the versioned Round 6 domain store adapters (`F04-B` covering `F05`, `F06`, `F07`, `F08`, `F10`, `F11`, `F13`, `F14`, `F15`), and the catalog, policy, model catalog, and frozen execution closure store (`F04-C`).
 
+The operational store requires SQLite 3.51.3 or newer for its WAL fix. The macOS arm64 VS Code 1.125.0 binary bundles 3.51.3. The editor integration test reads the engine version from the database and checks transaction state on a file-backed WAL write. [Runtime qualification](../release/node-floor-record.md)
+
 Implemented in:
 - [`src/contracts/sqlite-store/schema-types.ts`](../../src/contracts/sqlite-store/schema-types.ts)
 - [`src/contracts/sqlite-store/domain-adapter-types.ts`](../../src/contracts/sqlite-store/domain-adapter-types.ts)

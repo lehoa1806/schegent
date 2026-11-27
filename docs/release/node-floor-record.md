@@ -1,13 +1,16 @@
-# Node 22 floor record
+# Node and VS Code runtime floors
 
-**What ran on the declared Node 22 floor, and what that does not show.** `package.json` declares
-Node `^22.13.0 || ^24`, and the repository pins 24.19.0 in `.nvmrc`. The hosted workflows that ran the
-floor were retired on 2026-08-26 (`FR-R3-099`). This page records the run that exercised the floor
-again (`FR-R5-F21`, FR-019). The next run replaces this record.
+The source toolchain supports Node `^22.22.3 || ^24.15.0`. The development pin is 24.19.0. The installed extension requires VS Code 1.125.0 or newer. The minimums account for the operational store’s SQLite 3.51.3 WAL fix and the transaction-state API used by recovery.
 
-## Source-build minimum verified on 27 November 2026
+## Runtime verification on 27 November 2026
 
-On macOS arm64, clean exports of the reviewed source at `1e2b7d2a` and the remediation at `6f8cace6` used the official Node 22.13.0 release with its published SHA-256 verified. Both `npm ci --engine-strict` and `npm ci --prefix webview-ui --engine-strict` succeeded with the checked-in lifecycle-script settings. The remediation run used npm 10.9.2 in offline mode. `npm run build` produced the webviews, extension and ACP bridge. All dependency engine ranges in both lockfiles admit this patch. The extension-host test checks the bundled Node version against the complete manifest range, including its patch floor.
+Node 22.13.0 passed both engine-strict installs and the build. Its full host run at `8306c78f` failed 352 tests, passed 23,921 and skipped 14. Transaction state and read-only SQLite URI handling affected recovery and relocation. Node 22.22.3 and 24.15.0 both bundle SQLite 3.51.3. The official macOS arm64 archives were verified against the published SHA-256 manifests. [Node 22.22.3 release](https://nodejs.org/en/blog/release/v22.22.3) · [Node 24.15.0 release](https://nodejs.org/en/blog/release/v24.15.0)
+
+The VS Code 1.107.0 binary bundles SQLite 3.50.4. The macOS arm64 VS Code 1.125.0 binary reports Electron 42.2.0, Node 24.15.0 and SQLite 3.51.3, source ID `737ae4a34738ffa0c3ff7f9bb18df914dd1cad163f28fd6b6e114a344fe6d618`. This editor also has matching published TypeScript API definitions. The extension-host integration test checked the actual engine version and observed transaction state before, during and after a WAL commit. All 22 modules passed across the single-folder, multi-root, trust-untrusted and trust-granted launches.
+
+A normal `npm ci` on Node 22.16.0 refused the root and webview packages with `EBADENGINE`. On Node 22.22.3 with npm 10.9.8, both offline clean installs, the production build and SBOM generation passed in a paired checkout. The full host suite passed 24,273 tests and skipped 14. It includes restart recovery, relocation, and rejecting a stored log reference containing a NUL byte before any file lookup.
+
+Node 24.15.0 with npm 11.12.1 passed the same clean installs, build and SBOM generation. Its first host run exited 139. The macOS crash report placed the fault in SQLite during a worker-thread write. A complete rerun passed 24,273 tests with 14 skipped. The cause of the first crash is unresolved.
 
 ## The historical 22.23.2 run
 
@@ -73,7 +76,7 @@ feature removed them before it was committed. The count of failed tests is the s
   an `npm run gate` observation recorded through `npm run gate:record`. This run is neither, so the
   macOS / Node 22 cell stays `unobserved`.
 
-## The editor's runtime at the VS Code floor
+## Historical editor observation on 12 November 2026
 
 Added 2026-11-12 (review gap GC-19). The SQLite store runs on the `node:sqlite` built into the
 extension host's Node, which is Electron's and not the Node in `.nvmrc`, and nothing had recorded
@@ -95,10 +98,7 @@ runtime-floor: vscode=1.107.0 electron=39.2.3 node=22.21.1
 runtime-floor: node:sqlite DatabaseSync opened a WAL file database, wrote and read in the extension host
 ```
 
-So VS Code 1.107.0 runs the extension on Node 22.21.1, inside `engines.node` (`^22.13.0 || ^24`), and
-there `node:sqlite` opened a file database in WAL mode, created a `STRICT` table, and committed and read
-back a row. The module fails if the host's Node major falls outside `engines.node`, which it reads from
-the installed extension's manifest.
+The 1.107.0 observation established a successful file-backed WAL write under Node 22.21.1. It did not measure the SQLite version. The November 27 observation above supersedes it for release qualification.
 
 What it does not show:
 

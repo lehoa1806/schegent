@@ -452,6 +452,11 @@ describe('FR-R7-16 (16-09) — contained live-log segment replay reader end-to-e
       const index = createLiveLogIndex(conn);
       index.openStream({ streamKey: STREAM, generation: 'gen-1', captureMode: 'captured', nowMs: NOW });
 
+      expect(index.appendSegment({
+        streamKey: STREAM, generation: 'gen-1', segmentSeq: 0, artifactRef: 'logs/name\0suffix',
+        startOffset: 0, endOffset: 0, recordCount: 0
+      })).toEqual({ outcome: 'refused', reason: 'invalid' });
+
       const maliciousRefs: readonly string[] = [
         `../${outsideName}/secret.jsonl`,
         `logs/../../${outsideName}/secret.jsonl`,
