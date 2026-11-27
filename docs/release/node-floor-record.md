@@ -10,7 +10,7 @@ The VS Code 1.107.0 binary bundles SQLite 3.50.4. The macOS arm64 VS Code 1.125.
 
 A normal `npm ci` on Node 22.16.0 refused the root and webview packages with `EBADENGINE`. On Node 22.22.3 with npm 10.9.8, both offline clean installs, the production build and SBOM generation passed in a paired checkout. The full host suite passed 24,273 tests and skipped 14. It includes restart recovery, relocation, and rejecting a stored log reference containing a NUL byte before any file lookup.
 
-Node 24.15.0 with npm 11.12.1 passed the same clean installs, build and SBOM generation. Its first host run exited 139. The macOS crash report placed the fault in SQLite during a worker-thread write. A complete rerun passed 24,273 tests with 14 skipped. The cause of the first crash is unresolved.
+Node 24.15.0 with npm 11.12.1 passed the same clean installs, build and SBOM generation. Its first host run exited 139. The macOS crash report placed the fault in SQLite during a worker-thread write. Two complete reruns each passed 24,273 tests with 14 skipped. The cause of the first crash is unresolved.
 
 ## The historical 22.23.2 run
 
