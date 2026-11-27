@@ -67,6 +67,8 @@ written out so that executing it is a session's work rather than a design exerci
 
 The release decision remains private to the author. This review checked the candidate evidence, the four platform rows and the recovery procedure below. The recorded browser accessibility checks cover keyboard, focus and automated rules. A human VoiceOver session on the candidate is still owed. Run it on a clean VS Code 1.125.0 profile on macOS arm64 and record the editor version with the results. The maintainer owns that observation before any pilot. The next status review is 2026-12-11, or immediately when a candidate and tester are available.
 
+A browser trace of the small-window, high-contrast saved-report journey showed a queued scroll event closing the action menu after End focused Delete. The button had stayed in the same place. The menu now checks whether the button actually moved before dismissing it, so Enter reaches the confirmation. The corrected journey passed 20 consecutive browser runs, followed by all 19 automated accessibility checks. [Keyboard regression test](../../webview-ui/src/components/sg/__tests__/SgMenu.test.ts)
+
 ### Review 2026-11-06
 
 Feature 282 (`FR-R5-F21`) re-read this matrix ahead of its date.

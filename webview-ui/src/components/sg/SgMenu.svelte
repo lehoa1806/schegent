@@ -74,6 +74,7 @@
   let wrap = $state<HTMLSpanElement | undefined>(undefined);
   let trigger = $state<HTMLButtonElement | undefined>(undefined);
   let menu = $state<HTMLDivElement | undefined>(undefined);
+  let placedAnchor: DOMRect | undefined;
 
   function reachableItems(): HTMLElement[] {
     return menu === undefined ? [] : [...menu.querySelectorAll<HTMLElement>(REACHABLE_ITEM_SELECTOR)];
@@ -83,6 +84,7 @@
   function place(): void {
     if (trigger === undefined || menu === undefined) return;
     const anchor = trigger.getBoundingClientRect();
+    placedAnchor = anchor;
     const size = menu.getBoundingClientRect();
     const below = anchor.bottom + GAP_PX;
     const above = anchor.top - GAP_PX - size.height;
@@ -101,6 +103,7 @@
   function close(returnFocus: boolean): void {
     if (!open) return;
     open = false;
+    placedAnchor = undefined;
     const focused = document.activeElement;
     const focusLeftBehind = focused === document.body || wrap?.contains(focused) === true;
     if (returnFocus && focusLeftBehind) trigger?.focus();
@@ -174,9 +177,16 @@
       if (!inside) dismiss();
     };
     const onScroll = (event: Event): void => {
-      const movesButton =
-        trigger !== undefined && event.target instanceof Node && event.target.contains(trigger);
-      if (movesButton) dismiss();
+      if (!placedAnchor || !trigger || !(event.target instanceof Node) || !event.target.contains(trigger)) return;
+      // An earlier scroll may be delivered after opening, while focus is already on an item.
+      const anchor = trigger.getBoundingClientRect();
+      if (
+        anchor.top !== placedAnchor.top ||
+        anchor.bottom !== placedAnchor.bottom ||
+        anchor.right !== placedAnchor.right
+      ) {
+        dismiss();
+      }
     };
     document.addEventListener('mousedown', onPress);
     document.addEventListener('scroll', onScroll, true);
