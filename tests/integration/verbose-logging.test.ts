@@ -153,14 +153,14 @@ async function runOnce(opts: {
     logger,
     path.join(opts.workspaceRoot, 'raw-spool')
   );
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
-    audit,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
     logger,
     rawTranscript,
-    { isVerboseDiagnosticsEnabled: () => opts.verbose }
-  );
+    verboseAccessor: { isVerboseDiagnosticsEnabled: () => opts.verbose }
+  });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);

@@ -1085,4 +1085,95 @@ describe('FR-R6-F11 host reporting integration through MessageRouter', () => {
     expect(summaries.some((h) => h.handoffId === emptyId)).toBe(false);
     expect(summaries.some((h) => h.handoffId === futureReadyId)).toBe(false);
   });
+
+  it('surfaces auxiliary evidence truncation omissions across report page, last-root drill-down, and report export manifest (Post-merge Finding 4)', async () => {
+    const t1 = BASE_NOW_MS - 3_600_000;
+    const t2 = BASE_NOW_MS - 1_800_000;
+    seedFullRun('run-aux-1', t1);
+    seedFullRun('run-aux-2', t2);
+
+    // Seed 3 valid artifacts across the 2 roots so cap=2 fits roots/attempts but overflows evidenceRefs,
+    // leaving the last root (`run-aux-2`) missing its artifact reference.
+    for (const [artifactId, ownerRunId, ownerAttemptId] of [
+      ['art-1', 'run-aux-1', 'run-aux-1-att-1'],
+      ['art-2', 'run-aux-1', 'run-aux-1-att-1'],
+      ['art-3', 'run-aux-2', 'run-aux-2-att-1']
+    ] as const) {
+      conn.run(
+        `INSERT INTO artifacts (artifact_id, content_sha256, byte_length, media_type, kind, created_by_run_id, created_by_attempt_id, created_at_ms)
+         VALUES (?, ?, 64, 'application/json', 'diagnostic', ?, ?, ?)`,
+        artifactId,
+        'd'.repeat(64),
+        ownerRunId,
+        ownerAttemptId,
+        t1 + 500
+      );
+      conn.run(
+        `INSERT INTO artifact_lifecycle (
+           artifact_id, lifecycle_revision, owner_run_id, owner_attempt_id, sensitivity,
+           retention_class, store_kind, immutability, digest_algorithm, digest_value,
+           generation, extent_bytes, byte_size, availability, producer_identity,
+           display_name, created_at_ms, terminal_settled_at_ms, expires_at_ms, updated_at_ms
+         ) VALUES (
+           ?, 1, ?, ?, 'metadata',
+           'transcripts-diagnostics-checkpoints-audit-catalog', 'diagnostic', 'immutable', 'sha256', ?,
+           NULL, NULL, 64, 'present', 'runner', 'diag.json', ?, ?, NULL, ?
+         )`,
+        artifactId,
+        ownerRunId,
+        ownerAttemptId,
+        'd'.repeat(64),
+        t1 + 500,
+        t1 + 500,
+        t1 + 500
+      );
+    }
+
+    const { customRouter, service: customService } = buildRouterWith({ bounds: { snapshotCap: 2 } });
+    const runAck = await dispatchReadOn(customRouter, {
+      op: 'run',
+      query: {
+        view: 'execution-summary',
+        range: { startMs: BASE_NOW_MS - DAY_MS, endMs: BASE_NOW_MS }
+      }
+    });
+    expect(runAck.status).toBe('accepted');
+    expect(isValidReadReportResponse(runAck.result)).toBe(true);
+    const runRes = runAck.result as Extract<ReadReportResponse, { readonly op: 'run' }>;
+    if (!runRes.result.ok) throw new Error('expected run ok');
+    expect(runRes.result.value.omissions).toContainEqual({
+      what: 'evidenceRefs',
+      reason: 'snapshot-rows-truncated'
+    });
+
+    // Drill down into the last affected root (`run-aux-2`): omission must be visible rather than empty.
+    const drillAck = await dispatchReadOn(customRouter, {
+      op: 'drillDown',
+      reportId: runRes.result.value.reportId,
+      rootId: 'run-aux-2'
+    });
+    expect(drillAck.status).toBe('accepted');
+    expect(isValidReadReportResponse(drillAck.result)).toBe(true);
+    const drillRes = drillAck.result as Extract<ReadReportResponse, { readonly op: 'drillDown' }>;
+    if (!drillRes.result.ok) throw new Error('expected drillDown ok');
+    expect(drillRes.result.value.evidenceRefs).toBeUndefined();
+    expect(drillRes.result.value.omissions).toContainEqual({
+      what: 'evidenceRefs',
+      reason: 'snapshot-rows-truncated'
+    });
+
+    // Export manifest must also carry the auxiliary truncation omission.
+    const exportDest = path.join(tempDir, 'aux-truncated-report.json');
+    const exported = await customService.exportReport({
+      reportId: runRes.result.value.reportId,
+      format: 'json',
+      destination: { scheme: 'file', fsPath: exportDest }
+    });
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) throw new Error('expected export ok');
+    expect(exported.value.manifest.omissions).toContainEqual({
+      what: 'evidenceRefs',
+      reason: 'snapshot-rows-truncated'
+    });
+  });
 });

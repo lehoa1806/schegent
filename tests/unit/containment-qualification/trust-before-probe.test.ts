@@ -142,12 +142,12 @@ describe('FR-R7-16 (16-14) -- trust before probing and cancellation before spawn
     logger.info = vi.fn();
     logger.warn = vi.fn();
     logger.debug = vi.fn();
-    const phaseRunner = new PhaseRunner(
-      registry,
-      new PromptBuilder(),
-      makeFakeAuditWriter(),
+    const phaseRunner = new PhaseRunner({
+      runner: registry,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: makeFakeAuditWriter(),
       logger
-    );
+    });
 
     const baseInputs = {
       phase: 'implement',
@@ -217,12 +217,12 @@ describe('FR-R7-16 (16-14) -- trust before probing and cancellation before spawn
     logger.info = vi.fn();
     logger.warn = vi.fn();
     logger.debug = vi.fn();
-    const phaseRunner = new PhaseRunner(
-      registry,
-      new PromptBuilder(),
-      makeFakeAuditWriter(),
+    const phaseRunner = new PhaseRunner({
+      runner: registry,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: makeFakeAuditWriter(),
       logger
-    );
+    });
 
     const controller = new AbortController();
     controller.abort();

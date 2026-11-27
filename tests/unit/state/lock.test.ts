@@ -219,35 +219,63 @@ describe('WorkspaceLockManager.onPrimacyGained', () => {
     expect(gains).toEqual([]);
   });
 
-  it('notifies exactly once across a gain → loss → gain cycle', async () => {
-    // SC-011's second clause. The re-acquisition `heartbeat()` performs inline
-    // after a lost fence is a gain in every mechanical sense, and announcing it
-    // would install recovery a second time over a window that never stopped
-    // being the driver. It stays silent.
+  it('notifies onFenceLost before onPrimacyGained when heartbeat re-acquires inline after a lost fence', async () => {
+    // Because `onFenceLost` demotes SQLite, clears `installedRecovery`, and cancels
+    // watchdog timers, a successful inline re-acquisition MUST notify `onPrimacyGained`
+    // (strictly after `onFenceLost`) so SQLite primary authority and recovery producers
+    // are restored instead of remaining demoted until restart.
     const lockA = new WorkspaceLockManager(store, 'owner-A', clock, scheduler);
     await lockA.tryAcquire();
 
     const lockB = new WorkspaceLockManager(store, 'owner-B', clock, scheduler);
+    const events: string[] = [];
     const gains: Array<{ acquired: boolean; ownerId: string }> = [];
-    lockB.onPrimacyGained((result) => gains.push(result));
+    lockB.onFenceLost(() => events.push('lost'));
+    lockB.onPrimacyGained((result) => {
+      events.push('gained');
+      gains.push(result);
+    });
     await lockB.tryAcquire();
 
-    // Gain: A goes stale, B's next contest wins.
+    // Initial gain: A goes stale, B's next contest wins.
     clock.advance(STALENESS_THRESHOLD_MS + 1_000);
     await lockB.tick();
     expect(gains).toHaveLength(1);
+    expect(events).toEqual(['gained']);
 
     // Loss: B stalls long enough for A to reclaim the resource at a new
-    // generation, which invalidates B's fence.
+    // generation, which invalidates B's fence, then A releases so B can re-acquire inline.
     clock.advance(STALENESS_THRESHOLD_MS + 1_000);
     expect((await lockA.tryAcquire()).acquired).toBe(true);
     await lockA.release();
 
-    // Gain again, inline at the fence-loss path rather than through a contest.
+    // Gain again, inline at the fence-loss path.
     await lockB.tick();
 
     expect(lockB.isHeld()).toBe(true);
-    expect(gains).toHaveLength(1);
+    expect(gains).toHaveLength(2);
+    expect(gains[1]).toEqual({ acquired: true, ownerId: 'owner-B' });
+    expect(events).toEqual(['gained', 'lost', 'gained']);
+  });
+
+  it('does not notify onPrimacyGained when inline re-acquisition after fence loss is refused by a live rival', async () => {
+    const lockA = new WorkspaceLockManager(store, 'owner-A', clock, scheduler);
+    await lockA.tryAcquire();
+
+    const lockB = new WorkspaceLockManager(store, 'owner-B', clock, scheduler);
+    const events: string[] = [];
+    lockA.onFenceLost(() => events.push('lost'));
+    lockA.onPrimacyGained(() => events.push('gained'));
+
+    // A goes stale; B takes over and stays alive.
+    clock.advance(STALENESS_THRESHOLD_MS + 1_000);
+    expect((await lockB.tryAcquire()).acquired).toBe(true);
+
+    // A's beat fails, fires onFenceLost, attempts inline tryAcquire(), and is refused by live B.
+    await lockA.tick();
+
+    expect(lockA.isHeld()).toBe(false);
+    expect(events).toEqual(['lost']);
   });
 
   it('stops contesting when a losing window is disposed', async () => {

@@ -31,7 +31,13 @@ import { MAX_PAGE_BYTES, type ReportQuery } from '../../contracts/reporting/repo
 import type { ReportCoverage, ReportPage, ReportRow, RootDrillDown } from '../../contracts/reporting/report-rows';
 import { DIMENSION_VALUE_PATTERNS } from '../../contracts/usage-accounting/query-contract';
 import { buildRunRows } from './report-aggregates';
-import { captureReportAsync, sourcesOf, type Capture, type ReportingLogger } from './report-capture';
+import {
+  captureReportAsync,
+  sourcesOf,
+  type Capture,
+  type ReportingLogger,
+  type RunCaptureAsyncOptions
+} from './report-capture';
 import { encodeReportCursor, resolveReportCursor } from './report-cursor';
 import { drillIntoRoot } from './report-drill-down';
 import { canonicalQueryJson, queryDigest, validateReportQuery } from './report-query-validator';
@@ -47,7 +53,7 @@ import {
 import { toUtcIso } from './report-time';
 import type { AccountingPort } from './report-usage';
 import { createWorkSlicer, type WorkSlicer } from './work-slicer';
-import type { CaptureConnection } from './snapshot-capture';
+import type { CaptureConnection, CaptureRequest, CapturedRuns } from './snapshot-capture';
 
 export type { ReportingLogger } from './report-capture';
 
@@ -71,6 +77,11 @@ export interface ReportEngineBounds extends ReportSnapshotBounds {
 export interface ReportEngineOptions {
   /** Runs `read` against the run store's read connection. */
   readonly readSource: <T>(read: (source: CaptureConnection) => T) => T;
+  /** Optional asynchronous read-only worker capture for file-backed run views. */
+  readonly captureRunsAsync?: (
+    request: CaptureRequest,
+    options?: RunCaptureAsyncOptions
+  ) => Promise<ReportResult<CapturedRuns>>;
   readonly workspaceId: string;
   readonly nowMs: () => number;
   readonly monotonicMs: () => number;
@@ -140,9 +151,11 @@ export function createReportEngine(options: ReportEngineOptions): ReportEngine {
   const { accounting } = options;
   const source = {
     readSource: options.readSource,
+    ...(options.captureRunsAsync !== undefined ? { captureRunsAsync: options.captureRunsAsync } : {}),
     workspaceId: options.workspaceId,
     accounting,
     snapshotCap,
+    queryDeadlineMs: deadlineMs,
     ...(options.logger !== undefined ? { logger: options.logger } : {})
   };
 

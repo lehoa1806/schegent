@@ -180,7 +180,7 @@ describe('FR-R7-16 (16-14) -- cancel and close before or during awaited admissio
     expect(log).toEqual(['close']);
   });
 
-  it('belt-and-suspenders: pre-aborted cancellationSignal prevents spawn in ClaudeCliRunner, CodexCliRunner, AgyCliRunner, and AcpBackedRunner legacyDrain', async () => {
+  it('belt-and-suspenders: pre-aborted cancellationSignal prevents spawn in ClaudeCliRunner, CodexCliRunner, AgyCliRunner, and AcpBackedRunner', async () => {
     const spawnSpy = vi.fn(() => {
       throw new Error('must never spawn when already aborted');
     });
@@ -200,17 +200,23 @@ describe('FR-R7-16 (16-14) -- cancel and close before or during awaited admissio
     const codexRes = await new CodexCliRunner(spawnSpy as never).invoke(abortedReq);
     const agyRes = await new AgyCliRunner(spawnSpy as never).invoke(abortedReq);
     const innerLog: string[] = [];
-    const acpLegacyRes = await new AcpBackedRunner({
+    const launchTransport = vi.fn(() => {
+      throw new Error('must never launch ACP transport when already aborted');
+    });
+    const acpRes = await new AcpBackedRunner({
       kind: 'claude',
       inner: innerRunner(innerLog),
-      allowLegacyDrain: true
+      launchTransport
     }).invoke({ ...abortedReq, legacyDrain: true });
 
-    for (const res of [claudeRes, codexRes, agyRes, acpLegacyRes]) {
+    for (const res of [claudeRes, codexRes, agyRes]) {
       expect(res.killed).toBe(true);
       expect(res.exitCode).toBeNull();
     }
+    expect(acpRes.killed).toBe(true);
+    expect(acpRes.exitCode).toBe(130);
     expect(spawnSpy).not.toHaveBeenCalled();
+    expect(launchTransport).not.toHaveBeenCalled();
     expect(innerLog).toEqual([]);
   });
 

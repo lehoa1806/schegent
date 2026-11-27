@@ -81,10 +81,12 @@ import {
  *
  * Returning them as values and letting the caller reassign its own destructured
  * copy would leave every closure in here still holding `null`. Nothing would
- * fail to compile and no test asserts the wiring directly — the monitor would
- * simply stop recording activity, the sampler would stop reaching the UI, and
- * the capability panel would stop refreshing. A silent behavioural regression,
- * which `FR-059` forbids and which typechecking cannot see.
+ * fail to compile — the monitor would simply stop recording activity, the
+ * sampler would stop reaching the UI, and the capability panel would stop
+ * refreshing. A silent behavioural regression, which `FR-059` forbids and
+ * which typechecking cannot see. `tests/lint/activation-late-binding-wiring-census.test.ts`
+ * now enforces that every exposed `bind[A-Z]*` setter in `src/activation/` has
+ * a live call site in the composition root.
  *
  * So the late binding is explicit: `bindLivenessRecorder`, `bindTelemetryProjector`
  * and `bindCapabilityProjector`. That is strictly clearer than the `let x = null`

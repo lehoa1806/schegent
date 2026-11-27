@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SanitizedLogger } from '../../../../src/lib/logger';
 import { validateRunRequest } from '../../../../src/services/run-request/run-request-validator';
+import { createProductionWorkflowComposition } from '../../../../src/services/workflow-execution/production-workflow-composition';
 import { launchComposableWorkflow } from '../../../../src/services/workflow-execution/workflow-launcher';
 import type { ConnectedWorkflowRun } from '../../../../src/state/connected-workflow-run';
 import type { PhaseDefinition } from '../../../../src/contracts/process-definitions';
@@ -251,5 +253,69 @@ describe('workflow-launcher — launchComposableWorkflow & lease release (FR-R5-
     // Runs surface as a run nothing can finish, cancel or retry.
     expect(result.outcome).toBe('rejected-queue');
     expect(compareAndSetConnectedRun).not.toHaveBeenCalled();
+  });
+
+  it('logs sanitized warnings when unstarted connected-run delete or root-link release rollback fails', async () => {
+    const envelope = await buildValidatedEnvelope();
+    const warnings: string[] = [];
+    const logger = new SanitizedLogger([
+      {
+        appendLine: (line) => {
+          if (line.includes('WARN')) warnings.push(line);
+        }
+      }
+    ]);
+    const warnSpy = vi.spyOn(logger, 'warn');
+
+    const composition = createProductionWorkflowComposition({
+      workspaceRoot: '/tmp/ws'
+    });
+    const releaseSpy = vi
+      .spyOn(composition.controlAdmission, 'releaseUnstartedRootLink')
+      .mockRejectedValue(
+        new Error('release-link-failed token=sk-ant-api03-secretvalue12345678901234567890')
+      );
+
+    const deleteUnstartedConnectedRun = vi.fn(async () => {
+      throw new Error('delete-unstarted-failed token=sk-ant-api03-anothersecret12345678901234567');
+    });
+
+    const result = await launchComposableWorkflow(
+      {
+        guardedRun: {
+          scheduleOrEnqueue: async () => ({
+            outcome: 'rejected-paused',
+            detail: 'queue paused'
+          })
+        },
+        logger,
+        productionComposition: composition,
+        connectedRuns: {
+          compareAndSetConnectedRun: async (next) => ({
+            outcome: 'written',
+            run: { ...next, revision: 1 }
+          }),
+          deleteUnstartedConnectedRun
+        },
+        isChildSettled: () => true
+      },
+      {
+        connectedRunId: 'crun-rollback-warn-1',
+        envelope,
+        workspaceRoot: '/tmp/ws',
+        startedAt: 1000,
+        queueId: 'q-main'
+      }
+    );
+
+    expect(result.outcome).toBe('rejected-queue');
+    expect(deleteUnstartedConnectedRun).toHaveBeenCalledWith('crun-rollback-warn-1', 1);
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnings.some((w) => w.includes('failed to delete unstarted connected run'))).toBe(true);
+    expect(warnings.some((w) => w.includes('failed to release unstarted root link'))).toBe(true);
+    for (const line of warnings) {
+      expect(line).not.toContain('sk-ant-api03-');
+    }
   });
 });

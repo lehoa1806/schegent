@@ -52,22 +52,31 @@ export const ACTING_LAYERS = [
 // whoever takes it rather than taken in passing.
 
 /**
- * FR-R7-07 (FR-006) & FR-R8-04 (04-03) — Declarative per-layer value-import policy
- * enforced by `tests/lint/layer-dependency-direction.test.ts` (complementing the
- * leaf-layer gate in `dependency-direction.test.ts`).
+ * FR-R7-07 (FR-006), FR-R8-04 (04-03), & principal-review-2026-11-27-r2 (F-06) —
+ * Declarative per-layer value-import policy enforced by
+ * `tests/lint/layer-dependency-direction.test.ts` (complementing the leaf-layer
+ * gate in `dependency-direction.test.ts`).
  *
  * Each governed layer maps to the exact set of first-party layers it may
  * value-import. Non-acting layers (`config`, `audit`) remain outside
  * `ACTING_LAYERS` per the FR-R3-128 note above.
  *
- * `services` joins this map in FR-R8-04 (`04-03`) to prevent any new reverse
- * runtime value edge into `controller/`, `commands/`, `ui/`, `activation/`,
- * `headless/`, or top-level `root`, while holding all 11 reconciled
- * `services/ -> controller/` edges under an exact-target, owner-attributed
- * shrink-only allowlist below (0 `services/ -> commands|ui` edges remain).
+ * Governed layers form a strict acyclic partial order:
+ *   controller -> services -> {queue, runner, metrics} -> {parser, state} -> config -> {contracts, lib}
+ *
+ * `services` joined in FR-R8-04 (`04-03`); `controller`, `runner`, `queue`,
+ * `config`, `parser`, and `metrics` joined in `principal-review-2026-11-27-r2 F-06`
+ * so every layer currently participating in a layer-level cycle with `services`
+ * (or sitting above `services`) has its allowed value-import surface locked down
+ * and today's reverse edges frozen under the exact-target shrink-only allowlist.
  */
 export const LAYER_ALLOWED_VALUE_IMPORTS: Readonly<Record<string, readonly string[]>> = {
+  config: ['config', 'contracts', 'lib', 'catalog'],
+  parser: ['parser', 'contracts', 'lib', 'audit'],
   state: ['state', 'contracts', 'lib', 'config', 'audit'],
+  metrics: ['metrics', 'contracts', 'lib', 'audit', 'parser', 'state'],
+  queue: ['queue', 'contracts', 'lib', 'config', 'audit', 'state'],
+  runner: ['runner', 'contracts', 'lib', 'config', 'audit', 'parser', 'state'],
   services: [
     'services',
     'contracts',
@@ -84,7 +93,33 @@ export const LAYER_ALLOWED_VALUE_IMPORTS: Readonly<Record<string, readonly strin
     'telemetry',
     'watchdog',
     'host-services'
+  ],
+  controller: [
+    'controller',
+    'contracts',
+    'lib',
+    'config',
+    'audit',
+    'state',
+    'queue',
+    'parser',
+    'runner',
+    'services'
   ]
+};
+
+/**
+ * principal-review-2026-11-27-r2 (F-06 / D3) — Upper layers that `src/contracts/`
+ * should not reverse-import even as TypeScript `import type` edges. Today's
+ * reverse type edges are pinned under a shrink-only per-layer ceiling so contract
+ * modules cannot grow new upward type coupling.
+ */
+export const CONTRACTS_REVERSE_TYPE_EDGE_CEILINGS: Readonly<Record<string, number>> = {
+  services: 9,
+  state: 4,
+  controller: 1,
+  runner: 2,
+  queue: 5
 };
 
 /**
@@ -209,6 +244,269 @@ export const LAYER_IMPORT_ALLOWLIST: readonly LayerImportAllowlistEntry[] = [
     owner: 'resource-budgets',
     filing: 'FR-R8-04',
     reason: 'Resource inventory reads posture cache bound constant from controller/backend-posture-recorder.ts; relocate constant to contracts/ on next touch.'
+  },
+
+  // ---- 28 frozen reverse value edges into `services/` from newly governed layers (principal-review-2026-11-27-r2 F-06)
+  // config -> services (2)
+  {
+    from: 'src/config/pipeline-snapshot.ts',
+    fromLayer: 'config',
+    intoLayer: 'services',
+    target: 'src/services/phase-context/policy.ts',
+    owner: 'phase-handoff',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Pipeline snapshot reads pure phase-context policy defaults from services/phase-context/policy.ts; relocate pure policy helpers to contracts/ on next touch.'
+  },
+  {
+    from: 'src/config/workflow-handoff-policy-validator.ts',
+    fromLayer: 'config',
+    intoLayer: 'services',
+    target: 'src/services/phase-context/policy.ts',
+    owner: 'phase-handoff',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Workflow handoff validator reads pure phase-context policy helpers from services/phase-context/policy.ts; relocate pure policy helpers to contracts/ on next touch.'
+  },
+
+  // parser -> services (1)
+  {
+    from: 'src/parser/stream-json-unwrapper.ts',
+    fromLayer: 'parser',
+    intoLayer: 'services',
+    target: 'src/services/phase-log/phase-log-jsonl-parser.ts',
+    owner: 'phase-log',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Stream JSON unwrapper reuses pure JSONL parsing helper hosted in services/phase-log/phase-log-jsonl-parser.ts; move pure parser down to parser/ or lib/ on next touch.'
+  },
+
+  // metrics -> services (2)
+  {
+    from: 'src/metrics/metrics-rollup-writer.ts',
+    fromLayer: 'metrics',
+    intoLayer: 'services',
+    target: 'src/services/evidence-health/evidence-health-monitor.ts',
+    owner: 'operator-evidence',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Metrics rollup writer uses evidence-health helper from services/evidence-health/evidence-health-monitor.ts; invert via a narrow port in contracts/ on next touch.'
+  },
+  {
+    from: 'src/metrics/metrics-service.ts',
+    fromLayer: 'metrics',
+    intoLayer: 'services',
+    target: 'src/services/usage-reader.ts',
+    owner: 'operator-evidence',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Metrics service reads usage records through services/usage-reader.ts; inject reader port or relocate pure usage reader below services/ on next touch.'
+  },
+
+  // queue -> services (2)
+  {
+    from: 'src/queue/terminal-capture.ts',
+    fromLayer: 'queue',
+    intoLayer: 'services',
+    target: 'src/services/run-degradation.ts',
+    owner: 'queue-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Queue terminal capture calls pure run-degradation classifier in services/run-degradation.ts; relocate pure classifier to contracts/ or state/ on next touch.'
+  },
+  {
+    from: 'src/queue/terminal-capture.ts',
+    fromLayer: 'queue',
+    intoLayer: 'services',
+    target: 'src/services/run-planned-total.ts',
+    owner: 'queue-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Queue terminal capture calls pure planned-phase counter in services/run-planned-total.ts; relocate pure counter to contracts/ or state/ on next touch.'
+  },
+
+  // runner -> services (21)
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/acp-client.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner drives AcpClient currently housed in services/acp-runtime/; inject via port or relocate acp-runtime transport below runner/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/agent-identifier.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner uses pure agent-identifier helper in services/acp-runtime/agent-identifier.ts; relocate pure helper to contracts/ or lib/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/client-guards.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner calls client guard predicates in services/acp-runtime/client-guards.ts; relocate pure guards to contracts/ or runner/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/acp-durable-runtime-store.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner writes durable ACP runtime records via services/acp-runtime/acp-durable-runtime-store.ts; invert behind a narrow store port on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/profiles.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner reads built-in ACP profile descriptors from services/acp-runtime/profiles.ts; relocate pure profile definitions to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/stdio-transport.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner constructs stdio transport from services/acp-runtime/stdio-transport.ts; inject transport factory or move transport under runner/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/containment-qualification/acp-authority-gate.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner enforces AcpAuthorityGate from services/containment-qualification/; invert behind a gate port injected from activation/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/phase-context/handoff-delivery-coordinator.ts',
+    owner: 'phase-handoff',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner invokes phase-context handoff helper in services/phase-context/; inject delivery port from activation/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-backed-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/execution-lanes/git-runner.ts',
+    owner: 'execution-lanes',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'AcpBackedRunner calls git-runner helper in services/execution-lanes/git-runner.ts; relocate low-level git runner to lib/ or inject port on next touch.'
+  },
+  {
+    from: 'src/runner/acp-runner-stream-helpers.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/terminal-reconciliation.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'ACP stream helpers call pure terminal-reconciliation helper in services/acp-runtime/; relocate pure helper to contracts/ or parser/ on next touch.'
+  },
+  {
+    from: 'src/runner/acp-stream-encoder.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/acp-runtime/agent-identifier.ts',
+    owner: 'acp-runtime',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'ACP stream encoder reads agent-identifier helper from services/acp-runtime/agent-identifier.ts; relocate pure helper to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/agy-cli.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/capability-enforcement-plan.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Agy CLI runner reads pure capability-enforcement plan helper from services/capability-enforcement-plan.ts; relocate pure helper to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/agy-cli.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/capability-refusal.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Agy CLI runner constructs CapabilityRefusalError from services/capability-refusal.ts; relocate error contract to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/backend-runner-factory.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/backend-containment-policy.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'BackendRunnerFactory checks pure containment policy helpers in services/backend-containment-policy.ts; relocate pure policy helpers to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/backend-runner-registry.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/backend-containment-policy.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'BackendRunnerRegistry checks pure containment policy helpers in services/backend-containment-policy.ts; relocate pure policy helpers to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/claude-cli.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/capability-enforcement-plan.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Claude CLI runner reads pure capability-enforcement plan helper from services/capability-enforcement-plan.ts; relocate pure helper to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/claude-cli.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/capability-refusal.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Claude CLI runner constructs CapabilityRefusalError from services/capability-refusal.ts; relocate error contract to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/codex-cli.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/capability-enforcement-plan.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Codex CLI runner reads pure capability-enforcement plan helper from services/capability-enforcement-plan.ts; relocate pure helper to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/codex-cli.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/capability-refusal.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Codex CLI runner constructs CapabilityRefusalError from services/capability-refusal.ts; relocate error contract to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/native-review-launch.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/capability-refusal.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'Native review launcher constructs CapabilityRefusalError from services/capability-refusal.ts; relocate error contract to contracts/ on next touch.'
+  },
+  {
+    from: 'src/runner/spawn-gated-runner.ts',
+    fromLayer: 'runner',
+    intoLayer: 'services',
+    target: 'src/services/containment-qualification/admission-refusal.ts',
+    owner: 'containment-policy',
+    filing: 'principal-review-2026-11-27-r2 F-06',
+    reason: 'SpawnGatedRunner constructs ContainmentAdmissionRefusedError from services/containment-qualification/admission-refusal.ts; relocate error contract to contracts/ on next touch.'
   }
 ];
 

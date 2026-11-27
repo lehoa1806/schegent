@@ -157,7 +157,12 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
       cancelActive: vi.fn(() => false),
       hasActiveProcess: false
     } as unknown as ClaudeCliRunner;
-    const phaseRunner = new PhaseRunner(cliRunner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: audit,
+      logger
+    });
 
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);

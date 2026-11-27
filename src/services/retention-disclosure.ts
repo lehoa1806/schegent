@@ -425,7 +425,7 @@ export function retentionDisclosure(): readonly RetentionInventoryRow[] {
       location: '<destination>/<export>',
       contentClass: 'redacted content',
       redacted: true,
-      bounds: `a directory or file you choose; each artifact is carried up to ${mib(
+      bounds: `a directory or file you choose (run evidence exports create a fresh owner-only child directory per invocation); each artifact is carried up to ${mib(
         MAX_ARTIFACT_BYTES
       )} MiB and anything larger is omitted with the reason in the manifest; owner-only permissions; Schegent never removes or ages what it exported`,
       sweptBy: ['none'],

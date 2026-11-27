@@ -282,7 +282,13 @@ async function makeHarness(
     cancelActive: vi.fn(() => { cliCancels += 1; return false; }),
     hasActiveProcess: false
   } as unknown as ClaudeCliRunner;
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger, transcript);
+  const phaseRunner = new PhaseRunner({
+    runner,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
+    logger,
+    rawTranscript: transcript
+  });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);

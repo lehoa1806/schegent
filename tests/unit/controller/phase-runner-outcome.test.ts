@@ -95,12 +95,12 @@ describe('PhaseRunner.run — clean-with-non-zero-exit handling (T043 / FR-014)'
     );
     const lines: string[] = [];
     const logger = new SanitizedLogger([{ appendLine: (line) => void lines.push(line) }]);
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
-      makeFakeAuditWriter(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: makeFakeAuditWriter(),
       logger
-    );
+    });
     const output = await runner.run(baseInputs);
     expect(output.outcome).toBe('clean');
     const line = lines.find((entry) => entry.includes(' WARN phase-runner: clean result with non-zero exit code '));
@@ -117,12 +117,12 @@ describe('PhaseRunner.run — clean-with-non-zero-exit handling (T043 / FR-014)'
     );
     const lines: string[] = [];
     const logger = new SanitizedLogger([{ appendLine: (line) => void lines.push(line) }]);
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
-      makeFakeAuditWriter(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: makeFakeAuditWriter(),
       logger
-    );
+    });
     const output = await runner.run(baseInputs);
     expect(output.outcome).toBe('clean');
     const line = lines.find((entry) => entry.includes(' WARN phase-runner: clean result with non-zero exit code '));
@@ -163,7 +163,12 @@ describe('PhaseRunner.run — the cancelled phase is recorded (feature 212)', ()
       makeRawOutput({ killed: true, exitCode: null })
     );
     const { writer, written } = makeIdRecordingWriter();
-    const runner = new PhaseRunner(cliRunner, new PromptBuilder(), writer, new SanitizedLogger());
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     const out = await runner.run(baseInputs);
     expect(out.terminationReason).toBe('cancel');
     return written;
@@ -228,7 +233,12 @@ describe('PhaseRunner.run — one terminal record on every termination path (fea
   ): Promise<{ written: AuditEntry[]; end: AuditEntry; reason: string | undefined }> {
     const cliRunner = makeFakeRunner(async () => makeRawOutput(raw));
     const { writer, written } = makeIdRecordingWriter();
-    const runner = new PhaseRunner(cliRunner, new PromptBuilder(), writer, new SanitizedLogger());
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     const out = await runner.run({ ...baseInputs, ...inputs });
     const ends = written.filter((e) => e.eventType === 'phase-end');
     const starts = written.filter((e) => e.eventType === 'phase-start');
@@ -316,7 +326,12 @@ describe('PhaseRunner.run — the envelope-presence fact reaches the result (fea
   ): Promise<{ envelope: unknown; end: AuditEntry }> {
     const cliRunner = makeFakeRunner(async () => makeRawOutput(raw));
     const { writer, written } = makeIdRecordingWriter();
-    const runner = new PhaseRunner(cliRunner, new PromptBuilder(), writer, new SanitizedLogger());
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     const out = await runner.run({ ...baseInputs, ...inputs });
     const end = written.find((e) => e.eventType === 'phase-end')!;
     return { envelope: out.resultEnvelope, end };
@@ -406,7 +421,12 @@ describe('PhaseRunner.run — a terminated phase reports what it did (feature 21
       })
     );
     const { writer, written } = makeIdRecordingWriter();
-    const runner = new PhaseRunner(cliRunner, new PromptBuilder(), writer, new SanitizedLogger());
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     await runner.run({ ...baseInputs, phaseDef: VERIFIED_PHASE });
     const ends = written.filter((e) => e.eventType === 'phase-end');
     expect(ends).toHaveLength(1);

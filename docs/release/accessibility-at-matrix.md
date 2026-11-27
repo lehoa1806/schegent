@@ -1,6 +1,6 @@
 # Assistive-technology matrix
 
-**Captured**: 2026-08-25 · **Updated**: 2026-11-24 (`FR-R8-03`, `03-07`); 2026-11-23 (`FR-R7-17`, Features 310/311/331; `FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA (whole-app automated scan baseline); WCAG 2.2 Level AA (`F11-NFR-07` / `NFR-007` for Feature 310 and `F12-NFR-04` / `NFR-004` for Feature 311 operator journeys) · **Language scope**: English-only by product decision ([English-only is a product decision](../concepts/english-only-not-localizable.md))
+**Captured**: 2026-08-25 · **Latest review**: 2026-11-27 ([Review 2026-11-27](#review-2026-11-27)) · **Updated**: 2026-11-27; 2026-11-24 (`FR-R8-03`, `03-07`); 2026-11-23 (`FR-R7-17`, Features 310/311/331; `FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA (whole-app automated scan baseline); WCAG 2.2 Level AA (`F11-NFR-07` / `NFR-007` for Feature 310 and `F12-NFR-04` / `NFR-004` for Feature 311 operator journeys) · **Language scope**: English-only by product decision ([English-only is a product decision](../concepts/english-only-not-localizable.md))
 **Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`), 310 (`FR-R6-F11`), 311 (`FR-R6-F12`), 328 (`FR-R7-14`, 14-17), 331 (`FR-R7-17`, `R7-17-01` / `R7-17-03`), 335 (`FR-R8-03`, `03-07`)
 
 <!-- at-matrix-review-date: 2026-12-11 -->

@@ -239,7 +239,6 @@ export function buildHostAcpDispatchOptions(
 
   return {
     enabled: true,
-    allowLegacyDrain: true,
     bridgeScriptPath,
     authorityGate,
     primaryWorkspaceRoot: deps.workspaceRoot,

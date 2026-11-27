@@ -90,7 +90,12 @@ async function deliveredWarnings(stdout: string, exitCode = 0, phaseDef?: PhaseD
     logPath: '/tmp/.schegent/audit.log'
   } as unknown as AuditLogWriter;
 
-  const runner = new PhaseRunner(cliRunner, new PromptBuilder(), auditWriter, new SanitizedLogger());
+  const runner = new PhaseRunner({
+    runner: cliRunner,
+    promptBuilder: new PromptBuilder(),
+    auditWriter,
+    logger: new SanitizedLogger()
+  });
   await runner.run({ ...baseInputs, ...(phaseDef ? { phaseDef } : {}) });
 
   return appended.flatMap((entry) => {

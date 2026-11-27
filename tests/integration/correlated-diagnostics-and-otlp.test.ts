@@ -202,7 +202,7 @@ describe('FR-R8-03 (03-02) metadata-only correlated diagnostics, OTLP lifecycle,
       }
     };
 
-    const phaseRunner = new PhaseRunner(fakeBackend, new PromptBuilder(), auditWriter, logger);
+    const phaseRunner = new PhaseRunner({ runner: fakeBackend, promptBuilder: new PromptBuilder(), auditWriter, logger });
     const codexPhaseDef = {
       id: 'speckit-implement',
       name: 'Implement',

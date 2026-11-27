@@ -310,20 +310,16 @@ async function createExecutionStack(
     hasActiveProcess: false
   } as unknown as ClaudeCliRunner;
 
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
+    promptBuilder: new PromptBuilder(),
     auditWriter,
     logger,
     rawTranscript,
-    null,
-    null,
-    null,
-    null,
-    createPhaseBreakpointAccessor(
+    phaseBreakpointAccessor: createPhaseBreakpointAccessor(
       (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
     )
-  );
+  });
 
   const lockStore = new WorkspaceStateStore(makeMemoryMemento(), logger);
   await lockStore.initialize();

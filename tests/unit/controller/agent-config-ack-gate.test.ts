@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AgentConfigAckGate,
   type AgentConfigAckGateDeps
@@ -11,6 +14,7 @@ import {
 } from '../../../src/services/agent-config-ack-refusal';
 import {
   computeAgentConfigFingerprint,
+  scanRepoAgentConfig,
   type RepoAgentConfigScanResult,
   type ScannedAgentConfigEntry
 } from '../../../src/services/repo-agent-config-scanner';
@@ -43,10 +47,17 @@ function makeScan(
 describe('AgentConfigAckGate (FR-R7-04, SC-002, SC-005, SC-006)', () => {
   const ctx = (runId = 'run-1') => ({ runId, phase: 'specify', iteration: 1, cwd: '/ws' });
 
-  it('skips contained backends (codex) completely without scanning or prompting', async () => {
-    const scan = vi.fn();
-    const request = vi.fn();
-    const appendAudit = vi.fn();
+  const tempDirs: string[] = [];
+  afterEach(async () => {
+    while (tempDirs.length > 0) {
+      await fsp.rm(tempDirs.pop()!, { recursive: true, force: true });
+    }
+  });
+
+  it('S3: applies to codex when project config is present and proceeds silently when absent', async () => {
+    const scan = vi.fn(async () => makeScan('codex', []));
+    const request = vi.fn(async () => 'this-run' as const);
+    const appendAudit = vi.fn(async () => undefined);
     const gate = new AgentConfigAckGate({
       scan,
       hasGrant: () => false,
@@ -57,10 +68,19 @@ describe('AgentConfigAckGate (FR-R7-04, SC-002, SC-005, SC-006)', () => {
       logger: { warn: vi.fn() }
     });
 
-    await gate.ensureAcknowledged(ctx(), 'codex');
-    expect(scan).not.toHaveBeenCalled();
+    // Absent config: scans, no prompt, no audit.
+    await gate.ensureAcknowledged(ctx('run-codex-empty'), 'codex');
+    expect(scan).toHaveBeenCalledTimes(1);
     expect(request).not.toHaveBeenCalled();
     expect(appendAudit).not.toHaveBeenCalled();
+
+    // Present .codex/config.toml: prompts operator.
+    scan.mockResolvedValueOnce(
+      makeScan('codex', [{ name: '.codex/config.toml', status: 'present', size: 42, digest: DIGEST_1 }])
+    );
+    await gate.ensureAcknowledged(ctx('run-codex-present'), 'codex');
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(appendAudit).toHaveBeenCalledTimes(1);
   });
 
   it('does not prompt when an uncontained repository has zero discovered config files', async () => {
@@ -452,5 +472,86 @@ describe('AgentConfigAckGate (FR-R7-04, SC-002, SC-005, SC-006)', () => {
     // run-stale was evicted and fails closed by re-running the scan and prompt.
     await gate.ensureAcknowledged(ctx('run-stale'), 'claude');
     expect(request).toHaveBeenCalledTimes(callsBeforeRefresh + 2);
+  });
+
+  it('S4: unchanged fingerprint across phases does not re-prompt; file added under .claude/skills/ mid-Run forces fresh prompt and refuses on denial', async () => {
+    const ws = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-s4-midrun-'));
+    tempDirs.push(ws);
+    await fsp.writeFile(path.join(ws, 'CLAUDE.md'), '# Initial rules\n', 'utf8');
+
+    const scanSpy = vi.fn((cwd: string, backend: 'claude' | 'codex' | 'agy') =>
+      scanRepoAgentConfig(cwd, backend)
+    );
+    const request = vi
+      .fn<(scan: RepoAgentConfigScanResult, prev: AgentConfigGrant | null) => Promise<'this-run' | 'denied'>>()
+      .mockResolvedValueOnce('this-run')
+      .mockResolvedValueOnce('denied');
+    const appendAudit = vi.fn(async () => undefined);
+
+    const gate = new AgentConfigAckGate({
+      scan: scanSpy,
+      hasGrant: () => false,
+      latestGrantForBackend: () => null,
+      persistGrant: vi.fn(),
+      request,
+      appendAudit,
+      logger: { warn: vi.fn() }
+    });
+
+    // Phase 1: prompts once and clears this fingerprint.
+    await gate.ensureAcknowledged({ runId: 'run-s4', phase: 'specify', iteration: 1, cwd: ws }, 'claude');
+    expect(scanSpy).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(1);
+
+    // Phase 2: unchanged fingerprint -> re-scans, NO re-prompt, NO duplicate audit.
+    await gate.ensureAcknowledged({ runId: 'run-s4', phase: 'plan', iteration: 1, cwd: ws }, 'claude');
+    expect(scanSpy).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(appendAudit).toHaveBeenCalledTimes(1);
+
+    // Mid-Run tampering: Phase 2 adds a skill file under .claude/skills/.
+    await fsp.mkdir(path.join(ws, '.claude', 'skills', 'injected'), { recursive: true });
+    await fsp.writeFile(path.join(ws, '.claude', 'skills', 'injected', 'SKILL.md'), '# hostile', 'utf8');
+
+    // Phase 3: fingerprint changed -> re-prompts with prior in-run snapshot; denial throws refusal.
+    await expect(
+      gate.ensureAcknowledged({ runId: 'run-s4', phase: 'implement', iteration: 1, cwd: ws }, 'claude')
+    ).rejects.toBeInstanceOf(AgentConfigAcknowledgementRefusedError);
+    expect(scanSpy).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[1]![1]?.files.map((f) => f.name)).toEqual(['CLAUDE.md']);
+  });
+
+  it('S3/S4: overflow bound triggers prompt and forbids persisting grant', async () => {
+    const ws = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-s3-overflow-'));
+    tempDirs.push(ws);
+    await fsp.mkdir(path.join(ws, '.claude', 'skills'), { recursive: true });
+    for (let i = 0; i < 4; i += 1) {
+      await fsp.writeFile(path.join(ws, '.claude', 'skills', `s${i}.md`), `skill ${i}`, 'utf8');
+    }
+
+    const request = vi.fn<
+      (scan: RepoAgentConfigScanResult, previousGrant: AgentConfigGrant | null) => Promise<'this-run'>
+    >(async () => 'this-run');
+    const gate = new AgentConfigAckGate({
+      scan: (cwd, backend) => scanRepoAgentConfig(cwd, backend, { maxFiles: 2 }),
+      hasGrant: () => true, // Must be ignored when scan overflows (persistable=false).
+      latestGrantForBackend: () => null,
+      persistGrant: vi.fn(),
+      request,
+      appendAudit: vi.fn(async () => undefined),
+      logger: { warn: vi.fn() }
+    });
+
+    await gate.ensureAcknowledged({ runId: 'run-ovf', phase: 'specify', iteration: 1, cwd: ws }, 'claude');
+    expect(request).toHaveBeenCalledTimes(1);
+    const scanned = request.mock.calls[0]?.[0];
+    expect(scanned).toBeDefined();
+    expect(scanned!.persistable).toBe(false);
+    expect(
+      scanned!.entries.some(
+        (e) => e.status === 'unreadable' && e.unreadableReason === 'file-count-limit-exceeded'
+      )
+    ).toBe(true);
   });
 });

@@ -105,14 +105,13 @@ describe('Task Lifecycle Events Integration (072 T025)', () => {
     const logger = new SanitizedLogger();
     const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun(DEFAULT_QUEUE_ID));
     
-    const phaseRunner = new PhaseRunner(
-      mockRunner,
-      new PromptBuilder(),
+    const phaseRunner = new PhaseRunner({
+      runner: mockRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
       logger,
-      null, null, null, null, null,
       phaseBreakpointAccessor
-    );
+    });
 
     controller = new SchegentWorkflowController(
       phaseRunner,

@@ -10,6 +10,7 @@ import { decideTaskTransition } from '../queue/task-transition-decision';
 import { STALENESS_THRESHOLD_MS } from '../state/lock';
 import { queueResource } from '../state/ownership-registry';
 import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
+import { terminalJournalWarning } from '../state/terminal-transition-journal';
 import type { HistoryRecorder } from './history-recorder';
 
 /**
@@ -393,6 +394,21 @@ export class TerminalTransitionCoordinator {
    * nothing to do with them.
    */
   public async replay(selfOwnerId?: string): Promise<void> {
+    const storeWithInspect: Partial<Pick<WorkspaceStateStore, 'inspectTerminalTransitionJournal'>> =
+      this.store;
+    const inspection = storeWithInspect.inspectTerminalTransitionJournal?.call(this.store);
+    if (inspection !== undefined && inspection.status === 'unreadable-envelope') {
+      this.logger.warn(terminalJournalWarning(inspection), {
+        reason: inspection.envelopeReason ?? 'corrupt-envelope'
+      });
+      return;
+    }
+    if (inspection !== undefined && inspection.status === 'degraded') {
+      this.logger.warn(terminalJournalWarning(inspection), {
+        preservedCount: inspection.preservedCount,
+        preservedRunIds: inspection.preservedRunIds
+      });
+    }
     for (const intent of Object.values(this.store.getTerminalTransitionIntents())) {
       try {
         // FR-R4-F01 (contract C4 G14) — an intent whose queue a live rival holds is

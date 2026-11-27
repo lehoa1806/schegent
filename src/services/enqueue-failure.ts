@@ -47,7 +47,8 @@ export function classifyEnqueueFailure(thrown: unknown): EnqueueFailureClass {
   if (
     thrown instanceof QueueMutationRejected &&
     thrown.reason !== 'fence-unverifiable' &&
-    thrown.reason !== 'durable-store-unavailable'
+    thrown.reason !== 'durable-store-unavailable' &&
+    thrown.reason !== 'terminal-journal-corrupt'
   ) {
     return { outcome: 'rejected-validation', reason: thrown.reason };
   }

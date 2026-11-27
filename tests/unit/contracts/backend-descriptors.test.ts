@@ -72,7 +72,11 @@ describe('FR-R7-06 — BackendDescriptor table parity, purity, and unknown-safet
           '.claude/settings.local.json',
           '.mcp.json',
           'CLAUDE.md',
-          '.claude/CLAUDE.md'
+          '.claude/CLAUDE.md',
+          '.claude/skills/',
+          '.claude/commands/',
+          '.claude/agents/',
+          '.claude/hooks/'
         ],
         supportsGitSideEffects: true,
         supportsAutoCompactOverride: true,
@@ -139,7 +143,14 @@ describe('FR-R7-06 — BackendDescriptor table parity, purity, and unknown-safet
           nativeStdioArgs: ['acp', '--stdio', '--disable-telemetry']
         },
         ambientConfigSegments: null,
-        repoAgentConfigPaths: [],
+        repoAgentConfigPaths: [
+          'AGENTS.md',
+          'GEMINI.md',
+          '.agents/skills/',
+          '.agents/rules/',
+          '.agents/workflows/',
+          '.gemini/settings.json'
+        ],
         supportsGitSideEffects: true,
         supportsAutoCompactOverride: false,
         supportsSessionCompaction: false,

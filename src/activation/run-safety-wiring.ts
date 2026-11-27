@@ -74,8 +74,13 @@ import {
   EXPECTED_CUTOVER_REGISTRATION_ORDER,
   getSqliteCutoverCoordinator,
   getWorkspaceLockForStore,
-  sweepWithReadableProtection
+  sweepWithReadableProtection,
+  type SqliteCutoverServices
 } from './sqlite-cutover-wiring';
+import { extractPrimacyGainedSubscriber } from './sqlite-cutover-helpers';
+import { discloseVerdictBasisMigration } from './evidence-wiring';
+import { completeInterruptedResetOnActivation, recordCompletedInterruptedReset } from '../commands/reset-wiring';
+import { forwardMigrationAuditEvents } from '../state/migration-audit-forwarder';
 import type { BackendCapabilityService } from '../services/backend-capability-service';
 import { isWorkflowNodeTerminalStatus } from '../contracts/workflow-definitions';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
@@ -189,8 +194,55 @@ export async function createRunSafetyWiring(input: {
     boundDefaultRunnerKind = defaultRunnerKind;
     boundCancelOrphanedQueueItem = cancelOrphanedQueueItem;
   };
+  let lastReconciledSqliteStore: object | null = null;
+  const reconcileStoreAfterPrimaryAttach = async (
+    services: SqliteCutoverServices | null | undefined
+  ): Promise<void> => {
+    if (services === null || services === undefined) return;
+    if (services.sqliteStore === lastReconciledSqliteStore) return;
+    lastReconciledSqliteStore = services.sqliteStore;
+    if (typeof input.store.completeInterruptedReset === 'function') {
+      const resetGen = await completeInterruptedResetOnActivation(input.store, input.logger);
+      if (resetGen !== null) {
+        await recordCompletedInterruptedReset(input.auditWriter, input.logger, resetGen);
+      }
+    }
+    if (typeof input.store.initialize === 'function') {
+      const postAttachInit = await input.store.initialize();
+      const quarantineEvents =
+        typeof input.store.drainRunQuarantineEvents === 'function'
+          ? input.store.drainRunQuarantineEvents()
+          : [];
+      if (
+        postAttachInit.migrated ||
+        quarantineEvents.length > 0 ||
+        postAttachInit.v14MigrationEvents.length > 0
+      ) {
+        await forwardMigrationAuditEvents(
+          {
+            v6MigrationEvents: postAttachInit.v6MigrationEvents,
+            v7MigrationEvents: postAttachInit.v7MigrationEvents,
+            v10MigrationEvents: postAttachInit.v10MigrationEvents,
+            v11MigrationEvents: postAttachInit.v11MigrationEvents,
+            v12MigrationEvents: postAttachInit.v12MigrationEvents,
+            v13MigrationEvents: postAttachInit.v13MigrationEvents,
+            orphanedRunEvents: postAttachInit.orphanedRunEvents,
+            runRepairEvents: postAttachInit.runRepairEvents,
+            quarantineEvents
+          },
+          input.auditWriter,
+          input.logger
+        );
+        discloseVerdictBasisMigration(postAttachInit.v14MigrationEvents, {
+          notifier: input.notifier,
+          logger: input.logger
+        });
+      }
+    }
+  };
   const runComposableWorkflowRecovery = async (): Promise<void> => {
-    await sqliteCutover?.activatePrimary();
+    const services = await sqliteCutover?.activatePrimary();
+    await reconcileStoreAfterPrimaryAttach(services);
     await reconcileComposableWorkflowRuns({
       workspaceRoot: input.workspaceRoot,
       store: input.store,
@@ -201,7 +253,8 @@ export async function createRunSafetyWiring(input: {
     });
   };
   const replayTerminalTransitions = async (selfOwnerId?: string, beforeComposableRecovery?: () => Promise<void>): Promise<void> => {
-    await sqliteCutover?.activatePrimary();
+    const services = await sqliteCutover?.activatePrimary();
+    await reconcileStoreAfterPrimaryAttach(services);
     await terminalTransitions.replay(selfOwnerId);
     await beforeComposableRecovery?.();
     await runComposableWorkflowRecovery();
@@ -362,6 +415,9 @@ export async function createRunSafetyWiring(input: {
     resolveRunCwd
   );
   const lockRegistration = getWorkspaceLockForStore(input.store);
+  const subscribePrimacyGained = lockRegistration
+    ? extractPrimacyGainedSubscriber(lockRegistration.lock)
+    : undefined;
   const sqliteCutover = lockRegistration
     ? createSqliteCutoverCoordinator({
         context: input.context,
@@ -376,6 +432,7 @@ export async function createRunSafetyWiring(input: {
         ...(lockRegistration.lock.onFenceLost !== undefined
           ? { subscribePrimacyLost: (listener: () => void) => lockRegistration.lock.onFenceLost!(listener) }
           : {}),
+        ...(subscribePrimacyGained !== undefined ? { subscribePrimacyGained } : {}),
         disposables: lockRegistration.disposables
       })
     : undefined;
@@ -629,7 +686,8 @@ export async function reconcileComposableWorkflowRuns(input: {
       const availabilityWiring = createBackendAvailabilityWiring({
         store: input.store as WorkspaceStateStore,
         capabilities: input.capabilities,
-        hostEpoch: 'recovery-epoch'
+        hostEpoch: 'recovery-epoch',
+        logger: input.logger
       });
       availabilityWiring.dispose();
     }

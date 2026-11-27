@@ -2,8 +2,8 @@
  * FR-R6-F04 (F04-A, FR-004) — Trusted host storage location resolver.
  *
  * Enforces:
- * - Only host-trusted storage roots (`host_storage_uri`, `host_global_storage_uri`,
- *   or explicit `cli_state_dir`) are accepted; webview, workspace-setting, and
+ * - Only host-trusted storage roots (`host_storage_uri` or
+ *   `host_global_storage_uri`) are accepted; webview, workspace-setting, and
  *   untrusted env overrides are rejected before touching the filesystem.
  * - Directory creation uses `ensureAnchorWithinRoot` from `src/lib/safe-open.ts`
  *   with literal `0o700` mode (Hard Rule 69).
@@ -47,15 +47,14 @@ export async function resolveTrustedSqliteLocation(
 ): Promise<StorageLocationResolution> {
   if (
     request.sourceKind !== 'host_storage_uri' &&
-    request.sourceKind !== 'host_global_storage_uri' &&
-    request.sourceKind !== 'cli_state_dir'
+    request.sourceKind !== 'host_global_storage_uri'
   ) {
     return {
       status: 'refused',
       reason: 'untrusted_source',
       operatorDiagnostic:
         `Refused SQLite storage location from untrusted source '${request.sourceKind}'. ` +
-        'Database paths must originate from host storageUri, globalStorageUri, or explicit CLI --state-dir.'
+        'Database paths must originate from host storageUri or globalStorageUri.'
     };
   }
 
@@ -131,7 +130,7 @@ export async function resolveTrustedSqliteLocation(
       reason: 'network_share_wal_unsupported',
       operatorDiagnostic:
         `Refused SQLite WAL mode on network filesystem '${fsType}'. ` +
-        'Shared-memory WAL (.shm) locking is unsafe across network shares; configure a local --state-dir.'
+        'Shared-memory WAL (.shm) locking is unsafe across network shares; store the database on a local filesystem.'
     };
   }
 

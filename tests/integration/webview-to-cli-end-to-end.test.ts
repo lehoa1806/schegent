@@ -132,7 +132,7 @@ async function buildHarness(overrides: { isPrimary?: boolean; isTrusted?: boolea
     hasActiveProcess: false
   } as unknown as ClaudeCliRunner;
 
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
   const store = new WorkspaceStateStore(new FakeMemento());
   await store.initialize();
   const queue = new QueueManager(store);

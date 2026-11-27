@@ -45,6 +45,40 @@ import type { WorkflowRun } from './workflow-run';
 export const SCHEMA_VERSION = '1.0.0';
 export { STATE_SCHEMA_VERSION };
 
+/** Default liveness threshold for serialized workspace-state operations before emitting a sanitized warning. */
+export const SERIALIZE_OP_LIVENESS_THRESHOLD_MS = 30_000;
+
+export interface WorkspaceStateStoreOptions {
+  readonly serializeLivenessThresholdMs?: number | undefined;
+}
+
+export function resolveSerializeLivenessThresholdMs(options?: WorkspaceStateStoreOptions): number {
+  const raw = options?.serializeLivenessThresholdMs;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? raw
+    : SERIALIZE_OP_LIVENESS_THRESHOLD_MS;
+}
+
+export function trackSerializeLiveness(
+  keyLabel: string,
+  pending: Promise<void>,
+  thresholdMs: number,
+  logger: SanitizedLogger | null
+): Promise<void> {
+  const startedAt = Date.now();
+  const timer = setTimeout(() => {
+    logger?.warn('workspace state serialize operation pending past liveness threshold', {
+      key: keyLabel,
+      durationMs: Date.now() - startedAt,
+      thresholdMs
+    });
+  }, thresholdMs);
+  timer.unref();
+  return pending.finally(() => {
+    clearTimeout(timer);
+  });
+}
+
 export type PersistedHistoryEntry = object;
 
 /**
@@ -93,7 +127,8 @@ export const KEYS = {
   agentConfigGrants: 'schegent.consent.agentConfigGrants.v1',
   resetMarker: 'schegent.reset.marker',
   operatorPseudonym: 'schegent.operatorPseudonym',
-  controlLedger: 'schegent.controlLedger'
+  controlLedger: 'schegent.controlLedger',
+  sqliteCutoverAuthority: 'schegent.sqliteCutoverAuthority'
 } as const;
 
 /**
@@ -118,7 +153,11 @@ export const RESET_EXEMPT_KEYS: Readonly<Record<string, string>> = {
     'rewritten. A workspace reset clears Schegent\'s state, not the operator\'s identity, and a ' +
     'pseudonym cleared by it would be created again under a new value, splitting one operator\'s rows ' +
     'across two names for no decision of theirs. The reset-pseudonym command is the one way to change it, ' +
-    'and it records that it did.'
+    'and it records that it did.',
+  [KEYS.sqliteCutoverAuthority]:
+    'Durable cutover tombstone recording that this workspace moved operational authority to SQLite so ' +
+    'a missing or corrupt database fails closed instead of resurrecting stale legacy Memento state. ' +
+    'Workspace reset clears operational state inside the active store and never rolls authority back to legacy Memento.'
 } as const;
 
 /**
@@ -238,7 +277,8 @@ export type QueueMutationRejectReason =
   | 'ownership-lost'
   | 'stale-run-id'
   | 'run-status-precondition'
-  | 'durable-store-unavailable';
+  | 'durable-store-unavailable'
+  | 'terminal-journal-corrupt';
 
 export class QueueMutationRejected extends Error {
   public readonly reason: QueueMutationRejectReason;
@@ -387,6 +427,7 @@ export interface WorkspaceStateFamilyContext {
   ): PersistedHistoryMap | null;
   warnLoadRepairs(warnings: readonly LoadRepairWarning[]): void;
   getTerminalTransitionIntents(): Readonly<Record<string, import('./workflow-run').TerminalTransitionIntent>>;
+  inspectTerminalTransitionJournal(): import('./terminal-transition-journal').TerminalTransitionJournalInspection;
   readonly migrationSteps: {
     migrateV12ToV13IfNeeded(): Promise<readonly QueuePauseCollapseAuditEvent[]>;
     migrateVerdictBasisIfNeeded(): Promise<readonly VerdictBasisMigrationEvent[]>;

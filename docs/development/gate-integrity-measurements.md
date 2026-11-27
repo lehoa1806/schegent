@@ -13,11 +13,11 @@ the two cannot drift.
 
 **Produced by**: `repo/tests/lint/gate-integrity/vacuity-false-negative-census.test.ts`
 
-    vacuity-census-denominator: 140
+    vacuity-census-denominator: 141
 
 | Measure | Value |
 |---|---|
-| Gates the detector calls **controlled** (the denominator) | **140** |
+| Gates the detector calls **controlled** (the denominator) | **141** |
 | Still called controlled after their control is stripped | **0** |
 | **False-negative rate under this mutation** | **0.0%** |
 
@@ -304,6 +304,13 @@ reader"* can only be non-vacuous if it can tell the two apart, so the mutation t
 not stripping its floors — it is removing the comment stripper.
 
 The rate stays **0.0%**: the entrant was mutated with the rest and did not survive.
+
+**Denominator movement 140 → 141 (2026-11-27, `principal-review-2026-11-27-r2` F-07).** One gate
+joined, controlled on its first run.
+
+| Δ | Gate | Cause |
+|---|---|---|
+| **+1** | `activation-late-binding-wiring-census.test.ts` (140 → 141) | Joined. Walks `src/activation/` and `src/extension.ts` via the TypeScript AST and fails if any `bind[A-Z]*` late-binding setter returned by an activation wiring module lacks a live call site in `src/extension.ts` or a forwarded activation module. Controlled by a floor on discovered setters (`toBeGreaterThanOrEqual(5)`), explicit live-setter membership checks, and synthetic non-vacuity fixtures. Rate stays **0.0%**. |
 
 **Why this keeps happening, said plainly.** Two authorities on one figure — a line a test asserts
 against a live run, and a table a human maintains — will drift unless something reads both. Nothing

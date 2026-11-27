@@ -151,7 +151,12 @@ const PHASE_INPUTS: PhaseRunInputs = {
 };
 
 function phaseRunnerOver(cli: ClaudeCliRunner, writer: AuditLogWriter): PhaseRunner {
-  return new PhaseRunner(cli, new PromptBuilder(), writer, new SanitizedLogger());
+  return new PhaseRunner({
+    runner: cli,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: writer,
+    logger: new SanitizedLogger()
+  });
 }
 
 describe('FR-R3-198 (T1877) limb 1 — the phase runner over attempt 1 shape', () => {
@@ -596,7 +601,12 @@ rl.on('line', (line) => {
       });
 
       const { writer, entries } = capturingAuditWriter();
-      const runner = new PhaseRunner(acpRunner, new PromptBuilder(), writer, new SanitizedLogger());
+      const runner = new PhaseRunner({
+        runner: acpRunner,
+        promptBuilder: new PromptBuilder(),
+        auditWriter: writer,
+        logger: new SanitizedLogger()
+      });
       const inputs: PhaseRunInputs = {
         phase: AGY_SPECKIT_AUTO.id,
         phaseDef: AGY_SPECKIT_AUTO,
@@ -729,7 +739,12 @@ rl.on('line', (line) => {
       });
 
       const { writer } = capturingAuditWriter();
-      const runner = new PhaseRunner(acpRunner, new PromptBuilder(), writer, new SanitizedLogger());
+      const runner = new PhaseRunner({
+        runner: acpRunner,
+        promptBuilder: new PromptBuilder(),
+        auditWriter: writer,
+        logger: new SanitizedLogger()
+      });
       const output = await dispatchResumingIncompleteTurns(
         runner,
         {

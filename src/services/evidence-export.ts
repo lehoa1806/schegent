@@ -1,11 +1,23 @@
-// FR-R3-085 (PRIV-01) — collect one Run's evidence into a single artifact whose
-// contents are enumerated.
+// FR-R3-085 (PRIV-01) — collect one Run's evidence into an isolated, verified
+// bundle whose contents and deliberate omissions are enumerated.
 //
 // THE MANIFEST IS THE POINT. FR-R3-085 §3 says it plainly: "an export whose
 // contents are not enumerated is a leak the exporter cannot audit." An operator
 // handing evidence to someone else needs to know what they are handing over —
 // including what was deliberately left out, which is why omissions carry reasons
 // rather than being silent.
+//
+// EXPLICIT ELIGIBLE CLASSES ONLY. Eligible workspace evidence classes are decided
+// by `evidence-artifact-policy.ts`, in lockstep with `retentionDisclosure()`.
+// Disclosed-omitted subtrees (such as F15-B handoff staging under `.schegent/results/`
+// and F05 external artifact directories) and unknown paths under `.schegent/` are
+// never exported merely because a path carries the Run UUID.
+//
+// ISOLATED PRIVATE BUNDLE DIRECTORY. Each invocation creates a fresh, owner-only
+// (`0700`) child directory inside the operator-chosen parent folder, opens every
+// output exclusively (`wx`, `0600`), and verifies exact manifest membership via
+// `verifyExport` before returning success. Pre-existing files in the parent
+// folder are never overwritten or mixed into the bundle.
 //
 // THE CHAIN IS EXPORT-SIDE ONLY. Each manifest entry carries the digest of its
 // predecessor, so a recipient can detect a modified export. This asserts NOTHING
@@ -20,7 +32,7 @@
 // unredacted on disk — is redacted on the way OUT, because an export crosses a
 // trust boundary that the local file does not.
 import { isRunId } from '../contracts/run-id';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { SanitizedLogger } from '../lib/logger';
@@ -32,6 +44,10 @@ import {
 } from '../lib/path-containment';
 import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import { classifyAuditGeneration, type AuditGenerationClass } from '../audit/audit-generation-classify';
+import {
+  classifyWorkspaceExportDirectory,
+  classifyWorkspaceExportFile
+} from './evidence-artifact-policy';
 
 /** One file inside the export. */
 export interface ManifestEntry {
@@ -78,8 +94,12 @@ export type ExportResult =
   | { readonly outcome: 'exported'; readonly directory: string; readonly manifest: ExportManifest }
   | { readonly outcome: 'refused'; readonly reason: ExportRefusal; readonly detail: string };
 
-export type ExportRefusal = 'no-evidence' | 'outside-workspace' | 'write-failed' | 'invalid-run-id';
-
+export type ExportRefusal =
+  | 'no-evidence'
+  | 'outside-workspace'
+  | 'unreadable-source'
+  | 'write-failed'
+  | 'invalid-run-id';
 
 /**
  * The largest single artifact the export will read into memory.
@@ -100,30 +120,24 @@ export type ExportRefusal = 'no-evidence' | 'outside-workspace' | 'write-failed'
  */
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
+const MAX_BUNDLE_DIR_ATTEMPTS = 8;
+
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
-/** Artifacts an export never carries, each with the reason it is omitted. */
-const ALWAYS_OMITTED: ReadonlyArray<{ readonly match: RegExp; readonly reason: string }> = [
-  {
-    match: /(^|\/)\.pending(\/|$)/,
-    reason: 'in-flight spool directory: its contents are mid-write and would export a torn file'
-  },
-  {
-    match: /\.lock$/,
-    reason: 'lock file: it describes this machine, not the Run'
-  }
-];
+type CollectOutcome =
+  | { readonly ok: true; readonly included: string[]; readonly omitted: { path: string; reason: string }[] }
+  | { readonly ok: false; readonly reason: 'outside-workspace' | 'unreadable-source'; readonly detail: string };
 
 /**
- * Which evidence files exist for a Run, relative to the workspace root.
+ * Collect explicitly eligible evidence files for one Run under `.schegent/`.
  *
- * Only files whose name carries the run id, plus the audit log, which is shared
- * and therefore exported whole with that stated in the manifest.
+ * Only allowlisted per-Run classes plus the shared audit history (carried only
+ * when the Run has eligible evidence of its own) are selected. Disclosed-omitted
+ * classes and unknown paths are never included. Unreadable eligible directories
+ * fail closed with `unreadable-source` rather than silently producing a partial
+ * export.
  */
-async function collect(
-  workspaceRoot: string,
-  runId: string
-): Promise<{ included: string[]; omitted: { path: string; reason: string }[] }> {
+async function collect(workspaceRoot: string, runId: string): Promise<CollectOutcome> {
   const included: string[] = [];
   /**
    * The audit log is SHARED across Runs, so it is only carried when the Run has
@@ -136,38 +150,75 @@ async function collect(
    */
   const shared: string[] = [];
   const omitted: { path: string; reason: string }[] = [];
-  const walk = async (relativeDir: string): Promise<void> => {
+
+  const schegentRoot = path.join(workspaceRoot, '.schegent');
+  try {
+    const rootStat = await fsp.lstat(schegentRoot);
+    if (rootStat.isSymbolicLink()) {
+      return { ok: false, reason: 'outside-workspace', detail: '.schegent: symlink-component' };
+    }
+    if (!rootStat.isDirectory()) {
+      return { ok: false, reason: 'unreadable-source', detail: '.schegent: not-a-directory' };
+    }
+  } catch (error) {
+    if (describe(error) === 'ENOENT') {
+      return { ok: true, included: [], omitted: [] };
+    }
+    return { ok: false, reason: 'unreadable-source', detail: `.schegent: ${describe(error)}` };
+  }
+
+  const walk = async (relativeDir: string): Promise<CollectOutcome | null> => {
     const absolute = path.join(workspaceRoot, relativeDir);
     let entries;
     try {
       entries = await fsp.readdir(absolute, { withFileTypes: true });
-    } catch {
-      return;
+    } catch (error) {
+      const code = describe(error);
+      if (code === 'ENOENT') return null;
+      return { ok: false, reason: 'unreadable-source', detail: `${relativeDir}: ${code}` };
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const relative = path.posix.join(relativeDir, entry.name);
       if (entry.isDirectory()) {
-        const omission = ALWAYS_OMITTED.find((rule) => rule.match.test(relative));
-        if (omission) {
-          omitted.push({ path: relative, reason: omission.reason });
+        const dirDecision = classifyWorkspaceExportDirectory(relative, runId);
+        if (dirDecision.kind === 'walk') {
+          const failure = await walk(relative);
+          if (failure !== null) return failure;
           continue;
         }
-        await walk(relative);
+        if (dirDecision.kind === 'omit') {
+          omitted.push({ path: relative, reason: dirDecision.reason });
+          continue;
+        }
+        if (dirDecision.kind === 'deny-unknown' && relative.includes(runId)) {
+          omitted.push({ path: relative, reason: dirDecision.reason });
+        }
         continue;
       }
-      const omission = ALWAYS_OMITTED.find((rule) => rule.match.test(relative));
-      if (omission) {
-        omitted.push({ path: relative, reason: omission.reason });
+
+      const fileDecision = classifyWorkspaceExportFile(relative, runId);
+      if (fileDecision.kind === 'include-run') {
+        included.push(relative);
         continue;
       }
-      if (/(^|\/)audit\.log(\.|$)/.test(relative)) {
+      if (fileDecision.kind === 'include-shared') {
         shared.push(relative);
         continue;
       }
-      if (relative.includes(runId)) included.push(relative);
+      if (fileDecision.kind === 'omit') {
+        omitted.push({ path: relative, reason: fileDecision.reason });
+        continue;
+      }
+      if (fileDecision.kind === 'deny-unknown' && relative.includes(runId)) {
+        omitted.push({ path: relative, reason: fileDecision.reason });
+      }
     }
+    return null;
   };
-  await walk('.schegent');
+
+  const failure = await walk('.schegent');
+  if (failure !== null) return failure;
+
   if (included.length === 0) {
     for (const entry of shared) {
       omitted.push({
@@ -175,17 +226,23 @@ async function collect(
         reason: 'shared across Runs; carried only when the Run has evidence of its own'
       });
     }
-    return { included, omitted };
+    return { ok: true, included, omitted };
   }
-  return { included: [...shared, ...included], omitted };
+  return { ok: true, included: [...shared, ...included], omitted };
+}
+
+function compactUtcStamp(date: Date): string {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
 
 /**
- * Export one Run's evidence.
+ * Export one Run's evidence into a fresh, isolated private child directory
+ * beneath `destination`, verified against its own manifest before returning.
  *
- * Every path is resolved through `segmentsUnderRoot` before it is read or
- * written, so a planted symlink cannot make the export reach outside the
- * workspace — the same containment oracle the rest of the evidence path uses.
+ * Every source path is resolved through `resolveContainedTarget` before it is
+ * read, so a planted symlink cannot make the export reach outside the workspace.
+ * Pre-existing files in `destination` are never overwritten or mixed into the
+ * bundle.
  */
 export async function exportRunEvidence(
   workspaceRoot: string,
@@ -202,7 +259,11 @@ export async function exportRunEvidence(
     };
   }
   const baseLogger = new SanitizedLogger();
-  const { included, omitted } = await collect(workspaceRoot, runId);
+  const collected = await collect(workspaceRoot, runId);
+  if (!collected.ok) {
+    return { outcome: 'refused', reason: collected.reason, detail: collected.detail };
+  }
+  const { included, omitted } = collected;
   if (included.length === 0) {
     return {
       outcome: 'refused',
@@ -214,16 +275,16 @@ export async function exportRunEvidence(
   const contents: ManifestEntry[] = [];
   const chain: ChainLink[] = [];
   let previousDigest: string | null = null;
+  const exportTimestamp = now();
 
-  // FR-R4-F04 (E5) — the destination directory is made through the checked walk, owner-only, beneath its
-  // deepest resolved ancestor, and every output below is opened through the same walk with its mode
-  // declared (`0600`). An existing directory or file is narrowed by the helper; no `chmod` is added.
-  const prepared = await prepareDestination(destination);
+  // Create a fresh, owner-only (`0700`) bundle directory beneath the operator's chosen
+  // destination parent so unrelated files are never mixed in or overwritten.
+  const prepared = await prepareIsolatedDestination(destination, runId, exportTimestamp);
   if (prepared === null) {
     return { outcome: 'refused', reason: 'write-failed', detail: 'the destination could not be prepared' };
   }
   const { directory } = prepared;
-  const touched: TouchedFile[] = [];
+  const createdFiles: string[] = [];
   const auditFiles: { path: string; content: AuditGenerationClass }[] = [];
 
   for (const relative of included) {
@@ -234,7 +295,7 @@ export async function exportRunEvidence(
     // outside the workspace into an artifact an operator is about to hand over.
     const source = await resolveContainedTarget(absolute, [workspaceRoot]);
     if (source.outcome !== 'contained') {
-      await rollbackDestination(touched, prepared);
+      await rollbackDestination(createdFiles, prepared);
       return {
         outcome: 'refused',
         reason: 'outside-workspace',
@@ -255,8 +316,8 @@ export async function exportRunEvidence(
       }
       raw = await fsp.readFile(source.resolved, 'utf8');
     } catch (error) {
-      await rollbackDestination(touched, prepared);
-      return { outcome: 'refused', reason: 'write-failed', detail: describe(error) };
+      await rollbackDestination(createdFiles, prepared);
+      return { outcome: 'refused', reason: 'unreadable-source', detail: `${relative}: ${describe(error)}` };
     }
     // The redaction floor. The raw transcript is unredacted ON DISK by design;
     // an export crosses a trust boundary the local file does not, so it is
@@ -267,7 +328,7 @@ export async function exportRunEvidence(
       const floorRedacted = baseLogger.sanitize(raw);
       redacted = customLogger ? customLogger.sanitize(floorRedacted) : floorRedacted;
     } catch {
-      await rollbackDestination(touched, prepared);
+      await rollbackDestination(createdFiles, prepared);
       return { outcome: 'refused', reason: 'write-failed', detail: 'redaction-failed' };
     }
     const name = relative.replaceAll('/', '__');
@@ -280,19 +341,19 @@ export async function exportRunEvidence(
     // not happen is a write escaping the destination through a pre-planted link.
     const writable = await resolveContainedForWrite(target, [directory]);
     if (writable.outcome !== 'contained') {
-      await rollbackDestination(touched, prepared);
+      await rollbackDestination(createdFiles, prepared);
       return {
         outcome: 'refused',
         reason: 'outside-workspace',
         detail: `${relative}: ${writable.outcome === 'refused' ? writable.reason : writable.outcome}`
       };
     }
-    touched.push(await snapshotTarget(target));
-    const wrote = await writeOwnerOnly(directory, name, redacted);
+    const wrote = await writeOwnerOnlyExclusive(directory, name, redacted);
     if (!wrote.ok) {
-      await rollbackDestination(touched, prepared);
+      await rollbackDestination(createdFiles, prepared);
       return { outcome: 'refused', reason: wrote.reason, detail: wrote.detail };
     }
+    createdFiles.push(target);
     const digest = sha256(redacted);
     contents.push({ path: path.basename(target), bytes: Buffer.byteLength(redacted), digest });
     chain.push({ entryIndex: chain.length, digest: sha256(`${previousDigest ?? ''}${digest}`), previousDigest });
@@ -301,7 +362,7 @@ export async function exportRunEvidence(
 
   const manifest: ExportManifest = {
     runId,
-    createdAt: now().toISOString(),
+    createdAt: exportTimestamp.toISOString(),
     contents,
     deliberateOmissions: omitted,
     chain,
@@ -311,56 +372,50 @@ export async function exportRunEvidence(
   const manifestTarget = path.join(directory, 'manifest.json');
   const manifestPath = await resolveContainedForWrite(manifestTarget, [directory]);
   if (manifestPath.outcome !== 'contained') {
-    await rollbackDestination(touched, prepared);
+    await rollbackDestination(createdFiles, prepared);
     return { outcome: 'refused', reason: 'outside-workspace', detail: 'manifest path not contained' };
   }
-  touched.push(await snapshotTarget(manifestTarget));
-  const wroteManifest = await writeOwnerOnly(directory, 'manifest.json', `${JSON.stringify(manifest, null, 2)}\n`);
+  const wroteManifest = await writeOwnerOnlyExclusive(
+    directory,
+    'manifest.json',
+    `${JSON.stringify(manifest, null, 2)}\n`
+  );
   if (!wroteManifest.ok) {
-    await rollbackDestination(touched, prepared);
+    await rollbackDestination(createdFiles, prepared);
     return { outcome: 'refused', reason: wroteManifest.reason, detail: wroteManifest.detail };
   }
+  createdFiles.push(manifestTarget);
+
+  // Verify exact membership, digests, and hash chain inside the isolated bundle
+  // directory before declaring the export complete.
+  try {
+    const verdict = await verifyExport(directory);
+    if (!verdict.ok) {
+      await rollbackDestination(createdFiles, prepared);
+      return { outcome: 'refused', reason: 'write-failed', detail: 'export-verification-failed' };
+    }
+  } catch {
+    await rollbackDestination(createdFiles, prepared);
+    return { outcome: 'refused', reason: 'write-failed', detail: 'export-verification-failed' };
+  }
+
   return { outcome: 'exported', directory, manifest };
 }
 
-interface TouchedFile {
-  readonly fullPath: string;
-  readonly existedBefore: boolean;
-  readonly priorBytes: Buffer | null;
-}
-
-async function snapshotTarget(fullPath: string): Promise<TouchedFile> {
-  try {
-    const st = await fsp.lstat(fullPath);
-    if (st.isFile()) {
-      const priorBytes = await fsp.readFile(fullPath);
-      return { fullPath, existedBefore: true, priorBytes };
-    }
-  } catch {
-    // Target did not exist before this export attempt.
-  }
-  return { fullPath, existedBefore: false, priorBytes: null };
-}
-
 /**
- * Undo a failed export: restore each file it overwrote, remove each it created, then the
- * directories it made, deepest first. Every step goes through the checked walk or the
- * containment oracle, so a link planted during the export cannot aim the undo outside the
- * destination. A restored file keeps the owner-only mode the export gave it; its prior mode
- * is never widened back (FR-007).
+ * Undo a failed export: remove each file created inside the isolated bundle
+ * directory, then remove the bundle directory and any missing parent directories
+ * this export created, deepest first. Pre-existing files in the operator's
+ * selected parent folder are never touched.
  */
 async function rollbackDestination(
-  touched: readonly TouchedFile[],
+  createdFiles: readonly string[],
   prepared: PreparedDestination
 ): Promise<void> {
-  for (let index = touched.length - 1; index >= 0; index -= 1) {
-    const entry = touched.at(index);
-    if (entry === undefined) continue;
-    if (entry.existedBefore && entry.priorBytes !== null) {
-      await restoreOwnerOnly(prepared.directory, path.basename(entry.fullPath), entry.priorBytes);
-      continue;
-    }
-    const created = await resolveContainedLink(entry.fullPath, [prepared.directory]);
+  for (let index = createdFiles.length - 1; index >= 0; index -= 1) {
+    const fullPath = createdFiles.at(index);
+    if (fullPath === undefined) continue;
+    const created = await resolveContainedLink(fullPath, [prepared.directory]);
     if (created.outcome === 'contained') {
       await fsp.rm(created.resolved, { force: true }).catch(() => undefined);
     }
@@ -387,40 +442,99 @@ export async function restoreOwnerOnly(directory: string, name: string, bytes: B
 }
 
 interface PreparedDestination {
-  /** The canonical export directory. */
+  /** The canonical isolated bundle directory created for this invocation. */
   readonly directory: string;
   /** The deepest existing ancestor, resolved: the root of every directory this export made. */
   readonly anchor: string;
-  /** Directories this export created, deepest first. */
+  /** Directories this export created, deepest first (bundle dir first, then any created parents). */
   readonly createdDirs: readonly string[];
 }
 
 /**
- * Make the destination directory and return its canonical path: the deepest existing ancestor resolved, and
- * the missing components created `0700` through the checked walk beneath it. `null` if it cannot be made.
+ * Prepare `destinationParent` (creating any missing parent components `0700`) and allocate a
+ * brand-new, empty, owner-only (`0700`) child directory inside it for this invocation.
+ * Returns `null` if the parent or isolated child cannot be created safely.
  */
-async function prepareDestination(destination: string): Promise<PreparedDestination | null> {
-  const located = await resolveWritableAnchor(path.resolve(destination));
+async function prepareIsolatedDestination(
+  destinationParent: string,
+  runId: string,
+  timestamp: Date
+): Promise<PreparedDestination | null> {
+  const located = await resolveWritableAnchor(path.resolve(destinationParent));
   if (located === null) return null;
-  const createdDirs: string[] = [];
+  const createdParentDirs: string[] = [];
   if (located.tail.length > 0) {
-    const made = await ensureDirWithinRoot(located.anchor, located.tail, 0o700);
-    if (made.outcome === 'refused') return null;
+    const madeParent = await ensureDirWithinRoot(located.anchor, located.tail, 0o700);
+    if (madeParent.outcome === 'refused') return null;
     for (let length = located.tail.length; length >= 1; length -= 1) {
-      createdDirs.push(path.join(located.anchor, ...located.tail.slice(0, length)));
+      createdParentDirs.push(path.join(located.anchor, ...located.tail.slice(0, length)));
     }
   }
-  const directory = path.join(located.anchor, ...located.tail);
-  return { directory, anchor: located.anchor, createdDirs };
+  const parentDir = path.join(located.anchor, ...located.tail);
+  const stamp = compactUtcStamp(timestamp);
+
+  for (let attempt = 0; attempt < MAX_BUNDLE_DIR_ATTEMPTS; attempt += 1) {
+    const nonce = randomBytes(4).toString('hex');
+    const childName = `run-evidence-${runId}-${stamp}-${nonce}`;
+    const candidatePath = path.join(parentDir, childName);
+    let alreadyExists = false;
+    try {
+      await fsp.lstat(candidatePath);
+      alreadyExists = true;
+    } catch (error) {
+      if (describe(error) !== 'ENOENT') {
+        await removeDirs(createdParentDirs, located.anchor);
+        return null;
+      }
+    }
+    if (alreadyExists) continue;
+
+    const madeChild = await ensureDirWithinRoot(parentDir, [childName], 0o700);
+    if (madeChild.outcome === 'refused') {
+      await removeDirs(createdParentDirs, located.anchor);
+      return null;
+    }
+    try {
+      const entries = await fsp.readdir(candidatePath);
+      if (entries.length > 0) {
+        // Another writer populated this name between lstat and mkdir; try a fresh nonce.
+        continue;
+      }
+    } catch {
+      await removeDirs([candidatePath, ...createdParentDirs], located.anchor);
+      return null;
+    }
+    return {
+      directory: candidatePath,
+      anchor: located.anchor,
+      createdDirs: [candidatePath, ...createdParentDirs]
+    };
+  }
+
+  await removeDirs(createdParentDirs, located.anchor);
+  return null;
+}
+
+async function removeDirs(dirs: readonly string[], anchor: string): Promise<void> {
+  for (const dir of dirs) {
+    const made = await resolveContainedLink(dir, [anchor]);
+    if (made.outcome === 'contained') {
+      await fsp.rmdir(made.resolved).catch(() => undefined);
+    }
+  }
 }
 
 type OwnerOnlyWrite =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: ExportRefusal; readonly detail: string };
 
-/** Write one output `0600` through the checked walk, truncating a file that is already there. */
-async function writeOwnerOnly(directory: string, name: string, text: string): Promise<OwnerOnlyWrite> {
-  const opened = await openWithinRoot(directory, [name], { flags: 'w', fileMode: 0o600 });
+/** Create one new output `0600` exclusively (`wx`) through the checked walk. */
+async function writeOwnerOnlyExclusive(
+  directory: string,
+  name: string,
+  text: string
+): Promise<OwnerOnlyWrite> {
+  const opened = await openWithinRoot(directory, [name], { flags: 'wx', fileMode: 0o600 });
   if (opened.outcome === 'refused') {
     return {
       ok: false,
@@ -462,25 +576,27 @@ export async function verifyExport(
     if (sha256(body) !== entry.digest) altered.push(entry.path);
   }
 
-  let chainBroken = false;
+  let chainBroken = manifest.chain.length !== manifest.contents.length;
   let previous: string | null = null;
-  for (const [index, link] of manifest.chain.entries()) {
-    // `.at()` rather than `[index]`: the manifest was parsed from a file the
-    // recipient may have edited, so `contents` can be SHORTER than `chain`. The
-    // declared type says otherwise and the type is the thing that is wrong here
-    // — a cast over `JSON.parse` cannot make an untrusted file well-formed. A
-    // truncated `contents` with an intact `chain` is exactly the tamper this
-    // verification exists to catch.
-    const entry = manifest.contents.at(index);
-    if (
-      entry === undefined ||
-      link.previousDigest !== previous ||
-      link.digest !== sha256(`${previous ?? ''}${entry.digest}`)
-    ) {
-      chainBroken = true;
-      break;
+  if (!chainBroken) {
+    for (const [index, link] of manifest.chain.entries()) {
+      // `.at()` rather than `[index]`: the manifest was parsed from a file the
+      // recipient may have edited, so `contents` can be SHORTER than `chain`. The
+      // declared type says otherwise and the type is the thing that is wrong here
+      // — a cast over `JSON.parse` cannot make an untrusted file well-formed. A
+      // truncated `contents` with an intact `chain` is exactly the tamper this
+      // verification exists to catch.
+      const entry = manifest.contents.at(index);
+      if (
+        entry === undefined ||
+        link.previousDigest !== previous ||
+        link.digest !== sha256(`${previous ?? ''}${entry.digest}`)
+      ) {
+        chainBroken = true;
+        break;
+      }
+      previous = link.digest;
     }
-    previous = link.digest;
   }
 
   return {

@@ -2,7 +2,7 @@
 //
 // Mirrors the no-cache settings-accessor pattern used elsewhere
 // (`VerboseDiagnosticsAccessor`, `FatalSignaturesAccessor`,
-// `AutoCompactOverrideAccessor`, `ManualPauseAccessor`). The accessor is
+// `AutoCompactOverrideAccessor`). The accessor is
 // invoked at the top of every `PhaseRunner.run()` (and at any other phase
 // dispatch boundary) so a breakpoint added via the sidebar mid-run applies
 // to the very next phase invocation without any state-projector rebuild.

@@ -249,18 +249,13 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
   // Feature 028 — the breakpoint accessor the production wiring in
   // `src/extension.ts` installs, so the breakpoint stage below exercises the
   // real short-circuit rather than a stubbed one.
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
-    audit,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
     logger,
-    null,
-    null,
-    null,
-    null,
-    null,
-    createPhaseBreakpointAccessor(() => store.getRun(SOLE_QUEUE))
-  );
+    phaseBreakpointAccessor: createPhaseBreakpointAccessor(() => store.getRun(SOLE_QUEUE))
+  });
 
   const queue = new QueueManager(store);
   const deadlineTimer = new RecordingDeadlineTimer();

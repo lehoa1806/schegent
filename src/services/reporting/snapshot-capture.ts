@@ -26,8 +26,12 @@ import type {
   AttemptAcpAttribution,
   AttemptHandoffSummary,
   ReportEvidenceReference,
+  ReportOmission,
   RootReviewLoopSummary
 } from '../../contracts/reporting/report-rows';
+
+/** Omission reason recorded when an auxiliary metadata list exceeds the snapshot row cap. */
+export const AUXILIARY_TRUNCATION_REASON = 'snapshot-rows-truncated';
 
 /** The failure cause of a root whose `terminal_reason` is null. */
 export const CAUSE_NOT_RECORDED = 'not-recorded';
@@ -64,6 +68,7 @@ export interface CapturedRuns {
   readonly acpAttributions?: readonly AttemptAcpAttribution[];
   readonly handoffSummaries?: readonly AttemptHandoffSummary[];
   readonly reviewSummaries?: readonly RootReviewLoopSummary[];
+  readonly omissions?: readonly ReportOmission[];
 }
 
 export interface CaptureRequest {
@@ -270,8 +275,15 @@ function readAuxiliaryMetadata(
   filter: FilterClause,
   endMs: number,
   cap: number
-): Partial<Pick<CapturedRuns, 'evidenceRefs' | 'acpAttributions' | 'handoffSummaries' | 'reviewSummaries'>> {
-  const evidenceRows = conn.all<EvidenceRecord>(
+): Partial<
+  Pick<
+    CapturedRuns,
+    'evidenceRefs' | 'acpAttributions' | 'handoffSummaries' | 'reviewSummaries' | 'omissions'
+  >
+> {
+  const limit = cap + 1;
+  const omissions: ReportOmission[] = [];
+  const rawEvidenceRows = conn.all<EvidenceRecord>(
     `SELECT al.artifact_id, al.owner_run_id, al.owner_attempt_id, al.store_kind, al.availability,
        al.byte_size, al.retention_class
      FROM artifact_lifecycle al
@@ -281,11 +293,16 @@ function readAuxiliaryMetadata(
     ...head,
     ...filter.params,
     endMs,
-    cap
+    limit
   );
+  if (rawEvidenceRows.length > cap) {
+    omissions.push(Object.freeze({ what: 'evidenceRefs', reason: AUXILIARY_TRUNCATION_REASON }));
+  }
+  const evidenceRows = rawEvidenceRows.length > cap ? rawEvidenceRows.slice(0, cap) : rawEvidenceRows;
+
   const hasObservations =
     conn.all<{ readonly ok: number }>('SELECT 1 AS ok FROM acp_observation_ledger LIMIT 1').length > 0;
-  const attributionRows = hasObservations
+  const rawAttributionRows = hasObservations
     ? conn.all<AcpAttributionRecord>(
         `SELECT a.attempt_id, a.run_id,
            COALESCE(a.backend_kind, r.backend_kind) AS backend_kind,
@@ -312,7 +329,7 @@ function readAuxiliaryMetadata(
         ...head,
         ...filter.params,
         endMs,
-        cap
+        limit
       )
     : conn.all<AcpAttributionRecord>(
         `SELECT a.attempt_id, a.run_id,
@@ -333,9 +350,15 @@ function readAuxiliaryMetadata(
          ORDER BY a.run_id, a.attempt_id LIMIT ?`,
         ...head,
         ...filter.params,
-        cap
+        limit
       );
-  const handoffRows = conn.all<HandoffSummaryRecord>(
+  if (rawAttributionRows.length > cap) {
+    omissions.push(Object.freeze({ what: 'acpAttributions', reason: AUXILIARY_TRUNCATION_REASON }));
+  }
+  const attributionRows =
+    rawAttributionRows.length > cap ? rawAttributionRows.slice(0, cap) : rawAttributionRows;
+
+  const rawHandoffRows = conn.all<HandoffSummaryRecord>(
     `SELECT phr.handoff_id, phr.run_id, phr.source_attempt_id, phr.target_phase_id,
        phr.revision, phr.status, phr.record_bytes
      FROM phase_handoff_records phr
@@ -345,9 +368,14 @@ function readAuxiliaryMetadata(
     ...head,
     ...filter.params,
     endMs,
-    cap
+    limit
   );
-  const reviewRows = conn.all<ReviewLoopRecord>(
+  if (rawHandoffRows.length > cap) {
+    omissions.push(Object.freeze({ what: 'handoffSummaries', reason: AUXILIARY_TRUNCATION_REASON }));
+  }
+  const handoffRows = rawHandoffRows.length > cap ? rawHandoffRows.slice(0, cap) : rawHandoffRows;
+
+  const rawReviewRows = conn.all<ReviewLoopRecord>(
     `SELECT prl.loop_id, prl.run_id, prl.node_id, prl.iteration, prl.verdict, prl.ledger_json
      FROM phase_review_loop_ledgers prl
      JOIN runs r ON r.run_id = prl.run_id
@@ -356,8 +384,12 @@ function readAuxiliaryMetadata(
     ...head,
     ...filter.params,
     endMs,
-    cap
+    limit
   );
+  if (rawReviewRows.length > cap) {
+    omissions.push(Object.freeze({ what: 'reviewSummaries', reason: AUXILIARY_TRUNCATION_REASON }));
+  }
+  const reviewRows = rawReviewRows.length > cap ? rawReviewRows.slice(0, cap) : rawReviewRows;
 
   const evidenceRefs = evidenceRows.map((row) =>
     Object.freeze({
@@ -420,7 +452,8 @@ function readAuxiliaryMetadata(
     ...(evidenceRefs.length > 0 ? { evidenceRefs: Object.freeze(evidenceRefs) } : {}),
     ...(acpAttributions.length > 0 ? { acpAttributions: Object.freeze(acpAttributions) } : {}),
     ...(handoffSummaries.length > 0 ? { handoffSummaries: Object.freeze(handoffSummaries) } : {}),
-    ...(reviewSummaries.length > 0 ? { reviewSummaries: Object.freeze(reviewSummaries) } : {})
+    ...(reviewSummaries.length > 0 ? { reviewSummaries: Object.freeze(reviewSummaries) } : {}),
+    ...(omissions.length > 0 ? { omissions: Object.freeze(omissions) } : {})
   };
 }
 

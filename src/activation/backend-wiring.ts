@@ -74,6 +74,7 @@ export function createBackendAvailabilityWiring(input: {
   readonly hostEpoch: string;
   readonly clock?: AvailabilityClockPort;
   readonly onWakeupDue?: (event: ControlWakeupEvent) => void | Promise<void>;
+  readonly logger?: Pick<SanitizedLogger, 'warn' | 'sanitize'>;
 }): BackendAvailabilityWiring {
   const ledgerStore = new ControlLedgerStore(input.store);
   const clock: AvailabilityClockPort = input.clock ?? {
@@ -106,7 +107,8 @@ export function createBackendAvailabilityWiring(input: {
     ledgerStore,
     availabilityService,
     clock,
-    ...(input.onWakeupDue !== undefined ? { onWakeupDue: input.onWakeupDue } : {})
+    ...(input.onWakeupDue !== undefined ? { onWakeupDue: input.onWakeupDue } : {}),
+    ...(input.logger !== undefined ? { logger: input.logger } : {})
   });
   return {
     availabilityService,

@@ -30,6 +30,7 @@
 // No `vscode` import: the store and the child-status probe arrive as ports.
 
 import { randomUUID } from 'node:crypto';
+import { errorMessage } from '../../lib/errors';
 import type {
   ExecutionEnvelope,
   FrozenWorkflowClosure,
@@ -1044,7 +1045,11 @@ async function launchComposableWorkflowLocked(
       ) {
         await deps.connectedRuns
           .deleteUnstartedConnectedRun(input.connectedRunId, launchState.unstartedParentRevision)
-          .catch(() => undefined);
+          .catch((err: unknown) => {
+            deps.logger.warn(
+              `workflow-launcher: failed to delete unstarted connected run ${deps.logger.sanitize(input.connectedRunId)}: ${deps.logger.sanitize(errorMessage(err))}`
+            );
+          });
       }
       if (linkedComposition !== null && linkedLedgerRunId !== null) {
         await linkedComposition.controlAdmission
@@ -1052,7 +1057,11 @@ async function launchComposableWorkflowLocked(
             ledgerRunId: linkedLedgerRunId,
             connectedRunId: input.connectedRunId
           })
-          .catch(() => undefined);
+          .catch((err: unknown) => {
+            deps.logger.warn(
+              `workflow-launcher: failed to release unstarted root link for ${deps.logger.sanitize(input.connectedRunId)}: ${deps.logger.sanitize(errorMessage(err))}`
+            );
+          });
       }
       if (input.releaseRootLease !== undefined) {
         await input.releaseRootLease(boundQueueId, input.connectedRunId);

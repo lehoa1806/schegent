@@ -87,7 +87,6 @@ export type NetworkFilesystemType = (typeof NETWORK_FILESYSTEM_TYPES)[number];
 export type StorageLocationSourceKind =
   | 'host_storage_uri'
   | 'host_global_storage_uri'
-  | 'cli_state_dir'
   | 'webview_untrusted'
   | 'workspace_setting_untrusted'
   | 'env_untrusted';

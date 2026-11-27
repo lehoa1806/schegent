@@ -5,6 +5,9 @@ import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_AGENT_CONFIG_FILE_BYTES,
+  MAX_AGENT_CONFIG_FILES,
+  MAX_AGENT_CONFIG_TOTAL_BYTES,
+  MAX_AGENT_CONFIG_WALK_DEPTH,
   readBoundedBytes,
   scanOpenedHandle,
   scanRepoAgentConfig
@@ -481,5 +484,178 @@ describe('scanRepoAgentConfig (FR-R7-04, SC-001, SC-003, SC-004)', () => {
     ]);
     expect('digest' in (result.entries[0] ?? {})).toBe(false);
     expect(scanned.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('S3: walks .claude/{skills,commands,agents,hooks}/ recursively up to depth 4 and refuses symlinks', async () => {
+    const root = await makeTempDir('schegent-ack-walk-');
+    const outside = await makeTempDir('schegent-ack-walk-outside-');
+    const outsideFile = path.join(outside, 'secret.md');
+    await fsp.writeFile(outsideFile, 'OUTSIDE_WALK_SECRET', 'utf8');
+
+    await fsp.mkdir(path.join(root, '.claude', 'skills', 's1', 'nested'), { recursive: true });
+    await fsp.mkdir(path.join(root, '.claude', 'commands'), { recursive: true });
+    await fsp.mkdir(path.join(root, '.claude', 'agents'), { recursive: true });
+    await fsp.mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await fsp.writeFile(path.join(root, '.claude', 'skills', 's1', 'nested', 'SKILL.md'), '# skill', 'utf8');
+    await fsp.writeFile(path.join(root, '.claude', 'commands', 'ship.md'), '# cmd', 'utf8');
+    await fsp.writeFile(path.join(root, '.claude', 'agents', 'reviewer.md'), '# agent', 'utf8');
+    await fsp.writeFile(path.join(root, '.claude', 'hooks', 'pre.sh'), '#!/bin/sh\necho ok\n', 'utf8');
+
+    const clean = await scanRepoAgentConfig(root, 'claude');
+    expect(clean.scanError).toBe(false);
+    expect(clean.persistable).toBe(true);
+    expect(clean.entries.map((e) => e.name)).toEqual([
+      '.claude/skills/s1/nested/SKILL.md',
+      '.claude/commands/ship.md',
+      '.claude/agents/reviewer.md',
+      '.claude/hooks/pre.sh'
+    ]);
+
+    // Plant a symlink inside .claude/skills/: must be refused as unreadable symlink without reading target.
+    await fsp.symlink(outsideFile, path.join(root, '.claude', 'skills', 'leak.md'));
+    const withSymlink = await scanRepoAgentConfig(root, 'claude');
+    expect(withSymlink.persistable).toBe(false);
+    expect(withSymlink.entries).toContainEqual({
+      name: '.claude/skills/leak.md',
+      status: 'unreadable',
+      unreadableReason: 'symlink'
+    });
+    expect(JSON.stringify(withSymlink)).not.toContain('OUTSIDE_WALK_SECRET');
+    expect(withSymlink.fingerprint).not.toBe(clean.fingerprint);
+  });
+
+  it('S3: records overflow markers in entries and fingerprint when walk depth, file count, or total byte cap is exceeded', async () => {
+    expect(MAX_AGENT_CONFIG_WALK_DEPTH).toBe(4);
+    expect(MAX_AGENT_CONFIG_FILES).toBe(256);
+    expect(MAX_AGENT_CONFIG_TOTAL_BYTES).toBe(4 * 1024 * 1024);
+
+    // 1. Depth overflow (> 4 nested directories beneath .claude/skills/)
+    const depthRoot = await makeTempDir('schegent-ack-depth-');
+    await fsp.mkdir(path.join(depthRoot, '.claude', 'skills', 'd1', 'd2', 'd3', 'd4', 'd5'), {
+      recursive: true
+    });
+    await fsp.writeFile(
+      path.join(depthRoot, '.claude', 'skills', 'd1', 'd2', 'd3', 'd4', 'd5', 'too-deep.md'),
+      'deep',
+      'utf8'
+    );
+    const depthResult = await scanRepoAgentConfig(depthRoot, 'claude');
+    expect(depthResult.persistable).toBe(false);
+    expect(depthResult.entries).toContainEqual({
+      name: '.claude/skills/d1/d2/d3/d4/d5/',
+      status: 'unreadable',
+      unreadableReason: 'depth-limit-exceeded'
+    });
+    const emptyFp = (await scanRepoAgentConfig(await makeTempDir('schegent-ack-empty2-'), 'claude')).fingerprint;
+    expect(depthResult.fingerprint).not.toBe(emptyFp);
+
+    // 2. File count overflow
+    const countRoot = await makeTempDir('schegent-ack-count-');
+    await fsp.mkdir(path.join(countRoot, '.claude', 'skills'), { recursive: true });
+    for (let i = 1; i <= 4; i += 1) {
+      await fsp.writeFile(path.join(countRoot, '.claude', 'skills', `s${i}.md`), `skill ${i}`, 'utf8');
+    }
+    const countResult = await scanRepoAgentConfig(countRoot, 'claude', { maxFiles: 3 });
+    expect(countResult.persistable).toBe(false);
+    expect(countResult.entries.filter((e) => e.status === 'present')).toHaveLength(3);
+    expect(countResult.entries).toContainEqual({
+      name: '.claude/skills/s4.md',
+      status: 'unreadable',
+      unreadableReason: 'file-count-limit-exceeded'
+    });
+
+    // 3. Total bytes overflow
+    const bytesRoot = await makeTempDir('schegent-ack-totalbytes-');
+    await fsp.mkdir(path.join(bytesRoot, '.claude', 'skills'), { recursive: true });
+    await fsp.writeFile(path.join(bytesRoot, '.claude', 'skills', 'a.md'), Buffer.alloc(60, 0x61));
+    await fsp.writeFile(path.join(bytesRoot, '.claude', 'skills', 'b.md'), Buffer.alloc(60, 0x62));
+    const bytesResult = await scanRepoAgentConfig(bytesRoot, 'claude', { maxTotalBytes: 100 });
+    expect(bytesResult.persistable).toBe(false);
+    expect(bytesResult.entries).toContainEqual({
+      name: '.claude/skills/b.md',
+      status: 'unreadable',
+      unreadableReason: 'total-bytes-limit-exceeded'
+    });
+  });
+
+  it('S3: hashes workspace-internal scripts referenced by Claude hook commands and ignores external/missing paths', async () => {
+    const root = await makeTempDir('schegent-ack-hookscripts-');
+    const outside = await makeTempDir('schegent-ack-hookoutside-');
+    const outsideScript = path.join(outside, 'ext.sh');
+    await fsp.writeFile(outsideScript, 'echo EXTERNAL_SECRET', 'utf8');
+
+    await fsp.mkdir(path.join(root, '.claude'), { recursive: true });
+    await fsp.mkdir(path.join(root, 'scripts'), { recursive: true });
+    await fsp.writeFile(path.join(root, 'scripts', 'guard.sh'), '#!/bin/sh\necho v1\n', 'utf8');
+    await fsp.writeFile(path.join(root, 'scripts', 'check.mjs'), 'console.log("ok");\n', 'utf8');
+    await fsp.writeFile(
+      path.join(root, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash',
+              hooks: [
+                { type: 'command', command: 'bash ./scripts/guard.sh --strict' },
+                { type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/scripts/check.mjs"' },
+                { type: 'command', command: `sh ${outsideScript}` },
+                { type: 'command', command: 'echo harmless-nonfile-token' }
+              ]
+            }
+          ]
+        }
+      }),
+      'utf8'
+    );
+
+    const first = await scanRepoAgentConfig(root, 'claude');
+    expect(first.persistable).toBe(true);
+    expect(first.entries.map((e) => e.name)).toEqual([
+      '.claude/settings.json',
+      'scripts/check.mjs',
+      'scripts/guard.sh'
+    ]);
+    const guardEntry = first.entries.find((e) => e.name === 'scripts/guard.sh');
+    expect(guardEntry).toMatchObject({ status: 'present', hookScript: true });
+    expect(JSON.stringify(first)).not.toContain('EXTERNAL_SECRET');
+
+    // Editing the hook script body changes the fingerprint even when settings.json is untouched.
+    await fsp.writeFile(path.join(root, 'scripts', 'guard.sh'), '#!/bin/sh\necho v2\n', 'utf8');
+    const second = await scanRepoAgentConfig(root, 'claude');
+    expect(second.fingerprint).not.toBe(first.fingerprint);
+  });
+
+  it('S3: scans Agy workspace paths (.agents/skills, rules, workflows, AGENTS.md, GEMINI.md, .gemini/settings.json) and Codex paths', async () => {
+    const root = await makeTempDir('schegent-ack-agy-codex-');
+    await fsp.mkdir(path.join(root, '.agents', 'skills', 'deploy'), { recursive: true });
+    await fsp.mkdir(path.join(root, '.agents', 'rules'), { recursive: true });
+    await fsp.mkdir(path.join(root, '.agents', 'workflows'), { recursive: true });
+    await fsp.mkdir(path.join(root, '.gemini'), { recursive: true });
+    await fsp.mkdir(path.join(root, '.codex'), { recursive: true });
+    await fsp.writeFile(path.join(root, 'AGENTS.md'), '# agents', 'utf8');
+    await fsp.writeFile(path.join(root, 'GEMINI.md'), '# gemini', 'utf8');
+    await fsp.writeFile(path.join(root, '.gemini', 'settings.json'), '{}', 'utf8');
+    await fsp.writeFile(path.join(root, '.agents', 'skills', 'deploy', 'SKILL.md'), '# deploy', 'utf8');
+    await fsp.writeFile(path.join(root, '.agents', 'rules', 'r1.md'), '# rule', 'utf8');
+    await fsp.writeFile(path.join(root, '.agents', 'workflows', 'w1.md'), '# wf', 'utf8');
+    await fsp.writeFile(path.join(root, '.codex', 'config.toml'), 'approval_policy = "never"\n', 'utf8');
+
+    const agyRes = await scanRepoAgentConfig(root, 'agy');
+    expect(agyRes.persistable).toBe(true);
+    expect(agyRes.entries.map((e) => e.name)).toEqual([
+      'AGENTS.md',
+      'GEMINI.md',
+      '.gemini/settings.json',
+      '.agents/skills/deploy/SKILL.md',
+      '.agents/rules/r1.md',
+      '.agents/workflows/w1.md'
+    ]);
+
+    const codexRes = await scanRepoAgentConfig(root, 'codex');
+    expect(codexRes.persistable).toBe(true);
+    expect(codexRes.entries.map((e) => e.name)).toEqual([
+      '.codex/config.toml',
+      'AGENTS.md'
+    ]);
   });
 });

@@ -14,6 +14,7 @@ import { dirname, extname, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
+  CONTRACTS_REVERSE_TYPE_EDGE_CEILINGS,
   LAYER_ALLOWED_VALUE_IMPORTS,
   LAYER_IMPORT_ALLOWLIST,
   STATE_FORBIDDEN_TRANSITIVE_LAYERS,
@@ -117,6 +118,106 @@ export function extractRelativeValueEdges(
 
   ts.forEachChild(sf, visit);
   return found;
+}
+
+/**
+ * Extract every relative TYPE-ONLY import/re-export/inline `import('...').T` edge
+ * using the TypeScript AST parser (`ts.createSourceFile`).
+ */
+export function extractRelativeTypeEdges(
+  source: string,
+  fileName = 'module.ts'
+): readonly ParsedValueEdge[] {
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, false);
+  const found: ParsedValueEdge[] = [];
+
+  const pushEdge = (node: ts.Node, specifier: string): void => {
+    if (!specifier.startsWith('.')) return;
+    const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    found.push({ line, specifier });
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportEqualsDeclaration(node) && node.isTypeOnly) {
+      const reference = node.moduleReference;
+      if (ts.isExternalModuleReference(reference) && ts.isStringLiteralLike(reference.expression)) {
+        pushEdge(node, reference.expression.text);
+      }
+      return;
+    }
+
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const clause = node.importClause;
+      if (clause !== undefined) {
+        const hasTypeNamed =
+          clause.namedBindings !== undefined &&
+          ts.isNamedImports(clause.namedBindings) &&
+          clause.namedBindings.elements.some((el) => el.isTypeOnly);
+        if (clause.isTypeOnly || hasTypeNamed) {
+          pushEdge(node, node.moduleSpecifier.text);
+        }
+      }
+      return;
+    }
+
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier !== undefined &&
+      ts.isStringLiteralLike(node.moduleSpecifier)
+    ) {
+      const hasTypeNamed =
+        node.exportClause !== undefined &&
+        ts.isNamedExports(node.exportClause) &&
+        node.exportClause.elements.some((el) => el.isTypeOnly);
+      if (node.isTypeOnly || hasTypeNamed) {
+        pushEdge(node, node.moduleSpecifier.text);
+      }
+      return;
+    }
+
+    if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteralLike(node.argument.literal)
+    ) {
+      pushEdge(node, node.argument.literal.text);
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  ts.forEachChild(sf, visit);
+  return found;
+}
+
+export function findContractsReverseTypeEdges(
+  sources: ReadonlyMap<string, string>,
+  upperLayers: ReadonlySet<string>
+): readonly LayerViolation[] {
+  const knownFiles = new Set(sources.keys());
+  const edges: LayerViolation[] = [];
+  for (const [fromRel, body] of sources) {
+    if (layerOfSourcePath(fromRel) !== 'contracts') continue;
+    for (const edge of extractRelativeTypeEdges(body, fromRel)) {
+      const targetRel = resolveRelativeTarget(fromRel, edge.specifier, knownFiles);
+      const intoLayer =
+        targetRel !== null
+          ? layerOfSourcePath(targetRel)
+          : layerOfSourcePath(
+              relative(REPO_ROOT, resolve(dirname(resolve(REPO_ROOT, fromRel)), edge.specifier)),
+              true
+            );
+      if (intoLayer === null || !upperLayers.has(intoLayer)) continue;
+      edges.push({
+        from: fromRel,
+        fromLayer: 'contracts',
+        intoLayer,
+        line: edge.line,
+        target: targetRel ?? edge.specifier
+      });
+    }
+  }
+  return edges;
 }
 
 /**
@@ -313,22 +414,24 @@ describe('FR-R7-07 — layer-level value-import direction gate', () => {
         'or invert the dependency through a port owned by the lower layer.'
     ).toEqual([]);
 
-    // FR-R7-07: state/ must remain zero-exception.
+    // FR-R7-07 & F-06: state/ and controller/ must remain zero-exception.
     expect(
       LAYER_IMPORT_ALLOWLIST.filter((e) => e.fromLayer === 'state'),
       'src/state/ must stay zero-exception'
     ).toEqual([]);
+    expect(
+      LAYER_IMPORT_ALLOWLIST.filter((e) => e.fromLayer === 'controller'),
+      'src/controller/ must stay zero-exception'
+    ).toEqual([]);
 
-    // FR-R8-04 (04-03): every reconciled services/ reverse edge carries an owner, exact target, filing, and rationale.
+    // FR-R8-04 (04-03) & F-06: every reconciled reverse edge carries an owner, exact target, filing, and rationale.
     for (const entry of LAYER_IMPORT_ALLOWLIST) {
       expect(entry.owner.trim().length, `${entry.from} allowlist entry must name an owner`).toBeGreaterThan(2);
       expect(entry.filing, `${entry.from} allowlist entry must name a filing`).toMatch(
-        /^FR-(?:R\d+-)?\d+/
+        /^(?:FR-(?:R\d+-)?\d+|principal-review-\d{4}-\d{2}-\d{2}(?:-r\d+)? F-\d+)$/
       );
       expect(entry.reason.length, `${entry.from} allowlist entry needs a real explanation`).toBeGreaterThan(20);
-      if (entry.fromLayer === 'services') {
-        expect(entry.target, `${entry.from} services allowlist entry must pin an exact target`).toBeDefined();
-      }
+      expect(entry.target, `${entry.from} allowlist entry must pin an exact target`).toBeDefined();
     }
 
     // Truthfulness: reject any stale allowlist entry that no longer corresponds to a real edge.
@@ -495,7 +598,7 @@ describe('FR-R7-07 — layer-level value-import direction gate', () => {
     ]);
 
     expect(findLayerViolations(sources, LAYER_ALLOWED_VALUE_IMPORTS).map((edge) => edge.target))
-      .toEqual(['fixture/services/blocked.cts']);
+      .toEqual(['fixture/services/blocked.cts', 'fixture/controller/runtime.ts']);
     expect(findTransitiveLayerReach(
       buildValueImportGraph(sources),
       'fixture/state/entry.ts',
@@ -503,6 +606,131 @@ describe('FR-R7-07 — layer-level value-import direction gate', () => {
     )).toEqual([
       'fixture/state/entry.ts -> fixture/services/blocked.cts',
       'fixture/state/entry.ts -> fixture/config/bridge.ts -> fixture/controller/runtime.ts'
+    ]);
+  });
+
+  it('F-06: LAYER_ALLOWED_VALUE_IMPORTS defines a strict DAG across all governed layers', () => {
+    const governed = new Set(Object.keys(LAYER_ALLOWED_VALUE_IMPORTS));
+    expect(governed.size).toBeGreaterThanOrEqual(8);
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const cycles: string[] = [];
+
+    const dfs = (layer: string, stack: string[]): void => {
+      visiting.add(layer);
+      for (const target of LAYER_ALLOWED_VALUE_IMPORTS[layer] ?? []) {
+        if (target === layer || !governed.has(target)) continue;
+        if (visiting.has(target)) {
+          cycles.push([...stack.slice(stack.indexOf(target)), target].join(' -> '));
+        } else if (!visited.has(target)) {
+          dfs(target, [...stack, target]);
+        }
+      }
+      visiting.delete(layer);
+      visited.add(layer);
+    };
+
+    for (const layer of governed) {
+      if (!visited.has(layer)) dfs(layer, [layer]);
+    }
+    expect(cycles, 'governed layer policy must not admit layer-level cycles').toEqual([]);
+  });
+
+  it('F-06 NON-VACUITY: newly governed layers catch unowned reverse value edges', () => {
+    const synthetic = new Map<string, string>([
+      ['fixture/runner/bad.ts', "import { svc } from '../services/svc'; export const r = svc;"],
+      ['fixture/queue/bad.ts', "import { svc } from '../services/svc'; export const q = svc;"],
+      ['fixture/config/bad.ts', "import { svc } from '../services/svc'; export const c = svc;"],
+      ['fixture/parser/bad.ts', "import { svc } from '../services/svc'; export const p = svc;"],
+      ['fixture/metrics/bad.ts', "import { svc } from '../services/svc'; export const m = svc;"],
+      ['fixture/controller/bad.ts', "import { view } from '../ui/view'; export const k = view;"],
+      ['fixture/services/svc.ts', 'export const svc = 1;'],
+      ['fixture/ui/view.ts', 'export const view = 1;']
+    ]);
+
+    const found = findLayerViolations(synthetic, LAYER_ALLOWED_VALUE_IMPORTS).map(
+      (v) => `${v.fromLayer}->${v.intoLayer}`
+    );
+    expect(found).toEqual([
+      'runner->services',
+      'queue->services',
+      'config->services',
+      'parser->services',
+      'metrics->services',
+      'controller->ui'
+    ]);
+  });
+
+  it('F-06: ratchets type-only reverse edges from contracts/ into upper layers (no growth)', () => {
+    const contractFiles = [...sources.keys()].filter((p) => p.startsWith('src/contracts/'));
+    expect(contractFiles.length, 'expected substantial src/contracts/ file count').toBeGreaterThan(50);
+
+    const upperLayers = new Set(Object.keys(CONTRACTS_REVERSE_TYPE_EDGE_CEILINGS));
+    const reverseEdges = findContractsReverseTypeEdges(sources, upperLayers);
+    expect(
+      reverseEdges.length,
+      'anti-vacuity: expected live contracts/ reverse type edges to be observed'
+    ).toBeGreaterThan(0);
+
+    const byLayer = new Map<string, LayerViolation[]>();
+    for (const layer of upperLayers) byLayer.set(layer, []);
+    for (const edge of reverseEdges) {
+      byLayer.get(edge.intoLayer)?.push(edge);
+    }
+
+    const overCeiling: string[] = [];
+    let totalCeiling = 0;
+    for (const [layer, ceiling] of Object.entries(CONTRACTS_REVERSE_TYPE_EDGE_CEILINGS)) {
+      totalCeiling += ceiling;
+      const actual = byLayer.get(layer) ?? [];
+      if (actual.length > ceiling) {
+        overCeiling.push(
+          `contracts -> ${layer}: ${actual.length} > ceiling ${ceiling}\n  ` +
+            actual.map((e) => `${e.from}:${e.line} -> ${e.target}`).join('\n  ')
+        );
+      }
+    }
+
+    expect(
+      overCeiling,
+      'src/contracts/ added a new type-only reverse import into an upper layer. ' +
+        'Move the shared type into src/contracts/ instead of reaching upward.'
+    ).toEqual([]);
+    expect(reverseEdges.length).toBeLessThanOrEqual(totalCeiling);
+  });
+
+  it('F-06 NON-VACUITY: injected contracts/ type-only reverse edges are detected across all 5 upper layers', () => {
+    const upperLayers = new Set(Object.keys(CONTRACTS_REVERSE_TYPE_EDGE_CEILINGS));
+    const synthetic = new Map<string, string>([
+      [
+        'fixture/contracts/leak.ts',
+        [
+          "import type { Svc } from '../services/svc';",
+          "import { type St } from '../state/st';",
+          "export type { Ctrl } from '../controller/ctrl';",
+          "import type { Run } from '../runner/run';",
+          "export type Q = import('../queue/q').QueueItem;",
+          "import type { LeafOk } from '../lib/ok';",
+          'export type Keep = [Svc, St, Run, LeafOk];'
+        ].join('\n')
+      ],
+      ['fixture/services/svc.ts', 'export interface Svc {}'],
+      ['fixture/state/st.ts', 'export interface St {}'],
+      ['fixture/controller/ctrl.ts', 'export interface Ctrl {}'],
+      ['fixture/runner/run.ts', 'export interface Run {}'],
+      ['fixture/queue/q.ts', 'export interface QueueItem {}'],
+      ['fixture/lib/ok.ts', 'export interface LeafOk {}']
+    ]);
+
+    const found = findContractsReverseTypeEdges(synthetic, upperLayers).map(
+      (e) => `${e.intoLayer}@L${e.line}`
+    );
+    expect(found).toEqual([
+      'services@L1',
+      'state@L2',
+      'controller@L3',
+      'runner@L4',
+      'queue@L5'
     ]);
   });
 });

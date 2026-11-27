@@ -275,4 +275,88 @@ describe('FR-R6-F11 T012 — run snapshot capture', () => {
       ]);
     });
   });
+
+  it('records explicit snapshot-rows-truncated omissions whenever auxiliary lists overflow the cap (Post-merge Finding 4)', () => {
+    withStore((conn) => {
+      seedRun(conn, { runId: 'r-1', createdAtMs: 1_500 });
+      seedRun(conn, { runId: 'r-2', createdAtMs: 1_600 });
+      seedAttempt(conn, { attemptId: 'a-1', runId: 'r-1', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_510 });
+      seedAttempt(conn, { attemptId: 'a-2', runId: 'r-2', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_610 });
+
+      for (const [id, runId, attemptId] of [
+        ['art-1', 'r-1', 'a-1'],
+        ['art-2', 'r-1', 'a-1'],
+        ['art-3', 'r-2', 'a-2']
+      ] as const) {
+        conn.run(
+          `INSERT INTO artifacts (artifact_id, content_sha256, byte_length, media_type, kind, created_by_run_id, created_by_attempt_id, created_at_ms)
+           VALUES (?, ?, 128, 'application/json', 'diagnostic', ?, ?, 1550)`,
+          id,
+          'd'.repeat(64),
+          runId,
+          attemptId
+        );
+        conn.run(
+          `INSERT INTO artifact_lifecycle (
+             artifact_id, lifecycle_revision, owner_run_id, owner_attempt_id, sensitivity,
+             retention_class, store_kind, immutability, digest_algorithm, digest_value,
+             generation, extent_bytes, byte_size, availability, producer_identity,
+             display_name, created_at_ms, terminal_settled_at_ms, expires_at_ms, updated_at_ms
+           ) VALUES (
+             ?, 1, ?, ?, 'metadata',
+             'transcripts-diagnostics-checkpoints-audit-catalog', 'diagnostic', 'immutable', 'sha256', ?,
+             NULL, NULL, 128, 'present', 'runner', 'diag.json', 1550, 1550, NULL, 1550
+           )`,
+          id,
+          runId,
+          attemptId,
+          'd'.repeat(64)
+        );
+      }
+      for (const [id, runId, attemptId] of [
+        ['ho-1', 'r-1', 'a-1'],
+        ['ho-2', 'r-1', 'a-1'],
+        ['ho-3', 'r-2', 'a-2']
+      ] as const) {
+        conn.run(
+          `INSERT INTO phase_handoff_records (
+             handoff_id, run_id, source_attempt_id, target_phase_id, revision, status, record_json, record_bytes, created_at_ms, updated_at_ms
+           ) VALUES (?, ?, ?, 'verify', 1, 'ready', '{}', 2, 1550, 1550)`,
+          id,
+          runId,
+          attemptId
+        );
+      }
+      for (const [id, runId] of [
+        ['loop-1', 'r-1'],
+        ['loop-2', 'r-1'],
+        ['loop-3', 'r-2']
+      ] as const) {
+        conn.run(
+          `INSERT INTO phase_review_loop_ledgers (loop_id, run_id, node_id, iteration, verdict, ledger_json, updated_at_ms)
+           VALUES (?, ?, 'review', 1, 'approved', '{}', 1550)`,
+          id,
+          runId
+        );
+      }
+
+      // With cap=2, roots (2) and attempts (2) fit, while all three auxiliary lists (3 each) overflow.
+      const truncated = captured(conn, request({ cap: 2 }));
+      expect(truncated.evidenceRefs).toHaveLength(2);
+      expect(truncated.handoffSummaries).toHaveLength(2);
+      expect(truncated.reviewSummaries).toHaveLength(2);
+      expect(truncated.omissions).toEqual([
+        { what: 'evidenceRefs', reason: 'snapshot-rows-truncated' },
+        { what: 'handoffSummaries', reason: 'snapshot-rows-truncated' },
+        { what: 'reviewSummaries', reason: 'snapshot-rows-truncated' }
+      ]);
+
+      // Raising cap to 3 returns all rows with no auxiliary omissions.
+      const complete = captured(conn, request({ cap: 3 }));
+      expect(complete.evidenceRefs).toHaveLength(3);
+      expect(complete.handoffSummaries).toHaveLength(3);
+      expect(complete.reviewSummaries).toHaveLength(3);
+      expect(complete.omissions).toBeUndefined();
+    });
+  });
 });

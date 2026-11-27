@@ -92,8 +92,8 @@ async function runWith(
   overrides: Partial<RawInvocationOutput> = {},
   entries: AuditEntry[] = []
 ): Promise<Awaited<ReturnType<PhaseRunner['run']>>> {
-  const runner = new PhaseRunner(
-    {
+  const runner = new PhaseRunner({
+    runner: {
       invoke: vi.fn(
         async (): Promise<RawInvocationOutput> =>
           ({
@@ -109,8 +109,8 @@ async function runWith(
       cancelActive: vi.fn(() => false),
       hasActiveProcess: false
     } as unknown as ClaudeCliRunner,
-    new PromptBuilder(),
-    {
+    promptBuilder: new PromptBuilder(),
+    auditWriter: {
       append: vi.fn(
         async (entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> => {
           const recorded = {
@@ -123,8 +123,8 @@ async function runWith(
         }
       )
     } as unknown as AuditLogWriter,
-    new SanitizedLogger()
-  );
+    logger: new SanitizedLogger()
+  });
   return runner.run({
     phase: 'speckit-specify' as const,
     iteration: 1,

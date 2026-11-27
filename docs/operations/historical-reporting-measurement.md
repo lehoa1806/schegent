@@ -9,6 +9,8 @@ This page records the reproducible performance measurement for historical report
 <!-- Source: src/services/reporting/index.ts -->
 <!-- Source: src/services/reporting/report-engine.ts -->
 <!-- Source: src/services/reporting/snapshot-capture.ts -->
+<!-- Source: src/services/reporting/run-snapshot-worker.ts -->
+<!-- Source: src/services/reporting/run-snapshot-worker-entry.ts -->
 
 > **Single-platform qualification notice**: Every figure on this page was measured locally on one workstation (`darwin-arm64`, Apple M4 Max, local APFS, Node `v24.22.2`). These measurements provide single-platform risk reduction rather than a cross-platform guarantee; Linux and Windows hosts remain unobserved until measured on those platforms.
 
@@ -56,3 +58,24 @@ Warm-measured capture samples (`capture.sampleCount = 20`) are recorded strictly
 - **Later-page cursor reads**: `maxBytes = 36,544` bytes per `200`-row page (well below the `1 MiB` page byte bound), `0` failures across `200` measured reads, `p95 = 0.1117 ms`.
 - **Working-data memory (`execution-summary`)**: `22,120,000` bytes (`~21.10 MiB`) reserved during the live snapshot lease — within the `32 MiB` (`33,554,432` bytes) shared workspace budget. Full-range `attempt-detail` (`100,000` attempt rows on top of captured roots/attempts) exceeds `32 MiB` and returns the typed `limited / working-data` outcome rather than a silently shortened page.
 - **Zero resource leaks**: After closing the live report and running the cancellation, deadline, and working-data probes, `service.resources()` verified `{ executing: 0, waiting: 0, reservedBytes: 0, liveReports: 0 }`.
+
+---
+
+## 4. Head-to-Head Synchronous vs Read-Only Worker Capture (2026-11-27)
+
+To eliminate the `~200 ms` unfiltered extension-host event-loop stall during synchronous SQLite snapshot capture on file-backed stores (post-merge review Finding 5; refactored under F-09 to replace `eval: true` template strings with typed worker entry modules and explicit V8 `resourceLimits`), `ReportingService` defaults to a read-only `node:worker_threads` capture worker (`src/services/reporting/run-snapshot-worker.ts` dispatching the typed, erasable-TS entry module `src/services/reporting/run-snapshot-worker-entry.ts`, bundled by esbuild to `dist/run-snapshot.worker.js` for production VSIX packaging and run directly from `.ts` source via Node's built-in type stripping in Vitest) for file-backed SQLite databases (`useSnapshotWorker !== false`; `:memory:` fixtures and explicit `useSnapshotWorker: false` keep synchronous capture). The worker runs under explicit `resourceLimits` (`maxOldGenerationSizeMb: 256`, `maxYoungGenerationSizeMb: 32`, `stackSizeMb: 4`, mapping `ERR_WORKER_OUT_OF_MEMORY` cleanly to `limited / working-data`), opens the database read-only (`PRAGMA query_only = ON`, `PRAGMA busy_timeout = 2000`), executes the consistent `BEGIN DEFERRED ... ROLLBACK` snapshot read, releases the read transaction immediately before streaming, and streams chunks (`4,000` rows per chunk) back to the extension host with per-chunk `setImmediate` backpressure so the host event loop yields between chunks and honors mid-capture `AbortSignal` cancellation and query deadlines.
+
+Measured head-to-head in a single invocation of `tests/perf/historical-report-query.test.ts` on `2026-11-27` (`darwin-arm64`, Apple M4 Max, Node `v24.22.2`, `25,000` roots × `4` attempts = `100,000` attempts) after migrating to the typed worker entry and explicit `resourceLimits`:
+
+| Metric | Synchronous capture (`useSnapshotWorker: false`) | Default read-only chunked worker (`useSnapshotWorker: true`) |
+|---|---|---|
+| First-page `execution-summary` (`p50` / `p95` / `max`) | `295.36 ms` / `304.76 ms` / `325.21 ms` | `394.19 ms` / `488.89 ms` / `804.46 ms` (`<= 500 ms` spec target, `<= 1,000 ms` CI budget) |
+| Unfiltered end-to-end host event-loop gap (including capture) | `199.00 ms` max (`4.13 ms` post-capture `slicedP95Ms`) | `0.25 ms` `p95` of `p95`, `10.70 ms` `p95` of max, `11.70 ms` worst max across `20` measured runs |
+| Worker SQL read / total worker (`p95`) | `203.61 ms` (on host thread) | `236.15 ms` SQL read / `370.38 ms` total worker (off host thread) |
+| Mid-capture cancellation acknowledgement (`20 ms` after start) | `4.69 ms` (only after synchronous capture completes) | `0.37 ms` (`outcome: 'cancelled'`) |
+| Concurrent host settlement writes during full capture | Blocked during `~200 ms` synchronous capture | `23` writes committed (`0.67 ms` max write latency) |
+| `PRAGMA wal_checkpoint(TRUNCATE)` immediately after capture | `busy: 0` | `busy: 0` (read transaction rolled back before chunk streaming) |
+| Process RSS delta across `23` full captures (`3` warm-up + `20` measured) | Baseline | `+192.6 MiB` (`1,645.4 MiB` → `1,838.0 MiB` peak) |
+| Query deadline (`1 ms` probe) & zero resource leaks | `limited / deadline-exceeded`; `0` active/reserved | `limited / deadline-exceeded`; `0` active/reserved |
+
+Auxiliary snapshot tables (`evidenceRefs`, `acpAttributions`, `handoffSummaries`, `reviewSummaries`) in both synchronous and worker capture paths query `LIMIT cap + 1` and record a `{ what, reason: 'snapshot-rows-truncated' }` omission whenever rows exceed the configured capture ceiling, propagating that omission into `ReportPage.omissions`, `RootDrillDown.omissions`, and `ReportManifest.omissions`.

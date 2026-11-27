@@ -27,7 +27,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import type { AuditEntry } from './audit-entry';
-import { AUDIT_SCHEMA_VERSION } from '../contracts/audit-events';
+import { AUDIT_SCHEMA_VERSION, type AuditEventType } from '../contracts/audit-events';
 import { boundForCaller, holdOrdering } from '../lib/io-barrier';
 import type { SanitizedLogger } from '../lib/logger';
 import {
@@ -191,6 +191,15 @@ const AUDIT_WRITER_RUN_ID = 'audit-writer';
  * current millisecond/random suffix and the legacy seconds-only form are both
  * retained safely across upgrades.
  */
+/** Critical terminal, security, ownership, reset, and export events that invoke `handle.datasync()` on append. */
+export const CRITICAL_DURABILITY_AUDIT_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.freeze(
+  new Set<AuditEventType>([
+    'task-execution-ended', 'task-canceled', 'cancel', 'run-invocation-aborted-on-supersession', 'run-resume-declined-orphan-alive', 'host-teardown-unconfirmed', 'run-canceled-task-row-removed', 'run-record-quarantined',
+    'backend-posture-admitted', 'agent-config-acknowledged', 'capability-refused', 'capability-applied', 'trust.capability-denied', 'scanner-consent-changed', 'telemetry-credential-changed', 'output-target-refused-at-dispatch', 'run-snapshot-declined',
+    'workspace-state-reset', 'queue-cleared-all', 'queue-cleared', 'store-backup', 'store-restore', 'evidence-exported', 'evidence-deleted', 'operator-pseudonym-reset', 'audit-integrity-condition', 'artifact-lifecycle-mutation', 'process-exchange-import-committed', 'process-exchange-import-refused', 'process-exchange-export'
+  ])
+);
+
 const ARCHIVE_STAMP_RE = /^\d{8}-\d{6}(?:-\d{3}-[0-9a-f]{8})?$/;
 
 export type AuditAppendListener = (entry: AuditEntry) => void;
@@ -409,7 +418,7 @@ export class AuditLogWriter {
             entries: walk.verdict.entries,
             cuts: walk.verdict.cuts
           });
-          await this.doWrite(line);
+          await this.doWrite(line, true);
           this.landedDigest = digestOf(line.trimEnd());
           this.writtenUnderFence = fence;
           if (this.cp !== null) this.cp.position += 1;
@@ -547,7 +556,7 @@ export class AuditLogWriter {
           newPosition,
           reanchoredAtMs: now
         });
-        await this.doWrite(line);
+        await this.doWrite(line, true);
         newHead = digestOf(line.trimEnd());
         this.landedDigest = newHead;
         this.writtenUnderFence = fence;
@@ -695,7 +704,7 @@ export class AuditLogWriter {
       throw err;
     }
     try {
-      await this.doWrite(line);
+      await this.doWrite(line, CRITICAL_DURABILITY_AUDIT_EVENT_TYPES.has(entry.eventType));
     } catch (err) {
       this.tailCheckOwed = true;
       throw err;
@@ -742,7 +751,7 @@ export class AuditLogWriter {
       digestAlg: DAMAGE_DIGEST_ALG,
       digest: createHash(DAMAGE_DIGEST_ALG).update(tail.bytes).digest('hex')
     });
-    await this.appendBytes(line);
+    await this.appendBytes(line, true);
     this.landedDigest = digestOf(line.trimEnd());
     this.logger.warn(
       `audit-tail-damaged: the log's final line was not valid JSON; it was kept as found and ` +
@@ -813,7 +822,7 @@ export class AuditLogWriter {
         retiredPosition,
         retiredAtMs
       });
-      await this.appendBytes(line);
+      await this.appendBytes(line, true);
       this.landedDigest = digestOf(line.trimEnd());
       position = 1;
     }
@@ -908,10 +917,10 @@ export class AuditLogWriter {
     }
   }
 
-  private async doWrite(line: string): Promise<void> {
+  private async doWrite(line: string, durableSync = false): Promise<void> {
     await this.ensureRuntimeGitignore();
     await this.maybeRotate();
-    await this.appendBytes(line);
+    await this.appendBytes(line, durableSync);
   }
 
   /**
@@ -920,7 +929,7 @@ export class AuditLogWriter {
    * per append because a rotation replaces the file. A write that returns short is a PARTIAL WRITE:
    * thrown, so the next step re-reads the end of the log (FR-022).
    */
-  private async appendBytes(text: string): Promise<void> {
+  private async appendBytes(text: string, durableSync = false): Promise<void> {
     const opened = await openWithinRoot(
       this.config.workspaceRoot,
       [SCHEGENT_DIR_NAME, AUDIT_LOG_NAME],
@@ -940,6 +949,7 @@ export class AuditLogWriter {
       if (written?.bytesWritten !== undefined && written.bytesWritten < expected) {
         throw new AuditPartialWriteError(written.bytesWritten, expected);
       }
+      if (durableSync && typeof opened.handle.datasync === 'function') await opened.handle.datasync();
     } finally {
       await opened.handle.close().catch(() => undefined);
     }

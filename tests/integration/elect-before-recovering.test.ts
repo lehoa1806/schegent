@@ -116,7 +116,7 @@ async function makeHost(
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot }, logger);
   const { runner, invoke } = makeCountingRunner();
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
   const store = new WorkspaceStateStore(new FakeMemento());
   await store.initialize();
   // The production topology: mementos are per window, arbitration is shared.

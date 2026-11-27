@@ -105,12 +105,12 @@ const baseInputs = {
 };
 
 function newRunner(cliRunner: ClaudeCliRunner): PhaseRunner {
-  return new PhaseRunner(
-    cliRunner,
-    new PromptBuilder(),
-    makeFakeAuditWriter(),
-    new SanitizedLogger()
-  );
+  return new PhaseRunner({
+    runner: cliRunner,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: makeFakeAuditWriter(),
+    logger: new SanitizedLogger()
+  });
 }
 
 describe('PhaseRunner.run — BUG-002 completed-but-non-exiting classification', () => {
@@ -203,7 +203,12 @@ describe('PhaseRunner.run — exactly one terminal record on the normal path (fe
   async function driveOnce(overrides: MockRawOutput = {}): Promise<AuditEntry[]> {
     const cliRunner = makeFakeRunner(async () => makeRawOutput(overrides));
     const { writer, written } = makeIdRecordingWriter();
-    await new PhaseRunner(cliRunner, new PromptBuilder(), writer, new SanitizedLogger()).run(
+    await new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    }).run(
       baseInputs
     );
     return written;

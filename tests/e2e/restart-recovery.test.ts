@@ -78,7 +78,12 @@ function makeLock(): WorkspaceLockManager {
 async function buildHost(tmpRoot: string, memento: Memento) {
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
-  const phaseRunner = new PhaseRunner(new ClaudeCliRunner(), new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({
+    runner: new ClaudeCliRunner(),
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
+    logger
+  });
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);

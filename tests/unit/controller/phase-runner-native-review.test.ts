@@ -60,17 +60,17 @@ function setup(
   ].join('\n');
   const invoke = vi.fn(async (request: InvocationRequest) => respond(request, clean));
   const entries: Array<Omit<AuditEntry, 'id' | 'timestamp'>> = [];
-  const runner = new PhaseRunner(
-    { invoke, cancelActive: () => false, hasActiveProcess: false } as unknown as BackendRunner,
-    new PromptBuilder(),
-    {
+  const runner = new PhaseRunner({
+    runner: { invoke, cancelActive: () => false, hasActiveProcess: false } as unknown as BackendRunner,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: {
       append: async (entry: Omit<AuditEntry, 'id' | 'timestamp'>) => {
         entries.push(entry);
         return { ...entry, id: `audit-${entries.length}`, timestamp: '2026-11-20T00:00:00Z' };
       }
     } as unknown as AuditLogWriter,
-    new SanitizedLogger()
-  );
+    logger: new SanitizedLogger()
+  });
   return {
     phase, phaseDef, invoke, entries,
     run: (iteration: number) => runner.run({

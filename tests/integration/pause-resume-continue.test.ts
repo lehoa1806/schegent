@@ -208,18 +208,13 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   // `paused-at-breakpoint` BEFORE invoking the CLI. Mirrors production
   // wiring in `src/extension.ts`.
   const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun(DEFAULT_QUEUE_ID));
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
-    audit,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
     logger,
-    null,
-    null,
-    null,
-    null,
-    null,
     phaseBreakpointAccessor
-  );
+  });
   const queue = new QueueManager(store);
   const deadlineTimer = new RecordingDeadlineTimer();
 

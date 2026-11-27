@@ -142,8 +142,9 @@ describe('exports of a mixed history name no username that today\'s code wrote (
       const result = await exportRunEvidence(root, EXPORTED_RUN, destination);
 
       expect(result.outcome, 'the control: the export was made').toBe('exported');
-      const names = await fs.readdir(destination);
-      const texts = await Promise.all(names.map((name) => fs.readFile(path.join(destination, name), 'utf8')));
+      if (result.outcome !== 'exported') throw new Error('expected exported');
+      const names = await fs.readdir(result.directory);
+      const texts = await Promise.all(names.map((name) => fs.readFile(path.join(result.directory, name), 'utf8')));
       const everything = [...names, ...texts].join('\n');
       expect(everything, 'the control: the exported audit history holds the rows').toContain(pseudonym);
       expect(everything).not.toContain(SYNTHETIC_OS_USER);

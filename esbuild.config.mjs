@@ -70,53 +70,61 @@ const stripCommentsPlugin = {
 // with. A watch build is never a release input: the release path removes `dist/` and builds once.
 const identity = readBuildIdentity();
 
-// FR-R4-F09 (FR-007; contract MG1) -- write the host module graph once the bundle is on disk, on
-// every rebuild, and only for a build that had no errors. The webview half writes its own graph
-// from `webview-ui/vite.config.ts`.
-let latestExtensionMetafile = null;
-let latestBridgeMetafile = null;
+// FR-R4-F09 (FR-007; contract MG1) -- write the host module graph once all host bundles are on
+// disk, on every rebuild, and only for builds that had no errors. The webview half writes its own
+// graph from `webview-ui/vite.config.ts`.
+const hostBuildSpecs = [
+  { key: 'extension', entryPoint: 'src/extension.ts', outfile: 'dist/extension.js' },
+  {
+    key: 'bridge',
+    entryPoint: 'src/services/acp-runtime/bridges/acp-stdio-bridge-main.ts',
+    outfile: 'dist/acp-stdio-bridge.js'
+  },
+  {
+    key: 'run-snapshot-worker',
+    entryPoint: 'src/services/reporting/run-snapshot-worker-entry.ts',
+    outfile: 'dist/run-snapshot.worker.js'
+  },
+  {
+    key: 'accounting-query-worker',
+    entryPoint: 'src/services/usage-accounting/accounting-query-worker-entry.ts',
+    outfile: 'dist/accounting-query.worker.js'
+  },
+  {
+    key: 'result-operator-worker',
+    entryPoint: 'src/services/result-operator-worker.ts',
+    outfile: 'dist/result-operator.worker.js'
+  }
+];
+
+const latestMetafiles = new Map();
 
 function flushCombinedHostGraph() {
-  if (!latestExtensionMetafile || !latestBridgeMetafile) return;
-  writeHostGraph(
-    {
-      inputs: {
-        ...(latestExtensionMetafile.inputs ?? {}),
-        ...(latestBridgeMetafile.inputs ?? {})
-      },
-      outputs: {
-        ...(latestExtensionMetafile.outputs ?? {}),
-        ...(latestBridgeMetafile.outputs ?? {})
-      }
-    },
-    identity,
-    root
-  );
+  if (latestMetafiles.size < hostBuildSpecs.length) return;
+  const inputs = {};
+  const outputs = {};
+  for (const spec of hostBuildSpecs) {
+    const metafile = latestMetafiles.get(spec.key);
+    if (!metafile) return;
+    Object.assign(inputs, metafile.inputs ?? {});
+    Object.assign(outputs, metafile.outputs ?? {});
+  }
+  writeHostGraph({ inputs, outputs }, identity, root);
 }
 
-const extensionGraphPlugin = {
-  name: 'schegent-module-graph-extension',
-  setup(buildContext) {
-    buildContext.onEnd((result) => {
-      if (result.errors.length === 0 && result.metafile) {
-        latestExtensionMetafile = result.metafile;
-        flushCombinedHostGraph();
-      }
-    });
-  }
-};
-
-const bridgeGraphPlugin = {
-  name: 'schegent-module-graph-bridge',
-  setup(buildContext) {
-    buildContext.onEnd((result) => {
-      if (result.errors.length === 0 && result.metafile) {
-        latestBridgeMetafile = result.metafile;
-        flushCombinedHostGraph();
-      }
-    });
-  }
-};
+function createHostGraphPlugin(key) {
+  return {
+    name: `schegent-module-graph-${key}`,
+    setup(buildContext) {
+      buildContext.onEnd((result) => {
+        if (result.errors.length === 0 && result.metafile) {
+          latestMetafiles.set(key, result.metafile);
+          flushCombinedHostGraph();
+        }
+      });
+    }
+  };
+}
 
 const sharedHostOptions = {
   bundle: true,
@@ -139,28 +147,21 @@ const sharedHostOptions = {
   logLevel: 'info'
 };
 
-const extensionConfig = {
+const hostBuildConfigs = hostBuildSpecs.map((spec) => ({
   ...sharedHostOptions,
-  entryPoints: ['src/extension.ts'],
-  outfile: 'dist/extension.js',
-  plugins: [stripCommentsPlugin, extensionGraphPlugin]
-};
-
-const bridgeConfig = {
-  ...sharedHostOptions,
-  entryPoints: ['src/services/acp-runtime/bridges/acp-stdio-bridge-main.ts'],
-  outfile: 'dist/acp-stdio-bridge.js',
-  plugins: [stripCommentsPlugin, bridgeGraphPlugin]
-};
+  entryPoints: [spec.entryPoint],
+  outfile: spec.outfile,
+  plugins: [stripCommentsPlugin, createHostGraphPlugin(spec.key)]
+}));
 
 if (isWatch) {
-  const [extensionCtx, bridgeCtx] = await Promise.all([
-    context(extensionConfig),
-    context(bridgeConfig)
-  ]);
-  await Promise.all([extensionCtx.watch(), bridgeCtx.watch()]);
-  console.log('esbuild: watching extension and ACP stdio bridge...');
+  const contexts = await Promise.all(hostBuildConfigs.map((cfg) => context(cfg)));
+  await Promise.all(contexts.map((ctx) => ctx.watch()));
+  console.log('esbuild: watching extension, ACP stdio bridge, and worker entries...');
 } else {
-  await build(bridgeConfig);
-  await build(extensionConfig);
+  // Build auxiliary bundles before `dist/extension.js` so `dist/extension.js` is never newer
+  // than its worker/bridge siblings on a partial failure.
+  for (const cfg of [...hostBuildConfigs.slice(1), hostBuildConfigs[0]]) {
+    await build(cfg);
+  }
 }

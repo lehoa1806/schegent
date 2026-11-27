@@ -1,11 +1,10 @@
 /**
  * FR-R6-F13 (F13-C; FR-001, FR-005..FR-012, FR-017..FR-022) & FR-R6-F09 (FR-017) — host ACP
- * `BackendRunner` implementation for post-cutover execution, with bounded legacy drain delegation.
+ * `BackendRunner` implementation for post-cutover execution.
  *
- * - All new-architecture attempts execute over ACP (`openAcpConnection` + `resolveAcpProfileLaunch`
- *   + `spawnStdioTransport`); ACP refusal, disconnect, or error NEVER falls back to direct CLI.
- * - Pre-cutover in-flight legacy attempts (`request.legacyDrain === true` while
- *   `allowLegacyDrain === true`) delegate strictly to `this.inner` until drained.
+ * - All attempts execute exclusively over ACP (`openAcpConnection` + `resolveAcpProfileLaunch`
+ *   + `spawnStdioTransport`); ACP refusal, disconnect, or error NEVER falls back to direct CLI,
+ *   and the dormant pre-cutover `legacyDrain` delegation branch has been removed (D4/S15).
  * - Enforces `AcpAuthorityGate` (`F09-FR-17`) on every permission/resource callback and verifies
  *   OS process-group teardown (`verifyAcpTransportTeardown`) on completion and cancellation.
  * - History replay (`origin === 'history'`) is forwarded as historical observation only and never
@@ -125,6 +124,7 @@ export interface AcpBackedRunnerOptions {
   readonly logger?: SanitizedLogger;
   readonly evidenceHealth?: EvidenceHealthReporter;
   readonly readConfiguredProfile?: () => string;
+  /** @deprecated Removed (D4/S15): ignored; all invocations execute strictly over ACP. */
   readonly allowLegacyDrain?: boolean;
   readonly bridgeScriptPath?: string;
   readonly authorityGate?: AcpAuthorityGate;
@@ -216,27 +216,6 @@ export class AcpBackedRunner implements BackendRunner {
     request: InvocationRequest,
     outputSink?: InvocationOutputSink
   ): Promise<RawInvocationOutput> {
-    if (request.review === undefined && request.legacyDrain === true && this.options.allowLegacyDrain !== false) {
-      if (this.closed) {
-        throw new SpawnRefusedAfterCloseError(getBackendDescriptor(this.options.kind).runnerLabel);
-      }
-      if (request.cancellationSignal?.aborted === true) {
-        const stdoutBuffer = new ZippedStreamBuffer();
-        const stderrBuffer = new ZippedStreamBuffer();
-        stdoutBuffer.finalize();
-        stderrBuffer.finalize();
-        return {
-          stdoutBuffer,
-          stderrBuffer,
-          exitCode: null,
-          killed: true,
-          timedOut: false,
-          durationMs: 0,
-          command: request.cliPath
-        };
-      }
-      return this.inner.invoke(request, outputSink);
-    }
     const label = getBackendDescriptor(this.options.kind).runnerLabel;
     if (this.closed) {
       throw new SpawnRefusedAfterCloseError(label);

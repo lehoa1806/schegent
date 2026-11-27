@@ -92,8 +92,18 @@ describe('FR-R3-006 — reset accounts for every state key', () => {
     // reset clears Schegent's state, not the operator's identity, and rows already written keep the
     // pseudonym they carry, so a pseudonym that a reset cleared would be created again under a new value
     // and split one operator's rows across two names (reason on `RESET_EXEMPT_KEYS`).
+    //
+    // F-02 (2026-11-27) — four became five. `sqliteCutoverAuthority` is exempt by decision: a reset
+    // clears operational state inside the active store and never rolls cutover authority back to
+    // legacy Memento, so a missing or corrupt database keeps failing closed after a reset.
     expect(Object.keys(RESET_EXEMPT_KEYS).sort()).toEqual(
-      [KEYS.schemaVersion, KEYS.schemaVersionNumeric, KEYS.resetMarker, KEYS.operatorPseudonym].sort()
+      [
+        KEYS.schemaVersion,
+        KEYS.schemaVersionNumeric,
+        KEYS.resetMarker,
+        KEYS.operatorPseudonym,
+        KEYS.sqliteCutoverAuthority
+      ].sort()
     );
   });
 

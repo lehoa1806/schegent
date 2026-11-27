@@ -98,7 +98,12 @@ type RunExtras = Partial<PhaseRunInputs>;
 async function runAndReadStartRow(root: string, extras: RunExtras = {}): Promise<Record<string, unknown>> {
   const logger = new SanitizedLogger();
   const writer = new AuditLogWriter({ workspaceRoot: root }, logger);
-  const runner = new PhaseRunner(stubRunner(), new PromptBuilder(), writer, logger);
+  const runner = new PhaseRunner({
+    runner: stubRunner(),
+    promptBuilder: new PromptBuilder(),
+    auditWriter: writer,
+    logger
+  });
   await runner.run({
     phase: 'speckit-implement',
     pipelineId: 'standard',

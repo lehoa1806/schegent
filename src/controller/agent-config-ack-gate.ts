@@ -1,12 +1,17 @@
-// Feature 318 (FR-R7-04, FR-003, FR-004, FR-005, FR-007, FR-009) — per-run
-// repository agent configuration preflight gate.
+// Feature 318 (FR-R7-04, FR-003, FR-004, FR-005, FR-007, FR-009) & Principal Review S3/S4 —
+// per-phase repository agent configuration preflight gate.
 //
 // Modelled on `src/controller/backend-posture-recorder.ts`:
-//   - Runs ONLY for uncontained backends (`containmentOf(backend) === 'none'`).
-//   - Runs ONCE per `(runId, backend)` per activation via a bounded LRU
-//     in-memory ledger (same `POSTURE_LEDGER_MAX_PAIRS` bound and NUL separator),
-//     coalescing overlapping concurrent calls for the same pair and releasing
-//     terminal Runs via `forgetRun(runId)`.
+//   - Applies whenever `getBackendDescriptor(backend).repoAgentConfigPaths.length > 0`
+//     (covering uncontained backends as well as contained backends such as `codex` whose
+//     project config or instruction files can alter sandbox/approval posture or steer it).
+//   - Recomputes the bounded configuration fingerprint BEFORE EVERY phase spawn and
+//     compares it against the acknowledged fingerprint stored for `(runId, backend)` in
+//     a bounded LRU in-memory ledger (`POSTURE_LEDGER_MAX_PAIRS` bound and NUL separator):
+//     unchanged fingerprints proceed without re-prompting; any mid-Run change requires a
+//     fresh acknowledgement (or throws `AgentConfigAcknowledgementRefusedError`).
+//   - Coalesces overlapping concurrent calls for the same `(runId, backend)` pair and
+//     releases terminal Runs via `forgetRun(runId)`.
 //   - Checks workspace-scoped persistent grants (only when `scan.persistable`).
 //   - Emits closed metadata-only `agent-config-acknowledged` audit events
 //     (`backend`, `fileCount`, `decision`) — zero paths, hook names, or values.
@@ -18,16 +23,19 @@ import type {
   AgentConfigAckDecision,
   AgentConfigAcknowledgedPayload
 } from '../contracts/agent-config-acknowledgement';
+import { getBackendDescriptor } from '../contracts/backend-descriptors';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { errorMessage } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
 import { AgentConfigAcknowledgementRefusedError } from '../services/agent-config-ack-refusal';
-import { containmentOf } from '../services/backend-containment-policy';
 import {
   computeAgentConfigFingerprint,
   type RepoAgentConfigScanResult
 } from '../services/repo-agent-config-scanner';
-import type { AgentConfigGrant } from '../state/agent-config-grants';
+import type {
+  AgentConfigGrant,
+  AgentConfigGrantFileSummary
+} from '../state/agent-config-grants';
 import {
   LEDGER_KEY_SEPARATOR,
   POSTURE_LEDGER_MAX_PAIRS
@@ -56,8 +64,32 @@ export interface AgentConfigAckGateDeps {
   readonly now?: () => number;
 }
 
+interface ClearedAckRecord {
+  readonly fingerprint: string;
+  readonly backend: BackendRunnerKind;
+  readonly acknowledgedAt: number;
+  readonly files: readonly AgentConfigGrantFileSummary[];
+}
+
+function summarizePresentFiles(
+  scan: RepoAgentConfigScanResult
+): readonly AgentConfigGrantFileSummary[] {
+  return Object.freeze(
+    scan.entries
+      .filter((e): e is Extract<typeof e, { status: 'present' }> => e.status === 'present')
+      .map((e) =>
+        Object.freeze({
+          name: e.name,
+          size: e.size,
+          digest: e.digest,
+          ...(e.hookScript === true ? { source: 'hook-script' as const } : {})
+        })
+      )
+  );
+}
+
 export class AgentConfigAckGate {
-  private readonly cleared = new Set<string>();
+  private readonly cleared = new Map<string, ClearedAckRecord>();
   private readonly inFlight = new Map<string, Promise<void>>();
 
   public constructor(private readonly deps: AgentConfigAckGateDeps) {}
@@ -65,7 +97,7 @@ export class AgentConfigAckGate {
   /** Remove every cleared `(runId, backend)` pair for a terminal Run. */
   public forgetRun(runId: string): void {
     const prefix = `${runId}${LEDGER_KEY_SEPARATOR}`;
-    for (const key of this.cleared) {
+    for (const key of this.cleared.keys()) {
       if (key.startsWith(prefix)) {
         this.cleared.delete(key);
       }
@@ -76,17 +108,9 @@ export class AgentConfigAckGate {
     context: AgentConfigAckContext,
     backend: BackendRunnerKind
   ): Promise<void> {
-    // FR-009: contained (OS-enforced) backends do not trigger this uncontained preflight.
-    if (containmentOf(backend) !== 'none') return;
+    if (getBackendDescriptor(backend).repoAgentConfigPaths.length === 0) return;
 
     const ledgerKey = `${context.runId}${LEDGER_KEY_SEPARATOR}${backend}`;
-    if (this.cleared.has(ledgerKey)) {
-      // Refresh LRU order so long-lived active Runs stay newest under eviction.
-      this.cleared.delete(ledgerKey);
-      this.cleared.add(ledgerKey);
-      return;
-    }
-
     const pending = this.inFlight.get(ledgerKey);
     if (pending !== undefined) {
       return pending;
@@ -107,23 +131,60 @@ export class AgentConfigAckGate {
     ledgerKey: string
   ): Promise<void> {
     const scan = await this.safeScan(context.cwd, backend);
+    const now = (this.deps.now ?? Date.now)();
+    const priorInRun = this.cleared.get(ledgerKey);
 
     // FR-009: workspaces with no discovered repository agent config and no scan error proceed silently.
     if (!scan.scanError && scan.entries.length === 0) {
-      this.rememberCleared(ledgerKey);
+      this.rememberCleared(ledgerKey, {
+        fingerprint: scan.fingerprint,
+        backend,
+        acknowledgedAt: now,
+        files: Object.freeze([])
+      });
       return;
     }
 
+    // S4: per-Phase re-check. If this `(runId, backend)` already cleared the exact same
+    // fingerprint (and the current scan did not error), refresh LRU order and proceed without re-prompting.
+    if (priorInRun !== undefined && !scan.scanError && priorInRun.fingerprint === scan.fingerprint) {
+      this.cleared.delete(ledgerKey);
+      this.cleared.set(ledgerKey, priorInRun);
+      return;
+    }
+
+    // Fingerprint changed mid-Run (or scan errored): drop stale clearance so a denied prompt never stays cleared.
+    if (priorInRun !== undefined) {
+      this.cleared.delete(ledgerKey);
+    }
+
     const fileCount = scan.entries.length;
+    const presentFiles = summarizePresentFiles(scan);
 
     // FR-003: persistent match is valid ONLY when every discovered file was safely digested.
     if (scan.persistable && this.deps.hasGrant(scan.fingerprint, backend)) {
       await this.emitAudit(context, { backend, fileCount, decision: 'stored' });
-      this.rememberCleared(ledgerKey);
+      this.rememberCleared(ledgerKey, {
+        fingerprint: scan.fingerprint,
+        backend,
+        acknowledgedAt: now,
+        files: presentFiles
+      });
       return;
     }
 
-    const previousGrant = this.deps.latestGrantForBackend(backend);
+    const storedPrior = this.deps.latestGrantForBackend(backend);
+    const previousGrant: AgentConfigGrant | null =
+      storedPrior ??
+      (priorInRun !== undefined && priorInRun.files.length > 0
+        ? Object.freeze({
+            fingerprint: priorInRun.fingerprint,
+            backend: priorInRun.backend,
+            grantedAt: priorInRun.acknowledgedAt,
+            files: priorInRun.files
+          })
+        : null);
+
     let choice: AgentConfigAckChoice;
     try {
       choice = await this.deps.request(scan, previousGrant);
@@ -142,16 +203,13 @@ export class AgentConfigAckGate {
 
     let auditDecision: AgentConfigAckDecision = 'approved-once';
     if (choice === 'persist' && scan.persistable) {
-      const files = scan.entries
-        .filter((e): e is Extract<typeof e, { status: 'present' }> => e.status === 'present')
-        .map((e) => Object.freeze({ name: e.name, size: e.size, digest: e.digest }));
       try {
         await this.deps.persistGrant(
           Object.freeze({
             fingerprint: scan.fingerprint,
             backend,
-            grantedAt: (this.deps.now ?? Date.now)(),
-            files: Object.freeze(files)
+            grantedAt: now,
+            files: presentFiles
           })
         );
         // FR-R7-11 — record `acknowledged` ONLY after the persistent grant write
@@ -168,7 +226,12 @@ export class AgentConfigAckGate {
     }
 
     await this.emitAudit(context, { backend, fileCount, decision: auditDecision });
-    this.rememberCleared(ledgerKey);
+    this.rememberCleared(ledgerKey, {
+      fingerprint: scan.fingerprint,
+      backend,
+      acknowledgedAt: now,
+      files: presentFiles
+    });
   }
 
   private async safeScan(cwd: string, backend: BackendRunnerKind): Promise<RepoAgentConfigScanResult> {
@@ -219,13 +282,13 @@ export class AgentConfigAckGate {
     }
   }
 
-  private rememberCleared(key: string): void {
+  private rememberCleared(key: string, record: ClearedAckRecord): void {
     if (this.cleared.has(key)) {
       this.cleared.delete(key);
     } else if (this.cleared.size >= POSTURE_LEDGER_MAX_PAIRS) {
-      const oldest = this.cleared.values().next();
+      const oldest = this.cleared.keys().next();
       if (!oldest.done) this.cleared.delete(oldest.value);
     }
-    this.cleared.add(key);
+    this.cleared.set(key, record);
   }
 }

@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
-import { Worker } from 'node:worker_threads';
+import { Worker, type ResourceLimits } from 'node:worker_threads';
 import {
   ATTEMPT_OUTCOME_VERSION,
   MAX_EVIDENCE_REF_BYTES,
@@ -25,11 +25,45 @@ import {
 } from '../contracts/decision-results';
 import { readBoundedRange } from '../lib/bounded-read';
 import { openWithinRoot } from '../lib/safe-open';
-import {
-  workerEvaluateMain,
-  type WorkerEvaluationInput,
-  type WorkerEvaluationOutput
+import type {
+  WorkerEvaluationInput,
+  WorkerEvaluationOutput
 } from './result-operator-worker';
+import {
+  isWorkerOutOfMemoryError,
+  resolveWorkerEntryPath,
+  workerExecArgvForEntry
+} from './worker-entry-path';
+
+export const RESULT_OPERATOR_WORKER_FILENAME = 'result-operator.worker.js';
+
+/**
+ * V8 heap limits for the result-operator worker thread.
+ *
+ * Evidence inputs are capped at `MAX_RESULT_SOURCE_BYTES` (256 KiB), `MAX_JSON_DEPTH` (16),
+ * and `MAX_JSON_VALUE_NODES` (8,192). 128 MiB old-gen + 16 MiB young-gen comfortably covers
+ * Node worker startup (including native TS stripping in tests) while bounding untrusted
+ * evidence parsing so a runaway allocation cannot crash the extension host.
+ */
+export const RESULT_OPERATOR_WORKER_RESOURCE_LIMITS: Readonly<ResourceLimits> = Object.freeze({
+  maxOldGenerationSizeMb: 128,
+  maxYoungGenerationSizeMb: 16,
+  stackSizeMb: 4
+});
+
+export function resolveResultOperatorWorkerPath(options?: {
+  readonly callerDir?: string | undefined;
+  readonly callerFilename?: string | undefined;
+  readonly fileExists?: ((candidatePath: string) => boolean) | undefined;
+}): string {
+  return resolveWorkerEntryPath({
+    bundledFilename: RESULT_OPERATOR_WORKER_FILENAME,
+    sourceEntryStem: 'result-operator-worker',
+    callerDir: options?.callerDir ?? __dirname,
+    callerFilename: options?.callerFilename ?? __filename,
+    fileExists: options?.fileExists
+  });
+}
 
 export type HostControlReason =
   | 'cancelled'
@@ -334,37 +368,64 @@ export async function readContainedEvidenceFile(
 }
 
 /**
- * Execute `workerEvaluateMain` inside a terminable `node:worker_threads` Worker
- * bounded by `deadlineMs` (`RESULT_OPERATOR_DEADLINE_MS` = 2,000 ms).
+ * Execute `result-operator-worker` inside a terminable `node:worker_threads` Worker
+ * bounded by `deadlineMs` (`RESULT_OPERATOR_DEADLINE_MS` = 2,000 ms) and explicit
+ * V8 `resourceLimits`.
  */
 export async function executeResultContractInWorker(
   workerInput: WorkerEvaluationInput,
-  deadlineMs: number = RESULT_OPERATOR_DEADLINE_MS
+  deadlineMs: number = RESULT_OPERATOR_DEADLINE_MS,
+  options?: {
+    readonly resourceLimits?: ResourceLimits | undefined;
+    readonly workerEntryPath?: string | undefined;
+  }
 ): Promise<WorkerEvaluationOutput> {
-  const bootstrapScript = `
-    const { parentPort, workerData } = require('node:worker_threads');
-    const evaluate = (${workerEvaluateMain.toString()});
-    const output = evaluate(workerData);
-    parentPort.postMessage(output);
-  `;
+  const workerPath = options?.workerEntryPath ?? resolveResultOperatorWorkerPath();
+  const resourceLimits = options?.resourceLimits ?? RESULT_OPERATOR_WORKER_RESOURCE_LIMITS;
+  const execArgv = workerExecArgvForEntry(workerPath);
 
   return new Promise<WorkerEvaluationOutput>((resolve) => {
     let settled = false;
-    const worker = new Worker(bootstrapScript, {
-      eval: true,
-      workerData: workerInput
-    });
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
     const finish = (output: WorkerEvaluationOutput): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
       resolve(output);
     };
 
-    const timer = setTimeout(() => {
+    let worker: Worker;
+    try {
+      worker = new Worker(workerPath, {
+        workerData: workerInput,
+        resourceLimits,
+        ...(execArgv !== undefined ? { execArgv } : {})
+      });
+    } catch (err: unknown) {
+      const isOom = isWorkerOutOfMemoryError(err);
+      const message = err instanceof Error ? err.message : String(err);
+      finish({
+        status: 'invalid-result',
+        reason: isOom ? 'evidence-too-large' : 'malformed-evidence',
+        recovery: 'block-intervention',
+        values: {},
+        diagnostics: [
+          isOom
+            ? 'Result operator worker exceeded memory resource limits (ERR_WORKER_OUT_OF_MEMORY).'
+            : `Result operator worker failed to start: ${message.slice(0, 200)}`
+        ]
+      });
+      return;
+    }
+
+    timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      timer = null;
       void worker.terminate().finally(() => {
         resolve({
           status: 'invalid-result',
@@ -384,12 +445,17 @@ export async function executeResultContractInWorker(
     });
 
     worker.once('error', (err: Error) => {
+      const isOom = isWorkerOutOfMemoryError(err);
       finish({
         status: 'invalid-result',
-        reason: 'malformed-evidence',
+        reason: isOom ? 'evidence-too-large' : 'malformed-evidence',
         recovery: 'block-intervention',
         values: {},
-        diagnostics: [`Result operator worker error: ${err.message.slice(0, 200)}`]
+        diagnostics: [
+          isOom
+            ? 'Result operator worker exceeded memory resource limits (ERR_WORKER_OUT_OF_MEMORY).'
+            : `Result operator worker error: ${err.message.slice(0, 200)}`
+        ]
       });
       void worker.terminate();
     });

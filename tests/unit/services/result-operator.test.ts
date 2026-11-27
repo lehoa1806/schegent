@@ -31,6 +31,10 @@ import {
 import {
   evaluateAttemptOutcome,
   evaluateAttemptWithPrecedence,
+  executeResultContractInWorker,
+  resolveResultOperatorWorkerPath,
+  RESULT_OPERATOR_WORKER_FILENAME,
+  RESULT_OPERATOR_WORKER_RESOURCE_LIMITS,
   ResultOperator
 } from '../../../src/services/result-operator';
 import { workerEvaluateMain } from '../../../src/services/result-operator-worker';
@@ -830,5 +834,71 @@ describe('3-valued TypedCondition evaluation and default-branch non-masking (F24
     );
     expect(obs.branches[0]?.disposition).toBe('unresolved');
     expect(obs.branches[1]?.disposition).toBe('condition-false');
+  });
+});
+
+describe('result-operator worker path resolution and resource-limit error mapping (F-09)', () => {
+  it('resolves dist/result-operator.worker.js when bundled and sibling .ts in Vitest', () => {
+    const distDir = join('/', 'app', 'dist');
+    const bundled = join(distDir, RESULT_OPERATOR_WORKER_FILENAME);
+    expect(
+      resolveResultOperatorWorkerPath({
+        callerDir: distDir,
+        callerFilename: join(distDir, 'extension.js'),
+        fileExists: (candidate) => candidate === bundled
+      })
+    ).toBe(bundled);
+
+    expect(
+      resolveResultOperatorWorkerPath().endsWith(join('services', 'result-operator-worker.ts'))
+    ).toBe(true);
+    expect(RESULT_OPERATOR_WORKER_RESOURCE_LIMITS.maxOldGenerationSizeMb).toBe(128);
+    expect(RESULT_OPERATOR_WORKER_RESOURCE_LIMITS.maxYoungGenerationSizeMb).toBe(16);
+  });
+
+  it('maps ERR_WORKER_OUT_OF_MEMORY to invalid-result/evidence-too-large and non-OOM worker faults to malformed-evidence', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'schegent-result-op-oom-'));
+    try {
+      const oomScript = join(dir, 'oom-result-worker.cjs');
+      writeFileSync(
+        oomScript,
+        `const hold = [];
+         while (true) hold.push(new Array(1024 * 1024).fill(1));`,
+        'utf8'
+      );
+      const oomOut = await executeResultContractInWorker(
+        {
+          contract: BASE_CONTRACT,
+          rawText: '{}',
+          currentAttemptId: 'att-oom'
+        },
+        5_000,
+        {
+          workerEntryPath: oomScript,
+          resourceLimits: { maxOldGenerationSizeMb: 16, maxYoungGenerationSizeMb: 4 }
+        }
+      );
+      expect(oomOut.status).toBe('invalid-result');
+      expect(oomOut.reason).toBe('evidence-too-large');
+      expect(oomOut.recovery).toBe('block-intervention');
+      expect(oomOut.diagnostics.join(' ')).toContain('ERR_WORKER_OUT_OF_MEMORY');
+
+      const missingOut = await executeResultContractInWorker(
+        {
+          contract: BASE_CONTRACT,
+          rawText: '{}',
+          currentAttemptId: 'att-missing'
+        },
+        5_000,
+        {
+          workerEntryPath: join(dir, 'does-not-exist.cjs')
+        }
+      );
+      expect(missingOut.status).toBe('invalid-result');
+      expect(missingOut.reason).toBe('malformed-evidence');
+      expect(missingOut.recovery).toBe('block-intervention');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

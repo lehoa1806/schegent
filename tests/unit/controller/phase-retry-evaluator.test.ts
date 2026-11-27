@@ -908,12 +908,12 @@ describe('PhaseRunner.evictStagnationTracker — routes by arity (194, SC-007)',
   });
 
   const newPhaseRunner = (writer: AuditLogWriter): PhaseRunner =>
-    new PhaseRunner(
-      { invoke: vi.fn(), cancelActive: vi.fn(() => false), hasActiveProcess: false } as unknown as ClaudeCliRunner,
-      new PromptBuilder(),
-      writer,
-      new SanitizedLogger()
-    );
+    new PhaseRunner({
+      runner: { invoke: vi.fn(), cancelActive: vi.fn(() => false), hasActiveProcess: false } as unknown as ClaudeCliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
 
   it('sends an omitted phaseId to the whole-Run form and a named one to the pair form', () => {
     const perRun = vi.spyOn(PhaseRetryEvaluator.prototype, 'evictRunStagnationTrackers');

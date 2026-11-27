@@ -8,9 +8,11 @@ is absent, so obtain the planning envelope before changing host code.
 
 ## What This Repo Is
 
-Schegent is a VS Code extension that orchestrates local CLI backends through
-the Spec Driven Development workflow. Source code lives in `src/`, webview code in
-`webview-ui/`, tests in `tests/`, and implementation docs in `docs/`.
+Schegent is a VS Code extension that orchestrates installed local CLI backends
+(`claude`, `codex`, and `agy`) to drive catalog-authored Phases and composable
+Workflows, including the Spec Driven Development workflow. Source code lives in
+`src/`, webview code in `webview-ui/`, tests in `tests/`, and implementation
+docs in `docs/`.
 
 ## Verification
 

@@ -81,9 +81,11 @@ import {
   RESET_CLEARED_KEYS,
   RESET_EXEMPT_KEYS,
   SCHEMA_VERSION,
+  SERIALIZE_OP_LIVENESS_THRESHOLD_MS,
   STATE_SCHEMA_VERSION,
-  UnsupportedStateSchemaVersionError, isRunRaceRefusal, safeDisplay,
+  UnsupportedStateSchemaVersionError, isRunRaceRefusal, resolveSerializeLivenessThresholdMs, safeDisplay, trackSerializeLiveness,
   type ConcurrencyNotice, type StateSchemaVersionErrorCode,
+  type WorkspaceStateStoreOptions,
   type ConnectedRunWriteResult,
   type Disposable,
   type ForwardMigrationEvents,
@@ -111,9 +113,11 @@ export {
   RESET_CLEARED_KEYS,
   RESET_EXEMPT_KEYS,
   SCHEMA_VERSION,
+  SERIALIZE_OP_LIVENESS_THRESHOLD_MS,
   STATE_SCHEMA_VERSION,
   UnsupportedStateSchemaVersionError, isRunRaceRefusal,
   type ConcurrencyNotice, type StateSchemaVersionErrorCode,
+  type WorkspaceStateStoreOptions,
   type ConnectedRunWriteResult,
   type Disposable,
   type ForwardMigrationEvents,
@@ -287,9 +291,10 @@ export class WorkspaceStateStore {
   private readonly connectedRunsWarned = connectedFamily.createConnectedRunsWarningState();
   private ownershipRegistry: OwnershipRegistry;
   private readonly scheduler: Scheduler;
+  private readonly serializeLivenessThresholdMs: number;
   private readonly familyContext: WorkspaceStateFamilyContext;
 
-  constructor(memento: Memento, logger?: SanitizedLogger, scheduler: Scheduler = systemScheduler) {
+  constructor(memento: Memento, logger?: SanitizedLogger, scheduler: Scheduler = systemScheduler, options?: WorkspaceStateStoreOptions) {
     this.rawMemento = memento;
     this.memento = {
       get: <T>(key: string): T | undefined => this.rawMemento.get<T>(key),
@@ -297,6 +302,7 @@ export class WorkspaceStateStore {
     };
     this.logger = logger ?? null;
     this.scheduler = scheduler;
+    this.serializeLivenessThresholdMs = resolveSerializeLivenessThresholdMs(options);
     this.writeGate = new MementoWriteGate(memento, scheduler, this.logger);
     this.ownershipRegistry = new OwnershipRegistry(
       createMementoOwnershipFs(memento),
@@ -334,6 +340,8 @@ export class WorkspaceStateStore {
       warnLoadRepairs: (warnings) => this.warnLoadRepairs(warnings),
       getTerminalTransitionIntents: () =>
         runsFamily.getTerminalTransitionIntents(this.familyContext),
+      inspectTerminalTransitionJournal: () =>
+        runsFamily.inspectTerminalTransitionJournal(this.familyContext),
       migrationSteps: {
         migrateV12ToV13IfNeeded: () => this.migrateV12ToV13IfNeeded(),
         migrateVerdictBasisIfNeeded: () => this.migrateVerdictBasisIfNeeded(),
@@ -671,6 +679,10 @@ export class WorkspaceStateStore {
     return runsFamily.getTerminalTransitionIntents(this.familyContext);
   }
 
+  public inspectTerminalTransitionJournal(): import('./terminal-transition-journal').TerminalTransitionJournalInspection {
+    return runsFamily.inspectTerminalTransitionJournal(this.familyContext);
+  }
+
   public setTerminalTransitionIntent(
     runId: string,
     intent: TerminalTransitionIntent | null
@@ -845,7 +857,7 @@ export class WorkspaceStateStore {
       );
     }
     const predecessors = keys.map((key) => this.chains.get(key) ?? Promise.resolve());
-    const next = Promise.all(predecessors).then(() => {
+    const rawNext = Promise.all(predecessors).then(() => {
       if (this.writeGate.isQuarantined()) {
         throw new StorageWriteQuarantinedError(
           'storage-write-quarantined',
@@ -854,6 +866,7 @@ export class WorkspaceStateStore {
       }
       return Promise.resolve(op()).then(() => undefined);
     });
+    const next = trackSerializeLiveness(keys.join(','), rawNext, this.serializeLivenessThresholdMs, this.logger);
     const stored = next.catch(() => undefined);
     for (const key of keys) this.chains.set(key, stored);
     return next;
@@ -869,7 +882,7 @@ export class WorkspaceStateStore {
       );
     }
     const previous = this.chains.get(key) ?? Promise.resolve();
-    const next = previous.then(() => {
+    const rawNext = previous.then(() => {
       if (this.writeGate.isQuarantined()) {
         throw new StorageWriteQuarantinedError(
           'storage-write-quarantined',
@@ -878,6 +891,7 @@ export class WorkspaceStateStore {
       }
       return Promise.resolve(op()).then(() => undefined);
     });
+    const next = trackSerializeLiveness(key, rawNext, this.serializeLivenessThresholdMs, this.logger);
     this.chains.set(
       key,
       next.catch(() => undefined)

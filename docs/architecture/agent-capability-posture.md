@@ -347,6 +347,30 @@ which is recorded in the threat model rather than implied here.
 Shape 2 — the capability broker, which bounds what the agent may *do* rather than whether it may
 start — remains outstanding and is unaffected. The MCP and new-backend freeze still holds.
 
+## Subsequent risk-reduction hardening (principal review R2: S3, S4, S15, posture defaults)
+
+Without altering the underlying uncontained posture for `claude` and `agy` or claiming OS containment
+where none exists, four risk-reduction controls tighten the host perimeter around Runs:
+
+1. **Expanded repository agent-config acknowledgement (`S3`).** The preflight scanner now covers
+   bounded recursive walks of `.claude/{skills,commands,agents,hooks}/` (max depth 4, 256 files, 4 MiB
+   total, symlinks refused, overflow markers included in the fingerprint), best-effort hashing of
+   workspace-internal scripts referenced by Claude hook commands, conservative `agy` workspace config
+   and skill paths (`.agents/{skills,rules,workflows}/`, `AGENTS.md`, `GEMINI.md`,
+   `.gemini/settings.json`), and `codex` project config (`.codex/config.toml`, `AGENTS*.md`) with
+   contained-backend wording.
+2. **Per-Phase fingerprint re-check (`S4`).** `AgentConfigAckGate` recomputes the bounded fingerprint
+   before every Phase spawn and compares it to the fingerprint acknowledged for `(runId, backend)`;
+   unchanged fingerprints proceed without re-prompting, while mid-Run changes require fresh
+   acknowledgement or refuse spawn.
+3. **Removal of the dormant legacy-drain ACP bypass (`D4/S15`).** `AcpBackedRunner` no longer contains
+   the direct-CLI `legacyDrain` branch and `acp-execution-wiring.ts` no longer enables it, so every
+   invocation routes through ACP and `AcpAuthorityGate`.
+4. **Run-start visibility for unset spend bounds and unpinned models.** Defaults remain unchanged
+   (spend bounds unset, models unpinned), and `SpendBoundWatcher` emits one sanitized runtime-log
+   warning per Run at admission/start whenever a backend in the Run has no configured spend bound
+   and/or any Phase leaves its model unpinned.
+
 ## Related
 
 - [Threat model](../security/threat-model.md) — the shipped posture as it stands, including the

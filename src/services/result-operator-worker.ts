@@ -32,10 +32,10 @@ export interface WorkerEvaluationOutput {
 }
 
 /**
- * Self-contained worker evaluation function. Holds no external module references
- * so `executeResultContractInWorker` can run `workerEvaluateMain.toString()` inside
- * a `node:worker_threads` `Worker` (`eval: true`) in both TypeScript/Vitest and
- * compiled JavaScript environments without file-loader friction.
+ * Self-contained worker evaluation function. Holds no relative runtime imports
+ * (erasable-only TypeScript syntax + `import type` only) so it runs both bundled
+ * as `dist/result-operator.worker.js` in production and directly from `.ts` source
+ * under Node's built-in type stripping in Vitest.
  */
 export function workerEvaluateMain(input: WorkerEvaluationInput): WorkerEvaluationOutput {
   const MAX_SOURCE_BYTES = 262_144;

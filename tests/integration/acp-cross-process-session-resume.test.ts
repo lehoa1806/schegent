@@ -572,7 +572,12 @@ describe('FR-R7-14 (14-04) — cross-process ACP bridge session continuity and f
         allocateConnectionGeneration: () => durable.allocateConnectionGeneration(),
         platform: QUALIFIED_PLATFORM
       });
-      const phaseRunner = new PhaseRunner(acpRunner, new PromptBuilder(), makeAuditWriter(), new SanitizedLogger());
+      const phaseRunner = new PhaseRunner({
+        runner: acpRunner,
+        promptBuilder: new PromptBuilder(),
+        auditWriter: makeAuditWriter(),
+        logger: new SanitizedLogger()
+      });
       const okOutput = await dispatchResumingIncompleteTurns(
         phaseRunner,
         {
