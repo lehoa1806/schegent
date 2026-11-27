@@ -33,6 +33,7 @@ import type {
 import type { PhaseSourceStatus } from '../../../src/contracts/process-definitions';
 import { handler as preflightHandler } from '../../../src/ui/sidebar/commands/cmd-preflight-process-yaml';
 import { FakeCatalogStore, NO_WRITES, writesOf } from '../../fixtures/fake-catalog-store';
+import { loadExample } from '../../fixtures/speckit-new-feature-example';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -295,7 +296,7 @@ describe('Feature 084 — an import never takes an id that is already claimed', 
 
 describe('Feature 098 (T033) — importing the same document twice writes once', () => {
   // SC-004, on the document the VSIX ships. The first import is represented by its
-  // outcome — the ten rows sitting in the catalog — and the assertion is about the
+  // outcome — the example's rows sitting in the catalog — and the assertion is about the
   // second run: every row skips, every row reports a claimant that resolves, and
   // nothing is written.
   //
@@ -305,22 +306,13 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
   // built-in tier outright, so the only rows that can claim an id are ones the
   // operator put there, and `presentRowStatus: 'effective'` is the residue of that
   // claim: a row that resolves, holding the id.
-  const EXAMPLE = readFileSync(
-    join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.pipeline.yaml'),
+  const RAW_EXAMPLE = readFileSync(
+    join(__dirname, '..', '..', '..', 'examples', 'speckit-new-feature.workflow.yaml'),
     'utf8'
   );
 
-  const IMPORTED_PHASE_IDS = Object.freeze([
-    'speckit-specify',
-    'speckit-clarify',
-    'speckit-plan',
-    'speckit-tasks',
-    'speckit-checklist',
-    'speckit-analyze',
-    'speckit-implement',
-    'speckit-review',
-    'finalize'
-  ]);
+  const IMPORTED_PHASE_IDS = [...loadExample().phases.keys()];
+  const EXAMPLE = RAW_EXAMPLE;
 
   /**
    * What the catalog holds after the first import. The stored rows deliberately do
@@ -337,28 +329,30 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     }));
   }
 
-  function importedPipelines(): readonly unknown[] {
+  function importedWorkflows(): readonly unknown[] {
     return [
       {
-        id: 'speckit-new-feature',
-        name: 'Already Imported Pipeline',
+        workflowId: 'speckit-new-feature',
+        name: 'Already Imported Workflow',
         version: 7,
-        phases: [...IMPORTED_PHASE_IDS]
+        nodes: IMPORTED_PHASE_IDS.map((id) => ({ nodeId: id, kind: 'phase', phaseId: id })),
+        connections: [],
+        startNodeIds: [...IMPORTED_PHASE_IDS]
       }
     ];
   }
 
   function buildPackageHarness(): Harness {
-    const pipelines = importedPipelines();
+    const workflows = importedWorkflows();
     const base = buildHarness(importedPhases(), EXAMPLE);
-    base.ctx.deps.readPipelineConfig = () => ({
-      rows: pipelines,
-      revision: base.store.revisionOf('pipeline')
+    base.ctx.deps.readWorkflowConfig = () => ({
+      rows: workflows,
+      revision: base.store.revisionOf('workflow')
     });
     return base;
   }
 
-  it('plans ten skip rows, every one citing a stored row that resolves', async () => {
+  it('skips every phase and the workflow, each citing a stored row that resolves', async () => {
     const h = buildPackageHarness();
     await preflightHandler(h.ctx, COMMAND);
 
@@ -366,7 +360,7 @@ describe('Feature 098 (T033) — importing the same document twice writes once',
     expect(result.outcome).toBe('planned');
     if (result.outcome !== 'planned') return;
 
-    expect(result.plan.counts).toEqual({ import: 0, skip: 10, invalid: 0, blocked: 0 });
+    expect(result.plan.counts).toEqual({ import: 0, skip: IMPORTED_PHASE_IDS.length + 1, invalid: 0, blocked: 0 });
     for (const row of result.plan.rows) {
       expect(row.outcome).toBe('skip');
       if (row.outcome !== 'skip' || row.resourceKind === 'modelCatalog') continue;

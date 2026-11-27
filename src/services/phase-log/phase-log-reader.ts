@@ -3,21 +3,30 @@
 // at the IPC boundary (research.md §5). See
 // specs/020-phase-level-logs/contracts/phase-log-service.md §6.
 
-import * as fs from 'node:fs/promises';
+import { openWithinRootByPath } from '../../lib/safe-open';
 import { discoverIterations } from './phase-log-iteration-discovery';
-import { parseStreamJsonlBytes } from './phase-log-jsonl-parser';
-import { projectStreamJsonlLine } from './phase-log-display-projector';
+import { StreamLineProjector } from './phase-log-display-projector';
+import { RecordFramer } from './live-log-record-framer';
+import {
+  cursorAtOffset,
+  generationOf,
+  readBeforeFromHandle,
+  streamDigest
+} from './live-log-cursor';
+import { LIVE_LOG_RESIDUAL_MAX_BYTES } from '../../contracts/phase-log-bounds';
 import { resolvePhaseDirPath, resolveStreamJsonlPath } from './phase-log-path';
 // Feature 098 (PRIV-01) — the boundary scrub is shared with the live
 // tail session so a reopened phase and a watched one redact identically.
 import { sanitizeDisplayEntryBody } from './phase-log-sanitizer';
 import { truncateDisplayEntryBody } from './phase-log-truncator';
-import { detectVerboseDiagnosticsState } from './verbose-diagnostics-detector';
+import { classifyEmptyKind } from './verbose-diagnostics-detector';
+import { readBoundedTail } from '../../lib/bounded-read';
 import type {
   IterationManifest,
   PhaseLogDisplayEntry,
   PhaseLogReadResult,
-  PhaseLogSelection
+  PhaseLogSelection,
+  PhaseProgress
 } from './types';
 
 interface ReadCaps {
@@ -32,9 +41,55 @@ interface ReadIterationManifestArgs {
     'queueId' | 'taskId' | 'pipelineId' | 'phaseId' | 'iterationN'
   >;
   readonly isInFlight: boolean;
+  /**
+   * Feature 203 (D7, FR-016, risk R2) — progress at PHASE granularity, derived
+   * by the service. `isInFlight` above is task-level and stays as it is; a card
+   * that claims "still producing output" needs this one instead.
+   *
+   * REQUIRED, deliberately. Optional with an `unknown` default would let a
+   * future caller omit it and silently get a reader that can never produce
+   * `phase-running-no-output` — the exact class of silent degradation this
+   * feature exists to remove. Every caller states its progress claim, including
+   * the ones whose claim is that they cannot tell.
+   */
+  readonly progress: PhaseProgress;
   readonly caps: ReadCaps;
   readonly sanitize: (s: string) => string;
   readonly readSetting?: () => boolean;
+}
+
+interface FramedTail {
+  readonly projected: ReadonlyArray<{ readonly entry: PhaseLogDisplayEntry; readonly end: number }>;
+  readonly skippedLines: number;
+  /** The end of the last record after which the projector was idle. */
+  readonly idleEnd: number;
+}
+
+/**
+ * FR-R6-F07 (FR-001) — frames the bounded tail as the live tail does, so a read
+ * and a tail split records at the same offsets. The residual bound is the tail
+ * itself: a one-shot read already holds every byte, so it shows a long record
+ * whole as it always has. The idle boundary starts at the tail's first byte; a
+ * tail that began mid-record makes that cursor fail its newline check, and the
+ * tail then starts from the newest snapshot instead.
+ */
+function frameTail(bytes: Buffer, start: number): FramedTail {
+  const framer = new RecordFramer(start, Math.max(bytes.length, LIVE_LOG_RESIDUAL_MAX_BYTES));
+  framer.feed(bytes);
+  const projector = new StreamLineProjector();
+  const projected: Array<{ entry: PhaseLogDisplayEntry; end: number }> = [];
+  let skippedLines = 0;
+  let idleEnd = start;
+  for (let item = framer.next(); item !== null; item = framer.next()) {
+    if (item.kind === 'oversized-record') continue;
+    if (item.kind === 'record') {
+      for (const entry of projector.project(item.value)) projected.push({ entry, end: item.end });
+    } else if (item.kind === 'parse-omission') {
+      skippedLines += 1;
+    }
+    if (projector.isIdle()) idleEnd = item.end;
+  }
+  return { projected, skippedLines, idleEnd };
 }
 
 function validateSelectionFullyPopulated(
@@ -64,21 +119,30 @@ export async function readIterationManifest(
     pipelineId: args.selection.pipelineId,
     phaseId: args.selection.phaseId
   });
-  const iterations = await discoverIterations(phaseDir);
-  const verboseDiagnosticsState = await detectVerboseDiagnosticsState({
-    workspaceRoot: args.workspaceRoot,
-    selection: args.selection,
-    readSetting: args.readSetting ?? (() => false)
-  });
+  // Feature 203 (D3) — the one observation of the phase directory. Everything
+  // downstream classifies from `discovery`; nothing re-resolves this path.
+  const discovery = await discoverIterations(phaseDir);
+  const iterations = discovery.outcome === 'listed' ? discovery.iterations : [];
+  const settingOn = (args.readSetting ?? (() => false))();
+  const progress: PhaseProgress = args.progress;
 
   if (iterations.length === 0) {
+    // Feature 203 (T034, D2, FR-004, FR-008) — every one of these four
+    // situations used to return this same manifest with a label chosen by
+    // whether the directory happened to exist.
     return {
       iterations: [],
       selectedIteration: null,
       entries: [],
       skippedLines: 0,
       truncatedCount: 0,
-      verboseDiagnosticsState,
+      cursor: null,
+      verboseDiagnosticsState: classifyEmptyKind({
+        discovery,
+        settingOn,
+        progress,
+        entryCount: 0
+      }),
       isInFlight: args.isInFlight
     };
   }
@@ -97,35 +161,105 @@ export async function readIterationManifest(
     iterationN: selectedIteration
   });
 
-  let bytes = '';
+  let framed: FramedTail = { projected: [], skippedLines: 0, idleEnd: 0 };
+  let skippedBytes = 0;
+  let cursor: string | null = null;
   try {
-    bytes = await fs.readFile(streamPath, 'utf8');
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') {
-      // Race: iteration discovered then file deleted between calls.
+    // FR-R3-052 (H-03) — was `fs.readFile(streamPath, 'utf8')` with no `stat` at
+    // all, so a multi-GiB phase log went wholly into memory. Now the file's tail
+    // up to a bound, read in fixed chunks: a log's recent end is what an operator
+    // is looking at, and the allocation is the bound rather than the file.
+    // FR-R3-080 (T1070) — the components walked, not just the leaf opened. The
+    // bounded read below is unchanged: it was the H-03 fix and it is orthogonal
+    // to where the descriptor came from.
+    const opened = await openWithinRootByPath(args.workspaceRoot, streamPath, { flags: 'r' });
+    if (opened.outcome === 'refused') {
+      // A PERMISSION refusal is not an absent log. Before the walk, `fs.open`
+      // threw EACCES/EPERM, the catch below rethrew it (it only swallows
+      // ENOENT), and `readPhaseLog` mapped it to `permission-denied` — a
+      // failure the operator can actually act on. Collapsing every refusal to
+      // an empty result dropped that signal and showed an existing iteration
+      // with zero entries instead, which reads as "this phase logged nothing".
+      if (opened.errno === 'EACCES' || opened.errno === 'EPERM') {
+        const denied: NodeJS.ErrnoException = new Error(
+          `phase log stream is not readable (${opened.errno})`
+        );
+        denied.code = opened.errno;
+        throw denied;
+      }
+      // Feature 203 (T035, D2, F20) — everything else still returns an empty
+      // manifest, but it no longer returns an unlabelled one. The split keys on
+      // "errno is not ENOENT" and on nothing else: opening the stream path when
+      // it is a directory succeeds on POSIX and fails EISDIR on Windows, and a
+      // symlinked leaf carries no errno at all. All three are the same
+      // situation for the operator — the path is there and is not a log — so
+      // the branch must not name a code or a platform.
       return {
         iterations,
         selectedIteration,
         entries: [],
         skippedLines: 0,
         truncatedCount: 0,
-        verboseDiagnosticsState,
+        cursor: null,
+        verboseDiagnosticsState:
+          opened.errno === 'ENOENT'
+            ? { kind: 'record-vanished' }
+            : { kind: 'record-path-refused' },
+        isInFlight: args.isInFlight
+      };
+    }
+    const handle = opened.handle;
+    try {
+      const stat = await handle.stat();
+      const tail = await readBoundedTail(handle, stat.size);
+      skippedBytes = tail.skippedBytes;
+      framed = frameTail(tail.bytes, tail.nextOffset - tail.bytes.length);
+      // FR-R6-F07 — the digest names the iteration read, not the one asked for.
+      const stream = {
+        digest: streamDigest(args.workspaceRoot, { ...args.selection, iterationN: selectedIteration }),
+        generation: generationOf(stat, process.platform)
+      };
+      cursor = await cursorAtOffset(stream, framed.idleEnd, readBeforeFromHandle(handle));
+    } finally {
+      await handle.close();
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      // Race: iteration discovered then file deleted between calls.
+      //
+      // Feature 203 (T036, D2, FR-003) — the SAME member as the ENOENT refusal
+      // above, deliberately. Two code paths, one operator situation: an
+      // iteration exists and its stream does not. A distinct member here would
+      // be an enumeration of code paths rather than of situations.
+      return {
+        iterations,
+        selectedIteration,
+        entries: [],
+        skippedLines: 0,
+        truncatedCount: 0,
+        cursor: null,
+        verboseDiagnosticsState: { kind: 'record-vanished' },
         isInFlight: args.isInFlight
       };
     }
     throw err;
   }
 
-  const { parsedLines, skippedLines } = parseStreamJsonlBytes(bytes, '');
-
+  // Feature 020 BUG-002 (T083, FR-012a) — one projector for the whole read: an
+  // agy step spans several lines and is emitted once, when a line closes it.
+  // FR-R6-F07 (FR-001) — an in-flight read stops at its cursor; the tail that
+  // starts from it delivers the later entries, so none is shown twice.
+  const { skippedLines, idleEnd } = framed;
+  const shown = args.isInFlight
+    ? framed.projected.filter(({ end }) => end <= idleEnd)
+    : framed.projected;
   let entries: PhaseLogDisplayEntry[] = [];
   let truncatedCount = 0;
-  for (const parsed of parsedLines) {
-    const projected = projectStreamJsonlLine(parsed);
-    if (!projected) continue;
+  for (const { entry: projected } of shown) {
     const truncated = truncateDisplayEntryBody(projected, {
-      perFieldBytes: args.caps.perFieldBytes
+      perFieldBytes: args.caps.perFieldBytes,
+      sanitize: args.sanitize
     });
     if (truncated.bodyTruncated !== null) truncatedCount += 1;
     const sanitized = sanitizeDisplayEntryBody(truncated, args.sanitize);
@@ -156,7 +290,19 @@ export async function readIterationManifest(
     entries,
     skippedLines,
     truncatedCount,
-    verboseDiagnosticsState,
+    // FR-R3-052 — omitted when nothing was skipped, so the field's presence is
+    // itself the signal rather than a zero every caller has to interpret.
+    ...(skippedBytes > 0 ? { skippedLeadingBytes: skippedBytes } : {}),
+    cursor,
+    // Feature 203 (T037, D2, FR-007) — the only site that can reach
+    // `entries-present`, and it reaches it by counting the entries it is about
+    // to return. `entries-present` with zero entries is unconstructible here.
+    verboseDiagnosticsState: classifyEmptyKind({
+      discovery,
+      settingOn,
+      progress,
+      entryCount: entries.length
+    }),
     isInFlight: args.isInFlight
   };
 }

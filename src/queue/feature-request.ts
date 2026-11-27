@@ -1,5 +1,14 @@
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { QueuePauseSource } from './queue-registry';
+import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import type { DegradedPhaseEntry, TaskPhaseProgressProjection } from '../contracts/snapshot-projections';
+
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports it instead of restating it. Re-exported unchanged.
+import type { QueueLifecycle } from '../contracts/snapshot-vocabulary';
+
+export type { QueueLifecycle };
+
 
 export type FeatureRequestStatus =
   | 'pending'
@@ -24,29 +33,20 @@ export type FeatureRequestStatus =
  */
 export const TERMINAL_REQUEST_STATUSES = ['completed', 'canceled', 'failed'] as const;
 
+/**
+ * FR-R3-153 — the narrowed target type for `QueueManager.finish`. Replaces the
+ * over-permissive `FeatureRequestStatus` the method's `status` parameter used
+ * to accept, which let a caller (in principle) "finish" a task into `paused`
+ * or `in-flight`. A pure type addition; `TERMINAL_REQUEST_STATUSES` remains
+ * the one runtime source of truth this type is derived from.
+ */
+export type TerminalRequestStatus = (typeof TERMINAL_REQUEST_STATUSES)[number];
+
 export function isTerminalRequestStatus(status: FeatureRequestStatus | string): boolean {
   return (TERMINAL_REQUEST_STATUSES as readonly string[]).includes(status);
 }
 
-/**
- * Queue lifecycle discriminator. Single source of truth for whether
- * `AutoDrainCoordinator` may promote the next pending task.
- *
- * - `running`         — `inFlightId !== null`; an in-flight task is draining.
- * - `operator-paused` — operator paused the queue; auto-drain is suppressed.
- * - `idle-pending`    — entered from `active-empty` via an enqueue without an
- *                       explicit start. May carry a scheduled trigger.
- * - `active-empty`    — no in-flight, no operator pause, no pending start
- *                       intent — the steady-state default.
- *
- * Transition graph and lockstep invariants live in
- * [data-model.md §QueueLifecycle](../../specs/065-enqueue-start-separation/data-model.md).
- */
-export type QueueLifecycle =
-  | 'running'
-  | 'operator-paused'
-  | 'idle-pending'
-  | 'active-empty';
+
 
 /**
  * Why the queue is currently (or was previously) in `idle-pending`. Used as the
@@ -73,10 +73,45 @@ export type FeatureRequestRerunReason = 'manual' | 'retry-active' | 'auto-drain'
 
 export type FeatureRequestPauseCause = 'phase-paused' | 'manually-paused-task';
 
+/**
+ * Feature 195 (T065, FR-026, SC-017) — how a `completed` row came to be
+ * `completed`, when the answer is not "the host watched it succeed".
+ *
+ * **One member, and that is the shape rather than an unfinished union.** The
+ * alternative reading is the field's own absence, and absence is not a
+ * convention here — it is provable. Before T063 there was exactly one edge into
+ * `completed` and it was the host's (`QueueManager.finish`), so no stored row
+ * carrying no marker can have been attested, including every row written before
+ * this feature existed. Adding `'host-verified'` as a second member would
+ * therefore record nothing a reader cannot already conclude, at the cost of
+ * putting a provenance argument on `finish` — the generic terminal-write path
+ * every failure handler in the product calls, which is the exact coupling T063
+ * refused when it made attestation a separate method.
+ *
+ * A future third route into `completed` adds a member here and needs no
+ * migrator, because absence keeps meaning what it already means.
+ */
+export type CompletionProvenance = 'operator-attested';
+
 export interface FeatureRequestRerun {
   readonly originalRunId: string;
   readonly originalDescription: string;
   readonly reason: FeatureRequestRerunReason;
+}
+
+/**
+ * FR-R5-F08 — durable occurrence identity stamped on workflow-dispatched queue
+ * items so pre-dispatch recovery and resume reconciliation can match and
+ * deduplicate an enqueued Phase attempt even when the host crashed before the
+ * post-enqueue CAS bound `queueItemId` onto `NodeAttemptRecord`.
+ */
+export interface WorkflowOccurrenceIdentity {
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly parentInvocationId: string | null;
+  readonly nodePath: string;
+  readonly attemptId: string;
+  readonly attemptIndex: number;
 }
 
 export interface FeatureRequest {
@@ -107,6 +142,95 @@ export interface FeatureRequest {
    * and no `STATE_SCHEMA_VERSION` bump is needed (the feature-082 precedent).
    */
   runPlan?: FrozenRunPlan;
+  /**
+   * FR-R3-158 (FR-009) — the settled-phase pair recorded when this task
+   * reached a terminal status, so the figure outlives the Run that produced
+   * it. Runs are held one per queue, so a second failure in the same queue
+   * disposes of the first Run: without this field the earlier row's count
+   * would simply vanish, which is the defect the feature exists to end.
+   *
+   * Optional and additive, on the `runPlan` precedent directly above — a
+   * record from before this feature carries none, reads back byte-identical,
+   * and gives a migrator nothing to do. Absence means **unknown**, never
+   * "settled nothing"; a task that genuinely settled none records
+   * `{ settled: 0, total: N }`.
+   *
+   * Cleared on retry (FR-009b), so a new attempt is never reported with the
+   * previous attempt's numbers. Its reader lands with it, in the queue
+   * projector.
+   */
+  phaseProgress?: TaskPhaseProgressProjection;
+  /**
+   * FR-R3-157 (FR-011a) — the phases this task carried past their retry cap,
+   * recorded when it reached a terminal status so the mark outlives the Run
+   * that produced it. Same durability argument as `phaseProgress` directly
+   * above, and for the same reason: a mark held only on the Run reads blank on
+   * every finished row the moment the next task starts.
+   *
+   * Optional and additive, so a pre-feature record reads back byte-identical
+   * and no `STATE_SCHEMA_VERSION` bump is needed. **Absence means NOT
+   * degraded** — which is the opposite of `phaseProgress` above, where absence
+   * means unknown, and the difference is not an inconsistency: a settled-phase
+   * count is a measurement that may be unavailable, while a degradation is an
+   * event that either happened and was recorded or did not happen at all. An
+   * empty list means the same thing and is never written (`run-degradation.ts`).
+   *
+   * Cleared on retry (FR-013), so a new attempt never carries the previous
+   * attempt's doubt.
+   */
+  degradedPhases?: readonly DegradedPhaseEntry[];
+  /**
+   * Feature 195 (T065, FR-026, SC-017) — present when the operator asserted
+   * this task's outcome rather than the host observing it.
+   *
+   * **A fact about the task, never about the halt.** SC-008 forbids storing
+   * anything that describes a halt, and this is not that: it says how this row
+   * reached its status, and it is written on a row that may never have halted
+   * anything. The halt still ends by FR-003's recomputation with nothing stored
+   * — see `QueueManager.attestCompleted`, which writes this and no flag.
+   *
+   * **A marker beside the status, not a seventh `FeatureRequestStatus`.** A new
+   * member of that union would fail the blocking census's exhaustiveness
+   * enforcement with no registered expectation (data-model.md §5) and break
+   * FR-025's promise of no new vocabulary. Attested and verified completions
+   * are identical under the census's own question — is this row blocking — and
+   * differ only in provenance, which is why provenance is a separate field.
+   *
+   * Optional and additive, on the `degradedPhases` precedent directly above, so
+   * a pre-feature record reads back byte-identical and no `STATE_SCHEMA_VERSION`
+   * bump or migrator is needed (FR-017, research D2). **Absence means the host
+   * verified the outcome** — see `CompletionProvenance` for why that is a
+   * provable reading and not a default.
+   *
+   * **No queue decision reads it, by requirement.** FR-026 asks that an
+   * attested outcome be distinguishable "so a later reader can tell", and
+   * SC-017 measures exactly that: an assertion over the stored record, in
+   * `tests/integration/completion-provenance.test.ts`. This is deliberately not
+   * the `completedAwaitingExit` defect that
+   * `tests/lint/completed-awaiting-exit-has-a-reader.test.ts` was written for:
+   * that field's absence made the host decide something wrongly, whereas this
+   * one is required to change no decision at all — FR-025 admits the attested
+   * exit precisely because it needs no machinery, and a host reader branching on
+   * provenance would be the machinery it promised not to add.
+   *
+   * Two readers exist, and neither decides anything. Removing the row copies
+   * the value into the `task-removed` audit entry (FR-R4-F16: the removal path,
+   * `QueueManager.removeTask`), so the fact outlives the row. The failed-row
+   * census reads it from the queue snapshot to count how a failed row was
+   * resolved. `tests/lint/failed-row-census-isolation.test.ts` holds the list of
+   * files that may name this field and fails on any other, so a queue decision
+   * cannot start branching on it without that list, and a reviewer, saying so.
+   *
+   * Not cleared on retry, unlike the two fields above, because it cannot
+   * survive one: `retry` admits only `failed | canceled | paused`, and a row
+   * carrying this marker is `completed`.
+   */
+  completionProvenance?: CompletionProvenance;
+  /**
+   * FR-R5-F08 — optional occurrence identity for workflow-dispatched Phase
+   * items. Additive and optional so pre-feature records read back unchanged.
+   */
+  workflowOccurrence?: WorkflowOccurrenceIdentity;
 }
 
 export interface QueueState {
@@ -189,33 +313,30 @@ export interface QueueState {
    * Default for a never-migrated queue is `'dismissed'` (nothing to surface).
    */
   migrationNotice?: 'pending' | 'dismissed';
+  /**
+   * Feature 195 (T007, FR-001, FR-017, FR-018) — this queue's own answer to
+   * "does a failed task stop it", or absent when the operator has never
+   * stated one.
+   *
+   * The optionality IS the shape gate, not an incidental default: a record
+   * carrying this field has been touched by an operator (`CMD_SET_QUEUE_
+   * FAILURE_POLICY`, `src/commands/set-queue-failure-policy.ts`); one without
+   * it has not. That is what lets a later change to the workspace default
+   * (`schegent.queue.haltOnTaskFailure`) reach exactly the un-opinionated
+   * queues and none of the overridden ones (FR-018) — see
+   * `effectiveQueueFailurePolicy` in `src/contracts/queue-failure-policy.ts`.
+   * Every pre-existing record lacks this field and loads unchanged (FR-017):
+   * no schema bump, no migrator (research.md D2).
+   */
+  failurePolicy?: QueueFailurePolicy;
 }
 
-export const MAX_DESCRIPTION_LENGTH = 32_000;
-export const MAX_PENDING_TASKS_PER_QUEUE = 100;
-
-export function validateDescription(description: string): string {
-  const trimmed = description.trim();
-  if (trimmed.length === 0) {
-    throw new Error('Feature description must be non-empty');
-  }
-  if (trimmed.length > MAX_DESCRIPTION_LENGTH) {
-    throw new Error(`Feature description exceeds ${MAX_DESCRIPTION_LENGTH} characters`);
-  }
-  return trimmed;
-}
-
-export function ensureExtendedFeatureRequest(raw: Partial<FeatureRequest> & { id: string; description: string; enqueuedAt: number; status: FeatureRequestStatus; position: number; runId: string | null }): FeatureRequest {
-  return {
-    retryCount: 0,
-    lastError: null,
-    pausedReason: null,
-    queueId: 'default',
-    pauseCause: null,
-    startedAt: null,
-    completedAt: null,
-    createdAt: raw.enqueuedAt,
-    updatedAt: raw.enqueuedAt,
-    ...raw
-  };
-}
+// FR-R7-07 — Pure value helpers and bounds relocated to `src/contracts/queue-feature-request-helpers.ts`
+// so `src/state/` does not value-import `src/queue/`. Re-exported here unchanged while
+// `FeatureRequest` and `QueueState` interface declarations remain in this module for `contracts:check`.
+export {
+  MAX_DESCRIPTION_LENGTH,
+  MAX_PENDING_TASKS_PER_QUEUE,
+  validateDescription,
+  ensureExtendedFeatureRequest
+} from '../contracts/queue-feature-request-helpers';

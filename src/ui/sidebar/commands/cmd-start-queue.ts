@@ -2,7 +2,14 @@
 // task to in-flight by invoking `schegent.startQueue` (which delegates
 // to `controller.drainQueuedWork()` → `AutoDrainCoordinator.drainIfIdle()`).
 // The host command validates capacity, queue-paused state, and lock before
-// promoting. Rejections surface as ack('rejected', ...) to the webview.
+// promoting.
+//
+// FR-R3-154 (T1646) — "Rejections surface as ack('rejected', ...) to the
+// webview" is what this comment claimed while the handler ACKed `accepted`
+// unconditionally; `runStartQueueCommand` returned `void` and had swallowed
+// every rejection. It is true now, and the two acceptance meanings — intent
+// applied versus drain pass offered — are written out on the
+// `StartQueueCommand` contract in `src/contracts/sidebar-ipc.ts`.
 //
 // Feature 065 — when the chooser commits a `StartQueueIntent` against
 // `idle-pending`, the optional payload is threaded through so the host
@@ -20,7 +27,7 @@
 // wire shape byte for byte.
 import type { StartQueueCommand } from '../messages';
 import type { CommandHandler } from './handler-contract';
-import { ack, exec } from './handler-helpers';
+import { execAndAck } from './handler-helpers';
 
 export const handler: CommandHandler<StartQueueCommand> = async (ctx, command) => {
   const queueId = command.payload?.queueId;
@@ -28,6 +35,5 @@ export const handler: CommandHandler<StartQueueCommand> = async (ctx, command) =
   const arg = queueId || startIntent
     ? { ...(queueId ? { queueId } : {}), ...(startIntent ? { startIntent } : {}) }
     : undefined;
-  await exec(ctx, 'schegent.startQueue', arg);
-  await ack(ctx, 'accepted');
+  await execAndAck(ctx, 'schegent.startQueue', arg);
 };

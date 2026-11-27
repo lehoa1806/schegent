@@ -18,10 +18,11 @@
 // advances the loop until a stated condition holds and fails by *naming what it
 // waited for* rather than hanging.
 
-import { vi, type Mock } from 'vitest';
+import { vi } from 'vitest';
 import * as path from 'path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { diagnoseWait } from './wait-diagnosis';
 import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 import { SchegentWorkflowController } from '../../src/controller/workflow-controller';
 // Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
@@ -41,17 +42,15 @@ import { RunCheckpointService } from '../../src/services/run-checkpoint-service'
 import { RunMutationLedger } from '../../src/services/run-mutation-ledger';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { isTerminalRunStatus, type WorkflowRun } from '../../src/state/workflow-run';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { FeatureRequest } from '../../src/queue/feature-request';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
+import type { DeadlineTimer } from '../../src/services/retry-coordinator';
 import { removeTempRoot } from '../temp-root-cleanup';
 
 /** Registry ids need a real v4 shape — `isValidQueueId` enforces it. */
@@ -98,10 +97,13 @@ export const buffer = (text: string): ZippedStreamBuffer => {
   return b;
 };
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 /** A phase result the sequencer reads as a clean advance. */
 export const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -113,7 +115,8 @@ export const cleanStdout = (phase: string): string =>
     'open_questions: 0',
     'critical_issues: 0',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 export const cleanOutput = (phase: string): RawInvocationOutput => ({
@@ -150,8 +153,8 @@ export const fatalOutput = (): RawInvocationOutput => ({
 export const rateLimitedOutput = (resetsAtSec: number): RawInvocationOutput => ({
   stdoutBuffer: buffer(
     [
-      '{"type":"system","subtype":"init","session_id":"int-093","model":"claude-sonnet-4-5","cwd":"/tmp/wsp"}',
-      `{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":${resetsAtSec}}}`,
+      '{"type":"system","subtype":"init","session_id":"int-093","model":"claude-sonnet-5-5","cwd":"/tmp/wsp"}',
+      `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":${resetsAtSec}}}`,
       `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":${resetsAtSec}}}`
     ].join('\n')
   ),
@@ -210,7 +213,8 @@ export async function drainUntil(
   what: string | (() => string),
   timeoutMs = DRAIN_TIMEOUT_MS
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   let rounds = 0;
   while (Date.now() < deadline) {
     if (settled()) return;
@@ -219,21 +223,17 @@ export async function drainUntil(
     await new Promise((r) => setTimeout(r, 0));
   }
   if (!settled()) {
+    // FR-R3-097 — the round count used to be reported raw, under a comment
+    // claiming the ratio of rounds to milliseconds "is what tells the two
+    // apart". It does, and nothing stated a floor to divide against, so the one
+    // time anyone applied the rule they read a full-speed loop as a starved one.
+    // `diagnoseWait` supplies the floor and states the verdict.
+    const diagnosis = diagnoseWait({ elapsedMs: Date.now() - startedAt, rounds });
     throw new Error(
       `drainUntil gave up after ${timeoutMs}ms and ${rounds} round(s) waiting for: ` +
-        `${typeof what === 'function' ? what() : what}`
+        `${typeof what === 'function' ? what() : what}\n  ${diagnosis.text}`
     );
   }
-}
-
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: Mock;
-  cancelPendingTimer: Mock;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & { pauseAndPoll: Mock; cancelPendingTimer: Mock };
 }
 
 /** One parked CLI invocation, waiting for the test to let it proceed. */
@@ -260,6 +260,11 @@ export interface HarnessOptions {
   readonly concurrencyCap?: number;
   /** Registry entries to create beyond the default queue. */
   readonly queues?: readonly string[];
+  /**
+   * FR-R4-F02 — the retry coordinator's deadline timer. A test that fires backoff deadlines by hand
+   * passes a fake; the default is the coordinator's own real-timer implementation.
+   */
+  readonly deadlineTimer?: DeadlineTimer;
 }
 
 export interface Harness {
@@ -365,20 +370,16 @@ export async function makeHarness(
   // The breakpoint accessor resolves by **run id** across the whole record, not
   // by a fixed queue: with N Runs, a queue-pinned accessor would answer every
   // Run with the default queue's breakpoints.
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
-    audit,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
     logger,
     rawTranscript,
-    null,
-    null,
-    null,
-    null,
-    createPhaseBreakpointAccessor(
+    phaseBreakpointAccessor: createPhaseBreakpointAccessor(
       (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
     )
-  );
+  });
 
   const queue = new QueueManager(store);
 
@@ -417,11 +418,11 @@ export async function makeHarness(
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog: makeStubWatchdog(),
+    ...(options.deadlineTimer ? { deadlineTimer: options.deadlineTimer } : {}),
     terminalTransitions: new TerminalTransitionCoordinator(
       store,
       queue,
-      { record: vi.fn(async () => {}) },
+      { record: vi.fn(async () => ({ outcome: 'recorded' as const })) },
       logger
     ),
     executionLease: lease,

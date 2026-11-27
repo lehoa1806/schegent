@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeScheduleHarness, settle, DEFAULT_NOW } from './schedule-harness';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 // FR-R3-002 (T291) — a schedule denied by a foreign lock is retried.
 //

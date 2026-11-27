@@ -39,7 +39,7 @@
 // its own tests. This file exists to prove the single-queue operator's world is
 // untouched, which is the half of the feature that can only regress.
 
-import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { drainUntil as sharedDrainUntil } from './concurrent-run-harness';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -58,17 +58,29 @@ import { QueueManager } from '../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { createPhaseBreakpointAccessor } from '../../src/controller/breakpoint-accessor';
 import { TerminalTransitionCoordinator } from '../../src/services/terminal-transition-coordinator';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
 import { removeTempRoot } from '../temp-root-cleanup';
+import { RecordingDeadlineTimer } from '../recording-deadline-timer';
+// Feature 093 BUG-001 (T103a) — the real backend wiring, for the block at the
+// foot of this file. See that block's header for why the production dispatch is
+// called rather than reconstructed.
+import type * as vscode from 'vscode';
+import {
+  wireBackendExecution,
+  type BackendExecutionWiring,
+  type BackendExecutionWiringDeps
+} from '../../src/activation/backend-execution-wiring';
+import { CLI_TRANSPORT_DIRECTORY } from '../../src/monitor/cli-transport-sink';
+import { MONITOR_STALL_THRESHOLD_MS } from '../../src/contracts/monitor-events';
+import { EvidenceHealthMonitor } from '../../src/services/evidence-health/evidence-health-monitor';
+import { disposeWorkspaceFolderPicker } from '../../src/state/workspace-folder-picker';
+import { workspace as vscodeWorkspace } from '../__stubs__/vscode';
 
 /**
  * The single-queue operator's queue is the default one — feature 030 collapsed
@@ -91,10 +103,13 @@ class FakeMemento implements Memento {
   }
 }
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 /** A phase result the sequencer reads as a clean advance. */
 const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -106,7 +121,8 @@ const cleanStdout = (phase: string): string =>
     'open_questions: 0',
     'critical_issues: 0',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 const buffer = (text: string): ZippedStreamBuffer => {
@@ -179,24 +195,25 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: Mock;
-  cancelPendingTimer: Mock;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & { pauseAndPoll: Mock; cancelPendingTimer: Mock };
-}
-
 interface Harness {
   readonly controller: SchegentWorkflowController;
   readonly store: WorkspaceStateStore;
   readonly queue: QueueManager;
   readonly invocations: CapturedInvocation[];
-  /** Replace the scripted outcome handler; default is a clean advance. */
-  readonly script: (fn: (req: InvocationRequest, callIndex: number) => RawInvocationOutput) => void;
-  readonly watchdog: ReturnType<typeof makeStubWatchdog>;
+  /**
+   * Replace the scripted outcome handler; default is a clean advance.
+   *
+   * Feature 093 BUG-001 (T103a) — the handler may return a promise, which
+   * `invoke` already awaits. A handler that resolves when the test says so is
+   * how the block at the foot of this file gets a Run whose phase child is
+   * genuinely in flight: the monitor assertions there are about a live phase,
+   * and a Run that has already completed cannot make that claim.
+   */
+  readonly script: (
+    fn: (req: InvocationRequest, callIndex: number) => RawInvocationOutput | Promise<RawInvocationOutput>
+  ) => void;
+  /** The retry coordinator's own timer (FR-R4-F02): a delayed retry arms it, a cancel clears it. */
+  readonly deadlineTimer: RecordingDeadlineTimer;
   /** Keys of the run record — the one-entry invariant every stage asserts. */
   readonly runKeys: () => string[];
 }
@@ -212,8 +229,10 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
   await store.setGlobalConcurrencyCap(1);
 
   const invocations: CapturedInvocation[] = [];
-  let handler: (req: InvocationRequest, callIndex: number) => RawInvocationOutput = (req) =>
-    cleanOutput(req.phase);
+  let handler: (
+    req: InvocationRequest,
+    callIndex: number
+  ) => RawInvocationOutput | Promise<RawInvocationOutput> = (req) => cleanOutput(req.phase);
 
   const invoke = vi.fn(async (req: InvocationRequest): Promise<RawInvocationOutput> => {
     const callIndex = invocations.length;
@@ -230,21 +249,16 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
   // Feature 028 — the breakpoint accessor the production wiring in
   // `src/extension.ts` installs, so the breakpoint stage below exercises the
   // real short-circuit rather than a stubbed one.
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
-    audit,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
     logger,
-    null,
-    null,
-    null,
-    null,
-    null,
-    createPhaseBreakpointAccessor(() => store.getRun(SOLE_QUEUE))
-  );
+    phaseBreakpointAccessor: createPhaseBreakpointAccessor(() => store.getRun(SOLE_QUEUE))
+  });
 
   const queue = new QueueManager(store);
-  const watchdog = makeStubWatchdog();
+  const deadlineTimer = new RecordingDeadlineTimer();
 
   // The real coordinator, not a stub: it is one of the converted sites (pattern
   // C-2, `findRunByTask`), and it is the only thing that advances the Task for a
@@ -255,11 +269,11 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog,
+    deadlineTimer,
     terminalTransitions: new TerminalTransitionCoordinator(
       store,
       queue,
-      { record: vi.fn(async () => {}) },
+      { record: vi.fn(async () => ({ outcome: 'recorded' as const })) },
       logger
     )
   };
@@ -284,7 +298,7 @@ async function makeHarness(workspaceRoot: string): Promise<Harness> {
     script: (fn) => {
       handler = fn;
     },
-    watchdog,
+    deadlineTimer,
     runKeys: () => Object.keys(store.getRunMap())
   };
 }
@@ -404,9 +418,10 @@ describe('Feature 093 (T034, US2 scenario 2) — every control resolves the sole
     expect(harness.runKeys()).toEqual([SOLE_QUEUE]);
 
     const dispatchesBeforeRetry = harness.invocations.length;
+    expect(harness.deadlineTimer.armed()).toHaveLength(1);
     const retry = await harness.controller.retryPhaseNow();
     expect(retry.ok).toBe(true);
-    expect(harness.watchdog.cancelPendingTimer).toHaveBeenCalledTimes(1);
+    expect(harness.deadlineTimer.armed()).toHaveLength(0);
 
     // The override is a continuation, and it re-dispatches on the next tick.
     await drainUntil(
@@ -498,5 +513,317 @@ describe('Feature 093 (T034, US2 scenario 2) — every control resolves the sole
     expect(retry).toEqual({ ok: false, reason: 'no-active-run' });
 
     expect(harness.runKeys()).toEqual([]);
+  });
+});
+
+/**
+ * Feature 093 BUG-001 (T103a, SC-010) — cap 1, which is the configuration the
+ * failure actually happened in.
+ *
+ * T103's regression proves SC-019 against the concurrency harness. This one
+ * exists because SC-010 is a claim about the *single-queue* world specifically,
+ * and the clause added to it after BUG-001 — that a Run's monitoring survives a
+ * helper subprocess — is verified here and nowhere else. The operator whose
+ * `speckit-review` ran 21,600,129 ms unwatched had one queue and a cap of 1; a
+ * parity criterion exercised only at cap 3 would not have covered them.
+ *
+ * What is different here beyond the number. The Run is a **real** cap-1 Run: it
+ * is enqueued on the sole queue, admitted through the controller, and its phase
+ * invocation is held open by the scripted CLI for the length of the assertions.
+ * So "non-terminal while the phase child is alive" is checked at both layers
+ * that disagreed in the field — the monitor's state, and the Run record the
+ * sidebar reads — at a moment when the child genuinely has not exited. The
+ * one-entry invariant this file exists for is re-asserted at that moment too:
+ * the fix adds invocation-level state to the monitor, and a Run record that grew
+ * a second key while it was being tracked would be this file's own failure.
+ *
+ * The third case is the one with no sibling anywhere else. Stall coverage is not
+ * a value to read; it is a timer that either fires or does not, so the clock is
+ * faked for the length of that test and only for it. `performance`, `setTimeout`
+ * and `clearTimeout` are the three the detector uses, and they are named rather
+ * than taking the default set because the async setup above them — `drainUntil`,
+ * the audit writes, the temp-root cleanup — runs on real ones.
+ */
+describe('Feature 093 BUG-001 (T103a, SC-010) — at cap 1, a compaction before the phase does not blind the Run', () => {
+  const COMPACTION_LINE = 'compacting the session transcript';
+  const FIRST_PHASE_LINE = 'reviewing the plan';
+  const PHASE_LINES = [FIRST_PHASE_LINE, 'reading the contracts', 'writing the verdict'];
+  // Opaque keys to the monitor, shaped like `nextInvocationId()`'s output. The
+  // counter behind that function is process-wide, so pinning the numbers a
+  // previous test happened to leave would make this file order-dependent.
+  const COMPACTION_INVOCATION = 'claude-cli#cap-one-compaction';
+  const PHASE_INVOCATION = 'claude-cli#cap-one-phase';
+
+  const disposables: vscode.Disposable[] = [];
+  const hostSubscriptions: { dispose(): unknown }[] = [];
+  let wiring: BackendExecutionWiring;
+  let root: string;
+  /** Set while a phase invocation is parked; called to let the Run finish. */
+  let releasePhase: (() => void) | null = null;
+  let driving: Promise<void> | null = null;
+
+  // FR-R4-F04 — the sink no longer writes `.schegent/cli-transport.log`; the router writes a Run file
+  // under `on` and stages under the default `inherit` over an `errors-only` raw mode. This fixture reads
+  // what an operator could read back from a Run that is still running, so it sets the mode to `on`
+  // through the stub's configuration (the stub answers every other key with its default).
+  const originalGetConfiguration = vscodeWorkspace.getConfiguration;
+  const transportOn: typeof vscodeWorkspace.getConfiguration = (section, resource) => {
+    const base = originalGetConfiguration(section, resource);
+    return {
+      ...base,
+      get: <T>(key: string, def: T): T =>
+        key === 'logging.transportCaptureMode' ? ('on' as unknown as T) : base.get(key, def)
+    };
+  };
+
+  beforeEach(async () => {
+    // `realpath` because the sink proves containment against a resolved path and
+    // macOS hands `mkdtemp` a `/var` symlink. The picker caches the first answer
+    // it is given, so it is cleared on both sides of the test.
+    root = await fs.realpath(tmpRoot);
+    disposeWorkspaceFolderPicker();
+    vscodeWorkspace.workspaceFolders = [{ uri: { fsPath: root, scheme: 'file' } }];
+    vscodeWorkspace.getConfiguration = transportOn;
+
+    const logger = new SanitizedLogger();
+    const deps: BackendExecutionWiringDeps = {
+      workspaceRoot: root,
+      cliPath: 'noop',
+      logger,
+      // The harness's own store, so the cap this block reads is the stated 1
+      // that `makeHarness` set rather than a second workspace's default.
+      store: harness.store,
+      auditWriter: new AuditLogWriter({ workspaceRoot: root }, logger),
+      disposables,
+      hostSubscriptions,
+      evidenceHealth: new EvidenceHealthMonitor(),
+      processEnvironmentPolicy: { mode: 'minimal', inheritProcessEnv: false },
+      // FR-R6-F09 -- the spawn gate's inputs; nothing in this file spawns through it.
+      memento: { get: () => undefined, update: async () => undefined },
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: async () => true
+    };
+    wiring = wireBackendExecution(deps);
+  });
+
+  afterEach(async () => {
+    // Let the parked invocation resolve before anything is torn down: the drive
+    // loop is still holding it, and a temp root removed underneath a live audit
+    // write is the ENOTEMPTY this file's cleanup already retries for.
+    releasePhase?.();
+    releasePhase = null;
+    if (driving !== null) await driving;
+    driving = null;
+
+    await wiring.transport.flushAndDispose();
+    wiring.monitor.dispose();
+    for (const entry of [...disposables, ...hostSubscriptions]) entry.dispose();
+    disposables.length = 0;
+    hostSubscriptions.length = 0;
+    vscodeWorkspace.workspaceFolders = undefined;
+    vscodeWorkspace.getConfiguration = originalGetConfiguration;
+    disposeWorkspaceFolderPicker();
+  });
+
+  /**
+   * `pid: null`, a real value on this arm rather than a stand-in: the hook only
+   * starts a telemetry series when a pid arrives, and a pid this test invented
+   * would put the sampler on a `ps` poll against someone else's process.
+   */
+  const started = (runId: string, invocationId: string, helperInvocation: boolean): void => {
+    // `maxDurationMs: null` — these spawns arm no wall-clock deadline, and this
+    // suite is about cap-one parity, not about the bound.
+    wiring.monitorHook({
+      kind: 'started', runId, invocationId, helperInvocation, maxDurationMs: null, pid: null
+    });
+  };
+  const stdout = (runId: string, invocationId: string, line: string): void => {
+    wiring.monitorHook({ kind: 'stdout-chunk', runId, invocationId, chunk: `${line}\n` });
+  };
+  const exited = (runId: string, invocationId: string): void => {
+    wiring.monitorHook({
+      kind: 'exited',
+      runId,
+      invocationId,
+      exitCode: 0,
+      signal: null,
+      killed: false,
+      timedOut: false
+    });
+  };
+
+  /**
+   * Admit the sole queue's Run and park its first phase invocation.
+   *
+   * `admitNew` rather than `startNew`: `startNew` resolves when the Run
+   * *finishes*, and this Run is deliberately not going to finish until the
+   * assertions are done.
+   */
+  async function admitSoleRunHeldAtItsPhase(): Promise<{ runId: string; phase: string }> {
+    const held = new Promise<void>((resolve) => {
+      releasePhase = resolve;
+    });
+    harness.script(async (req) => {
+      await held;
+      return cleanOutput(req.phase);
+    });
+
+    const feature = await harness.queue.enqueue('cap-one compaction before phase');
+    driving = (await harness.controller.admitNew(feature, null)).completed;
+    await drainUntil(() => harness.invocations.length > 0, 'the phase invocation to dispatch');
+
+    const run = harness.store.getRun(SOLE_QUEUE);
+    // `.at(0)` rather than `[0]`: it is `CapturedInvocation | undefined` under
+    // both of the compiler settings this repo checks with, so the guard below is
+    // necessary to each of them. Indexing is `| undefined` only under
+    // `noUncheckedIndexedAccess`, which the strictness ratchet applies and the
+    // lint does not — a guard written against one of those is a new finding for
+    // the other, and both gates run.
+    //
+    // FR-R3-176: the convention, and the decision not to align the two gates,
+    // now live in docs/development/lint-and-type-aware-rules.md under "Indexed
+    // reads, and the one form that satisfies both gates". This comment stays —
+    // it is what an author editing THIS line reads, and the document is what an
+    // author writing a new indexed read reads. Neither replaces the other, so
+    // if one changes, change the other.
+    const dispatched = harness.invocations.at(0);
+    // Thrown rather than `expect`ed: these two narrow the types the rest of the
+    // block reads, and an `expect` that fails still falls through to a line that
+    // cannot run. Neither can happen after the drain above resolved.
+    if (run === null) throw new Error('the sole queue holds no Run after admission');
+    if (dispatched === undefined) throw new Error('no phase invocation was dispatched');
+
+    expect(run.status).toBe('running');
+    expect(harness.store.getGlobalConcurrencyCap()).toBe(1);
+    expect(harness.runKeys()).toEqual([SOLE_QUEUE]);
+    return { runId: run.id, phase: dispatched.phase };
+  }
+
+  /**
+   * The field sequence, synchronous and deliberately so: the compaction spawns
+   * under the Run's id, writes, exits — and only then does the phase child
+   * arrive. Every one of these reaches the monitor through the production
+   * dispatch the window installs on its runners, which is the point of taking
+   * `wiring.monitorHook` rather than rebuilding the forwarding here. The fix is
+   * three arguments of that function, and a fixture holding its own copy of it
+   * asserts only that its copy forwards them.
+   */
+  function compactionThenLivePhase(runId: string, phase: string): void {
+    wiring.monitor.onStart(runId, phase, null);
+
+    started(runId, COMPACTION_INVOCATION, true);
+    stdout(runId, COMPACTION_INVOCATION, COMPACTION_LINE);
+    exited(runId, COMPACTION_INVOCATION);
+
+    started(runId, PHASE_INVOCATION, false);
+  }
+
+  async function readTransportLines(): Promise<
+    Array<{ runId: string; phase: string; stream: string; line: string }>
+  > {
+    // Every Run's file under `.schegent/sessions/<runId>/transport.log`, in directory order.
+    const sessions = path.join(root, CLI_TRANSPORT_DIRECTORY, 'sessions');
+    let raw = '';
+    for (const name of (await fs.readdir(sessions)).sort()) {
+      raw += await fs.readFile(path.join(sessions, name, 'transport.log'), 'utf8').catch(() => '');
+    }
+    return raw
+      .split('\n')
+      .filter((entry) => entry.trim().length > 0)
+      .map((entry) => {
+        // `<stamp>\t<runId>\t<phase>\t<stream>\t<line>`, and the line is joined
+        // back because only the four leading fields are tab-delimited.
+        const [, runId = '', phase = '', stream = '', ...rest] = entry.split('\t');
+        return { runId, phase, stream, line: rest.join('\t') };
+      });
+  }
+
+  it("keeps the sole queue's phase output, counted against the phase invocation", async () => {
+    const { runId, phase } = await admitSoleRunHeldAtItsPhase();
+    compactionThenLivePhase(runId, phase);
+
+    // Bracketing is what makes this a count OF THE PHASE INVOCATION.
+    // `stdoutLines` is a Run-level total and this Run's total already carries the
+    // compaction's line, so the delta is the only honest reading.
+    const before = wiring.monitor.getCurrentState(runId)?.stdoutLines ?? -1;
+    for (const line of PHASE_LINES) stdout(runId, PHASE_INVOCATION, line);
+    const after = wiring.monitor.getCurrentState(runId)?.stdoutLines ?? -1;
+
+    await wiring.transport.flushAndDispose();
+    const captured = await readTransportLines();
+    const capturedForPhase = captured.filter(
+      (record) => record.runId === runId && PHASE_LINES.includes(record.line)
+    );
+    const reportedForPhase = after - before;
+
+    // Both halves. The equality alone is satisfied by the defect — a declined
+    // chunk is neither written nor counted, so it reads 0 === 0.
+    expect(reportedForPhase).toBeGreaterThan(0);
+    expect(capturedForPhase.map((record) => record.line)).toEqual(PHASE_LINES);
+    expect(capturedForPhase).toHaveLength(reportedForPhase);
+    expect(captured.filter((record) => record.line === COMPACTION_LINE)).toHaveLength(1);
+    expect(wiring.monitor.getCurrentState(runId)?.declinedChunks).toBe(0);
+  });
+
+  it('leaves the Run non-terminal at both layers while the phase child is alive', async () => {
+    const { runId, phase } = await admitSoleRunHeldAtItsPhase();
+    compactionThenLivePhase(runId, phase);
+    for (const line of PHASE_LINES) stdout(runId, PHASE_INVOCATION, line);
+
+    // The layer that lied in the field: the monitor read `completed` while the
+    // child it was supposed to be watching had six hours left to run.
+    const state = wiring.monitor.getCurrentState(runId);
+    expect(state?.status).toBe('running');
+    expect(state?.exitCode).toBeNull();
+    expect(state?.stdoutLines).toBe(PHASE_LINES.length + 1);
+
+    // And the layer that did not: the scripted invocation is still parked, so
+    // the Run record is still running, still the only key, still at cap 1. This
+    // is the parity half — the monitor grew invocation-level state and the
+    // single-queue record did not change shape underneath it.
+    expect(harness.store.getRun(SOLE_QUEUE)?.status).toBe('running');
+    expect(harness.runKeys()).toEqual([SOLE_QUEUE]);
+    expect(harness.store.getGlobalConcurrencyCap()).toBe(1);
+  });
+
+  it('keeps the stall detector armed across the helper exit, at cap 1', async () => {
+    const { runId, phase } = await admitSoleRunHeldAtItsPhase();
+
+    // Faked from here so every timer the detector creates is a fake one. The
+    // detector is built in `onStart` and armed from the first spawn, both of
+    // which are below this line; arming it on the real clock first and swapping
+    // afterwards would leave a live 90-second handle behind.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      compactionThenLivePhase(runId, phase);
+      stdout(runId, PHASE_INVOCATION, FIRST_PHASE_LINE);
+
+      // Under the defect the helper's exit disposed this detector, so the phase
+      // child could go silent for six hours and nothing would say so.
+      vi.advanceTimersByTime(MONITOR_STALL_THRESHOLD_MS);
+
+      const state = wiring.monitor.getCurrentState(runId);
+      expect(state?.status).toBe('stalled');
+      expect(state?.detectedIssues).toContain('stall');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // FR-R3-208 (T1893): the production hook routes a background hold to the monitor.
+  it('routes a background-hold event through the production hook to the monitor (W1)', async () => {
+    const { runId, phase } = await admitSoleRunHeldAtItsPhase();
+    wiring.monitor.onStart(runId, phase, null);
+    started(runId, PHASE_INVOCATION, false);
+
+    wiring.monitorHook({
+      kind: 'background-hold', runId, invocationId: PHASE_INVOCATION, held: true
+    });
+    expect(wiring.monitor.getCurrentState(runId)?.held).toBe(true);
+
+    wiring.monitorHook({
+      kind: 'background-hold', runId, invocationId: PHASE_INVOCATION, held: false
+    });
+    expect(wiring.monitor.getCurrentState(runId)?.held).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import { buildMutationPlan } from '../../../src/services/mutation-plan';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { fakeRunLogger } from './fake-run-logger';
 
 function cleanOutput(cliSessionId?: string) {
   return {
@@ -61,7 +62,8 @@ describe('RunDriver backend-scoped sessions', () => {
       runner: {
         run: vi.fn()
           .mockResolvedValueOnce(cleanOutput('session-from-first'))
-          .mockResolvedValueOnce(cleanOutput('session-from-second'))
+          .mockResolvedValueOnce(cleanOutput('session-from-second')),
+        evictStagnationTracker: vi.fn()
       },
       // Feature 093 (T039/T040) — the driver resolves the persisted snapshot by
       // the Run's own Task instead of reading the one ambient slot. This
@@ -73,7 +75,7 @@ describe('RunDriver backend-scoped sessions', () => {
       queue: { finish: vi.fn(), findById: vi.fn(() => null) },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       options: {
         cliPath: 'claude-bin',
@@ -243,5 +245,81 @@ describe('RunDriver backend-scoped sessions', () => {
         runner: 'claude'
       })
     });
+  });
+
+  // FR-R3-209 — D1: the session's cost figure is persisted beside the id the output reports.
+  it('persists the reported cost figure beside the session id, and leaves none when an output reports none', async () => {
+    deps.runner.run.mockReset();
+    deps.runner.run
+      .mockResolvedValueOnce({ ...cleanOutput('s1'), cliSessionCostUsd: 1.6 })
+      .mockResolvedValueOnce(cleanOutput('s2'));
+
+    await new RunDriver(deps).drive(makeRun('agy'), 'figure beside the id');
+
+    const transitions: WorkflowRun[] = deps.persistTransition.mock.calls.map(
+      (call: unknown[]) => call[1] as WorkflowRun
+    );
+    const transitionToSecond = transitions.find((next) => next.currentPhase === 'phase-two');
+    expect(transitionToSecond).toMatchObject({
+      lastCliSessionId: 's1',
+      lastCliSessionCostUsd: 1.6
+    });
+    const lastTransition = transitions.at(-1);
+    expect(lastTransition?.lastCliSessionId).toBe('s2');
+    expect(lastTransition?.lastCliSessionCostUsd).toBeUndefined();
+  });
+
+  it('clears the persisted cost figure with the session id when the next phase runs on another backend', async () => {
+    const run = {
+      ...makeRun('claude'),
+      lastCliSessionId: 'persisted',
+      lastCliSessionRunnerKind: 'agy' as const,
+      lastCliSessionCostUsd: 0.9
+    } as unknown as WorkflowRun;
+    deps.runner.run.mockReset();
+    deps.runner.run.mockResolvedValueOnce(cleanOutput()).mockResolvedValueOnce(cleanOutput());
+
+    await new RunDriver(deps).drive(run, 'figure cleared with the id');
+
+    const transitions: WorkflowRun[] = deps.persistTransition.mock.calls.map(
+      (call: unknown[]) => call[1] as WorkflowRun
+    );
+    const transitionToSecond = transitions.find((next) => next.currentPhase === 'phase-two');
+    expect(transitionToSecond?.lastCliSessionId).toBeUndefined();
+    expect(transitionToSecond?.lastCliSessionCostUsd).toBeUndefined();
+  });
+
+  it('hands the persisted cost figure on beside the resume id, and only when it is a finite number of 0 or more', async () => {
+    deps.isContinueGate.consume.mockReturnValue(true);
+    const ownedRun = (figure: unknown) =>
+      ({
+        ...makeRun('agy'),
+        lastCliSessionId: 'persisted',
+        lastCliSessionRunnerKind: 'agy' as const,
+        lastCliSessionCostUsd: figure
+      }) as unknown as WorkflowRun;
+    const firstRequestFor = async (figure: unknown) => {
+      deps.runner.run.mockReset();
+      deps.runner.run.mockImplementation(async () => cleanOutput());
+      await new RunDriver(deps).drive(ownedRun(figure), 'persisted figure');
+      return deps.runner.run.mock.calls[0][0];
+    };
+
+    // The owner is `agy`, phase one's runner, so a requested continue resumes the owned id.
+    expect(await firstRequestFor(0.9), 'a finite figure of 0 or more').toMatchObject({
+      resumeSessionId: 'persisted',
+      resumeSessionCostUsd: 0.9
+    });
+
+    for (const figure of [-1, Number.NaN, '0.9']) {
+      const request = await firstRequestFor(figure);
+      expect(request, `figure ${String(figure)} still resumes the owned session`).toMatchObject({
+        resumeSessionId: 'persisted'
+      });
+      expect(
+        request.resumeSessionCostUsd,
+        `figure ${String(figure)} is not carried`
+      ).toBeUndefined();
+    }
   });
 });

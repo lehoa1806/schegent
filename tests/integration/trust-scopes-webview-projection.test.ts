@@ -31,19 +31,35 @@ const mocks = vi.hoisted(() => {
       phases: boolean;
       retryConditions: boolean;
     },
+    // FR-R3-143 (T036) — which ladder step decided, now carried end-to-end.
+    scope: {
+      phases: 'workspace-trust',
+      retryConditions: 'workspace-trust'
+    } as {
+      phases: 'user' | 'workspace' | 'workspace-trust';
+      retryConditions: 'user' | 'workspace' | 'workspace-trust';
+    },
     throwOnNext: false as boolean
   };
   return { state };
 });
 
+// FR-R3-143 (T036) — a factory mock replaces the whole module, so `getResolvedScope`
+// has to be declared here or `composeTrustProjection` calls `undefined`, the
+// fail-closed `try` swallows it, and every assertion below silently tests the
+// fallback instead of the path it names.
 vi.mock('../../src/state/capability-trust-resolver', () => ({
   getResolvedCapabilities: () => {
     if (mocks.state.throwOnNext) throw new Error('resolver boom');
     return { ...mocks.state.current };
+  },
+  getResolvedScope: (capability: 'phases' | 'retryConditions') => {
+    if (mocks.state.throwOnNext) throw new Error('resolver boom');
+    return mocks.state.scope[capability];
   }
 }));
 
-import { StateProjector } from '../../src/ui/sidebar/state-projector';
+import { StateProjector, type ProjectorTimer } from '../../src/ui/sidebar/state-projector';
 import type { WorkflowSnapshot } from '../../src/ui/sidebar/snapshot';
 
 interface TrustView {
@@ -65,7 +81,7 @@ function readTrust(snap: WorkflowSnapshot): TrustView {
 function buildProjector(): {
   projector: StateProjector;
   warnings: string[];
-  flush: () => Promise<void>;
+  flush: () => void;
 } {
   const warnings: string[] = [];
   const logger = {
@@ -75,13 +91,31 @@ function buildProjector(): {
     debug: vi.fn(),
     sanitize: (s: string) => s
   };
+  const pendingTimers = new Map<number, () => void>();
+  let nextTimerId = 1;
+  const timer: ProjectorTimer = {
+    setTimeout: (fn) => {
+      const id = nextTimerId++;
+      pendingTimers.set(id, fn);
+      return id;
+    },
+    clearTimeout: (handle) => {
+      pendingTimers.delete(handle as number);
+    }
+  };
   const projector = new StateProjector({
     ownerId: 'trust-integ-owner',
     debounceMs: 0,
+    timer,
     logger: logger as any
   });
-  const flush = async (): Promise<void> => {
-    await new Promise((r) => setTimeout(r, 5));
+  const flush = (): void => {
+    while (pendingTimers.size > 0) {
+      for (const [id, fn] of [...pendingTimers.entries()]) {
+        pendingTimers.delete(id);
+        fn();
+      }
+    }
   };
   return { projector, warnings, flush };
 }
@@ -92,6 +126,7 @@ beforeEach(() => {
     phases: true,
     retryConditions: true
   };
+  mocks.state.scope = { phases: 'workspace-trust', retryConditions: 'workspace-trust' };
   mocks.state.throwOnNext = false;
 });
 
@@ -111,12 +146,12 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
     projector.dispose();
   });
 
-  it('re-publishes with new resolver values after a config-change kick (FR-011, push-not-poll)', async () => {
+  it('re-publishes with new resolver values after a config-change kick (FR-011, push-not-poll)', () => {
     const { projector, flush } = buildProjector();
     projector.start();
     const seen: WorkflowSnapshot[] = [];
     const sub = projector.subscribe((snap) => seen.push(snap));
-    await flush();
+    flush();
 
     // Simulate: workspace-scope `schegent.trust.allowCustomPhases: false`
     // arrives via onDidChangeConfiguration → resolver.onProjectionInvalidated
@@ -127,7 +162,7 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
       retryConditions: true
     };
     projector.kick();
-    await flush();
+    flush();
 
     const last = readTrust(seen[seen.length - 1]);
     expect(last.workspaceTrust).toBe(true);
@@ -141,7 +176,7 @@ describe('Feature 059 T023 — trust projection end-to-end via subscriber', () =
       retryConditions: true
     };
     projector.kick();
-    await flush();
+    flush();
     const afterReenable = readTrust(seen[seen.length - 1]);
     expect(afterReenable.resolvedTrust.phases).toBe(true);
 

@@ -43,8 +43,8 @@ beforeEach(async () => {
   h = await makeHarness();
 });
 
-afterEach(() => {
-  h.cleanup();
+afterEach(async () => {
+  await h.cleanup();
 });
 
 describe('Feature 065 (T024) — User Story 1: empty-queue start flow', () => {

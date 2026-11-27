@@ -1,0 +1,254 @@
+// FR-R3-154 (T1646) — the operator's half of the mutation ACK.
+//
+// The host end of this was the defect FR-R3-154 filed: five lifecycle routes
+// ACKed `accepted` unconditionally because the commands behind them returned
+// `void`. That is closed — `src/contracts/command-outcome.ts` now carries the
+// four-word vocabulary and each route ACKs what its command actually answered.
+//
+// Closing it exposed the other half. The host can now say "refused, the Run is
+// already paused", and nothing listens: these six dispatch sites called
+// `postCommand(...)` and dropped the returned `correlationId` on the floor.
+// `snapshotStore.applyAck` then cleared the pending flag and discarded the
+// message, so a truthful refusal died one layer below the operator. A control
+// that silently does nothing is the same experience whether the lie is told at
+// the host boundary or swallowed at the webview one.
+//
+// Same shape as `phase-breakpoint-ipc.ts`, `phase-log-ipc.ts`,
+// `queue-control-ipc.ts`, `save-general-settings.ts` and `metrics-ipc.ts`:
+// post, mark pending, one-shot ack, 5-second timeout, one `finalise` guard so a
+// late ack after a timeout is a no-op. Each of those five carries its own copy
+// of that scaffolding; this module follows the convention rather than
+// refactoring five working modules onto a shared one, which is a change no
+// requirement here asks for.
+//
+// The scaffolding is exported (`correlatedLifecycle`) rather than wrapped in
+// six dispatch functions, because two of the six posts cannot move into a lib
+// module: `tests/lint/destructive-actions.lint.test.ts` walks the *enclosing
+// brace block* of a destructive command's `postCommand` for a `useConfirm(`
+// sibling, and retry-phase-now's confirm needs component-level context. Those
+// call sites keep their `postCommand` where the lint requires it and pass it in
+// as the `post` callback. See `phase-control.ts` for the same reasoning applied
+// from the other direction.
+
+import { refusalTextFrom } from './boundary-refusal-text';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
+import type { CommandType } from './messages';
+import type { AckResult } from './snapshot-store.svelte';
+
+const ACK_TIMEOUT_MS = 5000;
+
+/**
+ * What a lifecycle control did, in the host's own four words.
+ *
+ * `no-op` is kept distinct from `refused` because they are different things to
+ * tell an operator: a refusal means the request was rejected, a no-op means the
+ * queue was already in the requested state and the request was redundant. The
+ * host draws that distinction (`CommandOutcome`); collapsing it here would
+ * discard it at the last possible moment.
+ *
+ * `message` is always a full sentence, never a reason code: `refusalText`'s
+ * counterpart in `queue-control-ipc.ts` used to fall through to `The host refused:
+ * <code>` for an unknown key, and `queue-refusal-vocabulary.test.ts` exists
+ * because that fall-through hid six invented keys for an entire feature. Both
+ * now fall through to `boundary-refusal-text.ts` (FR-R4-F05). The test at the
+ * bottom of this module's own coverage pins these keys the same way.
+ */
+export type LifecycleControlResult =
+  | { readonly outcome: 'accepted' }
+  | { readonly outcome: 'no-op'; readonly message: string }
+  | { readonly outcome: 'refused'; readonly message: string }
+  | { readonly outcome: 'failed'; readonly message: string }
+  // FR-R4-F05 (I5, FR-024) — the wait ran out before the host answered. Not `failed`: the host
+  // may still run the command, so the outcome is not yet known, and the message says so.
+  | { readonly outcome: 'unknown'; readonly message: string };
+
+/**
+ * One sentence per reason the five lifecycle commands can actually answer.
+ *
+ * Every key below is a code some host site emits, and the emitting site is
+ * named. That is not a formality: `REFUSAL_TEXT` in `queue-control-ipc.ts` was
+ * first written from the refusals as the spec *named* them, and not one of six
+ * such keys was a code any host site produced — the commonest refusal in that
+ * feature reached the operator as raw kebab-case for a whole release, because
+ * the fall-through made a wrong key an error nowhere.
+ *
+ * Emitting sites, so the pairing can be re-checked rather than trusted:
+ *   - `controller/sole-run-resolver.ts` (`resolveControlTarget`) — the
+ *     queue-addressing refusals every phase control passes through first
+ *   - `controller/phase-control-decision.ts` (`decidePhaseControl`) — the
+ *     'pause' / 'resume' / 'restart' / 'skip' / 'disable' / 'enable' eligibility
+ *     branches, and only those six: the other operations in that classifier are
+ *     posted by controls this module does not dispatch
+ *   - `ui/sidebar/commands/cmd-skip-phase.ts` — the Skip route's own guard
+ *     (FR-R4-F20), and its answer to a throw, which is a code from the
+ *     transport group below rather than the thrown message
+ *   - `controller/phase-control-service.ts` — its own pre-decision guards
+ *   - `controller/manual-retry-override.ts` — the three retry-now refusals
+ *   - `commands/retry-phase-now.ts` — the primary-window guard
+ *   - `guarded-run-service`'s `applyStartQueueIntent` — the start-intent
+ *     outcomes, renamed once on the way out (`noop` → `start-intent-no-change`,
+ *     see `commands/start-queue.ts` for why that one gets a name of its own)
+ *   - `commands/start-queue.ts`'s `outcomeAfterDrain`, on both branches that
+ *     drain — `queue-halted-on-failed-task` (Feature 195, FR-021) and
+ *     `queue-blocked-by-stranded-run` (BUG-004), each read from the drain's own
+ *     report rather than from a second predicate
+ *   - `contracts/command-outcome.ts` — the three transport reasons it
+ *     synthesises, and `commands/*.ts`'s five `*-failed` codes
+ *   - `ui/sidebar/message-router.ts` — the primacy gate and the trust gate
+ *     (`commands/constants.ts`: `SECONDARY_REJECT`, `UNTRUSTED_REJECT`)
+ * `timeout` is the one this module synthesises itself.
+ */
+const LIFECYCLE_REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
+  // Queue addressing — `resolveControlTarget`.
+  'ambiguous-run-target':
+    'More than one Run is in flight, so this control could not tell which one you meant.',
+  // Phase-control eligibility — `decidePhaseControl`'s 'pause' / 'resume' /
+  // 'restart' / 'skip' arms, and the three service methods' own `!run` guard.
+  //
+  // `run-not-in-flight`, `unknown-phase-id`, `phase-already-removed` and
+  // `unknown-task-id` are deliberately absent. `PhaseControlService` does emit
+  // all four, but from `removeTaskPhase` and the breakpoint pair — controls
+  // this module does not dispatch. They were in this table's first version,
+  // and `tests/lint/lifecycle-refusal-vocabulary.test.ts`'s A2 direction
+  // caught them on its first run: four sentences no operator could ever have
+  // been shown, which is the same defect as a missing one seen from the other
+  // side. Their controls surface refusals through their own paths.
+  'no-run-in-flight': 'There is no Run in flight on this queue.',
+  'run-already-paused': 'This Run is already paused.',
+  'run-not-paused': 'This Run is not paused, so there is nothing to resume.',
+  'run-terminal': 'This Run has already finished, so its Phases can no longer be changed.',
+  'phase-not-active': "That Phase is not the Run's current one.",
+  // FR-R4-F20 — the two Skip adds. `run-failed` is also the disabled Skip control's tooltip on a
+  // failed task (`phase-control-titles.ts` reads this entry), so the explanation and the refusal
+  // are one sentence and cannot drift apart.
+  'run-failed': 'A failed task cannot be skipped: retry it, mark it completed, or remove it.',
+  'phase-id-not-in-pipeline-snapshot': "That Phase is not part of this Run's Workflow.",
+  // FR-R5-F19 (US3) — Disable and Enable read their ACK now, so the three refusals only their
+  // `decidePhaseControl` arms answer are operator-facing. Each says what the phase is, not what the
+  // operator did wrong: all three are the Run having moved on while the control was on screen.
+  'phase-already-started': 'That Phase has already started, so it can no longer be disabled.',
+  'no-disabled-override': 'That Phase is not disabled, so there is nothing to enable.',
+  'phase-not-future': 'That Phase has already started, so it can no longer be enabled.',
+  // Retry now — `applyManualRetryOverride` and the command's own guard.
+  'no-active-run': 'There is no active Run to retry.',
+  'not-pending-retry': 'This Phase is not waiting for a retry, so there is nothing to bring forward.',
+  'already-retrying': 'A retry is already under way.',
+  'not-primary-window': 'This window is not the primary one, so it cannot retry the Phase.',
+  // Start queue — `applyStartQueueIntent`.
+  'rejected-horizon': 'That start time is outside the range this queue accepts.',
+  'rejected-untrusted': 'The workspace is not trusted, so the queue cannot be started.',
+  'start-intent-no-change': 'The queue was already set that way, so nothing changed.',
+  // Feature 195 (T018, FR-021, SC-011, SC-012) — the no-intent branch's one
+  // exception: `runStartQueueCommand` reads the drain's own halt report
+  // rather than evaluating a predicate of its own (`commands/start-queue.ts`).
+  'queue-halted-on-failed-task':
+    'This queue is halted because a task failed. Retry or remove it to continue.',
+  // BUG-004 — the second such reading, from both branches of the same command.
+  // It names the recovery because there is no control that performs it: the run
+  // holding the queue has no task row left, so nothing in the UI addresses it,
+  // and the reconciler that ends it runs when the workspace state is loaded.
+  'queue-blocked-by-stranded-run':
+    'A run with no task is holding this queue. Reload the window to release it.',
+  // Transport — `command-outcome.ts` and the router's primacy gate.
+  'workspace-not-trusted': 'The workspace is not trusted, so this control is unavailable.',
+  // FR-R5-F19 (US3, FR-013) — the router's own gate token (`UNTRUSTED_REJECT`), which no map here
+  // held: a refused Disable in an untrusted workspace read as the shared boundary text, a different
+  // sentence from the one every other control gives for the same refusal. One sentence, two codes.
+  'untrusted-workspace': 'The workspace is not trusted, so this control is unavailable.',
+  'command-dispatch-failed': 'The control could not be carried out. Check the log and try again.',
+  'command-result-unrecognized':
+    'The host answered in a way this view could not read, and nothing was changed.',
+  'operation-rejected': 'The host refused the operation.',
+  'secondary-window-readonly': 'This window is not the primary one, so it cannot change the Run.',
+  // Per-command failure codes — the five `catch` blocks in `commands/`.
+  'pause-phase-failed': 'Pausing the Phase failed. Check the log and try again.',
+  'resume-phase-failed': 'Resuming the Phase failed. Check the log and try again.',
+  'restart-phase-failed': 'Restarting the Phase failed. Check the log and try again.',
+  'retry-phase-now-failed': 'Retrying the Phase failed. Check the log and try again.',
+  'start-queue-failed': 'Starting the queue failed. Check the log and try again.',
+  // Skip route — `commands/cmd-skip-phase.ts`, a window whose router has no `phaseOps` wired.
+  'phase-ops-unavailable':
+    'Phase controls are not ready in this window yet, so nothing was changed.',
+  // Synthesised here. FR-R4-F05 (O3) — not yet known, not a failure and not an invitation to try
+  // again: the host may still run the command, and a second click would be a second action.
+  timeout:
+    'The host has not answered yet. The change may still happen; this view will update when it does.'
+});
+
+// FR-R4-F05 (O1) — this family's own sentence when it has one, the shared boundary text
+// otherwise (it used to echo the reason as `The host refused: ${reason}`).
+export function lifecycleRefusalText(reason: string): string {
+  return refusalTextFrom(LIFECYCLE_REFUSAL_TEXT, reason);
+}
+
+/**
+ * Read one ACK as a lifecycle result.
+ *
+ * `status` decides acceptance, because every other consumer in the webview
+ * reads that field and a second opinion here could disagree with them.
+ * `outcome` only refines a rejection into which of the three non-accepting
+ * words it was — and it is optional on the wire, so an ACK without it (any
+ * command outside these five, or a host that predates the field) reads as a
+ * plain refusal rather than as an error.
+ */
+function toLifecycleResult(ack: AckResult): LifecycleControlResult {
+  if (ack.status === 'accepted') return { outcome: 'accepted' };
+  const message = lifecycleRefusalText(ack.reason ?? 'operation-rejected');
+  if (ack.outcome === 'no-op') return { outcome: 'no-op', message };
+  if (ack.outcome === 'failed') return { outcome: 'failed', message };
+  return { outcome: 'refused', message };
+}
+
+/**
+ * The correlated-request scaffolding, resolving to a lifecycle result. FR-R4-F05 (I4): it sends
+ * through the intent ledger, so an identical retry of an unresolved control reuses its identity
+ * and its payload and the host applies it once. A wait that outlives `ACK_TIMEOUT_MS` resolves
+ * `unknown` (the host may still run the command); an abort or a disposed ledger resolves it too,
+ * and no caller renders that one. Every caller keeps its own `postCommand` and passes it in as
+ * `post`, so a confirmed control's post stays inside its `useConfirm` block.
+ */
+export function correlatedLifecycle<P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
+  wait: IntentWaitOptions<LifecycleControlResult> = {}
+): Promise<LifecycleControlResult> {
+  const { onLateOutcome } = wait;
+  return sendIntent({
+    type,
+    payload,
+    post,
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => onLateOutcome(toLifecycleResult(ack)) })
+  }).then((result) =>
+    result.kind === 'ack'
+      ? toLifecycleResult(result.ack)
+      : { outcome: 'unknown', message: lifecycleRefusalText('timeout') }
+  );
+}
+
+/**
+ * FR-R4-F05 (O4, FR-024) — the wait options a surface that shows a lifecycle answer passes: its
+ * lifetime signal, aborted when it unmounts, and a late outcome shown through the same text path as
+ * an on-time one, so an interim "not yet known" never outlives the host's answer.
+ */
+export function lifecycleWait(
+  signal: AbortSignal,
+  show: (message: string | null) => void
+): IntentWaitOptions<LifecycleControlResult> {
+  return { signal, onLateOutcome: (late) => show(lifecycleMessage(late)) };
+}
+
+/**
+ * The one sentence to show the operator, or `null` when the control committed.
+ *
+ * A `no-op` returns its sentence like a refusal does: "nothing changed" is
+ * exactly what the operator needs told, and it is the case this whole feature
+ * exists to make visible.
+ */
+export function lifecycleMessage(result: LifecycleControlResult): string | null {
+  return result.outcome === 'accepted' ? null : result.message;
+}

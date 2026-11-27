@@ -16,28 +16,34 @@
 // which rows the operator is being shown (FR-056), which rows are eligible
 // (FR-057), and which of those THIS commit can write.
 //
-// Feature 085 T048 — the commit is now two ordered layer writes: the Phase layer
-// first, then the Pipeline layer (FR-038), each carrying its OWN expected
-// revision (FR-043) and its own single mutation intent. They are two writes and
-// not one because they are two independently-revisioned catalogs; that is also
-// why the outcome has three values rather than two (FR-042a) and why a failed
-// second write triggers no compensating delete (FR-042c) — what landed is left
-// in place, and importing the same document again finishes the job (FR-042b).
+// Feature 085 T048 / Feature 086 T054/T055 — a confirmed import carries up to three layers, Phases,
+// Pipelines and Workflows, each with its OWN expected revision (FR-043), because they are three
+// independently revisioned catalogs. That is also why the outcome has three values rather than two
+// (FR-042a) and why a failed layer triggers no compensating delete (FR-042c): what landed is left in
+// place, and the recovery is to publish any draft the import left and then import the same document
+// again (FR-042b). Which layers landed decides what the operator has to look at next, so the partial
+// sentence names them (FR-051).
 //
-// Feature 086 T054/T055 — a third ordered write, the Workflow layer, sent last
-// for the same dependency reason the Pipeline layer is sent second (FR-045,
-// FR-050). The stopping rule and the outcome arithmetic were already total over
-// any number of layers, so neither changed; what did change is the partial
-// sentence, which now names WHICH layers landed (FR-051), because with three of
-// them "part of this document" no longer tells the operator where to look.
+// Feature 254 (FR-R4-F07, FR-013 to FR-020) — the layers travel in ONE `publishPackage` request.
+// The host validates the whole document, with every candidate overlaid on the catalog, before it
+// writes anything, and orders the passes itself, so this module no longer sends a layer and waits
+// for it before the next. What it keeps is the report: the single acknowledgement is fanned out into
+// one result per layer (`layerResultsOf`), and the result table reads those exactly as before.
+//
+// FR-R4-F07 audit G-RECOVERY — the recovery is two steps, because a package publish publishes only
+// what its own operation wrote (FR-039a) and the next preflight counts a draft as present: inspecting
+// the same document again plans a drafted row as a skip and anything that waits on it as blocked. The
+// operator publishes the drafts from the Builder first, and only then does the re-run import what is
+// still missing.
 //
 // Feature 099 (T494a, FR-043/FR-044) — the target scope is gone from every
 // function here. "Which layer" and "which kind" were two independent axes: the
-// three ordered writes are the KIND axis and are untouched, because the three
-// catalogs are still independently revisioned and a Pipeline still cannot be
-// validated before its Phases exist. What collapsed is the other axis — the
-// operator's choice of destination, the per-scope revision lookup, and the layer
-// noun in every sentence a result carries.
+// kinds are the KIND axis and are untouched, because the three catalogs are
+// still independently revisioned and the host writes them in dependency order
+// (Phases, Pipelines, Workflows) inside the one package request. What
+// collapsed is the other axis — the operator's choice of destination, the
+// per-scope revision lookup, and the layer noun in every sentence a result
+// carries.
 
 import type {
   BlockedDependency,
@@ -48,10 +54,8 @@ import type {
 } from '../../lib/messages';
 import type { SaveModelsImportRequest, SaveModelsImportResult } from '../../lib/save-models';
 import type { LifecycleResult } from '../../lib/catalog-lifecycle';
-import { pipelineRowId } from '../../lib/definition-rows';
 import type {
   SavePhaseRow,
-  SavePipelineRow,
   SaveWorkflowRow
 } from '../../lib/definition-rows';
 import type {
@@ -60,8 +64,8 @@ import type {
 } from '../../../../src/contracts/catalog-lifecycle';
 import { formatModelCatalogSaveRejection } from '../PipelineBuilderEditors/model-catalog-state';
 import { formatPhaseSaveRejection } from '../PipelineBuilderEditors/phase-catalog-state';
-import { formatPipelineSaveRejection } from '../PipelineBuilderEditors/pipeline-catalog-state';
 import { formatWorkflowSaveRejection } from '../PipelineBuilderEditors/workflow-catalog-state';
+import { OUTCOME_NOT_YET_KNOWN_TEXT, isOutcomeNotYetKnown } from '../../lib/boundary-refusal-text';
 
 /**
  * The definition an `import` plan row carries.
@@ -69,19 +73,10 @@ import { formatWorkflowSaveRejection } from '../PipelineBuilderEditors/workflow-
  * Derived from the contract rather than mirrored, because a second declaration
  * of the portable field set is a second thing to keep in step with the host, and
  * FR-046a turns any divergence into a lossy round trip.
- *
- * Narrowed to the `'phase'` arm as of feature 085, which widened the row union
- * with a Pipeline arm; `ImportedPipelineDefinition` is its counterpart.
  */
 export type ImportedPhaseDefinition = Extract<
   ImportPlanRow,
   { outcome: 'import'; resourceKind: 'phase' }
->['definition'];
-
-/** The definition a Pipeline `import` plan row carries, derived the same way. */
-export type ImportedPipelineDefinition = Extract<
-  ImportPlanRow,
-  { outcome: 'import'; resourceKind: 'pipeline' }
 >['definition'];
 
 /** The definition a Workflow `import` plan row carries, derived the same way. */
@@ -91,11 +86,6 @@ export type ImportedWorkflowDefinition = Extract<
 >['definition'];
 
 type ImportOutcomeRow = Extract<ImportPlanRow, { outcome: 'import'; resourceKind: 'phase' }>;
-
-type PipelineImportOutcomeRow = Extract<
-  ImportPlanRow,
-  { outcome: 'import'; resourceKind: 'pipeline' }
->;
 
 type WorkflowImportOutcomeRow = Extract<
   ImportPlanRow,
@@ -127,12 +117,34 @@ export type ImportSurfaceState =
   | 'planned'
   | 'committing';
 
+/**
+ * Target-kind-aware gate signals for Confirm import (Feature 326).
+ *
+ * Evaluated ONLY against the catalog(s) the inspected plan will actually write:
+ * a Model Catalog plan never consults workspace/Phase trust or Phase/Workflow
+ * dirtiness, and a Phase/Workflow plan never consults Model Catalog dirtiness.
+ */
+export interface ImportTargetGate {
+  readonly isPrimary: boolean;
+  readonly workspaceTrust: boolean;
+  readonly trustPhases: boolean;
+  readonly phaseSavePending: boolean;
+  readonly phaseMutationActive: boolean;
+  readonly workflowSavePending: boolean;
+  readonly workflowMutationActive: boolean;
+  readonly modelsSavePending: boolean;
+  readonly modelsDirty: boolean;
+}
+
 export interface ConfirmGate {
   readonly state: ImportSurfaceState;
   readonly plan: ImportPlan | null;
+  readonly targetGate?: ImportTargetGate;
 }
 
-export type ImportResultOutcome = 'imported' | 'skipped' | 'blocked' | 'invalid' | 'failed';
+// FR-R4-F05 (I5, FR-024) — `unknown`: the write's wait ran out and the host may still apply it,
+// so the row says the outcome is not yet known instead of `failed`.
+export type ImportResultOutcome = 'imported' | 'skipped' | 'blocked' | 'invalid' | 'failed' | 'unknown';
 
 export interface ImportResultRow {
   readonly resourceId: string | null;
@@ -161,28 +173,13 @@ export function phaseImportRows(plan: ImportPlan): readonly ImportOutcomeRow[] {
 }
 
 /**
- * The Pipeline `import` rows of a plan, in plan order.
- *
- * Separate from the Phase accessor rather than a filter at the call site,
- * because the two are written by different layer saves under different intents,
- * in a fixed order (FR-038). A single list would make the ordering an accident
- * of how the plan happened to arrive.
- */
-export function pipelineImportRows(plan: ImportPlan): readonly PipelineImportOutcomeRow[] {
-  return plan.rows.filter(
-    (row): row is PipelineImportOutcomeRow =>
-      row.outcome === 'import' && row.resourceKind === 'pipeline'
-  );
-}
-
-/**
  * The Workflow `import` rows of a plan, in plan order.
  *
- * A third accessor for the same reason there is a second: the Workflow layer is
- * a third independently-revisioned catalog, written last under its own intent
- * (FR-045). Folding it into either of the others would make the write order —
- * the thing that decides whether a self-contained package resolves — depend on
- * how the plan happened to list its rows.
+ * Separate from the Phase accessor: the Workflow layer is an
+ * independently-revisioned catalog, written after Phases under its own intent
+ * (FR-045). Folding it into the Phase list would make the write order — the
+ * thing that decides whether a self-contained package resolves — depend on how
+ * the plan happened to list its rows.
  */
 export function workflowImportRows(plan: ImportPlan): readonly WorkflowImportOutcomeRow[] {
   return plan.rows.filter(
@@ -199,7 +196,7 @@ export function workflowImportRows(plan: ImportPlan): readonly WorkflowImportOut
  * Catalog rows with Phase/Pipeline/Workflow rows, so this and the other three
  * are never both non-empty for the same plan, and Model Catalog commits
  * through its own single-write path (`runModelCatalogImportCommit`) below,
- * not `buildImportWrites`/`runImportCommit` (Implementation Note 1).
+ * not `buildImportPackage`/`runImportCommit` (Implementation Note 1).
  */
 export function modelCatalogImportRows(plan: ImportPlan): readonly ModelCatalogImportOutcomeRow[] {
   return plan.rows.filter(
@@ -240,7 +237,6 @@ export function isModelCatalogPlan(plan: ImportPlan): boolean {
  */
 const RESOURCE_KIND_LABELS: Readonly<Record<ProcessYamlResourceKind, string>> = {
   phase: 'Phase',
-  pipeline: 'Pipeline',
   workflow: 'Workflow',
   modelCatalog: 'Model Catalog'
 };
@@ -260,13 +256,36 @@ export function outcomeLabel(row: ImportPlanRow): string {
 /**
  * A blocked row's dependency, named with its own kind.
  *
- * Read from the reason rather than assumed: as of feature 086 a Pipeline waits
- * on a Phase and a Workflow waits on a Pipeline, so a hard-coded "Phase" would
- * misname half the cases and send the operator to the wrong catalog.
+ * Read from the reason rather than assumed: a Workflow can wait on a Phase or a
+ * child Workflow, so a hard-coded "Phase" would misname child Workflow
+ * dependencies and send the operator to the wrong catalog.
  */
 function dependencyLabel(dependency: BlockedDependency): string {
-  return `${dependency.kind === 'pipeline' ? 'Pipeline' : 'Phase'} ${dependency.resourceId}`;
+  return `${dependency.kind === 'workflow' ? 'Workflow' : 'Phase'} ${dependency.resourceId}`;
 }
+
+/**
+ * The status a skipped Phase or Workflow row says the catalog already holds it
+ * at. Derived from the row rather than imported, so the host contract stays the
+ * one place the vocabulary is written.
+ */
+type PresentRowStatus = Extract<ImportPlanRow, { presentRowStatus: string }>['presentRowStatus'];
+
+/**
+ * The indefinite article each presence status takes in the Skip reason
+ * (BUG-001, FR-008). One fixed article read "a effective row" and "a invalid
+ * row" in the preview: the sentence names a status, and the article belongs to
+ * the word that follows it, not to the sentence.
+ *
+ * A total lookup, for the reason `RESOURCE_KIND_LABELS` is one: keyed on the
+ * status union, so a status added to the contract fails to typecheck here
+ * instead of reading wrong in front of the operator.
+ */
+const PRESENT_ROW_STATUS_ARTICLES: Readonly<Record<PresentRowStatus, 'a' | 'an'>> = {
+  draft: 'a',
+  effective: 'an',
+  invalid: 'an'
+};
 
 /**
  * FR-054 — `skip`, `blocked`, and `invalid` must state the reason without the
@@ -308,14 +327,17 @@ export function reasonLines(row: ImportPlanRow): readonly string[] {
     // the skip: a stored row exists, and at what status. The presence PROPERTY is
     // unchanged — a scan of stored rows at every status, never the effective
     // catalog — so an `invalid` row still skips and still says so.
+    const article = PRESENT_ROW_STATUS_ARTICLES[row.presentRowStatus];
     return [
-      `Already present in the catalog as a ${row.presentRowStatus} row, so this import would not change it.`
+      `Already present in the catalog as ${article} ${row.presentRowStatus} row, so this import would not change it.`
     ];
   }
   if (row.outcome === 'blocked') {
     const needs = dependencyLabel(row.reason.dependency);
     if (row.reason.code === 'dependency-absent') {
-      return [`Needs the ${needs}, which is not in the catalog and this document does not supply.`];
+      // "Not published", not "not in the catalog": the presence check sees a draft, so a dependency the
+      // catalog holds only as a draft lands here too, and its own row says it IS in the catalog.
+      return [`Needs the ${needs}, which is not published and this document does not supply.`];
     }
     if (row.reason.code === 'dependency-unresolvable') {
       return [`Needs the ${needs}, which the catalog holds but does not currently resolve.`];
@@ -393,12 +415,55 @@ export function refusalHeadline(code: DocumentRefusalCode): string {
 }
 
 /**
+ * Target-kind-aware confirmation gate evaluated once preflight identifies the
+ * plan's document kind. Returns operator-facing prose when blocked, or `null`
+ * when every target catalog the plan writes is ready to accept the commit.
+ */
+export function confirmTargetBlockedReason(
+  plan: ImportPlan,
+  gate: ImportTargetGate
+): string | null {
+  if (!gate.isPrimary) {
+    return 'Only the primary window can import.';
+  }
+  if (isModelCatalogPlan(plan)) {
+    if (gate.modelsSavePending) return 'A Model Catalog save is still in progress.';
+    if (gate.modelsDirty) {
+      return 'Save or revert your pending Model Catalog changes before importing.';
+    }
+    return null;
+  }
+  const writesPhases = phaseImportRows(plan).length > 0;
+  const writesWorkflows = workflowImportRows(plan).length > 0;
+  if ((writesPhases || writesWorkflows) && !gate.workspaceTrust) {
+    return 'This workspace is not trusted, so an imported resource could not be saved.';
+  }
+  if (writesPhases) {
+    if (!gate.trustPhases) {
+      return 'Custom Phase changes are disabled in this workspace, so Phase imports cannot be saved.';
+    }
+    if (gate.phaseSavePending) return 'A Phase save is still in progress.';
+    if (gate.phaseMutationActive) {
+      return 'Save or revert your pending Phase changes before importing.';
+    }
+  }
+  if (writesWorkflows) {
+    if (gate.workflowSavePending) return 'A Workflow save is still in progress.';
+    if (gate.workflowMutationActive) {
+      return 'Save or revert your pending Workflow changes before importing.';
+    }
+  }
+  return null;
+}
+
+/**
  * Why Confirm is unavailable, or `null` when it is available.
  *
  * Every branch returns prose (FR-057) — a disabled control that does not say why
  * reads as a broken one. The order is the order the operator hits them: a commit
  * already in flight, then a preflight still in flight, then not having a plan at
- * all, then having one with nothing to do, then not having chosen where to write.
+ * all, then having one with nothing to do, then missing revision, then target
+ * primacy/trust/unsaved-edits gates for the catalog(s) this plan writes.
  */
 export function confirmBlockedReason(gate: ConfirmGate): string | null {
   if (gate.state === 'committing') return 'A commit is already in progress.';
@@ -418,9 +483,10 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   // and its revision comes from a different authority (FR-056), so none of the
   // Pipeline/Workflow checks below apply to it.
   if (modelCatalogImportRows(gate.plan).length > 0) {
-    return gate.plan.computedAgainstModelsRevision === undefined
-      ? 'This plan does not carry the Model Catalog revision its write has to check. Inspect the document again.'
-      : null;
+    if (gate.plan.computedAgainstModelsRevision === undefined) {
+      return 'This plan does not carry the Model Catalog revision its write has to check. Inspect the document again.';
+    }
+    return gate.targetGate ? confirmTargetBlockedReason(gate.plan, gate.targetGate) : null;
   }
   // The writability question, asked once per layer that has rows to write
   // (T048, T054). A row whose plan carries no revision for its own layer has no
@@ -429,21 +495,12 @@ export function confirmBlockedReason(gate: ConfirmGate): string | null {
   // silently. Held closed instead; re-inspecting the document rebuilds a plan
   // that carries it.
   if (
-    pipelineImportRows(gate.plan).length > 0 &&
-    gate.plan.computedAgainstPipelineRevision === undefined
-  ) {
-    return 'This plan does not carry the Pipeline catalog revision its write has to check. Inspect the document again.';
-  }
-  if (
     workflowImportRows(gate.plan).length > 0 &&
     gate.plan.computedAgainstWorkflowRevision === undefined
   ) {
     return 'This plan does not carry the Workflow catalog revision its write has to check. Inspect the document again.';
   }
-  // Feature 099 (T494a, FR-043) — a fourth refusal, "Choose the scope to import
-  // into", used to sit here. There is one target, so an operator can no longer
-  // fail to have chosen it.
-  return null;
+  return gate.targetGate ? confirmTargetBlockedReason(gate.plan, gate.targetGate) : null;
 }
 
 /**
@@ -503,33 +560,14 @@ export function savePhaseRowFromDefinition(definition: ImportedPhaseDefinition):
 }
 
 /**
- * The declared Pipeline definition as a catalog row.
- *
- * Two key names change rather than one — stored rows key identity as `id` and
- * the sequence as `phases`, while the portable document and the host contract
- * use `pipelineId` and `phaseIds`. Every other field spreads through, for the
- * same reason as the Phase row: a field added to the contract later must not be
- * silently dropped on the import path (FR-046a). `phaseIds` is copied rather
- * than aliased so the row does not share an array with the plan.
- */
-export function savePipelineRowFromDefinition(
-  definition: ImportedPipelineDefinition
-): SavePipelineRow {
-  const { pipelineId, phaseIds, ...declared } = definition;
-  return { id: pipelineId, phases: [...phaseIds], ...declared };
-}
-
-/**
  * The declared Workflow definition as a catalog row.
  *
- * No key name changes at all, unlike the Phase and Pipeline rows: the Workflow
- * catalog arrived with feature 083, after the `id` spelling was retired, so
- * `workflowId` is the only identity key a stored Workflow row has ever had.
- * Everything is spread through, for the same reason the other two spread their
- * remainder — a field added to the contract later must not be silently dropped
- * on the import path (FR-046a). The graph itself is carried as declared: a
- * rewritten connection or a reordered node list is precisely the lossy round
- * trip that requirement forbids.
+ * No key name changes at all: `workflowId` is the only identity key a stored
+ * Workflow row has ever had. Everything is spread through, for the same reason
+ * the Phase row spreads its remainder — a field added to the contract later
+ * must not be silently dropped on the import path (FR-046a). The graph itself is
+ * carried as declared: a rewritten connection or a reordered node list is
+ * precisely the lossy round trip that requirement forbids.
  */
 export function saveWorkflowRowFromDefinition(
   definition: ImportedWorkflowDefinition
@@ -540,182 +578,319 @@ export function saveWorkflowRowFromDefinition(
 /** The stored rows of each catalog the commit appends to. */
 export interface ImportTargetLayers {
   readonly phases: readonly SavePhaseRow[];
-  readonly pipelines: readonly SavePipelineRow[];
   readonly workflows: readonly SaveWorkflowRow[];
 }
 
-export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows';
+export type ImportLayerKey = 'phases' | 'workflows';
 
 /**
- * One layer write. The key says which catalog it reports against.
+ * The one request an import commit sends, and the layer each part of it reports under.
  *
- * Feature 101 (T029) — a `PackageLayer` rather than one of three whole-array
- * request shapes. The three shapes were already translated into exactly this
- * layer before dispatch by the retired `save*` shims; naming it directly removes
- * the translation without changing a byte of what is sent. One layer per write,
- * still: the writes are ordered and each is conditional on the last, so they
- * cannot be collapsed into a single package (see `runImportCommit`).
+ * Feature 254 (FR-013) — replaces the list of one-layer writes this module used to build. `keys` runs
+ * parallel to `request.layers`: one key per layer, in the same order, so the single acknowledgement
+ * can be read layer by layer (`layerResultsOf`).
  */
-export interface ImportLayerWrite {
-  readonly key: ImportLayerKey;
-  readonly layer: PackageLayer;
+export interface ImportPackage {
+  readonly request: PackagePublishRequest;
+  readonly keys: readonly ImportLayerKey[];
 }
 
 /**
- * The layer keys in write order — the one place the order is stated.
+ * The layer keys in dependency order — the one place the order is stated.
  *
- * Read by the outcome sentence to name the layers that landed. `buildImportWrites`
- * spells the order out in code instead, because each arm reads a different
- * revision map and builds a differently-shaped request; a loop over this list
- * would have to switch on the key anyway.
+ * Read by the outcome sentence to name the layers that landed. `buildImportPackage` spells the order
+ * out in code instead, because each arm reads a different revision and builds a differently shaped
+ * layer; a loop over this list would have to switch on the key anyway.
  */
-const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = ['phases', 'pipelines', 'workflows'];
+const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = ['phases', 'workflows'];
 
 /** The layer name used when the outcome sentence has to name what landed. */
 const IMPORT_LAYER_LABELS: Readonly<Record<ImportLayerKey, string>> = {
   phases: 'Phases',
-  pipelines: 'Pipelines',
   workflows: 'Workflows'
 };
 
-/**
- * The writes that apply a plan, in the order they must be sent (FR-038, FR-043,
- * FR-045, FR-050).
- *
- * The order is fixed by dependency, and each write must not precede the one it
- * depends on: a Pipeline that references a Phase this same document supplies
- * does not validate until that Phase is in the catalog, and a Workflow's nodes
- * do not resolve until its Pipelines are, so any other order would refuse a
- * package that is internally consistent. Each write carries the revision the
- * PLAN was computed against — its own, from its own catalog — because that is
- * what makes a catalog written since preflight refuse as `stale-catalog`
- * (FR-040) rather than overwrite an operator's work. Reading any of the three
- * revisions live at this moment would leave that gate unable to fire.
- *
- * Feature 101 (T029) — the `import`/`import-package` mutation intent is gone. It
- * was already dropped before dispatch: feature 100 rewired every one of these
- * writes onto the package publish, which carries layers and ids and no intent at
- * all, so the standalone/package distinction has not reached the host since. It
- * is not recorded here as a comment either, because a field nothing reads is a
- * claim nothing checks.
- *
- * Returns nothing at all — not a partial list — when a Pipeline or Workflow
- * row's plan carries no revision for that layer. Half a package is the one
- * outcome no requirement here admits, so a caller that ignores
- * `confirmBlockedReason` writes nothing rather than the layers it happens to
- * have a gate for.
- *
- * **Feature 100 (T511, FR-039a, FR-039b) — the document's own rows, and nothing
- * else.** Each layer used to carry the stored rows too, because the whole-array
- * command it went to treated an id the request did not name as a removal. A
- * package publish is a merge: an id it does not name is left exactly as it is, so
- * the stored rows no longer need carrying and must not be carried. Sending them
- * would name every stored definition in a publication, and publishing an id
- * publishes its head — so an operator's pending, deliberately unpublished draft
- * of an untouched definition would go live as a side effect of importing a
- * document that says nothing about it. That is the one thing FR-039a forbids by
- * name, and dropping the concatenation is what makes it true of this surface as
- * well as of the headless one.
- */
-export function buildImportWrites(plan: ImportPlan): readonly ImportLayerWrite[] {
-  const phases = phaseImportRows(plan);
-  const pipelines = pipelineImportRows(plan);
-  const workflows = workflowImportRows(plan);
-  const pipelineRevision = plan.computedAgainstPipelineRevision;
-  const workflowRevision = plan.computedAgainstWorkflowRevision;
-  if (pipelines.length > 0 && pipelineRevision === undefined) return [];
-  if (workflows.length > 0 && workflowRevision === undefined) return [];
+/** The catalog kind each layer key carries, and back (Feature 254, data-model §6). */
+const KIND_OF_LAYER: Readonly<Record<ImportLayerKey, 'phase' | 'workflow'>> = {
+  phases: 'phase',
+  workflows: 'workflow'
+};
+const LAYER_OF_KIND: Readonly<Record<'phase' | 'workflow', ImportLayerKey>> = {
+  phase: 'phases',
+  workflow: 'workflows'
+};
 
-  const writes: ImportLayerWrite[] = [];
+export function buildImportPackage(plan: ImportPlan): ImportPackage | null {
+  const phases = phaseImportRows(plan);
+  const workflows = workflowImportRows(plan);
+  const workflowRevision = plan.computedAgainstWorkflowRevision;
+  if (workflows.length > 0 && workflowRevision === undefined) return null;
+
+  const keys: ImportLayerKey[] = [];
+  const layers: PackageLayer[] = [];
   if (phases.length > 0) {
-    writes.push({
-      key: 'phases',
-      layer: {
-        kind: 'phase',
-        expectedRevision: plan.computedAgainstRevision,
-        definitions: phases.map((row) => {
-          const body = savePhaseRowFromDefinition(row.definition);
-          return { id: body.id, body };
-        })
-      }
-    });
-  }
-  if (pipelines.length > 0 && pipelineRevision !== undefined) {
-    writes.push({
-      key: 'pipelines',
-      layer: {
-        kind: 'pipeline',
-        expectedRevision: pipelineRevision,
-        // `pipelineRowId` rather than `body.id` for the same reason the Builder
-        // uses it: `id` and `pipelineId` are both accepted spellings. A row from
-        // this path always carries `id`, because the contract requires
-        // `pipelineId` and the translation above renames it — the shared reader
-        // is what keeps the two paths from disagreeing if that ever changes.
-        definitions: pipelines.map((row) => {
-          const body = savePipelineRowFromDefinition(row.definition);
-          return { id: pipelineRowId(body), body };
-        })
-      }
+    keys.push('phases');
+    layers.push({
+      kind: 'phase',
+      expectedRevision: plan.computedAgainstRevision,
+      definitions: phases.map((row) => {
+        const body = savePhaseRowFromDefinition(row.definition);
+        return { id: body.id, body };
+      })
     });
   }
   if (workflows.length > 0 && workflowRevision !== undefined) {
-    writes.push({
-      key: 'workflows',
-      layer: {
-        kind: 'workflow',
-        expectedRevision: workflowRevision,
-        definitions: workflows.map((row) => {
-          const body = saveWorkflowRowFromDefinition(row.definition);
-          return { id: body.workflowId, body };
-        })
-      }
+    keys.push('workflows');
+    layers.push({
+      kind: 'workflow',
+      expectedRevision: workflowRevision,
+      definitions: workflows.map((row) => {
+        const body = saveWorkflowRowFromDefinition(row.definition);
+        return { id: body.workflowId, body };
+      })
     });
   }
-  return writes;
+  return keys.length === 0 ? null : { request: { layers }, keys };
 }
 
 /** What a confirmed import did, taken as a whole (FR-042a). */
-export type ImportCommitOutcome = 'imported' | 'partial' | 'failed';
+export type ImportCommitOutcome = 'imported' | 'partial' | 'failed' | 'unknown';
+
+/** FR-R4-F05 (I5) — an ack the helper synthesised at its timeout, not an answer from the host. */
+function isTimedOut(ack: { readonly status: string; readonly reason?: string }): boolean {
+  return ack.status === 'rejected' && isOutcomeNotYetKnown(ack.reason);
+}
 
 export interface ImportLayerResult {
   readonly key: ImportLayerKey;
   readonly ack: LifecycleResult;
 }
 
+/** The reason a layer carries when the package stopped before it was tried (Feature 254, data-model §6). */
+const NOT_ATTEMPTED_REASON = 'not-attempted';
+const PACKAGE_PARTIAL_REASON = 'package-partial';
+const VALIDATION_FAILED_REASON = 'validation-failed';
+
 /**
- * The three outcomes, read off the acks that actually came back (FR-042a).
+ * The host's `cause` for a layer whose publish failed on a stale revision is the store's word
+ * (`stale`); the operator-facing refusal formatters know it as `stale-catalog`.
+ */
+function reasonOfCause(cause: string): string {
+  if (cause === 'stale') return 'stale-catalog';
+  return cause.length > 0 ? cause : PACKAGE_PARTIAL_REASON;
+}
+
+/** What a `package-partial` acknowledgement lists, read defensively (the webview trusts no payload). */
+interface PartialPackage {
+  readonly published: ReadonlySet<'phase' | 'workflow'>;
+  readonly draftedOnly: ReadonlySet<'phase' | 'workflow'>;
+  readonly failedKind: 'phase' | 'workflow';
+  readonly cause: string;
+}
+
+const PACKAGE_KINDS: readonly string[] = ['phase', 'workflow'];
+
+function isPackageKind(value: unknown): value is 'phase' | 'workflow' {
+  return typeof value === 'string' && PACKAGE_KINDS.includes(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** `null` when the payload is not the documented shape, so a caller falls back to the plain reason. */
+function readPartialPackage(result: unknown): PartialPackage | null {
+  if (!isRecord(result)) return null;
+  const { published, draftedOnly, failedKind, cause } = result;
+  if (!Array.isArray(published) || !Array.isArray(draftedOnly)) return null;
+  if (!isPackageKind(failedKind) || typeof cause !== 'string') return null;
+  const publishedKinds = new Set<'phase' | 'workflow'>();
+  for (const entry of published) {
+    if (!isRecord(entry) || !isPackageKind(entry['kind'])) return null;
+    publishedKinds.add(entry['kind']);
+  }
+  const draftedKinds = new Set<'phase' | 'workflow'>();
+  for (const kind of draftedOnly) {
+    if (!isPackageKind(kind)) return null;
+    draftedKinds.add(kind);
+  }
+  return { published: publishedKinds, draftedOnly: draftedKinds, failedKind, cause };
+}
+
+/**
+ * What the failed layer's result carries: the host's own word for the failure, and whether the draft
+ * pass had already written the layer (the publish pass then failed on it), in which case it is on disk
+ * as a draft and not published.
+ */
+function failedLayerResult(cause: string, drafted: boolean): { readonly failedCause: string; readonly draftedOnly: boolean } {
+  return { failedCause: cause, draftedOnly: drafted };
+}
+
+function isDraftedMark(result: unknown): boolean {
+  return isRecord(result) && result['draftedOnly'] === true;
+}
+
+function readFailedCause(result: unknown): string | null {
+  return isRecord(result) && typeof result['failedCause'] === 'string' ? result['failedCause'] : null;
+}
+
+/** The facts a drafted-only layer's row states: which layer failed and why. */
+function readDraftedInfo(result: unknown): { readonly failedKind: 'phase' | 'workflow'; readonly cause: string } | null {
+  if (!isRecord(result)) return null;
+  const { failedKind, cause } = result;
+  return isPackageKind(failedKind) && typeof cause === 'string' ? { failedKind, cause } : null;
+}
+
+/** Whether this layer is on disk as a draft that was not published (FR-016). */
+function landedAsDraft(ack: LifecycleResult): boolean {
+  if (ack.status !== 'rejected') return false;
+  if (ack.reason === PACKAGE_PARTIAL_REASON) return readDraftedInfo(ack.result) !== null;
+  return isDraftedMark(ack.result);
+}
+
+function partialAckFor(key: ImportLayerKey, partial: PartialPackage): LifecycleResult {
+  const kind = KIND_OF_LAYER[key];
+  // The failed layer wins over drafted-only: the host lists it in both when the publish pass stopped
+  // on a layer the draft pass had written, and the operator needs its cause.
+  if (kind === partial.failedKind) {
+    return {
+      status: 'rejected',
+      reason: reasonOfCause(partial.cause),
+      result: failedLayerResult(partial.cause, partial.draftedOnly.has(kind))
+    };
+  }
+  if (partial.published.has(kind)) return { status: 'accepted' };
+  if (partial.draftedOnly.has(kind)) {
+    return {
+      status: 'rejected',
+      reason: PACKAGE_PARTIAL_REASON,
+      result: { failedKind: partial.failedKind, cause: partial.cause }
+    };
+  }
+  return { status: 'rejected', reason: NOT_ATTEMPTED_REASON };
+}
+
+/**
+ * The one acknowledgement of a package publish, as one result per layer (FR-015, data-model §6).
  *
- * `partial` exists because the writes are independently gated and an earlier one
- * can succeed while a later one is refused — which as of feature 086 has two
- * shapes, a refused Pipeline write after a Phase write and a refused Workflow
- * write after both. Counting acks is total over either, so nothing here changes.
- * It is reported rather than repaired: FR-042c forbids a compensating delete, so
- * the honest report is the only thing this surface owes the operator.
+ * | Acknowledgement | Each key |
+ * |---|---|
+ * | accepted | accepted |
+ * | rejected `package-partial` | published: accepted. Failed: rejected with its cause. Drafted only: rejected, written as a draft. Any other: not attempted |
+ * | rejected `validation-failed`, or any other reason | every key rejected with that acknowledgement, defects and all |
+ * | a timeout | every key carries the timed-out acknowledgement, so every row reads unknown |
  *
- * An empty result list is `failed`, not `imported`. It means the commit sent
- * nothing — a plan `buildImportWrites` refused — and calling that success would
- * put an "imported" line under a document that was never written.
+ * Pure, and total over its input: a payload that is not the documented shape falls back to rejecting
+ * every layer with the acknowledgement's own reason, which claims nothing about what landed.
+ */
+export function layerResultsOf(
+  keys: readonly ImportLayerKey[],
+  ack: LifecycleResult
+): readonly ImportLayerResult[] {
+  if (ack.status === 'rejected' && ack.reason === PACKAGE_PARTIAL_REASON) {
+    const partial = readPartialPackage(ack.result);
+    if (partial !== null) return keys.map((key) => ({ key, ack: partialAckFor(key, partial) }));
+  }
+  return keys.map((key) => ({ key, ack }));
+}
+
+/**
+ * The three outcomes, read off the results of the one acknowledgement (FR-042a).
+ *
+ * `partial` exists because the layers are independently revisioned and a package can stop partway:
+ * an earlier layer published and a later one failed, which as of feature 086 has two shapes (a Pipeline
+ * layer after the Phases, and a Workflow layer after both). Counting accepted results is total over
+ * either. It is reported rather than repaired: FR-042c forbids a compensating delete, so the honest
+ * report is the only thing this surface owes the operator.
+ *
+ * Drafts do not count as live. A package that stopped before anything published is `failed` here, as
+ * the headless importer reports it for the same package; what the sentence and the rows then say is
+ * that the drafted layers are written (FR-016).
+ *
+ * An empty result list is `failed`, not `imported`. It means the commit sent nothing — a plan
+ * `buildImportPackage` refused — and calling that success would put an "imported" line under a
+ * document that was never written.
  */
 export function commitOutcome(results: readonly ImportLayerResult[]): ImportCommitOutcome {
   if (results.length === 0) return 'failed';
+  // FR-R4-F05 (I5) — the package request's wait ran out, so what it did is not yet known;
+  // "nothing was written" would be a claim the host may still contradict.
+  const last = results.at(-1);
+  if (last !== undefined && isTimedOut(last.ack)) return 'unknown';
   const accepted = results.filter((result) => result.ack.status === 'accepted').length;
   if (accepted === results.length) return 'imported';
   return accepted === 0 ? 'failed' : 'partial';
 }
 
+/** The row text for a layer the package never reached (unchanged wording, Feature 085 T048). */
+const NOT_REACHED_TEXT = 'Not written — the import stopped before this layer.';
+
+/** The row text for a package the host refused whole, when no defect names the row (FR-014, P3). */
+const PACKAGE_REFUSED_TEXT = 'Not written: the package was refused';
+
+/** How many of a row's defects its detail line shows before it counts the rest. */
+const ROW_DEFECTS_SHOWN = 3;
+
+interface RowDefect {
+  readonly kind: string;
+  readonly id: string;
+  readonly field: string;
+  readonly message: string;
+}
+
+/** The defects of a `validation-failed` acknowledgement, read defensively. */
+function readRowDefects(result: unknown): readonly RowDefect[] {
+  if (!isRecord(result) || !Array.isArray(result['defects'])) return [];
+  const defects: RowDefect[] = [];
+  for (const entry of result['defects']) {
+    if (!isRecord(entry)) continue;
+    const { kind, id, field, message, code } = entry;
+    if (typeof kind !== 'string' || typeof id !== 'string' || typeof field !== 'string') continue;
+    defects.push({
+      kind,
+      id,
+      field,
+      message: typeof message === 'string' && message.length > 0 ? message : String(code ?? 'invalid value')
+    });
+  }
+  return defects;
+}
+
+/**
+ * What a refused package says about one row: the defects whose kind and id are the row's own, or that
+ * the package was refused when none is (FR-014). Matching on both is what keeps a Phase defect off a
+ * Pipeline row that happens to share its id.
+ */
+function refusedRowDetail(row: { readonly resourceKind: string; readonly resourceId: string | null }, result: unknown): string {
+  const own = readRowDefects(result).filter(
+    (defect) => defect.kind === row.resourceKind && defect.id === row.resourceId
+  );
+  if (own.length === 0) return PACKAGE_REFUSED_TEXT;
+  const visible = own.slice(0, ROW_DEFECTS_SHOWN).map((defect) => `${defect.field}: ${defect.message}`);
+  const remaining = own.length - visible.length;
+  return `${VALIDATION_FAILED_REASON} — ${visible.join('; ')}${remaining > 0 ? `; +${remaining} more` : ''}`;
+}
+
+/** The row text of a layer that was written as a draft and not published (FR-016). */
+function draftedLayerText(result: unknown): string {
+  const info = readDraftedInfo(result);
+  const failed = info === null ? 'a later' : `the ${IMPORT_LAYER_LABELS[LAYER_OF_KIND[info.failedKind]]}`;
+  const cause = info === null || info.cause.length === 0 ? '' : ` (${reasonOfCause(info.cause)})`;
+  return `Saved as a draft, not published — ${failed} layer failed${cause}. Publish this draft from the Builder, then inspect the same document again to import what is still missing.`;
+}
+
 /**
  * The layer acks, as one result per plan row (FR-042).
  *
- * Total over `plan.rows` by construction. Each `import` row reads the ack of ITS
- * OWN layer, which is what lets a partial outcome be reported exactly: the
- * Phases say imported and the Pipeline says why it was not, in the same table.
- * A row whose layer was never reached — the sequence stopped at the first
- * rejection — says that rather than borrowing the other layer's reason. Rows the
- * commit never addressed keep the outcome and the reason preflight gave them.
+ * Total over `plan.rows` by construction. Each `import` row reads the result of ITS OWN layer, which is
+ * what lets a partial outcome be reported exactly: the Phases say imported and the Pipeline says why
+ * it was not, in the same table. A layer the package never reached says that rather than borrowing
+ * another layer's reason, and a refused package says, row by row, which definition the host found a
+ * defect in and that the rest were refused with it (FR-014). Rows the commit never addressed keep the
+ * outcome and the reason preflight gave them.
  *
- * Feature 099 (T494a, FR-043) — the `imported` detail used to name the scope the
- * operator chose. There is one catalog, so the row says it was imported and the
- * destination is no longer a fact about the row.
+ * Feature 099 (T494a, FR-043) — the `imported` detail used to name the scope the operator chose. There
+ * is one catalog, so the row says it was imported and the destination is no longer a fact about the row.
  */
 export function projectCommitResults(
   plan: ImportPlan,
@@ -723,20 +898,33 @@ export function projectCommitResults(
 ): readonly ImportResultRow[] {
   const failureFor = (key: ImportLayerKey): string | null => {
     const entry = results.find((result) => result.key === key);
-    if (entry === undefined) return 'Not written — the import stopped before this layer.';
+    if (entry === undefined) return NOT_REACHED_TEXT;
     if (entry.ack.status === 'accepted') return null;
+    if (entry.ack.reason === NOT_ATTEMPTED_REASON) return NOT_REACHED_TEXT;
+    const drafted = landedAsDraft(entry.ack);
+    // A layer the draft pass wrote and the publish pass then failed on carries its cause; one that was
+    // only drafted carries the layer that failed.
+    if (entry.ack.reason === PACKAGE_PARTIAL_REASON && drafted) return draftedLayerText(entry.ack.result);
     // One formatter per layer, never a shared one: each reads a differently
     // shaped structured payload, and the Workflow formatter alone reports the
     // suppressed-ancestry note a cycle produces.
-    if (key === 'phases') return formatPhaseSaveRejection(entry.ack.reason, entry.ack.result);
-    if (key === 'pipelines') return formatPipelineSaveRejection(entry.ack.reason, entry.ack.result);
-    return formatWorkflowSaveRejection(
-      entry.ack.reason,
-      entry.ack.result as Parameters<typeof formatWorkflowSaveRejection>[1]
-    );
+    const text =
+      key === 'phases'
+        ? formatPhaseSaveRejection(entry.ack.reason, entry.ack.result)
+        : formatWorkflowSaveRejection(
+            entry.ack.reason,
+            entry.ack.result as Parameters<typeof formatWorkflowSaveRejection>[1]
+          );
+    // The host's word for a failure the formatters have no sentence for (an errno, say) still has to
+    // reach the operator: the row names the cause as the acknowledgement gave it.
+    const cause = readFailedCause(entry.ack.result);
+    const named =
+      cause !== null && cause.length > 0 && reasonOfCause(cause) === cause && !text.includes(cause)
+        ? `${text} (cause: ${cause})`
+        : text;
+    return drafted ? `${named.replace(/[.\s]+$/, '')}. The layer was saved as a draft and not published.` : named;
   };
   const layerOf = (kind: ProcessYamlResourceKind): ImportLayerKey => {
-    if (kind === 'pipeline') return 'pipelines';
     if (kind === 'workflow') return 'workflows';
     return 'phases';
   };
@@ -750,6 +938,17 @@ export function projectCommitResults(
     if (row.outcome === 'invalid') {
       return { resourceId: row.resourceId, outcome: 'invalid' as const, detail: reasonLines(row).join(' ') };
     }
+    const layerAck = results.find((result) => result.key === layerOf(row.resourceKind))?.ack;
+    if (layerAck !== undefined && isTimedOut(layerAck)) {
+      return { resourceId: row.resourceId, outcome: 'unknown' as const, detail: OUTCOME_NOT_YET_KNOWN_TEXT };
+    }
+    if (layerAck?.status === 'rejected' && layerAck.reason === VALIDATION_FAILED_REASON) {
+      return {
+        resourceId: row.resourceId,
+        outcome: 'failed' as const,
+        detail: refusedRowDetail(row, layerAck.result)
+      };
+    }
     const failure = failureFor(layerOf(row.resourceKind));
     return failure === null
       ? {
@@ -761,6 +960,12 @@ export function projectCommitResults(
   });
 }
 
+/** "A", "A and B", "A, B and C". */
+function listLabels(labels: readonly string[]): string {
+  if (labels.length <= 1) return labels[0] ?? '';
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
+
 /**
  * The whole-commit sentence shown above the result table (FR-042a, FR-042b/c,
  * FR-051).
@@ -769,41 +974,90 @@ export function projectCommitResults(
  * the per-row table cannot: which layers landed, that what landed is still there
  * — no compensating delete was performed and none is offered — and that the
  * recovery is to import the same document again, which is safe precisely because
- * an already-present id is a `skip` (FR-030).
+ * an already-present id is a `skip` (FR-030). A draft counts as present, so when
+ * one was left the recovery starts with publishing it (FR-R4-F07 audit G-RECOVERY).
  *
  * With three layers "part of this document" stopped being enough: which part
  * landed decides what the operator has to look at next. The layers are named
- * from the ACKS rather than from the plan, so only a layer that actually came
- * back accepted can be named — a plan-derived list would name a layer the
- * sequence never reached.
+ * from the RESULTS rather than from the plan, so only a layer that actually came
+ * back accepted can be named as written — a plan-derived list would name a layer
+ * the package never reached.
+ *
+ * Feature 254 (FR-016) — a layer can also be on disk as a draft that was never published, and the
+ * sentence says so: validating the whole document first is not a rollback, and "Nothing was written"
+ * would be false of a package that drafted the Phases and then stopped.
  */
 export function commitOutcomeStatement(
   outcome: ImportCommitOutcome,
   results: readonly ImportLayerResult[]
 ): string {
   if (outcome === 'imported') return 'Every eligible resource was written to the catalog.';
-  if (outcome === 'failed') return 'Nothing was written.';
+  if (outcome === 'unknown') return IMPORT_NOT_YET_KNOWN;
+  const drafted = IMPORT_LAYER_ORDER.filter((key) =>
+    results.some((result) => result.key === key && landedAsDraft(result.ack))
+  ).map((key) => IMPORT_LAYER_LABELS[key]);
+  const draftedSentence =
+    drafted.length === 0
+      ? ''
+      : `${listLabels(drafted)} were saved as drafts and not published. `;
+  const recovery =
+    drafted.length === 0
+      ? 'What was written is still there. Inspect the same document again to import the rest — anything already in the catalog is skipped.'
+      : 'What was written is still there. Publish the drafts from the Builder, then inspect the same document again to import anything still missing — anything already in the catalog, drafts included, is skipped.';
+  if (outcome === 'failed') {
+    if (drafted.length === 0) return 'Nothing was written.';
+    return `${draftedSentence}Nothing is live. ${recovery}`;
+  }
   const landed = IMPORT_LAYER_ORDER.filter((key) =>
     results.some((result) => result.key === key && result.ack.status === 'accepted')
   ).map((key) => IMPORT_LAYER_LABELS[key]);
   const written =
     landed.length === 0
       ? 'Part of this document was'
-      : `${landed.length === 1 ? landed[0] : `${landed.slice(0, -1).join(', ')} and ${landed[landed.length - 1]}`} were`;
-  return `${written} written to the catalog; the rest of this document was not. What was written is still there. Inspect the same document again to finish the import — anything already in the catalog is skipped.`;
+      : `${listLabels(landed)} were`;
+  const rest = drafted.length === 0 ? 'the rest of this document was not.' : draftedSentence.trimEnd();
+  return `${written} written to the catalog; ${rest} ${recovery}`;
 }
 
 /**
  * The send, injected so the commit can be exercised without a host.
  *
- * Feature 101 (T029) — one member where there were three. The three were
- * per-kind only in their argument shape; each translated to the same package
- * publish and returned the same `LifecycleResult`, so the kind now travels in
- * the layer rather than in the choice of function.
+ * Feature 101 (T029) — one member where there were three. The three were per-kind only in their
+ * argument shape; each translated to the same package publish and returned the same `LifecycleResult`,
+ * so the kind now travels in the layer rather than in the choice of function.
+ *
+ * Feature 254 (FR-013) — called once per commit, with every layer in the request.
  */
 export interface ImportCommitDeps {
   readonly publishPackage: (request: PackagePublishRequest) => Promise<LifecycleResult>;
 }
+
+/**
+ * The send threw instead of answering, at either commit track's boundary.
+ *
+ * `dispatch` in `lib/catalog-lifecycle.ts` resolves on every path it reaches,
+ * including its own ack timeout, so a rejected promise can only come from a throw
+ * inside its promise executor — `postCommand`'s `postMessage` (a `DataCloneError`
+ * when the payload holds something structured clone cannot carry),
+ * `markPending`, or `onceAck`. Each of those throws BEFORE the timeout is armed,
+ * so nothing will ever settle that promise: an awaiting caller waits forever
+ * unless the throw is turned back into the rejection shape it already handles.
+ *
+ * A fixed reason rather than the thrown message, for the reason the host's own
+ * read failure is generic: this string is rendered, and a transport `Error` can
+ * carry a path or a fragment of the payload. The detail stays in the console the
+ * throw already reached.
+ *
+ * Declared here rather than beside `dispatch` on purpose — this module holds no
+ * value import from `lib/catalog-lifecycle`, only a type one, and taking one
+ * would pull the snapshot store and the host transport into a pure state module.
+ */
+const DISPATCH_FAILED_REASON = 'dispatch-failed';
+
+const DISPATCH_FAILED: LifecycleResult = Object.freeze({
+  status: 'rejected',
+  reason: DISPATCH_FAILED_REASON
+});
 
 export interface ImportCommitReport {
   readonly outcome: ImportCommitOutcome;
@@ -812,31 +1066,45 @@ export interface ImportCommitReport {
 }
 
 /**
- * Send the plan's writes in order and report what happened (FR-038, FR-042,
- * FR-045, FR-051).
+ * Send the plan as ONE package publication and report what happened (FR-013, FR-015, FR-042,
+ * FR-051).
  *
- * Sequential and short-circuiting by design: each write is only sent once the one
- * it depends on has been accepted, because a Pipeline referencing a Phase from
- * the same document — or a Workflow referencing such a Pipeline — would otherwise
- * be validated against a catalog that never received it. A rejection therefore
- * stops the sequence — and stopping is all it does. Nothing already written is
- * retracted (FR-042c), at whatever depth the sequence stopped.
+ * Every layer is in the one request. The host validates the whole document, with every candidate
+ * overlaid on the catalog, before it writes anything (FR-014), then drafts the layers and publishes
+ * them in dependency order. This function therefore sends once and waits once; what used to be a
+ * sequence is now the host's two passes, and what the operator sees is the fan-out of its one
+ * acknowledgement (`layerResultsOf`). A partial outcome is reported layer by layer and nothing that
+ * landed is retracted (FR-016, FR-042c): there is no second request, so there is nothing to undo
+ * with.
+ *
+ * A throw is reported as a rejection of every layer rather than propagated. A sender that threw
+ * landed nothing, so it IS a rejection, and letting it escape would discard the caller's own
+ * in-flight bookkeeping. `DISPATCH_FAILED` names the one way `publishPackage` can reject rather than
+ * resolve.
+ *
+ * Reports `failed` with no results, and sends nothing, for a plan `buildImportPackage` cannot build a
+ * package from.
  */
 export async function runImportCommit(
   plan: ImportPlan,
   deps: ImportCommitDeps
 ): Promise<ImportCommitReport> {
-  const results: ImportLayerResult[] = [];
-  for (const write of buildImportWrites(plan)) {
-    // Awaited inside the loop deliberately, and one layer per publish: the writes
-    // are ordered and each is conditional on the one before it. A single package
-    // carrying all three would send the Pipeline before its Phases exist, and the
-    // Workflow before its Pipelines do — and would report one verdict where the
-    // per-row table needs one per layer (FR-042).
-    const ack = await deps.publishPackage({ layers: [write.layer] });
-    results.push({ key: write.key, ack });
-    if (ack.status !== 'accepted') break;
+  const built = buildImportPackage(plan);
+  if (built === null) return importCommitReport(plan, []);
+  let ack: LifecycleResult;
+  try {
+    ack = await deps.publishPackage(built.request);
+  } catch {
+    ack = DISPATCH_FAILED;
   }
+  return importCommitReport(plan, layerResultsOf(built.keys, ack));
+}
+
+/** The report for a set of layer results, on time or with a late answer in place (FR-R4-F05, I6). */
+export function importCommitReport(
+  plan: ImportPlan,
+  results: readonly ImportLayerResult[]
+): ImportCommitReport {
   return {
     outcome: commitOutcome(results),
     results,
@@ -844,11 +1112,24 @@ export async function runImportCommit(
   };
 }
 
+/**
+ * The report for the late answer to a commit whose wait ran out (FR-R4-F05 I6, Feature 254 P9).
+ *
+ * The whole report is re-projected from the one acknowledgement, for every layer the commit sent. The
+ * layers are the ones `buildImportPackage` yields for the same plan, so the keys here are the keys the
+ * send used. Replacing only the last layer's result, as the sequence's handler had to, would leave the
+ * earlier layers' rows reading "unknown" for good.
+ */
+export function lateImportCommitReport(plan: ImportPlan, late: LifecycleResult): ImportCommitReport {
+  const keys = buildImportPackage(plan)?.keys ?? [];
+  return importCommitReport(plan, layerResultsOf(keys, late));
+}
+
 // ---------------------------------------------------------------------------
 // Feature 096 T023 — Model Catalog import commit.
 //
 // A parallel, deliberately separate track from everything above (Implementation
-// Note 1): `buildImportWrites`/`runImportCommit` write the three store-backed
+// Note 1): `buildImportPackage`/`runImportCommit` publish the three store-backed
 // kinds, each independently revisioned by the catalog store, while the Model
 // Catalog is not in the store at all (FR-056) — it is VS Code configuration,
 // with its own authority and its own revision. Forcing it into that shape would
@@ -884,7 +1165,11 @@ export interface ModelCatalogCommitDeps {
  * Binary rather than `ImportCommitOutcome`'s three values: a single write has
  * nothing in between imported and failed, so there is no `partial` to report.
  */
-export type ModelCatalogCommitOutcome = 'imported' | 'failed';
+export type ModelCatalogCommitOutcome = 'imported' | 'failed' | 'unknown';
+
+/** FR-R4-F05 (I5, FR-024) — the whole-commit sentence when the last write's wait ran out. */
+const IMPORT_NOT_YET_KNOWN =
+  'The host has not answered the last write yet, so its outcome is not yet known. This view will update when it does.';
 
 export interface ModelCatalogCommitReport {
   readonly outcome: ModelCatalogCommitOutcome;
@@ -896,13 +1181,14 @@ export interface ModelCatalogCommitReport {
  * The ack, as one result per plan row (FR-042's Model Catalog analog) — the
  * single-write counterpart to `projectCommitResults`. One ack decides every
  * `import` row's outcome, because Model Catalog is a single write rather than
- * an ordered sequence of independently-gated layers.
+ * a package of independently-revisioned layers.
  */
 export function projectModelCatalogCommitResults(
   plan: ImportPlan,
   ack: SaveModelsImportResult
 ): readonly ImportResultRow[] {
-  const failure = ack.status === 'accepted' ? null : formatModelCatalogSaveRejection(ack.reason);
+  const failure = ack.status === 'accepted' ? null : formatModelCatalogSaveRejection(ack.reason, 'import-package');
+  const timedOut = isTimedOut(ack);
   return plan.rows.map((row) => {
     if (row.outcome === 'skip') {
       return {
@@ -931,6 +1217,9 @@ export function projectModelCatalogCommitResults(
     // the null fallback covers what the row union still permits at the type
     // level.
     const backend = row.resourceKind === 'modelCatalog' ? row.backend : null;
+    if (timedOut) {
+      return { resourceId: row.resourceId, outcome: 'unknown' as const, detail: OUTCOME_NOT_YET_KNOWN_TEXT };
+    }
     return failure === null
       ? {
           resourceId: row.resourceId,
@@ -944,13 +1233,13 @@ export function projectModelCatalogCommitResults(
 /**
  * Send a Model Catalog plan's delta and report what happened — the
  * single-write counterpart to `runImportCommit` (Implementation Note 1). One
- * write, not an ordered sequence: FR-015 rules out a mixed document, so there
+ * write, not a package of layers: FR-015 rules out a mixed document, so there
  * is no second, independently-revisioned layer for this write to depend on or
  * to leave stranded on a rejection.
  *
  * Answers `failed` with no write attempted when the plan carries no Model
  * Catalog revision to gate against — the same "nothing to send" case
- * `buildImportWrites` answers with `[]` for the other three kinds. Reachable
+ * `buildImportPackage` answers with `null` for the other three kinds. Reachable
  * only if called against a plan `confirmBlockedReason` would not have let
  * through Confirm.
  */
@@ -963,13 +1252,32 @@ export async function runModelCatalogImportCommit(
     const ack: SaveModelsImportResult = { status: 'rejected', reason: 'no-plan-revision' };
     return { outcome: 'failed', ack, rows: projectModelCatalogCommitResults(plan, ack) };
   }
-  const ack = await deps.saveModels({
-    models: modelCatalogImportDelta(plan),
-    expectedRevision,
-    mutation: { kind: 'import-package' }
-  });
+  // Turned into this track's rejection for the reason `runImportCommit` does the
+  // same with its publish: the sender can throw before anything settles its
+  // promise, and an escaping rejection would strand the caller's in-flight flag.
+  let ack: SaveModelsImportResult;
+  try {
+    ack = await deps.saveModels({
+      models: modelCatalogImportDelta(plan),
+      expectedRevision,
+      mutation: { kind: 'import-package' }
+    });
+  } catch {
+    ack = { status: 'rejected', reason: DISPATCH_FAILED_REASON };
+  }
+  return modelCatalogCommitReport(plan, ack);
+}
+
+/**
+ * The report for one Model Catalog ack, on time or late (FR-R4-F05, I6): `unknown` when the
+ * helper's wait ran out, because the host may still add the models.
+ */
+export function modelCatalogCommitReport(
+  plan: ImportPlan,
+  ack: SaveModelsImportResult
+): ModelCatalogCommitReport {
   return {
-    outcome: ack.status === 'accepted' ? 'imported' : 'failed',
+    outcome: ack.status === 'accepted' ? 'imported' : isTimedOut(ack) ? 'unknown' : 'failed',
     ack,
     rows: projectModelCatalogCommitResults(plan, ack)
   };
@@ -982,6 +1290,7 @@ export async function runModelCatalogImportCommit(
  * nothing to report between imported and failed.
  */
 export function modelCatalogCommitOutcomeStatement(outcome: ModelCatalogCommitOutcome): string {
+  if (outcome === 'unknown') return IMPORT_NOT_YET_KNOWN;
   return outcome === 'imported'
     ? 'Every eligible model was added to the catalog.'
     : 'Nothing was added to the catalog.';

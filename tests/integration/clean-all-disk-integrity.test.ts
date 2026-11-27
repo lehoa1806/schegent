@@ -101,6 +101,7 @@ describe('Clean All preserves on-disk .schegent/audit.log (Feature 064 T017 / SC
       pauseSource: 'operator',
       activeRunCleared: false,
       watchdogCleared: false,
+      scheduleCleared: false,
       wasNoop: false
     };
     const ctx: ClearAllCtx = {
@@ -174,6 +175,7 @@ describe('Clean All preserves on-disk .schegent/audit.log (Feature 064 T017 / SC
       pauseSource: null,
       activeRunCleared: false,
       watchdogCleared: false,
+      scheduleCleared: false,
       wasNoop: true
     };
     const ctx: ClearAllCtx = {

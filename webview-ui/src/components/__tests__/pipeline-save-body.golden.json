@@ -1,0 +1,10 @@
+{
+  "id": "golden-flow",
+  "name": "Golden Flow",
+  "version": 1,
+  "phases": [
+    "done",
+    "speckit-plan"
+  ],
+  "description": "Recorded before the rework, replayed after it."
+}

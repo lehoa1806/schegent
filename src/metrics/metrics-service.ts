@@ -16,6 +16,7 @@ import { open, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AuditEntry } from '../audit/audit-entry';
 import { parseAuditLogLineDetailed } from '../parser/audit-log-parser';
+import { readPhaseEndUsage } from '../services/usage-reader';
 import type {
   CostTimelinePoint,
   MetricsRunSummary,
@@ -43,6 +44,8 @@ export interface ReadMetricsOptions {
 
 const ARCHIVE_PREFIX = 'audit.log.';
 const ARCHIVE_STAMP_RE = /^\d{8}-\d{6}(?:-\d{3}-[0-9a-f]{8})?$/;
+export const METRICS_SCAN_CORPUS_MAX_ENTRIES = 2_048;
+export const METRICS_WORKSPACE_CACHES_MAX = 8;
 
 interface PhaseGroup {
   readonly runId: string;
@@ -115,6 +118,10 @@ export async function readMetrics(
   for (const file of files) {
     offsets.set(file, await scanFile(file, state, logger, offsets.get(file) ?? 0));
   }
+  if (!metricsCache.has(cacheKey) && metricsCache.size >= METRICS_WORKSPACE_CACHES_MAX) {
+    const oldestKey = metricsCache.keys().next().value;
+    if (oldestKey !== undefined) metricsCache.delete(oldestKey);
+  }
   metricsCache.set(cacheKey, { files: [...files], offsets, state });
 
   const phasesByRunId = buildPhaseRecordsByRunId(state);
@@ -130,7 +137,7 @@ export async function readMetrics(
   // rollup or reconstructs a record for a day the corpus no longer covers —
   // there is no backfill path to take.
   const rollup = await readMetricsRollup(workspaceRoot, logger);
-  const composed = composeCumulativeTotals(rollup.records, tasks);
+  const composed = composeCumulativeTotals(rollup.records, tasks, rollup.carryForward);
 
   // Feature 103 (T093, FR-025) — the run detail's cost and phase counts come
   // from the rollup and not from `tasks`. `tasks` is a fold over the retained
@@ -349,6 +356,10 @@ function pushTo(map: Map<string, AuditEntry[]>, key: string, entry: AuditEntry):
   if (list) {
     list.push(entry);
   } else {
+    if (map.size >= METRICS_SCAN_CORPUS_MAX_ENTRIES) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
     map.set(key, [entry]);
   }
 }
@@ -369,6 +380,10 @@ function getOrCreatePhaseGroup(
   const key = JSON.stringify([runId, phaseType, iteration]);
   let group = state.phaseGroups.get(key);
   if (!group) {
+    if (state.phaseGroups.size >= METRICS_SCAN_CORPUS_MAX_ENTRIES) {
+      const oldest = state.phaseGroups.keys().next().value;
+      if (oldest !== undefined) state.phaseGroups.delete(oldest);
+    }
     group = {
       runId,
       phaseType: truncateForDisplay(phaseType),
@@ -437,12 +452,19 @@ function buildPhaseRecordsByRunId(state: ScanState): Map<string, PhaseRecord[]> 
 // the same (runId, phase, iteration) join key. Reading only `latest(ends)`
 // silently drops that earlier real cost, so sum every defined cost across
 // the whole group instead.
+//
+// FR-R4-F02 (contract S5 G18) — each row's cost comes through `readPhaseEndUsage`, the one validated
+// reader: nested `metrics.totalCostUsd` first, the flat legacy key second, a negative or non-finite
+// figure rejected. The sum runs over PRESENT values only and is `undefined` when none is present,
+// which renders "not measured" and is never `0`. The reader, not this file, knows where usage lives,
+// so the rollup and the spend bound can no longer disagree about a row (G19).
 function costFromEnds(ends: readonly AuditEntry[]): number | undefined {
-  const defined = ends
-    .map((e) => e.payload.totalCostUsd)
-    .filter((c): c is number => typeof c === 'number');
-  if (defined.length === 0) return undefined;
-  return defined.reduce((sum, c) => sum + c, 0);
+  let total: number | undefined;
+  for (const end of ends) {
+    const cost = readPhaseEndUsage(end.payload).costUsd;
+    if (cost.kind === 'present') total = (total ?? 0) + cost.value;
+  }
+  return total;
 }
 
 function buildPhaseRecord(group: PhaseGroup): PhaseRecord | null {

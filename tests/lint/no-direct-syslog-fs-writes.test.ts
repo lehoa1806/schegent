@@ -61,7 +61,11 @@ const ALLOWED_SYSLOG_REFERENCES: ReadonlySet<string> = new Set([
  */
 const ALLOWED_APPENDFILE_FILES: ReadonlySet<string> = new Set([
   'src/lib/runtime-log/runtime-log-sink.ts',
-  'src/audit/audit-log-writer.ts',
+  // `src/audit/audit-log-writer.ts` is deliberately NOT here any more: FR-R3-053
+  // moved it onto `openWithinRoot` + `handle.write`, so it has no `appendFile`
+  // call to sanction. Kept as a comment rather than deleted silently, because an
+  // allowlist that keeps entries for calls that no longer exist stops describing
+  // anything.
   'src/audit/raw-transcript-writer.ts',
   'src/audit/verbose-diagnostic-writer.ts',
   'src/monitor/cli-transport-sink.ts',
@@ -127,7 +131,13 @@ describe('Feature 019 T029 — no direct syslog fs writes', () => {
   });
 
   it('only the allowlisted writer files call fs.appendFile(...)', () => {
-    const matches = execGrep('appendFile');
+    // FR-R3-053 — a CALL shape, not the bare identifier. Matching any textual
+    // occurrence flagged a module that only NAMES `fs.appendFile` in a comment
+    // explaining what it replaced, which pressures an author to write a worse
+    // comment to satisfy a lint gate. It also kept `audit-log-writer.ts` on the
+    // allowlist after that file stopped calling it -- a stale entry that reads
+    // as a sanctioned call site.
+    const matches = execGrep('fs[a-zA-Z]*\\.appendFile[[:space:]]*\\(');
     const offenders = matches.filter((rel) => !ALLOWED_APPENDFILE_FILES.has(rel));
     expect(
       offenders,

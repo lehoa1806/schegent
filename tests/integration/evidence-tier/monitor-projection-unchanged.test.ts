@@ -24,7 +24,7 @@
 // used to evict every workflow event from that tail before an operator could
 // read one. Those tests measure the improvement instead of asserting stasis.
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
@@ -33,11 +33,14 @@ import { SanitizedLogger } from '../../../src/lib/logger';
 import { WebviewLogSink, type DebugLogEntry } from '../../../src/lib/webview-log-sink';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import { CliTransportSink, type CliTransportRecorder } from '../../../src/monitor/cli-transport-sink';
+import { RunTransportStore, TransportStoreError } from '../../../src/monitor/transport/run-transport-store';
+import { createTransportRouter } from '../../../src/monitor/transport/transport-router';
+import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 import type { QueueState } from '../../../src/queue/feature-request';
 import { AuditTailState } from '../../../src/ui/sidebar/audit-tail-state';
 import { ProjectorBookkeepingRegistry } from '../../../src/ui/sidebar/projector-bookkeeping-registry';
 import { AUDIT_TAIL_MAX, type WorkflowSnapshot } from '../../../src/ui/sidebar/snapshot';
-import { composeWorkflowSnapshot } from '../../../src/ui/sidebar/snapshot-composer';
+import { ProjectionFailureEpisodes } from '../../../src/ui/sidebar/projection-failure-episodes';
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 
@@ -112,7 +115,7 @@ function harness(recorderFor?: (logger: SanitizedLogger) => CliTransportRecorder
       elapsed += ms;
     },
     compose: () =>
-      composeWorkflowSnapshot({
+      new ProjectionFailureEpisodes().compose({
         deps: { getDebugLogTail: () => logSink.getEntries() },
         store: {
           getRunMap: () => ({}),
@@ -171,19 +174,48 @@ function workflowEntry(id: string, eventType: AuditEntry['eventType']): AuditEnt
 }
 
 /** A sink whose every append fails, so the failure path lands in the log tail. */
-function failingSink(logger: SanitizedLogger, target: string, root: string): CliTransportSink {
-  return new CliTransportSink({
-    settings: { read: () => ({ root, path: target, maxBytes: 1024 * 1024, maxGenerations: 3 }) },
-    sanitize: (line) => logger.sanitize(line),
+/**
+ * FR-R3-137 (T1531c, FR-012) — the sink this file builds is disposed, and the run
+ * is asserted to have produced no descriptor warning. It emitted none before the
+ * item because `failingSink` injects an `appendFile` that always rejects and so
+ * never reaches `appendHandleFor` — an accident of the double, not a property of
+ * the code.
+ */
+const live: CliTransportSink[] = [];
+function track<T extends CliTransportSink>(sink: T): T {
+  live.push(sink);
+  return sink;
+}
+afterEach(async () => {
+  await Promise.all(live.splice(0).map((sink) => sink.flushAndDispose()));
+});
+afterAll(() => {
+  expectNoDescriptorWarnings();
+});
+
+/**
+ * FR-R4-F04 — a sink whose file layer fails with `EACCES`. The sink writes no file; the router's store
+ * does, so the failure is injected there, the way the disk it stands for cannot be made to fail on demand.
+ */
+class DeniedStore extends RunTransportStore {
+  override async append(): Promise<void> {
+    throw new TransportStoreError('EACCES');
+  }
+}
+
+function failingSink(logger: SanitizedLogger, root: string): CliTransportSink {
+  const store = new DeniedStore({ tempRoot: join(root, 'os-temp'), warn: (message) => logger.warn(message) });
+  const router = createTransportRouter({
+    workspaceRoot: () => root,
+    readSetting: () => 'on',
+    readRawTranscriptMode: () => 'errors-only',
+    readMaxAgeDays: () => 30,
+    tempRoot: join(root, 'os-temp'),
+    runStatus: () => undefined,
     logger,
-    appendFile: async () => {
-      throw Object.assign(new Error('denied'), { code: 'EACCES' });
-    },
-    writeFile: async () => {},
-    mkdir: async () => undefined,
-    stat: async () => ({ size: 0 }),
-    realpath: async (candidate: string) => candidate
+    store
   });
+  return track(new CliTransportSink({ router, sanitize: (line) => logger.sanitize(line), logger }));
 }
 
 describe('FR-R3-007 — the monitor projection is unchanged', () => {
@@ -247,12 +279,93 @@ describe('FR-R3-007 — the monitor projection is unchanged', () => {
     // over which they accumulated is what the per-line timestamps used to be the
     // only record of, so removing that writer had to add these two.
     const ADDED_BY_THIS_FEATURE = ['firstOutputAt', 'lastOutputAt'];
+    // Feature 093 BUG-001 (T102a), added deliberately per the note above.
+    //
+    // `projectMonitor` returns the monitor's state object itself, so a field on
+    // `CliMonitorState` is a field the webview receives. That is the decision
+    // T102a took and this is where it is recorded: "3 lines captured, 4,412
+    // chunks declined" is the sentence that names the defect on sight, and a
+    // capture count with no decline count beside it is what let a Run look
+    // healthy for six hours. Zero for every healthy Run, so nothing renders
+    // differently until something is actually being dropped.
+    const ADDED_BY_BUG_001 = ['declinedChunks'];
+    // Feature 211 (T019), added deliberately per the note above.
+    //
+    // The bound and whether it has been crossed. `startedAt` was already here and
+    // is half of the question an operator asks of a long phase — "how far is this
+    // from the cap that kills it" — and the other half was only ever in the
+    // runner's own closure. Both are `null`/`false` for an invocation the runner
+    // armed no deadline for, so nothing renders differently for one.
+    const ADDED_BY_211 = ['maxDurationMs', 'deadlineApproaching'];
+    // FR-R3-208, added deliberately per the note above.
+    //
+    // Whether the Run's CLI is holding its settle for background work. `false`
+    // for every Run that is not holding, so nothing renders differently for one.
+    // The webview does not render the field: it reads it through the composer's
+    // freshness, which says `holding` where it would have said `stalled`.
+    const ADDED_BY_208 = ['held'];
 
     const keys = Object.keys(h.compose().monitor!);
-    expect(keys.slice().sort()).toEqual([...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE].sort());
+    expect(keys.slice().sort()).toEqual(
+      [
+        ...PRE_FEATURE_FIELDS, ...ADDED_BY_THIS_FEATURE, ...ADDED_BY_BUG_001, ...ADDED_BY_211,
+        ...ADDED_BY_208
+      ].sort()
+    );
     for (const field of PRE_FEATURE_FIELDS) {
       expect(keys, `${field} is a reading the webview already rendered`).toContain(field);
     }
+  });
+
+  /**
+   * Feature 211 (T019) — the bound reaches the projection from the spawn event,
+   * through the real monitor rather than a hand-built state.
+   *
+   * The census above proves the field names are published; this proves a value
+   * gets into them. The supply path is the `started` sidecar event and nothing
+   * else: no setting is read here, so a bound that never left the runner would
+   * still project `null` and the census would still pass.
+   */
+  it('projects the bound the spawn event carried, and null when it carried none', () => {
+    const bounded = harness();
+    bounded.monitor.onStart('run-1', 'speckit-implement', 1);
+    bounded.monitor.onSpawnPid('run-1', 501, {
+      id: 'claude-cli#2',
+      helperInvocation: false,
+      maxDurationMs: 21_600_000
+    });
+    expect(bounded.compose().monitor!.maxDurationMs).toBe(21_600_000);
+    expect(bounded.compose().monitor!.deadlineApproaching).toBe(false);
+
+    const unbounded = harness();
+    unbounded.monitor.onStart('run-2', 'speckit-implement', 1);
+    unbounded.monitor.onSpawnPid('run-2', 502, {
+      id: 'claude-cli#2',
+      helperInvocation: false,
+      maxDurationMs: null
+    });
+    expect(unbounded.compose().monitor!.maxDurationMs).toBeNull();
+  });
+
+  it('does not project a helper invocation bound as the Run bound', () => {
+    // The pre-phase compaction is bounded in seconds and the phase it precedes in
+    // hours. Projecting the helper's would put "23 min of 60 s" on the surface,
+    // and the Run is not being killed at the helper's bound.
+    const h = harness();
+    h.monitor.onStart('run-1', 'speckit-implement', 1);
+    h.monitor.onSpawnPid('run-1', 500, {
+      id: 'claude-cli#1',
+      helperInvocation: true,
+      maxDurationMs: 60_000
+    });
+    expect(h.compose().monitor!.maxDurationMs).toBeNull();
+
+    h.monitor.onSpawnPid('run-1', 501, {
+      id: 'claude-cli#2',
+      helperInvocation: false,
+      maxDurationMs: 21_600_000
+    });
+    expect(h.compose().monitor!.maxDurationMs).toBe(21_600_000);
   });
 
   it('keeps projecting a paused invocation — only a terminal one drops', () => {
@@ -337,7 +450,7 @@ describe('FR-R3-007 — the debug log tail is unchanged', () => {
     const target = join(root, '.schegent', 'cli-transport.log');
     let sink: CliTransportSink | null = null;
     const h = harness((logger) => {
-      sink = failingSink(logger, target, root);
+      sink = failingSink(logger, root);
       return sink;
     });
 

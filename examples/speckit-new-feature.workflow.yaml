@@ -1,0 +1,422 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: speckit-new-feature
+  name: Spec-kit New Feature
+  version: 1
+spec:
+  startNodeIds:
+    - claude-speckit-specify
+  nodes:
+    - nodeId: claude-speckit-specify
+      kind: phase
+      phaseId: claude-speckit-specify
+    - nodeId: claude-speckit-clarify
+      kind: phase
+      phaseId: claude-speckit-clarify
+    - nodeId: claude-speckit-plan
+      kind: phase
+      phaseId: claude-speckit-plan
+    - nodeId: claude-speckit-tasks
+      kind: phase
+      phaseId: claude-speckit-tasks
+    - nodeId: claude-speckit-checklist
+      kind: phase
+      phaseId: claude-speckit-checklist
+    - nodeId: claude-speckit-analyze
+      kind: phase
+      phaseId: claude-speckit-analyze
+    - nodeId: claude-speckit-implement
+      kind: phase
+      phaseId: claude-speckit-implement
+    - nodeId: claude-speckit-converge
+      kind: phase
+      phaseId: claude-speckit-converge
+    - nodeId: claude-code-review
+      kind: phase
+      phaseId: claude-code-review
+    - nodeId: claude-security-review
+      kind: phase
+      phaseId: claude-security-review
+    - nodeId: claude-finalize
+      kind: phase
+      phaseId: claude-finalize
+  connections:
+    - from:
+        nodeId: claude-speckit-specify
+      to:
+        nodeId: claude-speckit-clarify
+    - from:
+        nodeId: claude-speckit-clarify
+      to:
+        nodeId: claude-speckit-plan
+    - from:
+        nodeId: claude-speckit-plan
+      to:
+        nodeId: claude-speckit-tasks
+    - from:
+        nodeId: claude-speckit-tasks
+      to:
+        nodeId: claude-speckit-checklist
+    - from:
+        nodeId: claude-speckit-checklist
+      to:
+        nodeId: claude-speckit-analyze
+    - from:
+        nodeId: claude-speckit-analyze
+      to:
+        nodeId: claude-speckit-implement
+    - from:
+        nodeId: claude-speckit-implement
+      to:
+        nodeId: claude-speckit-converge
+    - from:
+        nodeId: claude-speckit-converge
+      to:
+        nodeId: claude-code-review
+    - from:
+        nodeId: claude-code-review
+      to:
+        nodeId: claude-security-review
+    - from:
+        nodeId: claude-security-review
+      to:
+        nodeId: claude-finalize
+included:
+  phases:
+    - metadata:
+        phaseId: claude-speckit-specify
+        name: Spec-kit Specify (Claude)
+        version: 1
+      spec:
+        instruction: /speckit-specify
+        runner: claude
+        hostVerification: exit-code
+        sideEffects: git
+        model: claude-opus-5-5
+        effort: high
+    - metadata:
+        phaseId: claude-speckit-clarify
+        name: Spec-kit Clarify (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-clarify
+          Apply reversible defaults within the feature's scope. Report questions that need a maintainer without waiting.
+          Audit the top-level integers `open_questions: <N>` (still unanswered) and `resolved_questions: <N>` (answered this pass).
+
+          If this prompt has no SCHEGENT_FEATURE_DIR line and supplies a sidecar path, write the single line `SCHEGENT_FEATURE_DIR=<dir>` to phase-message.env there. Use the feature directory relative to the workspace root and list that file in the audit log's files_created. Never write an absolute path or one with a `..` segment.
+        runner: claude
+        model: claude-opus-5-5
+        effort: high
+        retryCondition: open_questions > 0
+    - metadata:
+        phaseId: claude-speckit-plan
+        name: Spec-kit Plan (Claude)
+        version: 1
+      spec:
+        instruction: /speckit-plan
+        runner: claude
+        model: claude-opus-5-5
+        hostVerification: exit-code
+        effort: xhigh
+    - metadata:
+        phaseId: claude-speckit-tasks
+        name: Spec-kit Tasks (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-tasks
+          Mark hand-offs in the generated tasks.md.
+          - Add the label [USER-RUN], beside the task's other labels, to a task only when it needs a person: pushing, opening or merging a pull request, watching CI, deploying to a system outside this repository, an explicit approval, or work that cannot start until one of those has happened.
+          - Never mark work the authorized headless run can complete. If a task mixes both kinds, split it in two and mark only the person-only part.
+          - Never add a person-only task the generated list does not have. Write mentions of the label in inline code, as `USER-RUN`.
+        runner: claude
+        model: claude-opus-5-5
+        hostVerification: exit-code
+        effort: high
+    - metadata:
+        phaseId: claude-speckit-checklist
+        name: Spec-kit Checklist (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-checklist
+          Generate a custom checklist only when the feature calls for one. Otherwise report the existing requirements checklist. Leave reviewer checkboxes unchanged and report unanswered questions without waiting.
+          Audit `checklist_items: <N>` as a top-level integer (0 if no checklist exists).
+        runner: claude
+        model: claude-sonnet-5-5
+        effort: medium
+    - metadata:
+        phaseId: claude-speckit-analyze
+        name: Spec-kit Analyze (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-analyze
+          After the read-only report, apply explicitly authorized artifact fixes and recheck. Report approval or decision blockers without waiting.
+          List unresolved critical findings under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit the final report's top-level integers `critical_issues: <N>` and `high_issues: <N>`, including zeros. Report completion only on a verified pass with zero critical findings.
+        runner: claude
+        model: claude-opus-5-5
+        effort: xhigh
+        retryCondition: critical_issues > 0
+    - metadata:
+        phaseId: claude-speckit-implement
+        name: Spec-kit Implement (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-implement
+          Set aside hand-offs and blocked tasks before implementation. If a required checklist still needs approval, report the blocker without waiting and leave its marks unchanged.
+
+          Hand-off tasks qualify only in these three cases.
+          - marker: its own line in tasks.md carries the token USER-RUN outside inline code. A line that only quotes the token in inline code is not marked.
+          - approval: its own line names a person's approval as the condition. Review, test results and other conditions do not count.
+          - person-only last step: the only remaining step is pushing, opening or merging a pull request, watching CI, or deploying outside this repository. A task with any implementation step still undone is pending.
+          Difficulty and fixable failures never make a task a hand-off or a blocker. Do not attempt a hand-off task, do not mark it complete, and do not add, remove or edit any marker or approval wording on any task line.
+
+          Resolve conflicts in order of constitution, spec.md, plan.md, research.md/data-model.md/contracts/, and tasks.md. Correct lower sources where authorized. Choose the conventional lowest-risk option where they are silent. Project rules outrank this authority.
+          Decide alone only what is reversible inside this repository and leaves secrets, external systems and production data untouched. Never weaken a security or privacy property, edit the constitution, delete or reinterpret a requirement in spec.md, or change the expected outcome of a test that already exists on develop.
+          Record each choice in <feature_dir>/decisions.md under "## D-<n>: <title>" with "Status: decided", "Question:", "Chosen:", "Reversal:" and "Tasks:".
+
+          Blocked tasks. For equal-rank conflicts, missing information or choices outside your authority, record "Status: needs-maintainer" with the question, options, recommendation and affected task IDs. A task that depends on a blocked task is blocked too. Leave the task unchecked in tasks.md and do not attempt it again in a later iteration until resolved. Treat a repeated failure with the same maintainer blocker the same way.
+
+          Report completion when 0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked, even when hand-off tasks remain. Otherwise list pending tasks, known spec or plan gaps, and blockers with decision IDs and questions under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          List open hand-offs separately under "Hand-off tasks (for the user):" as `- <task id> (<basis>): <task text>`, before the audit block. With none open, omit that heading.
+          Audit `pending_tasks: <N>`, `spec_gaps: <N>`, `blocked_tasks: <N>` and `user_run_tasks: <N>` as top-level integers, including zeros. `pending_tasks` excludes blocked and hand-off tasks. `user_run_tasks` equals the number of listed hand-offs.
+        model: claude-sonnet-5-5
+        runner: claude
+        hostVerification: exit-code
+        effort: xhigh
+        retryCondition: pending_tasks > 0
+    - metadata:
+        phaseId: codex-speckit-implement
+        name: Spec-kit Implement (Codex)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-implement
+          Set aside hand-offs and blocked tasks before implementation. If a required checklist still needs approval, report the blocker without waiting and leave its marks unchanged.
+
+          Hand-off tasks qualify only in these three cases.
+          - marker: its own line in tasks.md carries the token USER-RUN outside inline code. A line that only quotes the token in inline code is not marked.
+          - approval: its own line names a person's approval as the condition. Review, test results and other conditions do not count.
+          - person-only last step: the only remaining step is pushing, opening or merging a pull request, watching CI, or deploying outside this repository. A task with any implementation step still undone is pending.
+          Difficulty and fixable failures never make a task a hand-off or a blocker. Do not attempt a hand-off task, do not mark it complete, and do not add, remove or edit any marker or approval wording on any task line.
+
+          Resolve conflicts in order of constitution, spec.md, plan.md, research.md/data-model.md/contracts/, and tasks.md. Correct lower sources where authorized. Choose the conventional lowest-risk option where they are silent. Project rules outrank this authority.
+          Decide alone only what is reversible inside this repository and leaves secrets, external systems and production data untouched. Never weaken a security or privacy property, edit the constitution, delete or reinterpret a requirement in spec.md, or change the expected outcome of a test that already exists on develop.
+          Record each choice in <feature_dir>/decisions.md under "## D-<n>: <title>" with "Status: decided", "Question:", "Chosen:", "Reversal:" and "Tasks:".
+
+          Blocked tasks. For equal-rank conflicts, missing information or choices outside your authority, record "Status: needs-maintainer" with the question, options, recommendation and affected task IDs. A task that depends on a blocked task is blocked too. Leave the task unchecked in tasks.md and do not attempt it again in a later iteration until resolved. Treat a repeated failure with the same maintainer blocker the same way.
+
+          Report completion when 0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked, even when hand-off tasks remain. Otherwise list pending tasks, known spec or plan gaps, and blockers with decision IDs and questions under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          List open hand-offs separately under "Hand-off tasks (for the user):" as `- <task id> (<basis>): <task text>`, before the audit block. With none open, omit that heading.
+          Audit `pending_tasks: <N>`, `spec_gaps: <N>`, `blocked_tasks: <N>` and `user_run_tasks: <N>` as top-level integers, including zeros. `pending_tasks` excludes blocked and hand-off tasks. `user_run_tasks` equals the number of listed hand-offs.
+        runner: codex
+        hostVerification: exit-code
+        effort: high
+        retryCondition: pending_tasks > 0
+    - metadata:
+        phaseId: agy-speckit-implement
+        name: Spec-kit Implement (Agy)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-implement
+          Set aside hand-offs and blocked tasks before implementation. If a required checklist still needs approval, report the blocker without waiting and leave its marks unchanged.
+
+          Hand-off tasks qualify only in these three cases.
+          - marker: its own line in tasks.md carries the token USER-RUN outside inline code. A line that only quotes the token in inline code is not marked.
+          - approval: its own line names a person's approval as the condition. Review, test results and other conditions do not count.
+          - person-only last step: the only remaining step is pushing, opening or merging a pull request, watching CI, or deploying outside this repository. A task with any implementation step still undone is pending.
+          Difficulty and fixable failures never make a task a hand-off or a blocker. Do not attempt a hand-off task, do not mark it complete, and do not add, remove or edit any marker or approval wording on any task line.
+
+          Resolve conflicts in order of constitution, spec.md, plan.md, research.md/data-model.md/contracts/, and tasks.md. Correct lower sources where authorized. Choose the conventional lowest-risk option where they are silent. Project rules outrank this authority.
+          Decide alone only what is reversible inside this repository and leaves secrets, external systems and production data untouched. Never weaken a security or privacy property, edit the constitution, delete or reinterpret a requirement in spec.md, or change the expected outcome of a test that already exists on develop.
+          Record each choice in <feature_dir>/decisions.md under "## D-<n>: <title>" with "Status: decided", "Question:", "Chosen:", "Reversal:" and "Tasks:".
+
+          Blocked tasks. For equal-rank conflicts, missing information or choices outside your authority, record "Status: needs-maintainer" with the question, options, recommendation and affected task IDs. A task that depends on a blocked task is blocked too. Leave the task unchecked in tasks.md and do not attempt it again in a later iteration until resolved. Treat a repeated failure with the same maintainer blocker the same way.
+
+          Report completion when 0 tasks are pending, 0 spec gaps remain and 0 tasks are blocked, even when hand-off tasks remain. Otherwise list pending tasks, known spec or plan gaps, and blockers with decision IDs and questions under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          List open hand-offs separately under "Hand-off tasks (for the user):" as `- <task id> (<basis>): <task text>`, before the audit block. With none open, omit that heading.
+          Audit `pending_tasks: <N>`, `spec_gaps: <N>`, `blocked_tasks: <N>` and `user_run_tasks: <N>` as top-level integers, including zeros. `pending_tasks` excludes blocked and hand-off tasks. `user_run_tasks` equals the number of listed hand-offs.
+        runner: agy
+        hostVerification: exit-code
+        effort: high
+        retryCondition: pending_tasks > 0
+    - metadata:
+        phaseId: claude-speckit-converge
+        name: Spec-kit Converge (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-converge
+          On retries, complete and verify actionable tasks from earlier convergence passes before running the check. Leave hand-offs and tasks awaiting approval or a decision open. Reuse open tasks for gaps they already cover.
+          Audit the top-level integer `converged: 1` only on successful convergence with no blockers. Otherwise audit `converged: 0` and list task IDs or blockers under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+        runner: claude
+        hostVerification: exit-code
+        model: claude-sonnet-5-5
+        effort: high
+        retryCondition: converged != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: codex-speckit-converge
+        name: Spec-kit Converge (Codex)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-converge
+          On retries, complete and verify actionable tasks from earlier convergence passes before running the check. Leave hand-offs and tasks awaiting approval or a decision open. Reuse open tasks for gaps they already cover.
+          Audit the top-level integer `converged: 1` only on successful convergence with no blockers. Otherwise audit `converged: 0` and list task IDs or blockers under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+        runner: codex
+        hostVerification: exit-code
+        effort: high
+        retryCondition: converged != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: agy-speckit-converge
+        name: Spec-kit Converge (Agy)
+        version: 1
+      spec:
+        instruction: |-
+          /speckit-converge
+          On retries, complete and verify actionable tasks from earlier convergence passes before running the check. Leave hand-offs and tasks awaiting approval or a decision open. Reuse open tasks for gaps they already cover.
+          Audit the top-level integer `converged: 1` only on successful convergence with no blockers. Otherwise audit `converged: 0` and list task IDs or blockers under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+        runner: agy
+        hostVerification: exit-code
+        effort: high
+        retryCondition: converged != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: claude-code-review
+        name: Code Review (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          Start with "Review scope:" and summarize the scope supplied by Schegent.
+          Fix confirmed correctness findings in the Claude Code review reports. Verify affected behavior with focused repository checks.
+          List unresolved findings under "Remaining issues:" with file, line and impact. Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit `code_review_findings: <N>` as the top-level integer count of confirmed findings still open. Emit `code_review_verified: 1` only after a complete review with zero open findings. Otherwise use 0.
+        model: claude-opus-5-5
+        runner: claude
+        nativeReview: code
+        hostVerification: exit-code
+        effort: high
+        retryCondition: code_review_findings > 0 or code_review_verified != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: codex-code-review
+        name: Code Review (Codex)
+        version: 1
+      spec:
+        instruction: |-
+          Start with "Review scope:" and summarize the scope supplied by Schegent.
+          Fix confirmed correctness findings in the Codex review reports. Run the relevant repository checks against the patch.
+          List unresolved findings under "Remaining issues:" with file, line and impact. Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit `code_review_findings: <N>` as the top-level integer count of confirmed findings still open. Emit `code_review_verified: 1` only after a complete review with zero open findings. Otherwise use 0.
+        runner: codex
+        nativeReview: code
+        hostVerification: exit-code
+        effort: high
+        retryCondition: code_review_findings > 0 or code_review_verified != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: agy-code-review
+        name: Code Review (Agy)
+        version: 1
+      spec:
+        instruction: |-
+          Start with "Review scope:" and summarize the scope supplied by Schegent.
+          Fix confirmed correctness findings in the Antigravity review reports. Verify the changed contracts and callers with focused checks.
+          List unresolved findings under "Remaining issues:" with file, line and impact. Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit `code_review_findings: <N>` as the top-level integer count of confirmed findings still open. Emit `code_review_verified: 1` only after a complete review with zero open findings. Otherwise use 0.
+        runner: agy
+        nativeReview: code
+        hostVerification: exit-code
+        effort: high
+        retryCondition: code_review_findings > 0 or code_review_verified != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: claude-security-review
+        name: Security Review (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          Start with "Review scope:" and summarize the scope supplied by Schegent.
+          Fix confirmed security findings in the Claude review reports. Verify the corrected behavior with targeted defensive checks.
+          List unresolved findings under "Remaining issues:" with file, line and impact. Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit `security_review_findings: <N>` as the top-level integer count of confirmed findings still open. Emit `security_review_verified: 1` only after a complete review with zero open findings. Otherwise use 0.
+        model: claude-opus-5-5
+        runner: claude
+        nativeReview: security
+        hostVerification: exit-code
+        effort: high
+        retryCondition: security_review_findings > 0 or security_review_verified != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: codex-security-review
+        name: Security Review (Codex)
+        version: 1
+      spec:
+        instruction: |-
+          Start with "Review scope:" and summarize the scope supplied by Schegent.
+          Fix confirmed security findings in the Codex Security scan reports. Verify the corrected behavior with targeted defensive checks.
+          List unresolved findings under "Remaining issues:" with file, line and impact. Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit `security_review_findings: <N>` as the top-level integer count of confirmed findings still open. Emit `security_review_verified: 1` only after a complete review with zero open findings. Otherwise use 0.
+        runner: codex
+        nativeReview: security
+        hostVerification: exit-code
+        effort: high
+        retryCondition: security_review_findings > 0 or security_review_verified != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: agy-security-review
+        name: Security Review (Agy)
+        version: 1
+      spec:
+        instruction: |-
+          Start with "Review scope:" and summarize the scope supplied by Schegent.
+          Fix confirmed security findings in the Antigravity review reports. Verify the affected access and data boundaries with focused checks.
+          List unresolved findings under "Remaining issues:" with file, line and impact. Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit `security_review_findings: <N>` as the top-level integer count of confirmed findings still open. Emit `security_review_verified: 1` only after a complete review with zero open findings. Otherwise use 0.
+        runner: agy
+        nativeReview: security
+        hostVerification: exit-code
+        effort: high
+        retryCondition: security_review_findings > 0 or security_review_verified != 1
+        onRetryCap: fail
+    - metadata:
+        phaseId: claude-finalize
+        name: Finalize (Claude)
+        version: 1
+      spec:
+        instruction: |-
+          Verify and commit the feature. Report approval or decision blockers without waiting.
+
+          Repositories:
+          Resolve them before any write, from the workspace root <root>, running each command as written: each placeholder is one argument, and a <... paths> placeholder one argument per path. Under a heading exactly "## Implementation repositories", <root>/AGENTS.md declares one per bullet starting with inline code: a path relative to <root> (`.` for <root>), optionally then `(base: <ref>)`, each in inline code, and nothing else. Paths and refs use only letters, digits and . _ / - and never start with -; the base defaults to develop. Without the section: repo if <root> holds specs/ and repo is a repository top level, else . if <root> is one. Nothing else picks a repository. Then add the envelope <root>, last, with base develop, when it is a repository top level not already listed.
+          The scope is unresolved, and nothing is written anywhere, on: no repository; a section with no entry, a broken entry or a twin; two entries at one location; a listed repository whose path is absolute, missing or outside <root> by `cd <root>/<path> && pwd -P`, whose `git -C <path> rev-parse --show-prefix` fails or prints anything, or whose `git -C <path> merge-base HEAD <base>` (its <merge-base>) fails or prints nothing; or, without the section, a gitlink of <root> (mode 160000 in `git -C <root> ls-files --stage`) in the status below that is no repository. Report each reason under "Remaining issues:" tagged [needs-decision]. Never substitute a branch, fetch, or edit the declaration.
+
+          Ownership:
+          List changed paths with `git --no-optional-locks -C <path> status --porcelain --untracked-files=all --ignore-submodules=none`, matching them to feature paths relative to <root>. Never git diff the working tree: it can rewrite the index. Each path is, first match winning:
+          - ambiguous: claimed by this feature and another; both status columns letters (partially staged); mixing a change tied to this feature with one that is not; a rename with one side not owned; or claimed by no feature, other than the changed gitlink of a repository with feature work.
+          - owned: in <feature_dir>; named by this feature's tasks.md or plan.md; tied by you to a named task (say which and why); or the changed gitlink of a repository with feature work.
+          - unrelated: claimed by another feature's directory, tasks.md or plan.md; or a changed gitlink of no repository.
+          Changing never makes a path owned; .specify/feature.json and other shared pointers are owned only while naming <feature_dir>. Leave unrelated and ambiguous paths exactly as found: never stage, format, commit or restore them. Each ambiguous path is a hand-off under "Remaining issues:", tagged [needs-decision], with its reason.
+
+          1. Run the project formatter in write mode on owned paths only (e.g. `npx prettier --write -- <paths>`). Use check mode or report a skip if it cannot be scoped.
+          2. Run the full check set in each repository. Use plan.md or documented repository defaults (build, tests, lint and typecheck as applicable). An implementation repository with no check set is unverifiable. The envelope may have no check set.
+          3. Stop before committing if a check fails, scope is unresolved, or a maintainer decision or approval remains open. Use `git --no-optional-locks -C <path> diff-index --name-only <merge-base>` to identify feature paths when reporting a failure. Leave fixes and dependency changes to their own tasks.
+          4. Commit only owned paths, with conventional commit format: feat(<feature_name>): <summary>. Before committing, list the untracked owned paths. Refuse the commit and report [needs-decision] for any that looks like a credential, key or token file or exceeds 1 MiB, even with an owned gitlink change. This is a prompt-only check and the post-commit tracked-files scan is the backstop. Implementation repositories first, the envelope last. Run `git -C <path> add -- <untracked owned paths>` then `git -C <path> commit -m <message> -- <owned paths>`, which leaves other staged entries staged. Commit nothing where nothing is owned, HEAD is detached or on the base branch, or after a failed commit.
+          5. Never merge, switch or check out a branch, reset, stash or push.
+
+          Result determination:
+          Complete only if all checks are green, every owned path is committed and nothing is handed off. Report the commit IDs or why none were made. List blockers under "Remaining issues:". Prefix each bullet with [regression], [pre-existing], [environment], [needs-approval] or [needs-decision] when applicable.
+          Audit the top-level integers `checks_passing: <N>` and `checks_failing: <N>`.
+        runner: claude
+        hostVerification: exit-code
+        sideEffects: git
+        model: claude-sonnet-5-5
+        effort: medium

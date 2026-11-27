@@ -1,140 +1,201 @@
 // Authoritative runtime validators for inbound webview→host IPC messages.
 //
 // Feature 013 — Wave 5 (US5): this file is the SINGLE source of truth for
-// the `validateInboundMessage` helper and its private validators. The
-// sidebar shim at `src/ui/sidebar/ipc-validator.ts` is a thin re-export
-// of this module. The lint test at
+// `validateInboundMessage`. The sidebar shim at `src/ui/sidebar/ipc-validator.ts`
+// is a thin re-export of this module. The lint test at
 // `tests/lint/no-duplicate-ipc-validators.test.ts` guards against drift.
 //
-// Validator scope: each validator covers exactly one command literal from
-// `COMMAND_TYPES` (defined in the authoritative IPC contract module
-// `src/contracts/sidebar-ipc.ts`). Cross-context payload validation
-// (e.g., pipelines, phases) intentionally validates only the structural
-// shape at the IPC boundary; downstream host code (e.g., the workspace
-// settings writer) re-validates against typed allowlists.
+// FR-R7-05 — Per-command inbound validators are generated from the declarative
+// descriptors under `scripts/contracts/ipc-descriptors/` into
+// `src/contracts/generated/validators/<family>.ts`. Each generated validator
+// constructs a statically typed member of `SidebarCommand` with zero casts.
 
 import {
+  CMD_ACK_PHASE_LOG_TAIL,
+  CMD_ATTEST_TASK_COMPLETED,
   CMD_CANCEL,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
-  CMD_MOVE_QUEUE_ITEM_DOWN,
-  CMD_MOVE_QUEUE_ITEM_UP,
-  CMD_OPEN_AUDIT_LOG,
-  CMD_OPEN_DASHBOARD,
-  CMD_OPEN_HISTORY_ITEM_DETAILS,
-  CMD_OPEN_QUEUE_ITEM_DETAILS,
-  CMD_PAUSE_QUEUE,
-  CMD_REMOVE_TASK_PHASE,
-  CMD_REMOVE_QUEUE_ITEM,
-  CMD_RERUN_FROM_HISTORY,
-  CMD_RESET,
-  CMD_RESUME,
-  CMD_RESUME_QUEUE,
-  CMD_RETRY_ACTIVE_RUN,
-  CMD_RETRY_QUEUE_ITEM,
-  CMD_START,
-  CMD_SAVE_DEFINITION_DRAFT,
-  CMD_PUBLISH_DEFINITION,
-  CMD_DEACTIVATE_DEFINITION,
-  CMD_RESTORE_DEFINITION_VERSION,
-  CMD_DISCARD_DEFINITION_DRAFT,
-  CMD_PUBLISH_PACKAGE,
-  CMD_READ_DEFINITION_VERSION,
-  CMD_SAVE_MODELS,
-  CMD_SAVE_GENERAL_SETTINGS,
-  CMD_RETRY_PHASE_NOW,
-  CMD_PAUSE_PHASE,
-  CMD_PING_BACKEND,
-  CMD_RESUME_PHASE,
-  CMD_RESTART_PHASE,
-  CMD_SKIP_PHASE,
-  CMD_DISABLE_PHASE,
-  CMD_ENABLE_PHASE,
-  CMD_OPEN_VERBOSE_SETTING,
-  // Feature 092 (T034, US1) — reinstated by FR-019/FR-020.
-  CMD_CREATE_QUEUE,
-  CMD_RENAME_QUEUE,
-  CMD_DELETE_QUEUE,
-  CMD_SAVE_QUEUE_SETTINGS,
-  CMD_MOVE_TASK,
-  CMD_MODIFY_TASK,
-  CMD_REORDER_TASK,
-  CMD_RESTART_CANCELED_TASK,
-  CMD_READ_PHASE_LOG,
-  CMD_START_PHASE_LOG_TAIL,
-  CMD_STOP_PHASE_LOG_TAIL,
-  CMD_RESOLVE_AUDIT_POINTER,
-  CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
-  CMD_START_QUEUE, CMD_READ_METRICS,
-  CMD_CLEAR_ALL,
-  CMD_SET_CONFIRM_SUPPRESSION,
+  CMD_CLEAR_QUEUE,
+  CMD_CONTINUE_WORKFLOW,
+  CMD_CREATE_QUEUE,
+  CMD_DEACTIVATE_DEFINITION,
+  CMD_DECIDE_PHASE_HANDOFF,
+  CMD_DELETE_QUEUE,
+  CMD_DISABLE_PHASE,
+  CMD_DISCARD_DEFINITION_DRAFT,
   CMD_DISMISS_MIGRATION_NOTICE,
+  CMD_ENABLE_PHASE,
   CMD_EXPORT_PROCESS_YAML,
-  CMD_PREFLIGHT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
   CMD_LAUNCH_WORKFLOW,
-  CMD_CONTINUE_WORKFLOW,
-  type SidebarCommand
+  CMD_MODIFY_TASK,
+  CMD_MOVE_QUEUE_ITEM_DOWN,
+  CMD_MOVE_QUEUE_ITEM_UP,
+  CMD_MOVE_TASK,
+  CMD_MUTATE_REPORT,
+  CMD_OPEN_AUDIT_LOG,
+  CMD_OPEN_CHANGE_REVIEW,
+  CMD_OPEN_DASHBOARD,
+  CMD_OPEN_DECISION_RECORD,
+  CMD_OPEN_HISTORY_ITEM_DETAILS,
+  CMD_OPEN_TRUST_SETTINGS,
+  CMD_OPEN_VERBOSE_SETTING,
+  CMD_PAUSE_PHASE,
+  CMD_PAUSE_QUEUE,
+  CMD_PING_BACKEND,
+  CMD_PREFLIGHT_PROCESS_YAML,
+  CMD_PUBLISH_DEFINITION,
+  CMD_PUBLISH_PACKAGE,
+  CMD_READ_DEFINITION_VERSION,
+  CMD_READ_EXECUTION_VISIBILITY,
+  CMD_READ_FAILURE_RECORD,
+  CMD_READ_METRICS,
+  CMD_READ_PHASE_LOG,
+  CMD_READ_REPORT,
+  CMD_READ_STORAGE_DETAILS,
+  CMD_READ_USAGE_ACCOUNTING,
+  CMD_REMOVE_QUEUE_ITEM,
+  CMD_REMOVE_TASK_PHASE,
+  CMD_RENAME_QUEUE,
+  CMD_REORDER_TASK,
+  CMD_RERUN_FROM_HISTORY,
+  CMD_RESOLVE_AUDIT_POINTER,
+  CMD_RESOLVE_HISTORY_DESCRIPTION,
+  CMD_RESTART_CANCELED_TASK,
+  CMD_RESTART_PHASE,
+  CMD_RESTORE_DEFINITION_VERSION,
+  CMD_RESUME_PHASE,
+  CMD_RESUME_QUEUE,
+  CMD_RETRY_PHASE_NOW,
+  CMD_RETRY_QUEUE_ITEM,
+  CMD_SAVE_DEFINITION_DRAFT,
+  CMD_SAVE_GENERAL_SETTINGS,
+  CMD_SAVE_MODELS,
+  CMD_SAVE_QUEUE_SETTINGS,
+  CMD_SET_CONFIRM_SUPPRESSION,
+  CMD_SET_PHASE_BREAKPOINT,
+  CMD_SET_QUEUE_FAILURE_POLICY,
+  CMD_SET_UNCONTAINED_BACKEND_GRANT,
+  CMD_SKIP_PHASE,
+  CMD_START,
+  CMD_START_PHASE_LOG_TAIL,
+  CMD_START_QUEUE,
+  CMD_STOP_PHASE_LOG_TAIL,
+  SIDEBAR_IPC_SCHEMA_VERSION
 } from './sidebar-ipc';
-import { isValidEnqueueStartIntent } from './start-intent-types';
 import {
+  validateMutateReport,
+  validateReadMetrics,
+  validateReadReport,
+  validateReadStorageDetails,
+  validateReadUsageAccounting
+} from './generated/validators/analytics-reporting';
+import {
+  validateDeactivateDefinition,
+  validateDiscardDefinitionDraft,
+  validateExportProcessYaml,
+  validatePreflightProcessYaml,
+  validatePublishDefinition,
+  validatePublishPackage,
+  validateReadDefinitionVersion,
+  validateRestoreDefinitionVersion,
+  validateSaveDefinitionDraft
+} from './generated/validators/catalog';
+import {
+  validateContinueWorkflow,
+  validateDecidePhaseHandoff,
+  validateLaunchPipeline,
+  validateLaunchWorkflow,
+  validateOpenChangeReview,
+  validateReadExecutionVisibility
+} from './generated/validators/execution-workflow';
+import {
+  validateOpenDecisionRecord,
+  validateOpenHistoryItemDetails,
+  validateReadFailureRecord,
+  validateRerunFromHistory,
+  validateResolveAuditPointer,
+  validateResolveHistoryDescription
+} from './generated/validators/history-evidence';
+import {
+  validateDismissMigrationNotice,
+  validateOpenAuditLog,
+  validateOpenDashboard,
+  validateOpenTrustSettings,
+  validateOpenVerboseSetting,
+  validatePingBackend,
+  validateSaveGeneralSettings,
+  validateSaveModels,
+  validateSetConfirmSuppression,
+  validateSetUncontainedBackendGrant
+} from './generated/validators/navigation-settings';
+import {
+  validateClearPhaseBreakpoint,
+  validateDisablePhase,
+  validateEnablePhase,
+  validatePausePhase,
+  validateRestartPhase,
+  validateResumePhase,
+  validateRetryPhaseNow,
+  validateSetPhaseBreakpoint,
+  validateSkipPhase
+} from './generated/validators/phase-control';
+import {
+  validateAckPhaseLogTail,
   validateReadPhaseLog,
   validateStartPhaseLogTail,
   validateStopPhaseLogTail
-} from './validators/phase-log';
-import { validateReadMetrics } from './validators/metrics';
-import { validateResolveAuditPointer } from './validators/history-evidence';
+} from './generated/validators/phase-log';
 import {
-  validateExportProcessYaml,
-  validatePreflightProcessYaml
-} from './validators/process-yaml';
-import { validateLaunchPipeline } from './validators/launch-pipeline';
-import { validateContinueWorkflow, validateLaunchWorkflow } from './validators/workflow-run';
-import { validateSetConfirmSuppression, validateStartQueue } from './validators/queue';
+  validateCancel,
+  validateClearCompleted,
+  validateClearQueue,
+  validateModifyTask,
+  validateMoveQueueItemDown,
+  validateMoveQueueItemUp,
+  validatePauseQueue,
+  validateRemoveQueueItem,
+  validateRemoveTaskPhase,
+  validateReorderTask,
+  validateRestartCanceledTask,
+  validateResumeQueue,
+  validateRetryQueueItem,
+  validateStart,
+  validateStartQueue
+} from './generated/validators/queue-core';
 import {
+  validateAttestTaskCompleted,
   validateCreateQueue,
   validateDeleteQueue,
   validateMoveTask,
   validateRenameQueue,
-  validateSaveQueueSettings
-} from './validators/queue-management';
-import {
-  validatePhaseBreakpointPayload,
-  validatePhaseIdPayload,
-  validateQueueIdPayload,
-  validateResumePhasePayload
-} from './validators/phase-control';
-import {
-  validateDeactivateDefinition,
-  validateDiscardDefinitionDraft,
-  validatePublishDefinition,
-  validatePublishPackage,
-  validateRestoreDefinitionVersion,
-  validateSaveDefinitionDraft
-} from './validators/catalog-lifecycle';
-import { validateReadDefinitionVersion } from './validators/catalog-history';
+  validateSaveQueueSettings,
+  validateSetQueueFailurePolicy
+} from './generated/validators/queue-management';
 import {
   CORRELATION_ID_MAX,
-  QUEUE_ID_MAX,
   fail,
-  hasUnexpectedKeys,
-  ok,
   type IpcValidationResult
 } from './validators/shared';
 
 export { isValidReadMetricsResponse } from './validators/metrics';
 export { isValidReadDefinitionVersionResponse } from './validators/catalog-history';
 export { isValidResolveAuditPointerResponse } from './validators/history-evidence';
+export { isValidResolveHistoryDescriptionResponse } from './validators/history-description';
+export { isValidReadFailureRecordResponse } from './validators/failure-record';
+export { isValidReadStorageDetailsResponse } from './validators/artifact-lifecycle';
+export { isValidReadUsageAccountingResponse } from './validators/usage-accounting';
+export {
+  isValidMutateReportResponse,
+  isValidReadReportResponse
+} from './validators/reporting-ipc';
+export {
+  isValidDecidePhaseHandoffResponse,
+  isValidOpenChangeReviewResponse,
+  isValidReadExecutionVisibilityResponse
+} from './validators/execution-visibility-ipc';
 export type { IpcValidationError, IpcValidationResult } from './validators/shared';
-
-const DESCRIPTION_MAX = 4096;
-// Feature 013 — US4 (FR-016): mirror the projector cap so payloads
-// produced by the projector are guaranteed to validate. The projector
-// at state-projector.ts:PAUSED_REASON_MAX_LENGTH writes ≤500 chars to
-// host→webview snapshots; this validator enforces the same cap on the
-// inverse webview→host direction (operator-typed pause reason).
-const PAUSED_REASON_MAX_LENGTH = 500;
 
 export function validateInboundMessage(raw: unknown): IpcValidationResult {
   if (raw === null || typeof raw !== 'object') {
@@ -147,57 +208,47 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
   if (typeof correlationId !== 'string' || correlationId.length === 0 || correlationId.length > CORRELATION_ID_MAX) {
     return fail('invalid-correlationId', { type });
   }
+  if ('schemaVersion' in obj && obj['schemaVersion'] !== undefined && obj['schemaVersion'] !== SIDEBAR_IPC_SCHEMA_VERSION) {
+    return fail('unsupported-ipc-schema-version', {
+      code: 'unsupported-ipc-schema-version',
+      type,
+      correlationId
+    });
+  }
 
   switch (type) {
     case CMD_START:
       return validateStart(obj, correlationId);
     case CMD_CANCEL:
-      // Feature 017 — BUG-001: CMD_CANCEL carries the operator's intended
-      // target taskId so the host resolves the run by FeatureRequest.id
-      // instead of via the singular `store.getRun()` projection.
-      return validateTaskIdPayload(CMD_CANCEL, obj, correlationId);
-    case CMD_RESUME:
-      return validateNoPayload(CMD_RESUME, obj, correlationId);
-    case CMD_RESET:
-      return validateReset(obj, correlationId);
+      return validateCancel(obj, correlationId);
     case CMD_REMOVE_QUEUE_ITEM:
-      return validateConfirmedRemoveQueueItem(obj, correlationId);
+      return validateRemoveQueueItem(obj, correlationId);
     case CMD_OPEN_AUDIT_LOG:
-      return validateNoPayload(CMD_OPEN_AUDIT_LOG, obj, correlationId);
+      return validateOpenAuditLog(obj, correlationId);
     case CMD_RETRY_QUEUE_ITEM:
-      return validateIdPayload(CMD_RETRY_QUEUE_ITEM, obj, correlationId);
+      return validateRetryQueueItem(obj, correlationId);
     case CMD_MOVE_QUEUE_ITEM_UP:
-      return validateIdPayload(CMD_MOVE_QUEUE_ITEM_UP, obj, correlationId);
+      return validateMoveQueueItemUp(obj, correlationId);
     case CMD_MOVE_QUEUE_ITEM_DOWN:
-      return validateIdPayload(CMD_MOVE_QUEUE_ITEM_DOWN, obj, correlationId);
-    case CMD_OPEN_QUEUE_ITEM_DETAILS:
-      return validateIdPayload(CMD_OPEN_QUEUE_ITEM_DETAILS, obj, correlationId);
+      return validateMoveQueueItemDown(obj, correlationId);
     case CMD_OPEN_HISTORY_ITEM_DETAILS:
-      return validateIdPayload(CMD_OPEN_HISTORY_ITEM_DETAILS, obj, correlationId);
+      return validateOpenHistoryItemDetails(obj, correlationId);
     case CMD_RERUN_FROM_HISTORY:
-      return validateRunIdPayload(CMD_RERUN_FROM_HISTORY, obj, correlationId);
+      return validateRerunFromHistory(obj, correlationId);
     case CMD_PAUSE_QUEUE:
       return validatePauseQueue(obj, correlationId);
     case CMD_RESUME_QUEUE:
       return validateResumeQueue(obj, correlationId);
     case CMD_CLEAR_COMPLETED:
-      return validateNoPayload(CMD_CLEAR_COMPLETED, obj, correlationId);
-    case CMD_CLEAR_FAILED:
-      return validateNoPayload(CMD_CLEAR_FAILED, obj, correlationId);
-    case CMD_CLEAR_ALL:
-      return validateOptionalEmptyPayload(CMD_CLEAR_ALL, obj, correlationId);
+      return validateClearCompleted(obj, correlationId);
+    case CMD_CLEAR_QUEUE:
+      return validateClearQueue(obj, correlationId);
     case CMD_SET_CONFIRM_SUPPRESSION:
       return validateSetConfirmSuppression(obj, correlationId);
     case CMD_DISMISS_MIGRATION_NOTICE:
-      // Feature 065 (T054a / FR-020). No payload — the empty discriminator
-      // is enough; the host idempotency-guards the flip to 'dismissed'.
-      return validateNoPayload(CMD_DISMISS_MIGRATION_NOTICE, obj, correlationId);
+      return validateDismissMigrationNotice(obj, correlationId);
     case CMD_OPEN_DASHBOARD:
-      return validateNoPayload(CMD_OPEN_DASHBOARD, obj, correlationId);
-    case CMD_RETRY_ACTIVE_RUN:
-      return validateNoPayload(CMD_RETRY_ACTIVE_RUN, obj, correlationId);
-    // Feature 100 (T509) — the six lifecycle commands replace the three
-    // whole-array layer saves that stood here.
+      return validateOpenDashboard(obj, correlationId);
     case CMD_SAVE_DEFINITION_DRAFT:
       return validateSaveDefinitionDraft(obj, correlationId);
     case CMD_PUBLISH_DEFINITION:
@@ -210,8 +261,6 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateDiscardDefinitionDraft(obj, correlationId);
     case CMD_PUBLISH_PACKAGE:
       return validatePublishPackage(obj, correlationId);
-    // Feature 101 (T051) — the history panel's only pull. A read, so it is
-    // absent from `MUTATING_COMMANDS` by the rule rather than by exception.
     case CMD_READ_DEFINITION_VERSION:
       return validateReadDefinitionVersion(obj, correlationId);
     case CMD_SAVE_MODELS:
@@ -219,11 +268,7 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
     case CMD_SAVE_GENERAL_SETTINGS:
       return validateSaveGeneralSettings(obj, correlationId);
     case CMD_RETRY_PHASE_NOW:
-      return validateQueueIdPayload(CMD_RETRY_PHASE_NOW, obj, correlationId);
-    // Feature 092 (T034, US1, FR-019) — the seven multi-queue management
-    // validators feature 030 removed with their commands. Bodies live in
-    // ./validators/queue-management.ts; the cases stay here because this
-    // switch is the single inbound gate `MessageRouter` dispatches behind.
+      return validateRetryPhaseNow(obj, correlationId);
     case CMD_CREATE_QUEUE:
       return validateCreateQueue(obj, correlationId);
     case CMD_RENAME_QUEUE:
@@ -232,6 +277,10 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateDeleteQueue(obj, correlationId);
     case CMD_SAVE_QUEUE_SETTINGS:
       return validateSaveQueueSettings(obj, correlationId);
+    case CMD_SET_QUEUE_FAILURE_POLICY:
+      return validateSetQueueFailurePolicy(obj, correlationId);
+    case CMD_ATTEST_TASK_COMPLETED:
+      return validateAttestTaskCompleted(obj, correlationId);
     case CMD_MOVE_TASK:
       return validateMoveTask(obj, correlationId);
     case CMD_MODIFY_TASK:
@@ -239,19 +288,19 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
     case CMD_REORDER_TASK:
       return validateReorderTask(obj, correlationId);
     case CMD_RESTART_CANCELED_TASK:
-      return validateTaskIdPayload(CMD_RESTART_CANCELED_TASK, obj, correlationId);
+      return validateRestartCanceledTask(obj, correlationId);
     case CMD_PAUSE_PHASE:
-      return validateQueueIdPayload(CMD_PAUSE_PHASE, obj, correlationId);
+      return validatePausePhase(obj, correlationId);
     case CMD_RESUME_PHASE:
-      return validateResumePhasePayload(obj, correlationId);
+      return validateResumePhase(obj, correlationId);
     case CMD_RESTART_PHASE:
-      return validatePhaseIdPayload(CMD_RESTART_PHASE, obj, correlationId);
+      return validateRestartPhase(obj, correlationId);
     case CMD_SKIP_PHASE:
-      return validatePhaseIdPayload(CMD_SKIP_PHASE, obj, correlationId);
+      return validateSkipPhase(obj, correlationId);
     case CMD_DISABLE_PHASE:
-      return validatePhaseIdPayload(CMD_DISABLE_PHASE, obj, correlationId);
+      return validateDisablePhase(obj, correlationId);
     case CMD_ENABLE_PHASE:
-      return validatePhaseIdPayload(CMD_ENABLE_PHASE, obj, correlationId);
+      return validateEnablePhase(obj, correlationId);
     case CMD_REMOVE_TASK_PHASE:
       return validateRemoveTaskPhase(obj, correlationId);
     case CMD_READ_PHASE_LOG:
@@ -260,17 +309,38 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateStartPhaseLogTail(obj, correlationId);
     case CMD_STOP_PHASE_LOG_TAIL:
       return validateStopPhaseLogTail(obj, correlationId);
+    case CMD_ACK_PHASE_LOG_TAIL:
+      return validateAckPhaseLogTail(obj, correlationId);
     case CMD_OPEN_VERBOSE_SETTING:
-      return validateNoPayload(CMD_OPEN_VERBOSE_SETTING, obj, correlationId);
+      return validateOpenVerboseSetting(obj, correlationId);
+    case CMD_OPEN_TRUST_SETTINGS:
+      return validateOpenTrustSettings(obj, correlationId);
     case CMD_RESOLVE_AUDIT_POINTER:
       return validateResolveAuditPointer(obj, correlationId);
+    case CMD_RESOLVE_HISTORY_DESCRIPTION:
+      return validateResolveHistoryDescription(obj, correlationId);
+    case CMD_READ_FAILURE_RECORD:
+      return validateReadFailureRecord(obj, correlationId);
+    case CMD_OPEN_DECISION_RECORD:
+      return validateOpenDecisionRecord(obj, correlationId);
+    case CMD_READ_STORAGE_DETAILS:
+      return validateReadStorageDetails(obj, correlationId);
+    case CMD_READ_USAGE_ACCOUNTING:
+      return validateReadUsageAccounting(obj, correlationId);
+    case CMD_READ_REPORT:
+      return validateReadReport(obj, correlationId);
+    case CMD_MUTATE_REPORT:
+      return validateMutateReport(obj, correlationId);
+    case CMD_READ_EXECUTION_VISIBILITY:
+      return validateReadExecutionVisibility(obj, correlationId);
+    case CMD_OPEN_CHANGE_REVIEW:
+      return validateOpenChangeReview(obj, correlationId);
+    case CMD_DECIDE_PHASE_HANDOFF:
+      return validateDecidePhaseHandoff(obj, correlationId);
     case CMD_SET_PHASE_BREAKPOINT:
-      return validatePhaseBreakpointPayload(CMD_SET_PHASE_BREAKPOINT, obj, correlationId);
+      return validateSetPhaseBreakpoint(obj, correlationId);
     case CMD_CLEAR_PHASE_BREAKPOINT:
-      return validatePhaseBreakpointPayload(CMD_CLEAR_PHASE_BREAKPOINT, obj, correlationId);
-    // Feature 065 (BUG-002 / FR-012a) — start-queue accepts no payload,
-    // an empty `{}`, or `{ startIntent: StartQueueIntent }`. The empty
-    // forms preserve the feature 020 / FR-012a legacy semantic.
+      return validateClearPhaseBreakpoint(obj, correlationId);
     case CMD_START_QUEUE:
       return validateStartQueue(obj, correlationId);
     case CMD_READ_METRICS:
@@ -287,460 +357,9 @@ export function validateInboundMessage(raw: unknown): IpcValidationResult {
       return validateLaunchWorkflow(obj, correlationId);
     case CMD_CONTINUE_WORKFLOW:
       return validateContinueWorkflow(obj, correlationId);
+    case CMD_SET_UNCONTAINED_BACKEND_GRANT:
+      return validateSetUncontainedBackendGrant(obj, correlationId);
     default:
       return fail('unknown-type', { type, correlationId });
   }
-}
-
-function validatePingBackend(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return fail('missing-payload', { type: CMD_PING_BACKEND, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['runner'])) {
-    return fail('unexpected-payload-fields', { type: CMD_PING_BACKEND, correlationId });
-  }
-  const runner = p['runner'];
-  if (runner !== 'claude' && runner !== 'codex' && runner !== 'agy') {
-    return fail('invalid-runner', { type: CMD_PING_BACKEND, correlationId });
-  }
-  return ok({ type: CMD_PING_BACKEND, correlationId, payload: { runner } });
-}
-
-function validateStart(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_START, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  // BUG-002 (Feature 065) — `startIntent` is an optional payload field;
-  // shape is validated below via `isValidEnqueueStartIntent`. Keep this
-  // allowlist in lockstep with the `isCmdStart` predicate in
-  // `sidebar-ipc.ts`.
-  if (hasUnexpectedKeys(p, ['description', 'pipelineId', 'queueId', 'position', 'startIntent'])) {
-    return fail('unexpected-payload-fields', { type: CMD_START, correlationId });
-  }
-  const description = p['description'];
-  if (typeof description !== 'string') {
-    return fail('description-not-string', { type: CMD_START, correlationId });
-  }
-  const trimmed = description.trim();
-  if (trimmed.length === 0 || trimmed.length > DESCRIPTION_MAX) {
-    return fail('description-out-of-range', { type: CMD_START, correlationId });
-  }
-  const pipelineId = p['pipelineId'];
-  if (pipelineId !== undefined && typeof pipelineId !== 'string') {
-    return fail('pipelineId-not-string', { type: CMD_START, correlationId });
-  }
-  const queueId = p['queueId'];
-  if (
-    queueId !== undefined &&
-    (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX)
-  ) {
-    return fail('invalid-queueId', { type: CMD_START, correlationId });
-  }
-  const position = p['position'];
-  if (
-    position !== undefined &&
-    (typeof position !== 'number' || !Number.isInteger(position) || position < 0)
-  ) {
-    return fail('invalid-position', { type: CMD_START, correlationId });
-  }
-  const startIntent = p['startIntent'];
-  if (startIntent !== undefined && !isValidEnqueueStartIntent(startIntent)) {
-    return fail('invalid-start-intent', { type: CMD_START, correlationId });
-  }
-  return ok({
-    type: CMD_START,
-    correlationId,
-    payload: {
-      description: trimmed,
-      ...(pipelineId ? { pipelineId } : {}),
-      ...(queueId ? { queueId } : {}),
-      ...(position !== undefined ? { position } : {}),
-      ...(startIntent !== undefined ? { startIntent } : {})
-    }
-  });
-}
-
-function validateReset(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_RESET, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['confirmed'])) {
-    return fail('unexpected-payload-fields', { type: CMD_RESET, correlationId });
-  }
-  if (p['confirmed'] !== true) {
-    return fail('reset-not-confirmed', { type: CMD_RESET, correlationId });
-  }
-  return ok({ type: CMD_RESET, correlationId, payload: { confirmed: true } });
-}
-
-type IdCommandType =
-  | typeof CMD_RETRY_QUEUE_ITEM
-  | typeof CMD_MOVE_QUEUE_ITEM_UP
-  | typeof CMD_MOVE_QUEUE_ITEM_DOWN
-  | typeof CMD_OPEN_QUEUE_ITEM_DETAILS
-  | typeof CMD_OPEN_HISTORY_ITEM_DETAILS;
-
-function validateIdPayload(type: IdCommandType, obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['id'])) {
-    return fail('unexpected-payload-fields', { type, correlationId });
-  }
-  const id = p['id'];
-  if (typeof id !== 'string' || id.length === 0 || id.length > QUEUE_ID_MAX) {
-    return fail('invalid-id', { type, correlationId });
-  }
-  return ok({ type, correlationId, payload: { id } } as SidebarCommand);
-}
-
-function validateConfirmedRemoveQueueItem(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['id', 'confirmed'])) {
-    return fail('unexpected-payload-fields', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
-  }
-  const id = p['id'];
-  if (typeof id !== 'string' || id.length === 0 || id.length > QUEUE_ID_MAX) {
-    return fail('invalid-id', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
-  }
-  if (p['confirmed'] !== true) {
-    return fail('missing-confirmation', { type: CMD_REMOVE_QUEUE_ITEM, correlationId });
-  }
-  return ok({ type: CMD_REMOVE_QUEUE_ITEM, correlationId, payload: { id, confirmed: true } });
-}
-
-function validateRemoveTaskPhase(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_REMOVE_TASK_PHASE, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['taskId', 'phaseId', 'confirmed'])) {
-    return fail('unexpected-payload-fields', { type: CMD_REMOVE_TASK_PHASE, correlationId });
-  }
-  const taskId = p['taskId'];
-  const phaseId = p['phaseId'];
-  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
-    return fail('invalid-taskId', { type: CMD_REMOVE_TASK_PHASE, correlationId });
-  }
-  if (typeof phaseId !== 'string' || phaseId.length === 0 || phaseId.length > QUEUE_ID_MAX) {
-    return fail('invalid-phaseId', { type: CMD_REMOVE_TASK_PHASE, correlationId });
-  }
-  if (p['confirmed'] !== true) {
-    return fail('missing-confirmation', { type: CMD_REMOVE_TASK_PHASE, correlationId });
-  }
-  return ok({
-    type: CMD_REMOVE_TASK_PHASE,
-    correlationId,
-    payload: { taskId, phaseId, confirmed: true }
-  });
-}
-
-function validateRunIdPayload(
-  type: typeof CMD_RERUN_FROM_HISTORY,
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  // Feature 013 — Wave 6 (US6, FR-031): `force` is an optional boolean
-  // operator opt-in for replaying legacy entries with the truncated
-  // preview. Defaults to `false` (refuse with warning) when absent.
-  if (hasUnexpectedKeys(p, ['runId', 'force'])) {
-    return fail('unexpected-payload-fields', { type, correlationId });
-  }
-  const runId = p['runId'];
-  if (typeof runId !== 'string' || runId.length === 0 || runId.length > QUEUE_ID_MAX) {
-    return fail('invalid-runId', { type, correlationId });
-  }
-  const force = p['force'];
-  if (force !== undefined && typeof force !== 'boolean') {
-    return fail('force-not-boolean', { type, correlationId });
-  }
-  return ok({
-    type,
-    correlationId,
-    payload: { runId, ...(force === true ? { force: true } : {}) }
-  } as SidebarCommand);
-}
-
-function validatePauseQueue(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === undefined) {
-    return ok({ type: CMD_PAUSE_QUEUE, correlationId } as SidebarCommand);
-  }
-  if (payload === null || typeof payload !== 'object') {
-    return fail('invalid-payload', { type: CMD_PAUSE_QUEUE, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['queueId', 'reason'])) {
-    return fail('unexpected-payload-fields', { type: CMD_PAUSE_QUEUE, correlationId });
-  }
-  const queueId = p['queueId'];
-  if (
-    queueId !== undefined &&
-    (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX)
-  ) {
-    return fail('invalid-queueId', { type: CMD_PAUSE_QUEUE, correlationId });
-  }
-  const reason = p['reason'];
-  if (reason !== undefined && typeof reason !== 'string') {
-    return fail('reason-not-string', { type: CMD_PAUSE_QUEUE, correlationId });
-  }
-  if (typeof reason === 'string' && reason.length > PAUSED_REASON_MAX_LENGTH) {
-    return fail('reason-too-long', { type: CMD_PAUSE_QUEUE, correlationId });
-  }
-  return ok({
-    type: CMD_PAUSE_QUEUE,
-    correlationId,
-    payload:
-      queueId !== undefined || reason !== undefined
-        ? { ...(queueId ? { queueId } : {}), ...(reason !== undefined ? { reason } : {}) }
-        : undefined
-  } as SidebarCommand);
-}
-
-function validateResumeQueue(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === undefined) {
-    return ok({ type: CMD_RESUME_QUEUE, correlationId } as SidebarCommand);
-  }
-  if (payload === null || typeof payload !== 'object') {
-    return fail('invalid-payload', { type: CMD_RESUME_QUEUE, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['queueId'])) {
-    return fail('unexpected-payload-fields', { type: CMD_RESUME_QUEUE, correlationId });
-  }
-  const queueId = p['queueId'];
-  if (
-    queueId !== undefined &&
-    (typeof queueId !== 'string' || queueId.length === 0 || queueId.length > QUEUE_ID_MAX)
-  ) {
-    return fail('invalid-queueId', { type: CMD_RESUME_QUEUE, correlationId });
-  }
-  return ok({
-    type: CMD_RESUME_QUEUE,
-    correlationId,
-    payload: queueId ? { queueId } : undefined
-  } as SidebarCommand);
-}
-
-type NoPayloadType =
-  | typeof CMD_RESUME
-  | typeof CMD_OPEN_AUDIT_LOG
-  | typeof CMD_CLEAR_COMPLETED
-  | typeof CMD_CLEAR_FAILED
-  | typeof CMD_OPEN_DASHBOARD
-  | typeof CMD_RETRY_ACTIVE_RUN
-  | typeof CMD_OPEN_VERBOSE_SETTING
-  | typeof CMD_DISMISS_MIGRATION_NOTICE;
-
-// Feature 017 — BUG-001. Both CMD_CANCEL and CMD_RESTART_CANCELED_TASK
-// carry a single `taskId: string` payload.
-type TaskIdCommandType = typeof CMD_CANCEL | typeof CMD_RESTART_CANCELED_TASK;
-
-function validateTaskIdPayload(
-  type: TaskIdCommandType,
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['taskId'])) {
-    return fail('unexpected-payload-fields', { type, correlationId });
-  }
-  const taskId = p['taskId'];
-  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
-    return fail('invalid-taskId', { type, correlationId });
-  }
-  return ok({ type, correlationId, payload: { taskId } } as SidebarCommand);
-}
-
-function validateNoPayload(
-  type: NoPayloadType,
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  if ('payload' in obj && obj['payload'] !== undefined) {
-    return fail('unexpected-payload', { type, correlationId });
-  }
-  return ok({ type, correlationId } as SidebarCommand);
-}
-
-
-function validateSaveModels(obj: Record<string, unknown>, correlationId: string): IpcValidationResult {
-  const payload = obj['payload'];
-  if (!payload || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_SAVE_MODELS, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (!p.models || typeof p.models !== 'object' || Array.isArray(p.models)) {
-    return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
-  }
-  for (const v of Object.values(p.models as Record<string, unknown>)) {
-    if (!Array.isArray(v)) {
-      return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
-    }
-    for (const model of v) {
-      if (typeof model !== 'string' || model.length === 0) {
-        return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
-      }
-    }
-  }
-  // Feature 096 — forward `expectedRevision` and `mutation` when present so the
-  // import-confirm gated path in cmd-save-models.ts is reachable. The manual
-  // add/remove call site omits both; the import-confirm call site sends both.
-  const forwarded: Record<string, unknown> = { models: p.models };
-  if (typeof p.expectedRevision === 'string') {
-    forwarded.expectedRevision = p.expectedRevision;
-  }
-  if (p.mutation !== undefined && p.mutation !== null && typeof p.mutation === 'object') {
-    const kind = (p.mutation as { kind?: unknown }).kind;
-    if (kind === 'manual-edit' || kind === 'import-package') {
-      forwarded.mutation = p.mutation;
-    }
-  }
-  return ok({ type: CMD_SAVE_MODELS, correlationId, payload: forwarded } as unknown as SidebarCommand);
-}
-
-// Feature 011 — CMD_SAVE_GENERAL_SETTINGS payload contract.
-// Keys are unprefixed (host adds the `schegent.` prefix). Per-key allowlist
-// and type validation happen in the host router (out-of-scope for IPC
-// shape validation; this validator only confirms the basic object shape).
-function validateSaveGeneralSettings(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_SAVE_GENERAL_SETTINGS, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['updates'])) {
-    return fail('unexpected-payload-fields', { type: CMD_SAVE_GENERAL_SETTINGS, correlationId });
-  }
-  const updates = p['updates'];
-  if (updates === null || typeof updates !== 'object' || Array.isArray(updates)) {
-    return fail('invalid-updates', { type: CMD_SAVE_GENERAL_SETTINGS, correlationId });
-  }
-  return ok({
-    type: CMD_SAVE_GENERAL_SETTINGS,
-    correlationId,
-    payload: { updates: updates as Record<string, unknown> }
-  } as SidebarCommand);
-}
-
-// Feature 030 — single-queue mode: validators for CMD_CREATE_QUEUE,
-// CMD_RENAME_QUEUE, CMD_DELETE_QUEUE, CMD_SAVE_QUEUE_SETTINGS removed
-// because the commands no longer exist.
-
-function validateModifyTask(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_MODIFY_TASK, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['taskId', 'description'])) {
-    return fail('unexpected-payload-fields', { type: CMD_MODIFY_TASK, correlationId });
-  }
-  const taskId = p['taskId'];
-  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
-    return fail('invalid-taskId', { type: CMD_MODIFY_TASK, correlationId });
-  }
-  const description = p['description'];
-  if (typeof description !== 'string') {
-    return fail('description-not-string', { type: CMD_MODIFY_TASK, correlationId });
-  }
-  const trimmed = description.trim();
-  if (trimmed.length === 0 || trimmed.length > DESCRIPTION_MAX) {
-    return fail('description-out-of-range', { type: CMD_MODIFY_TASK, correlationId });
-  }
-  return ok({
-    type: CMD_MODIFY_TASK,
-    correlationId,
-    payload: { taskId, description: trimmed }
-  } as SidebarCommand);
-}
-
-function validateReorderTask(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_REORDER_TASK, correlationId });
-  }
-  const p = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(p, ['taskId', 'newPosition'])) {
-    return fail('unexpected-payload-fields', { type: CMD_REORDER_TASK, correlationId });
-  }
-  const taskId = p['taskId'];
-  if (typeof taskId !== 'string' || taskId.length === 0 || taskId.length > QUEUE_ID_MAX) {
-    return fail('invalid-taskId', { type: CMD_REORDER_TASK, correlationId });
-  }
-  const newPosition = p['newPosition'];
-  if (typeof newPosition !== 'number' || !Number.isInteger(newPosition) || newPosition < 0) {
-    return fail('invalid-position', { type: CMD_REORDER_TASK, correlationId });
-  }
-  return ok({
-    type: CMD_REORDER_TASK,
-    correlationId,
-    payload: { taskId, newPosition }
-  } as SidebarCommand);
-}
-
-// Feature 097 — schedule control removed: validators for
-// CMD_SET_QUEUE_SCHEDULE, CMD_CLEAR_QUEUE_SCHEDULE removed because the
-// commands no longer exist.
-
-// BUG-002 (FR-012a) — generic validator for commands that accept either
-// no payload at all or an empty object `{}`. Shared by feature 020's
-// legacy CMD_START_QUEUE consumers (no longer routed through this fn,
-// kept for CMD_CLEAR_ALL).
-function validateOptionalEmptyPayload(
-  type: string,
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload !== undefined) {
-    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-      return fail('invalid-payload', { type, correlationId });
-    }
-    if (Object.keys(payload).length > 0) {
-      return fail('unexpected-payload-fields', { type, correlationId });
-    }
-  }
-  return ok({ type, correlationId, payload: {} } as SidebarCommand);
 }

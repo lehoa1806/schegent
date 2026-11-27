@@ -1,10 +1,21 @@
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { runEnqueue, type EnqueueCommandArgs, type RunEnqueueResult } from './enqueue';
+import { ENQUEUE_STORAGE_FAULT_TOAST } from '../services/enqueue-failure';
+
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when
+ * queueing fails for a reason the command has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. The outcomes the launch service returns as codes keep their own handling.
+ */
+export const AUTO_FAILED_TOAST =
+  'Schegent: the task could not be queued. See the Schegent log for details.';
 
 /**
  * FR-R3-002 (T279) — `queueId` stays optional here even though `runEnqueue`
@@ -61,8 +72,10 @@ export async function runAuto(
     if (!outcome) return;
     handleEnqueueResult(outcome, ctx.notifier);
   } catch (err) {
-    ctx.notifier.error(`Schegent: ${(err as Error).message}`);
-    ctx.logger.error((err as Error).message);
+    ctx.notifier.error(AUTO_FAILED_TOAST);
+    ctx.logger.error('auto: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
   }
 }
 
@@ -79,6 +92,11 @@ function handleEnqueueResult(outcome: RunEnqueueResult, notifier: Notifier): voi
       return;
     case 'rejected-validation':
       notifier.warn(`Schegent: rejected (${outcome.result.reason ?? 'validation-failed'}).`);
+      return;
+    // FR-R4-F05 (F8) — a queue that could not be read or saved. Shown as one fixed
+    // sentence; `reason` is a code and is not echoed.
+    case 'failed-storage':
+      notifier.error(ENQUEUE_STORAGE_FAULT_TOAST);
       return;
   }
 }

@@ -28,14 +28,92 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { AUDIT_SCHEMA_VERSION } from '../../src/contracts/audit-events';
+import { SIDEBAR_IPC_SCHEMA_VERSION } from '../../src/contracts/sidebar-ipc';
+import {
+  SQLITE_MIN_READER_VERSION,
+  SQLITE_SCHEMA_CURRENT_VERSION
+} from '../../src/contracts/sqlite-store/schema-types';
 import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
-import { MAX_QUEUES } from '../../src/queue/queue-registry';
-import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../src/state/workspace-state';
+// FR-R3-145 (T1572) — `DEFAULT_GLOBAL_CONCURRENCY_CAP` moved here from
+// `src/state/workspace-state.ts`, beside the ceiling it is bounded by.
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP, MAX_QUEUES } from '../../src/contracts/queue-bounds';
+import { PHASE_YAML_API_VERSION } from '../../src/services/process-yaml/types';
+import {
+  MAX_GLOBAL_CONCURRENCY_CAP,
+  SCHEMA_VERSION as LEGACY_STATE_SCHEMA_VERSION
+} from '../../src/state/workspace-state';
+import { SCHEMA_VERSION as SNAPSHOT_SCHEMA_VERSION } from '../../src/ui/sidebar/snapshot';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const ARCH_REL = 'ARCHITECTURE.md';
 const ARCH = fs.readFileSync(path.join(REPO_ROOT, ARCH_REL), 'utf8');
 const ARCH_LINES = ARCH.split('\n');
+
+/**
+ * Every place the document states a number on a line that names a version constant,
+ * and disagrees with it.
+ *
+ * Extracted by FR-R3-102 (FR-034) so the live assertion and its non-vacuity control
+ * run **one** body. Two copies of a detector is how a gate comes to pass while its
+ * control passes for a different reason.
+ *
+ * FR-R4-F11 (FR-028) — `label` names the page the lines came from. The detector used to hard-code
+ * `ARCHITECTURE.md` in its message because it read only that page; it now reads every Markdown page
+ * (the live case below), and a message that named the wrong file would send the author to the wrong
+ * place. The body is unchanged.
+ */
+function disagreements(label: string, lines: readonly string[]): string[] {
+  const wrong: string[] = [];
+  for (const [name, value] of VERSION_CONSTANTS) {
+    const assignment = new RegExp(`${name}\\s*=\\s*(\\d+)`, 'g');
+    lines.forEach((line, index) => {
+      if (!line.includes(name)) return;
+      const stated = [
+        // A bare integer in a code span on the same line — `13`, `3`.
+        ...[...line.matchAll(/`(\d+)`/g)].map((match) => Number(match[1])),
+        // …and the assignment form, whose number sits inside a wider span.
+        ...[...line.matchAll(assignment)].map((match) => Number(match[1]))
+      ];
+      for (const found of stated) {
+        if (found === value) continue;
+        wrong.push(
+          `${label}:${index + 1} states \`${found}\` on a line naming ${name}, ` +
+            `which is \`${value}\``
+        );
+      }
+    });
+  }
+  lines.forEach((line, index) => {
+    if (line.includes('PHASE_YAML_API_VERSION')) {
+      for (const match of line.matchAll(/`(schegent\/v[^`]+)`/g)) {
+        if (match[1] !== PHASE_YAML_API_VERSION) {
+          wrong.push(
+            `${label}:${index + 1} states \`${match[1]}\` on a line naming PHASE_YAML_API_VERSION, ` +
+              `which is \`${PHASE_YAML_API_VERSION}\``
+          );
+        }
+      }
+    }
+    for (const match of line.matchAll(/(?<![A-Z_])SCHEMA_VERSION\s*=\s*(\d+)/g)) {
+      const found = Number(match[1]);
+      if (found !== SNAPSHOT_SCHEMA_VERSION) {
+        wrong.push(
+          `${label}:${index + 1} states \`SCHEMA_VERSION = ${found}\`, ` +
+            `which disagrees with snapshot SCHEMA_VERSION \`${SNAPSHOT_SCHEMA_VERSION}\``
+        );
+      }
+    }
+    for (const match of line.matchAll(/(?<![A-Z_])SCHEMA_VERSION\s*=\s*['"]([^'"]+)['"]/g)) {
+      if (match[1] !== LEGACY_STATE_SCHEMA_VERSION) {
+        wrong.push(
+          `${label}:${index + 1} states \`SCHEMA_VERSION = '${match[1]}'\`, ` +
+            `which disagrees with legacy state SCHEMA_VERSION \`${LEGACY_STATE_SCHEMA_VERSION}\``
+        );
+      }
+    }
+  });
+  return wrong;
+}
 
 /**
  * The same text with every run of whitespace collapsed to one space.
@@ -47,11 +125,71 @@ const ARCH_LINES = ARCH.split('\n');
  */
 const FLAT = ARCH.replace(/\s+/g, ' ');
 
-/** Every constant whose value the document may state, with its true value. */
+/** Every unambiguous numeric version constant whose value docs may state, with its true value. */
 const VERSION_CONSTANTS = [
+  ['SIDEBAR_IPC_SCHEMA_VERSION', SIDEBAR_IPC_SCHEMA_VERSION],
   ['STATE_SCHEMA_VERSION', STATE_SCHEMA_VERSION],
+  ['SQLITE_SCHEMA_CURRENT_VERSION', SQLITE_SCHEMA_CURRENT_VERSION],
+  ['SQLITE_MIN_READER_VERSION', SQLITE_MIN_READER_VERSION],
   ['AUDIT_SCHEMA_VERSION', AUDIT_SCHEMA_VERSION]
 ] as const;
+
+/** All six core version families (plus legacy string state & SQLite reader floor) pinned in Schema Versions. */
+const SCHEMA_TABLE_ROWS: ReadonlyArray<{
+  readonly label: string;
+  readonly storeMatch: string;
+  readonly constant: string;
+  readonly expected: string | number;
+}> = [
+  {
+    label: 'Sidebar IPC contract',
+    storeMatch: 'Sidebar IPC',
+    constant: 'SIDEBAR_IPC_SCHEMA_VERSION',
+    expected: SIDEBAR_IPC_SCHEMA_VERSION
+  },
+  {
+    label: 'Snapshot body',
+    storeMatch: 'src/ui/sidebar/snapshot.ts',
+    constant: 'SCHEMA_VERSION',
+    expected: SNAPSHOT_SCHEMA_VERSION
+  },
+  {
+    label: 'Workspace state numeric',
+    storeMatch: 'schegent.schemaVersionNumeric',
+    constant: 'STATE_SCHEMA_VERSION',
+    expected: STATE_SCHEMA_VERSION
+  },
+  {
+    label: 'Workspace state legacy string',
+    storeMatch: 'src/state/workspace-state.ts',
+    constant: 'SCHEMA_VERSION',
+    expected: LEGACY_STATE_SCHEMA_VERSION
+  },
+  {
+    label: 'SQLite operational store',
+    storeMatch: 'SQLite operational store',
+    constant: 'SQLITE_SCHEMA_CURRENT_VERSION',
+    expected: SQLITE_SCHEMA_CURRENT_VERSION
+  },
+  {
+    label: 'SQLite reader floor',
+    storeMatch: 'reader floor',
+    constant: 'SQLITE_MIN_READER_VERSION',
+    expected: SQLITE_MIN_READER_VERSION
+  },
+  {
+    label: 'Process-YAML exchange',
+    storeMatch: 'Process-YAML',
+    constant: 'PHASE_YAML_API_VERSION',
+    expected: PHASE_YAML_API_VERSION
+  },
+  {
+    label: 'Audit event envelope',
+    storeMatch: 'Audit event envelope',
+    constant: 'AUDIT_SCHEMA_VERSION',
+    expected: AUDIT_SCHEMA_VERSION
+  }
+];
 
 interface SettingContribution {
   readonly default?: unknown;
@@ -74,6 +212,22 @@ function readContribution(key: string): SettingContribution {
     if (found) return found;
   }
   throw new Error(`package.json contributes no setting named ${key}`);
+}
+
+/**
+ * FR-R3-145 (T1570) — the same lookup, for a key that is expected to be absent.
+ *
+ * `readContribution` throws, which is right when the manifest entry is the
+ * authority a claim is checked against. It is the wrong shape for asserting that
+ * a contribution was REMOVED: a thrown error and a failed assertion read the
+ * same in a report, and the absence is the thing being pinned.
+ */
+function contributionOrNull(key: string): SettingContribution | null {
+  try {
+    return readContribution(key);
+  } catch {
+    return null;
+  }
 }
 
 /** The `## Schema Versions` block, so the row lookup cannot stray into another table. */
@@ -107,6 +261,20 @@ function schemaRow(constant: string): readonly string[] {
   return (row as string).split('|').map((cell) => cell.trim());
 }
 
+function schemaRowFor(storeMatch: string, constant: string): readonly string[] {
+  const row = schemaVersionsSection().find(
+    (line) =>
+      line.startsWith('|') &&
+      line.includes(storeMatch) &&
+      line.includes(`\`${constant}\``)
+  );
+  expect(
+    row,
+    `the Schema Versions table in ${ARCH_REL} has no row matching '${storeMatch}' and \`${constant}\``
+  ).toBeTruthy();
+  return (row as string).split('|').map((cell) => cell.trim());
+}
+
 const CURRENT_CELL = 3;
 const MIGRATORS_CELL = 4;
 
@@ -117,8 +285,39 @@ function claimNear(anchor: string, pattern: RegExp, window = 240): RegExpMatchAr
   return FLAT.slice(at, at + window).match(pattern);
 }
 
+/** Every Markdown page under `docs/` and every root page, repo-relative and POSIX. */
+function pagesToCheck(): string[] {
+  const found: string[] = [];
+  const walk = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue;
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (entry.name.endsWith('.md')) found.push(path.relative(REPO_ROOT, full).split(path.sep).join('/'));
+    }
+  };
+  walk(path.join(REPO_ROOT, 'docs'));
+  for (const entry of fs.readdirSync(REPO_ROOT, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.md')) found.push(entry.name);
+  }
+  return found.sort();
+}
+
 describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
-  it('the Schema Versions table states each constant’s current value', () => {
+  it('the Schema Versions table states each constant’s current value across all six core version families', () => {
+    expect(SCHEMA_TABLE_ROWS).toHaveLength(8);
+    for (const rowSpec of SCHEMA_TABLE_ROWS) {
+      const cells = schemaRowFor(rowSpec.storeMatch, rowSpec.constant);
+      expect(
+        cells[CURRENT_CELL],
+        `${ARCH_REL}: the Schema Versions row for ${rowSpec.label} (\`${rowSpec.constant}\`) states ` +
+          `${cells[CURRENT_CELL]} in its Current column; the constant is \`${rowSpec.expected}\`. ` +
+          `Edit the table in ${ARCH_REL}.`
+      ).toBe(`\`${rowSpec.expected}\``);
+    }
     for (const [name, value] of VERSION_CONSTANTS) {
       expect(
         schemaRow(name)[CURRENT_CELL],
@@ -163,44 +362,107 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
     // The self-contradiction case: `STATE_SCHEMA_VERSION = 11` in the State
     // subsystem prose while the table said `10`. Neither of the two assertions
     // above sees it, because each looks at one place.
-    const wrong: string[] = [];
-    for (const [name, value] of VERSION_CONSTANTS) {
-      const assignment = new RegExp(`${name}\\s*=\\s*(\\d+)`, 'g');
-      ARCH_LINES.forEach((line, index) => {
-        if (!line.includes(name)) return;
-        const stated = [
-          // A bare integer in a code span on the same line — `13`, `3`.
-          ...[...line.matchAll(/`(\d+)`/g)].map((match) => Number(match[1])),
-          // …and the assignment form, whose number sits inside a wider span.
-          ...[...line.matchAll(assignment)].map((match) => Number(match[1]))
-        ];
-        for (const found of stated) {
-          if (found === value) continue;
-          wrong.push(
-            `${ARCH_REL}:${index + 1} states \`${found}\` on a line naming ${name}, ` +
-              `which is \`${value}\``
-          );
-        }
-      });
-    }
+    const wrong = disagreements(ARCH_REL, ARCH_LINES);
     expect(
       wrong,
       `${ARCH_REL} contradicts a schema constant:\n${wrong.join('\n')}`
     ).toEqual([]);
   });
 
-  it('the documented globalConcurrencyCap default matches the code and the contribution', () => {
-    const contribution = readContribution('schegent.queue.globalConcurrencyCap');
-    // Three-way, and the code-to-contribution leg first: if those two have
-    // already drifted, the document cannot be right about both and saying which
-    // one it disagrees with would be arbitrary.
+  it('NON-VACUITY: a drifted schema version in the document is detected', () => {
+    // FR-R3-102 (FR-034). This gate had no non-vacuity control, and that mattered more
+    // than usual: it is the reason `repo/ARCHITECTURE.md` could be trusted as the
+    // surviving authority when the envelope document was demoted (FR-032). A
+    // machine-pinned document whose pin has never been observed failing is
+    // machine-pinned in name only.
+    //
+    // The mutation runs the REAL detector over the REAL document text with one number
+    // changed, in memory. Nothing is written, and the detector is the same function the
+    // assertion above uses — a hand-written stub would only prove that a regex matches
+    // a string written to be matched.
+    const target = ARCH_LINES.findIndex(
+      (line) => line.includes('STATE_SCHEMA_VERSION') && /`\d+`/.test(line)
+    );
     expect(
-      contribution.default,
-      'package.json contributes a different default for ' +
-        '`schegent.queue.globalConcurrencyCap` than `DEFAULT_GLOBAL_CONCURRENCY_CAP` ' +
-        'in src/state/workspace-state.ts'
-    ).toBe(DEFAULT_GLOBAL_CONCURRENCY_CAP);
+      target,
+      'no line in the document both names STATE_SCHEMA_VERSION and states a number, so ' +
+        'the assertion above has nothing to check and this gate is vacuous'
+    ).toBeGreaterThanOrEqual(0);
 
+    const mutated = [...ARCH_LINES];
+    mutated[target] = (mutated[target] as string).replace(
+      /`\d+`/,
+      `\`${STATE_SCHEMA_VERSION + 41}\``
+    );
+    expect(mutated[target], 'the mutation changed nothing, so it proves nothing').not.toBe(
+      ARCH_LINES[target]
+    );
+
+    const found = disagreements(ARCH_REL, mutated);
+    expect(
+      found.length,
+      'the detector did not notice a schema version it was pointed straight at'
+    ).toBeGreaterThan(0);
+    expect(found.join('\n')).toContain('STATE_SCHEMA_VERSION');
+    // ...and the unmutated document is clean, so the detector is not matching everything.
+    expect(disagreements(ARCH_REL, ARCH_LINES)).toEqual([]);
+  });
+
+  it('no Markdown page states a schema version that disagrees with its constant (FR-R4-F11)', () => {
+    // The check above reads one page. The same drift lives in the pages that restate the
+    // version in prose ("schema 13", "currently version 13"), so the one detector is run over
+    // every page under docs/ and every root page: a page that names a version constant and
+    // states a different backticked integer on that line is reported with its own path.
+    const wrong = pagesToCheck().flatMap((relPath) =>
+      disagreements(relPath, fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8').split('\n'))
+    );
+    expect(
+      wrong,
+      `a page contradicts a schema constant; state the version without a literal, or correct it:\n${wrong.join('\n')}`
+    ).toEqual([]);
+  });
+
+  it('NON-VACUITY: a drifted schema version on any other page is detected and labelled', () => {
+    // The same function the live case calls, over a synthetic page: one wrong literal on a line
+    // that names the constant is reported once, under the page's own path and line.
+    const drifted = [`The current version is \`STATE_SCHEMA_VERSION\` \`${STATE_SCHEMA_VERSION + 1}\`.`];
+    const found = disagreements('docs/x.md', drifted);
+    expect(found).toHaveLength(1);
+    expect(found.join('\n')).toContain('docs/x.md:1');
+    // A page that states the version without a literal, and one that states the true value, are clean.
+    expect(disagreements('docs/x.md', ['The current version is `STATE_SCHEMA_VERSION`.'])).toEqual([]);
+    expect(disagreements('docs/x.md', [`\`STATE_SCHEMA_VERSION\` \`${STATE_SCHEMA_VERSION}\``])).toEqual([]);
+  });
+
+  /**
+   * FR-R3-145 (T1570) — this pair used to check the document against
+   * `package.json`. There is no contribution to check against any more.
+   *
+   * `schegent.queue.globalConcurrencyCap` was a *configuration* key, and it was
+   * removed because no scheduling path read it: `hasExecutionCapacity` and
+   * `hasWorkspaceCapacity` gate on the workspace memento of the same name, which
+   * the Queue configuration surface writes through `CMD_SAVE_QUEUE_SETTINGS`. A
+   * three-way parity check whose third leg is a key nothing consults was
+   * verifying that two stale numbers agreed.
+   *
+   * What replaces it is the same check with the manifest leg turned around: the
+   * document is pinned to the constants, and the contribution's ABSENCE is
+   * asserted. Restoring the key would fail here, which is the point — the reason
+   * it is gone is not obvious from `package.json`, where nothing is written.
+   */
+  it('no manifest contribution restates the cap', () => {
+    expect(
+      contributionOrNull('schegent.queue.globalConcurrencyCap'),
+      'package.json contributes `schegent.queue.globalConcurrencyCap` again. That key ' +
+        'was removed by FR-R3-145: the cap the drain gates on lives in the workspace ' +
+        'memento of the same name, and a configuration key beside it is a second ' +
+        'opinion the operator can set and nothing reads. If the intent is to make the ' +
+        'cap configurable, the work is to make the scheduler read configuration — not ' +
+        'to re-advertise the key.'
+    ).toBeNull();
+  });
+
+  it('the documented globalConcurrencyCap default matches the code', () => {
     const documented = claimNear('schegent.queue.globalConcurrencyCap', /default `(\d+)`/);
     expect(
       documented,
@@ -211,15 +473,18 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
       Number((documented as RegExpMatchArray)[1]),
       `${ARCH_REL} documents a default of ${(documented as RegExpMatchArray)[1]} for ` +
         `\`schegent.queue.globalConcurrencyCap\`; the shipped default is ` +
-        `\`${DEFAULT_GLOBAL_CONCURRENCY_CAP}\`. The 2026-08-18 defaults change ` +
-        'lowered it under review finding REL-02 — not feature 098, which is the ' +
-        `runtime-only catalog. Edit ${ARCH_REL}.`
+        `\`${DEFAULT_GLOBAL_CONCURRENCY_CAP}\`, from ` +
+        '`src/contracts/queue-bounds.ts`. The 2026-08-18 defaults change lowered it ' +
+        'under review finding REL-02 — not feature 098, which is the runtime-only ' +
+        `catalog. Edit ${ARCH_REL}.`
     ).toBe(DEFAULT_GLOBAL_CONCURRENCY_CAP);
   });
 
-  it('the documented globalConcurrencyCap range matches the contribution', () => {
-    const contribution = readContribution('schegent.queue.globalConcurrencyCap');
-    const documented = claimNear('schegent.queue.globalConcurrencyCap', /range `\[(\d+), (\d+)\]`/);
+  it('the documented globalConcurrencyCap range matches the enforced bounds', () => {
+    const documented = claimNear(
+      'schegent.queue.globalConcurrencyCap',
+      /range `\[(\d+), (\d+)\]`/
+    );
     expect(
       documented,
       `${ARCH_REL} names \`schegent.queue.globalConcurrencyCap\` without stating its ` +
@@ -229,9 +494,10 @@ describe('FR-R3-013 — ARCHITECTURE.md schema and defaults parity', () => {
     expect(
       [Number(min), Number(max)],
       `${ARCH_REL} documents the range [${min}, ${max}] for ` +
-        `\`schegent.queue.globalConcurrencyCap\`; package.json contributes ` +
-        `[${contribution.minimum}, ${contribution.maximum}].`
-    ).toEqual([contribution.minimum, contribution.maximum]);
+        `\`schegent.queue.globalConcurrencyCap\`; the bound enforced by ` +
+        '`WorkspaceStateStore`, `QueueManager.saveQueueSettings` and ' +
+        `\`validateSaveQueueSettings\` is [1, ${MAX_GLOBAL_CONCURRENCY_CAP}].`
+    ).toEqual([1, MAX_GLOBAL_CONCURRENCY_CAP]);
   });
 
   it('the documented MAX_QUEUES bound matches the constant', () => {

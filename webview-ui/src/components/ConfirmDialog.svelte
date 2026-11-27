@@ -13,10 +13,12 @@
   //   DOM order so the natural tab order matches the focus-trap rule
   //   without any JS reshuffling (research.md R-011).
   // - Escape calls onCancel
-  // - Focus restored to `originatingElement` on unmount
+  // - Focus restored to `originatingElement` on unmount, or to the button that
+  //   opens its menu when it is an item of a menu that has since closed
 
   import { onMount, tick } from 'svelte';
   import { SUPPRESSION_CHECKBOX_LABEL, type Severity } from '../lib/action-copy';
+  import BreakAtJoins from './BreakAtJoins.svelte';
 
   interface ConfirmationRequest {
     readonly actionKey: string;
@@ -50,13 +52,44 @@
   let confirmButtonEl: HTMLButtonElement | null = $state(null);
   let suppressionInputEl: HTMLInputElement | null = $state(null);
 
+  /**
+   * Where focus goes back to. A menu hides as soon as one of its items is
+   * chosen, and a hidden item cannot take focus, so an action that came from a
+   * closed menu returns focus to the button that opens the menu.
+   */
+  function focusReturnTarget(origin: HTMLElement | null): HTMLElement | null {
+    const menu = origin?.closest<HTMLElement>('[role="menu"]');
+    if (!menu?.hidden) return origin;
+    const opener = Array.from(menu.parentElement?.children ?? []).find(
+      (sibling) => sibling.getAttribute('aria-haspopup') === 'menu'
+    );
+    return opener instanceof HTMLElement ? opener : origin;
+  }
+
   onMount(() => {
     void tick().then(() => {
       cancelButtonEl?.focus();
     });
     return () => {
-      // Restore focus to the element that opened us.
-      request.originatingElement?.focus?.();
+      // Restore focus to the element that opened us. Defer past Svelte's
+      // synchronous effect teardown so focusing a control with `use:hoverTextAnchor`
+      // (which mounts a portal on focus) does not throw `effect_in_teardown`, and
+      // guard against detached targets, already-moved focus, or a replacement modal.
+      const target = focusReturnTarget(request.originatingElement);
+      queueMicrotask(() => {
+        if (!target?.isConnected) return;
+        const active = document.activeElement;
+        if (
+          active !== null &&
+          active.isConnected &&
+          active !== document.body &&
+          active !== document.documentElement
+        ) {
+          return;
+        }
+        if (document.querySelector('[aria-modal="true"]') !== null) return;
+        target.focus();
+      });
     };
   });
 
@@ -97,7 +130,7 @@
 </script>
 
 <div
-  class="confirm-backdrop"
+  class="sg confirm-backdrop"
   role="presentation"
   onkeydown={handleKeydown}
 >
@@ -112,18 +145,18 @@
     data-severity={request.severity}
   >
     <h2 id={titleId} data-testid="confirm-dialog-title">{request.title}</h2>
-    <p id={bodyId} data-testid="confirm-dialog-body">{request.body}</p>
+    <p id={bodyId} data-testid="confirm-dialog-body"><BreakAtJoins text={request.body} /></p>
     <div class="confirm-actions">
       <button
         type="button"
-        class="btn-cancel"
+        class="btn btn-secondary btn-cancel"
         data-testid="confirm-dialog-cancel"
         bind:this={cancelButtonEl}
         onclick={onCancel}
       >Cancel</button>
       <button
         type="button"
-        class="btn-confirm btn-{request.severity}"
+        class="btn {request.severity === 'destructive' ? 'btn-danger' : 'btn-primary'} btn-confirm btn-{request.severity}"
         data-testid="confirm-dialog-confirm"
         bind:this={confirmButtonEl}
         onclick={handleConfirm}
@@ -151,22 +184,25 @@
     display: grid;
     place-items: center;
     padding: 16px;
-    background: color-mix(in srgb, var(--vscode-editor-background) 72%, transparent);
+    background: color-mix(in srgb, var(--schegent-bg) 72%, transparent);
   }
 
   .confirm-dialog {
     position: relative;
     z-index: var(--schegent-z-modal);
+    box-sizing: border-box;
     width: min(480px, 100%);
+    max-height: calc(100vh - 32px);
+    overflow: auto;
     border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
-    background: var(--vscode-editor-background);
+    background: var(--schegent-bg);
     color: var(--schegent-fg);
     padding: 16px;
   }
 
   .severity-destructive {
-    border-color: var(--vscode-inputValidation-errorBorder);
+    border-color: var(--schegent-error-border);
   }
 
   h2 {
@@ -194,41 +230,10 @@
 
   .confirm-actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 16px;
-  }
-
-  button {
-    min-height: 28px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: transparent;
-    color: var(--schegent-fg);
-    font: inherit;
-    padding: 0 10px;
-    cursor: pointer;
-  }
-
-  button:hover,
-  button:focus-visible {
-    border-color: var(--schegent-focus-border);
-    outline: none;
-  }
-
-  .btn-info {
-    border-color: var(--schegent-color-active);
-    color: var(--schegent-color-active);
-  }
-
-  .btn-caution {
-    border-color: var(--schegent-color-warning, var(--schegent-color-active));
-    color: var(--schegent-color-warning, var(--schegent-fg));
-  }
-
-  .btn-destructive {
-    border-color: var(--vscode-inputValidation-errorBorder);
-    color: var(--schegent-error-text);
   }
 
   .suppression-row {

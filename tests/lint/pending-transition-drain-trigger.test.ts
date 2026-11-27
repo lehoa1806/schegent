@@ -1,0 +1,283 @@
+// Lifecycle round-check of 2026-08-30, finding A — the gate the bug report asked
+// for: "a reachability assertion that every command which writes
+// `status: 'pending'` has a drain trigger, so the fourth such command does not
+// repeat this."
+//
+// WHAT WENT WRONG
+//
+// `AutoDrainCoordinator` is edge-triggered. Nothing polls; a queue drains only
+// where a call site asks it to. Three separate implementations returned a Task
+// to `pending` and asked for nothing — `runEnqueue` did ask, and the two that
+// did not each carried a comment claiming "the dequeue pump picks it up on the
+// next tick". No such pump exists. The operator saw the row go back to
+// `pending` and sit there: no Run, no log, and no refusal to explain it.
+//
+// The belief in a pump is why the omission survived three implementations, and a
+// comment is exactly what a lint cannot read. So this gate reads the two things
+// it can: which source files put a Task into `pending`, and whether the command
+// registration that reaches each one drains the queue it landed on.
+//
+// TWO DIRECTIONS, FOR THE REASON THE MUTATING PINNED LIST HAS TWO
+//
+//   1. Every registration named below contains `drainQueuedWork`. Catches a
+//      trigger deleted in a refactor.
+//   2. Every `status: 'pending'` writer in `src/` is classified in the table
+//      below. Catches the failure that actually happened — a *fourth* writer
+//      added with no trigger and nothing noticing, which direction (1) cannot
+//      see because an unlisted writer is absent from both sides at once.
+//
+// Deriving either side from the other would make every assertion `X === X`.
+
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { filesUnder } from './source-scan';
+
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const SRC_ROOT = resolve(REPO_ROOT, 'src');
+
+/**
+ * Where a guarded registration may live.
+ *
+ * Was `ui-wiring.ts` alone. Feature 195 (T064) made that assumption false
+ * rather than merely narrow: `registerStage2Ui()` reached the 400-line
+ * composition-root bound, and `source-loc-budget.test.ts` answers that by
+ * requiring new registrations to move into `src/activation/*-wiring.ts`
+ * modules — so `schegent.retryQueuedItem` now registers in
+ * `queue-item-exit-wiring.ts`, beside the attested-completion command that
+ * shares its drain trigger.
+ *
+ * Reading every activation module keeps this gate's assertion exactly as
+ * strict: a command id that appears in none of them still fails as
+ * unregistered, which is the failure mode that matters. What it stops doing is
+ * failing for a registration that exists and moved.
+ */
+const ACTIVATION_ROOT = resolve(SRC_ROOT, 'activation');
+
+/**
+ * BUG-001 (2026-11-19, FR-017, FR-019, FR-020) — activation no longer auto-drains
+ * pending tasks on open/restart. Instead, primary activation runs the crash-safe
+ * startup pause (`pauseQueuesOnStartup`) in `stage2-producers.ts`, and pending rows
+ * (including rows demoted during state-load migration) are drained when the operator
+ * explicitly resumes the paused queue via `CMD_RESUME_QUEUE` or `schegent.resumeQueue`,
+ * both wired through `resumePausedQueueExecution`.
+ */
+const ACTIVATION_PRODUCERS = resolve(SRC_ROOT, 'activation', 'stage2-producers.ts');
+const STARTUP_PAUSE = 'pauseQueuesOnStartup?.()';
+const RETIRED_ACTIVATION_DRAIN = 'controller.scheduleAutoDrain()';
+const MANUAL_RESUME_HELPER = resolve(SRC_ROOT, 'commands', 'resume-queue-execution.ts');
+const SIDEBAR_ROUTER_WIRING = resolve(SRC_ROOT, 'activation', 'sidebar-router-wiring.ts');
+const UI_WIRING = resolve(SRC_ROOT, 'activation', 'ui-wiring.ts');
+
+// The literal that puts a Task into the state only a drain can leave.
+const PENDING_WRITE = "status: 'pending'";
+
+/**
+ * Every file that writes `status: 'pending'`, and what reaches it.
+ *
+ * `commandId: null` means the write is not operator-initiated and has no
+ * registration to carry a trigger. That is a claim about the write, not an
+ * excuse for it, so it carries the same sentence-length reason as any other
+ * entry here.
+ */
+interface PendingWriter {
+  /** Repo-relative path, as `relativize` renders it. */
+  readonly file: string;
+  /** The `schegent.*` command whose registration must drain, or null. */
+  readonly commandId: string | null;
+  readonly reason: string;
+}
+
+const PENDING_WRITERS: readonly PendingWriter[] = [
+  {
+    file: 'src/queue/queue-manager.ts',
+    commandId: 'schegent.enqueue',
+    reason:
+      'Two writes in this file: `enqueue` creates a pending row, and `retry` returns a ' +
+      'failed/canceled/paused row to pending. They reach different registrations — the ' +
+      'second is `schegent.retryQueuedItem`, listed below — so both are named.'
+  },
+  {
+    file: 'src/queue/queue-manager.ts',
+    commandId: 'schegent.retryQueuedItem',
+    reason:
+      '`QueueManager.retry`. This is also the sidebar Retry (the ↻ affordance): ' +
+      '`cmd-retry-queue-item.ts` delegates to the host command rather than calling ' +
+      '`queueOps.retry()` itself, precisely so both affordances share one trigger.'
+  },
+  {
+    file: 'src/commands/restart-canceled-task.ts',
+    commandId: 'schegent.restartCanceledTask',
+    reason:
+      'Restores a canceled row to pending through `store.updateQueue` directly rather ' +
+      'than through `QueueManager`, which is why its trigger had to be added separately ' +
+      'from the retry one.'
+  },
+  {
+    file: 'src/state/queue-state-migrator.ts',
+    commandId: null,
+    reason:
+      'Not operator-initiated. The migrator demotes rows left `in-flight` by a host that ' +
+      'died mid-run, and it runs during state load, before a controller exists to drain ' +
+      'with. Per BUG-001 (FR-017, FR-019), startup pauses the queue rather than auto-draining ' +
+      'on open, and explicit operator Resume (`resumePausedQueueExecution`) drains those rows.'
+  },
+  {
+    file: 'src/services/guarded-run-service.ts',
+    commandId: null,
+    reason:
+      'FR-R8-01 (01-02): `admitComposableWorkflowLaunchAtomically` writes the initial pending ' +
+      'leaf Task row for a composable Workflow launch in one atomic SQLite batch alongside ' +
+      'KEYS.connectedRuns and KEYS.controlLedger, honoring the same start-intent lifecycle ' +
+      'table as QueueManager.enqueue (drained on operator Start Queue or wakeWorkflowQueue).'
+  }
+];
+
+const MIN_REASON_LENGTH = 40;
+
+function relativize(abs: string): string {
+  return abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs;
+}
+
+/** Files under `src/` that contain the pending-write literal. */
+function scanPendingWriters(): readonly string[] {
+  return filesUnder(SRC_ROOT, { extensions: ['.ts'], skipDirectories: ['generated'] })
+    .filter((abs) => readFileSync(abs, 'utf8').includes(PENDING_WRITE))
+    .map(relativize)
+    .sort();
+}
+
+/**
+ * The source of one `registerGuardedCommand(guard, '<id>', ...)` call, from the
+ * command id to the start of the next registration.
+ *
+ * Brace matching would be stricter, but the registrations are a flat comma-
+ * separated array and the next `registerGuardedCommand(` is an unambiguous
+ * terminator — and a block that over-reads would only ever make this check more
+ * permissive in a way the `null`-registration test below would catch.
+ *
+ * Searched per file rather than over a concatenation of them, so a block can
+ * never run past the end of the module it started in.
+ */
+function registrationBlock(commandId: string): string | null {
+  for (const abs of filesUnder(ACTIVATION_ROOT, { extensions: ['.ts'] })) {
+    const source = readFileSync(abs, 'utf8');
+    const start = source.indexOf(`'${commandId}'`);
+    if (start === -1) continue;
+    const next = source.indexOf('registerGuardedCommand(', start);
+    return source.slice(start, next === -1 ? source.length : next);
+  }
+  return null;
+}
+
+describe('Lifecycle round-check finding A — a pending transition must trigger a drain', () => {
+  const scanned = scanPendingWriters();
+
+  it('finds the pending-write literal in source (the scan is not broken)', () => {
+    // Without this, a renamed literal would empty both directions at once and
+    // report a clean gate over a codebase it never read.
+    expect(scanned.length).toBeGreaterThan(0);
+  });
+
+  it('classifies every file in src/ that writes a Task to pending', () => {
+    const classified = new Set(PENDING_WRITERS.map((w) => w.file));
+    const unclassified = scanned.filter((file) => !classified.has(file));
+    expect(
+      unclassified,
+      `These files write \`${PENDING_WRITE}\` and are not classified in ` +
+        `PENDING_WRITERS. A Task returned to pending with no drain trigger sits ` +
+        `there forever — the coordinator is edge-triggered and nothing polls. Add ` +
+        `the file with the command that reaches it, and add the trigger to that ` +
+        `command's registration in src/activation/ui-wiring.ts:\n${unclassified.join('\n')}`
+    ).toEqual([]);
+  });
+
+  it('classifies nothing that no longer writes a pending transition', () => {
+    // The mirror direction: a file that stopped writing pending has to leave
+    // this table deliberately, rather than sit here making the count look right.
+    const scannedSet = new Set(scanned);
+    const stale = PENDING_WRITERS.map((w) => w.file).filter((file) => !scannedSet.has(file));
+    expect(stale).toEqual([]);
+  });
+
+  it('drains the queue from every registration that returns a Task to pending', () => {
+    const missing: string[] = [];
+    for (const writer of PENDING_WRITERS) {
+      if (writer.commandId === null) continue;
+      const block = registrationBlock(writer.commandId);
+      if (block === null) {
+        missing.push(`${writer.commandId} — no registration found under src/activation/`);
+        continue;
+      }
+      if (!block.includes('drainQueuedWork')) {
+        missing.push(`${writer.commandId} — registration does not call drainQueuedWork`);
+      }
+    }
+    expect(
+      missing,
+      `A command that writes a Task to pending must drain the queue the row landed ` +
+        `on. Without it the row waits for an unrelated event that may never come — ` +
+        `the defect the bug report calls "retried task is returned to pending and ` +
+        `never drained":\n${missing.join('\n')}`
+    ).toEqual([]);
+  });
+
+  it('drains the queue the row landed on, never a defaulted sweep', () => {
+    // `drainQueuedWork()` with no argument swept the default queue, which is a
+    // silent no-op for a Task on any other one — a trigger that reads as present
+    // and does nothing. Every call in a pending-producing registration must name
+    // a queue.
+    const bare: string[] = [];
+    for (const writer of PENDING_WRITERS) {
+      if (writer.commandId === null) continue;
+      const block = registrationBlock(writer.commandId);
+      if (block !== null && /drainQueuedWork\(\s*\)/.test(block)) bare.push(writer.commandId);
+    }
+    expect(
+      bare,
+      `These registrations call drainQueuedWork() with no queue, which sweeps the ` +
+        `default queue and silently skips a Task on any other one:\n${bare.join('\n')}`
+    ).toEqual([]);
+  });
+
+  it('pauses leftover queues on startup and wires explicit manual Resume to drain them (BUG-001 FR-017/FR-019/FR-020)', () => {
+    const producers = readFileSync(ACTIVATION_PRODUCERS, 'utf8');
+    expect(
+      producers.includes(STARTUP_PAUSE),
+      `${relativize(ACTIVATION_PRODUCERS)} must invoke ${STARTUP_PAUSE} on primary startup.`
+    ).toBe(true);
+    expect(
+      producers.includes(RETIRED_ACTIVATION_DRAIN),
+      `${relativize(ACTIVATION_PRODUCERS)} must not call ${RETIRED_ACTIVATION_DRAIN} on startup (BUG-001 FR-017).`
+    ).toBe(false);
+
+    const resumeHelper = readFileSync(MANUAL_RESUME_HELPER, 'utf8');
+    expect(
+      resumeHelper.includes('drainQueuedWork(queueId)'),
+      `${relativize(MANUAL_RESUME_HELPER)} must call drainQueuedWork(queueId) so explicit operator Resume drains migrated/paused pending rows.`
+    ).toBe(true);
+
+    for (const wiringPath of [SIDEBAR_ROUTER_WIRING, UI_WIRING]) {
+      const wiring = readFileSync(wiringPath, 'utf8');
+      expect(
+        wiring.includes('resumePausedQueueExecution('),
+        `${relativize(wiringPath)} must wire manual Resume through resumePausedQueueExecution.`
+      ).toBe(true);
+    }
+
+    // Non-vacuity for the citation itself: at least one entry must actually be
+    // relying on it, or this test is holding the codebase to a promise nobody made.
+    expect(PENDING_WRITERS.some((w) => w.commandId === null)).toBe(true);
+  });
+
+  it('records a substantive reason for every classification', () => {
+    expect(PENDING_WRITERS.length).toBeGreaterThan(0);
+    for (const writer of PENDING_WRITERS) {
+      expect(
+        writer.reason.trim().length,
+        `${writer.file} (${writer.commandId ?? 'no command'}) needs a reason saying what ` +
+          `reaches the write and why its trigger is where it is`
+      ).toBeGreaterThan(MIN_REASON_LENGTH);
+    }
+  });
+});

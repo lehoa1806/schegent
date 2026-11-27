@@ -1,25 +1,13 @@
 <script lang="ts">
-  // Feature 101 (US6, T064, FR-032, FR-033) — the Builder's front door when a
-  // catalog has nothing in it.
+  // Feature 101 (US6, T064, FR-032, FR-033) & Feature 326 — the Builder's front
+  // door when a catalog has nothing in it.
   //
-  // The words are imported, never written here (FR-032). FR-030a of feature 098
-  // made the wording a contract between surfaces — the Runs surface and this one
-  // say the identical thing — and the only mechanism that survives an edit is a
-  // shared constant. A literal here would agree with `RunsSurface.svelte` on the
-  // day it was typed and drift the first time either is reworded, silently,
-  // because nothing compares two literals in two files.
-  //
-  // The guidance helper decides *whether* to show, rather than a zero check
-  // written here, for the same reason: the rule is as shared as the text, and a
-  // rule stated twice is a rule that can be changed once.
-  //
-  // The import affordance comes with it. Guidance that says "import a process
-  // document" beside no way to import one is an instruction, not a front door —
-  // and on the Pipelines and Workflows tabs this is the only import entry there
-  // is.
-  import type { CatalogKind } from '../../../../src/contracts/catalog-store';
-  import { emptyCatalogGuidance } from '../../../../src/contracts/empty-catalog-guidance';
-  import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
+  // The words are imported from the shared contract (`emptyCatalogGuidance`),
+  // never restated here. In Feature 326 this component no longer mounts its own
+  // inline preflight widget: its secondary `Import…` button opens the single
+  // top-level Builder Import modal.
+  import type { CatalogKind } from "../../../../src/contracts/catalog-store";
+  import { emptyCatalogGuidance } from "../../../../src/contracts/empty-catalog-guidance";
 
   interface Props {
     /** Which tab is empty — the test handle, and nothing else. The words are shared. */
@@ -27,24 +15,53 @@
     /** How many definitions this tab has. Zero is the only value that shows anything. */
     count: number;
     /**
-     * Why an import cannot start right now, or null. Owned by the tab, as it is
-     * for the standalone preflight: the conditions are the manager's (FR-057).
+     * Why an import cannot start right now (e.g. secondary window), or null.
      */
     disabledReason?: string | null;
+    /** Opens the single top-level Builder Import modal, passing the trigger for focus return. */
+    onimport?: (originatingElement: HTMLElement | null) => void;
   }
 
-  const { kind, count, disabledReason = null }: Props = $props();
+  const { kind, count, disabledReason = null, onimport }: Props = $props();
 
   const guidance = $derived(emptyCatalogGuidance(count));
+  const reasonId = $derived(`catalog-empty-import-unavailable-${kind}`);
 </script>
 
 {#if guidance}
-  <div class="catalog-empty-state" data-testid="catalog-empty-state-{kind}">
-    <p class="empty-catalog-headline" data-testid="catalog-empty-headline-{kind}">
+  <div class="empty catalog-empty-state" data-testid="catalog-empty-state-{kind}">
+    <p
+      class="empty-catalog-headline"
+      data-testid="catalog-empty-headline-{kind}"
+    >
       {guidance.headline}
     </p>
-    <p class="empty-catalog-body" data-testid="catalog-empty-body-{kind}">{guidance.body}</p>
-    <ProcessImportPreflight {disabledReason} />
+    <p class="empty-catalog-body" data-testid="catalog-empty-body-{kind}">
+      {guidance.body}
+    </p>
+    <button
+      type="button"
+      class="btn btn-secondary"
+      data-testid="catalog-empty-import-{kind}"
+      disabled={disabledReason !== null}
+      title={disabledReason ?? "Choose a document to inspect"}
+      aria-describedby={disabledReason !== null ? reasonId : undefined}
+      onclick={(event) => {
+        if (disabledReason !== null) return;
+        onimport?.(event.currentTarget);
+      }}
+    >
+      <svg class="i" aria-hidden="true"><use href="#i-import"></use></svg>Import…
+    </button>
+    {#if disabledReason !== null}
+      <p
+        class="empty-import-note"
+        id={reasonId}
+        data-testid="catalog-empty-import-unavailable-{kind}"
+      >
+        {disabledReason}
+      </p>
+    {/if}
   </div>
 {/if}
 
@@ -52,17 +69,26 @@
   .catalog-empty-state {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
+    align-items: center;
+    gap: var(--schegent-space-2);
   }
 
   .empty-catalog-headline {
+    color: var(--schegent-fg);
+    font-size: var(--schegent-text-subheading);
     font-weight: 600;
     margin: 0;
   }
 
   .empty-catalog-body {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
+    max-width: 52ch;
+    margin: 0;
+  }
+
+  .empty-import-note {
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-secondary);
     margin: 0;
   }
 </style>

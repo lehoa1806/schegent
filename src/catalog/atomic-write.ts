@@ -24,7 +24,7 @@
 // The `rename` itself is deliberately **not** here. `tests/lint/destructive-fs-requires-containment.test.ts`
 // requires any module calling `.rename(` to import the containment oracle and prove
 // containment, which would pull `node:fs` into the directory whose purity FR-058
-// pins. The sequencing is pure; the rename lives in `src/lib/catalog-fs-adapter.ts`.
+// pins. The sequencing is pure; the rename lives in `src/host-services/catalog-fs-adapter.ts`.
 
 import type { CatalogFsPort, StoreSegments } from './ports';
 

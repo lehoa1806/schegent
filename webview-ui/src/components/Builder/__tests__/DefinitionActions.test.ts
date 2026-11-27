@@ -59,8 +59,13 @@ const posted: Envelope[] = [];
 const ackListeners = new Map<string, AckListener>();
 
 vi.mock('../../../lib/vscode-api', () => ({
-  postCommand(type: string, payload: Record<string, unknown>): { correlationId: string } {
-    const correlationId = `corr-${posted.length + 1}`;
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  postCommand(
+    type: string,
+    payload: Record<string, unknown>,
+    opts?: { correlationId?: string }
+  ): { correlationId: string } {
+    const correlationId = opts?.correlationId ?? `corr-${posted.length + 1}`;
     posted.push({ type, payload, correlationId });
     return { correlationId };
   }
@@ -87,8 +92,11 @@ vi.mock('../../../lib/use-confirm', () => ({
   }
 }));
 
+const { disposeIntentLedger } = await import('../../../lib/intent-ledger');
 const DefinitionActions = (await import('../DefinitionActions.svelte')).default;
-const DefinitionLifecycleRow = (await import('../DefinitionLifecycleRow.svelte')).default;
+// Feature 186 (D-1) — the row mounted this until the split; the panel is where
+// the actions and the cells they affect now both live.
+const DefinitionLifecyclePanel = (await import('../DefinitionLifecyclePanel.svelte')).default;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -177,6 +185,8 @@ function fireAck(
 }
 
 beforeEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   posted.length = 0;
   confirmCalls.length = 0;
   ackListeners.clear();
@@ -189,11 +199,11 @@ afterEach(() => cleanup());
 // T039 — the offer matrix (FR-016 – FR-019)
 // ---------------------------------------------------------------------------
 
-describe('Feature 101 T039 — which actions a row offers (FR-016 – FR-019)', () => {
+describe('Feature 101 T039 / Feature 326 — which actions a row offers (FR-016 – FR-019)', () => {
   const MATRIX: readonly { state: DefinitionState; offered: readonly Action[] }[] = [
     { state: 'draft', offered: ['publish', 'discard-draft'] },
-    { state: 'active', offered: ['deactivate'] },
-    { state: 'active-with-draft', offered: ['publish', 'discard-draft', 'deactivate'] }
+    { state: 'active', offered: [] },
+    { state: 'active-with-draft', offered: ['publish', 'discard-draft'] }
   ];
 
   for (const { state, offered } of MATRIX) {
@@ -257,24 +267,13 @@ describe('Feature 101 T039 — which actions a row offers (FR-016 – FR-019)', 
 // T039 — the gate on the two destructive actions (FR-020, FR-022, SC-003)
 // ---------------------------------------------------------------------------
 
-describe('Feature 101 T039 — the two destructive actions are gated (FR-020, FR-022)', () => {
+describe('Feature 101 T039 / Feature 326 — Discard draft is gated (FR-020, FR-022)', () => {
   it('posts nothing when Discard draft is dismissed', async () => {
     confirmAnswer = false;
     const { container } = renderActions({ state: 'active-with-draft' });
     await click(actionButton(container, 'discard-draft'));
 
     expect(confirmCalls.map((call) => call.actionKey)).toEqual(['catalog.discard-draft']);
-    expect(posted, 'a dismissed confirmation must post no command').toEqual([]);
-  });
-
-  it('posts nothing when Deactivate is dismissed', async () => {
-    confirmAnswer = false;
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
-
-    expect(confirmCalls.map((call) => call.actionKey)).toEqual([
-      'catalog.deactivate-definition'
-    ]);
     expect(posted, 'a dismissed confirmation must post no command').toEqual([]);
   });
 
@@ -288,19 +287,6 @@ describe('Feature 101 T039 — the two destructive actions are gated (FR-020, FR
       kind: 'pipeline',
       id: DEFINITION_ID,
       expectedDraftVersion: 'v4'
-    });
-  });
-
-  it('posts the deactivation once the confirmation is accepted', async () => {
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
-
-    expect(posted).toHaveLength(1);
-    expect(posted[0]?.type).toBe(WIRE.deactivate);
-    expect(posted[0]?.payload).toEqual({
-      kind: 'pipeline',
-      id: DEFINITION_ID,
-      expectedDraftVersion: 'no-draft'
     });
   });
 
@@ -324,20 +310,10 @@ describe('Feature 101 T039 — the two destructive actions are gated (FR-020, FR
     expect(confirmCalls[0]?.context).toMatchObject({ removesEntry: false });
   });
 
-  it('names the definition in the deactivate prompt, not just its id', async () => {
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
-    expect(confirmCalls[0]?.context).toMatchObject({
-      definitionName: DEFINITION_NAME,
-      definitionId: DEFINITION_ID,
-      kindLabel: 'Pipeline'
-    });
-  });
-
-  it('reports nothing to the operator when they dismissed the prompt themselves', async () => {
+  it('reports nothing to the operator when they dismissed the discard prompt themselves', async () => {
     confirmAnswer = false;
-    const { container } = renderActions({ state: 'active' });
-    await click(actionButton(container, 'deactivate'));
+    const { container } = renderActions({ state: 'active-with-draft' });
+    await click(actionButton(container, 'discard-draft'));
     expect(
       container.querySelector(`[data-testid="definition-action-refusal-${DEFINITION_ID}"]`),
       'a declined confirmation is not a failure to report back'
@@ -495,14 +471,13 @@ describe('Feature 101 T040 — a refused publish reports all defects (FR-023)', 
     );
   });
 
-  it('posts nothing further and leaves the row Active at its prior version', async () => {
-    const { container } = render(DefinitionLifecycleRow, {
+  it('posts nothing further and leaves the panel Active at its prior version', async () => {
+    const { container } = render(DefinitionLifecyclePanel, {
       props: {
         kind: 'pipeline' as const,
         definitionId: DEFINITION_ID,
         definitionName: DEFINITION_NAME,
         lifecycle: lifecycle('active-with-draft'),
-        validity: 'effective' as const,
         defects: []
       }
     });
@@ -515,11 +490,6 @@ describe('Feature 101 T040 — a refused publish reports all defects (FR-023)', 
         .querySelector(`[data-testid="definition-row-active-version-${DEFINITION_ID}"]`)
         ?.textContent?.trim()
     ).toBe('v3');
-    expect(
-      container
-        .querySelector(`[data-testid="definition-row-state-${DEFINITION_ID}"]`)
-        ?.textContent?.trim()
-    ).toBe('Active with draft');
   });
 
   it('clears the previous refusal when the next attempt is accepted', async () => {
@@ -551,5 +521,31 @@ describe('Feature 101 T040 — a refused publish reports all defects (FR-023)', 
     expect(panel, 'every refusal reaches the operator, defects or not').not.toBeNull();
     expect(panel?.querySelectorAll('[data-testid^="definition-action-defect-"]')).toHaveLength(0);
     expect(panel?.textContent ?? '').not.toContain('undefined');
+  });
+});
+
+// FR-R4-F05 (T17, T121; contract I, I5, I6; contract O, O3, O4) — a timeout says the outcome is not
+// yet known and never claims nothing was written, and the host's late answer replaces it once.
+describe('FR-R4-F05 T121 — a timed-out lifecycle action is not yet known', () => {
+  it('shows the not-yet-known text, never "Nothing was written.", and replaces it with the late outcome', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = renderActions({ state: 'draft' });
+
+      await click(getByTestId(`definition-action-publish-${DEFINITION_ID}`));
+      await vi.advanceTimersByTimeAsync(5_000);
+      await flush();
+
+      const headline = getByTestId(`definition-action-refusal-${DEFINITION_ID}`).textContent;
+      expect(headline).toContain('The host has not answered yet, so the outcome is not yet known.');
+      expect(headline).not.toContain('Nothing was written');
+
+      fireAck(posted[0]!.correlationId, { status: 'accepted' });
+      await flush();
+
+      expect(queryByTestId(`definition-action-refusal-${DEFINITION_ID}`)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

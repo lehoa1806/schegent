@@ -287,4 +287,56 @@ describe('DashboardPanel (T053)', () => {
     // until DashboardPanel.open() was called explicitly. Reset expectations.
     expect(mocks.state.createWebviewPanel).not.toHaveBeenCalled();
   });
+
+  it('(g) posts a phase-log batch only while visible and reports the refusal (FR-R5-F10, FR-R6-F07)', async () => {
+    const onDispose = vi.fn();
+    const opts = { ...buildOpts(), onDispose };
+    const dashboard = DashboardPanel.open(opts);
+    const panel = mocks.state.panels.at(0);
+    if (!panel) throw new Error('expected the dashboard panel to be created');
+    await Promise.resolve();
+    panel.webview.postMessage.mockClear();
+
+    const batch = {
+      type: 'MSG_PHASE_LOG_BATCH' as const,
+      payload: {
+        protocol: 1 as const,
+        tailSessionId: 'tail-1',
+        batchSeq: 1,
+        generation: 'gen-1',
+        mode: 'continue' as const,
+        toCursor: null,
+        entries: [
+          {
+            at: 0,
+            n: 0,
+            entry: { seq: 0, kind: 'assistant-text' as const, ts: null, body: { text: 'hello' }, bodyTruncated: null }
+          }
+        ]
+      }
+    };
+
+    expect(dashboard.postPhaseLogBatch(batch)).toBe(true);
+    expect(panel.webview.postMessage).toHaveBeenCalledWith(batch);
+
+    panel.webview.postMessage.mockClear();
+    panel.__triggerVisibilityChange(false);
+    expect(dashboard.postPhaseLogBatch(batch)).toBe(false);
+    expect(panel.webview.postMessage).not.toHaveBeenCalled();
+
+    panel.__triggerDispose();
+    dashboard.dispose();
+    expect(dashboard.postPhaseLogBatch(batch)).toBe(false);
+    expect(onDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('(h) reports each visibility change, and the initial state on open (FR-R6-F07)', () => {
+    const seen: boolean[] = [];
+    DashboardPanel.open({ ...buildOpts(), onVisibilityChange: (visible: boolean) => seen.push(visible) });
+    const panel = mocks.state.panels.at(0);
+    if (!panel) throw new Error('expected the dashboard panel to be created');
+    panel.__triggerVisibilityChange(false);
+    panel.__triggerVisibilityChange(true);
+    expect(seen).toEqual([true, false, true]);
+  });
 });

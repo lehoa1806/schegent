@@ -1,335 +1,308 @@
-# Import and Export Process Definitions
+# Import and export process YAML
 
-Schegent moves Phases, Pipelines, and Workflows between workspaces as
-portable YAML documents. This runbook is the **operator procedure** for
-both directions: what to click, what each screen is telling you, and what
-to do about it.
+Use the catalog editors to exchange a Phase, Workflow, or the Model
+Catalog as a portable YAML document. The host owns every open and save dialog:
+the webview sends no file location and receives none.
 
-It deliberately does not restate the document format, the refusal
-taxonomy, or the closed YAML subset — those live in
-[Phase YAML exchange](../features/phase-yaml-exchange.md). Read that when
-you need to know what a document *is*; read this when you need to move
-one.
-
-## Before you start
-
-An import is a catalog write, so it is gated by Workspace Trust and by
-the same per-capability trust scopes as any other catalog edit. Which
-scopes a document needs depends on what it carries — see
-[Per-capability trust scopes](trust-scopes.md), which walks the
-no-capability, one-scope, and two-scope cases in order.
-
-An **export** is a read. It needs no trust scope and asks for no
-confirmation.
-
-## The first import
-
-On a fresh install the catalog is empty — no Phases, no Pipelines, no
-Workflows, no Models — and import is the only way anything gets into it.
-Nothing runs until you do one; a launch against an empty catalog is
-refused with `catalog-empty` rather than started against something you
-never chose.
-
-The extension ships process documents under `examples/` for exactly this:
-
-| Document | Supplies |
-|---|---|
-| `speckit-new-feature.pipeline.yaml` | one Pipeline and the nine Phases it names |
-| `speckit-bugfix.pipeline.yaml` | one Pipeline and the five Phases it names |
-| `model-catalog.yaml` | per-backend model identifiers |
-
-They are ordinary documents with no privileged status. Importing one
-produces `import` rows on a fresh catalog and `skip` rows on a second
-run, exactly as any document you wrote would — no id is claimed in
-advance, so nothing forces a skip until you have imported something.
-
-## Import a document
-
-### 1. Open the preview
-
-Press **Import…** in the process catalog surface. Schegent opens a file
-dialog, reads the file you choose, and shows you a plan. Nothing is
-written yet — preview is read-only, and the button that writes is a
-separate, later press.
-
-You do not classify the file first. The document declares its own
-`kind:`, and Schegent dispatches on that, so one **Import…** button
-handles a Phase, a Pipeline package, and a Workflow package alike.
-
-If the whole document is unusable, you get a **refusal** instead of a
-plan. A refusal is document-level: nothing in the file is planned,
-because the file could not be trusted enough to plan from.
-
-| Refusal | What happened | What to do |
-|---|---|---|
-| `unreadable` | Not valid UTF-8, or it starts with a byte-order mark | Re-save the file as UTF-8 without a BOM |
-| `too-large` | Over the size bound, refused before parsing | Split the package, or export a narrower closure |
-| `unsupported-version` | `apiVersion` is absent or is not the supported one | The document came from a different Schegent generation; re-export it from the source workspace |
-| `unsupported-kind` | `kind` is absent or is not a kind Schegent imports | Check the top of the file; a hand-edited document often loses it |
-| `disallowed-syntax` | The file uses YAML outside the accepted subset — an anchor, alias, merge key, tag, directive, flow collection, folded or single-quoted scalar, or a tab | Rewrite that line in plain block YAML. Hand-authored files hit this most often on `[a, b]`; write a block sequence instead |
-| `multi-document` | A second document start, an end marker, or a sequence of resources | One resource tree per file |
-| `duplicate-id` | Two resources in the same package declare the same id | Schegent will not guess which one you meant — fix the source and re-export |
-
-### 2. Read the plan
-
-The plan is one row per declared resource, plus a count per outcome. The
-four counts always sum to the number of rows, so nothing in the document
-is silently absent from the plan.
-
-Each row lands in exactly one of four outcomes:
-
-| Outcome | What it means | Will it be written? |
-|---|---|---|
-| `import` | New to this workspace, and valid | Yes |
-| `skip` | Something already claims this id | No |
-| `blocked` | This resource is fine; something it depends on is not | No |
-| `invalid` | This resource is itself defective | No |
-
-**`skip` is a guarantee, not a warning.** Schegent resolves presence
-against the *stored* rows of the catalog at **every status**, including
-rows that are currently invalid. If the catalog holds that id, the import
-skips it. The row tells you what that stored row's status is. The effect
-is that an import never overwrites work you authored, including a broken
-definition you are half-way through fixing.
-
-The property is unchanged by the move to a single-layer catalog store;
-only the *scan* collapsed, from a walk across three layers to one pass
-over the manifest.
-
-**`blocked` names what it is waiting on**, and the reason tells you which
-kind of repair is needed:
-
-| Reason | Meaning | What to do |
-|---|---|---|
-| `dependency-absent` | The named Phase or Pipeline is not in the catalog, and this document does not supply it | Import the dependency first, or re-export the source as a package that includes it |
-| `dependency-unresolvable` | A stored row claims that id, but it is invalid, so it is not effective | Repair that row; nothing about this document will fix it |
-| `dependency-blocked` | The dependency resolves but is itself blocked | Ignore this row and fix the root cause it points at via `via` — this row is propagation, not a separate fault |
-
-**`invalid` lists the defects** with the field each one is about. The row
-also carries the total defect count *before* the display cap, so a
-badly-broken resource says "42 defects" rather than showing you the cap's
-worth and looking complete.
-
-An `invalid` row has no id when the document did not give it a
-well-formed one.
-
-### 3. Confirm
-
-Press **Confirm import**. There is no scope to choose: there is one
-catalog, under `<workspaceRoot>/.schegent/catalog/`, and it is where the
-document lands.
-
-Two things are re-evaluated at this moment rather than inherited from the
-preview:
-
-- **Trust capabilities.** A capability you granted or revoked between
-  previewing and confirming is honored as of the confirm. The preview's
-  note that a document "requires the retry-condition capability" is
-  advisory; the gate is the confirm.
-- **Catalog freshness.** The plan carries the revision of each catalog it
-  was computed against. If that catalog changed underneath you — another
-  window, another import — the write is refused as `stale-catalog` rather
-  than applied to a catalog the plan never described. Re-run the preview
-  and confirm again.
-
-A package commits as **ordered writes, one per catalog kind**: Phases
-first, then Pipelines, then Workflows. The order is dependency order — a
-Pipeline's bindings are only satisfiable once its Phases are effective,
-and a Workflow's nodes only resolve once its Pipelines are. A document
-that supplies fewer kinds performs fewer writes. Each write that lands
-produces an immutable new version of every definition it touches, exactly
-as an ordinary save does.
-
-### 4. Read the outcome
-
-The result is one of three words.
-
-| Outcome | Meaning |
-|---|---|
-| `imported` | Every kind the document supplied was written |
-| `partial` | Some kinds were written and a later one was not |
-| `failed` | Nothing was written |
-
-**`partial` is a real, expected outcome — not a corrupted state.** The
-writes commit independently, and the first rejection stops the sequence
-where it stands. Where it stopped tells you what was missing:
-
-- Phases written, no Pipeline → the Pipeline write was refused. The Phase
-  write is the one carrying capability gates (`allowCustomPhases`, and
-  `allowCustomRetryConditions` for a document declaring one); a Pipeline
-  write needs Workspace Trust and nothing further, so the usual cause
-  here is a stale catalog revision rather than a missing capability.
-- Phases and Pipelines written, no Workflow → the Workflow write was
-  refused, on the same terms.
-
-**Whatever landed stays written.** Schegent does not undo a partial
-import. A compensating delete would remove rows you may already have
-edited, and it would be a destructive write performed on a failure path
-that nobody confirmed.
-
-**Re-running the same document is the recovery, at any depth.** Fix the
-cause — grant the missing capability, supply the missing dependency,
-repair the invalid row — and import the same file again. The presence
-scan turns everything that already landed into `skip` rows, so the retry
-writes only the part that did not. This is self-healing regardless of how
-far the first attempt got.
+<!-- Source: webview-ui/src/lib/process-yaml-ipc.ts -->
+<!-- Source: src/extension.ts -->
 
 ## Export a document
 
-### 1. Choose what to export
+Choose the control for the resource you want to export:
 
-Press **Export** on the Phase, Pipeline, or Workflow you want to move.
+| Resource | Control and choices |
+| --- | --- |
+| Phase | Open a saved, valid Phase and choose **Export…** from **More phase actions**. |
+| Workflow | Open a saved Workflow and choose **Export YAML…** from **More workflow actions**. Under **Include**, select **References only** or **Include child Workflows and Phases**, then choose **Export**. The default is references only. |
+| Model Catalog | On the Models tab, choose **Export…**, which assistive technology names **Export Model Catalog**. The catalog is exportable even when it is empty. |
 
-Export reads the **effective** catalog — the definition that would
-actually run — and within it the **active** version. Earlier versions in
-a definition's history are readable in the Builder, but they are not what
-Export serializes.
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseEditorPage.svelte -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/WorkflowToolbar.svelte -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/ModelCatalogEditor.svelte -->
 
-Two situations produce an **unavailable** result rather than a document:
+In the host's **Export document** dialog, choose a YAML or YML destination and
+approve any overwrite there. Canceling the dialog writes nothing. An export
+does not change extension state, although it does write the file you selected.
+If the write fails, the UI receives the generic message `Could not write the
+document.`; location-bearing detail remains in the sanitized host log.
 
-| Reason | Meaning |
-|---|---|
-| `not-found` | No row in the catalog carries that id — most commonly an unsaved draft. Save it first |
-| `does-not-resolve` | A row exists, but the effective catalog has no valid definition for it. Repair it first |
-| `dependency-does-not-resolve` | The resource itself resolves, but something it references does not. The result names the first unresolved dependency in reference order |
+<!-- Source: src/extension.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-export-process-yaml.ts -->
 
-The third only occurs under an inclusion mode that requires that level to
-resolve. A references-only export never requires any dependency to
-resolve, so it succeeds where a deeper export cannot.
+## Inspect an import
 
-### 2. Choose how much travels with it
+1. In the Phase catalog, choose **Import…** under **Import a Phase,
+   Workflow, or Model Catalog document**.
+2. In the host's **Inspect document** dialog, choose one YAML or YML file.
+3. Review every plan row. Its outcome is **Import**, **Skip**, **Blocked**, or
+   **Invalid**, and non-import outcomes include their reason.
 
-A Phase has no references, so there is no choice to make — you get one
-document.
+The inspection reads the selected document once and changes no configuration,
+catalog revision, or lock. A document-level refusal shows a refusal code and
+reason but no plan table. Canceling the dialog leaves nothing to confirm.
 
-A **Pipeline** has one level of dependency below it:
+<!-- Source: webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte -->
+<!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-preflight-process-yaml.ts -->
+<!-- Source: src/extension.ts -->
 
-| Mode | What the document carries | Use when |
+The import entry is unavailable while the workspace is untrusted, a Phase save
+is pending, or a local Phase edit is outstanding. Save or discard the local edit
+and retry. These checks happen before the file picker opens.
+
+<!-- Source: webview-ui/src/components/ProcessImport/process-exchange-entry.ts -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseCatalogEditor.svelte -->
+
+## Confirm the plan
+
+Choose **Confirm import** only after checking the statement beside it. Confirm
+writes rows marked **Import** and leaves all other rows unchanged. The control
+stays unavailable when the plan has nothing eligible to write or lacks a
+revision required to protect a catalog write; inspect the document again to
+build a fresh plan.
+
+<!-- Source: webview-ui/src/components/ProcessImport/ProcessImportPreflight.svelte -->
+<!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
+
+For process definitions, Confirm sends the plan's definitions as one publication:
+every layer you are importing, Phases and Workflows, in a single
+request. Each layer carries the revision captured during inspection, so a
+catalog changed since then is refused rather than overwritten.
+
+The host validates the whole document before it writes anything, with every
+definition in it applied over the catalog, so a Workflow that uses a Phase or child
+Workflow from the same document is checked against the definitions it is about to
+receive. Only then does it write the definitions as drafts and publish them, in
+dependency order (Phases first, then child Workflows before parent Workflows).
+
+- **An invalid definition means nothing is written.** Every defect is shown on the
+  row it belongs to, and the other rows read **Not written: the package was
+  refused**. Fix the document and inspect it again.
+- **A storage failure part-way is reported row by row.** Each row says whether it
+  was published, saved as a draft but not published, or not written. Nothing that
+  landed is removed.
+- **This is not a rollback.** Checking the whole document first stops a bad
+  document from being written; it does not make the write all-or-nothing on disk.
+  To recover from a partial import, fix the reported condition, publish each
+  draft the import left from the Builder (a second import does not publish a
+  draft an earlier one left), and inspect the same document again. Definitions
+  already present, drafts included, are planned as **Skip**, and a definition
+  that needs a draft is **Blocked** until that draft is published.
+
+<!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
+<!-- Source: webview-ui/src/lib/catalog-lifecycle.ts -->
+
+A Model Catalog plan uses a separate, single write. It sends only eligible model
+additions, grouped by backend, and checks the Model Catalog revision captured by
+inspection.
+
+<!-- Source: webview-ui/src/components/ProcessImport/process-import-state.ts -->
+<!-- Source: webview-ui/src/lib/save-models.ts -->
+
+## Choose the repositories the two reviews read
+
+Before each Code Review or Security Review iteration, Schegent resolves the repositories,
+runs the selected reviewer in each changed target, and supplies the review scope to the repair pass.
+The Phase includes that scope under `Review scope:`. For a feature across several repositories,
+declare the implementation repositories in the workspace root.
+
+### Declare the repositories
+
+Add a section headed exactly `## Implementation repositories` to the workspace root's
+`AGENTS.md`. Each bullet that starts with inline code is one repository:
+
+- the path relative to the workspace root, in inline code, with `.` for the root itself;
+- optionally, a second inline-code span, `(base: <ref>)`, naming the branch to compare against.
+  The base defaults to `develop`.
+
+A path or ref uses only letters, digits and the characters `.` `_` `/` `-`, and does not start
+with `-`. Every other line in the section is prose and is ignored. This example is for a planning
+root with linked repositories, which the reviews do not review themselves:
+
+```markdown
+## Implementation repositories
+
+The feature code lives in these linked repositories.
+
+- `client-source`
+- `datahub`
+- `shopify-app` `(base: main)`
+- `klaviyo`
+```
+
+A bullet that starts with inline code but breaks the form, such as one with a space in its path,
+makes the whole scope unresolved. It is never skipped as prose, so a typo cannot quietly drop a
+repository from the review. The same holds for a section with no entry, two such sections, and two
+entries that resolve to the same directory.
+
+### What is read, and what is not
+
+The root declaration determines the targets. Schegent reads the configured base in each
+target and selects committed, staged, unstaged, and untracked changes. The scope excludes
+`specs/`, `.specify/`, and nested Git repositories that are covered separately.
+
+Without a declaration the reviews infer the target, as before:
+
+- a standalone repository: the workspace root;
+- the envelope: `repo/`, when the root holds `specs/` and `repo/` is a repository, including a
+  `repo/` that is a linked worktree;
+- a planning root with linked repositories: neither applies, so the scope is unresolved until you
+  write the declaration.
+
+Schegent checks the repository top level with Git. Both regular checkouts and linked worktrees qualify.
+
+A linked repository, a Git entry of mode `160000`, is a repository and not a file. One the
+declaration does not name is listed as "changed, not declared, not reviewed" when it changed, which
+does not block the review, and as not reviewed when it did not. Without a declaration, a changed
+one inside the inferred repository stops the review instead, because the inferred target alone
+would hide it.
+
+### When the scope cannot be resolved
+
+Each of these is an unresolved condition: a declared path that does not exist, is outside the
+workspace, is not a repository top level, or has no base because its base branch does not resolve
+there; and a broken declaration, as described above. Each is reported as one counted finding,
+tagged `[needs-decision]`, naming the path and the reason. The review never reviews a substitute
+for it, and it never edits the declaration.
+
+- **The review never reports clear while one stands.** Findings count toward
+  `code_review_findings` and `security_review_findings`, so the loop condition stays true.
+- **It costs iterations.** The Phase retries up to its iteration cap, or stops early when
+  `schegent.loop.maxUnchangedComparisons` is set (see
+  [retry-contract.md](retry-contract.md#stopping-a-loop-whose-judged-metrics-stop-changing)), and a
+  Phase whose cap outcome is to fail, the default for these two, then fails the Run.
+- **The remedy is the declaration.** For a repository that has no `develop`, declare it with
+  `(base: <ref>)`. The reviews do not fall back to another branch, a remote-tracking ref or a
+  fetch.
+
+### What discovery never does
+
+Working out the scope only reads. It stages nothing, switches no branch, creates or deletes no
+branch, fetches nothing, stashes nothing, writes no ref, touches no index and updates no
+submodule. The reviews fix confirmed findings only inside the resolved targets and review the
+updated changes.
+
+### Review commands and fixes
+
+| Backend | Code Review | Security Review |
 |---|---|---|
-| `references-only` | The Pipeline alone, naming its Phases by id | The recipient already has those Phases |
-| `include-referenced` | The Pipeline plus the definitions of every Phase it references | The recipient has nothing, or you want one self-contained file |
+| Claude | Starts `/code-review --max-findings all` in a new headless Claude Code session. | Starts `/security-review` when the committed scope matches the default branch comparison for `origin`. Claude uses a scoped security review turn for a different base or local changes. |
+| Codex | Runs `codex exec --json --sandbox read-only review -` with the scoped review instructions on stdin. | Runs the separate `codex-security scan` CLI against the working tree and resolved base **only after explicit operator consent** via `Schegent: Grant Native Review Scanner` (`schegent.backend.uncontainedScanners` + workspace fingerprint binding); refused by default with zero subprocess spawns. |
+| Agy | Runs a dedicated Antigravity ACP turn for correctness findings. | Runs a dedicated Antigravity ACP turn for security findings and defensive fixes. |
 
-A **Workflow** has two levels, so it has three modes rather than two:
+Claude Code 2.1.288 or newer supports the `--max-findings` option. Codex Security (`codex-security`) is a standalone executable with **no observed OS containment sandbox** (`mechanism: 'none'`); granting `codex` alone never admits it. It needs `codex-security` on the extension host's sanitized PATH, its own configured credentials, and explicit opt-in via `Schegent: Grant Native Review Scanner` (and can be revoked at any time with `Schegent: Revoke Native Review Scanner`, returning to fail-closed zero-spawn refusal).
+[Claude Code review](https://code.claude.com/docs/en/code-review-local),
+[Claude Code commands](https://code.claude.com/docs/en/commands),
+[Codex Security CLI](https://learn.chatgpt.com/docs/security/cli/reference).
 
-| Mode | What the document carries | Use when |
-|---|---|---|
-| `references-only` | The Workflow alone | The recipient already has the whole tree |
-| `include-pipelines` | The Workflow plus its referenced Pipelines, without their Phases | The Phases are shared and you are only moving the composition |
-| `include-closure` | The Workflow, its Pipelines, and those Pipelines' Phases | The recipient has nothing |
+The repair pass receives each report and fixes confirmed findings. When it changes the reviewed
+patch, Schegent clears the verification metric and the Phase runs the reviewer again. A missing or
+failed reviewer report stops the Phase. The example gives each review its own retry condition and
+fails at the configured cap if findings remain or verification is incomplete.
 
-The choice travels with the request rather than being inferred. The same
-Workflow is legitimately exported at all three depths, and only you know
-how much the recipient already has.
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: src/controller/native-review.ts -->
+<!-- Source: src/services/acp-runtime/bridges/acp-stdio-bridge.ts -->
 
-A self-contained package is worth preferring when in doubt: it costs
-bytes, and it removes an entire class of `blocked` rows on the receiving
-end.
+## Finalize across repositories
 
-### 3. Where the document goes
+The new-feature example ends at `claude-finalize`. It runs repository checks, commits
+feature-owned paths, and reports any blockers. Merging follows the target repository's
+procedure. Schegent's own workspace requires a recorded gate and a merge with a gate trailer.
 
-Schegent opens its own save dialog. You choose the location there.
+Finalize uses the same repository declaration as review and adds the workspace root last on
+`develop` when the root is a repository top level and the declaration omits it.
 
-The result reports only what happened, never where:
+- Ownership comes from the feature directory, the plan or tasks, a named task that accounts
+  for the change, or the gitlink of a repository with feature work. A shared pointer belongs to
+  the feature while it names that feature's directory.
+- Finalize reports ambiguous paths as `[needs-decision]` and leaves them out of the commit.
+  This covers mixed ownership, partially staged files, and renames with an unowned side.
+- When checks pass and the blockers are resolved, Finalize stages untracked owned paths and
+  commits the owned paths explicitly. It handles the implementation repositories first and the
+  workspace root last.
+- The finalization record reports the checks, commits, skipped paths, and remaining hand-offs.
 
-| Outcome | Meaning |
-|---|---|
-| `saved` | A document was written |
-| `canceled` | You dismissed the save dialog. Nothing was written |
-| `unavailable` | See the table in step 1 |
-| `failed` | The write did not complete |
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
-A `failed` export reports a generic message — "Could not write the
-document." — and does not name the path it tried. Overwrite consent
-belongs to the save dialog, so export registers no separate confirmation
-of its own; dismissing the dialog is the cancel.
+## Bring an existing catalog to a revised example
 
-If a write fails repeatedly, check the destination directory's
-permissions and free space from a terminal. Schegent will not tell you
-which directory it was, by design.
+A catalog that already holds an example's ids does not pick up a later version of that
+example on its own. This section walks through the new-feature example's version 3, which
+revises the Phases `speckit-tasks`, `speckit-implement` and `finalize` and the Workflow
+`speckit-new-feature`. Each numbered step is one thing you do, or one thing that follows.
 
-## Model Catalog
+1. **An import skips what you already have.** Inspecting the revised example plans every id
+   the catalog already holds as **Skip**, at any status, and confirming writes nothing for
+   them. An import cannot deliver a changed definition, and deleting a row to import it again is not
+   the route: a deactivated row still claims its id.
+2. **Publish each changed definition by hand.** Open it in the catalog editor, replace its
+   fields with the revised document's, save a draft (**Save** on a Phase's page), then choose
+   **Publish**. For version 3 these are `speckit-tasks`, `speckit-implement` and `finalize`,
+   and the Workflow `speckit-new-feature` for its record. For version 4: `speckit-analyze`,
+   `speckit-implement`, `speckit-code-review`, `speckit-security-review` and `finalize`, which
+   ask for issue tags. For version 5: `speckit-code-review` and `speckit-security-review`, which
+   resolve the repositories to review (see
+   [Choose the repositories the two reviews read](#choose-the-repositories-the-two-reviews-read)),
+   and the Workflow `speckit-new-feature` for its record. The Workflow names its Phases by
+   id, so the Phases carry the behavior. Saving a Phase that declares `retryCondition`, as
+   `speckit-implement` does, needs the `retryConditions` capability.
 
-The Model Catalog — the list of model ids Schegent offers per backend —
-moves through the same **Import…**/**Export** buttons and the same file
-dialogs as a Phase, Pipeline, or Workflow, but several of the choices
-above do not apply to it. This section only covers where it differs; the
-document lifecycle (preview before write, confirm before commit) is the
-same one described above.
+   Version 6 is the first version of the example that adds a Phase. Inspecting the revised example plans
+   `integrate` as an **Import** row, because its id is new, and confirming writes it as a Draft;
+   every other id is still **Skip**. Publish in this order:
 
-**Still configuration, not a catalog store.** The Model Catalog is the
-one exchange target feature 099 left where it was: it is read from and
-written to configuration, has no version history, and produces no
-immutable version record on save. A Phase, Pipeline, or Workflow does all
-three.
+   1. `integrate`;
+   2. `finalize`, saved from the revised text (version 5), which now commits only the feature's
+      paths and no longer merges;
+   3. the Workflow `speckit-new-feature`, saved from the revised text (version 6).
 
-**Two outcomes, not four.** A Model Catalog row is never `blocked` or
-`invalid`: a model id has no dependency to be blocked on, and nothing
-about a model id can be defective the way a malformed Phase definition
-can.
+   The Workflow's node list changed, so "for its record" does not apply to it: publishing it is
+   what makes a newly composed item run `integrate`, and publishing it after `integrate` lets the
+   new node's Phase reference resolve. An item composed before the publish keeps its frozen snapshot and still
+   merges the version-4 way (see step 5).
 
-| Outcome | What it means | Will it be written? |
-|---|---|---|
-| `import` | This id is new for this backend | Yes |
-| `skip` | Something already claims this id, or the row cannot be classified | No |
+   Version 9 adds Converge and backend-specific Implement, Converge, and review Phases. Publish the
+   selected definitions first, then update and publish the Workflow. Its default path ends at
+   Finalize.
 
-`skip` carries one of two reasons, neither of which is the `blocked` or
-`invalid` reasons above:
+   Version 10 gives every Phase a backend-specific ID, including `claude-speckit-specify` and
+   `claude-speckit-finalize`. Import and publish the new IDs, then update the existing Workflow's
+   Phase bindings and publish it. Apply the revised instructions when publishing an existing
+   Implement or Converge Phase.
 
-| Reason | Meaning | What to do |
-|---|---|---|
-| `already-exists` | This backend already has this exact id, byte for byte — no case-folding, no whitespace-trimming | Nothing — it is already there |
-| `unrecognized-backend` | The group's `backend` is not one this workspace runs | Check the backend name against the ones this workspace supports, then re-export from a workspace that has the right ones |
+   Version 11 names review phases independently of Spec Kit, for example `claude-code-review`
+   and `codex-security-review`. The last node is `claude-finalize`. Publish the new definitions
+   before using their IDs in the Workflow.
 
-An empty model id is silently dropped rather than reported as a row of
-its own — the same convention the catalog editor already applies to a
-blank entry.
+   Version 12 updated the review instructions to use each backend's review mechanism and check
+   the patch after fixes. The current example declares version `1` for the Workflow and all
+   included Phases. It uses `nativeReview` for the review Phases and ends at Finalize. Save and
+   publish the revised review Phases and the Workflow to use native dispatch on new Runs.
+3. **The version number does not move.** The editor shows **Version** read-only, and a save
+   keeps it. The published copy carries the revised text under its old number. The catalog's
+   own record id (`v<N>`), which advances on every save, is what tells the two apart.
+4. **Compose new items after the publish.** A composed item freezes the definitions that are
+   active at the moment it is composed.
+5. **Decide about items queued earlier.** An item composed before the publish keeps its plan
+   and the old text: compose it again and enqueue it again if you want the new text. An item
+   enqueued without a plan resolves when its Run is created, so it runs whatever is active
+   then.
+6. **Existing Runs do not change.** A Run keeps the frozen snapshot it was created with,
+   including when it is resumed. A Run that failed at its retry cap under the old text runs
+   the old text again when resumed, so it can fail at the cap again.
+7. **Removing an old row deletes its session data.** Removing a Task deletes its Run's session
+   directory and raw transcript. A failed Run's failure record and the audit log stay. Copy what
+   you need first.
 
-**No inclusion-depth choice on export.** Export always produces the whole
-catalog, every backend, as one document. There is no
-references-only/include-referenced-style choice to make, and no
-per-resource **Export** button to press one entry at a time — one
-**Export Model Catalog** button covers all of it, even an empty catalog.
-
-## What the exchange never carries
-
-No filesystem path crosses between the extension host and the webview in
-either direction. You name a file in a host dialog; the panel never
-learns the answer, and no plan row, payload, or message carries one.
-
-An imported `retryCondition` is inert text to the exchange path: it is
-checked for presence, carried verbatim, and handed to the catalog's own
-validator, which owns its grammar. Nothing evaluates it during import.
-The trust gate keys on the field being *there*, never on what it says.
-
-## What is recorded
-
-Exchange activity is audited as metadata only — ids, versions, statuses,
-outcomes, counts, and the resource kind. No instruction text, prompt,
-transcript, file name, or workspace path appears in these entries, and
-there is no `scope` field: with one catalog per kind, the kind already
-says where the write went.
-
-| When | What is recorded |
-|---|---|
-| Preview | One entry per refused document. A planned document records nothing — no write was requested |
-| Confirm | One entry per catalog write of a package import, saying whether that write landed |
-| Export | One entry |
-
-A single-Phase import records nothing at commit: one write cannot be
-partial, so the catalog is already the record. A package can be partial,
-which is exactly why its writes are recorded individually.
-
-Long id lists are capped in the entry, but the untruncated count stays in
-`counts`, so a cap is visible rather than silent. See
-[Inspect audit logs](inspect-audit-logs.md) for how to read the log.
-
-## References
-
-- [Phase YAML exchange](../features/phase-yaml-exchange.md) — the
-  document format, the accepted YAML subset, and the full refusal
-  taxonomy
-- [Per-capability trust scopes](trust-scopes.md) — which scopes each
-  import shape requires
-- [Inspect audit logs](inspect-audit-logs.md) — reading the recorded
-  entries
-- [Configuration](configuration.md) — where the catalogs live
+<!-- Source: src/services/process-yaml/import-planner.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseEditorPage.svelte -->
+<!-- Source: webview-ui/src/components/PipelineBuilderEditors/PhaseEditorForm.svelte -->
+<!-- Source: webview-ui/src/components/Builder/DefinitionActions.svelte -->
+<!-- Source: src/catalog/version-record.ts -->
+<!-- Source: src/contracts/pipeline-definitions.ts -->
+<!-- Source: src/services/workflow-run-factory.ts -->
+<!-- Source: src/queue/feature-request.ts -->
+<!-- Source: src/controller/task-deletion.ts -->

@@ -30,7 +30,7 @@ import {
   STATE_SCHEMA_VERSION,
   STATE_SCHEMA_VERSION_V10
 } from '../../../src/contracts/state-schema';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueState } from '../../../src/queue/feature-request';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import {
@@ -119,9 +119,35 @@ function seedV10Workspace(memento: FakeMemento, run: WorkflowRun): void {
 let memento: FakeMemento;
 let run: WorkflowRun;
 
+/**
+ * FR-R4-F01 (spec 239, US4) — the seeded Run is frozen by a v14 build: every Phase records both
+ * verdict-basis fields. The verdict-basis step therefore has nothing to do here, and this file keeps
+ * pinning the v10 -> v11 reshape and its single write, which is what it is about. (The step has its
+ * own tests: `verdict-basis-migration.test.ts` and `verdict-basis-ladder.test.ts`.)
+ */
+function frozenByV14(source: WorkflowRun): WorkflowRun {
+  const snapshot = source.pipeline!;
+  return {
+    ...source,
+    // FR-R4-F02 (spec 240) — the same device for the v15 step: the seeded Run already carries the
+    // `creditPause` default, so that step writes nothing and this file keeps asserting that the
+    // v10 -> v11 reshape reaches `KEYS.run` once. (The v15 step has its own tests:
+    // `forward-migration-ladder.test.ts`.)
+    creditPause: null,
+    pipeline: {
+      ...snapshot,
+      phases: snapshot.phases.map((phase) => ({
+        ...phase,
+        hostVerification: 'exit-code' as const,
+        hostVerificationDeclaredAt: 'default' as const
+      }))
+    }
+  };
+}
+
 beforeEach(() => {
   memento = new FakeMemento();
-  run = buildWorkflowRun({ featureId: taskIdFor(OTHER_QUEUE) });
+  run = frozenByV14(buildWorkflowRun({ featureId: taskIdFor(OTHER_QUEUE) }));
 });
 
 describe('initialize() reshapes KEYS.run in every branch (T010, FR-002)', () => {
@@ -343,6 +369,16 @@ describe('KEYS.queue is untouched by the v11 migration (T011, guarantee 1)', () 
     expect(Object.keys(memento.get(KEYS.run) as object)).toEqual([OTHER_QUEUE]);
   });
 
+  // FR-006 is a claim about not LOSING the record, and that is what is asserted
+  // here: the Run is still in the map, under the default queue, and the reassign
+  // event fired. It is no longer asserted byte-identical, because a second repair
+  // later in the same ladder now has something to say about it.
+  //
+  // The two compose rather than collide. This migration files an unattributable
+  // Run under a queue so the reshape does not drop it; the orphan reconciler
+  // then observes that `task-nowhere` is a row in no queue and ends the Run, so
+  // it cannot hold that queue's occupancy gate shut forever. Preserving a Run is
+  // the migration's job; deciding it has no work left to do is not.
   it('reassigns a Run whose task belongs to no queue, rather than dropping it (FR-006)', async () => {
     const orphan = buildWorkflowRun({ id: 'run-orphan', featureId: 'task-nowhere' });
     seedV10Workspace(memento, orphan);
@@ -351,9 +387,16 @@ describe('KEYS.queue is untouched by the v11 migration (T011, guarantee 1)', () 
 
     const result = await new WorkspaceStateStore(memento).initialize();
 
-    expect(memento.get(KEYS.run)).toEqual({ [DEFAULT_QUEUE_ID]: orphan });
+    const persisted = memento.get(KEYS.run) as Record<string, { id: string; status: string }>;
+    expect(Object.keys(persisted)).toEqual([DEFAULT_QUEUE_ID]);
+    expect(persisted[DEFAULT_QUEUE_ID]).toMatchObject({
+      ...orphan,
+      status: 'canceled',
+      lastTransitionAt: expect.any(Number) as unknown as number
+    });
     expect(result.v11MigrationEvents.map((event) => event.type)).toContain(
       'run-reassigned-to-default-queue'
     );
+    expect(result.orphanedRunEvents.map((event) => event.runId)).toEqual(['run-orphan']);
   });
 });

@@ -185,7 +185,7 @@
     <div class="rc-warning" data-testid="retry-condition-warning" role="alert">
       <strong>Cross-artifact warning:</strong>
       The following identifier{missingIdentifiers.length === 1 ? '' : 's'} do not appear in
-      this phase's instruction —
+      this Phase's instruction —
       <span class="rc-missing">
         {#each missingIdentifiers as id, idx (id)}
           <code>{id}</code>{idx < missingIdentifiers.length - 1 ? ', ' : ''}
@@ -216,12 +216,12 @@
     font-size: 0.75em;
   }
   .rc-input {
-    background: var(--vscode-input-background);
+    background: var(--schegent-input-bg);
     color: var(--schegent-fg);
     border: 1px solid var(--sch-glass-border);
     border-radius: var(--schegent-radius);
     padding: 6px 8px;
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
     font-size: 0.9em;
     resize: vertical;
   }
@@ -236,7 +236,7 @@
     font-size: 0.85em;
   }
   .rc-status[data-state="valid"] {
-    color: var(--vscode-charts-green);
+    color: var(--schegent-status-completed-text);
   }
   .rc-status[data-state="invalid"] {
     color: var(--schegent-error-text);
@@ -246,10 +246,10 @@
     height: 8px;
     border-radius: 50%;
   }
-  .rc-pip-ok { background: var(--vscode-charts-green); }
+  .rc-pip-ok { background: var(--schegent-color-completed); }
   .rc-pip-err { background: var(--schegent-color-error); }
   .rc-warning {
-    color: var(--schegent-color-warning);
+    color: var(--schegent-status-warning-text);
     background: color-mix(in srgb, var(--schegent-color-warning) 8%, transparent);
     border: 1px solid color-mix(in srgb, var(--schegent-color-warning) 30%, transparent);
     border-radius: var(--schegent-radius);
@@ -258,9 +258,9 @@
     line-height: 1.4;
   }
   .rc-missing code {
-    background: var(--vscode-textCodeBlock-background);
+    background: var(--schegent-code-bg);
     padding: 1px 4px;
     border-radius: 3px;
-    font-family: var(--vscode-editor-font-family, monospace);
+    font-family: var(--schegent-mono-font);
   }
 </style>

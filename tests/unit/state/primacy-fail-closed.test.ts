@@ -102,15 +102,26 @@ function makeOpsCtx(): {
   };
 }
 
-/** The seven palette mutations, each with the argument its command passes. */
-const QUEUE_OPS: ReadonlyArray<readonly [string, (ctx: QueueOpsCtx) => Promise<void>]> = [
-  ['retry', (ctx) => runRetryQueuedItem('item-1', ctx)],
-  ['move up', (ctx) => runMoveQueuedItemUp('item-1', ctx)],
-  ['move down', (ctx) => runMoveQueuedItemDown('item-1', ctx)],
-  ['clear completed', (ctx) => runClearCompleted(ctx)],
-  ['clear failed', (ctx) => runClearFailed(ctx)],
-  ['pause', (ctx) => runPauseQueue(undefined, ctx)],
-  ['resume', (ctx) => runResumeQueue(ctx)]
+/**
+ * The seven palette mutations, each with the argument its command passes and
+ * the `QueueManager` methods it is expected to reach.
+ *
+ * The expected methods were a bare count of 1 until `retry` grew a second call:
+ * it resolves `queueIdForTask` before mutating, so its caller can drain *that*
+ * queue rather than sweeping Default. Naming the methods instead of counting
+ * them keeps the positive control specific — a count would have been satisfied
+ * by the read alone once the mutation stopped happening.
+ */
+const QUEUE_OPS: ReadonlyArray<
+  readonly [string, (ctx: QueueOpsCtx) => Promise<unknown>, readonly string[]]
+> = [
+  ['retry', (ctx) => runRetryQueuedItem('item-1', ctx), ['queueIdForTask', 'retry']],
+  ['move up', (ctx) => runMoveQueuedItemUp('item-1', ctx), ['moveUp']],
+  ['move down', (ctx) => runMoveQueuedItemDown('item-1', ctx), ['moveDown']],
+  ['clear completed', (ctx) => runClearCompleted(ctx), ['clearCompleted']],
+  ['clear failed', (ctx) => runClearFailed(ctx), ['clearFailed']],
+  ['pause', (ctx) => runPauseQueue(undefined, ctx), ['setQueuePausedState']],
+  ['resume', (ctx) => runResumeQueue(ctx), ['setQueuePausedState']]
 ];
 
 const NOW = Date.parse('2026-08-18T00:00:00.000Z');
@@ -163,16 +174,19 @@ describe('the fail-closed primacy posture (FR-R3-024 FR-019)', () => {
     expect(notifier.error).not.toHaveBeenCalled();
   });
 
-  it.each(QUEUE_OPS)('still performs the %s mutation while storage answers', async (_name, run) => {
-    // The positive control for the pair above. Without it, a `queue-ops`
-    // function that had become a no-op would satisfy every refusal assertion.
-    const { ctx, touched, notifier } = makeOpsCtx();
+  it.each(QUEUE_OPS)(
+    'still performs the %s mutation while storage answers',
+    async (_name, run, expectedTouched) => {
+      // The positive control for the pair above. Without it, a `queue-ops`
+      // function that had become a no-op would satisfy every refusal assertion.
+      const { ctx, touched, notifier } = makeOpsCtx();
 
-    await run(ctx);
+      await run(ctx);
 
-    expect(touched.length).toBe(1);
-    expect(notifier.warn).not.toHaveBeenCalled();
-  });
+      expect(touched).toEqual(expectedTouched);
+      expect(notifier.warn).not.toHaveBeenCalled();
+    }
+  );
 
   it('defers the watchdog sweep and leaves the deadline for the next tick', async () => {
     const states: Record<string, QueueState> = { alpha: due(NOW - 1) };

@@ -11,11 +11,12 @@
   const reversed = $derived(entries.slice().reverse());
   const empty = $derived(entries.length === 0);
 
-  const LEVEL_ICONS: Record<DebugLogEntry['level'], string> = {
-    DEBUG: '·',
-    INFO: 'ℹ',
-    WARN: '⚠',
-    ERROR: '✕'
+  /** The `.sg` status tone each level's chip takes. */
+  const LEVEL_TONES: Record<DebugLogEntry['level'], string> = {
+    DEBUG: 's-idle',
+    INFO: 's-run',
+    WARN: 's-warn',
+    ERROR: 's-err'
   };
 
   function levelClass(level: DebugLogEntry['level']): string {
@@ -23,130 +24,51 @@
   }
 </script>
 
-<section class="tail" aria-label="Debug log" data-testid="system-debug-log">
-  <header class="title">Debug log</header>
-  {#if empty}
-    <p class="empty" data-testid="system-empty">No debug log entries yet.</p>
-  {:else}
-    <ol data-testid="system-debug-list">
-      {#each reversed as entry (entry.id)}
-        <li
-          class="entry {levelClass(entry.level)}"
-          data-testid="system-entry-{entry.id}"
-          aria-label={entry.level}
-        >
-          <span class="time" data-testid="system-entry-time-{entry.id}">
-            {formatAbsoluteTime(entry.timestamp)}
-          </span>
-          <span class="level-badge" data-testid="system-entry-level-{entry.id}">
-            {LEVEL_ICONS[entry.level]}
-            <span class="level-label">{entry.level}</span>
-          </span>
-          <span class="message" data-testid="system-entry-message-{entry.id}">
-            {entry.message}
-          </span>
-        </li>
-      {/each}
-    </ol>
-  {/if}
+<section aria-label="Debug log" data-testid="system-debug-log">
+  <div class="table-wrap">
+    <div class="ltable" class:fit={empty}>
+      <div class="lhead" aria-hidden="true"><span>Time</span><span>Level</span><span>Message</span></div>
+      {#if empty}
+        <p class="empty" data-testid="system-empty">No debug log entries yet.</p>
+      {:else}
+        <ol data-testid="system-debug-list">
+          {#each reversed as entry (entry.id)}
+            <li
+              class="entry {levelClass(entry.level)}"
+              data-testid="system-entry-{entry.id}"
+              aria-label={entry.level}
+            >
+              <span class="cell time mono muted" data-testid="system-entry-time-{entry.id}">{formatAbsoluteTime(entry.timestamp)}</span>
+              <span class="cell">
+                <span class="chip {LEVEL_TONES[entry.level]}" data-testid="system-entry-level-{entry.id}"><span class="dot"></span><span class="level-label">{entry.level}</span></span>
+              </span>
+              <span class="cell message" data-testid="system-entry-message-{entry.id}">{entry.message}</span>
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    </div>
+  </div>
 </section>
 
 <style>
-  .tail {
-    padding: var(--schegent-pad);
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    flex-direction: column;
-    gap: 4px;
-    overflow: hidden;
+  .ltable {
+    grid-template-columns: max-content max-content minmax(0, 1fr);
   }
 
-  .title {
-    color: var(--schegent-muted-fg);
-    font-size: 0.8em;
-  }
-
-  .empty {
-    margin: 0;
-    color: var(--schegent-muted-fg);
-    font-style: italic;
-  }
-
-  ol {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    flex-direction: column;
-    gap: 0;
-    margin: 0;
-    padding: 0;
-    overflow-y: auto;
-    font-family: var(--schegent-mono-font, ui-monospace, SFMono-Regular, monospace);
-    font-size: 0.8em;
-    line-height: 1.5;
-    list-style: none;
-  }
-
-  .entry {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    padding: 1px 4px;
-    color: var(--schegent-muted-fg);
-    white-space: nowrap;
-  }
-
-  .entry:hover {
-    background: var(--vscode-list-hoverBackground, transparent);
-  }
-
-  .time {
-    flex-shrink: 0;
-    opacity: 0.6;
-    font-size: 0.9em;
-  }
-
-  .level-badge {
-    display: inline-flex;
-    align-items: center;
-    flex-shrink: 0;
-    gap: 3px;
-    min-width: 4.5em;
-  }
-
+  /* The chip shows the log's own word with only its first letter capitalised ("Error"); the
+     document keeps the word as the log wrote it. */
   .level-label {
-    font-size: 0.85em;
-    font-weight: 600;
+    display: inline-block;
+    text-transform: lowercase;
+  }
+
+  .level-label::first-letter {
+    text-transform: uppercase;
   }
 
   .message {
-    min-width: 0;
     white-space: pre-wrap;
-    word-break: break-word;
-    overflow-wrap: break-word;
-  }
-
-  .level-debug {
-    color: var(--schegent-muted-fg);
-  }
-
-  .level-info,
-  .level-warn,
-  .level-error {
-    color: var(--schegent-fg);
-  }
-
-  .level-info .level-badge {
-    color: var(--schegent-color-active);
-  }
-
-  .level-warn .level-badge {
-    color: var(--schegent-color-warning);
-  }
-
-  .level-error .level-badge,
-  .level-error .message {
-    color: var(--schegent-error-text);
+    overflow-wrap: anywhere;
   }
 </style>

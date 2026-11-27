@@ -1,6 +1,6 @@
 <script lang="ts">
   // Feature 029 T029 — visual highlight for a detected SCHEGENT AUDIT
-  // LOG footer block. Pairs the parsed status (CLEAR / FAILED / UNKNOWN)
+  // LOG footer block. Pairs the parsed status (CLEAR / UNKNOWN)
   // with a colored badge and renders the block body inside the shared
   // MultiLineCodeBlock so newlines render correctly. Pure renderer —
   // the host has already sanitized the block bytes at the IPC boundary
@@ -17,11 +17,19 @@
 
   const STATUS_LABEL: Record<AuditFooterMatch['status'], string> = {
     CLEAR: 'CLEAR',
-    FAILED: 'FAILED',
     UNKNOWN: 'UNKNOWN'
+  };
+
+  // The redesign's status chip colours: done for a clear log, warning for one whose status
+  // could not be read.
+  const STATUS_CHIP: Record<AuditFooterMatch['status'], string> = {
+    CLEAR: 's-ok',
+    UNKNOWN: 's-warn'
   };
 </script>
 
+<!-- A framed block in the log's body column, its frame tinted by the status: a caption line naming
+     the audit log with the redesign's status chip, then the block itself. -->
 <article
   class="audit-completion-card"
   data-testid="audit-completion-card"
@@ -29,7 +37,9 @@
 >
   <header class="header">
     <span class="label">Schegent audit log</span>
-    <span class="badge" data-badge={match.status}>{STATUS_LABEL[match.status]}</span>
+    <span class="chip {STATUS_CHIP[match.status]}" data-badge={match.status}
+      ><span class="dot" aria-hidden="true"></span>{STATUS_LABEL[match.status]}</span
+    >
   </header>
   <div class="body">
     <MultiLineCodeBlock text={match.blockText} />
@@ -40,56 +50,30 @@
   .audit-completion-card {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    border: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
-    border-radius: var(--schegent-radius-sm, 4px);
-    padding: 0.375rem 0.5rem;
-    margin: 0.25rem 0;
-    background: var(--vscode-editorWidget-background, transparent);
+    gap: var(--schegent-space-1-5);
+    margin: var(--schegent-space-1) 0;
+    padding: var(--schegent-space-1-5) var(--schegent-space-2);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius-sm);
+    background: var(--schegent-surface);
   }
   .audit-completion-card[data-status='CLEAR'] {
-    border-color: color-mix(in srgb, var(--vscode-testing-iconPassed) 55%, var(--schegent-border));
-  }
-  .audit-completion-card[data-status='FAILED'] {
-    border-color: color-mix(in srgb, var(--vscode-testing-iconFailed) 55%, var(--schegent-border));
+    border-color: color-mix(in srgb, var(--schegent-color-completed) 55%, var(--schegent-border));
   }
   .audit-completion-card[data-status='UNKNOWN'] {
-    border-color: color-mix(in srgb, var(--vscode-testing-iconQueued) 55%, var(--schegent-border));
+    border-color: color-mix(in srgb, var(--schegent-color-warning) 55%, var(--schegent-border));
   }
   .header {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.75rem;
+    gap: var(--schegent-space-2);
   }
+  /* The redesign's small section label. */
   .label {
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.7;
-  }
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.0625rem 0.375rem;
-    border-radius: 999px;
+    color: var(--schegent-muted-fg);
+    font-size: var(--schegent-text-caption);
     font-weight: 600;
-    font-size: 0.7rem;
-    letter-spacing: 0.04em;
-    line-height: 1.4;
-  }
-  .badge[data-badge='CLEAR'] {
-    background: var(--vscode-testing-iconPassed, transparent);
-    color: var(--vscode-editor-background, transparent);
-  }
-  .badge[data-badge='FAILED'] {
-    background: var(--vscode-testing-iconFailed, transparent);
-    color: var(--vscode-editor-background, transparent);
-  }
-  .badge[data-badge='UNKNOWN'] {
-    background: var(--vscode-testing-iconQueued, transparent);
-    color: var(--vscode-editor-background, transparent);
-  }
-  .body {
-    margin: 0;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
 </style>

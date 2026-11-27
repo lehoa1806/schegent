@@ -119,8 +119,10 @@ const BASELINED_SVELTE_RULES = {
   'svelte/prefer-writable-derived': 'warn'
 };
 
-// Carried over from `eslintConfig.ignorePatterns`: 7 of the 10, dropping exactly
-// `webview-ui/`, `*.mjs` and `*.config.js` and adding none (FR-005, SC-008).
+// Carried over from `eslintConfig.ignorePatterns` (dropping `webview-ui/`,
+// `*.mjs` and `*.config.js`; FR-005, SC-008) plus the documented scratch and
+// generated artifact directories excluded by the host lint input-set contract
+// (FR-R7-15 W14).
 //
 // `webview-ui/` is absent by design rather than by oversight: the webview is no
 // longer excluded from linting, it is linted by its own pass over its own tsconfig
@@ -133,7 +135,14 @@ const CARRIED_IGNORES = [
   '.specify/**',
   'specs/**',
   'docs/**',
-  '.claude/**'
+  '.claude/**',
+  'scratch/**',
+  '.tmp/**',
+  'coverage/**',
+  '.vscode-test/**',
+  '.release/**',
+  'tests/visual/.artifacts/**',
+  'tests/soak/.artifacts/**'
 ];
 
 /**
@@ -227,11 +236,10 @@ export const hostConfig = [
   },
   {
     // The root package.json declares no `type`, so `.js` in this tree is
-    // CommonJS — two CLI stubs node launches directly, tests/e2e/fixtures/
-    // fake-claude/index.js and tests/fixtures/mock-claude/index.js. Declaring
-    // `globals.node` here is what replaced the `/* eslint-env node */` comment
-    // the first of them carried: flat config no longer honours that comment, and
-    // ESLint 10 will reject it outright (FR-022).
+    // CommonJS — the one CLI stub node launches directly, tests/e2e/fixtures/
+    // fake-claude/index.js. Declaring `globals.node` here is what replaced the
+    // `/* eslint-env node */` comment it carried: flat config no longer honours
+    // that comment, and ESLint 10 will reject it outright (FR-022).
     files: ['**/*.js', '**/*.cjs'],
     languageOptions: {
       ecmaVersion: 2022,

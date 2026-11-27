@@ -10,7 +10,7 @@ import {
   RETRY_BUFFER_MS,
   RETRY_FLOOR_MS,
   TRANSIENT_BACKOFF_MS
-} from '../../../src/controller/retry-constants';
+} from '../../../src/contracts/retry-bounds';
 
 class FixedClock implements BackoffClock {
   constructor(private epoch: number) {}

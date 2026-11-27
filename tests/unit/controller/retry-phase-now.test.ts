@@ -6,12 +6,14 @@
 // schedules resume on the next tick.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 // Feature 098 (T080) — the controller no longer carries a compiled-in catalog,
 // so a test that drives Phases supplies one. See the fixture header for why the
 // ids here are the real Spec Kit ones.
 import { buildSpeckitCatalog } from '../../fixtures/speckit-catalog-fixture';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../../recording-deadline-timer';
+import { waitForCondition } from '../../wait-for-condition';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -20,7 +22,7 @@ import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -104,10 +106,7 @@ let statusBar: SchegentStatusBar;
 let notifier: Notifier;
 let lock: WorkspaceLockManager & { release: ReturnType<typeof vi.fn> };
 let auditWriter: { append: ReturnType<typeof vi.fn> };
-let watchdog: {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-};
+let deadlineTimer: RecordingDeadlineTimer;
 
 beforeEach(async () => {
   memento = new FakeMemento();
@@ -118,7 +117,7 @@ beforeEach(async () => {
   notifier = makeNotifier();
   lock = makeLock();
   runSpy = vi.fn();
-  phaseRunner = { run: runSpy } as unknown as PhaseRunner;
+  phaseRunner = { run: runSpy, evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   const auditAppend = vi.fn();
   auditAppend.mockImplementation(async (entry: Record<string, unknown>) => ({
     id: 'mock-audit-id',
@@ -126,12 +125,7 @@ beforeEach(async () => {
     ...entry
   }));
   auditWriter = { append: auditAppend };
-  const pauseAndPoll = vi.fn();
-  pauseAndPoll.mockImplementation(async () => {});
-  watchdog = {
-    pauseAndPoll,
-    cancelPendingTimer: vi.fn()
-  };
+  deadlineTimer = new RecordingDeadlineTimer();
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -144,7 +138,7 @@ beforeEach(async () => {
     {
       catalog: buildSpeckitCatalog(),
       auditWriter: auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
-      watchdog: watchdog as unknown as DelayedRetryWatchdog
+      deadlineTimer
     }
   );
 });
@@ -169,10 +163,13 @@ describe('retryPhaseNow — rejection guards', () => {
     // with no armed retry, which is what is arranged here.
     await store.setRun(DEFAULT_QUEUE_ID, {
       ...store.getRun(DEFAULT_QUEUE_ID)!,
+      id: 'run-paused-not-retrying',
       status: 'paused',
       pendingRetryAt: null,
       pendingRetryCause: null
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(false);
@@ -196,7 +193,7 @@ describe('retryPhaseNow — rejection guards', () => {
 });
 
 describe('retryPhaseNow — happy path', () => {
-  it('cancels the watchdog timer, resets counter, emits retry-manual audit', async () => {
+  it('clears the armed retry deadline, resets counter, emits retry-manual audit', async () => {
     let calls = 0;
     runSpy.mockImplementation(async () => {
       calls++;
@@ -212,12 +209,16 @@ describe('retryPhaseNow — happy path', () => {
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    expect(watchdog.cancelPendingTimer).toHaveBeenCalledOnce();
+    // The failure armed one deadline on the coordinator's own timer; the manual retry cleared it.
+    expect(deadlineTimer.sets).toHaveLength(1);
+    expect(deadlineTimer.armed()).toHaveLength(0);
 
     // Settled state (after setImmediate-driven resumeExisting) — count
     // resets to 0 and pendingRetry* clear.
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => store.getRun(DEFAULT_QUEUE_ID)?.status === 'completed',
+      { label: 'retryPhaseNow resumed run completion' }
+    );
 
     const settled = store.getRun(DEFAULT_QUEUE_ID)!;
     expect(settled.delayedRetryCount).toBe(0);
@@ -257,14 +258,18 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
       pendingRetryAt: Date.now() + 60_000,
       pendingRetryCause: 'transient_error',
       status: 'paused'
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     runSpy.mockImplementation(async () => makeOutput());
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => store.getRun(DEFAULT_QUEUE_ID)?.status === 'completed',
+      { label: 'retryPhaseNow resumed run completion after cap unpause' }
+    );
 
     expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(false);
     expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBeNull();
@@ -286,8 +291,10 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => runSpy.mock.calls.length >= 2 && deadlineTimer.sets.length >= 2,
+      { label: 'retryPhaseNow resumed invocation settled' }
+    );
 
     expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
     expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe('retry-cap-exhausted:some-other-run-id-9999');
@@ -303,8 +310,10 @@ describe('retryPhaseNow — queue unpause gating (FR-009)', () => {
     const result = await controller.retryPhaseNow();
     expect(result.ok).toBe(true);
 
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setTimeout(r, 5));
+    await waitForCondition(
+      () => runSpy.mock.calls.length >= 2 && deadlineTimer.sets.length >= 2,
+      { label: 'retryPhaseNow resumed invocation settled' }
+    );
 
     expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle === 'operator-paused').toBe(true);
     expect(store.getQueue(DEFAULT_QUEUE_ID).pausedReason).toBe('operator-paused');

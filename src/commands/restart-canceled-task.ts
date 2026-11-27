@@ -1,22 +1,58 @@
 import type { QueueManager } from '../queue/queue-manager';
+import { withRefreshedLifecycle } from '../queue/queue-lifecycle-refresh';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { describeFailure } from '../lib/errors';
+import { QueueMutationRejected, type WorkspaceStateStore } from '../state/workspace-state';
 import type { FeatureRequest } from '../queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { MAX_PENDING_TASKS_PER_QUEUE } from '../queue/feature-request';
+import { decideTaskTransition } from '../queue/task-transition-decision';
+import { workflowAttemptEndedForQueueItem } from '../state/connected-workflow-run';
 
-export type RestartCanceledResult = { ok: true } | { ok: false; reason: string };
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when a
+ * restart fails for a reason the function has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. The typed refusals `task-cap-reached` and `illegal-state` keep their codes
+ * and add no toast of their own.
+ */
+export const RESTART_FAILED_TOAST =
+  'Schegent: the task could not be restarted. See the Schegent log for details.';
+
+/**
+ * Why a restart of a Workflow attempt's row is refused. The registration in `ui-wiring` shows nothing
+ * for a refusal, and this one needs saying: the exit is on another surface.
+ */
+export const RESTART_WORKFLOW_ATTEMPT_ENDED_TOAST =
+  "Schegent: this Task's Workflow attempt has ended. Retry it from the Workflow run.";
+
+export type RestartCanceledResult =
+  | { ok: true; queueId: string }
+  | { ok: false; reason: string };
 
 /**
  * Feature 017 — BUG-001. Transition a `canceled` FeatureRequest back to
- * `pending` so the queue dequeue pump picks it up on the next tick.
+ * `pending`, and report the queue it landed on so the caller can ask that queue
+ * to drain.
+ *
+ * This used to say the row would be picked up "by the queue dequeue pump on the
+ * next tick". **There is no dequeue pump.** `AutoDrainCoordinator` is
+ * edge-triggered — a drain happens only where some call site asks for one — and
+ * the only periodic sweep in the subsystem, `QueueScheduleWatchdog.tick()`,
+ * filters to queues with an elapsed `scheduledStartAt`, which an ordinary
+ * restarted Task never has. So the restarted row sat `pending` with nothing to
+ * start it. Returning `queueId` is what lets the registration in `ui-wiring`
+ * supply the trigger, the same way `schegent.enqueue` already does for the same
+ * state transition.
  *
  * Invariants:
  *  - Reject `not-found` when no FeatureRequest matches `taskId`.
  *  - Reject `illegal-state` when the matched task is not in `canceled`
  *    status (operator may have already retried via a different path).
+ *  - Reject `workflow-attempt-ended` when a Workflow attempt started this row
+ *    and has since ended: the attempt's result would have nowhere to go.
  *  - Reject `task-cap-reached` when the target queue is already at the
  *    100-task pending cap (FR-029 ceiling).
  *  - Preserve `description`, `queueId`, `pipelineId`, `rerun`, and
@@ -44,8 +80,25 @@ export async function runRestartCanceledTask(ctx: {
       ctx.notifier.info('Schegent: cannot restart — task not found.');
       return { ok: false, reason: 'not-found' };
     }
+    // FR-R3-153 (T1636/T1637, code-review fix 2026-09-03) — this function's
+    // own identity is narrower than the shared classifier's 'return-to-pending'
+    // edge (paused/failed/canceled all legal): it restarts a `canceled` task
+    // specifically, leaving `retry()` to own paused/failed. A `decideTaskTransition`
+    // call here would be provably non-load-bearing — the classifier's only
+    // pre-edge check is existence, already made by `!feature` above (FR-R3-161
+    // removed the ownership input this clause used to name), and `'canceled'` is
+    // always a member of the classifier's accepted set for this operation, so
+    // its `.eligible` verdict could never disagree with the plain equality
+    // check below. This fast-fail (before entering `store.updateQueue`) is a
+    // pure optimization; the authoritative, TOCTOU-safe check is the one
+    // inside the mutator below.
     if (feature.status !== 'canceled') {
       return { ok: false, reason: 'illegal-state' };
+    }
+    const connectedRuns = Object.values(ctx.store.getConnectedRuns());
+    if (connectedRuns.some((run) => workflowAttemptEndedForQueueItem(run, taskId))) {
+      ctx.notifier.warn(RESTART_WORKFLOW_ATTEMPT_ENDED_TOAST);
+      return { ok: false, reason: 'workflow-attempt-ended' };
     }
 
     const targetQueueId = feature.queueId ?? DEFAULT_QUEUE_ID;
@@ -57,16 +110,32 @@ export async function runRestartCanceledTask(ctx: {
     // a task on any other queue the read-back found no matching row, so the
     // restart returned `null` and reported `illegal-state` — a live task the
     // operator asked to restart, refused for a reason that was not true.
-    const restarted = await ctx.store.updateQueue<FeatureRequest | null>((queue) => {
+    const restarted = await ctx.store.updateQueue<FeatureRequest>((queue) => {
       const current = queue.requests.find((request) => request.id === taskId);
-      if (!current || current.status !== 'canceled') return { queue, result: null };
+      const decision = decideTaskTransition({
+        operation: 'return-to-pending',
+        currentStatus: current?.status,
+        queueAlreadyHasDifferentInFlight: false
+      });
+      // Thrown, not returned — a value returned from this mutator is always
+      // committed (with a bumped `updatedAt`) by `store.updateQueue`, so the
+      // only way to leave timestamps completely unchanged on refusal (spec
+      // FR-004) is to never reach that commit. Caught below, alongside this
+      // function's existing `'task-cap-reached'` throw. Typed as
+      // `QueueMutationRejected` (code-review fix 2026-09-03) rather than a
+      // bare `Error` — an inner layer throws a typed/domain error, matching
+      // every other writer this feature touches (`queue-manager.ts`'s
+      // `finish`/`pause`/`retry`).
+      if (!decision.eligible || current === undefined || current.status !== 'canceled') {
+        throw new QueueMutationRejected('illegal-source-status', `Cannot restart ${taskId}: illegal-state`);
+      }
       const pendingInTarget = queue.requests.filter(
         (request) =>
           (request.queueId ?? DEFAULT_QUEUE_ID) === targetQueueId &&
           request.status === 'pending'
       );
       if (pendingInTarget.length >= MAX_PENDING_TASKS_PER_QUEUE) {
-        throw new Error('task-cap-reached');
+        throw new QueueMutationRejected('task-cap-reached', `Cannot restart ${taskId}: task-cap-reached`);
       }
       const next: FeatureRequest = {
         ...current,
@@ -81,17 +150,23 @@ export async function runRestartCanceledTask(ctx: {
         pausedReason: null,
         pauseCause: null
       };
+      const nextQueue = {
+        ...queue,
+        requests: queue.requests.map((request) =>
+          request.id === taskId ? next : request
+        )
+      };
       return {
-        queue: {
-          ...queue,
-          requests: queue.requests.map((request) =>
-            request.id === taskId ? next : request
-          )
-        },
+        // The queue just gained pending work, so its unheld lifecycle is
+        // refreshed to match. A *held* queue (`operator-paused`,
+        // `idle-pending`) comes back untouched, so a restart never releases a
+        // hold the operator or a schedule put there — see
+        // `queue-lifecycle-refresh.ts` for why that distinction is the whole
+        // point of the helper.
+        queue: withRefreshedLifecycle(nextQueue),
         result: next
       };
-    }, targetQueueId);
-    if (!restarted) return { ok: false, reason: 'illegal-state' };
+    }, targetQueueId, ctx.store.runCommitClaim(targetQueueId));
 
     await ctx.audit.append({
       runId: previousRunId ?? `task:${feature.id}`,
@@ -107,12 +182,21 @@ export async function runRestartCanceledTask(ctx: {
     });
 
     ctx.notifier.info('Schegent: task restarted.');
-    return { ok: true };
+    return { ok: true, queueId: targetQueueId };
   } catch (err) {
-    const message = (err as Error).message ?? 'unknown error';
-    if (message === 'task-cap-reached') return { ok: false, reason: message };
-    ctx.notifier.error(`Schegent: restart failed — ${message}`);
-    ctx.logger.error(message);
+    // Code-review fix (2026-09-03) — the mutator's two refusals are now a
+    // typed `QueueMutationRejected` rather than a bare `Error`; this maps its
+    // `reason` back to this function's own, pre-existing public vocabulary
+    // (`'illegal-state'` / `'task-cap-reached'`) rather than string-matching
+    // `.message`.
+    if (err instanceof QueueMutationRejected) {
+      if (err.reason === 'task-cap-reached') return { ok: false, reason: 'task-cap-reached' };
+      if (err.reason === 'illegal-source-status') return { ok: false, reason: 'illegal-state' };
+    }
+    ctx.notifier.error(RESTART_FAILED_TOAST);
+    ctx.logger.error('restart-canceled-task: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
     return { ok: false, reason: 'unexpected-error' };
   }
 }

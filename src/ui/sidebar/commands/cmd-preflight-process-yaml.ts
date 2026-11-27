@@ -1,10 +1,12 @@
 // Feature 084 T030/T031 — import preflight: read one document, say what
 // importing it would do, change nothing.
 //
-// Read-only by construction (FR-031, FR-032). It writes no configuration, moves
-// no layer revision, takes no lock, and retains nothing past the read, so it is
-// deliberately NOT a member of `MUTATING_COMMANDS`. The write happens later,
-// through `CMD_PUBLISH_PACKAGE`, which IS gated.
+// It changes no configuration, moves no layer revision, takes no lock, and
+// retains nothing past the read (FR-031, FR-032). It is gated all the same
+// (FR-R4-F05, FR-003) because a refusal appends an audit row
+// (`services/process-yaml/preflight-service.ts`), and it is not serialized: it
+// waits on an open dialog, which must not hold queue mutations. The write it
+// precedes goes through `CMD_PUBLISH_PACKAGE`, which is gated too.
 //
 // This directory imports no `vscode`: the open dialog and the read are an
 // injected dependency (`openProcessYamlDocument`) wired in `src/extension.ts`,
@@ -26,7 +28,10 @@
 // operator to classify a file before opening it would make "picked the wrong
 // per-kind action" a reachable failure (FR-055a).
 
-import { preflightProcessDocument } from '../../../services/process-yaml/preflight-service';
+import {
+  preflightOversizedDocument,
+  preflightProcessDocument
+} from '../../../services/process-yaml/preflight-service';
 import type { PreflightProcessYamlCommand, PreflightProcessYamlResult } from '../messages';
 import type { CommandHandler, HandlerContext } from './handler-contract';
 import { ack } from './handler-helpers';
@@ -67,6 +72,15 @@ export const handler: CommandHandler<PreflightProcessYamlCommand> = async (ctx) 
   }
   if (opened.outcome === 'failed') {
     await respond(ctx, { outcome: 'failed', message: 'Could not read the document.' });
+    return;
+  }
+  // Feature 254 (FR-003) — the host judged the file over the cap before reading it, so there are no
+  // bytes. The refusal and its audit row are the parser's own, built in one place.
+  if (opened.outcome === 'too-large') {
+    await respond(
+      ctx,
+      await preflightOversizedDocument(ctx.deps, { correlationId: ctx.correlationId })
+    );
     return;
   }
 

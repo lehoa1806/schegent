@@ -20,7 +20,6 @@
 // Existence is asked of an injected probe rather than of `fs` directly, so this
 // module stays pure and the composing validator owns the one filesystem seam.
 
-import * as path from 'node:path';
 import type { PipelineOutputPort } from '../../contracts/pipeline-definitions';
 import type {
   FrozenOutputRequest,
@@ -28,6 +27,7 @@ import type {
   RunRequestErrorCode,
   RunRequestFieldError
 } from '../../contracts/run-request';
+import { outputTargetIdentity } from '../../lib/output-target-identity';
 import { resolveWithinWorkspace } from './workspace-containment';
 
 /** Answers whether something already occupies a resolved absolute path. */
@@ -96,7 +96,10 @@ export async function validateOutputTargets(
       continue;
     }
 
-    const key = normalizeForCollision(contained.absolutePath);
+    // FR-R3-079 (T1059) — canonical, not lexical. Two names that reach one file
+    // through a link are one claim; the old `path.normalize` compare called them
+    // two and let the Run race itself for a single file.
+    const key = (await outputTargetIdentity(input.workspaceRoot, contained.absolutePath)).key;
     const claimedBy = claimedPaths.get(key);
     if (claimedBy !== undefined) {
       errors.push(
@@ -169,7 +172,8 @@ export async function validateOutputTargets(
  * so `Out/A.md` and `out/a.md` are recognized as one target there. On Linux they
  * are genuinely two files and are left distinct.
  */
-function normalizeForCollision(absolutePath: string): string {
-  const normalized = path.normalize(absolutePath);
-  return process.platform === 'linux' ? normalized : normalized.toLowerCase();
-}
+// `normalizeForCollision` was deleted by FR-R3-079 (T1059). It normalized and
+// case-folded a pathname, which is a comparison of NAMES; identity now comes from
+// `lib/output-target-identity.ts`, which canonicalizes the existing ancestry so
+// two names for one file compare equal. Recorded rather than removed silently,
+// because "normalize then compare" is the obvious thing to write again.

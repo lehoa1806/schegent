@@ -1,0 +1,228 @@
+import { describe, expect, it, vi } from 'vitest';
+import { ProcessTreeDegradationRecorder } from '../../../src/controller/process-tree-degradation-recorder';
+import type { AuditEntry } from '../../../src/audit/audit-entry';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+/**
+ * FR-R3-083 / FR-R3-054 §5 (T1163) — the degraded terminal state, in evidence.
+ *
+ * `FR-R3-054` shipped a `logger.warn` and recorded that as the half that shipped:
+ * its acceptance asks for the degraded path to be "visibly recorded in evidence",
+ * and a runtime-log line is not the audit record. An operator reconstructing why a
+ * later phase saw foreign writes had nothing to read.
+ *
+ * ABSENCE IS THE SIGNAL. The recorder is only called when the tree could not be
+ * proven gone, so a Run with no such entry is one whose descendants were accounted
+ * for. That is asserted here by asserting the recorder is not a no-op AND that
+ * nothing else emits.
+ */
+function harness(): {
+  readonly appended: Omit<AuditEntry, 'id' | 'timestamp'>[];
+  readonly recorder: ProcessTreeDegradationRecorder;
+} {
+  const appended: Omit<AuditEntry, 'id' | 'timestamp'>[] = [];
+  const recorder = new ProcessTreeDegradationRecorder(async (entry) => {
+    appended.push(entry);
+    return { ...entry, id: 'x', timestamp: '2026-08-25T00:00:00.000Z' } as AuditEntry;
+  });
+  return { appended, recorder };
+}
+
+const EVENT = {
+  runId: 'run-1',
+  phase: 'implement',
+  iteration: 2,
+  pid: 4242,
+  runner: 'claude-cli',
+  escalation: 'sigterm-then-sigkill'
+} as const;
+
+describe('process-tree degradation recorder (FR-R3-083)', () => {
+  it('records exactly one entry for an unconfirmed tree', async () => {
+    const h = harness();
+    await h.recorder.record(EVENT);
+    expect(h.appended).toHaveLength(1);
+    expect(h.appended[0].eventType).toBe('process-tree-unconfirmed');
+    expect(h.appended[0].runId).toBe('run-1');
+    expect(h.appended[0].phase).toBe('implement');
+    expect(h.appended[0].iteration).toBe(2);
+  });
+
+  it('carries identifiers and a bounded class, and nothing else', async () => {
+    // FR-032. No path, no argv, no operator-authored content, no message. The
+    // payload has nowhere to put a secret, which is what makes it safe without
+    // redaction -- the same discipline BackendPostureAdmittedPayload states.
+    const h = harness();
+    await h.recorder.record(EVENT);
+    const payload = h.appended[0].payload;
+    expect(Object.keys(payload).sort()).toEqual(['escalation', 'pid', 'runner']);
+    expect(payload.escalation).toBe('sigterm-then-sigkill');
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toMatch(/[/\\]/);
+  });
+
+  it('records info, not failure, because the phase itself is not failed', async () => {
+    // `AuditOutcome` is the closed union success | failure | info. The phase may
+    // well have succeeded; what is degraded is the claim that the work stopped.
+    // `failure` would make a Run that completed read as one that did not.
+    const h = harness();
+    await h.recorder.record(EVENT);
+    expect(h.appended[0].outcome).toBe('info');
+  });
+
+  it('carries the escalation the runner reported, rather than stamping one', async () => {
+    // The recorder must not invent this. Today the union has one member, because
+    // the ladder escalates on the GROUP and so a report is only reachable after a
+    // delivered SIGKILL -- but the value travels from the runner, so a second rung
+    // added later reaches the audit record without touching this file.
+    const h = harness();
+    await h.recorder.record({ ...EVENT, escalation: 'sigterm-then-sigkill' });
+    expect(h.appended[0].payload.escalation).toBe('sigterm-then-sigkill');
+  });
+
+  it('drops an unattributable event rather than guessing a Run', async () => {
+    // With more than one Run in a window, attributing this to whichever Run is
+    // enumerated first records a surviving process against a Run that never spawned
+    // it. A missing entry is a gap; a wrong one is a false lead.
+    const h = harness();
+    await h.recorder.record({ ...EVENT, runId: null });
+    expect(h.appended).toEqual([]);
+  });
+
+  it('survives a writer disposed by deactivation', async () => {
+    // T1159a. `deactivate()` disposes context.subscriptions, the audit writer among
+    // them, and this fires on an unref'd timer AFTER the tree was killed -- which is
+    // often killed BECAUSE the extension is going away. An append into a disposed
+    // writer is the expected case here, not an edge one.
+    const disposed = new ProcessTreeDegradationRecorder(() => {
+      throw new Error('audit writer disposed');
+    });
+    await expect(disposed.record(EVENT)).resolves.toBeUndefined();
+  });
+
+  it('survives a rejected append', async () => {
+    const rejecting = new ProcessTreeDegradationRecorder(() =>
+      Promise.reject(new Error('append failed'))
+    );
+    await expect(rejecting.record(EVENT)).resolves.toBeUndefined();
+  });
+
+  it('is not a no-op, so the assertions above are not vacuous', async () => {
+    const append = vi.fn(async (entry: Omit<AuditEntry, 'id' | 'timestamp'>) => entry as AuditEntry);
+    await new ProcessTreeDegradationRecorder(append).record(EVENT);
+    expect(append).toHaveBeenCalledTimes(1);
+  });
+});
+
+const UNION_DECLARATION = 'export type TerminationReason';
+
+describe('the degraded path adds no state-schema change (FR-036, SC-010)', () => {
+  it('leaves TerminationReason untouched', () => {
+    // FR-R3-054 §5 named the union's closure and its migration story as the reason
+    // a new member did not ship. The audit event is the shape that does not need
+    // one, so this asserts the thing that would have been the cost.
+    //
+    // FR-R3-172 (FR-049, SC-017, T1775, 2026-09-13) — THE EXTRACTION BELOW WAS
+    // REWRITTEN, because the previous one had stopped extracting anything. It
+    // bounded the union by slicing up to `| 'cancel';`, which was the last member
+    // when it was written. Feature 212 appended `pre_spawn_refusal` after it; that
+    // moved the semicolon off the `cancel` line, the closing needle stopped
+    // matching, `indexOf` returned -1, and the end bound landed BELOW the start.
+    // `slice` yielded the empty string, and both assertions at the bottom passed
+    // against nothing — quietly, for the whole of feature 212. A guard that cannot
+    // fail is worse than no guard: it is a green check standing in for one.
+    //
+    // The bound is now the union's own terminator instead of any member of it, so
+    // the next append cannot invalidate it the way the last one did. Pinning a
+    // second member literal was the repair explicitly rejected: it would have
+    // restored the assertion and rearmed the identical trap for whoever appends
+    // the next member.
+    //
+    // The bound checks come FIRST, and that ordering is the point of the repair as
+    // much as the bound itself. An extraction that finds nothing has to FAIL here,
+    // where the message says which bound went missing, rather than hand an empty
+    // string to the two assertions it exists to feed.
+    const source = readFileSync(
+      resolve(__dirname, '..', '..', '..', 'src', 'state', 'workflow-run.ts'),
+      'utf8'
+    );
+    const start = source.indexOf(UNION_DECLARATION);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const terminator = source.indexOf(';', start);
+    expect(terminator).toBeGreaterThan(start);
+
+    const union = source.slice(start, terminator + 1);
+    expect(union).toContain(UNION_DECLARATION);
+    expect(union).toContain('|');
+    expect(union.endsWith(';')).toBe(true);
+
+    expect(union).not.toContain('degraded');
+    expect(union).not.toContain('tree');
+  });
+});
+
+/**
+ * FR-R4-F06 (S7) -- `settled()` lets shutdown wait for the evidence of a surviving group.
+ *
+ * The runners' hook calls `void recorder.record(...)`, so nothing could await the
+ * `process-tree-unconfirmed` row of a POSIX survivor, and the audit writer refuses appends once
+ * ownership is released. `settled()` resolves when every append started before the call has
+ * settled, and never rejects, so a wait that belongs to shutdown cannot itself fail it.
+ */
+describe('process-tree degradation recorder settled() (FR-R4-F06, S7)', () => {
+  it('resolves at once when nothing is in flight', async () => {
+    const h = harness();
+    await expect(h.recorder.settled()).resolves.toBeUndefined();
+  });
+
+  it('does not resolve while an append is still in flight, and does once it lands', async () => {
+    let finishAppend: () => void = () => undefined;
+    const landed: string[] = [];
+    const recorder = new ProcessTreeDegradationRecorder(
+      (entry) =>
+        new Promise<AuditEntry>((resolve) => {
+          finishAppend = () => {
+            landed.push(entry.eventType);
+            resolve({ ...entry, id: 'x', timestamp: 't' } as AuditEntry);
+          };
+        })
+    );
+
+    void recorder.record(EVENT);
+    let settled = false;
+    const waiting = recorder.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled, 'the append has not landed').toBe(false);
+
+    finishAppend();
+    await waiting;
+    expect(settled).toBe(true);
+    expect(landed).toEqual(['process-tree-unconfirmed']);
+  });
+
+  it('resolves, never rejects, when the append failed', async () => {
+    const recorder = new ProcessTreeDegradationRecorder(async () => {
+      throw new Error('the writer was disposed');
+    });
+    void recorder.record(EVENT);
+    await expect(recorder.settled()).resolves.toBeUndefined();
+  });
+
+  it('forgets an append once it has settled, so a later call has nothing to wait for', async () => {
+    const h = harness();
+    await h.recorder.record(EVENT);
+    await expect(h.recorder.settled()).resolves.toBeUndefined();
+    expect(h.appended).toHaveLength(1);
+  });
+
+  it('does not wait for an unattributable event, which writes nothing', async () => {
+    const h = harness();
+    await h.recorder.record({ ...EVENT, runId: null });
+    await expect(h.recorder.settled()).resolves.toBeUndefined();
+    expect(h.appended).toEqual([]);
+  });
+});

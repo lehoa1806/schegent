@@ -1,0 +1,424 @@
+<!--
+  FR-R3-144 (T038) — this group's field specs are DECLARED here, in the component
+  that renders them, and exported for the one thing the tab still needs them for:
+  folding them into the `FIELDS` array the page Save writes from.
+
+  They lived in `GeneralSettingsTab.svelte` until this task, threaded back down as
+  four props (`backends`, `runnerField`, `spendFields`, `environmentFields`) whose
+  only purpose was to return them to their renderer. That put the tab at 525
+  physical lines against a 500-line budget — the budget doing exactly its job, by
+  refusing the tab the role of holding every group's data as well as composing the
+  groups.
+
+  A `<script module>` block and not a `.ts` module, and the distinction is
+  load-bearing: `tests/integration/settings-surface.integration.test.ts` proves
+  every declared setting reaches a control by scanning `key:`/`ipcKey:` literals in
+  `.svelte` files under this directory tree, and nothing else. Moving these specs
+  to a `.ts` file would empty that gate of four settings with every test green —
+  the same class of silent hole this feature exists to close. The literals stay in
+  a `.svelte` file; only the TYPES live in `field-types.ts`.
+-->
+<script module lang="ts">
+  // Imported here rather than in the instance block below because a module script
+  // and an instance script share one module scope: the markup and the `$derived`
+  // values read these same bindings, and importing a name in both blocks is a
+  // redeclaration.
+  import type { BackendSection, FieldSpec, ScalarKey } from './field-types';
+  import {
+    SUPPORTED_BACKENDS,
+    mapBackends,
+    spendDenominationOf,
+    type BackendMap,
+    type SpendDenomination
+  } from '../../../lib/generated/backend-descriptors';
+  // FR-R3-143 (T030, T034) — the mode list and the allowlist element pattern are
+  // READ from the module that enforces them, not copied. A copy on the far side of
+  // the IPC boundary is the one that would drift, and it would drift silently: the
+  // host's allowlist filter drops a name the surface accepted without saying so, at
+  // spawn time, in another process.
+  //
+  // That filter is deliberately not named here, and neither is the policy field the
+  // fold sets. `__tests__/environment-policy-line.test.ts` forbids both strings
+  // anywhere in this file — a substring scan, comments included, because a scan a
+  // reimplementation could talk its way past would not be a gate. Naming them in
+  // prose reads as harmless and fails the build; that is the gate working.
+  //
+  // This import is `src/contracts/`, and that is not incidental. The first version
+  // read the same two values from `src/config/settings-schema`, which
+  // `tests/lint/webview-host-import-direction.test.ts` forbids: a webview VALUE
+  // import drags everything the module transitively imports into the untrusted
+  // bundle, so values come from contracts or not at all. T034 moved them there,
+  // and `SETTINGS_SCHEMA` now reads the same two constants.
+  import {
+    PROCESS_ENVIRONMENT_MODES,
+    PROCESS_ENV_NAME_PATTERN_SOURCE
+  } from '../../../../../src/contracts/process-environment-policy';
+
+  // FR-R3-144 (T029, T037) — Claude's own setting, sited in Claude's section
+  // rather than in a general "UI and trust" list where its name was the only clue
+  // that it applies to one backend out of three. Being IN the Claude section is
+  // the label FR-009 asks for. The note is the redesign's sentence for the row,
+  // then the disclosure that the other two backends ignore it.
+  const AUTO_COMPACT_FIELD: FieldSpec = {
+    key: 'claudeAutoCompactPctOverride',
+    ipcKey: 'claude.autoCompactPctOverride',
+    label: 'Claude compaction threshold',
+    kind: 'number-optional',
+    unit: '%',
+    min: 1,
+    max: 100,
+    placeholder: 'Unset — use CLI default',
+    note: 'Claude compacts its context above this share. Codex and Agy have no equivalent and ignore it.'
+  };
+
+  // FR-R3-144 (T025, D-5, FR-001) — every backend's section, keyed BY BACKEND.
+  //
+  // This replaces `BACKEND_FIELDS`, an array whose entries `BackendHealthSection`
+  // paired with its own `RUNNERS` array by index. That worked only because two
+  // files happened to list three backends in the same order, and nothing checked:
+  // inserting a spec at the front would have drawn Claude's path field under
+  // Codex's check button with every test still passing.
+  //
+  // A `Record` and not a `Map` — the shape host code uses for the same association
+  // — because a fourth member of `BackendRunnerKind` must be a COMPILE error here.
+  // A `Map` or an array would compile and render three backends out of four. That
+  // property is asserted directly in `backend-record-exhaustiveness.test.ts`.
+  // FR-R7-06 — derived from the generated webview backend descriptor mirror so adding a
+  // backend to `BACKEND_DESCRIPTORS` renders and saves its section without editing this file.
+  export const BACKENDS: BackendMap<BackendSection> = mapBackends((descriptor) => ({
+    label: descriptor.displayLabel,
+    path: {
+      key: descriptor.cliPathFieldKey as ScalarKey,
+      ipcKey: descriptor.cliPathSettingKey,
+      label: `${descriptor.displayLabel} CLI path`,
+      kind: 'string'
+    },
+    specific: descriptor.supportsAutoCompactPctOverride ? [AUTO_COMPACT_FIELD] : []
+  }));
+
+  // FR-R3-144 (T031, C7-2) — the setting the whole item turns on. The product has
+  // supported three backends since FR-R3-089 and the tab had no control for
+  // choosing one, so `schegent.backend.runner` was reachable only by hand-editing
+  // settings JSON. Options come from the platform's enumeration, so a backend
+  // added there is selectable without an edit here.
+  export const RUNNER_FIELD: FieldSpec = {
+    key: 'backendRunner',
+    ipcKey: 'backend.runner',
+    label: 'Backend for new runs',
+    kind: 'enum',
+    options: SUPPORTED_BACKENDS,
+    note: 'Applies to every workspace on this machine. Takes effect on the next invocation.'
+  };
+
+  // FR-R3-144 (T036, FR-009) — one bound per denomination, and the group renders
+  // the one that matches the selected backend. Both are declared here because both
+  // are real settings the manifest carries; only one is ever offered at a time,
+  // because offering a dollar bound for a backend that reports no cost is how an
+  // operator comes to believe they have bounded a run they have not bounded.
+  export const SPEND_FIELDS: Readonly<Record<SpendDenomination, FieldSpec>> = {
+    usd: {
+      key: 'spendMaxUsdPerRun',
+      ipcKey: 'spend.maxUsdPerRun',
+      label: 'Spend limit per run',
+      kind: 'number-optional',
+      unit: 'USD',
+      min: 0.01,
+      placeholder: 'Unset — no limit',
+      note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
+    },
+    tokens: {
+      key: 'spendMaxTokensPerRun',
+      ipcKey: 'spend.maxTokensPerRun',
+      label: 'Spend limit per run',
+      kind: 'number-optional',
+      unit: 'tokens',
+      min: 1,
+      placeholder: 'Unset — no limit',
+      note: 'Crossing it pauses the run, resumable by you. It never fails or cancels a run.'
+    }
+  };
+
+  // FR-R3-143 (T031) — the process-environment and probe settings, listed rather
+  // than folded into the per-backend sections above. They stayed separate
+  // originally because `BACKEND_FIELDS[i]` was paired with `RUNNERS[i]`
+  // positionally, so a fourth entry there was a CLI path the section never drew.
+  // FR-R3-144 (T025) removed that coupling, and they stay separate for the reason
+  // that outlives it: the environment policy is not per-backend data — it applies
+  // to whichever backend runs.
+  //
+  // The three environment settings and the probe timeout differ in when they take
+  // effect, and each `note` says which — see the descriptions module for where
+  // that was read from. All four are `application`-scoped, so the host writes them
+  // to User settings for every workspace on this machine.
+  const ENVIRONMENT_FIELDS: readonly FieldSpec[] = [
+    {
+      key: 'cliEnvironmentMode',
+      ipcKey: 'cli.environmentMode',
+      label: 'Environment passed to backends',
+      kind: 'enum',
+      options: PROCESS_ENVIRONMENT_MODES,
+      note: 'Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+    },
+    {
+      key: 'cliEnvironmentAllowlist',
+      ipcKey: 'cli.environmentAllowlist',
+      label: 'Allowed variables',
+      kind: 'string-list',
+      itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
+      invalidMessage:
+        'Not a legal environment variable name — use letters, digits and underscores, and do not start with a digit.',
+      note: 'Names only; values are read at spawn time and never stored here. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+    },
+    {
+      key: 'cliInheritEnvironment',
+      ipcKey: 'cli.inheritEnvironment',
+      label: 'Inherit host environment (legacy)',
+      kind: 'boolean',
+      note: 'Superseded by Environment passed to backends; Off forces minimal. Applies to every workspace on this machine. Takes effect after reloading the VS Code Extension Host.'
+    },
+    {
+      key: 'backendProbeTimeoutSeconds',
+      ipcKey: 'backend.probeTimeoutSeconds',
+      label: 'Backend check timeout',
+      kind: 'number',
+      unit: 'seconds',
+      min: 1,
+      max: 30,
+      note: 'How long to wait when testing a backend. Applies to every workspace on this machine. Read at the start of each probe — the next test uses it, no reload.'
+    }
+  ] as const;
+
+  /**
+   * Every spec this group renders, flattened — the tab's `FIELDS` folds it in.
+   *
+   * FR-R3-144 (T025) — the per-backend specs are flattened OUT OF `BACKENDS`
+   * rather than listed a second time. `FIELDS` is what the page Save writes from and what
+   * `dirty` is computed from, so a spec that reached the screen but not that array
+   * would be a control whose edit the page Save silently dropped. Deriving this from
+   * the same record the sections render means a backend added to
+   * `SUPPORTED_BACKENDS` becomes savable at the same moment it becomes visible.
+   */
+  export const BACKEND_GROUP_FIELDS: readonly FieldSpec[] = [
+    RUNNER_FIELD,
+    SPEND_FIELDS.usd,
+    SPEND_FIELDS.tokens,
+    ...SUPPORTED_BACKENDS.flatMap((kind) => [BACKENDS[kind].path, ...BACKENDS[kind].specific]),
+    ...ENVIRONMENT_FIELDS
+  ];
+</script>
+
+<script lang="ts">
+  import type { WorkflowSnapshot } from '../../../lib/snapshot-types';
+  import BackendHealthSection from '../BackendHealthSection.svelte';
+  import GeneralSettingFieldRow from './GeneralSettingFieldRow.svelte';
+  import type { SettingsGroupProps } from './field-types';
+  import { settingsSearch } from '../settings-search.svelte';
+  // FR-R3-143 (T035) — the SAME function the spawn calls. See T034's header in
+  // that module for why it is reachable from here at all.
+  import { resolveProcessEnvironmentPolicy } from '../../../../../src/contracts/process-environment-policy';
+
+  // FR-R3-144 (T025) — `fields` is GONE, and its absence is the point. It was
+  // this group's slice of `BACKEND_FIELDS`, handed to `BackendHealthSection`,
+  // which paired it with its own `RUNNERS` array by index. `BACKENDS` above is
+  // keyed by backend instead, so no ordering agreement is required between two
+  // files.
+  //
+  // FR-R3-144 (T038) — and no spec props either: the four that stood here
+  // (`backends`, `runnerField`, `spendFields`, `environmentFields`) were the tab
+  // handing this group back the data it declares itself. What remains is what a
+  // group genuinely cannot know — the draft, the per-key save status, and the
+  // callbacks that write.
+  interface Props extends Omit<SettingsGroupProps, 'fields'> {
+    snapshot: WorkflowSnapshot;
+  }
+
+  let {
+    snapshot,
+    draft = $bindable(),
+    statusByKey,
+    workflows,
+    fieldChanged,
+    fieldScopeLabel
+  }: Props = $props();
+
+  // The page's search hides a block of this group while it holds no setting the search found.
+  const { group: searchGroup } = settingsSearch();
+  /** The environment block's heading. The page's search also finds its settings by it. */
+  const ENVIRONMENT_HEADING = 'Process environment';
+
+  // FR-R3-144 (T036, FR-009) — which bound the operator is being offered follows
+  // the SELECTED backend, and only one is offered at a time.
+  //
+  // Both controls at once is what the tab would do if this were a flat field list,
+  // and it is worse than it sounds: `schegent.spend.maxUsdPerRun` applies to
+  // backends that report a cost, so an operator who set a dollar bound and then
+  // ran `codex` would have set nothing at all and would believe they had bounded
+  // the run. The denomination is read from the contract rather than decided here,
+  // for the reason the import above gives.
+  const denomination = $derived<SpendDenomination>(spendDenominationOf(draft.backendRunner));
+  const spendField = $derived<FieldSpec>(SPEND_FIELDS[denomination]);
+  const denominationText = $derived(
+    `${BACKENDS[draft.backendRunner].label} reports ` +
+      (denomination === 'usd'
+        ? 'a cost, so its spend limit per run is set in US dollars.'
+        : 'tokens and no cost, so its spend limit per run is set in tokens.')
+  );
+
+  // FR-R3-143 (T035) — reads the DRAFT, not the projection.
+  //
+  // Reading the saved snapshot would show the operator the policy they already
+  // have, which they can find out by looking at the spawn. The question the four
+  // controls above raise is what the edit in front of them will do, and it is a
+  // real question: three inputs fold into one outcome, and one of them silently
+  // overrides the other two.
+  const effectivePolicy = $derived(
+    resolveProcessEnvironmentPolicy({
+      inheritEnvironment: draft.cliInheritEnvironment,
+      mode: draft.cliEnvironmentMode,
+      allowlist: draft.cliEnvironmentAllowlist
+    })
+  );
+
+  // The line names the OVERRIDING INPUT, not just the outcome.
+  //
+  // "Effective policy: minimal" over a mode reading `allowlist` and a populated
+  // list is the exact reading an operator disbelieves — they conclude the surface
+  // is stale, edit the list again, and file a bug against the allowlist. Naming
+  // the legacy boolean is the whole value of the line; the outcome alone is worse
+  // than nothing.
+  const forcedByLegacyBoolean = $derived(
+    !draft.cliInheritEnvironment && draft.cliEnvironmentMode !== 'minimal'
+  );
+  const effectivePolicyText = $derived.by(() => {
+    if (forcedByLegacyBoolean) {
+      return (
+        'minimal — forced by "Inherit host environment (legacy)" being off, which overrides ' +
+        'the mode and allowlist above. Backend CLIs receive only the variables Schegent sets. ' +
+        'Turn it on to make those two take effect.'
+      );
+    }
+    if (effectivePolicy.mode === 'minimal') {
+      return 'minimal — backend CLIs receive only the variables Schegent sets. No PATH, no HOME, no ambient credentials.';
+    }
+    if (effectivePolicy.mode === 'inherit') {
+      return "inherit — backend CLIs receive the extension host's entire environment, including any credentials in it.";
+    }
+    const count = effectivePolicy.processEnvAllowlist?.length ?? 0;
+    const named =
+      count === 0
+        ? 'nothing else'
+        : `${count} name${count === 1 ? '' : 's'} listed above`;
+    return `allowlist — backend CLIs receive the required bootstrap variables (PATH, home, temp, locale) plus ${named}.`;
+  });
+</script>
+
+<!--
+  FR-R3-143 (T005) — `open` is not a style choice. A collapsed group would put
+  every description key in `orphanKeys` (hover-text-coverage collects the DOM
+  unfiltered) and would hide its controls from the 44px touch-target check,
+  which skips 0x0 rects.
+-->
+<details class="section settings-group" data-testid="settings-group-backend-environment" open>
+  <!--
+    FR-R3-143 (T047) — singular `Backend`, verbatim from
+    `docs/reference/settings.md:9`, which is the §4 grouping FR-006 requires this
+    tab to present. T005 wrote `Backends`; one word, and the only one of the four
+    that drifted, because nothing compared them until
+    `tests/lint/settings-group-heading-parity.test.ts`.
+  -->
+  <summary>Backend and process environment</summary>
+  <!--
+    FR-R3-144 (T031, T036) — the two settings that are ABOUT the choice of
+    backend, above the per-backend sections because they govern which of those
+    sections is the one that will run. The selector writes `backend.runner`
+    through the ordinary draft path — no bespoke handler, no second write route —
+    so the page Save, the dirty marker and the scope label work on it exactly as they
+    do on every other field.
+  -->
+  <div class="selection" data-testid="backend-selection" use:searchGroup>
+    <GeneralSettingFieldRow
+      spec={RUNNER_FIELD}
+      bind:draft
+      status={statusByKey[RUNNER_FIELD.key]}
+      changed={fieldChanged(RUNNER_FIELD.key)}
+      scopeLabel={fieldScopeLabel(RUNNER_FIELD.key)}
+      {workflows}
+    />
+    <GeneralSettingFieldRow
+      spec={spendField}
+      bind:draft
+      status={statusByKey[spendField.key]}
+      changed={fieldChanged(spendField.key)}
+      scopeLabel={fieldScopeLabel(spendField.key)}
+      {workflows}
+    />
+    <!--
+      Static text, like the effective-policy line below and for the same reasons:
+      no `controlId`, not focusable, a summary of the two controls above rather
+      than a third one. `aria-live` because changing the selector rewrites this
+      sentence AND swaps the control above it without moving focus.
+    -->
+    <p class="denomination small muted" data-testid="spend-denomination" aria-live="polite">
+      {denominationText}
+    </p>
+  </div>
+  <BackendHealthSection
+    {snapshot}
+    backends={BACKENDS}
+    bind:draft
+    {statusByKey}
+    {fieldChanged}
+    {fieldScopeLabel}
+    {workflows}
+  />
+  <!--
+    The redesign's "Process environment" section: the environment rows under their own heading,
+    after the backend cards, so they do not read as part of the last card's section.
+  -->
+  <section
+    class="section"
+    aria-labelledby="process-environment-heading"
+    use:searchGroup={() => [ENVIRONMENT_HEADING]}
+  >
+    <h3 id="process-environment-heading">{ENVIRONMENT_HEADING}</h3>
+    <div class="field-list">
+      {#each ENVIRONMENT_FIELDS as spec (spec.key)}
+        <GeneralSettingFieldRow
+          {spec}
+          bind:draft
+          status={statusByKey[spec.key]}
+          changed={fieldChanged(spec.key)}
+          scopeLabel={fieldScopeLabel(spec.key)}
+          {workflows}
+        />
+      {/each}
+      <!--
+        FR-R3-143 (T035) — static text, deliberately. It carries no `controlId` and
+        is not focusable, so it adds no hover-text surface to account for and no
+        touch target to size; it is the summary of the four controls above, not a
+        fifth control.
+
+        `aria-live="polite"` because the three inputs are elsewhere in the group:
+        toggling the legacy boolean changes this sentence without moving focus, and
+        a screen-reader user would otherwise never learn that their mode selection
+        just stopped applying.
+      -->
+      <p class="effective-policy small muted" data-testid="effective-environment-policy" aria-live="polite">
+        <strong>Effective policy:</strong>
+        {effectivePolicyText}
+      </p>
+    </div>
+  </section>
+</details>
+<style>
+  /* The two lines that sum up the controls above them, set as the redesign's "Stored locally"
+     line: small and muted, under the rows rather than boxed in with them. */
+  .denomination,
+  .effective-policy {
+    margin: var(--schegent-space-2) 0 0;
+    line-height: 1.45;
+  }
+  .effective-policy strong {
+    color: var(--schegent-fg);
+  }
+</style>

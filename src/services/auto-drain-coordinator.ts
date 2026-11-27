@@ -18,13 +18,19 @@
 //   - `drainAll()` sweeps the registry, and it does so from a round-robin
 //     cursor so a saturated ceiling does not let position 0 win every sweep.
 
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import type { FeatureRequest } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
-import type { WorkspaceStateStore } from '../state/workspace-state';
-import { isTerminalRunStatus } from '../state/workflow-run';
+import { releaseLeaseLogged, type ClaimLostReason, type ClaimTenure } from '../state/execution-lease';
+import type { ReleaseOutcome } from '../state/ownership-registry';
+import type { OwnershipClaim, WorkspaceStateStore } from '../state/workspace-state';
+import { isTerminalRunStatus, type WorkflowRun } from '../state/workflow-run';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import type { UnattendedWakeup } from './unattended-eligibility';
+import type { UnattendedAdmitOutcome } from './unattended-admission';
 import type { SanitizedLogger } from '../lib/logger';
+import { effectiveQueueFailurePolicy, type QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import { evaluateQueueHalt } from '../queue/queue-halt-policy';
 
 /**
  * The slice of `ExecutionLeaseManager` the drain needs. Structural on purpose:
@@ -33,7 +39,11 @@ import type { SanitizedLogger } from '../lib/logger';
  */
 export interface ExecutionLeasePort {
   tryAcquire(queueId: string): Promise<{ acquired: boolean; ownerId: string }>;
-  release(queueId: string): Promise<void> | void;
+  /**
+   * FR-R4-F01 (FR-033, C7) — the manager answers with what the release came to; doubles that
+   * return nothing stay valid. The drain's sites go through `releaseLeaseLogged`.
+   */
+  release(queueId: string): Promise<ReleaseOutcome | void> | ReleaseOutcome | void;
   /**
    * Feature FR-R3-003 (T301) — the point-of-effect check on the fencing token
    * step 6 was granted, read from the arbitrated record rather than the mirror.
@@ -46,6 +56,36 @@ export interface ExecutionLeasePort {
    * windows' Runs in one tree.
    */
   hasLease?(queueId: string): Promise<boolean>;
+  /** Whether another window's fresh entry names this queue. Optional on the same terms. */
+  isForeignLeaseHeld?(queueId: string): boolean;
+  /**
+   * FR-R3-077 (T1038) — this window's claim on `queueId`, for the commit points
+   * that now require one.
+   *
+   * **Required**, unlike `hasLease` above. That one is optional because a double
+   * that omits it degrades to the pre-feature admission rule; this one decides
+   * whether every Run commit in the window carries a fence, and a double that
+   * silently omitted it would turn the whole mechanism off for whatever composed
+   * it. The item's rule is that a caller which cannot produce a claim is a
+   * recorded finding rather than a default, and an optional member here would be
+   * the default.
+   */
+  claimFor(queueId: string): OwnershipClaim | null;
+  /**
+   * FR-R4-F01 (decision TA1) — whether `claimFor`'s claim is held or lost. Optional
+   * on the `hasLease` precedent above: a double without it is read as before, and
+   * the controller can bind and subscribe without a cast.
+   */
+  tenureOf?(queueId: string): ClaimTenure;
+  /** FR-R4-F01 (contract C2 G8) — the store reports a `fence-superseded` refusal here. */
+  markLost?(queueId: string, reason: 'superseded'): void;
+  /**
+   * FR-R4-F01 (contract C1 G2) — told once per transition of a queue into lost.
+   * The controller subscribes to stop that queue's driver and no other.
+   */
+  onClaimLost?(listener: (queueId: string, reason: ClaimLostReason) => void): {
+    dispose(): void;
+  };
 }
 
 /**
@@ -63,6 +103,44 @@ export interface OverlapAuditPort {
     outcome: 'info';
     payload: Record<string, unknown>;
   }): Promise<unknown>;
+}
+
+/**
+ * Feature 187 (T003, FR-010) — where a step-7 throw is reported, narrowed to
+ * that one subject on the same terms as `OverlapAuditPort` above.
+ *
+ * **No read side, deliberately.** The coordinator writes what it just did and
+ * cannot ask what it wrote, cannot enumerate queues through this, and cannot
+ * reach queue state with it. That last one is the point: step 1 of `drainQueue`
+ * is the single site that decides whether an `idle-pending` queue may start
+ * (hard rules 31 and 32), so this module is the *reader* of a hold. A port that
+ * could write one would put "may this queue start" and "this queue may not
+ * start" in the same object, arriving through the one door nobody thought to
+ * gate because it comes from inside the enforcement site.
+ */
+export interface QueueStartFailurePort {
+  recordFailure(
+    queueId: string,
+    failure:
+      | { readonly kind: 'admission'; readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
+      | { readonly kind: 'halted'; readonly taskId: string; readonly taskName: string }
+      | { readonly kind: 'stranded-run'; readonly runId: string; readonly phase: string }
+  ): void;
+  clear(queueId: string): void;
+}
+
+/**
+ * Feature 195 (T011, FR-001, research.md D4) — the queue failure-policy
+ * workspace default, read at the moment step 2a needs it rather than
+ * captured at construction.
+ *
+ * **Required, on the `claimFor` precedent stated on that port above**: a
+ * double that silently omitted it would turn the halt gate off for whatever
+ * composed this coordinator, and an optional port here would be exactly that
+ * default. Every test double must supply one.
+ */
+export interface QueueFailurePolicyDefaultPort {
+  resolve(): QueueFailurePolicy;
 }
 
 export interface AutoDrainCoordinatorDeps {
@@ -90,7 +168,7 @@ export interface AutoDrainCoordinatorDeps {
    */
   readonly controller: Pick<
     SchegentWorkflowController,
-    'admitNew' | 'admitResume' | 'liveRunCount'
+    'admitNew' | 'admitResume' | 'liveRunCount' | 'holdsSession'
   >;
   /**
    * Feature 092 (T066) — optional because the overlap record is the only thing
@@ -101,6 +179,17 @@ export interface AutoDrainCoordinatorDeps {
    * the gate under test.
    */
   readonly auditWriter?: OverlapAuditPort | null;
+  /**
+   * Feature 187 (T004) — optional for exactly the reason `auditWriter` above is,
+   * and the reason is worth restating because it is the same gate-order property:
+   * the unit tests assert that no collaborator past the failing step was
+   * consulted, and a required port would be built into every double, making that
+   * assertion true for reasons unrelated to the gate under test. Absent, a failed
+   * start still logs (FR-011) and reports nothing.
+   */
+  readonly startFailures?: QueueStartFailurePort | null;
+  /** Feature 195 (T011, FR-001) — see `QueueFailurePolicyDefaultPort` above. */
+  readonly failurePolicyDefault: QueueFailurePolicyDefaultPort;
   readonly logger?: SanitizedLogger;
 }
 
@@ -113,6 +202,8 @@ export class AutoDrainCoordinator {
   private readonly executionLease: ExecutionLeasePort;
   private readonly controller: AutoDrainCoordinatorDeps['controller'];
   private readonly auditWriter: OverlapAuditPort | null;
+  private readonly startFailures: QueueStartFailurePort | null;
+  private readonly failurePolicyDefault: QueueFailurePolicyDefaultPort;
   private readonly logger: SanitizedLogger | null;
 
   /**
@@ -178,10 +269,34 @@ export class AutoDrainCoordinator {
   private readonly drainingQueues = new Set<string>();
 
   /**
+   * Feature 195 (T013, FR-003) — which queues step 2a most recently reported
+   * halted. See the clearing branch just below step 2a in `drainQueueOnce`
+   * for why this exists: it lets that branch clear exactly the report this
+   * coordinator wrote, without giving `QueueStartFailurePort` a read side.
+   */
+  private readonly haltedQueues = new Set<string>();
+
+  /**
+   * BUG-004 — which queues step 3 most recently reported as held by a stranded
+   * Run. Exactly the `haltedQueues` device above, for exactly its reason: the
+   * clearing branch below step 3's occupant check drops the report THIS
+   * coordinator wrote and no other, which it cannot ask `QueueStartFailurePort`
+   * about (that port has no read side, by design).
+   *
+   * A successful start also clears the registry, and it cannot clobber a report
+   * this set is still tracking: reaching step 7 means passing the occupant
+   * check, and the clearing branch sits on that path.
+   */
+  private readonly strandedQueues = new Set<string>();
+
+  /**
    * Feature 093 (T049a) — the Runs this coordinator started that have not yet
    * reached a terminal status. See `detach` and `settled` below.
    */
   private readonly detachedDrives = new Set<Promise<unknown>>();
+
+  /** FR-R4-F02 — see `onSweepEnd`. */
+  private readonly sweepEndListeners: Array<() => Promise<void>> = [];
 
   /**
    * Feature 093 (bulk review) — starts this coordinator has committed to but
@@ -212,12 +327,22 @@ export class AutoDrainCoordinator {
    */
   private reservedStarts = 0;
 
+  /**
+   * FR-R3-205 — whether `close()` has run. Set once and never cleared, and
+   * this coordinator's own: the stage 2 a reset or a folder change builds
+   * afterwards builds a new coordinator, which starts open. Not a lifecycle
+   * value and never stored.
+   */
+  private closed = false;
+
   constructor(deps: AutoDrainCoordinatorDeps) {
     this.store = deps.store;
     this.queue = deps.queue;
     this.executionLease = deps.executionLease;
     this.controller = deps.controller;
     this.auditWriter = deps.auditWriter ?? null;
+    this.startFailures = deps.startFailures ?? null;
+    this.failurePolicyDefault = deps.failurePolicyDefault;
     this.logger = deps.logger ?? null;
   }
 
@@ -248,12 +373,41 @@ export class AutoDrainCoordinator {
     await this.sweepInFlight;
   }
 
+  /**
+   * FR-R3-205 — stop starting work. Stage 2's teardown calls this before it
+   * stops any child, so the drain that the stopped Run's terminal funnel then
+   * schedules admits nothing and the task waiting for the freed slot stays
+   * pending for the next session, instead of being admitted, refused by a
+   * closed runner and left failed.
+   *
+   * Synchronous, idempotent and never throws, so teardown can call it first
+   * and unconditionally.
+   *
+   * The close is this coordinator's own state and not a lifecycle value, so
+   * step 1 stays the one site that decides `idle-pending` and step 2a the one
+   * that decides a halt. A refusal after it is a wait, like steps 1 to 6:
+   * nothing is written and nothing is logged. A start already inside step 7
+   * when this runs is left to the closed runner (threat model T26).
+   */
+  public close(): void {
+    this.closed = true;
+  }
+
+  /** FR-R4-F06 (S4) — has `close()` been called? The resume guard reads it; it admits nothing itself. */
+  public isClosed(): boolean {
+    return this.closed;
+  }
+
   /** Sweep, then sweep again for whatever was asked for while we swept. */
   private async sweepUntilNoneRequested(): Promise<void> {
     try {
       do {
         this.sweepRequested = false;
         await this.sweep();
+        // FR-R4-F02 — the end listeners await store and lease work, so a request can arrive
+        // while they run. They run inside the loop so that the read below, which ends the sweep,
+        // comes after them and stays in the same continuation as the clearing in `finally`.
+        await this.notifySweepEnd();
       } while (this.sweepRequested);
     } finally {
       // Cleared in the same synchronous continuation that read
@@ -296,6 +450,10 @@ export class AutoDrainCoordinator {
    * on every path.
    */
   private async drainQueue(queueId: string): Promise<boolean> {
+    // FR-R3-205 — a closed drain starts nothing. Before step 0, so it takes no
+    // slot in the per-queue guard and reaches no later step; `drainIfIdle` and
+    // every queue of a sweep come through here.
+    if (this.closed) return false;
     // Step 0 — Feature 093 (T049): this queue already has a drain deciding for
     // it. A wait of the same shape as every step below: nothing is written,
     // nothing is signalled, and the Task stays pending for the next sweep.
@@ -321,6 +479,50 @@ export class AutoDrainCoordinator {
     // a record written after the collapse carries no `paused`, so the old read
     // was `undefined` on every queue and this step stopped refusing anything.
     if (queueState.queueLifecycle === 'operator-paused') return false;
+    // Step 2a — Feature 195 (T013, FR-002, FR-004, FR-012) — a queue whose
+    // effective failure policy is `halt-on-failure` and whose current rows
+    // include a failed task starts no further task.
+    //
+    // Recomputed from `queueState.requests`, the same read step 1 already
+    // paid for — no additional store call, no queue-manager call — and
+    // nothing about the verdict is written back to `queueState` or to
+    // `queueLifecycle` (FR-003): the next attempt asks the same question of
+    // whatever rows exist then, which is what makes retrying or removing the
+    // failed row clear the halt with no code of its own (FR-009).
+    //
+    // Sited here, before step 3, for the same reason BUG-003's note gives for
+    // ordering waits by what they mean to the operator: a halt is a distinct
+    // reason from "busy" or "at the ceiling", and — more load-bearing — this
+    // is *before* step 6's `tryAcquire`, so a halted queue's execution lease
+    // is never touched (FR-012, AGENTS.md rules 32/33/36/60). The queue that
+    // owns the failed task is refused; every other queue's gate chain is
+    // unaffected, because each call to this function reads only its own
+    // `queueId`'s state.
+    const failurePolicy = effectiveQueueFailurePolicy(
+      queueState.failurePolicy,
+      this.failurePolicyDefault.resolve()
+    );
+    const haltVerdict = evaluateQueueHalt(failurePolicy, queueState.requests);
+    if (haltVerdict !== null) {
+      this.haltedQueues.add(queueId);
+      this.startFailures?.recordFailure(queueId, {
+        kind: 'halted',
+        taskId: haltVerdict.taskId,
+        taskName: haltVerdict.taskName
+      });
+      return false;
+    }
+    // The halt condition is gone (the failed row was retried, removed, or
+    // otherwise stopped blocking). Clear exactly the report this coordinator
+    // itself wrote for it — not an admission report from an unrelated attempt
+    // — so a queue that has nothing left to start once the halt clears does
+    // not keep reporting one anyway (`haltedQueues` is this coordinator's own
+    // memory of what it wrote; `QueueStartFailurePort` has no read side by
+    // design, see that port's own note, so this is not a second gate on
+    // whether to start).
+    if (this.haltedQueues.delete(queueId)) {
+      this.startFailures?.clear(queueId);
+    }
     // Step 3 — this queue is busy. One limit, two readings, on the same terms as
     // step 4 below: neither subsumes the other, so a start needs both.
     //
@@ -347,9 +549,22 @@ export class AutoDrainCoordinator {
     // it sits **before** step 6's `tryAcquire`, so the paused Run's execution
     // lease is never touched — a refusal after the acquire would reach step 7's
     // release path and strip the lease out from under a Run that still owns it.
+    //
+    // BUG-004 — and this is the one reading in the seven steps that can refuse
+    // forever. The paragraph above is why the two readings can disagree at all;
+    // when they do because the occupant's Task row was DELETED, no control can
+    // reach the Run (every cancel, resume and retry route resolves the row
+    // first), so nothing ends it, and no terminal Run re-asks this refusal for
+    // this queue. `reportStrandedOccupant` names that case and only that case.
+    // It changes no verdict — the `return false` below is the same refusal it
+    // always was, on the same reading — so this is not a second gate.
     if (!this.queue.hasQueueCapacity(queueId)) return false;
     const occupant = this.store.getRun(queueId);
-    if (occupant !== null && !isTerminalRunStatus(occupant.status)) return false;
+    if (occupant !== null && !isTerminalRunStatus(occupant.status)) {
+      this.reportStrandedOccupant(queueId, occupant);
+      return false;
+    }
+    this.clearStrandedReport(queueId);
     // Step 4 — the workspace is at its concurrency ceiling. A wait, not an
     // error: nothing is written and nothing is signalled, and the next sweep
     // (from a different cursor position) will try again.
@@ -369,11 +584,7 @@ export class AutoDrainCoordinator {
     // starts already committed to but not yet observable. See the field's own
     // note: without it a concurrent addressed drain spends a slot a suspended
     // sweep has already claimed.
-    if (
-      !this.queue.hasExecutionCapacity(this.controller.liveRunCount + this.reservedStarts)
-    ) {
-      return false;
-    }
+    if (!this.executionSlotFor(queueId)) return false;
     if (!this.queue.hasWorkspaceCapacity()) return false;
     // Feature 093 (T081, FR-011) — step 4b stood here and is gone. It refused a
     // second concurrent start because `KEYS.run` held one `WorkflowRun` and the
@@ -400,6 +611,151 @@ export class AutoDrainCoordinator {
   }
 
   /**
+   * FR-R4-F02 (contract U4 G13; hard rule 60) — whether `queueId` may take an execution slot now: it
+   * already holds one, or the ceiling has room for one more.
+   *
+   * THE ONE READER of `hasExecutionCapacity(`. Drain step 4 and an unattended admission both ask
+   * here, so the ceiling is decided in one place and stays one conjunctive predicate. A queue whose
+   * Run is paused keeps its session and so its slot (FR-014a); counting it again for a resume would
+   * refuse the one Run that needs nothing new, and counting a Run with no session as free would take
+   * a slot the cap does not have. `reservedStarts` adds the starts committed to and not yet visible.
+   */
+  private executionSlotFor(queueId: string): boolean {
+    return (
+      this.controller.holdsSession(queueId) ||
+      this.queue.hasExecutionCapacity(this.controller.liveRunCount + this.reservedStarts)
+    );
+  }
+
+  /**
+   * FR-R4-F02 (contract U4 G14) — admit an unattended resume through the one capacity method, and
+   * never wait for the Run to finish.
+   *
+   * `capacity-refused` is a wait and writes nothing, so the caller keeps the wakeup due. A Run that
+   * already holds a session needs no new slot, so it reserves none (counting it twice is the defect
+   * this feature removes); a Run with none reserves the slot it is about to take, synchronously, in
+   * the continuation that read the count, as step 5 does. `hasWorkspaceCapacity()` is not consulted:
+   * it counts persisted in-flight Task rows, and a paused Run is not one (research R2).
+   */
+  public async admitUnattended(
+    queueId: string,
+    wakeup: UnattendedWakeup
+  ): Promise<UnattendedAdmitOutcome> {
+    // FR-R4-F06 (FR-022, S4) -- shutdown has begun. The sweep-end listener, the delayed retry and the
+    // credit-watchdog restore all arrive here and only the drain checked the flag, so each could resume
+    // a Run between `close()` and the runners going down. `ineligible` drops the wakeup: nothing
+    // retries it, and a reload rebuilds it from the persisted record.
+    if (this.closed) return 'ineligible';
+    if (!this.executionSlotFor(queueId)) return 'capacity-refused';
+    const needsSlot = !this.controller.holdsSession(queueId);
+    if (needsSlot) this.reservedStarts += 1;
+    try {
+      const resume = await this.controller.admitResume(queueId, { unattended: wakeup });
+      if (!resume.resumed) return resume.refusal === 'lease-declined' ? 'lease-declined' : 'ineligible';
+      this.startFailures?.clear(queueId);
+      this.detach(queueId, resume.completed);
+      await this.openOverlapEpisodeIfStarted(queueId);
+      return 'admitted';
+    } finally {
+      if (needsSlot) this.reservedStarts -= 1;
+    }
+  }
+
+  /**
+   * FR-R4-F02 (contract U2 G7) — run `listener` when a drain sweep ends. The admission service
+   * retries the wakeups capacity refused here, because a sweep ending is the moment a slot may have
+   * freed. A listener's failure is logged and never reaches the sweep's caller.
+   */
+  public onSweepEnd(listener: () => Promise<void>): void {
+    this.sweepEndListeners.push(listener);
+  }
+
+  /**
+   * FR-R5-F29 (SPEC-07, D7) — re-evaluate eligible queue heads and sweep-end listeners
+   * when a shared-quota permit is released or an availability check updates readiness,
+   * coalescing through `drainAll()` without bypassing queue order or process capacity.
+   */
+  public async notifyQuotaCapacityChanged(): Promise<void> {
+    if (this.closed) return;
+    await this.drainAll();
+  }
+
+  private async notifySweepEnd(): Promise<void> {
+    for (const listener of this.sweepEndListeners) {
+      try {
+        await listener();
+      } catch (err) {
+        this.logger?.warn(`auto-drain: a sweep-end listener failed: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * BUG-004 — report step 3's occupant refusal, but only when it is the one
+   * that will never be re-asked.
+   *
+   * A non-terminal occupant is the ORDINARY state of a queue with work in
+   * flight, and reporting every one of them would put a failure notice on every
+   * busy queue and a refusal on every Start pressed against one — noise that
+   * would teach the operator to ignore the surface that matters. What separates
+   * the deadlock is that the occupant's Task row is gone: `deleteTask` used to
+   * remove the row while leaving a non-terminal Run behind (this bug's Part 1),
+   * and the result is a Run that cannot be canceled, resumed or retried, because
+   * all three resolve the row first.
+   *
+   * Whether the report exists changes nothing about whether the queue starts.
+   * The refusal is the caller's, unconditional, and identical either way.
+   *
+   * Gated on the port being wired for the reason its own declaration gives: the
+   * gate-order unit tests assert that no collaborator past the failing step was
+   * consulted, and a scan that ran without a reader would make that assertion
+   * true or false for reasons unrelated to the gate under test.
+   */
+  private reportStrandedOccupant(queueId: string, occupant: WorkflowRun): void {
+    if (this.startFailures === null) return;
+    if (this.taskRowExistsAnywhere(occupant.featureId)) {
+      // Addressable again — the row was restored or moved back. Drop the report
+      // rather than leaving one that now describes a Run the operator can reach.
+      this.clearStrandedReport(queueId);
+      return;
+    }
+    this.strandedQueues.add(queueId);
+    this.startFailures.recordFailure(queueId, {
+      kind: 'stranded-run',
+      runId: occupant.id,
+      phase: occupant.currentPhase
+    });
+  }
+
+  /**
+   * Drops the stranded report this coordinator wrote for `queueId`, and only
+   * that one. See `strandedQueues` for why the membership check is what makes
+   * "only that one" true.
+   */
+  private clearStrandedReport(queueId: string): void {
+    if (!this.strandedQueues.delete(queueId)) return;
+    this.startFailures?.clear(queueId);
+  }
+
+  /**
+   * Whether any queue in the registry still holds a Task row with this id — the
+   * same question `reconcileOrphanedRuns` asks of persisted state at load, asked
+   * here of live state.
+   *
+   * Across ALL queues rather than the Run's own, for the reason that module
+   * gives: a Task that moved between queues is still addressable, so the Run
+   * naming it is still cancellable and this is not the stranded case.
+   */
+  private taskRowExistsAnywhere(taskId: string): boolean {
+    for (const entry of this.store.getQueueRegistry().entries) {
+      if (this.store.getQueue(entry.id).requests.some((request) => request.id === taskId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Steps 6 and 7 — claim the queue's lease and admit its head.
    *
    * Split out so the reservation above has an unmistakable scope: it is held for
@@ -418,46 +774,121 @@ export class AutoDrainCoordinator {
     // start. Step 6 and step 7 are two awaits apart, and the interval is exactly
     // where a stalled window used to be reclaimed and then start anyway.
     if (this.executionLease.hasLease && !(await this.executionLease.hasLease(queueId))) {
-      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      await releaseLeaseLogged(this.executionLease, queueId, this.logger);
       this.logger?.warn(
         `auto-drain: execution lease for queue ${queueId} could not be verified at start; not admitting`
       );
       return false;
     }
-    // Step 7 — start.
+    // FR-R3-205 — a close can land during either await above, the claim or the
+    // re-check, after the first check passed. Give the lease back and start
+    // nothing; this is a wait, so nothing is logged or reported. It sits outside
+    // the re-check's `if` so it runs whether or not the port offers one.
+    if (this.closed) {
+      await releaseLeaseLogged(this.executionLease, queueId, this.logger);
+      return false;
+    }
+    // Step 7 — start. `attempted` is what the failure message names; see the
+    // `catch` for why naming it correctly is load-bearing.
+    let attempted: 'admitResume' | 'admitNew' = 'admitNew';
     try {
       // If the pending task still carries a runId (preserved by the
       // retry path when the active workspace run matches), try to resume
       // the existing run so the pipeline picks up from the failed phase
       // instead of restarting from scratch.
       if (next.runId) {
+        attempted = 'admitResume';
         // Feature 093 (T039) — pattern A: the queue is already the subject of
         // this drain, so the resume names it rather than reaching for whatever
         // Run happened to be persisted.
         const resume = await this.controller.admitResume(queueId);
         if (resume.resumed) {
+          // Feature 187 (FR-003) — a start that worked supersedes any report of
+          // one that did not. Before `detach`, so an overlap-audit throw cannot
+          // leave the queue reporting a failure it has just recovered from; not
+          // in a `finally`, which would also run on the throw eleven lines below
+          // and erase the report recorded there.
+          this.startFailures?.clear(queueId);
           this.detach(queueId, resume.completed);
           await this.openOverlapEpisodeIfStarted(queueId);
           return true;
         }
+        // FR-R4-F06 (FR-016, TA3) -- a resume refused because the previous backend's tree is
+        // still alive, or because shutdown has begun, is a WAIT. A fresh start would write a new
+        // Run over the queue's Run and put a second backend beside the survivor, so start nothing
+        // and give back the lease claimed at step 6; the Task stays pending.
+        if (resume.refusal === 'previous-tree-live' || resume.refusal === 'shutdown-begun') {
+          await releaseLeaseLogged(this.executionLease, queueId, this.logger);
+          return false;
+        }
         // Fall through to a fresh start if the run cannot be resumed
         // (e.g. the persisted run no longer matches).
+        attempted = 'admitNew';
       }
       // Feature 093 (T049a) — awaited to admission, not to completion. The Task
       // is in flight by the time this resolves, so the rest of the sweep reads
       // current capacity; the Run itself proceeds alongside it.
       const admission = await this.controller.admitNew(next, null);
+      if (admission.refusal !== undefined) {
+        await releaseLeaseLogged(this.executionLease, queueId, this.logger);
+        const message = admission.refusalMessage ?? admission.refusal;
+        this.logger?.warn(
+          `auto-drain: controller.admitNew refused for queue ${queueId} (${admission.refusal}): ${message}`
+        );
+        this.startFailures?.recordFailure(queueId, {
+          kind: 'admission',
+          admission: 'admitNew',
+          message
+        });
+        return false;
+      }
+      this.startFailures?.clear(queueId);
       this.detach(queueId, admission.completed);
       await this.openOverlapEpisodeIfStarted(queueId);
       return true;
     } catch (err) {
-      // Release the lease we acquired — if startNew throws before
-      // RunDriver.drive() enters its own scope, this queue would stay
+      // Release the lease we acquired — if the admission throws before
+      // `RunDriver.drive()` enters its own scope, this queue would stay
       // claimed until STALENESS_THRESHOLD_MS (15s).
-      await Promise.resolve(this.executionLease.release(queueId)).catch(() => undefined);
+      await releaseLeaseLogged(this.executionLease, queueId, this.logger);
+      // FR-R3-089 — name the queue, and the admission that actually failed.
+      //
+      // This read `controller.startNew failed`, a call the drain has not made
+      // since Feature 093 (T049a) narrowed `deps.controller` to the admission
+      // pair — the narrowing whose entire purpose is that this module *cannot*
+      // reach `startNew`. And `startNew` still exists on the controller, so the
+      // message did not read as stale. It read as a lead, and it pointed at a
+      // function that was never on this path.
+      //
+      // It matters more here than a wrong name usually does, because this
+      // warning is the *only* trace a failed start leaves. Every other refusal
+      // in the seven steps is re-asked by a terminal Run's own sweep; this one
+      // cannot be, because no Run started and so none will end. The next sweep
+      // within the session comes from some other queue's Run terminating, and
+      // there may not be one; the next guaranteed one is at activation. An
+      // operator asking why a queue stopped therefore has this line and nothing
+      // else, and a sweep visits several queues, so it names which one. It does
+      // not name the Task: the description is operator-authored content, on the
+      // same terms as FR-038a keeps a queue name out of the audit log.
       this.logger?.warn(
-        `auto-drain: controller.startNew failed: ${(err as Error).message}`
+        `auto-drain: controller.${attempted} failed for queue ${queueId}: ${(err as Error).message}`
       );
+      // Feature 187 (FR-001, FR-002, FR-011) — and the same failure, reported to
+      // whoever does *not* open a log. The line above is the record for a
+      // maintainer; this is the record for the operator watching a queue that
+      // reads `Active (waiting)` and cannot tell a fault from a turn in the
+      // queue. Written here, inside step 7's own `catch`, because that is the
+      // only refusal of the seven that is a fault rather than a wait — hoisting
+      // it into `drainQueue` would report the other six as failures too.
+      //
+      // Nothing else happens. No lifecycle is written, no retry is scheduled:
+      // the queue stays unheld, so the next trigger re-attempts it exactly as it
+      // re-attempts every other refusal (FR-005, FR-006).
+      this.startFailures?.recordFailure(queueId, {
+        kind: 'admission',
+        admission: attempted,
+        message: (err as Error).message
+      });
       return false;
     }
   }

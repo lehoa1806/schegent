@@ -14,7 +14,14 @@
   // A sub-view of `HistoryDashboard` rather than a route: `selectedRunId` lives
   // in `HistoryLocation` beside the filters, which is what makes the filter set
   // survive the return (FR-020).
+  //
+  // Since the redesign the detail is the body of the dashboard's drawer, and it
+  // draws the drawer's three bands itself: the run's name and state on top, the
+  // record in a scrolling body, and the two actions in the footer. Names come
+  // first and the run id sits in the Diagnostics fold, where it is still one
+  // click from the clipboard.
 
+  import { untrack } from 'svelte';
   import {
     NO_CATALOG_NAMES,
     provenanceLabels,
@@ -22,16 +29,36 @@
     type HistoryRow
   } from '../lib/history-rows';
   import type { MetricsRunSummary } from '../lib/messages';
-  import { readRunSummary } from '../lib/metrics-ipc';
+  import { readRunSummary, type RunSummaryResult } from '../lib/metrics-ipc';
+  import {
+    FAILURE_CAUSE_LABELS,
+    FAILURE_CAUSE_NOT_RECORDED,
+    isFailureCause
+  } from '../../../src/contracts/failure-cause';
   import { copyText } from '../lib/copy-text';
-  import { formatAbsoluteTime, formatStatus } from '../lib/format';
+  import { formatAbsoluteTime } from '../lib/format';
   import { formatDuration } from '../lib/format-duration';
+  import { runStatusChip } from '../lib/run-status-chip';
+  import { snapshotStore } from '../lib/snapshot-store.svelte';
   import HistoryEvidencePanel from './HistoryEvidencePanel.svelte';
+  import ExecutionVisibilityPanel from './ExecutionVisibilityPanel.svelte';
 
   interface Props {
     row: HistoryRow;
     onBack: () => void;
     catalogNames?: CatalogNames;
+    /** Whether this window holds workspace primacy; falls back to live `snapshotStore.isPrimary`. */
+    isPrimary?: boolean;
+    /**
+     * FR-R3-127 (FR-004) — the two facts the evidence panel needs to say whether
+     * this Run's unredacted transcript is being kept, and for how long.
+     *
+     * Defaulted to the shipped values rather than made required: every existing
+     * mount would otherwise break, and the shipped default is the correct reading
+     * when a caller has no snapshot to read from.
+     */
+    rawTranscriptMode?: 'always' | 'errors-only' | 'off';
+    retentionMaxAgeDays?: number;
     /**
      * Feature 103 (T065, FR-033) — open the trigger form for this run.
      *
@@ -44,9 +71,26 @@
      * detail rendering and the operator clicking.
      */
     onRerun?: () => void;
+    /**
+     * The id the heading carries, so the drawer around the detail can take its
+     * name from it (`aria-labelledby`) and move focus to it when it opens.
+     * Optional: a mount with no drawer around it has nothing to label.
+     */
+    headingId?: string;
   }
 
-  const { row, onBack, catalogNames = NO_CATALOG_NAMES, onRerun }: Props = $props();
+  const {
+    row,
+    onBack,
+    catalogNames = NO_CATALOG_NAMES,
+    isPrimary,
+    onRerun,
+    rawTranscriptMode = 'errors-only',
+    retentionMaxAgeDays = 30,
+    headingId
+  }: Props = $props();
+
+  const effectiveIsPrimary = $derived(isPrimary ?? snapshotStore.isPrimary);
 
   /**
    * The metrics join, as three states and not two.
@@ -75,15 +119,26 @@
     const wanted = runId;
     let live = true;
     join = { state: 'pending' };
-    void readRunSummary(wanted).then((result) => {
+    // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the unreadable state through the same
+    // path; a new run or unmounting aborts the wait.
+    const lifetime = new AbortController();
+    const show = (result: RunSummaryResult): void => {
       if (!live) return;
       join =
         result.outcome === 'read'
           ? { state: 'read', summary: result.summary }
           : { state: 'unreadable' };
-    });
+    };
+    // Asked untracked. The intent ledger marks the request pending in the
+    // snapshot store, which reads the store's pending set and replaces it; read
+    // tracked, that set makes this effect depend on its own write, and it reads
+    // the rollup a second time.
+    void untrack(() =>
+      readRunSummary(wanted, { signal: lifetime.signal, onLateOutcome: show })
+    ).then(show);
     return () => {
       live = false;
+      lifetime.abort();
     };
   });
 
@@ -103,6 +158,19 @@
     return summary === null ? 'not-reported' : 'reported';
   });
 
+  // FR-R4-F14 (M7, data-model §8) — a failed run's cause, in the same states the fields above have, with
+  // the one a cost cannot have: a run that recorded no cause is "not recorded", which is a fact about the
+  // run, and a read that never landed is "unreadable", which is a fact about the window. The code is shown
+  // only if it is a member of the closed vocabulary, so a value this build cannot label never reaches the
+  // page as text; both words around it are host constants.
+  const recordedCause = $derived(
+    summary !== null && isFailureCause(summary.failureCause) ? summary.failureCause : null
+  );
+  const causeState = $derived.by((): 'recorded' | 'not-recorded' | 'unreadable' => {
+    if (join.state === 'unreadable') return 'unreadable';
+    return recordedCause === null ? 'not-recorded' : 'recorded';
+  });
+
   // The same `$${n.toFixed(2)}` the metrics surfaces already use, so one run's
   // cost and the cumulative total read as the same kind of figure.
   const costText = $derived(
@@ -110,6 +178,10 @@
   );
 
   const provenance = $derived(provenanceLabels(row, catalogNames));
+  const chip = $derived(runStatusChip(row.status));
+  // The run's name is its description, as in the list; a run whose description
+  // retention removed is named by its id rather than by nothing.
+  const runLabel = $derived(row.descriptionPreview || row.runId);
 
   const startedText = $derived(row.startedAt === null ? 'Not recorded' : formatAbsoluteTime(row.startedAt));
   const endedText = $derived(
@@ -149,101 +221,103 @@
 </script>
 
 <article class="run-detail" data-testid="history-run-detail" aria-label="Run detail">
-  <header class="detail-header">
-    <button type="button" class="back" data-testid="history-detail-back" onclick={onBack}>
-      Back to the list
+  <div class="dh">
+    <div class="heading">
+      <h2 id={headingId} tabindex="-1">{runLabel}</h2>
+      <div class="state">
+        <span class="chip {chip.tone}" data-testid="history-detail-status"><span class="sr-only">Status: </span>{#if chip.icon}<svg class="i" aria-hidden="true"><use href={chip.icon}></use></svg>{:else}<span class="dot" aria-hidden="true"></span>{/if}{chip.label}</span>
+      </div>
+    </div>
+    <button
+      type="button"
+      class="icon-btn"
+      aria-label="Close run details"
+      data-testid="history-detail-back"
+      onclick={onBack}
+    >
+      <svg class="i" aria-hidden="true"><use href="#i-x"></use></svg>
     </button>
-    <div class="identity">
-      <span class="run-id" data-testid="history-detail-run-id">{row.runId}</span>
-      <button
-        type="button"
-        class="copy"
-        data-testid="history-detail-copy-run-id"
-        aria-label={`Copy run ID ${row.runId}`}
-        onclick={onCopyRunId}
-      >
-        {copied === 'done' ? 'Copied' : copied === 'failed' ? 'Copy blocked' : 'Copy run ID'}
-      </button>
-      {#if onRerun}
-        <button
-          type="button"
-          class="copy"
-          data-testid="history-detail-rerun"
-          onclick={() => onRerun()}
-        >
-          Run again
-        </button>
-      {/if}
-    </div>
-  </header>
+  </div>
 
-  <!-- FR-024 — what the record itself says. Started, ended and duration, and no
-       queued time: `queuedAt` lives on the live queue item and dies with it, so
-       a figure here could only be reconstructed, and a reconstructed timestamp
-       beside recorded ones is a lie that looks exactly like a fact. -->
-  <dl class="fields">
-    <div class="field" data-testid="history-detail-definition">
-      <dt>Definition</dt>
-      <dd>{provenance.definition}</dd>
-    </div>
-    <div class="field" data-testid="history-detail-version">
-      <dt>Version</dt>
-      <!-- FR-012 — the same stated absence the row uses, so drilling in does
-           not change what a run is understood to have recorded. -->
-      <dd class:absent={row.catalogVersion === null}>{provenance.version}</dd>
-    </div>
-    <div class="field" data-testid="history-detail-origin">
-      <dt>Started as</dt>
-      <dd>{provenance.origin}</dd>
-    </div>
-    <div class="field" data-testid="history-detail-queue">
-      <dt>Queue</dt>
-      <dd>{row.queueName}</dd>
-    </div>
-    <div class="field" data-testid="history-detail-status">
-      <dt>Status</dt>
-      <dd>{formatStatus(row.status)}</dd>
-    </div>
-    <div class="field" data-testid="history-detail-started">
-      <dt>Started</dt>
-      <dd>{startedText}</dd>
-    </div>
-    <div class="field" data-testid="history-detail-ended">
-      <dt>Ended</dt>
-      <dd>{endedText}</dd>
-    </div>
-    <div class="field" data-testid="history-detail-duration">
-      <dt>Duration</dt>
-      <dd>{durationText}</dd>
-    </div>
-  </dl>
-
-  <section class="description" aria-label="Run description">
-    {#if hasDescription}
-      <p class="description-text" data-testid="history-detail-description">
-        {row.descriptionPreview}
-      </p>
-      {#if showsExtent}
-        <p class="note" data-testid="history-detail-description-extent">{extentText}</p>
-      {/if}
-    {:else}
-      <!-- Retention removes the text and keeps the run. An empty block here
-           would read as a rendering fault rather than as an absent value. -->
-      <p class="note" data-testid="history-detail-description-absent">
-        No description is retained for this run.
-      </p>
+  <div class="db">
+    <!-- FR-R4-F14 (FR-018, clarification Q4) — only a failed run has a cause. The label and the code
+         come from host constants and Svelte escapes both; no count, chart, filter or column (Q3).
+         The box stands for every failed run, a cause not recorded or not read included: that the
+         run failed is on the record either way. -->
+    {#if row.status === 'failed'}
+      <div class="attn">
+        <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+        <div class="body small">
+          <b>Why it failed.</b>
+          {#if join.state === 'pending'}
+            <span class="pending">Reading the recorded cause…</span>
+          {:else}
+            <span class="cause" data-testid="history-detail-cause" data-state={causeState}>
+              {#if causeState === 'recorded' && recordedCause !== null}
+                {FAILURE_CAUSE_LABELS[recordedCause]} <span class="code mono">({recordedCause})</span>
+              {:else if causeState === 'not-recorded'}
+                {FAILURE_CAUSE_NOT_RECORDED}
+              {:else}
+                Could not be read
+              {/if}
+            </span>
+          {/if}
+        </div>
+      </div>
     {/if}
-  </section>
 
-  <section aria-label="Run cost and phases">
-    {#if join.state === 'pending'}
-      <p class="note" data-testid="history-detail-metrics-pending">Reading this run’s figures…</p>
-    {:else}
-      <dl class="fields metrics">
+    <h3>Run</h3>
+    <!-- FR-024 — what the record itself says. Started, ended and duration, and no
+         queued time: `queuedAt` lives on the live queue item and dies with it, so
+         a figure here could only be reconstructed, and a reconstructed timestamp
+         beside recorded ones is a lie that looks exactly like a fact. -->
+    <dl class="kv">
+      <div class="pair" data-testid="history-detail-definition">
+        <dt>Definition</dt>
+        <dd>{provenance.definition}</dd>
+      </div>
+      <div class="pair" data-testid="history-detail-version">
+        <dt>Version</dt>
+        <!-- FR-012 — the same stated absence the row uses, so drilling in does
+             not change what a run is understood to have recorded. -->
+        <dd class:absent={row.catalogVersion === null}>{provenance.version}</dd>
+      </div>
+      <div class="pair" data-testid="history-detail-origin">
+        <dt>Started as</dt>
+        <dd>{provenance.origin}</dd>
+      </div>
+      <div class="pair" data-testid="history-detail-queue">
+        <dt>Queue</dt>
+        <dd>{row.queueName}</dd>
+      </div>
+      <div class="pair" data-testid="history-detail-started">
+        <dt>Started</dt>
+        <dd>{startedText}</dd>
+      </div>
+      <div class="pair" data-testid="history-detail-ended">
+        <dt>Ended</dt>
+        <dd>{endedText}</dd>
+      </div>
+      <div class="pair" data-testid="history-detail-duration">
+        <dt>Duration</dt>
+        <dd>{durationText}</dd>
+      </div>
+      {#if join.state === 'pending'}
+        <!-- The two figures hold their rows while the read is out, so the list
+             does not grow under the operator's eye when it lands. -->
+        <div class="pair" data-testid="history-detail-metrics-pending">
+          <dt>Cost</dt>
+          <dd class="absent">Reading…</dd>
+        </div>
+        <div class="pair">
+          <dt>Phases</dt>
+          <dd class="absent">Reading…</dd>
+        </div>
+      {:else}
         <!-- FR-026 (T091) — three causes stay three answers. A zero the surface
              invented from a missing field, or from a read that never landed,
              reads exactly like a recorded one. -->
-        <div class="field" data-testid="history-detail-cost" data-state={costState}>
+        <div class="pair" data-testid="history-detail-cost" data-state={costState}>
           <dt>Cost</dt>
           <dd>
             {costState === 'reported'
@@ -253,7 +327,7 @@
                 : 'Could not be read'}
           </dd>
         </div>
-        <div class="field" data-testid="history-detail-phases" data-state={phaseState}>
+        <div class="pair" data-testid="history-detail-phases" data-state={phaseState}>
           <dt>Phases</dt>
           <dd>
             <!-- FR-027 — three totals and nothing more. Nothing in the system
@@ -271,88 +345,119 @@
             {/if}
           </dd>
         </div>
-      </dl>
-    {/if}
-  </section>
+      {/if}
+    </dl>
 
-  <!-- The derived id, not `row.runId`: passing the raw property makes the prop
-       a getter that re-reads `row`, which is the subscription the panel's own
-       derived then has to absorb. Cheaper to not create it. -->
-  <HistoryEvidencePanel {runId} />
+    <h3>Description</h3>
+    {#if hasDescription}
+      <p class="description-text small" data-testid="history-detail-description">{row.descriptionPreview}</p>
+      {#if showsExtent}
+        <p class="note" data-testid="history-detail-description-extent">{extentText}</p>
+      {/if}
+    {:else}
+      <!-- Retention removes the text and keeps the run. An empty block here
+           would read as a rendering fault rather than as an absent value. -->
+      <p class="note" data-testid="history-detail-description-absent">
+        No description is retained for this run.
+      </p>
+    {/if}
+
+    <!-- The derived id, not `row.runId`: passing the raw property makes the prop
+         a getter that re-reads `row`, which is the subscription the panel's own
+         derived then has to absorb. Cheaper to not create it. -->
+    <HistoryEvidencePanel
+      {runId}
+      runStatus={row.status}
+      rawTranscriptMode={rawTranscriptMode}
+      retentionMaxAgeDays={retentionMaxAgeDays}
+    />
+
+    <details class="diag">
+      <summary>Diagnostics</summary>
+      <dl class="kv">
+        <dt>Run ID</dt>
+        <dd class="mono" data-testid="history-detail-run-id">{row.runId}</dd>
+      </dl>
+    </details>
+
+    <ExecutionVisibilityPanel rootExecutionId={runId} isPrimary={effectiveIsPrimary} />
+  </div>
+
+  <div class="df">
+    <button
+      type="button"
+      class="btn btn-secondary"
+      data-testid="history-detail-copy-run-id"
+      aria-label={`Copy run ID ${row.runId}`}
+      onclick={onCopyRunId}
+    >
+      <svg class="i" aria-hidden="true"><use href={copied === 'done' ? '#i-check' : '#i-copy'}></use></svg>{copied === 'done' ? 'Copied' : copied === 'failed' ? 'Copy blocked' : 'Copy run ID'}
+    </button>
+    {#if onRerun}
+      <button
+        type="button"
+        class="btn btn-primary"
+        data-testid="history-detail-rerun"
+        onclick={() => onRerun()}
+      >
+        <svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>Run again…
+      </button>
+    {/if}
+  </div>
 </article>
 
 <style>
+  /* The bands themselves (`.dh`, `.db`, `.df`) are the drawer's, from the dashboard
+     sheet. This column only hands the body the height left between head and
+     footer, so the record scrolls and the two actions stay in reach. */
   .run-detail {
     display: flex;
     flex-direction: column;
-    gap: var(--schegent-space-3);
-    padding: var(--schegent-space-3);
+    flex: 1;
+    min-height: 0;
   }
-  .detail-header {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--schegent-gap);
-    align-items: center;
-    justify-content: space-between;
-  }
-  .identity {
-    display: inline-flex;
-    gap: 8px;
-    align-items: center;
+  .heading {
+    flex: 1;
     min-width: 0;
   }
-  .run-id {
+  /* A description names the run here, and some descriptions are paragraphs.
+     Three lines name it; the Description section below carries all of it. */
+  .heading h2 {
+    display: -webkit-box;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--schegent-text-caption);
+    line-clamp: 3;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
   }
-  .back,
-  .copy {
-    min-height: var(--schegent-control-height);
-    padding: 4px 10px;
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius-sm);
-    background: transparent;
-    color: var(--schegent-fg);
-    font: inherit;
-    cursor: pointer;
+  .state {
+    margin-top: var(--schegent-space-1);
   }
-  .back:hover,
-  .copy:hover {
-    background: var(--schegent-list-hover);
+  .pair {
+    display: contents;
   }
-  .fields,
-  .metrics {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-    gap: var(--schegent-gap);
-    margin: 0;
-  }
-  .metrics {
-    align-items: start;
-  }
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+  .kv dd {
     min-width: 0;
+    overflow-wrap: anywhere;
   }
-  .field dt {
+  .code {
+    display: block;
+    margin-top: var(--schegent-space-0-5);
     color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-caption);
-  }
-  .field dd {
-    margin: 0;
-    word-break: break-word;
   }
   /* FR-012, FR-026 — a stated absence is not a value, and must not read as one
      of the figures beside it. */
-  .field dd.absent,
-  .field[data-state='not-reported'] dd,
-  .field[data-state='unreadable'] dd {
+  .absent,
+  .pair[data-state='not-reported'] dd,
+  .pair[data-state='unreadable'] dd {
     color: var(--schegent-muted-fg);
+    font-style: italic;
+  }
+  /* Inside the failure box an absence keeps the box's ink, for contrast on the
+     tinted ground, and says what it is by its slant. */
+  .pending,
+  .cause[data-state='not-recorded'],
+  .cause[data-state='unreadable'] {
     font-style: italic;
   }
   .description-text {
@@ -360,10 +465,10 @@
     line-height: 1.45;
     text-wrap: pretty;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
   .note {
-    margin: 4px 0 0;
+    margin: var(--schegent-space-1) 0 0;
     color: var(--schegent-muted-fg);
     font-size: var(--schegent-text-caption);
     line-height: 1.4;

@@ -44,6 +44,7 @@ import {
   type ContainmentFs,
   type ContainmentRefusal
 } from '../../lib/path-containment';
+import { doesSubtreeOverlapProtectedPathsSync } from '../../lib/protected-path-match';
 import {
   resolveRawTranscriptPath,
   resolveSessionRootPath
@@ -81,6 +82,11 @@ export interface SessionCleanupInput {
    * machine that runs the suite to have a symlink on it.
    */
   readonly filesystem?: ContainmentFs;
+  /**
+   * FR-R7-11 (FR-020) — Protected database paths (active canonical/fallback DB,
+   * sidecars, and preserved unselected copies) that cleanup must never remove.
+   */
+  readonly protectedPaths?: () => readonly string[];
 }
 
 interface SubOpFailure {
@@ -115,18 +121,19 @@ async function guardedRm(
   fsRm: SessionCleanupFsRm,
   filesystem: ContainmentFs,
   workspaceRoot: string,
-  target: string
+  target: string,
+  protectedPaths: readonly string[]
 ): Promise<SubOpResult> {
   const verdict = await resolveContainedTarget(target, [workspaceRoot], filesystem);
   if (verdict.outcome === 'refused') return { kind: 'refused', reason: verdict.reason };
-  // An absent target still goes to `rm`, unchanged: `force: true` converts
-  // ENOENT to success, and a run that wrote no diagnostics has always taken
-  // that path. Skipping the call here would be the same outcome by a different
-  // route, and "the added resolution is the only difference" is the property
-  // this feature is supposed to preserve. A contained target is removed by its
-  // *resolved* path, so the removal acts on what was proven rather than
-  // re-walking the links a second time.
   const removable = verdict.outcome === 'contained' ? verdict.resolved : target;
+  if (
+    protectedPaths.length > 0 &&
+    (doesSubtreeOverlapProtectedPathsSync(target, protectedPaths) ||
+      doesSubtreeOverlapProtectedPathsSync(removable, protectedPaths))
+  ) {
+    return { kind: 'refused', reason: 'not-contained' };
+  }
   try {
     await fsRm(removable, { recursive: true, force: true });
     return { kind: 'done' };
@@ -167,8 +174,9 @@ export async function cleanupSessionArtifacts(
 
   // Run both sub-ops independently — do NOT short-circuit on first
   // failure so the second target is still attempted.
-  const dirResult = await guardedRm(fsRm, filesystem, input.workspaceRoot, sessionRoot);
-  const fileResult = await guardedRm(fsRm, filesystem, input.workspaceRoot, rawTranscript);
+  const protectedList = input.protectedPaths?.() ?? [];
+  const dirResult = await guardedRm(fsRm, filesystem, input.workspaceRoot, sessionRoot, protectedList);
+  const fileResult = await guardedRm(fsRm, filesystem, input.workspaceRoot, rawTranscript, protectedList);
 
   const results = [dirResult, fileResult];
   const refusal = pickRefusal(results);

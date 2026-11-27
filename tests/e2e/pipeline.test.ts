@@ -13,7 +13,7 @@ import { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { buildSpeckitCatalog } from '../fixtures/speckit-catalog-fixture';
 
 // Feature 034 Item 055 — deterministic Speckit pipeline E2E test.
@@ -63,7 +63,7 @@ async function buildHarness(tmpRoot: string) {
   const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
 
   const runner = new ClaudeCliRunner();
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);

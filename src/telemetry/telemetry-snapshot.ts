@@ -3,6 +3,13 @@
 // Ephemeral per-subprocess telemetry record carried on the
 // `WorkflowSnapshot.telemetry` field. Never persisted to WorkflowRun, never
 // written to the audit log. Lives only on the live snapshot envelope; the
+
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports them instead of restating them. Re-exported unchanged.
+import type { TelemetryStatus, TelemetrySnapshot } from '../contracts/snapshot-vocabulary';
+
+export type { TelemetryStatus, TelemetrySnapshot };
+
 // projection clears to `null` one publish after the runner's `exited` hook.
 //
 // This module has NO `vscode` import and no I/O. It MUST be safe to load
@@ -11,31 +18,9 @@
 
 export const TELEMETRY_SAMPLE_INTERVAL_MS = 2000 as const;
 
-/**
- * Process status at the sample boundary. Closed enum.
- */
-export type TelemetryStatus =
-  | 'active'
-  | 'sleeping'
-  | 'zombie'
-  | 'exited'
-  | 'killed'
-  | 'unavailable';
 
-export interface TelemetrySnapshot {
-  /** OS process id of the sampled subprocess. */
-  readonly pid: number;
-  /** Process status at the sample boundary. */
-  readonly status: TelemetryStatus;
-  /** Latest CPU utilization as a percentage (0–100 per core; `ps -%cpu` semantics on macOS/Linux). Null when unavailable. */
-  readonly cpuPercent: number | null;
-  /** Resident set size in bytes at the sample boundary. Null when unavailable. */
-  readonly memoryRssBytes: number | null;
-  /** Wall-clock uptime since the subprocess `started` event, in milliseconds. Null when unavailable. */
-  readonly uptimeMs: number | null;
-  /** Sampling timestamp (ISO 8601, millisecond precision). */
-  readonly sampledAt: string;
-}
+
+
 
 export interface ExitSampleArgs {
   readonly pid: number;

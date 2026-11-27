@@ -20,15 +20,42 @@
 // `workflowCatalog` already carry. Giving one fact two representations is how
 // the two come to disagree about a host with no catalog wired at all.
 
+import {
+  DEFAULT_BACKEND,
+  SUPPORTED_BACKENDS,
+  type BackendRunnerKind
+} from '../../contracts/backend-kinds';
 import { isPipelineInputPortType } from '../../contracts/pipeline-definitions';
 import type { PipelineInputPort } from '../../contracts/pipeline-definitions';
-import type { WorkflowDerivedPort } from '../../contracts/workflow-definitions';
+import type { PhaseDefinition } from '../../contracts/process-definitions';
+import type {
+  WorkflowDefinition,
+  WorkflowDerivedPort,
+  WorkflowInputPort
+} from '../../contracts/workflow-definitions';
+import { MAX_WORKFLOW_NESTING_DEPTH } from '../../config/workflow-closure-resolver';
+import { declaredCapabilitySet } from '../../contracts/phase-capabilities';
+import type {
+  CapabilityNotice,
+  EffectiveLimit,
+  LaunchableNodeSummary,
+  LaunchableOutputPort,
+  LaunchPhaseSettings,
+  LaunchRunSettings
+} from '../../contracts/snapshot-projections';
+import { isSafeArgvValue } from '../../contracts/argv-value';
+import { authoredPhaseTimeoutMs, effectivePhaseTimeoutMs } from '../../controller/effective-phase-timeout';
+import { effectiveRunnerKindForPhase } from '../../config/pipeline-snapshot';
+import { describeCapabilityOutcome } from '../../services/capability-disclosure';
+import { planCapabilityEnforcement } from '../../services/capability-enforcement-plan';
+import { phaseDefinitionToPhaseDef } from '../../config/process-catalog';
 import type {
   BuilderLifecycle,
   Launchable,
   LaunchablePort,
   LaunchProjection,
   LaunchSection,
+  PhaseCatalogProjection,
   PipelineCatalogProjection,
   WorkflowCatalogProjection
 } from './snapshot';
@@ -91,20 +118,106 @@ function pipelinePort(port: PipelineInputPort): LaunchablePort {
  * here would be the second derivation this module exists to avoid (FR-018) —
  * absence reads as "not declared required", which is what the graph says.
  */
-function workflowPorts(ports: readonly WorkflowDerivedPort[]): readonly LaunchablePort[] {
+function workflowPorts(
+  ports: readonly WorkflowDerivedPort[],
+  declaredInputs?: readonly WorkflowInputPort[]
+): readonly LaunchablePort[] {
+  const declaredById = new Map((declaredInputs ?? []).map((input) => [input.portId, input]));
   const narrowed: LaunchablePort[] = [];
   for (const port of ports) {
     if (!isPipelineInputPortType(port.type)) continue;
+    const declared = declaredById.get(port.portId);
     narrowed.push(
+      Object.freeze({
+        portId: port.portId,
+        label: port.label,
+        type: port.type,
+        nodeId: port.nodeId,
+        ...(declared?.required !== undefined ? { required: declared.required } : {}),
+        ...(declared?.description !== undefined ? { description: declared.description } : {})
+      })
+    );
+  }
+  return Object.freeze(narrowed);
+}
+
+function workflowOutputPorts(
+  definition: WorkflowDefinition,
+  derivedOutputs: readonly WorkflowDerivedPort[]
+): readonly LaunchableOutputPort[] {
+  if (definition.outputs !== undefined && definition.outputs.length > 0) {
+    return Object.freeze(
+      definition.outputs.map((port) =>
+        Object.freeze({
+          portId: port.portId,
+          label: port.label,
+          type: port.type,
+          ...(port.required !== undefined ? { required: port.required } : {}),
+          ...(port.description !== undefined ? { description: port.description } : {})
+        })
+      )
+    );
+  }
+  return Object.freeze(
+    derivedOutputs.map((port) =>
       Object.freeze({
         portId: port.portId,
         label: port.label,
         type: port.type,
         nodeId: port.nodeId
       })
-    );
+    )
+  );
+}
+
+function workflowNodeSummaries(definition: WorkflowDefinition): readonly LaunchableNodeSummary[] {
+  return Object.freeze(
+    definition.nodes.map((node) => {
+      const kind =
+        node.phaseId !== undefined
+          ? ('phase' as const)
+          : node.workflowId !== undefined
+            ? ('workflow' as const)
+            : ('pipeline' as const);
+      const targetId = node.phaseId ?? node.workflowId ?? node.pipelineId ?? node.nodeId;
+      return Object.freeze({
+        nodeId: node.nodeId,
+        kind,
+        targetId,
+        ...(node.label !== undefined ? { label: node.label } : {})
+      });
+    })
+  );
+}
+
+function collectWorkflowLeafPhases(
+  workflow: WorkflowDefinition,
+  workflowsById: ReadonlyMap<string, WorkflowDefinition>,
+  pipelinePhaseIds: ReadonlyMap<string, readonly string[]>,
+  depth = 0,
+  visited: ReadonlySet<string> = new Set()
+): readonly string[] {
+  if (depth > MAX_WORKFLOW_NESTING_DEPTH || visited.has(workflow.workflowId)) {
+    return [];
   }
-  return Object.freeze(narrowed);
+  const nextVisited = new Set(visited);
+  nextVisited.add(workflow.workflowId);
+  const phaseIds: string[] = [];
+  for (const node of workflow.nodes) {
+    if (node.phaseId !== undefined) {
+      phaseIds.push(node.phaseId);
+    } else if (node.workflowId !== undefined) {
+      const child = workflowsById.get(node.workflowId);
+      if (child !== undefined) {
+        phaseIds.push(
+          ...collectWorkflowLeafPhases(child, workflowsById, pipelinePhaseIds, depth + 1, nextVisited)
+        );
+      }
+    } else if (node.pipelineId !== undefined) {
+      phaseIds.push(...(pipelinePhaseIds.get(node.pipelineId) ?? []));
+    }
+  }
+  return phaseIds;
 }
 
 /**
@@ -143,7 +256,175 @@ function sectionOf(entries: readonly Launchable[], recordCount: number): LaunchS
   return entries.length > 0 ? entriesSection(entries) : emptySection(recordCount);
 }
 
-function pipelineEntries(catalog: PipelineCatalogProjection): readonly Launchable[] {
+/**
+ * FR-R4-F06 (FR-007; contract D, D3) -- what the backend question is asked against.
+ *
+ * `phasesById` is the effective Phase catalog keyed by id, and `defaultRunner` is the
+ * window's resolved default. Both come from the composer; neither is re-resolved here.
+ */
+interface BackendContext {
+  readonly phasesById: ReadonlyMap<string, PhaseDefinition>;
+  readonly defaultRunner: BackendRunnerKind;
+}
+
+/**
+ * The backends a list of Phases would spawn, by the freeze's OWN function.
+ *
+ * `effectiveRunnerKindForPhase` is what `snapshotPhaseDef` applies when a Run is frozen,
+ * so the notice and the Run cannot disagree: a Phase's pinned `runner` wins over the window
+ * default, and a `sideEffects: git` Phase always runs on Claude. It is reused, not
+ * restated. A Phase the catalog does not resolve contributes the window default, the
+ * conservative answer: such a launch is refused at freeze anyway, and a notice that
+ * named nothing would be the less safe error.
+ */
+function backendsOfPhases(
+  phaseIds: readonly string[],
+  context: BackendContext
+): ReadonlySet<BackendRunnerKind> {
+  const kinds = new Set<BackendRunnerKind>();
+  for (const phaseId of phaseIds) {
+    const definition = context.phasesById.get(phaseId);
+    kinds.add(
+      effectiveRunnerKindForPhase(
+        definition === undefined ? undefined : phaseDefinitionToPhaseDef(definition),
+        context.defaultRunner
+      )
+    );
+  }
+  return kinds;
+}
+
+/** Non-empty, unique and in `SUPPORTED_BACKENDS` order, so an unchanged catalog projects identically. */
+function orderedBackends(
+  kinds: ReadonlySet<BackendRunnerKind>,
+  context: BackendContext
+): readonly BackendRunnerKind[] {
+  const present = kinds.size > 0 ? kinds : new Set<BackendRunnerKind>([context.defaultRunner]);
+  return Object.freeze(SUPPORTED_BACKENDS.filter((kind) => present.has(kind)));
+}
+
+/**
+ * FR-R4-F06 (FR-012; contract K, K6) -- what each Phase of a launchable that declares a capability set
+ * would do, planned on THAT Phase's effective backend (the same one `backends` reports), worded by the host.
+ *
+ * A Phase that declares nothing yields nothing, and so does one whose restriction leaves nothing open
+ * (`describeCapabilityOutcome` answers `null`). A Phase met twice is noted once. The planner is the one
+ * the adapters spawn from, so the sentence describes the Run that would start and cannot drift from it.
+ */
+function capabilityNoticesOfPhases(
+  phaseIds: readonly string[],
+  context: BackendContext,
+  seen: Set<string>
+): readonly CapabilityNotice[] {
+  const notices: CapabilityNotice[] = [];
+  for (const phaseId of phaseIds) {
+    if (seen.has(phaseId)) continue;
+    const definition = context.phasesById.get(phaseId);
+    if (definition?.capabilities === undefined) continue;
+    seen.add(phaseId);
+    const backend = effectiveRunnerKindForPhase(
+      phaseDefinitionToPhaseDef(definition),
+      context.defaultRunner
+    );
+    const plan = planCapabilityEnforcement(backend, declaredCapabilitySet(definition.capabilities));
+    const text = describeCapabilityOutcome(plan, definition.name);
+    if (text === null) continue;
+    notices.push({
+      phaseName: definition.name,
+      backend,
+      outcome: plan.outcome === 'refused' ? 'refused' : 'residual',
+      text
+    });
+  }
+  return notices;
+}
+
+function pipelineBackends(
+  phaseIds: readonly string[],
+  context: BackendContext
+): ReadonlySet<BackendRunnerKind> {
+  return backendsOfPhases(phaseIds, context);
+}
+
+/**
+ * FR-R4-F07 (FR-022; contract D, D1) -- the limits the host runs a Run under, as the composer was
+ * handed them: the idle bound every Phase falls back to, and the Run's wall-clock bound.
+ */
+export interface LaunchLimits {
+  readonly idleTimeoutSeconds: EffectiveLimit<number>;
+  readonly maxDurationSeconds: EffectiveLimit<number>;
+}
+
+const MS_PER_SECOND = 1000;
+
+/**
+ * FR-R4-F07 (data-model §5) -- what execution will use for one Phase, by the functions execution calls.
+ *
+ *   backend  `effectiveRunnerKindForPhase`, which the freeze applies and dispatch reads.
+ *   model    `isSafeArgvValue`: `phase-runner.ts` passes the authored model only when it is safe and
+ *            drops it otherwise, so an unsafe string is `backend-default` here, never echoed.
+ *   effort   passed when the Phase states one; the validators close it to the enum.
+ *   idle     `effectivePhaseTimeoutMs`, with the origin `phase` when the Phase states a timeout and the
+ *            settings layer's own otherwise (`services/effective-limits.ts` does the same).
+ *
+ * The Pipeline's `executionDefaults` are never read (FR-023): they are advisory, and
+ * `tests/lint/execution-defaults-stay-advisory.test.ts` holds this file to that.
+ */
+function phaseSettings(
+  definition: PhaseDefinition,
+  context: BackendContext,
+  limits: LaunchLimits
+): LaunchPhaseSettings {
+  const phaseDef = phaseDefinitionToPhaseDef(definition);
+  const idleMs = effectivePhaseTimeoutMs({
+    timeoutMs: limits.idleTimeoutSeconds.value * MS_PER_SECOND,
+    phaseDef
+  });
+  return Object.freeze({
+    phaseName: definition.name,
+    backend: effectiveRunnerKindForPhase(phaseDef, context.defaultRunner),
+    model: isSafeArgvValue(definition.model)
+      ? Object.freeze({ kind: 'value' as const, value: definition.model })
+      : Object.freeze({ kind: 'backend-default' as const }),
+    effort:
+      definition.effort !== undefined
+        ? Object.freeze({ kind: 'value' as const, value: definition.effort })
+        : Object.freeze({ kind: 'backend-default' as const }),
+    idleTimeoutSeconds: Object.freeze({
+      value: idleMs / MS_PER_SECOND,
+      origin: authoredPhaseTimeoutMs(phaseDef) !== undefined ? ('phase' as const) : limits.idleTimeoutSeconds.origin
+    })
+  });
+}
+
+/**
+ * The settings of a Pipeline's Phases, or nothing when the host cannot state them (data-model §5):
+ * the limits were not supplied, or a Phase of the active version does not resolve in the effective
+ * catalog. An unresolved Phase would otherwise be reported on the window default, which is a guess.
+ */
+function runSettingsOf(
+  phaseIds: readonly string[],
+  context: BackendContext,
+  limits: LaunchLimits | undefined
+): LaunchRunSettings | undefined {
+  if (limits === undefined) return undefined;
+  const phases: LaunchPhaseSettings[] = [];
+  for (const phaseId of phaseIds) {
+    const definition = context.phasesById.get(phaseId);
+    if (definition === undefined) return undefined;
+    phases.push(phaseSettings(definition, context, limits));
+  }
+  return Object.freeze({
+    phases: Object.freeze(phases),
+    maxDurationSeconds: limits.maxDurationSeconds
+  });
+}
+
+function pipelineEntries(
+  catalog: PipelineCatalogProjection,
+  context: BackendContext,
+  limits: LaunchLimits | undefined
+): readonly Launchable[] {
   const entries: Launchable[] = [];
   for (const record of catalog.records) {
     const activeVersionId = activeVersionOf(record.lifecycle);
@@ -152,6 +433,7 @@ function pipelineEntries(catalog: PipelineCatalogProjection): readonly Launchabl
     // definition, so there is no entry to build without one.
     if (activeVersionId === undefined || record.definition === null) continue;
     const description = displayText(record.display, 'description') ?? record.definition.description;
+    const runSettings = runSettingsOf(record.definition.phaseIds, context, limits);
     entries.push(
       Object.freeze({
         kind: 'pipeline' as const,
@@ -159,7 +441,12 @@ function pipelineEntries(catalog: PipelineCatalogProjection): readonly Launchabl
         name: displayText(record.display, 'name') ?? record.definition.name,
         ...(description !== undefined ? { description } : {}),
         activeVersionId,
-        inputs: Object.freeze(record.definition.inputs.map(pipelinePort))
+        inputs: Object.freeze(record.definition.inputs.map(pipelinePort)),
+        backends: orderedBackends(pipelineBackends(record.definition.phaseIds, context), context),
+        capabilityNotices: Object.freeze(
+          capabilityNoticesOfPhases(record.definition.phaseIds, context, new Set())
+        ),
+        ...(runSettings !== undefined ? { runSettings } : {})
       })
     );
   }
@@ -168,8 +455,14 @@ function pipelineEntries(catalog: PipelineCatalogProjection): readonly Launchabl
 
 function workflowEntries(
   catalog: WorkflowCatalogProjection,
-  effectivePipelineIds: ReadonlySet<string>
+  effectivePipelineIds: ReadonlySet<string>,
+  pipelinePhaseIds: ReadonlyMap<string, readonly string[]>,
+  context: BackendContext,
+  limits?: LaunchLimits
 ): readonly Launchable[] {
+  const workflowsById = new Map(
+    catalog.effective.map((definition) => [definition.workflowId, definition])
+  );
   const entries: Launchable[] = [];
   for (const record of catalog.records) {
     const activeVersionId = activeVersionOf(record.lifecycle);
@@ -179,10 +472,29 @@ function workflowEntries(
     // and no other unsatisfied ports is indistinguishable, by port list alone,
     // from one that needs no inputs.
     const resolvable = record.definition.nodes.every((node) =>
-      effectivePipelineIds.has(node.pipelineId)
+      node.phaseId !== undefined
+        ? context.phasesById.has(node.phaseId)
+        : node.workflowId !== undefined
+          ? workflowsById.has(node.workflowId)
+          : node.pipelineId !== undefined && effectivePipelineIds.has(node.pipelineId)
     );
     if (!resolvable) continue;
     const description = displayText(record.display, 'description') ?? record.definition.description;
+    const isComposable = record.definition.nodes.some(
+      (node) => node.phaseId !== undefined || node.workflowId !== undefined
+    );
+    const leafPhaseIds = collectWorkflowLeafPhases(
+      record.definition,
+      workflowsById,
+      pipelinePhaseIds
+    );
+    const union = pipelineBackends(leafPhaseIds, context);
+    const notices = capabilityNoticesOfPhases(leafPhaseIds, context, new Set<string>());
+    const runSettings = isComposable ? runSettingsOf(leafPhaseIds, context, limits) : undefined;
+    const outputs = isComposable
+      ? workflowOutputPorts(record.definition, record.derivedOutputs)
+      : undefined;
+    const nodes = isComposable ? workflowNodeSummaries(record.definition) : undefined;
     entries.push(
       Object.freeze({
         kind: 'workflow' as const,
@@ -190,8 +502,13 @@ function workflowEntries(
         name: displayText(record.display, 'name') ?? record.definition.name,
         ...(description !== undefined ? { description } : {}),
         activeVersionId,
-        inputs: workflowPorts(record.derivedInputs),
-        startNodeIds: Object.freeze([...record.definition.startNodeIds])
+        inputs: workflowPorts(record.derivedInputs, record.definition.inputs),
+        ...(outputs !== undefined && outputs.length > 0 ? { outputs } : {}),
+        startNodeIds: Object.freeze([...record.definition.startNodeIds]),
+        ...(nodes !== undefined ? { nodes } : {}),
+        backends: orderedBackends(union, context),
+        capabilityNotices: Object.freeze(notices),
+        ...(runSettings !== undefined ? { runSettings } : {})
       })
     );
   }
@@ -212,7 +529,10 @@ function workflowEntries(
  */
 export function buildLaunchProjection(
   pipelineCatalog: PipelineCatalogProjection | undefined,
-  workflowCatalog: WorkflowCatalogProjection | undefined
+  workflowCatalog: WorkflowCatalogProjection | undefined,
+  phaseCatalog?: PhaseCatalogProjection,
+  defaultRunner: BackendRunnerKind = DEFAULT_BACKEND,
+  limits?: LaunchLimits
 ): LaunchProjection | undefined {
   if (pipelineCatalog === undefined || workflowCatalog === undefined) return undefined;
   // The effective catalog is the set of Active versions (100 FR-007), which is
@@ -221,10 +541,25 @@ export function buildLaunchProjection(
   const effectivePipelineIds = new Set(
     pipelineCatalog.effective.map((definition) => definition.pipelineId)
   );
+  // FR-R4-F06 (D3) -- the backends each entry would spawn, asked of the effective
+  // catalogs and never of the store. An absent Phase catalog is the loading state, and
+  // every Phase then contributes the window default.
+  const context: BackendContext = {
+    phasesById: new Map(
+      (phaseCatalog?.effective ?? []).map((definition) => [definition.phaseId, definition])
+    ),
+    defaultRunner
+  };
+  const pipelinePhaseIds = new Map(
+    pipelineCatalog.effective.map((definition) => [definition.pipelineId, definition.phaseIds])
+  );
   return Object.freeze({
-    pipelines: sectionOf(pipelineEntries(pipelineCatalog), pipelineCatalog.records.length),
+    pipelines: sectionOf(
+      pipelineEntries(pipelineCatalog, context, limits),
+      pipelineCatalog.records.length
+    ),
     workflows: sectionOf(
-      workflowEntries(workflowCatalog, effectivePipelineIds),
+      workflowEntries(workflowCatalog, effectivePipelineIds, pipelinePhaseIds, context, limits),
       workflowCatalog.records.length
     )
   });

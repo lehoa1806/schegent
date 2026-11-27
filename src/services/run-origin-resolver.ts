@@ -13,7 +13,10 @@
 // and so the two composition roots share one implementation instead of two
 // copies of the same walk.
 
-import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
+import {
+  connectedRunOwnsQueueItem,
+  type ConnectedWorkflowRun
+} from '../state/connected-workflow-run';
 import type { RunOriginRef } from '../contracts/run-origin';
 
 /**
@@ -38,19 +41,17 @@ export function resolveRunOrigin(
 ): RunOriginRef {
   if (taskId.length === 0) return { kind: 'standalone' };
   for (const run of Object.values(connectedRuns)) {
-    for (const node of Object.values(run.nodes)) {
-      for (const attempt of node.attempts) {
-        if (attempt.queueItemId === taskId) {
-          // `workflowId` is never `''` on a live aggregate, but a blank one
-          // would be a present-but-blank identity — neither recorded nor
-          // absent. Falling through to standalone would assert something false,
-          // so the loop keeps looking and, finding nothing better, the caller
-          // records a standalone run it can at least defend.
-          if (run.workflowId.length > 0) {
-            return { kind: 'workflow-member', workflowId: run.workflowId };
-          }
-        }
-      }
+    // A legacy run records its attempts on `nodes` and a composable one on its invocation
+    // frames, and `nodes` stays empty there. The ownership read covers both, so a member of
+    // either shape is named rather than recorded as standalone for good.
+    if (!connectedRunOwnsQueueItem(run, taskId)) continue;
+    // `workflowId` is never `''` on a live aggregate, but a blank one
+    // would be a present-but-blank identity — neither recorded nor
+    // absent. Falling through to standalone would assert something false,
+    // so the loop keeps looking and, finding nothing better, the caller
+    // records a standalone run it can at least defend.
+    if (run.workflowId.length > 0) {
+      return { kind: 'workflow-member', workflowId: run.workflowId };
     }
   }
   return { kind: 'standalone' };

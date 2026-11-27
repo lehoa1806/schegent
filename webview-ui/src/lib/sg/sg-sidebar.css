@@ -1,0 +1,29 @@
+/* Redesign design language: the sidebar view.
+   Ported from the sidebar surface of the mockup `schegent_redesign_surfaces.html`.
+
+   Loaded by the sidebar entry point after `sg-core.css`, and scoped under `.sg` as that file is.
+   The mockup draws the sidebar as a 300px column inside a window frame; in the product the
+   webview is the frame, so the width, the right border and the narrow-width hide rule are left
+   out. So is the mockup's own scroll: the sidebar's view contract has the view fit its content
+   rather than scroll inside itself, so the column fills the view and grows past it instead of
+   opening a scroll region. */
+
+.sg.sidebar, .sg .sidebar { display: flex; flex-direction: column; min-height: 100%; background: var(--schegent-shell-bg); }
+.sg .sb-head { display: flex; align-items: center; gap: var(--schegent-space-2); padding: 0 var(--schegent-space-3); height: 36px; font-size: var(--schegent-text-caption); font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; border-bottom: 1px solid var(--schegent-border); }
+.sg .sb-head .conn { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--schegent-color-completed); }
+/* Not in the mockup, which is always connected: the dot while the view waits for its first state. */
+.sg .sb-head .conn.off { background: var(--schegent-muted-fg); }
+.sg .sb-sec { padding: var(--schegent-space-3); border-bottom: 1px solid var(--schegent-border); }
+.sg .sb-sec:has(+ .sb-foot) { border-bottom: 0; }
+.sg .sb-sec h2 { font-size: var(--schegent-text-caption); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--schegent-muted-fg); margin-bottom: var(--schegent-space-2); }
+.sg .now-title { font-weight: 600; font-size: var(--schegent-text-body); margin: var(--schegent-space-1-5) 0 var(--schegent-space-0-5); }
+/* The mockup's bar is a box around a span sized by an inline width. The product's is a native
+   `<progress>`: it carries the progressbar role and its values itself, keeps the value within the
+   maximum, and leaves Svelte's style helper out of the sidebar's startup bundle. */
+.sg .prog { display: block; width: 100%; height: 4px; border: 0; border-radius: 2px; background: var(--schegent-border); overflow: hidden; margin: var(--schegent-space-2) 0 var(--schegent-space-1); appearance: none; }
+.sg .prog::-webkit-progress-bar { background: transparent; }
+.sg .prog::-webkit-progress-value { background: var(--schegent-color-active); }
+.sg .sb-row { display: flex; align-items: center; gap: var(--schegent-space-2); padding: var(--schegent-space-1) 0; }
+.sg .sb-row .num { margin-left: auto; font-variant-numeric: tabular-nums; }
+.sg .sb-foot { margin-top: auto; padding: var(--schegent-space-3); border-top: 1px solid var(--schegent-border); }
+.sg .sb-foot .btn { width: 100%; justify-content: center; }

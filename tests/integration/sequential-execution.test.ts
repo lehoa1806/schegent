@@ -8,7 +8,9 @@
 //
 //   - The sequential invariant SURVIVES, per queue. Three Tasks on one queue
 //     still promote one at a time, in FIFO order, with the same
-//     "Another request is already in flight" refusal. That is this file.
+//     `in-flight-ownership-conflict` refusal (FR-R3-153 — was an untyped
+//     "Another request is already in flight" `Error` before this feature
+//     closed the transition table). That is this file.
 //   - The cross-queue half becomes its OPPOSITE — two queues each reaching
 //     in-flight at the same time — and moves to
 //     `tests/integration/concurrent-drain.test.ts` (T042).
@@ -20,7 +22,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { createQueue } from '../../src/queue/queue-registry';
 
 const QUEUE_B = '11111111-2222-4333-8444-555555555555';
 
@@ -130,7 +133,7 @@ describe('feature 092 (T038a) — sequential execution survives per queue', () =
 
     expect(queue.hasQueueCapacity(DEFAULT_QUEUE_ID)).toBe(false);
     await expect(queue.markInFlight(t2.id, 'run-2')).rejects.toThrow(
-      /Another request is already in flight/
+      /in-flight-ownership-conflict/
     );
     expect(queue.findById(t2.id)?.status).toBe('pending');
     expect(queue.findById(t1Picked!.id)?.status).toBe('in-flight');

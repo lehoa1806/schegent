@@ -20,17 +20,22 @@
 
   import { nowFine, nowCoarse } from '../lib/tick-store';
   import { postCommand } from '../lib/vscode-api';
+  import { correlatedLifecycle, lifecycleMessage, lifecycleWait } from '../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE } from '../lib/messages';
   import StartModeChooser, { type StartQueueIntent } from './StartModeChooser.svelte';
+  import { findQueueRuntime } from '../lib/queue-runtime-view';
   import { snapshotStore } from '../lib/snapshot-store.svelte';
   import { remoteLifecycleChangeStore } from '../lib/remote-lifecycle-change-store.svelte';
 
   interface Props {
+    /** The queue whose schedule this is — named on every dispatch, so the host
+     *  does not fall back to the default queue (hard rule 56). */
+    readonly queueId: string;
     readonly scheduledStartAt: number;
     readonly collapsed?: boolean;
   }
 
-  const { scheduledStartAt, collapsed = false }: Props = $props();
+  const { queueId, scheduledStartAt, collapsed = false }: Props = $props();
 
   // Subscribe to the appropriate tick stream. Svelte stores are auto-subscribed
   // by referencing `$nowFine` / `$nowCoarse` in derived state.
@@ -44,12 +49,16 @@
 
   let showChooser = $state(false);
 
-  // FR-019a — if the chooser is mounted (operator pressed Change) and the
-  // queue lifecycle transitions OUT of `idle-pending` (e.g. another window
+  // FR-019a — if the chooser is mounted (operator pressed Change) and this
+  // queue's lifecycle transitions OUT of `idle-pending` (e.g. another window
   // committed a state change), silently unmount the chooser and surface the
   // "queue state changed elsewhere" notice. We don't dispatch any IPC.
+  //
+  // Read against `queueId`: `snapshot.queue` is the default queue's projection,
+  // so on any other queue's panel this effect used to fire on a lifecycle the
+  // operator was not looking at and pull the chooser out from under them.
   const queueLifecycleForChooser = $derived(
-    snapshotStore.snapshot?.queue.lifecycle ?? null
+    findQueueRuntime(snapshotStore.snapshot, queueId)?.lifecycle ?? null
   );
   $effect(() => {
     if (
@@ -94,22 +103,39 @@
     return `${yyyy}-${mm}-${dd} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // FR-R3-154 (T1646) — what the host answered about the last of these three
+  // start intents, as one sentence, or `null` when it committed. All three
+  // dispatch `CMD_START_QUEUE` with a `startIntent`, which is the branch of
+  // `runStartQueueCommand` that reports a real outcome rather than the
+  // documented asynchronous acceptance of a bare drain pass — so
+  // `rejected-horizon` and `start-intent-no-change` are both reachable from
+  // this surface, and neither reached a listener before.
+  let startMessage = $state<string | null>(null);
+  // FR-R4-F05 (O4, FR-024, FR-026) — a late answer replaces the interim text; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  const wait = lifecycleWait(lifetime.signal, (message) => (startMessage = message));
+
+  async function dispatchIntent(intent: StartQueueIntent): Promise<void> {
+    startMessage = null;
+    startMessage = lifecycleMessage(
+      await correlatedLifecycle(
+        CMD_START_QUEUE,
+        { queueId, startIntent: intent },
+        (correlationId, payload) => {
+          postCommand(CMD_START_QUEUE, payload as never, { correlationId });
+        },
+        wait
+      )
+    );
+  }
+
   function onCancel(): void {
-    postCommand(CMD_START_QUEUE, {
-      startIntent: {
-        startMode: 'cancel-schedule',
-        source: 'operator-restart'
-      }
-    } as never);
+    void dispatchIntent({ startMode: 'cancel-schedule', source: 'operator-restart' });
   }
 
   function onStartNow(): void {
-    postCommand(CMD_START_QUEUE, {
-      startIntent: {
-        startMode: 'now',
-        source: 'operator-restart'
-      }
-    } as never);
+    void dispatchIntent({ startMode: 'now', source: 'operator-restart' });
   }
 
   function onChange(): void {
@@ -121,19 +147,22 @@
     if (intent === null) return;
     // Chooser already emits a `StartQueueIntent` with
     // `source: 'operator-restart'` (T027 simplification — Feature 065).
-    postCommand(CMD_START_QUEUE, { startIntent: intent } as never);
+    void dispatchIntent(intent);
   }
 </script>
 
-<div class="scheduled-start-indicator" title={resolvedFireTime}>
-  <span class="countdown" data-testid="scheduled-start-countdown">{countdownText}</span>
-  <span class="resolved-fire-time" data-testid="scheduled-start-fire-time">
-    {resolvedFireTime}
-  </span>
+<!-- Drawn as one of the redesign's cards: when the queue starts in bold, the exact time beside
+     it, then the actions, small, as its banners draw theirs. Start now is the primary one,
+     the start the schedule is waiting for. -->
+<div class="scheduled-start-indicator card" title={resolvedFireTime}>
+  <div class="when">
+    <span class="countdown" data-testid="scheduled-start-countdown">{countdownText}</span>
+    <span class="small muted" data-testid="scheduled-start-fire-time">{resolvedFireTime}</span>
+  </div>
   <div class="actions">
     <button
       type="button"
-      class="btn btn-cancel"
+      class="btn btn-secondary btn-sm"
       data-testid="scheduled-start-cancel"
       onclick={onCancel}
     >
@@ -141,7 +170,7 @@
     </button>
     <button
       type="button"
-      class="btn btn-change"
+      class="btn btn-secondary btn-sm"
       data-testid="scheduled-start-change"
       onclick={onChange}
     >
@@ -149,7 +178,7 @@
     </button>
     <button
       type="button"
-      class="btn btn-start-now"
+      class="btn btn-primary btn-sm"
       data-testid="scheduled-start-now"
       onclick={onStartNow}
     >
@@ -162,41 +191,56 @@
       <StartModeChooser onCommit={onChooserCommit} />
     </div>
   {/if}
+
+  {#if startMessage !== null}
+    <p class="start-message" role="alert" data-testid="scheduled-start-message">{startMessage}</p>
+  {/if}
 </div>
 
 <style>
   .scheduled-start-indicator {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    padding: 0.5rem;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 4px;
-    background: var(--vscode-editor-background);
+    gap: var(--schegent-space-2);
+    min-width: 0;
   }
+
+  .when {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--schegent-space-2);
+  }
+
   .countdown {
     font-weight: 600;
+    /* The seconds tick every second; even figures keep the line from shuffling. */
+    font-variant-numeric: tabular-nums;
   }
-  .resolved-fire-time {
-    font-size: 0.85em;
-    color: var(--vscode-descriptionForeground);
+
+  /* The line opens a sentence, so it starts with a capital, as the redesign's "Starts 14:30"
+     does; the words themselves, which tests and the clock logic share, are unchanged. */
+  .countdown::first-letter {
+    text-transform: uppercase;
   }
+
   .actions {
     display: flex;
-    gap: 0.5rem;
+    flex-wrap: wrap;
+    gap: var(--schegent-space-1-5);
   }
-  .btn {
-    padding: 0.25rem 0.75rem;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: 0;
-    border-radius: 2px;
-    cursor: pointer;
-  }
-  .btn:hover {
-    background: var(--vscode-button-hoverBackground);
-  }
+
+  /* The chooser opened by Change sits inside this card, under a rule of its own. */
   .chooser-host {
-    margin-top: 0.5rem;
+    margin-top: var(--schegent-space-1);
+    padding-top: var(--schegent-space-3);
+    border-top: 1px solid var(--schegent-border);
+  }
+
+  /* Colour matches `QueueDetailTier`'s `.refusal`. */
+  .start-message {
+    margin: 0;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
   }
 </style>

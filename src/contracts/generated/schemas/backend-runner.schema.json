@@ -5,16 +5,36 @@
   "x-generatedBy": "scripts/generate-contract-schemas.mjs",
   "x-generatedSchemaVersion": 1,
   "x-generatedFrom": [
+    "src/contracts/backend-kinds.ts",
+    "src/contracts/backend-descriptors.ts",
     "src/contracts/backend-runner.ts",
-    "src/runner/invocation-result.ts"
+    "src/runner/invocation-result.ts",
+    "src/contracts/backend-availability.ts"
   ],
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "supportedBackends",
     "invocationRequestFields",
-    "rawInvocationOutputFields"
+    "rawInvocationOutputFields",
+    "quotaIdentityKinds",
+    "quotaStatusCheckSupports",
+    "quotaObservationStatuses",
+    "quotaObservationSources"
   ],
   "properties": {
+    "supportedBackends": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "claude",
+          "codex",
+          "agy"
+        ]
+      },
+      "uniqueItems": true
+    },
     "invocationRequestFields": {
       "type": "array",
       "items": {
@@ -39,6 +59,11 @@
       },
       "default": [
         {
+          "name": "executableFileStamp",
+          "optional": true,
+          "type": "string"
+        },
+        {
           "name": "phase",
           "optional": false,
           "type": "Phase"
@@ -54,13 +79,38 @@
           "type": "string"
         },
         {
+          "name": "helperInvocation",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "onBeforeSpawn",
+          "optional": true,
+          "type": "(ctx?: { readonly helperInvocation?: boolean }) => Promise<void> | void"
+        },
+        {
+          "name": "onAfterSpawn",
+          "optional": true,
+          "type": "(pid: number | undefined) => Promise<void> | void"
+        },
+        {
           "name": "prompt",
           "optional": false,
           "type": "string"
         },
         {
+          "name": "review",
+          "optional": true,
+          "type": "NativeReviewInvocation"
+        },
+        {
           "name": "timeoutMs",
           "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "maxDurationMs",
+          "optional": true,
           "type": "number"
         },
         {
@@ -124,9 +174,59 @@
           "type": "string"
         },
         {
+          "name": "resumeSessionCostUsd",
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "name": "capabilities",
+          "optional": true,
+          "type": "DeclaredCapabilitySet"
+        },
+        {
           "name": "effectiveFatalSignatures",
           "optional": true,
           "type": "ReadonlyArray<EffectiveSignature>"
+        },
+        {
+          "name": "attemptId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "acpPromptBlocks",
+          "optional": true,
+          "type": "readonly AcpPromptBlock[]"
+        },
+        {
+          "name": "resumeSessionOrigin",
+          "optional": true,
+          "type": "'acp' | 'legacy-cli'"
+        },
+        {
+          "name": "legacyDrain",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "authorizedUpstreamInputPaths",
+          "optional": true,
+          "type": "readonly string[]"
+        },
+        {
+          "name": "authorizedOutputPaths",
+          "optional": true,
+          "type": "readonly string[]"
+        },
+        {
+          "name": "phaseHandoffId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "phaseHandoffRepresentationDigest",
+          "optional": true,
+          "type": "string"
         }
       ]
     },
@@ -179,9 +279,49 @@
           "type": "boolean"
         },
         {
+          "name": "deadlineExceeded",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
           "name": "completedAwaitingExit",
           "optional": true,
           "type": "boolean"
+        },
+        {
+          "name": "sawTerminalResult",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "backgroundWorkOpenAtResult",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "acpTurnSettled",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "sessionCostBaselineUsd",
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "name": "cliSessionCostUsd",
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "name": "stdinDeliveryFailed",
+          "optional": true,
+          "type": "boolean"
+        },
+        {
+          "name": "stdinErrorCode",
+          "optional": true,
+          "type": "string"
         },
         {
           "name": "durationMs",
@@ -192,6 +332,11 @@
           "name": "diagnosticWarnings",
           "optional": true,
           "type": "ReadonlyArray<string>"
+        },
+        {
+          "name": "diagnosticsCaptured",
+          "optional": true,
+          "type": "boolean"
         },
         {
           "name": "command",
@@ -207,8 +352,72 @@
           "name": "streamFatalMatch",
           "optional": true,
           "type": "FatalClassification"
+        },
+        {
+          "name": "admissionDecision",
+          "optional": true,
+          "type": "SpawnAdmissionDecision"
+        },
+        {
+          "name": "terminalReconciliation",
+          "optional": true,
+          "type": "AcpTerminalReconciliation"
+        },
+        {
+          "name": "streamPendingHighWaterBytes",
+          "optional": true,
+          "type": "number"
         }
       ]
+    },
+    "quotaIdentityKinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "qualified",
+          "unknown"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "quotaStatusCheckSupports": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "supported",
+          "unsupported"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "quotaObservationStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "ready",
+          "cooldown-known",
+          "cooldown-unknown",
+          "unreachable",
+          "top-up-required",
+          "check-unsupported"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "quotaObservationSources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "qualified-status",
+          "canonical-diagnostic",
+          "counted-trial"
+        ]
+      },
+      "uniqueItems": true
     }
   }
 }

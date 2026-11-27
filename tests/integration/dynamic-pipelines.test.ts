@@ -20,7 +20,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -34,9 +34,12 @@ class FakeMemento implements Memento {
   }
 }
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -47,7 +50,8 @@ const cleanStdout = (phase: string): string =>
     'ruleset_switches: ["none"]',
     'open_issues: 0',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 const issuesStdout = (phase: string): string =>
@@ -131,16 +135,18 @@ afterEach(async () => {
 //
 // They keep their ids and their fields, because this file is about a *custom*
 // Pipeline: the custom Phase is the subject, and the two around it are the
-// control — the assertion that `speckit-specify` runs on `claude-opus-5` with no
-// effort and no timeout is what makes the `security-audit` overrides mean
+// control — the assertion that `speckit-specify` runs on `claude-opus-5-5` with
+// no effort and no timeout is what makes the `security-audit` overrides mean
 // something rather than being the only values in the run. Substituting fixture
 // ids would keep that structure, and the ids are kept only so the diff shows the
-// definitions moving rather than the test changing.
+// definitions moving rather than the test changing. The one field changed since
+// is the model: the built-ins declared `claude-opus-5`, and `repo/examples/`
+// declares `claude-opus-5-5`.
 const SPECIFY_PHASE: PhaseDef = {
   id: 'speckit-specify',
   name: 'Spec-kit Specify',
   instruction: 'Run /speckit-specify',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   runner: 'claude'
 };
 
@@ -148,7 +154,7 @@ const FINALIZE_PHASE: PhaseDef = {
   id: 'finalize',
   name: 'Finalize',
   instruction: 'Finalize the feature.',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   runner: 'claude'
 };
 
@@ -166,7 +172,8 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       id: 'security-audit',
       name: 'Security Audit',
       instruction: 'Audit the staged diff for security regressions.',
-      model: 'claude-opus-4-7',
+      // Not the control phases' `claude-opus-5-5`, so the override is the only source.
+      model: 'claude-fable-5-1',
       effort: 'high',
       timeoutSeconds: 90,
       retryCondition: 'open_issues > 0'
@@ -188,7 +195,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
     const { runner, invocations } = makeCliRunner(new Set(['security-audit']));
-    const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);
@@ -228,12 +235,12 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     ]);
 
     const securityCall = invocations.find((i) => i.phase === 'security-audit')!;
-    expect(securityCall.model).toBe('claude-opus-4-7');
+    expect(securityCall.model).toBe('claude-fable-5-1');
     expect(securityCall.effort).toBe('high');
     expect(securityCall.timeoutMs).toBe(90_000);
 
     const specifyCall = invocations.find((i) => i.phase === 'speckit-specify')!;
-    expect(specifyCall.model).toBe('claude-opus-5');
+    expect(specifyCall.model).toBe('claude-opus-5-5');
     expect(specifyCall.effort).toBeUndefined();
 
     const log = await fs.readFile(path.join(tmpRoot, '.schegent', 'audit.log'), 'utf8');
@@ -244,7 +251,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     expect(securityStarts.length).toBeGreaterThan(0);
     for (const entry of securityStarts) {
       expect(entry.payload.pipelineId).toBe('security');
-      expect(entry.payload.model).toBe('claude-opus-4-7');
+      expect(entry.payload.model).toBe('claude-fable-5-1');
       expect(entry.payload.effort).toBe('high');
       expect(entry.payload.timeoutMs).toBe(90_000);
     }
@@ -253,7 +260,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
       (l) => l.eventType === 'phase-start' && l.payload.phaseId === 'speckit-specify'
     )!;
     expect(specifyStart.payload.pipelineId).toBe('security');
-    expect(specifyStart.payload).toHaveProperty('model', 'claude-opus-5');
+    expect(specifyStart.payload).toHaveProperty('model', 'claude-opus-5-5');
     expect(specifyStart.payload).not.toHaveProperty('effort');
     expect(specifyStart.payload).not.toHaveProperty('timeoutMs');
   });
@@ -264,7 +271,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
     const { runner, invocations } = makeCliRunner(new Set());
-    const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);
     await store.initialize();

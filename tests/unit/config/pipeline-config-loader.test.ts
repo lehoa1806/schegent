@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { loadAndReportCatalog } from '../../../src/activation/catalog-loading';
 import { loadCatalog, type CatalogConfigReader } from '../../../src/config/pipeline-config-loader';
 import { isPhaseDef } from '../../../src/config/pipeline-config';
-import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS } from '../../../src/contracts/backend-kinds';
 // Feature 098 (T080) — the Pipelines these tests author name `speckit-specify`,
 // `speckit-clarify` and `finalize`, which used to resolve out of the built-in
 // Phase layer. That layer is empty now, so a test about *Pipeline* resolution has
@@ -11,10 +12,11 @@ import { SUPPORTED_BACKENDS } from '../../../src/runner/backend-runner-factory';
 import { SPECKIT_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 // Feature 099 (T496f, FR-042/FR-054) — definitions arrive as a store snapshot,
 // not as configuration. `getPhases`/`getPipelines` are gone from the reader, so a
-// test that used to seed a layer now seeds the store; `getModels` and
-// `getDefaultPipelineId` are the two keys the store does not own and they keep
-// both settings scopes, which is why `userDefault`/`workspaceDefault` survive
-// below while `userPhases`/`workspacePhases` do not.
+// test that used to seed a layer now seeds the store; `getModels` and the default
+// keys are the settings the store does not own and they keep both settings scopes,
+// which is why `userDefault`/`workspaceDefault` survive below while
+// `userPhases`/`workspacePhases` do not. Feature 285 (D2): those two now feed the
+// deprecated `schegent.defaultPipelineId` read, and `workflowDefault` the new key.
 import { EMPTY_SNAPSHOT, snapshotOf } from '../../fixtures/catalog-snapshot-fixture';
 
 /** The Phase rows the Pipelines below reference, as the store supplies them. */
@@ -23,13 +25,17 @@ const REFERENCED_PHASES = SPECKIT_PHASE_DEFS;
 interface LoadOptions {
   readonly phases?: readonly unknown[];
   readonly pipelines?: readonly unknown[];
+  readonly workflows?: readonly unknown[];
   readonly userDefault?: string;
   readonly workspaceDefault?: string;
+  readonly workflowDefault?: string;
 }
 
 function makeReader(opts: LoadOptions): CatalogConfigReader {
   return {
-    getDefaultPipelineId: (scope) => (scope === 'user' ? opts.userDefault : opts.workspaceDefault),
+    getDefaultWorkflowId: (scope) => (scope === 'user' ? opts.workflowDefault : undefined),
+    getDeprecatedDefaultPipelineId: (scope) =>
+      scope === 'user' ? opts.userDefault : opts.workspaceDefault,
     getModels: () => undefined
   };
 }
@@ -37,7 +43,7 @@ function makeReader(opts: LoadOptions): CatalogConfigReader {
 /** One store snapshot plus the two surviving configuration keys. */
 function load(opts: LoadOptions) {
   return loadCatalog(
-    snapshotOf({ phases: opts.phases, pipelines: opts.pipelines }),
+    snapshotOf({ phases: opts.phases, pipelines: opts.pipelines, workflows: opts.workflows }),
     makeReader(opts)
   );
 }
@@ -85,7 +91,8 @@ describe('loadCatalog (T044, T045, US3)', () => {
     const snapshot = snapshotOf({ phases: REFERENCED_PHASES, pipelines });
     const supplyingNothing: CatalogConfigReader = {
       getModels: () => undefined,
-      getDefaultPipelineId: () => undefined
+      getDefaultWorkflowId: () => undefined,
+      getDeprecatedDefaultPipelineId: () => undefined
     };
 
     const withoutReader = loadCatalog(snapshot);
@@ -123,20 +130,27 @@ describe('loadCatalog (T044, T045, US3)', () => {
   // produces — two rows claiming one id, both invalidated — is the duplicate case
   // further down, which is a different rule and already has its own test.
 
-  // `defaultPipelineId` is NOT a definition, so it keeps both settings scopes and
-  // keeps this precedence (FR-054). The Pipelines it names come from the store.
-  it('workspace defaultPipelineId shadows user defaultPipelineId for scalar setting precedence', () => {
+  // The default is NOT a definition, so it keeps both settings scopes and keeps this precedence
+  // (FR-054). Feature 285 (FR-005, FR-007): it names a Workflow now, so the two rows are Workflows
+  // and the linear catalog's default stays `''`.
+  it('workspace default shadows user default for scalar setting precedence', () => {
+    const workflowNamed = (workflowId: string) => ({
+      workflowId,
+      name: workflowId,
+      version: 1,
+      nodes: [{ nodeId: 'only', kind: 'phase', phaseId: 'speckit-specify' }],
+      connections: [],
+      startNodeIds: ['only']
+    });
     const result = load({
       userDefault: 'user-default',
       workspaceDefault: 'workspace-default',
-      pipelines: [
-        { id: 'user-default', name: 'User Default', phases: ['speckit-specify'] },
-        { id: 'workspace-default', name: 'Workspace Default', phases: ['speckit-specify'] }
-      ],
+      workflows: [workflowNamed('user-default'), workflowNamed('workspace-default')],
       phases: REFERENCED_PHASES
     });
     expect(result.errors).toEqual([]);
-    expect(result.catalog.defaultPipelineId).toBe('workspace-default');
+    expect(result.defaultWorkflowId).toBe('workspace-default');
+    expect(result.catalog.defaultPipelineId).toBe('');
   });
 
   it('quarantines invalid source rows without discarding the effective catalog', () => {
@@ -342,13 +356,50 @@ describe('loadCatalog — resolved Pipeline catalog (082 FR-002, FR-003)', () =>
     expect(result.warnings.some((warning) => /ghost/.test(warning.message))).toBe(true);
   });
 
-  it('keeps a defaultPipelineId naming a Pipeline only the store supplies', () => {
+  // Feature 285 (FR-007): the settings no longer source the linear catalog's default. A deprecated
+  // `schegent.defaultPipelineId` naming an effective Pipeline used to be kept here as `scoped`.
+  it('sources no linear default from a deprecated key naming an effective Pipeline (FR-007)', () => {
     const result = load({
         workspaceDefault: 'scoped',
         pipelines: [{ id: 'scoped', name: 'Scoped', phases: ['finalize'] }],
         phases: REFERENCED_PHASES
       });
-    expect(result.defaultPipelineId).toBe('scoped');
+    expect(result.catalog.pipelinesById.has('scoped')).toBe(true);
+    expect(result.catalog.defaultPipelineId).toBe('');
+    expect(result.defaultPipelineId).toBe('');
+    expect(result.defaultWorkflowId).toBe('');
+  });
+
+  it('resolves the default Workflow from the new key, then the deprecated one (FR-005)', () => {
+    const workflow = {
+      workflowId: 'wf-default',
+      name: 'Default Workflow',
+      version: 1,
+      nodes: [{ nodeId: 'only', kind: 'phase', phaseId: 'finalize' }],
+      connections: [],
+      startNodeIds: ['only']
+    };
+    const base = { phases: REFERENCED_PHASES, workflows: [workflow] };
+    expect(load({ ...base, workflowDefault: 'wf-default' }).defaultWorkflowId).toBe('wf-default');
+    expect(load({ ...base, workspaceDefault: 'wf-default' }).defaultWorkflowId).toBe('wf-default');
+    expect(load({ ...base, workflowDefault: '', userDefault: 'wf-default' }).defaultWorkflowId).toBe('');
+    expect(load({ ...base, workflowDefault: 'wf-gone' }).defaultWorkflowId).toBe('');
+
+    // The session reads it from the same load (T008), so a reload cannot leave it stale.
+    const snapshot = snapshotOf({ phases: REFERENCED_PHASES, workflows: [workflow] });
+    const loaded = loadAndReportCatalog(snapshot, makeReader({ workflowDefault: 'wf-default' }), {
+      debug: () => undefined
+    });
+    expect(loaded.defaultWorkflowId).toBe('wf-default');
+  });
+
+  it('gives the reader no way to write either default key (FR-006)', () => {
+    const reader = makeReader({});
+    expect(Object.keys(reader).sort()).toEqual([
+      'getDefaultWorkflowId',
+      'getDeprecatedDefaultPipelineId',
+      'getModels'
+    ]);
   });
 });
 
@@ -608,25 +659,69 @@ describe('loadCatalog — runner validation (074, T033)', () => {
     expect(isPhaseDef(phase)).toBe(true);
   });
 
-  it.each(['claude', 'agy'] as const)(
-    'accepts Git-mutating overrides with explicit %s runner',
-    (runner) => {
-      const opts = {
-        phases: [
-          {
-            id: 'finalize',
-            name: 'Finalize override',
-            instruction: 'Commit and merge the work.',
-            runner,
-            sideEffects: 'git' as const
-          }
-        ]
-      };
+    it.each(['claude', 'agy'] as const)(
+      'accepts Git-mutating overrides with explicit %s runner',
+      (runner) => {
+        const opts = {
+          phases: [
+            {
+              id: 'finalize',
+              name: 'Finalize override',
+              instruction: 'Commit and merge the work.',
+              runner,
+              sideEffects: 'git' as const
+            }
+          ]
+        };
 
-      const result = load(opts);
+        const result = load(opts);
 
-      expect(result.errors).toEqual([]);
-      expect(result.catalog.phasesById.get('finalize')?.runner).toBe(runner);
-    }
-  );
+        expect(result.errors).toEqual([]);
+        expect(result.catalog.phasesById.get('finalize')?.runner).toBe(runner);
+      }
+    );
+  });
+
+describe('loadCatalog — composable Workflow graph preservation (FR-R5-F08 / NF-01)', () => {
+  it('exposes effective WorkflowDefinitions via workflows and workflowsById without flattening them into pipelinesById', () => {
+    const snapshot = snapshotOf({
+      phases: REFERENCED_PHASES,
+      workflows: [
+        {
+          workflowId: 'child-wf',
+          name: 'Child Workflow',
+          version: 1,
+          nodes: [
+            { nodeId: 'child-end', kind: 'phase', phaseId: 'finalize' },
+            { nodeId: 'child-start', kind: 'phase', phaseId: 'speckit-clarify' }
+          ],
+          connections: [
+            { from: { nodeId: 'child-start' }, to: { nodeId: 'child-end' } }
+          ],
+          startNodeIds: ['child-start']
+        },
+        {
+          workflowId: 'parent-wf',
+          name: 'Parent Workflow',
+          version: 1,
+          nodes: [
+            { nodeId: 'step-2', kind: 'workflow', workflowId: 'child-wf' },
+            { nodeId: 'step-1', kind: 'phase', phaseId: 'speckit-specify' }
+          ],
+          connections: [
+            { from: { nodeId: 'step-1' }, to: { nodeId: 'step-2' } }
+          ],
+          startNodeIds: ['step-1']
+        }
+      ]
+    });
+
+    const result = loadCatalog(snapshot);
+    expect(result.errors).toEqual([]);
+    expect(result.catalog.pipelinesById.has('child-wf')).toBe(false);
+    expect(result.catalog.pipelinesById.has('parent-wf')).toBe(false);
+    expect(result.catalog.workflowsById?.get('child-wf')?.workflowId).toBe('child-wf');
+    expect(result.catalog.workflowsById?.get('parent-wf')?.workflowId).toBe('parent-wf');
+    expect(result.catalog.workflows?.map((w) => w.workflowId)).toEqual(['child-wf', 'parent-wf']);
+  });
 });

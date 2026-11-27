@@ -5,26 +5,55 @@
 //   - v6 → v7 enqueue/start-separation lift (Feature 065)
 //   - v10 → v11 per-queue Run-record reshape (Feature 093)
 //   - v11 → v12 per-queue history partition (FR-R3-010)
-//   - workflow-run repair events (legacy)
+//   - Runs ended at load because their Task row was gone (the deleted-paused-
+//     task deadlock; not a version step, see the reconciler's own note)
+//   - workflow-run repair events (legacy phases, malformed session ids)
 //
 // Each forwarding loop swallows append errors and logs a sanitized
 // warn — best-effort, never blocks activation.
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
+  QueuePauseCollapseAuditEvent,
   StateMigratedV5ToV6AuditEvent,
-  StateMigratedV6ToV7AuditEvent
+  StateMigratedV6ToV7AuditEvent,
+  StateMigratedV9ToV10AuditEvent
 } from './queue-state-migrator';
 import type { RunStateMigrationAuditEvent } from './run-state-migrator';
 import type { HistoryStateMigrationAuditEvent } from './history-state-migrator';
 import type { WorkflowRunRepairedAuditEvent } from './workflow-run-migrator';
+import type { OrphanedRunCanceledAuditEvent } from './orphaned-run-reconciler';
 import type { SanitizedLogger } from '../lib/logger';
+import { errorMessage } from '../lib/errors';
+import type { RunRecordQuarantinedPayload } from '../contracts/audit-events';
 
 type WarnLogger = Pick<SanitizedLogger, 'warn'>;
 type AuditAppender = Pick<AuditLogWriter, 'append'>;
 
+/**
+ * FR-R3-111 — quarantined run records, forwarded the same way the migration events are.
+ *
+ * WHY IT IS HERE AND WHY IT WAS MISSING. `WorkspaceStateStore.initialize()` runs before the audit
+ * writer exists, so a quarantine is buffered and drained afterwards — exactly the arrangement the
+ * five migration kinds above use. The buffer, the drain and the closed payload all shipped; **the
+ * drain was called by nothing but its own test**, so in production a corrupt run record was
+ * quarantined and the audit event that replaces the silent discard was never appended. The item was
+ * about not discarding evidence silently, and its own evidence was being discarded silently.
+ *
+ * Found by measuring public methods with no caller anywhere in `src/` — the same shape as
+ * `seedChainFrom`, in the same batch, three hours apart.
+ */
+export interface QuarantineAuditEvent {
+  readonly eventType: 'run-record-quarantined';
+  // The contract's own payload type, not a widened record: this forwarder must not become a way to
+  // put an unclosed shape into a closed union. `src/contracts/audit-events.ts` owns what may be in
+  // it, and its parity gates check that.
+  readonly payload: RunRecordQuarantinedPayload;
+}
+
 export interface MigrationAuditEvents {
   readonly v6MigrationEvents: readonly StateMigratedV5ToV6AuditEvent[];
   readonly v7MigrationEvents: readonly StateMigratedV6ToV7AuditEvent[];
+  readonly v10MigrationEvents?: readonly StateMigratedV9ToV10AuditEvent[];
   // Feature 093 — the v10 → v11 reshape, plus every repair it made on the way.
   // A migration nobody can audit is a migration nobody can debug, which is why
   // this field exists at the same time as the events that fill it rather than
@@ -36,7 +65,21 @@ export interface MigrationAuditEvents {
   // because a migrator that reaches the audit writer is a migrator that can fail
   // activation on an I/O error.
   readonly v12MigrationEvents: readonly HistoryStateMigrationAuditEvent[];
+  readonly v13MigrationEvents?: readonly QueuePauseCollapseAuditEvent[];
+  /**
+   * Runs ended at load because their Task row was gone from every queue.
+   *
+   * Optional, on the same reasoning as `quarantineEvents` below: every existing
+   * caller and test constructs this object unchanged, and absent means none,
+   * which is the common case.
+   */
+  readonly orphanedRunEvents?: readonly OrphanedRunCanceledAuditEvent[];
   readonly runRepairEvents: readonly WorkflowRunRepairedAuditEvent[];
+  /**
+   * FR-R3-111 — records quarantined during `initialize()`. Optional so every existing caller and
+   * test constructs this object unchanged; absent means none, which is the common case.
+   */
+  readonly quarantineEvents?: readonly QuarantineAuditEvent[];
 }
 
 /**
@@ -70,6 +113,22 @@ function runMigrationPayload(event: RunStateMigrationAuditEvent): Record<string,
   }
 }
 
+/** Each repair's payload is built on its own; the session-id one names the repair, not the id. */
+function runRepairPayload(event: WorkflowRunRepairedAuditEvent): Record<string, unknown> {
+  switch (event.repair) {
+    case 'remove-bugfix-phases-from-default-pipeline':
+      return {
+        pipelineId: event.pipelineId,
+        repair: event.repair,
+        removedPhaseCount: event.removedPhaseCount,
+        removedBreakpointCount: event.removedBreakpointCount,
+        remainingPhaseCount: event.remainingPhaseCount
+      };
+    case 'remove-malformed-cli-session-id':
+      return { repair: event.repair };
+  }
+}
+
 /**
  * The audit payload for one v11 → v12 event.
  *
@@ -98,6 +157,32 @@ function historyMigrationPayload(event: HistoryStateMigrationAuditEvent): Record
       };
     case 'history-record-repaired':
       return { occurredAt: event.occurredAt, reason: event.reason };
+  }
+}
+
+/** The audit payload for one v12 → v13 pause-collapse or divergence event. */
+function pauseCollapsePayload(event: QueuePauseCollapseAuditEvent): Record<string, unknown> {
+  switch (event.type) {
+    case 'state-migrated-v12-to-v13':
+      return {
+        fromVersion: event.fromVersion,
+        toVersion: event.toVersion,
+        occurredAt: event.occurredAt,
+        queueIds: event.queueIds,
+        pausedQueueCount: event.pausedQueueCount,
+        divergentQueueCount: event.divergentQueueCount
+      };
+    case 'queue-pause-divergence-resolved':
+      return {
+        occurredAt: event.occurredAt,
+        queueId: event.queueId,
+        registryPaused: event.registryPaused,
+        lifecyclePaused: event.lifecyclePaused,
+        mirrorPaused: event.mirrorPaused,
+        resolvedPaused: event.resolvedPaused,
+        resolvedPauseSource: event.resolvedPauseSource,
+        reason: event.reason
+      };
   }
 }
 
@@ -147,6 +232,27 @@ export async function forwardMigrationAuditEvents(
       logger.warn(`state-migrated-v6-to-v7 audit append failed: ${(err as Error).message}`);
     }
   }
+  for (const event of events.v10MigrationEvents ?? []) {
+    try {
+      await auditWriter.append({
+        runId: '',
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: {
+          fromVersion: event.fromVersion,
+          toVersion: event.toVersion,
+          occurredAt: event.occurredAt,
+          queueIds: event.queueIds,
+          pendingTaskCount: event.pendingTaskCount,
+          inFlightTaskCount: event.inFlightTaskCount
+        },
+        outcome: 'success'
+      });
+    } catch (err) {
+      logger.warn(`state-migrated-v9-to-v10 audit append failed: ${errorMessage(err)}`);
+    }
+  }
   for (const event of events.v11MigrationEvents) {
     try {
       await auditWriter.append({
@@ -183,7 +289,27 @@ export async function forwardMigrationAuditEvents(
       logger.warn(`state-migrated-v11-to-v12 audit append failed: ${(err as Error).message}`);
     }
   }
-  for (const event of events.runRepairEvents) {
+  for (const event of events.v13MigrationEvents ?? []) {
+    try {
+      await auditWriter.append({
+        runId: '',
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: pauseCollapsePayload(event),
+        outcome: 'success'
+      });
+    } catch (err) {
+      logger.warn(`${event.type} audit append failed: ${errorMessage(err)}`);
+    }
+  }
+  // A Run ended because the Task row addressing it was gone. `runId` IS carried
+  // here, unlike the reshape events above: this Run existed, executed and was
+  // stopped by the repair, so an auditor correlating on it reaches a real
+  // history. `outcome: 'failure'` for the same reason the quarantine below uses
+  // it — the state this host was handed was broken, and the repair is the
+  // record of the breakage, not a routine step.
+  for (const event of events.orphanedRunEvents ?? []) {
     try {
       await auditWriter.append({
         runId: event.runId,
@@ -191,16 +317,46 @@ export async function forwardMigrationAuditEvents(
         iteration: 0,
         eventType: event.type,
         payload: {
-          pipelineId: event.pipelineId,
-          repair: event.repair,
-          removedPhaseCount: event.removedPhaseCount,
-          removedBreakpointCount: event.removedBreakpointCount,
-          remainingPhaseCount: event.remainingPhaseCount
+          queueId: event.queueId,
+          runId: event.runId,
+          priorStatus: event.priorStatus
         },
+        outcome: 'failure'
+      });
+    } catch (err) {
+      logger.warn(`run-canceled-task-row-removed audit append failed: ${errorMessage(err)}`);
+    }
+  }
+  for (const event of events.runRepairEvents) {
+    try {
+      await auditWriter.append({
+        runId: event.runId,
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.type,
+        payload: runRepairPayload(event),
         outcome: 'success'
       });
     } catch (err) {
       logger.warn(`workflow-run-repaired audit append failed: ${(err as Error).message}`);
+    }
+  }
+  // FR-R3-111 — the quarantine's audit half. `runId` is empty because a quarantined record is one
+  // whose run identity could not be trusted enough to read; the payload carries the queue, the
+  // reason and the depth, and nothing else. `outcome: 'failure'` because a record that had to be
+  // quarantined is a failure of the state this host was handed, not a routine migration step.
+  for (const event of events.quarantineEvents ?? []) {
+    try {
+      await auditWriter.append({
+        runId: '',
+        phase: 'state-migration',
+        iteration: 0,
+        eventType: event.eventType,
+        payload: { ...event.payload },
+        outcome: 'failure'
+      });
+    } catch (err) {
+      logger.warn(`run-record-quarantined audit append failed: ${errorMessage(err)}`);
     }
   }
 }

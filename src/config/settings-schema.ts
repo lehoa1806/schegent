@@ -15,7 +15,14 @@
 //   - schegent.trust.allowCustomRetryConditions
 //
 // This module is intentionally `vscode`-free: it is imported by host
-// validators (transitively via `general-settings.ts`) and by tests.
+// validators and by tests. FR-R3-143 (T016) — that sentence used to end
+// "(transitively via `general-settings.ts`)", which was false: that file
+// imported one module, `../contracts/snapshot-vocabulary`, so no path reached
+// this one through it. The validator path is
+// `src/activation/workspace-settings.ts:8` -> `settings-schema-validator.ts:31`
+// -> here; `src/config/general-settings.ts` now imports this module DIRECTLY,
+// since T015 read the `cli.environmentAllowlist` element pattern from
+// `SETTINGS_SCHEMA` rather than writing a fourth copy of it.
 // No I/O, no side effects, no module-level state besides the frozen
 // schema record itself.
 //
@@ -27,6 +34,25 @@
 // Model Catalog and backend-runner keys whose IPC paths live elsewhere.
 // Feature 099 (T494, FR-054) — it no longer includes definition keys at
 // all: Phases, Pipelines and Workflows are stored, not configured.
+
+// FR-R3-143 (T034) — the two process-environment constraints below are READ from
+// `src/contracts/process-environment-policy.ts` rather than written here. That
+// module is where the fold that enforces them lives, and where the settings surface
+// reads them from; a literal here would be a second declaration that a parity test
+// against `package.json` would keep green while the two drifted from the code that
+// applies them.
+import {
+  PROCESS_ENVIRONMENT_MODES,
+  PROCESS_ENV_NAME_PATTERN_SOURCE
+} from '../contracts/process-environment-policy';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
+import {
+  BACKEND_DESCRIPTORS,
+  BACKEND_DESCRIPTOR_LIST,
+  emptyBackendModels
+} from '../contracts/backend-descriptors';
+import { REVIEW_SCANNERS } from '../contracts/containment-qualification';
+import { MAX_UNCHANGED_COMPARISONS } from '../contracts/unchanged-comparison-bound';
 
 /** Setting value-shape category, mirroring JSON Schema vocabulary. */
 export type SettingsSchemaType =
@@ -60,6 +86,8 @@ export interface SettingsSchemaEntry {
   readonly itemType?: 'string' | 'integer' | 'number' | 'boolean' | 'enum' | 'object';
   /** Optional element pattern for string arrays. */
   readonly itemPattern?: string;
+  /** Optional closed element enum for string arrays (mirrors `items.enum` in package.json). */
+  readonly itemEnum?: readonly string[];
   /** `true` when `default === null` and the value may be cleared back to null. */
   readonly nullable?: boolean;
 }
@@ -81,9 +109,9 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.cli.path': {
     key: 'schegent.cli.path',
     type: 'string',
-    default: 'claude',
+    default: BACKEND_DESCRIPTORS.claude.defaultCliBinary,
     scope: 'application',
-    docLabel: 'Claude CLI binary path'
+    docLabel: BACKEND_DESCRIPTORS.claude.cliPathDocLabel
   },
   'schegent.cli.inheritEnvironment': {
     key: 'schegent.cli.inheritEnvironment',
@@ -98,7 +126,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     // Feature 098 (PRIV-02) — `inherit` -> `allowlist`; see package.json.
     default: 'allowlist',
     scope: 'application',
-    enum: ['inherit', 'minimal', 'allowlist'],
+    enum: PROCESS_ENVIRONMENT_MODES,
     docLabel: 'Backend CLI environment policy mode'
   },
   'schegent.cli.environmentAllowlist': {
@@ -106,17 +134,44 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     type: 'array',
     default: [],
     itemType: 'string',
-    itemPattern: '^[A-Za-z_][A-Za-z0-9_]*$',
+    itemPattern: PROCESS_ENV_NAME_PATTERN_SOURCE,
     scope: 'application',
     docLabel: 'Backend CLI environment variable name allowlist'
   },
   'schegent.backend.runner': {
     key: 'schegent.backend.runner',
     type: 'enum',
-    default: 'claude',
+    default: DEFAULT_BACKEND,
     scope: 'application',
-    enum: ['claude', 'codex', 'agy'],
+    enum: SUPPORTED_BACKENDS,
     docLabel: 'Backend runner selection'
+  },
+  // FR-R3-056 (H-01) — `application`-scoped deliberately: this is a machine-level
+  // safety posture, and a workspace must not be able to grant itself the right to
+  // run an unbounded agent.
+  // FR-R3-125 (FR-004) — one boolean became a list of backend ids. The old key
+  // `schegent.backend.allowUncontainedBackends` is REMOVED, not read as a
+  // fallback: two keys answering one safety question is the duplicate-authority
+  // shape FR-R3-066 removed, and the fallback branch that mishandles `true` fails
+  // OPEN. A stale `true` therefore grants nothing, which is the fail-closed
+  // direction and is stated in the refusal message and the settings reference.
+  'schegent.backend.uncontainedBackends': {
+    key: 'schegent.backend.uncontainedBackends',
+    type: 'array',
+    default: [],
+    itemType: 'string',
+    itemEnum: SUPPORTED_BACKENDS,
+    scope: 'application',
+    docLabel: 'Backends allowed to run with no OS-enforced bound'
+  },
+  'schegent.backend.uncontainedScanners': {
+    key: 'schegent.backend.uncontainedScanners',
+    type: 'array',
+    default: [],
+    itemType: 'string',
+    itemEnum: REVIEW_SCANNERS,
+    scope: 'application',
+    docLabel: 'Standalone native review scanners allowed to run with no OS-enforced bound'
   },
   'schegent.backend.probeTimeoutSeconds': {
     key: 'schegent.backend.probeTimeoutSeconds',
@@ -130,16 +185,103 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.codex.path': {
     key: 'schegent.codex.path',
     type: 'string',
-    default: 'codex',
+    default: BACKEND_DESCRIPTORS.codex.defaultCliBinary,
     scope: 'application',
-    docLabel: 'Codex CLI binary path'
+    docLabel: BACKEND_DESCRIPTORS.codex.cliPathDocLabel
   },
   'schegent.agy.path': {
     key: 'schegent.agy.path',
     type: 'string',
-    default: 'agy',
+    default: BACKEND_DESCRIPTORS.agy.defaultCliBinary,
     scope: 'application',
-    docLabel: 'Agy CLI binary path'
+    docLabel: BACKEND_DESCRIPTORS.agy.cliPathDocLabel
+  },
+  'schegent.acp.profile': {
+    key: 'schegent.acp.profile',
+    type: 'enum',
+    default: 'auto',
+    scope: 'application',
+    enum: Object.freeze([
+      'auto',
+      ...BACKEND_DESCRIPTOR_LIST.map((descriptor) => descriptor.acpProfile.profileId).sort()
+    ]),
+    docLabel: 'ACP agent profile selection'
+  },
+  'schegent.telemetry.export.enabled': {
+    key: 'schegent.telemetry.export.enabled',
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    docLabel: 'Optional OTLP metadata export opt-in'
+  },
+  'schegent.telemetry.export.endpoint': {
+    key: 'schegent.telemetry.export.endpoint',
+    type: 'string',
+    default: '',
+    scope: 'application',
+    docLabel: 'Optional OTLP/HTTP metrics destination URL'
+  },
+  'schegent.telemetry.export.protocol': {
+    key: 'schegent.telemetry.export.protocol',
+    type: 'enum',
+    default: 'otlp-http-json',
+    scope: 'application',
+    enum: ['otlp-http-json', 'otlp-http-protobuf', 'otlp-grpc'],
+    docLabel: 'Declared OTLP export protocol'
+  },
+  'schegent.telemetry.export.allowPlaintextLoopback': {
+    key: 'schegent.telemetry.export.allowPlaintextLoopback',
+    type: 'boolean',
+    default: false,
+    scope: 'application',
+    docLabel: 'Allow plaintext OTLP export to verified loopback endpoints'
+  },
+  'schegent.telemetry.export.credentialSecretKey': {
+    key: 'schegent.telemetry.export.credentialSecretKey',
+    type: 'string',
+    default: '',
+    scope: 'application',
+    docLabel: 'SecretStorage key reference for OTLP credential'
+  },
+  'schegent.telemetry.export.credentialHeaderName': {
+    key: 'schegent.telemetry.export.credentialHeaderName',
+    type: 'string',
+    default: 'Authorization',
+    scope: 'application',
+    docLabel: 'HTTP header name for SecretStorage OTLP credential'
+  },
+  'schegent.telemetry.export.contentPolicy': {
+    key: 'schegent.telemetry.export.contentPolicy',
+    type: 'enum',
+    default: 'metadata-only',
+    scope: 'application',
+    enum: ['metadata-only', 'content'],
+    docLabel: 'Explicit telemetry content-export policy'
+  },
+  'schegent.lanes.enabled': {
+    key: 'schegent.lanes.enabled',
+    type: 'boolean',
+    default: false,
+    scope: 'resource',
+    docLabel: 'Provision isolated per-run Git worktrees'
+  },
+  'schegent.lanes.liveCap': {
+    key: 'schegent.lanes.liveCap',
+    type: 'integer',
+    default: 1,
+    min: 1,
+    max: 20,
+    scope: 'resource',
+    docLabel: 'Maximum concurrent live isolated execution lanes'
+  },
+  'schegent.lanes.provisioningDeadlineSeconds': {
+    key: 'schegent.lanes.provisioningDeadlineSeconds',
+    type: 'integer',
+    default: 120,
+    min: 1,
+    max: 600,
+    scope: 'resource',
+    docLabel: 'Isolated lane provisioning deadline (seconds)'
   },
   'schegent.loop.maxIterations': {
     key: 'schegent.loop.maxIterations',
@@ -148,7 +290,16 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     min: 1,
     max: 50,
     scope: 'resource',
-    docLabel: 'Loop phase max iterations'
+    docLabel: 'Phase retry-condition max iterations'
+  },
+  'schegent.loop.maxUnchangedComparisons': {
+    key: 'schegent.loop.maxUnchangedComparisons',
+    type: 'integer',
+    default: 0,
+    min: 0,
+    max: MAX_UNCHANGED_COMPARISONS,
+    scope: 'resource',
+    docLabel: 'Unchanged retry comparisons before an early stop'
   },
   'schegent.watchdog.pollIntervalMinutes': {
     key: 'schegent.watchdog.pollIntervalMinutes',
@@ -158,13 +309,60 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Credit watchdog poll interval (minutes)'
   },
+  'schegent.invocation.idleTimeoutSeconds': {
+    key: 'schegent.invocation.idleTimeoutSeconds',
+    type: 'number',
+    default: 5400,
+    min: 30,
+    scope: 'resource',
+    docLabel: 'Per-phase idle timeout (seconds)'
+  },
+  'schegent.invocation.maxDurationSeconds': {
+    key: 'schegent.invocation.maxDurationSeconds',
+    type: 'number',
+    default: 21600,
+    min: 60,
+    scope: 'resource',
+    docLabel: 'Per-invocation max duration (seconds)'
+  },
+  // FR-R3-075 — deprecated manifest alias of idleTimeoutSeconds, kept for
+  // migration (an explicit legacy value is honoured while the renamed key is
+  // unset). Present here because this schema mirrors the MANIFEST; the IPC
+  // settings surface (KEY_SPECS) deliberately omits it.
   'schegent.invocation.timeoutSeconds': {
     key: 'schegent.invocation.timeoutSeconds',
     type: 'number',
     default: 5400,
     min: 30,
     scope: 'resource',
-    docLabel: 'Per-phase invocation timeout (seconds)'
+    docLabel: 'Per-phase idle timeout (seconds) — deprecated alias'
+  },
+  // FR-R3-112 — the spend bound. `null` (default) is NO BOUND, deliberately: a
+  // shipped default would pause existing operators' runs on upgrade, and a bound
+  // arriving as a surprise mid-run is worse than no bound at all. The mechanism
+  // ships enabled and unset, and the operator disclosure says so.
+  //
+  // Two keys because the bound has two denominations and one number cannot carry
+  // both units: `claude` reports cost, `codex` and `agy` report tokens and no cost
+  // (FR-R3-098 left cost absent there rather than derived). Which key is in force
+  // follows from what the backend reports.
+  'schegent.spend.maxUsdPerRun': {
+    key: 'schegent.spend.maxUsdPerRun',
+    type: 'number',
+    default: null,
+    nullable: true,
+    min: 0.01,
+    scope: 'resource',
+    docLabel: 'Per-run spend bound in US dollars (null = no bound)'
+  },
+  'schegent.spend.maxTokensPerRun': {
+    key: 'schegent.spend.maxTokensPerRun',
+    type: 'number',
+    default: null,
+    nullable: true,
+    min: 1,
+    scope: 'resource',
+    docLabel: 'Per-run spend bound in tokens, for backends that report no cost (null = no bound)'
   },
   'schegent.audit.rotation.sizeMB': {
     key: 'schegent.audit.rotation.sizeMB',
@@ -185,7 +383,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   'schegent.models': {
     key: 'schegent.models',
     type: 'object',
-    default: { claude: [], codex: [], agy: [] },
+    default: emptyBackendModels(),
     scope: 'resource',
     docLabel: 'Custom model identifiers'
   },
@@ -193,8 +391,21 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
   // are deleted, not drained. Definitions live in the
   // versioned store; a settings key that still declared them would be a second
   // place to author a definition from, which is the thing the store replaces.
-  // The keys that remain here name what a Pipeline may select and which Pipeline
+  // The keys that remain here name what a Phase may select and which Workflow
   // a surface opens on — neither is a definition.
+  //
+  // Feature 285 (OD-2, FR-001): the default is `schegent.defaultWorkflowId`, which holds Workflow
+  // ids only. `schegent.defaultPipelineId` below is its deprecated alias: present because this
+  // schema mirrors the MANIFEST, read only as a fallback, and omitted from KEY_SPECS.
+  'schegent.defaultWorkflowId': {
+    key: 'schegent.defaultWorkflowId',
+    type: 'string',
+    // Unset is the empty string, which the pattern admits, as for the alias below.
+    default: '',
+    scope: 'resource',
+    pattern: '^$|^[a-z][a-z0-9-]{0,63}$',
+    docLabel: 'Default Workflow id'
+  },
   'schegent.defaultPipelineId': {
     key: 'schegent.defaultPipelineId',
     type: 'string',
@@ -207,7 +418,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     default: '',
     scope: 'resource',
     pattern: '^$|^[a-z][a-z0-9-]{0,63}$',
-    docLabel: 'Default pipeline id'
+    docLabel: 'Default Workflow id — deprecated alias'
   },
   'schegent.retry.maxAttempts': {
     key: 'schegent.retry.maxAttempts',
@@ -225,34 +436,6 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Continue past an unsatisfied retryCondition at the cap'
   },
-  // Feature 092 (T054, FR-026/FR-027) — the cap is no longer pinned. Feature
-  // 056 held it at exactly 1 because a single workspace lock made concurrency
-  // unrepresentable; the lock split of US2 removed that constraint, so the
-  // knob now means what it says.
-  //
-  // Feature 094 — the note above is the mechanism, not the permission. The
-  // authority to ship a default above one is
-  // `docs/architecture/local-queue-parallelism-ratification.md`, which narrows
-  // one clause of the remote/multi-user expansion gate for the local
-  // single-operator shape only, dispositions the gate's seven exit criteria
-  // individually, and refuses precedent for anything wider. This is one of
-  // three sites that *advertise* the range to the operator; three others
-  // enforce it, and unlike those three this one restates the numbers rather
-  // than deriving them, so it is a place drift can be recorded.
-  //
-  // Six sites in total. Do not take that count from any other comment: before
-  // feature 094 the codebase carried two counts, four and five, which
-  // disagreed with each other and with the truth.
-  'schegent.queue.globalConcurrencyCap': {
-    key: 'schegent.queue.globalConcurrencyCap',
-    type: 'integer',
-    // Feature 098 (REL-02) — default 3 -> 1; the RANGE is unchanged.
-    default: 1,
-    min: 1,
-    max: 20,
-    scope: 'resource',
-    docLabel: 'Global queue concurrency cap'
-  },
   'schegent.logging.verbose': {
     key: 'schegent.logging.verbose',
     type: 'boolean',
@@ -269,6 +452,16 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'resource',
     docLabel: 'Raw transcript retention policy for new runs'
   },
+  // FR-R4-F04 (FR-001) — whether and when the CLI's own output is kept. `inherit` follows the raw
+  // transcript mode, so a workspace that never touched this keeps the retention it had.
+  'schegent.logging.transportCaptureMode': {
+    key: 'schegent.logging.transportCaptureMode',
+    type: 'enum',
+    default: 'inherit',
+    enum: ['inherit', 'off', 'errors-only', 'on'],
+    scope: 'resource',
+    docLabel: 'CLI transport capture mode'
+  },
   'schegent.logging.sessionRetentionMaxAgeDays': {
     key: 'schegent.logging.sessionRetentionMaxAgeDays',
     type: 'integer',
@@ -276,7 +469,7 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     min: 1,
     max: 3650,
     scope: 'resource',
-    docLabel: 'Unredacted session artifact maximum age (days)'
+    docLabel: 'Session artifact maximum age (days)'
   },
   'schegent.logging.sessionRetentionMaxBytes': {
     key: 'schegent.logging.sessionRetentionMaxBytes',
@@ -352,6 +545,14 @@ export const SETTINGS_SCHEMA: Readonly<Record<string, SettingsSchemaEntry>> = Ob
     scope: 'window',
     docLabel: 'Show confirmation prompts for destructive UI actions'
   },
+  'schegent.queue.haltOnTaskFailure': {
+    key: 'schegent.queue.haltOnTaskFailure',
+    type: 'enum',
+    default: 'halt-on-failure',
+    scope: 'window',
+    enum: ['halt-on-failure', 'continue'],
+    docLabel: 'Workspace default: stop a queue after a task fails'
+  },
   'schegent.trust.allowCustomPhases': {
     key: 'schegent.trust.allowCustomPhases',
     type: 'boolean',
@@ -405,26 +606,30 @@ export function isSchemaCompliantValue(
       );
     case 'boolean':
       return typeof value === 'boolean';
-    case 'array':
+    case 'array': {
       if (!Array.isArray(value)) return false;
-      if (entry.itemType === undefined) return true;
+      const itemType = entry.itemType;
+      if (itemType === undefined) return true;
       return value.every((item) => {
         const typeMatches = (() => {
-          switch (entry.itemType) {
+          switch (itemType) {
             case 'string': return typeof item === 'string';
             case 'integer': return typeof item === 'number' && Number.isInteger(item);
             case 'number': return typeof item === 'number' && Number.isFinite(item);
             case 'boolean': return typeof item === 'boolean';
             case 'object': return typeof item === 'object' && item !== null && !Array.isArray(item);
             case 'enum': return typeof item === 'string';
-            case undefined: return true;
           }
         })();
-        return typeMatches && (
-          entry.itemPattern === undefined ||
-          (typeof item === 'string' && new RegExp(entry.itemPattern).test(item))
+        return (
+          typeMatches &&
+          (entry.itemPattern === undefined ||
+            (typeof item === 'string' && new RegExp(entry.itemPattern).test(item))) &&
+          (entry.itemEnum === undefined ||
+            (typeof item === 'string' && entry.itemEnum.includes(item)))
         );
       });
+    }
     case 'object':
       return typeof value === 'object' && value !== null && !Array.isArray(value);
     case 'enum':

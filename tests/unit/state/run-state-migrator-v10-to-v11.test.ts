@@ -30,7 +30,7 @@ import {
   type RunStateMap,
   type RunStateMigrationAuditEvent
 } from '../../../src/state/run-state-migrator';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { STATE_SCHEMA_VERSION_V11 } from '../../../src/contracts/state-schema';
 import {
   FIXTURE_NOW,
@@ -236,7 +236,7 @@ describe('migrateV10ToV11 — preservation', () => {
     const carried = migrateV10ToV11(run, RESOLVES, NOW).runs[QUEUE_A];
 
     expect(Object.keys(carried).sort()).toEqual(Object.keys(run).sort());
-    expect(carried).not.toHaveProperty('queueId');
+    expect(carried).not.toHaveProperty('queueId'); // 2026-09-06 coincidental: a WorkflowRun, not a ScheduleEventPayloadCore
   });
 
   it('does not reorder or re-key an already-plural record', () => {

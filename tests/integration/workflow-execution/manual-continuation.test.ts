@@ -116,8 +116,8 @@ describe('a connected run whose completed node offers two branches', () => {
     workflow = branchingRelease();
   });
 
-  afterEach(() => {
-    harness.cleanup();
+  afterEach(async () => {
+    await harness.cleanup();
   });
 
   /** Start the run, complete `n-triage`, and return what the routing decided. */

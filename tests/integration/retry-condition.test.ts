@@ -21,7 +21,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -101,8 +101,12 @@ function block(phase: string, body: readonly string[]): string {
   ].join('\n');
 }
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, unseen because the retryCondition transitions on
+// its metric before the outcome is consulted.
 function clearWithMetrics(phase: string, metricLines: string[]): string {
-  return `[SCHEGENT_STATUS: CLEAR]\n${block(phase, metricLines)}`;
+  return `${block(phase, metricLines)}\n[SCHEGENT_STATUS: CLEAR]`;
 }
 
 const SECURITY_AUDIT_PHASE: PhaseDef = {
@@ -157,7 +161,7 @@ async function makeController(
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
   const { runner, invokeCount } = makeStubRunner(scripts);
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);
@@ -216,6 +220,12 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
       expect(evt.payload.pipelineId).toBe('security');
       expect(evt.payload.phaseId).toBe('security-audit');
     }
+
+    // FR-R3-199 — each iteration ends on the fake's token, not on remaining
+    // issues. A retryCondition decides the transition whatever the outcome, so
+    // nothing above would notice the token going unread.
+    const phaseEnds = lines.filter((l) => l.eventType === 'phase-end');
+    expect(phaseEnds.map((l) => l.payload.terminationReason)).toEqual(['token', 'token', 'token']);
   });
 
   it('advances with missingKeys recorded when the metric is absent (FR-012)', async () => {
@@ -256,9 +266,86 @@ describe('Retry-condition end-to-end (010, T025, US2)', () => {
 
     const lines = await readAuditLog(tmpRoot);
     const ends = lines.filter((l) => l.eventType === 'phase-end');
-    const lastEnd = ends[ends.length - 1];
+    // `.at(-1)` plus a throw, not `ends[ends.length - 1]`: an empty `ends` would
+    // otherwise make `.not.toHaveProperty('cause')` below pass on `undefined` — a
+    // green assertion about an event nobody wrote. `at` is the read whose type
+    // says the miss is possible (FR-R3-110's noUncheckedIndexedAccess ratchet).
+    const lastEnd = ends.at(-1);
+    if (lastEnd === undefined) throw new Error('no phase-end event was written');
     expect(lastEnd.outcome).toBe('failure');
     expect(lastEnd.payload.terminationReason).toBe('cap-exhausted');
+    expect(
+      lastEnd.payload.cause,
+      'contracts/audit-events.md §"phase-end — new payload.cause field" enumerates ' +
+        '"cap_exhausted" for this path (see also specs/194-cap-exhausted-cause-stagnation/' +
+        'contracts/audit-payload-deltas.md Delta 1, rule C1.1); the emitter must write it'
+    ).toBe('cap_exhausted');
+  });
+
+  it('carries no cause on a phase failure that is not a cap exhaustion (FR-003, SC-003)', async () => {
+    // A timed-out invocation: a distinct failure class from cap exhaustion, with no
+    // fatal signature and therefore no cause value to begin with. Positive control for
+    // Delta 1 rule C1.3: cause is absent on this path, so the two failure classes stay
+    // distinguishable.
+    const scripts = [
+      () => {
+        const raw = makeRaw('', 0);
+        return { ...raw, timedOut: true };
+      }
+    ];
+    const { controller, queue, store, invokeCount } = await makeController(scripts, 2);
+
+    const feature = await queue.enqueue('Audit thing', { pipelineId: 'security' });
+    await controller.startNew(feature, 'specs/001-mock', { pipelineId: 'security' });
+
+    expect(invokeCount.value).toBe(1);
+    const run = store.getRun(DEFAULT_QUEUE_ID)!;
+    expect(run.status).toBe('failed');
+
+    const lines = await readAuditLog(tmpRoot);
+    const ends = lines.filter((l) => l.eventType === 'phase-end');
+    const lastEnd = ends.at(-1);
+    if (lastEnd === undefined) throw new Error('no phase-end event was written');
+    expect(lastEnd.outcome).toBe('failure');
+    expect(
+      lastEnd.payload,
+      'Delta 1 rule C1.3: a phase failure that is not a cap exhaustion carries no cause'
+    ).not.toHaveProperty('cause');
+  });
+
+  it('drops the cause a fatal-signature failure DOES emit, rather than never writing one (C1.3, FR-005)', async () => {
+    // The control above is a TIMEOUT, and a timed-out invocation never had a
+    // `cause` to lose — so on its own it proved only that a path with no cause
+    // records none, which an emitter that had never learned to write `cause` at
+    // all would satisfy (2026-09-04 review). This is the failure class that DOES
+    // write one: `phase-runner.ts` puts the redacted fatal signature on the raw
+    // payload as `cause`, and `projectPhaseEnd()` narrows the field to the single
+    // literal `cap_exhausted` on the way to disk. Absence here therefore means
+    // the narrowing fired, which is the claim C1.3 actually makes — and FR-005's
+    // too, since the value dropped is redacted CLI text.
+    const scripts = [() => makeRaw('Autocompact is thrashing\n', 1)];
+    const { controller, queue, store, invokeCount } = await makeController(scripts, 2);
+
+    const feature = await queue.enqueue('Audit thing', { pipelineId: 'security' });
+    await controller.startNew(feature, 'specs/001-mock', { pipelineId: 'security' });
+
+    // One invocation: a fatal signature halts the run regardless of the cap.
+    expect(invokeCount.value).toBe(1);
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('failed');
+
+    const lines = await readAuditLog(tmpRoot);
+    // The witness that keeps the absence below meaningful: `phase-runner.ts`
+    // emits `fatal-signature-matched` from the same `fatalCause` it then puts on
+    // the phase-end payload, so this event's presence is proof a `cause` was
+    // written and dropped, not that the path produced none.
+    expect(lines.map((l) => l.eventType)).toContain('fatal-signature-matched');
+
+    const lastEnd = lines.filter((l) => l.eventType === 'phase-end').at(-1);
+    if (lastEnd === undefined) throw new Error('no phase-end event was written');
+    expect(lastEnd.outcome).toBe('failure');
     expect(lastEnd.payload).not.toHaveProperty('cause');
+    // ...and the text itself is nowhere in the log, under any key. A projection
+    // that moved it to a different field would pass the assertion above.
+    expect(JSON.stringify(lines)).not.toContain('Autocompact is thrashing');
   });
 });

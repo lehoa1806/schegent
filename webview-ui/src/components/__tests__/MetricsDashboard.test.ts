@@ -318,7 +318,7 @@ describe('MetricsDashboard', () => {
     expect(readMetricsSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('toggling include-archived re-fetches with includeArchived: true and shows the coverage window', async () => {
+  it('toggling include-archived re-fetches with includeArchives: true and shows the coverage window', async () => {
     readMetricsSpy.mockResolvedValueOnce(successResult());
     readMetricsSpy.mockResolvedValueOnce(
       successResult({ meta: { includesArchives: true, totalScannedEntries: 0, parseWarnings: 0 }, oldestIncludedTimestamp: '2026-01-01T00:00:00.000Z' })
@@ -481,5 +481,66 @@ describe('MetricsDashboard — coverage windows for totals and detail (FR-R3-009
     await tick();
     expect(queryByTestId('metrics-cumulative')).toBeNull();
     expect(queryByTestId('metrics-coverage-window')).toBeNull();
+  });
+
+  it('keeps .phead free of tab-conditional controls and mounts metrics-toolbar inside the Overview panel only', async () => {
+    const { container, getByTestId, queryByTestId } = render(MetricsDashboard, {
+      props: { active: true }
+    });
+    await tick();
+    await tick();
+
+    const header = container.querySelector('.phead');
+    expect(header).not.toBeNull();
+    expect(header?.querySelector('[data-testid="metrics-toolbar"]')).toBeNull();
+    expect(header?.querySelector('[data-testid="metrics-refresh"]')).toBeNull();
+    expect(header?.querySelector('[data-testid="metrics-include-archived"]')).toBeNull();
+
+    const overviewPanel = container.querySelector('#metrics-panel');
+    const toolbar = getByTestId('metrics-toolbar');
+    expect(overviewPanel?.contains(toolbar)).toBe(true);
+    expect(toolbar.contains(getByTestId('metrics-include-archived'))).toBe(true);
+    expect(toolbar.contains(getByTestId('metrics-refresh'))).toBe(true);
+
+    const headerHtmlBefore = header?.innerHTML;
+    await fireEvent.click(getByTestId('metrics-mode-reports'));
+    await tick();
+
+    expect(queryByTestId('metrics-toolbar')).toBeNull();
+    expect(header?.innerHTML).toBe(headerHtmlBefore);
+
+    await fireEvent.click(getByTestId('metrics-mode-rollup'));
+    await tick();
+    expect(queryByTestId('metrics-toolbar')).not.toBeNull();
+    expect(header?.innerHTML).toBe(headerHtmlBefore);
+  });
+
+  it('switches Overview and Reports tabs deterministically via keyboard Arrow/Home/End (W13)', async () => {
+    const { getByTestId, queryByTestId } = render(MetricsDashboard, {
+      props: { active: true }
+    });
+    await tick();
+    await tick();
+
+    const overviewTab = getByTestId('metrics-mode-rollup');
+    const reportsTab = getByTestId('metrics-mode-reports');
+
+    await fireEvent.keyDown(overviewTab, { key: 'ArrowRight' });
+    await tick();
+    expect(reportsTab.getAttribute('aria-selected')).toBe('true');
+    expect(queryByTestId('metrics-toolbar')).toBeNull();
+
+    await fireEvent.keyDown(reportsTab, { key: 'ArrowLeft' });
+    await tick();
+    expect(overviewTab.getAttribute('aria-selected')).toBe('true');
+    expect(queryByTestId('metrics-toolbar')).not.toBeNull();
+
+    await fireEvent.keyDown(overviewTab, { key: 'End' });
+    await tick();
+    expect(reportsTab.getAttribute('aria-selected')).toBe('true');
+
+    await fireEvent.keyDown(reportsTab, { key: 'Home' });
+    await tick();
+    expect(overviewTab.getAttribute('aria-selected')).toBe('true');
   });
 });

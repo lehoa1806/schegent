@@ -1,0 +1,5 @@
+{
+  "schegent.trust.allowCustomPhases": true,
+  "schegent.loop.maxIterations": 3,
+  "schegent.cli.path": "/nonexistent/workspace-supplied-cli"
+}

@@ -10,6 +10,7 @@
 // identifiers.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import {
   WorkspaceStateStore,
   KEYS,
@@ -20,7 +21,7 @@ import { HistoryStore } from '../../../src/state/history-store';
 import { buildHistoryEntry, withDescriptionRef } from '../../../src/state/history-entry';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { parseAuditLogLine } from '../../../src/parser/audit-log-parser';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -80,11 +81,18 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
-    } as never);
+    } as never,
+      unfencedCommit('test-fixture')
+    );
     await store.setQueue({
       requests: [
         {
-          id: 'q-1',
+          // The row id is the Run's `featureId`, which is what makes this pair
+          // a workspace that could exist. It read `q-1` against a Run pointing
+          // at `feat-1` — a Run whose Task row is nowhere, which the load-time
+          // orphan reconciler now ends on sight. Nothing below asserts the id,
+          // only the shared `runId` this test is actually about.
+          id: 'feat-1',
           description: 'foo',
           addedAt: 1,
           updatedAt: 1,
@@ -95,7 +103,7 @@ describe('restart hydration coherence (US5 / T039 / FR-030)', () => {
           phaseHistory: []
         } as never
       ],
-      inFlightId: 'q-1',
+      inFlightId: 'feat-1',
       paused: false,
       pausedReason: null,
       updatedAt: 1,

@@ -1,0 +1,55 @@
+// FR-R3-089 — backend *identity* lives here; backend *construction* lives in
+// `src/runner/backend-runner-factory.ts`.
+//
+// WHY THEY ARE SEPARATE
+//
+// Before this module existed, eight modules across `config/` and `services/`
+// imported `SUPPORTED_BACKENDS` from the factory to obtain a backend enum —
+// validators that only need to know *which backend names exist* depended on the
+// module that knows *how to build one*. The visible symptom was a runtime cycle
+// between `services/backend-containment-policy.ts` and the factory:
+// `containmentByBackend()` iterates `SUPPORTED_BACKENDS` at runtime, so the
+// import is a value import, not a type-only one. It resolved lazily and had no
+// runtime failure mode — verified, not assumed — which is why this was filed at
+// Low severity as a placement finding rather than a defect.
+//
+// The rule the move establishes: **a module that needs to know the set of
+// backends must not, by that fact alone, pull in the code that spawns one.**
+// `tests/lint/backend-kind-placement.test.ts` keeps it true, and forbids a
+// re-export hub as well — a barrel everything imports from is the same coupling
+// with a different filename.
+//
+// This module imports nothing on purpose. It is a leaf, in the same shape as the
+// reset-transaction literals that `contracts/audit-events.ts` already reuses
+// rather than restates.
+//
+// ADDING A BACKEND (FR-R7-06) takes four explicit steps:
+//   1. Record the expansion-freeze decision (`tests/lint/expansion-freeze.test.ts` closes this union).
+//   2. Extend `BackendRunnerKind` and `SUPPORTED_BACKENDS` below.
+//   3. Add the complete data row in `src/contracts/backend-descriptors.ts` (typecheck fails there first)
+//      and run `npm run contracts:generate` so the webview mirror and manifest checks stay in sync.
+//   4. Implement and register the behavioural adapter (`src/runner/backend-runner-factory.ts` and the
+//      behavioural sites listed in `tests/fixtures/backend-recipe-sites.ts`).
+
+export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
+
+/**
+ * Every backend, in a fixed order.
+ *
+ * The order is observable: `containmentByBackend()` builds its Map from this
+ * array, and settings enumerations project it. Frozen so a caller cannot reorder
+ * it in place.
+ */
+export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freeze([
+  'claude',
+  'codex',
+  'agy'
+]);
+
+/** The backend a workspace gets when `schegent.backend.runner` is unset. */
+export const DEFAULT_BACKEND: BackendRunnerKind = 'claude';
+
+export function isBackendRunnerKind(value: unknown): value is BackendRunnerKind {
+  return typeof value === 'string' &&
+    (SUPPORTED_BACKENDS as ReadonlyArray<string>).includes(value);
+}

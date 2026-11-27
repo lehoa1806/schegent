@@ -120,7 +120,6 @@ function makeDeps(
 ): RouterDeps {
   return {
     executeCommand: vi.fn(async () => undefined as unknown) as unknown as RouterDeps['executeCommand'],
-    queueRemover: { remove: vi.fn(async () => true) },
     catalogStore: store,
     catalogLifecycle: lifecycle.ops,
     refreshCatalog: async () => undefined,

@@ -15,18 +15,26 @@
   // activity, which under concurrent Runs is some other queue's feed. Reading it
   // here would be exactly the cross-queue bleed FR-051 and FR-052 forbid.
   //
-  // Mockup: docs/mockup/schegent_mockup.html `view-run-detail`.
+  // Mockup: docs/mockup/schegent_redesign_surfaces.html, run detail. The steps and the selected
+  // step's views stand side by side, as there; the limits keep their card above both (spec 240 D11).
 
   import PhaseProgression from '../PhaseProgression.svelte';
   import QueueItemActions from '../QueueItemActions.svelte';
   import WorkflowRun from '../WorkflowRun/WorkflowRun.svelte';
   import PhaseLogFeed from '../PhaseLogFeed/PhaseLogFeed.svelte';
   import RunOutputs from '../RunOutputs.svelte';
+  import CreditPollingNotice from './CreditPollingNotice.svelte';
+  import RunLimitsPanel from './RunLimitsPanel.svelte';
+  import RunTabBar, { type RunTab } from './RunTabBar.svelte';
+  import ExecutionVisibilityPanel from '../ExecutionVisibilityPanel.svelte';
   import { findQueueRuntime } from '../../lib/queue-runtime-view';
+  import { queueRowStatusChip } from '../../lib/queue-row-status';
   import { formatDuration } from '../../lib/format-duration';
   import type { QueueItemStatus } from '../../lib/snapshot-types';
   import { resolveTaskPipelineName } from '../../lib/resolve-pipeline-name';
+  import { deriveRunDetailPhases, isSinglePhaseTask } from '../../lib/single-phase-task';
   import { createPhaseLogStore } from '../../lib/phase-log-store.svelte';
+  import { TERMINAL_PHASE_SENTINEL } from '../../lib/activity-feed-selection.svelte';
   import { deriveRunLivenessView, deriveRunProgressView } from '../../lib/run-liveness-view';
   import { nowCoarse } from '../../lib/tick-store';
   import type { WorkflowSnapshot } from '../../lib/snapshot-types';
@@ -45,9 +53,15 @@
     /** FR-065 — a non-primary window reads the Run but mutates nothing. */
     isPrimary: boolean;
     onBack: () => void;
+    /** BUG-001 (FR-009): the Workflow run this member Task was opened from. */
+    parentRunId?: string;
+    /** BUG-001 (FR-009): opens a member Task from the topology. */
+    onOpenTask?: (taskId: string, returnKey: string) => void;
+    /** BUG-001 (FR-009): the topology row to focus on return. */
+    returnFocusKey?: string | null;
   }
 
-  const { snapshot, queueId, runId, isPrimary, onBack }: Props = $props();
+  const { snapshot, queueId, runId, isPrimary, onBack, parentRunId, onOpenTask, returnFocusKey = null }: Props = $props();
 
   const runtime = $derived(findQueueRuntime(snapshot, queueId));
   const queueName = $derived(runtime?.name ?? queueId);
@@ -57,6 +71,10 @@
     (snapshot.connectedRuns ?? []).find((run) => run.connectedRunId === runId) ?? null
   );
   const task = $derived(tasks.find((item) => item.id === runId) ?? null);
+  // Back names where it goes: the parent run's Workflow for a member Task, else the queue.
+  const backLabel = $derived(
+    (snapshot.connectedRuns ?? []).find((run) => run.connectedRunId === parentRunId)?.workflowId ?? queueName
+  );
   // T010 (FR-010/SC-003) — the same resolver tier 2's row calls, so the two
   // tiers can never disagree about what a Task's Pipeline is named.
   const pipelineName = $derived(
@@ -64,6 +82,12 @@
   );
 
   const inFlightRun = $derived(runtime?.inFlightRun ?? null);
+  // Active (including paused) Task runs are keyed in SQLite `runs.run_id` by `inFlightRun.runId`
+  // rather than `task.id`. Keep the non-borrowing rule so a sibling Task never borrows another
+  // executing Task's run ID.
+  const visibilityRootExecutionId = $derived(
+    inFlightRun !== null && inFlightRun.feature?.id === runId ? inFlightRun.runId : runId
+  );
   // The feed belongs to this Run only while this Run is the one executing. A
   // pending Task's detail view reports idle rather than borrowing the reading of
   // whichever Run the queue happens to be working.
@@ -73,6 +97,15 @@
     (task?.status === 'in-flight')
   );
   const liveActivity = $derived(isExecuting ? inFlightRun?.liveActivity ?? null : null);
+  // FR-R4-F02 (TA3) — a credit-paused Run is not executing, so this is NOT gated on `isExecuting`;
+  // it is still this Run's own reading, so it is gated on the Run being the one this tier shows.
+  const creditPolling = $derived(
+    inFlightRun !== null && inFlightRun.feature?.id === runId ? inFlightRun.creditPolling ?? null : null
+  );
+  // FR-R4-F02 (US8, TA3) — under the same rule: the limits belong to the Run this tier shows.
+  const effectiveLimits = $derived(
+    inFlightRun !== null && inFlightRun.feature?.id === runId ? inFlightRun.effectiveLimits ?? null : null
+  );
   const feedText = $derived(
     liveActivity === null
       ? 'idle'
@@ -115,7 +148,19 @@
       : null
   );
 
-  const phases = $derived(runtime?.phases ?? []);
+  // Feature 265 BUG-001 (FR-011) & Feature 020 BUG-004 (FR-008) — Workflow leaf `phase` Tasks and
+  // standalone single-Phase Tasks synthesize their own Phase tile when not executing rather than
+  // reading an empty or sibling Run's `runtime.phases`. Multi-phase Pipelines keep `runtime.phases`.
+  const singlePhaseTask = $derived(isSinglePhaseTask(snapshot, task, runId));
+  const phases = $derived(
+    deriveRunDetailPhases({
+      snapshot,
+      task,
+      taskId: runId,
+      isExecuting,
+      runtimePhases: runtime?.phases ?? []
+    })
+  );
   const activePhaseIndex = $derived(
     phases.findIndex((p) => p.state === 'active')
   );
@@ -128,8 +173,8 @@
     activePhaseIndex >= 0 ? phases[activePhaseIndex].iteration : 1
   );
 
-  // ── Tab state ──────────────────────────────────────────────────────
-  let activeTab = $state<'log' | 'outputs' | 'context'>('log');
+  // ── Tab state ── (FR-R4-F08; the roving tab bar lives in `RunTabBar.svelte`)
+  let activeTab = $state<RunTab>('log');
 
   // Feature 097 (T006) — a local PhaseLogStore pinned to this Run. Unlike the
   // removed Dashboard embed, this tier is about one Run, so the store lives
@@ -139,19 +184,66 @@
 
   $effect(() => {
     if (task === null) return;
-    const key = `${queueId}:${runId}:${task.currentPipelineId}:${task.currentPhase}`;
+    // Bug "the phase log that asked for a phase named done" (2026-09-02) —
+    // `'done'` is a terminal state of the phase state machine, not a Phase
+    // definition, so nothing ever wrote a log under that name and the host
+    // refuses the tuple with `unknown-tuple`. Read as "no current phase", the
+    // same as an absent one: the Run is still pinned, so a tile click below
+    // still completes a readable tuple, but the tier stops asking for a log
+    // that cannot exist. Guarded here as well as at the composer that now
+    // filters the sentinel out of the projection, because `currentPhase` is
+    // typed as any string and the refusal this produces is silent.
+    const currentPhase =
+      task.currentPhase === TERMINAL_PHASE_SENTINEL ? null : task.currentPhase ?? null;
+    const effectivePhase = currentPhase ?? (singlePhaseTask ? (task.currentPipelineId ?? null) : null);
+    const key = `${queueId}:${runId}:${task.currentPipelineId}:${effectivePhase}`;
     if (key === pinnedTaskKey) return;
+    // A re-pin follows the Run as it advances, which is right up until the
+    // operator picks a phase tile themselves: `setPhase` records that as an
+    // operator selection and turns Live Mode off (Feature 067), and the phase
+    // they pinned has to survive the next transition. The first pin is
+    // unconditional — it is what fills the feed on mount, and Live Mode is
+    // persisted webview-wide, so reading it here would leave this tier empty
+    // for an operator who had turned it off on some other surface.
+    if (pinnedTaskKey !== null && !phaseLogStore.isLiveMode()) {
+      pinnedTaskKey = key;
+      return;
+    }
     pinnedTaskKey = key;
     phaseLogStore.setSelection(
       {
         queueId,
         taskId: runId,
         pipelineId: task.currentPipelineId ?? null,
-        phaseId: task.currentPhase ?? null,
+        phaseId: effectivePhase,
         iterationN: null
       },
       { origin: 'cascade' }
     );
+  });
+
+  // The phase strip is this tier's navigation into the Activity Feed beside
+  // it: the operator picks the phase whose log they want to read. Default
+  // origin ('manual') on purpose — this is an operator selection, and the
+  // Live button in the feed's own header is how they hand the follow back.
+  const selectedPhaseId = $derived(phaseLogStore.state.selection.phaseId);
+
+  function handleSelectPhase(phaseId: string): void {
+    phaseLogStore.setPhase(phaseId);
+  }
+
+  // What "currently executing" means on a surface about one Run: this Run,
+  // while it is the one executing, and nothing otherwise — the same
+  // non-borrowing rule `liveActivity` and `outputs` above already apply. The
+  // embed's own default is the workspace singular, which here is whatever the
+  // *default* queue happens to be executing; see `liveTarget` on PhaseLogFeed
+  // for both things that read wrong.
+  //
+  // `queueId` is overridden from this tier's own prop rather than trusted from
+  // the projection: `QueueItem.queueId` is optional, and `jumpToCurrent`
+  // returns null without it, which would leave Live silently doing nothing.
+  const liveTarget = $derived({
+    inFlight: isExecuting && task !== null ? { ...task, queueId } : null
   });
 
   function onBackKeyDown(event: KeyboardEvent): void {
@@ -163,18 +255,56 @@
   }
 </script>
 
-<main class="run-detail-tier" data-testid="run-detail-tier" aria-label="Run detail">
-  <header class="tier-header">
-    <button
-      type="button"
-      class="back"
-      data-testid="run-detail-back"
-      onclick={onBack}
-      onkeydown={onBackKeyDown}
-    >
-      &larr; {queueName}
-    </button>
-  </header>
+<main class="run-detail-tier" class:workflow-branch={connectedRun !== null} data-testid="run-detail-tier" aria-label="Run detail">
+  <!-- The redesign's page header: a crumb back to where the Run was opened from, then, for a
+       Task, its title with its status chip, the meta line and the Task's own actions. -->
+  <div class="phead">
+    <div>
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <button
+          type="button"
+          class="linkbtn"
+          data-testid="run-detail-back"
+          onclick={onBack}
+          onkeydown={onBackKeyDown}
+        >{backLabel}</button>
+        <span class="muted" aria-hidden="true">/</span>
+      </nav>
+      {#if connectedRun === null && task !== null}
+        {@const chip = queueRowStatusChip(task.status)}
+        <div class="titlerow">
+          <h1
+            class="run-prompt"
+            data-testid="run-detail-prompt"
+            title={task.label}
+          >{task.label.length > 64 ? task.label.slice(0, 64) + '…' : task.label}</h1>
+          <span class="chip {chip.tone}" data-testid="run-detail-status">{#if chip.icon === null}<span class="dot" aria-hidden="true"></span>{:else}<svg class="i" aria-hidden="true"><use href={chip.icon}></use></svg>{/if}{statusLabel(task.status)}</span>
+        </div>
+        <div class="meta run-meta" data-testid="run-detail-meta">
+          <span data-testid="run-detail-pipeline">{pipelineName}</span>
+          {#if elapsedLabel !== null}
+            <span aria-hidden="true">&middot;</span>
+            <span>{elapsedLabel}</span>
+          {/if}
+          {#if phaseOfTotal !== null}
+            <span aria-hidden="true">&middot;</span>
+            <span>{phaseOfTotal}</span>
+          {/if}
+          {#if currentIteration > 1}
+            <span aria-hidden="true">&middot;</span>
+            <span>iteration {currentIteration}</span>
+          {/if}
+          <span aria-hidden="true">&middot;</span>
+          <span class="mono">{task.id.length > 10 ? task.id.slice(0, 10) : task.id}</span>
+        </div>
+      {/if}
+    </div>
+    {#if connectedRun === null && task !== null && isPrimary}
+      <div class="actions" data-testid="run-detail-controls">
+        <QueueItemActions item={task} {isPrimary} variant="header" />
+      </div>
+    {/if}
+  </div>
 
   {#if connectedRun !== null}
     <!-- Workflow-backed: the relocated topology view, unchanged (FR-066). -->
@@ -182,50 +312,31 @@
       run={connectedRun}
       queueItems={tasks}
       pipelines={snapshot.availablePipelines ?? []}
+      {isPrimary}
+      {onOpenTask}
+      {returnFocusKey}
     />
+    <ExecutionVisibilityPanel rootExecutionId={connectedRun.connectedRunId} {isPrimary} />
   {:else if task !== null}
-    <!-- Header block: title + meta line + action buttons -->
-    <div class="run-header-block">
-      <div class="run-header-top">
-        <h1
-          class="run-prompt"
-          data-testid="run-detail-prompt"
-          title={task.label}
-        >{task.label.length > 64 ? task.label.slice(0, 64) + '…' : task.label}</h1>
-        {#if isPrimary}
-          <div class="header-actions" data-testid="run-detail-controls">
-            <QueueItemActions item={task} {isPrimary} />
-          </div>
-        {/if}
-      </div>
-
-      <p class="run-meta" data-testid="run-detail-meta">
-        <span class="meta-id">{task.id.length > 10 ? task.id.slice(0, 10) : task.id}</span>
-        <span class="meta-sep">&middot;</span>
-        <span class="meta-pipeline" data-testid="run-detail-pipeline">{pipelineName}</span>
-        <span class="meta-sep">&middot;</span>
-        <span
-          class="meta-status status-{task.status}"
-          data-testid="run-detail-status"
-        >{statusLabel(task.status)}</span>
-        {#if elapsedLabel !== null}
-          <span class="meta-sep">&middot;</span>
-          <span class="meta-elapsed">{elapsedLabel}</span>
-        {/if}
-        {#if phaseOfTotal !== null}
-          <span class="meta-sep">&middot;</span>
-          <span class="meta-phase-of">{phaseOfTotal}</span>
-        {/if}
-        {#if currentIteration > 1}
-          <span class="meta-sep">&middot;</span>
-          <span class="meta-iteration">iteration {currentIteration}</span>
-        {/if}
-      </p>
-    </div>
+    {#if creditPolling !== null}
+      <CreditPollingNotice {queueId} {creditPolling} />
+    {/if}
+    {#if effectiveLimits !== null}
+      <RunLimitsPanel {queueId} {effectiveLimits} />
+    {/if}
 
     <!-- Two-column body: phases left, content right -->
     <div class="run-columns">
       <!-- Left panel: Phase Progression -->
+      <!--
+        Lifecycle round-check finding C — `delayedRetry`. `PhaseProgression` has
+        declared that prop since the delayed-retry badge was built, and this,
+        its only wiring site, never passed it: `isWaitingRetry` was permanently
+        false in the shipping build, so the countdown never rendered and the
+        Retry now control it gates had nowhere to appear. Gated on `isExecuting`
+        for the same reason as `activeRunId` — a countdown belonging to the
+        queue's live Run must not be drawn on a surface showing another Task.
+      -->
       <aside class="run-left-panel">
         <PhaseProgression
           phases={phases}
@@ -233,68 +344,59 @@
           activeRunId={isExecuting ? inFlightRun?.runId ?? null : null}
           {queueId}
           targetsSubjectRun={isExecuting}
+          subjectTaskFailed={task.status === 'failed'}
           {isPrimary}
           manualPauseAt={runtime?.manualPause?.at ?? null}
           manualPauseCause={runtime?.manualPause?.cause ?? null}
           phaseOverrides={runtime?.phaseOverrides ?? []}
           phaseBreakpoints={runtime?.phaseBreakpoints ?? []}
           resumeTargetPhaseId={inFlightRun?.resumeTargetPhaseId ?? null}
+          delayedRetry={isExecuting ? inFlightRun?.delayedRetry : undefined}
+          {selectedPhaseId}
+          onSelectPhase={handleSelectPhase}
         />
       </aside>
 
       <!-- Right panel: Tabbed content -->
       <div class="run-right-panel">
-        <div class="tab-bar" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            class="tab-btn"
-            class:active={activeTab === 'log'}
-            aria-selected={activeTab === 'log'}
-            data-testid="run-tab-log"
-            onclick={() => activeTab = 'log'}
-          >&Sigma; Phase log</button>
-          <button
-            type="button"
-            role="tab"
-            class="tab-btn"
-            class:active={activeTab === 'outputs'}
-            aria-selected={activeTab === 'outputs'}
-            data-testid="run-tab-outputs"
-            onclick={() => activeTab = 'outputs'}
-          >&#128196; Run outputs</button>
-          <button
-            type="button"
-            role="tab"
-            class="tab-btn"
-            class:active={activeTab === 'context'}
-            aria-selected={activeTab === 'context'}
-            data-testid="run-tab-context"
-            onclick={() => activeTab = 'context'}
-          >&#128196; Context</button>
+        <RunTabBar bind:activeTab {isExecuting} />
 
-          {#if isExecuting}
-            <span class="streaming-badge" data-testid="run-streaming-badge">
-              <span class="streaming-dot"></span>
-              STREAMING
-            </span>
-          {/if}
-        </div>
-
-        <div class="tab-panel" role="tabpanel">
+        <div
+          class="tab-panel"
+          role="tabpanel"
+          id="run-detail-panel"
+          aria-labelledby="run-tab-{activeTab}"
+        >
           {#if activeTab === 'log'}
             <!-- autoFollow={false}: this store is pinned to one Run (the $effect
                  above); PhaseLogFeed's own Live-Mode auto-follow must not
                  redirect it to the default queue's in-flight task. -->
-            <PhaseLogFeed {snapshot} store={phaseLogStore} autoFollow={false} />
+            <PhaseLogFeed
+              {snapshot}
+              store={phaseLogStore}
+              autoFollow={false}
+              {liveTarget}
+            />
           {:else if activeTab === 'outputs'}
-            <RunOutputs {outputs} />
+            {#if outputs.length > 0}
+              <RunOutputs {outputs} />
+            {:else}
+              <!-- The redesign's empty note, where `RunOutputs` draws nothing. Outputs reach this
+                   tier only while the Run executes, so the note says which case this is. -->
+              <div class="empty" data-testid="run-outputs-empty">
+                {#if isExecuting}
+                  <strong>No outputs yet</strong>Outputs appear here as the run records them.
+                {:else}
+                  <strong>No outputs to show</strong>This tab lists outputs while the run executes.
+                {/if}
+              </div>
+            {/if}
           {:else}
             <!-- FR-R3-008 (T380) — the same two questions the live feed answers from
                  memory, answered from the persisted record so they survive a window
                  reload. Both read `unknown` on a Run written before the feature; see
                  `run-liveness-view.ts` for why that is not zero. -->
-            <dl class="run-liveness" data-testid="run-detail-liveness">
+            <dl class="kv run-liveness" data-testid="run-detail-liveness">
               <dt>Activity</dt>
               <dd data-testid="run-detail-last-activity" data-known={livenessView.known}>
                 {livenessView.label}
@@ -311,6 +413,7 @@
               </dd>
             </dl>
             <p class="live-feed" data-testid="run-detail-live-feed">{feedText}</p>
+            <ExecutionVisibilityPanel rootExecutionId={visibilityRootExecutionId} {isPrimary} />
           {/if}
         </div>
       </div>
@@ -318,61 +421,40 @@
   {:else}
     <!-- FR-062 — the destination resolved to nothing. Say so; the surface above
          decides whether to fall back, and this view must not look merely empty. -->
-    <p class="missing" data-testid="run-detail-missing">
+    <p class="empty missing" data-testid="run-detail-missing">
       This run no longer exists on {queueName}.
     </p>
   {/if}
 </main>
 
 <style>
-  .run-detail-tier { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; height: 100%; min-height: 0; overflow: hidden; }
-  .tier-header { display: flex; align-items: center; }
-  .back { font: inherit; padding: 2px 0; border: 0; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; }
-  .back:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+  /* The page (`.page` on the surface) pads the tier, and the blocks space themselves by their own
+     bottom margins, as the redesign's page header, banner and card do. The tier stays the height of
+     the surface, so the steps and the selected step's views each scroll on their own. */
+  .run-detail-tier { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+  /* BUG-001 (FR-008): the topology grows with its nodes; `operations-scroll` owns the overflow. */
+  .run-detail-tier.workflow-branch { height: auto; overflow: visible; }
 
-  .run-header-block { display: flex; flex-direction: column; gap: 6px; }
-  .run-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-  .run-prompt { margin: 0; font-size: 18px; font-weight: 600; color: var(--vscode-editor-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
-  .header-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .phead { flex-shrink: 0; }
+  /* The label is already cut at 64 characters, so it wraps rather than cutting again. */
+  .run-prompt { overflow-wrap: anywhere; }
+  .run-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-space-1-5); font-variant-numeric: tabular-nums; }
 
-  .run-meta { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--vscode-descriptionForeground); }
-  .meta-id { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; color: var(--vscode-descriptionForeground); }
-  .meta-sep { color: var(--vscode-descriptionForeground); opacity: 0.5; }
-  .meta-pipeline { font-size: 12px; padding: 1px 7px; border-radius: 4px; background: color-mix(in srgb, var(--vscode-descriptionForeground) 12%, transparent); }
-  .meta-status { font-size: 11px; font-weight: 600; text-transform: uppercase; padding: 1px 8px; border-radius: 4px; }
-  /* Same status-to-token mapping the Queue Detail rows use, so one status
-     reads the same colour in both tiers. FR-021 — theme variables only. */
-  .meta-status.status-in-flight { background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent); color: var(--schegent-color-active); }
-  .meta-status.status-completed { background: color-mix(in srgb, var(--schegent-color-completed) 18%, transparent); color: var(--schegent-color-completed); }
-  .meta-status.status-pending { background: transparent; color: var(--vscode-descriptionForeground); }
-  .meta-status.status-paused { background: color-mix(in srgb, var(--schegent-color-warning) 18%, transparent); color: var(--schegent-color-warning); }
-  .meta-status.status-failed { background: color-mix(in srgb, var(--schegent-color-error) 18%, transparent); color: var(--schegent-color-error); }
-  .meta-status.status-canceled { background: transparent; color: var(--vscode-descriptionForeground); opacity: 0.7; }
-  .meta-elapsed, .meta-phase-of, .meta-iteration { font-variant-numeric: tabular-nums; }
+  /* The redesign's split: the step list at 260 pixels, the selected step's views beside it. The
+     row is the tier's remaining height, never the content's, so each column scrolls inside it. */
+  .run-columns { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: var(--schegent-space-4); }
+  .run-left-panel { min-height: 0; overflow-y: auto; }
+  .run-right-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .tab-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; }
 
-  .run-columns { display: flex; gap: 0; flex: 1 1 0; min-height: 0; overflow: hidden; }
-  .run-left-panel { flex: 0 0 260px; border-right: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-right: 14px; overflow-y: auto; }
-  .run-right-panel { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  .run-liveness dd { overflow-wrap: anywhere; }
+  .run-liveness dd[data-known='false'], .run-liveness .detail { color: var(--schegent-muted-fg); }
+  .live-feed { margin: var(--schegent-space-3) 0 0; font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+  .missing { margin: 0; }
 
-  .tab-bar { display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--schegent-divider, color-mix(in srgb, var(--vscode-descriptionForeground) 15%, transparent)); padding-left: 14px; flex-shrink: 0; }
-  .tab-btn { font: inherit; font-size: 12px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; white-space: nowrap; }
-  .tab-btn:hover { color: var(--vscode-editor-foreground); }
-  .tab-btn.active { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-focusBorder); }
-
-  .streaming-badge { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--schegent-color-active); padding-right: 8px; }
-  .streaming-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--schegent-color-active); animation: pulse-stream 1.8s ease-in-out infinite; }
-  @keyframes pulse-stream {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(1.3); }
+  /* One column where the redesign stacks its split: the steps take what they need, up to two
+     fifths of the height, and the views the rest. */
+  @media (max-width: 860px) {
+    .run-columns { grid-template-columns: minmax(0, 1fr); grid-template-rows: fit-content(40%) minmax(0, 1fr); }
   }
-
-  .tab-panel { flex: 1 1 0; min-height: 0; overflow-y: auto; padding-left: 14px; padding-top: 8px; height: 100%; }
-
-  .run-liveness { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; font-size: 12px; }
-  .run-liveness dt { color: var(--vscode-descriptionForeground); text-transform: uppercase; font-size: 11px; }
-  .run-liveness dd { margin: 0; color: var(--vscode-editor-foreground); overflow-wrap: anywhere; }
-  .run-liveness dd[data-known='false'] { color: var(--vscode-descriptionForeground); font-style: italic; }
-  .run-liveness .detail { color: var(--vscode-descriptionForeground); }
-  .live-feed { margin: 12px 0 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
-  .missing { margin: 0; font-size: 12px; color: var(--vscode-descriptionForeground); }
 </style>

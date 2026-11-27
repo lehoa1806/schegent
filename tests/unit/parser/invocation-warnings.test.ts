@@ -12,6 +12,7 @@
  * `tests/unit/controller/warning-delivery.test.ts`, asserts they arrive in the
  * persisted audit entry — construction is not delivery.
  */
+import { RECORDABLE_PHASE_END_WARNINGS } from '../../../src/audit/audit-payload';
 import { describe, it, expect } from 'vitest';
 import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { parseInvocation, type InvocationResult, type ParseInputs } from '../../../src/parser/stdout-parser';
@@ -38,6 +39,13 @@ function block(notes = 'work done'): string[] {
     CLOSE
   ];
 }
+
+/**
+ * FR-R4-F12 (FR-002) -- a complete audit pair whose body the entry parser cannot read, then the
+ * token in the region. A token with no block before it is no longer read, so the warnings that
+ * describe a missing entry on a clean response are driven on this shape: a region, and a null entry.
+ */
+const ENTRY_NULL_TURN = [OPEN, 'phase: speckit-implement', CLOSE, TOKEN].join('\n');
 
 /** `rate_limited` is the one variant with no `warnings` field; it returns
  *  before detection runs, so it can never accumulate one. */
@@ -77,8 +85,8 @@ describe('the three previously-discarded warnings are returned (FR-030)', () => 
     expect(warningsOf(result)).toContain('[constitution] multiple contract blocks');
   });
 
-  it('returns "missing audit log on clean response" when a token arrives with no block', () => {
-    const result = parse(TOKEN);
+  it('returns "missing audit log on clean response" when a token arrives with no readable entry', () => {
+    const result = parse(ENTRY_NULL_TURN);
 
     expect(result.kind).toBe('clean');
     expect(warningsOf(result)).toContain('[constitution] missing audit log on clean response');
@@ -170,5 +178,172 @@ describe('failClosedOnTruncatedOutput preserves warnings (FR-032)', () => {
     const twice = failClosedOnTruncatedOutput(once, true);
 
     expect(warningsOf(twice)?.filter((w) => w === OUTPUT_TRUNCATED_WARNING)).toHaveLength(1);
+  });
+});
+
+// FR-R3-086 follow-up (S12) — `evidencePolicy`'s first reader.
+//
+// The field was validated, persisted, frozen into the plan snapshot, carried
+// through the portable exchange format and projected to the UI, and NO code path
+// branched on it: all three settings classified a Phase identically. That is what
+// `tests/lint/authored-fields-have-readers.test.ts` was built to catch, and what
+// it caught.
+//
+// WHAT IT CAN AND CANNOT DO, and the limit is a fact about the data rather than a
+// design preference. `pipeline-snapshot.ts` has always resolved omission to
+// `'required'`, so that value is already written into every snapshot ever taken.
+// Giving `'required'` teeth would retroactively tighten all of them, including
+// runs mid-flight.
+//
+// FR-R3-096 SUPPLIED THE MISSING HALF, and it is not a relaxation of that limit
+// -- it is the datum the limit was really about. The value alone still cannot
+// tighten anything, and the population described above is still un-enforced. What
+// changed is that `evidencePolicyDeclaredAt` now says whether an author ASKED for
+// `'required'` or whether `?? 'required'` filled it in, and only the first
+// withholds. Absence reads as defaulted, so everything below -- which passes no
+// origin at all -- is exactly the pre-096 behaviour, deliberately.
+describe('evidencePolicy governs how a missing audit block is reported (S12)', () => {
+  const MISSING_ON_CLEAN = '[constitution] missing audit log on clean response';
+  const RELAXED_ON_CLEAN = '[evidence] audit log absent on clean response, best-effort';
+
+  it('required — the default, and today’s behaviour unchanged', () => {
+    // Asserted against BOTH spellings of the default: an explicit `required` and
+    // an omitted field. A change that moved only one of them would be a change to
+    // every already-persisted snapshot, and this is what would notice.
+    for (const overrides of [{ evidencePolicy: 'required' as const }, {}]) {
+      const result = parse(ENTRY_NULL_TURN, overrides);
+      expect(result.kind).toBe('clean');
+      expect(warningsOf(result)).toContain(MISSING_ON_CLEAN);
+    }
+  });
+
+  it('best-effort — recorded as an expectation unmet, not a rule broken', () => {
+    const result = parse(ENTRY_NULL_TURN, { evidencePolicy: 'best-effort' });
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).toContain(RELAXED_ON_CLEAN);
+    expect(warningsOf(result)).not.toContain(MISSING_ON_CLEAN);
+  });
+
+  it('none — the Phase declares it produces no audit block, so absence is not news', () => {
+    const result = parse(ENTRY_NULL_TURN, { evidencePolicy: 'none' });
+    expect(result.kind).toBe('clean');
+    expect(warningsOf(result)).not.toContain(MISSING_ON_CLEAN);
+    expect(warningsOf(result)).not.toContain(RELAXED_ON_CLEAN);
+  });
+
+  it('advances identically under all three when nobody declared one (the safety property)', () => {
+    // FR-R3-096 kept this property and made its boundary explicit rather than
+    // deleting it, per that item's §5. It used to read "all three advance
+    // identically, full stop"; it now reads "all three advance identically for
+    // the DEFAULTED population", which is the same guarantee over the same rows
+    // and says out loud which rows they are.
+    //
+    // These calls pass no `evidencePolicyDeclaredAt`, which is exactly what every
+    // snapshot written before that field carries. If this ever diverges, a
+    // persisted `required` has gained teeth by accident -- the failure the whole
+    // provenance design exists to prevent.
+    for (const declaredAt of [undefined, 'default' as const]) {
+      const kinds = (['required', 'best-effort', 'none'] as const).map(
+        (evidencePolicy) =>
+          parse(ENTRY_NULL_TURN, {
+            evidencePolicy,
+            ...(declaredAt === undefined ? {} : { evidencePolicyDeclaredAt: declaredAt })
+          }).kind
+      );
+      expect(new Set(kinds).size).toBe(1);
+      expect(kinds[0]).toBe('clean');
+    }
+  });
+
+  it('an AUTHORED required withholds the clean advance, and names why (FR-R3-096)', () => {
+    // The other side of the boundary, asserted beside it so the two cannot drift.
+    const result = parse(ENTRY_NULL_TURN, {
+      evidencePolicy: 'required',
+      evidencePolicyDeclaredAt: 'phase-definition'
+    });
+    expect(result.kind).toBe('remaining_issues');
+    if (result.kind !== 'remaining_issues') throw new Error('unreachable');
+    expect(result.issues[0].tag).toBe('constitution');
+    expect(result.issues[0].summary).toContain('evidencePolicy required');
+    expect(warningsOf(result)).toContain(MISSING_ON_CLEAN);
+  });
+
+  it('an authored required advances normally once the audit block IS present', () => {
+    // Non-vacuity for the assertion above: the refusal must be about the missing
+    // block, not about the setting. A Phase that declares `required` and produces
+    // evidence is the ordinary case and must be untouched.
+    const withBlock = [...block(), TOKEN].join('\n');
+    const result = parse(withBlock, {
+      evidencePolicy: 'required',
+      evidencePolicyDeclaredAt: 'phase-definition'
+    });
+    expect(result.kind).toBe('clean');
+  });
+
+  it('relaxing the SAME phase to best-effort advances it (FR-R3-096 non-vacuity)', () => {
+    // The item's acceptance names this exact comparison: one Phase, one stdout,
+    // one field moved. If `best-effort` also refused, the refusal would be coming
+    // from somewhere other than the policy.
+    for (const evidencePolicy of ['best-effort', 'none'] as const) {
+      const result = parse(ENTRY_NULL_TURN, {
+        evidencePolicy,
+        evidencePolicyDeclaredAt: 'phase-definition'
+      });
+      expect(result.kind).toBe('clean');
+    }
+  });
+
+  it('a token with no block at all is not read under any defaulted shape (FR-R4-F12, FR-007)', () => {
+    // The boundary of the safety property above: it holds for a turn with a region, and a defaulted
+    // Phase on a turn with no block no longer advances on a token alone.
+    for (const overrides of [
+      {},
+      { evidencePolicy: 'required' as const },
+      { evidencePolicy: 'required' as const, evidencePolicyDeclaredAt: 'default' as const }
+    ]) {
+      const result = parse(TOKEN, overrides);
+      expect(result.kind).toBe('remaining_issues');
+      expect(warningsOf(result)).toContainEqual(
+        expect.stringContaining('termination token without audit block')
+      );
+    }
+  });
+
+  it('a relaxed Phase still completes on the last line, at its own warning volume (FR-003)', () => {
+    const relaxed = parse(TOKEN, { evidencePolicy: 'best-effort' });
+    const silent = parse(TOKEN, { evidencePolicy: 'none' });
+
+    expect(relaxed.kind).toBe('clean');
+    expect(warningsOf(relaxed)).toContain(RELAXED_ON_CLEAN);
+    expect(silent.kind).toBe('clean');
+    expect(warningsOf(silent)).not.toContain(MISSING_ON_CLEAN);
+    expect(warningsOf(silent)).not.toContain(RELAXED_ON_CLEAN);
+  });
+
+  it('reports the no-contract-block path at the same three volumes', () => {
+    const noBlock = 'the model said nothing structured';
+    expect(warningsOf(parse(noBlock, { evidencePolicy: 'required' }))).toContain(
+      '[constitution] missing audit log'
+    );
+    expect(warningsOf(parse(noBlock, { evidencePolicy: 'best-effort' }))).toContain(
+      '[evidence] audit log absent, best-effort'
+    );
+    expect(warningsOf(parse(noBlock, { evidencePolicy: 'none' }))).not.toContain(
+      '[constitution] missing audit log'
+    );
+  });
+
+  it('every warning it can emit is recordable in the audit payload', () => {
+    // A warning the payload cannot name degrades to `omittedWarningCount`, and
+    // "something was warned about" is precisely the record this round keeps
+    // finding too weak to act on.
+    for (const warning of [
+      MISSING_ON_CLEAN,
+      RELAXED_ON_CLEAN,
+      '[constitution] missing audit log',
+      '[evidence] audit log absent, best-effort'
+    ]) {
+      expect(RECORDABLE_PHASE_END_WARNINGS.has(warning), warning).toBe(true);
+    }
   });
 });

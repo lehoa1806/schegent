@@ -1,30 +1,37 @@
 import * as vscode from 'vscode';
 
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { findBackendDescriptor } from '../contracts/backend-descriptors';
+
 /**
- * Feature 074 — Resolves the CLI binary path for a given runner kind.
- * Reads the setting dynamically so the operator can change
- * `schegent.agy.path`, `schegent.codex.path`, or `schegent.cli.path`
- * without restarting the VS Code extension host.
+ * Feature 074 / FR-R7-06 — Resolves the CLI binary path for a given runner kind.
+ * Reads the setting dynamically from the descriptor table's `cliPathSettingKey`
+ * so the operator can change `schegent.agy.path`, `schegent.codex.path`, or
+ * `schegent.cli.path` without restarting the VS Code extension host.
  *
  * This accessor is intentionally isolated from the main `PipelineConfig`
  * because runner paths are strictly local machine configuration, whereas
  * pipelines can be workspace-shared.
  */
-export function resolveCliPath(runnerKind: string, workspaceRoot: string, fallbackDefaultPath: string): string {
+export function resolveCliPath(
+  runnerKind: BackendRunnerKind,
+  workspaceRoot: string,
+  fallbackDefaultPath: string
+): string {
+  const descriptor = findBackendDescriptor(runnerKind);
+  if (descriptor === undefined) {
+    // Review gap GC-06 / FR-R7-06 FR-002 — unknown kind throws rather than launching
+    // Claude's binary under another backend's name.
+    throw new TypeError(`no CLI path setting for backend kind "${String(runnerKind)}"`);
+  }
   const config = vscode.workspace.getConfiguration(
     'schegent',
     vscode.Uri.file(workspaceRoot)
   );
-  if (runnerKind === 'agy') {
-    return readNonBlankPath(config.get<unknown>('agy.path'), 'agy');
-  }
-  if (runnerKind === 'codex') {
-    return readNonBlankPath(config.get<unknown>('codex.path'), 'codex');
-  }
-  return readNonBlankPath(
-    config.get<unknown>('cli.path'),
-    readNonBlankPath(fallbackDefaultPath, 'claude')
-  );
+  const defaultPath = descriptor.usesLegacyFallbackPath
+    ? readNonBlankPath(fallbackDefaultPath, descriptor.defaultCliBinary)
+    : descriptor.defaultCliBinary;
+  return readNonBlankPath(config.get<unknown>(descriptor.cliPathSettingKey), defaultPath);
 }
 
 function readNonBlankPath(value: unknown, fallback: string): string {

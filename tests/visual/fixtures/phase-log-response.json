@@ -1,7 +1,7 @@
 {
   "outcome": "success",
   "manifest": {
-    "iterations": [1, 2],
+    "iterations": [2, 1],
     "selectedIteration": 2,
     "entries": [
       { "seq": 1, "kind": "assistant-text", "ts": "2026-08-01T09:04:02.000Z", "body": { "text": "Reviewing the implementation boundary and existing contract tests." }, "bodyTruncated": null },
@@ -11,7 +11,7 @@
     ],
     "skippedLines": 0,
     "truncatedCount": 0,
-    "verboseDiagnosticsState": { "kind": "enabled-with-sessions" },
+    "verboseDiagnosticsState": { "kind": "entries-present" },
     "isInFlight": true
   }
 }

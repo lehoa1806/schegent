@@ -39,6 +39,14 @@ describe('messages literal mirror (Wave 5 — authoritative module)', () => {
     }
   });
 
+  // Lifecycle round-check of 2026-08-30 (finding D) — `CMD_CLEAR_FAILED`,
+  // `CMD_RETRY_ACTIVE_RUN` and `CMD_OPEN_QUEUE_ITEM_DETAILS` were three of this
+  // era's twelve and are gone. This shortens rather than substitutes, unlike the
+  // 011+012 block below, because their work did not move to another IPC command:
+  // it moved OFF the IPC surface entirely, to the palette commands
+  // `schegent.clearFailed`, `schegent.retryActiveRun` and `schegent.showActiveRun`,
+  // which have no literal in this module to name. The mirror test below is what
+  // keeps that shortening honest.
   it('declares all 004-era command constants in the authoritative module', () => {
     const authoritative = readLiterals(AUTHORITATIVE_PATH);
     const expected = [
@@ -48,15 +56,29 @@ describe('messages literal mirror (Wave 5 — authoritative module)', () => {
       'CMD_PAUSE_QUEUE',
       'CMD_RESUME_QUEUE',
       'CMD_CLEAR_COMPLETED',
-      'CMD_CLEAR_FAILED',
       'CMD_OPEN_DASHBOARD',
-      'CMD_RETRY_ACTIVE_RUN',
-      'CMD_OPEN_QUEUE_ITEM_DETAILS',
       'CMD_OPEN_HISTORY_ITEM_DETAILS',
       'CMD_RERUN_FROM_HISTORY'
     ];
     for (const symbol of expected) {
       expect(authoritative.symbols.has(symbol), `${symbol} must be declared`).toBe(true);
+    }
+  });
+
+  it('declares none of the constants the lifecycle round-check deleted', () => {
+    // A name removed from the list above must be ABSENT from the barrel, not
+    // merely unasserted. Otherwise a half-finished deletion — the constant left
+    // exported, the handler gone — would read as a clean removal here.
+    const authoritative = readLiterals(AUTHORITATIVE_PATH);
+    const deleted = [
+      'CMD_RESUME',
+      'CMD_RESET',
+      'CMD_CLEAR_FAILED',
+      'CMD_RETRY_ACTIVE_RUN',
+      'CMD_OPEN_QUEUE_ITEM_DETAILS'
+    ];
+    for (const symbol of deleted) {
+      expect(authoritative.symbols.has(symbol), `${symbol} must not be declared`).toBe(false);
     }
   });
 

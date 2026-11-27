@@ -20,7 +20,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -89,7 +89,7 @@ describe('Fatal fail-fast end-to-end (010, T013, US1)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
     const { runner, invokeCount } = makeFatalCliRunner();
-    const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);

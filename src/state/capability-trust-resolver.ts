@@ -5,9 +5,25 @@
 // four-step resolution ladder:
 //
 //   1. `workspace.isTrusted === false`            → deny.
-//   2. workspace-scope override (`true` / `false`) → that value.
-//   3. user-scope override     (`true` / `false`) → that value.
-//   4. otherwise                                   → allow (trusted by default).
+//   2. an explicit `false` at EITHER scope         → deny.
+//   3. an explicit `true` at either scope          → allow.
+//   4. otherwise (silent at both)                  → allow, following Workspace Trust.
+//
+// FR-R3-108 — step 2 is new, and it replaces a ladder that consulted workspace scope
+// first and user scope only if the workspace was silent. That was inverted for exactly
+// the scenario a trust control exists for: a user who set `false` at USER scope opened a
+// repository whose `.vscode/settings.json` — content that arrived WITH the workspace —
+// set `true`, and the workspace won. Every sibling hardening went the other way;
+// application-scoped settings exist precisely so a repository cannot redirect `cliPath`
+// or flip containment (FR-R3-051). This one handed the workspace the override.
+//
+// DENY-PRECEDENCE, not user-precedence. A workspace `true` still takes effect where the
+// user is silent or allowing — a repository may narrow or agree, never widen past a
+// user's deny. So the resolution is no longer "first scope with an opinion wins" but
+// "any deny wins, otherwise any allow".
+//
+// THE SILENT DEFAULT IS UNCHANGED, and named rather than implicit. See
+// `SILENT_DEFAULT` below.
 //
 // Contract: specs/059-fine-grained-trust-scopes/contracts/capability-trust-resolver-contract.md
 //
@@ -28,16 +44,24 @@
 
 import * as vscode from 'vscode';
 
+import {
+  resolveCapabilityDecision,
+  resolveCapabilityScope,
+  type ResolvedScope
+} from './capability-trust-decision';
+
 // Feature 099 (T492, FR-046) — `pipelineOverrides` and `workflowOverrides` are
 // gone with the layer tier. Both asked which layer was permitted to redefine
 // another's row; one layer has no such question. The two survivors gate document
 // CONTENT, not layering, so the collapse leaves them exactly as they were.
 export type TrustCapability = 'phases' | 'retryConditions';
 
-export type ResolvedScope =
-  | 'user'
-  | 'workspace'
-  | 'workspace-trust';
+// FR-R3-143 (T039) — the type moved to the pure module with the ladder that
+// produces it and is re-exported here, so every existing
+// `from '../state/capability-trust-resolver'` import keeps resolving. Re-exported
+// rather than redeclared: two spellings of a closed enum is how a third one
+// eventually appears in only one of them.
+export type { ResolvedScope };
 
 export interface ResolvedCapabilities {
   readonly workspaceTrust: boolean;
@@ -50,9 +74,14 @@ const SETTING_KEYS: Record<TrustCapability, string> = {
   retryConditions: 'schegent.trust.allowCustomRetryConditions'
 };
 
-function isExplicitBoolean(value: unknown): value is boolean {
-  return value === true || value === false;
-}
+
+
+/**
+ * FR-R3-126 — the ladder and its silent default moved to
+ * `capability-trust-decision.ts`, a pure module, so the decision is reachable
+ * without `vscode`. Nothing about it changed; read that file for the reasoning
+ * behind `SILENT_DEFAULT`, which is where it now lives.
+ */
 
 function readInspect(
   capability: TrustCapability
@@ -66,20 +95,34 @@ function readInspect(
   };
 }
 
+/**
+ * FR-R3-126 — this is now the vscode-READING half. The decision is
+ * `resolveCapabilityDecision`; this function's whole job is invariant I-1, which
+ * is that every public call re-reads `isTrusted` and `inspect()` rather than
+ * caching either.
+ */
 export function isCapabilityAllowed(capability: TrustCapability): boolean {
-  if (vscode.workspace.isTrusted !== true) return false;
   const { workspaceValue, globalValue } = readInspect(capability);
-  if (isExplicitBoolean(workspaceValue)) return workspaceValue;
-  if (isExplicitBoolean(globalValue)) return globalValue;
-  return true;
+  return resolveCapabilityDecision({
+    isTrusted: vscode.workspace.isTrusted === true,
+    workspaceValue,
+    globalValue
+  });
 }
 
+/**
+ * FR-R3-143 (T039) — the ladder is `resolveCapabilityScope`; this is the
+ * `vscode`-reading half, and invariant I-1 is the whole of its job: re-read
+ * `isTrusted` and `inspect()` on every call rather than caching either. Same
+ * split `isCapabilityAllowed` has had since FR-R3-126, and for the same reason.
+ */
 export function getResolvedScope(capability: TrustCapability): ResolvedScope {
-  if (vscode.workspace.isTrusted !== true) return 'workspace-trust';
   const { workspaceValue, globalValue } = readInspect(capability);
-  if (isExplicitBoolean(workspaceValue)) return 'workspace';
-  if (isExplicitBoolean(globalValue)) return 'user';
-  return 'workspace-trust';
+  return resolveCapabilityScope({
+    isTrusted: vscode.workspace.isTrusted === true,
+    workspaceValue,
+    globalValue
+  });
 }
 
 export function getResolvedCapabilities(): ResolvedCapabilities {

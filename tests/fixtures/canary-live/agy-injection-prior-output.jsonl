@@ -1,0 +1,4 @@
+{"event":"step_update","step_update":{"conversation_id":"<redacted>","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"<redacted>","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"KESTREL"}}
+{"event":"step_update","step_update":{"conversation_id":"<redacted>","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","duration_seconds":13.236427,"usage":{"input_tokens":2041,"output_tokens":7,"thinking_tokens":0,"cache_read_tokens":9873,"total_tokens":2048}}}
+{"event":"result","result":{"conversation_id":"<redacted>","status":"SUCCESS","response":"KESTREL\n","duration_seconds":13.272604,"num_turns":1,"usage":{"input_tokens":2041,"output_tokens":7,"thinking_tokens":0,"cache_read_tokens":9873,"total_tokens":2048}}}

@@ -99,7 +99,7 @@ function parseExported(text: string) {
 describe('Feature 096 — Model Catalog export', () => {
   it('exports a well-formed document for a populated catalog', async () => {
     const h = buildHarness({
-      models: { claude: ['claude-opus-5', 'claude-sonnet-5'], codex: ['gpt-6-codex'], agy: [] }
+      models: { claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: ['gpt-6-codex'], agy: [] }
     });
     await exportHandler(h.ctx, command);
 
@@ -109,8 +109,8 @@ describe('Feature 096 — Model Catalog export', () => {
     const document = parseExported(h.saved[0]!.text);
     expect(document.groups.map((group) => group.backend)).toEqual(['claude', 'codex', 'agy']);
     expect(document.groups.find((group) => group.backend === 'claude')?.models).toEqual([
-      'claude-opus-5',
-      'claude-sonnet-5'
+      'claude-opus-5-5',
+      'claude-sonnet-5-5'
     ]);
     expect(document.groups.find((group) => group.backend === 'codex')?.models).toEqual([
       'gpt-6-codex'

@@ -1,9 +1,41 @@
+import { createHash } from 'node:crypto';
 import type { PhaseBinding } from '../contracts/pipeline-definitions';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
-import { DEFAULT_BACKEND } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { DEFAULT_BACKEND } from '../contracts/backend-kinds';
+import { freezeResultContract } from '../contracts/decision-results';
+import { nativeReviewRetryCondition, type EvidencePolicyOrigin, type PhaseDefinition } from '../contracts/process-definitions';
+import type { FrozenWorkflowClosure } from '../contracts/run-request';
+import {
+  deriveRootControlBudget,
+  resolveCandidateBlockDefaults,
+  resolveForEachControlDefaults,
+  resolveRepeatControlDefaults,
+  WORKFLOW_CONTROL_SCHEMA_VERSION,
+  type ResolvedCandidateBlockControl,
+  type ResolvedForEachControl,
+  type ResolvedRepeatControl
+} from '../contracts/workflow-controls';
+import type {
+  WorkflowDefinition,
+  WorkflowFieldError
+} from '../contracts/workflow-definitions';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 import type { PhaseDef, PipelineDef } from './pipeline-config';
-import { writesGitMetadata } from './phase-runner-policy';
+import { resolveHostVerification, writesGitMetadata } from './phase-runner-policy';
+import { resolveWorkflowClosure } from './workflow-closure-resolver';
+import { parseHandoffPolicy } from '../services/phase-context/policy';
+
+/**
+ * Where a frozen policy value came from. An origin the Phase already carries wins, so a re-freeze
+ * never reads the value an earlier freeze filled in as a declaration; otherwise the value itself
+ * says -- present means the author wrote it, absent means the freeze is about to supply it.
+ */
+function declarationOrigin(
+  carried: EvidencePolicyOrigin | undefined,
+  declared: unknown
+): EvidencePolicyOrigin {
+  return carried ?? (declared === undefined ? 'default' : 'phase-definition');
+}
 
 /**
  * Freeze one phase with its effective backend persisted for the run lifetime.
@@ -22,14 +54,69 @@ import { writesGitMetadata } from './phase-runner-policy';
  */
 export function snapshotPhaseDef(
   phase: PhaseDef,
-  defaultRunner?: BackendRunnerKind
+  defaultRunner?: BackendRunnerKind,
+  /**
+   * FR-R3-117 — does a pipeline binding take an output from this Phase position?
+   * Output bindings live on the PipelineDef and are addressed by phase index, so
+   * a bare PhaseDef cannot see them; the caller that holds the pipeline passes it.
+   * Defaulting to `false` is safe: the only Phase whose answer it changes is one
+   * that explicitly declared `sideEffects: 'none'` AND is bound to an output,
+   * which is a contradiction in the authoring rather than a common shape.
+   */
+  producesOutput = false
 ): PhaseDef {
   return Object.freeze({
     ...phase,
+    ...(phase.nativeReview !== undefined && phase.retryCondition === undefined
+      ? { retryCondition: nativeReviewRetryCondition(phase.nativeReview) }
+      : {}),
     version: phase.version ?? 1,
     runner: effectiveRunnerKindForPhase(phase, defaultRunner),
     sideEffects: phase.sideEffects ?? 'workspace',
+    // FR-R3-086 — the declared capability set is frozen with the plan. Omission
+    // stays omission rather than being defaulted to the full set here: the
+    // enforcement plan reads an absent set as DEFAULT_CAPABILITY_SET, and
+    // writing the full list into every snapshot would make an untouched phase's
+    // frozen contract change shape for no behavioural reason.
+    capabilities: phase.capabilities === undefined ? undefined : Object.freeze([...phase.capabilities]),
+    ...(phase.resultContract !== undefined
+      ? { resultContract: freezeResultContract(phase.resultContract) }
+      : {}),
     evidencePolicy: phase.evidencePolicy ?? 'required',
+    // FR-R3-096 — the provenance the value alone cannot carry. `?? 'required'`
+    // above has filled in every Phase that declared nothing since the field
+    // existed, so the stored value cannot distinguish an author who asked for
+    // enforcement from an author who said nothing. This can, and the parser
+    // enforces only on `'phase-definition'`.
+    //
+    // Carried forward when already present rather than recomputed: re-freezing a
+    // snapshot would see the DEFAULTED `'required'` above as a declaration and
+    // silently grant teeth to a Phase that never asked for them. No caller does
+    // that today — all three pass catalog definitions — and the guard costs one
+    // `??`, where the failure it prevents is a Phase that stops advancing for
+    // reasons nobody authored.
+    evidencePolicyDeclaredAt: declarationOrigin(
+      phase.evidencePolicyDeclaredAt,
+      phase.evidencePolicy
+    ),
+    // FR-R3-117 — the verdict basis, frozen with the rest of the plan rather than
+    // recomputed at read time. A Run's frozen plan must not change meaning if the
+    // resolution rule later changes; that is the same "never retargeted in flight"
+    // rule the capability set already states.
+    hostVerification: resolveHostVerification(
+      phase.hostVerification,
+      phase.sideEffects,
+      producesOutput
+    ),
+    // Carried forward when present, exactly as `evidencePolicyDeclaredAt` above and
+    // for the reason its comment gives -- re-freezing must not read the resolver's
+    // own output as a declaration. Here the consequence is sharper: a defaulted
+    // `'model-token'` misread as an opt-out leaves a load-bearing Phase judged on
+    // its own account, which is the whole defect FR-R3-117 exists to close.
+    hostVerificationDeclaredAt: declarationOrigin(
+      phase.hostVerificationDeclaredAt,
+      phase.hostVerification
+    ),
     promptVersion: phase.promptVersion ?? 'custom-v1'
   });
 }
@@ -111,6 +198,456 @@ export function resolvePinnedRunnerKind(
 ): BackendRunnerKind {
   return persisted ?? sessionOwner ?? configured ?? DEFAULT_BACKEND;
 }
+
+function deepCloneAndFreeze<T>(value: T): T {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((item) => deepCloneAndFreeze(item))) as unknown as T;
+  }
+  const copy: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (nested !== undefined) {
+      copy[key] = deepCloneAndFreeze(nested);
+    }
+  }
+  return Object.freeze(copy) as T;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, nested]) => nested !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/**
+ * FR-R5-F02 — compute a deterministic SHA-256 content digest for a frozen
+ * Workflow or Phase definition.
+ */
+export function computeDefinitionDigest(definition: unknown): string {
+  return `sha256:${createHash('sha256').update(canonicalJson(definition)).digest('hex')}`;
+}
+
+/**
+ * FR-R5-F02 — freeze one PhaseDefinition for a composable Workflow closure.
+ */
+export function snapshotPhaseDefinition(
+  phase: PhaseDefinition,
+  defaultRunner?: BackendRunnerKind
+): PhaseDefinition {
+  const effectiveRunner =
+    phase.runner !== undefined
+      ? phase.runner
+      : writesGitMetadata(phase.sideEffects)
+        ? DEFAULT_BACKEND
+        : (defaultRunner ?? DEFAULT_BACKEND);
+  return deepCloneAndFreeze({
+    ...phase,
+    version: phase.version ?? 1,
+    runner: effectiveRunner,
+    sideEffects: phase.sideEffects ?? 'workspace',
+    evidencePolicy: phase.evidencePolicy ?? 'required',
+    // FR-R3-096 / FR-R3-117 — the value is filled in above, so the stored value can no longer
+    // say whether the author asked for it. A Workflow run freezes each Phase a second time when
+    // its node run is built (`synthesizePhasePipelineSnapshot` -> `snapshotPhaseDef`), and that
+    // freeze reads a value with no origin as a declaration: an omitted `evidencePolicy` would be
+    // held to `required` and a resolved `model-token` read as an opt-out nobody made.
+    evidencePolicyDeclaredAt: declarationOrigin(
+      phase.evidencePolicyDeclaredAt,
+      phase.evidencePolicy
+    ),
+    hostVerification: resolveHostVerification(phase.hostVerification, phase.sideEffects, false),
+    hostVerificationDeclaredAt: declarationOrigin(
+      phase.hostVerificationDeclaredAt,
+      phase.hostVerification
+    )
+  });
+}
+
+/**
+ * FR-R5-F02 — freeze one WorkflowDefinition for a composable Workflow closure.
+ * Preserves `executionDefaults` in the frozen snapshot for provenance while
+ * keeping it strictly advisory.
+ */
+export function snapshotWorkflowDefinition(workflow: WorkflowDefinition): WorkflowDefinition {
+  const frozenNodes = workflow.nodes.map((node) => {
+    if (node.control === undefined) {
+      return node;
+    }
+    const resolvedControl =
+      node.control.kind === 'repeat'
+        ? resolveRepeatControlDefaults(node.control)
+        : resolveForEachControlDefaults(node.control);
+    return {
+      ...node,
+      control: resolvedControl
+    };
+  });
+  return deepCloneAndFreeze({
+    workflowId: workflow.workflowId,
+    name: workflow.name,
+    version: workflow.version,
+    nodes: frozenNodes,
+    connections: workflow.connections,
+    startNodeIds: workflow.startNodeIds,
+    ...(workflow.description !== undefined ? { description: workflow.description } : {}),
+    ...(workflow.inputs !== undefined ? { inputs: workflow.inputs } : {}),
+    ...(workflow.outputs !== undefined ? { outputs: workflow.outputs } : {}),
+    ...(workflow.bindings !== undefined ? { bindings: workflow.bindings } : {}),
+    ...(workflow.executionDefaults !== undefined
+      ? { executionDefaults: { ...workflow.executionDefaults } }
+      : {}),
+    ...(workflow.recommendedNext !== undefined
+      ? { recommendedNext: [...workflow.recommendedNext] }
+      : {}),
+    ...(workflow.control !== undefined
+      ? { control: resolveCandidateBlockDefaults(workflow.control) }
+      : {}),
+    ...(workflow.decisionResults !== undefined
+      ? { decisionResults: workflow.decisionResults }
+      : {})
+  });
+}
+
+export interface CreateFrozenWorkflowClosureInput {
+  readonly rootWorkflow: WorkflowDefinition;
+  readonly entryNodeId?: string;
+  readonly effectiveWorkflows?: readonly WorkflowDefinition[];
+  readonly effectivePhases?: readonly PhaseDefinition[];
+  readonly invalidWorkflows?: ReadonlyMap<string, string>;
+  readonly invalidPhases?: ReadonlyMap<string, string>;
+  readonly defaultRunnerKind?: BackendRunnerKind;
+}
+
+export type CreateFrozenWorkflowClosureResult =
+  | {
+      readonly ok: true;
+      readonly closure: FrozenWorkflowClosure;
+    }
+  | {
+      readonly ok: false;
+      readonly code:
+        | 'invalid-entry-node'
+        | 'workflow-closure-invalid'
+        | 'unsupported-control-version';
+      readonly message: string;
+      readonly errors: readonly WorkflowFieldError[];
+    };
+
+/**
+ * FR-R5-F02 / FR-R5-F25 — resolve, bound-check, and deep-freeze the complete
+ * transitive closure of a composable Workflow before admission, including
+ * resolved candidate-block, Repeat, ForEach, and root budget defaults.
+ */
+export function createFrozenWorkflowClosure(
+  input: CreateFrozenWorkflowClosureInput
+): CreateFrozenWorkflowClosureResult {
+  const rootNodeIds = new Set(input.rootWorkflow.nodes.map((node) => node.nodeId));
+  const resolvedEntryNodeId = input.entryNodeId ?? input.rootWorkflow.startNodeIds[0];
+
+  if (
+    resolvedEntryNodeId === undefined ||
+    resolvedEntryNodeId.trim().length === 0 ||
+    !input.rootWorkflow.startNodeIds.includes(resolvedEntryNodeId) ||
+    !rootNodeIds.has(resolvedEntryNodeId)
+  ) {
+    return {
+      ok: false,
+      code: 'invalid-entry-node',
+      message: `Entry node '${String(resolvedEntryNodeId ?? '')}' is not in root Workflow '${input.rootWorkflow.workflowId}' startNodeIds.`,
+      errors: [
+        {
+          workflowId: input.rootWorkflow.workflowId,
+          field: 'entryNodeId',
+          code: 'start-node-not-found',
+          message: `Entry node '${String(resolvedEntryNodeId ?? '')}' is not a declared start node of '${input.rootWorkflow.workflowId}'.`
+        }
+      ]
+    };
+  }
+
+  const allWorkflows = [
+    input.rootWorkflow,
+    ...(input.effectiveWorkflows ?? []).filter(
+      (wf) => wf.workflowId !== input.rootWorkflow.workflowId
+    )
+  ];
+  const allPhases = input.effectivePhases ?? [];
+
+  const closureResult = resolveWorkflowClosure(input.rootWorkflow, {
+    effectiveWorkflows: allWorkflows,
+    effectivePhases: allPhases,
+    ...(input.invalidWorkflows !== undefined
+      ? { invalidWorkflows: input.invalidWorkflows }
+      : {}),
+    ...(input.invalidPhases !== undefined ? { invalidPhases: input.invalidPhases } : {})
+  });
+
+  if (!closureResult.ok) {
+    return {
+      ok: false,
+      code: 'workflow-closure-invalid',
+      message:
+        closureResult.errors[0]?.message ??
+        `Workflow '${input.rootWorkflow.workflowId}' closure validation failed.`,
+      errors: closureResult.errors
+    };
+  }
+
+  const workflowsByIdSource = new Map(allWorkflows.map((wf) => [wf.workflowId, wf]));
+  const phasesByIdSource = new Map(allPhases.map((phase) => [phase.phaseId, phase]));
+
+  const workflowsById: Record<string, WorkflowDefinition> = {};
+  const phasesById: Record<string, PhaseDefinition> = {};
+  const definitionDigestsById: Record<string, string> = {};
+  const controlDefaultsByWorkflowId: Record<string, ResolvedCandidateBlockControl> = {};
+  const nodeControlDefaultsByNodeKey: Record<
+    string,
+    ResolvedRepeatControl | ResolvedForEachControl
+  > = {};
+
+  const reachableWorkflowIds = new Set<string>([
+    input.rootWorkflow.workflowId,
+    ...closureResult.referencedWorkflowIds
+  ]);
+
+  for (const wfId of reachableWorkflowIds) {
+    const wf = workflowsByIdSource.get(wfId);
+    if (wf === undefined) continue;
+    const wfControlVersion: number | undefined = wf.control?.version;
+    if (wfControlVersion !== undefined && wfControlVersion !== WORKFLOW_CONTROL_SCHEMA_VERSION) {
+      return {
+        ok: false,
+        code: 'unsupported-control-version',
+        message: `Workflow '${wfId}' declares unsupported control version '${String(wfControlVersion)}'.`,
+        errors: [
+          {
+            workflowId: wfId,
+            field: 'control.version',
+            code: 'unsupported-control-version',
+            message: `Workflow '${wfId}' control.version must be ${WORKFLOW_CONTROL_SCHEMA_VERSION}.`
+          }
+        ]
+      };
+    }
+    const wfDecisionVersion: number | undefined = wf.decisionResults?.version;
+    if (
+      wfDecisionVersion !== undefined &&
+      wfDecisionVersion !== WORKFLOW_CONTROL_SCHEMA_VERSION
+    ) {
+      return {
+        ok: false,
+        code: 'unsupported-control-version',
+        message: `Workflow '${wfId}' declares unsupported decisionResults version '${String(wfDecisionVersion)}'.`,
+        errors: [
+          {
+            workflowId: wfId,
+            field: 'decisionResults.version',
+            code: 'unsupported-control-version',
+            message: `Workflow '${wfId}' decisionResults.version must be ${WORKFLOW_CONTROL_SCHEMA_VERSION}.`
+          }
+        ]
+      };
+    }
+    for (const [nodeIndex, node] of wf.nodes.entries()) {
+      const nodeControlVersion: number | undefined = node.control?.version;
+      if (
+        nodeControlVersion !== undefined &&
+        nodeControlVersion !== WORKFLOW_CONTROL_SCHEMA_VERSION
+      ) {
+        return {
+          ok: false,
+          code: 'unsupported-control-version',
+          message: `Node '${node.nodeId}' in Workflow '${wfId}' declares unsupported control version '${String(nodeControlVersion)}'.`,
+          errors: [
+            {
+              workflowId: wfId,
+              field: `nodes[${nodeIndex}].control.version`,
+              code: 'unsupported-control-version',
+              message: `Node '${node.nodeId}' control.version must be ${WORKFLOW_CONTROL_SCHEMA_VERSION}.`
+            }
+          ]
+        };
+      }
+    }
+    for (const [connIndex, conn] of wf.connections.entries()) {
+      if (conn.contextPolicy === undefined) continue;
+      const policyCheck = parseHandoffPolicy(conn.contextPolicy);
+      if (policyCheck.kind === 'unsupported-version') {
+        const ver = String((conn.contextPolicy as { readonly version?: unknown }).version ?? '?');
+        return {
+          ok: false,
+          code: 'unsupported-control-version',
+          message: `Connection ${connIndex} in Workflow '${wfId}' declares unsupported contextPolicy version '${ver}'.`,
+          errors: [
+            {
+              workflowId: wfId,
+              field: `connections[${connIndex}].contextPolicy.version`,
+              code: 'unsupported-context-policy-version',
+              message: `Connection ${connIndex} contextPolicy.version '${ver}' is unsupported.`
+            }
+          ]
+        };
+      }
+      if (policyCheck.kind !== 'valid') {
+        return {
+          ok: false,
+          code: 'workflow-closure-invalid',
+          message: `Connection ${connIndex} in Workflow '${wfId}' declares an invalid contextPolicy (${policyCheck.kind === 'invalid' ? policyCheck.detail : 'absent'}).`,
+          errors: [
+            {
+              workflowId: wfId,
+              field: `connections[${connIndex}].contextPolicy`,
+              code: 'invalid-context-policy',
+              message: `Connection ${connIndex} contextPolicy is invalid.`
+            }
+          ]
+        };
+      }
+    }
+
+    const childEntry = wf.startNodeIds[0];
+    const wfNodeIds = new Set(wf.nodes.map((node) => node.nodeId));
+    if (childEntry === undefined || !wfNodeIds.has(childEntry)) {
+      return {
+        ok: false,
+        code: 'workflow-closure-invalid',
+        message: `Workflow '${wfId}' has no valid primary start node (startNodeIds[0]).`,
+        errors: [
+          {
+            workflowId: wfId,
+            field: 'startNodeIds[0]',
+            code: 'start-node-not-found',
+            message: `Workflow '${wfId}' has no valid primary start node.`
+          }
+        ]
+      };
+    }
+    const frozenWf = snapshotWorkflowDefinition(wf);
+    const digest = computeDefinitionDigest(frozenWf);
+    workflowsById[wfId] = frozenWf;
+    definitionDigestsById[wfId] = digest;
+    definitionDigestsById[`workflow:${wfId}`] = digest;
+
+    if (wf.control !== undefined) {
+      controlDefaultsByWorkflowId[wfId] = resolveCandidateBlockDefaults(wf.control);
+    }
+    for (const node of wf.nodes) {
+      if (node.control !== undefined) {
+        nodeControlDefaultsByNodeKey[`${wfId}:${node.nodeId}`] =
+          node.control.kind === 'repeat'
+            ? resolveRepeatControlDefaults(node.control)
+            : resolveForEachControlDefaults(node.control);
+      }
+    }
+  }
+
+  for (const phaseId of closureResult.referencedPhaseIds) {
+    const phase = phasesByIdSource.get(phaseId);
+    if (phase === undefined) continue;
+    const frozenPhase = snapshotPhaseDefinition(phase, input.defaultRunnerKind);
+    const digest = computeDefinitionDigest(frozenPhase);
+    phasesById[phaseId] = frozenPhase;
+    definitionDigestsById[phaseId] = digest;
+    definitionDigestsById[`phase:${phaseId}`] = digest;
+  }
+
+  const rootBudget = deriveRootControlBudget(Object.values(workflowsById));
+  const hasControlDefaults = Object.keys(controlDefaultsByWorkflowId).length > 0;
+  const hasNodeControlDefaults = Object.keys(nodeControlDefaultsByNodeKey).length > 0;
+
+  return {
+    ok: true,
+    closure: Object.freeze({
+      rootWorkflowId: input.rootWorkflow.workflowId,
+      entryNodeId: resolvedEntryNodeId,
+      workflowsById: Object.freeze(workflowsById),
+      phasesById: Object.freeze(phasesById),
+      definitionDigestsById: Object.freeze(definitionDigestsById),
+      closureMetrics: Object.freeze({
+        maxDepth: closureResult.maxDepthReached,
+        definitionCount: closureResult.closureSize,
+        expandedNodeCount: closureResult.expandedNodeCount,
+        ...(closureResult.maxControlDepthReached > 0
+          ? { maxControlDepth: closureResult.maxControlDepthReached }
+          : {})
+      }),
+      rootBudget,
+      ...(hasControlDefaults
+        ? { controlDefaultsByWorkflowId: Object.freeze(controlDefaultsByWorkflowId) }
+        : {}),
+      ...(hasNodeControlDefaults
+        ? { nodeControlDefaultsByNodeKey: Object.freeze(nodeControlDefaultsByNodeKey) }
+        : {})
+    })
+  };
+}
+
+export interface ResolvedCandidatePhaseTarget {
+  readonly workflowId: string;
+  readonly candidateId: string;
+  readonly nodeId: string;
+  readonly phaseId: string;
+  readonly phase: PhaseDefinition;
+  readonly maxAttempts: number;
+  readonly priority: number;
+}
+
+function lookupRecord<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+/**
+ * Resolves a candidate's frozen `PhaseDefinition` and candidate-block entry from a
+ * `FrozenWorkflowClosure` (`SPEC-05` / `D5`).
+ *
+ * Ensures two candidates that share a backend runner still retain distinct frozen
+ * `PhaseDefinition` records (`instruction`, `runner`, `resultContract`, `sideEffects`).
+ */
+export function resolveCandidatePhaseDefinition(
+  closure: FrozenWorkflowClosure,
+  workflowId: string,
+  candidateId: string
+): ResolvedCandidatePhaseTarget | undefined {
+  const workflow = lookupRecord(closure.workflowsById, workflowId);
+  if (workflow === undefined || workflow.control?.kind !== 'candidate-block') {
+    return undefined;
+  }
+  const resolvedControl =
+    (closure.controlDefaultsByWorkflowId !== undefined
+      ? lookupRecord(closure.controlDefaultsByWorkflowId, workflowId)
+      : undefined) ?? resolveCandidateBlockDefaults(workflow.control);
+  const candidate = resolvedControl.candidates.find((entry) => entry.candidateId === candidateId);
+  if (candidate === undefined) {
+    return undefined;
+  }
+  const node = workflow.nodes.find((entry) => entry.nodeId === candidate.nodeId);
+  if (node === undefined || node.kind !== 'phase' || node.phaseId === undefined) {
+    return undefined;
+  }
+  const phase = lookupRecord(closure.phasesById, node.phaseId);
+  if (phase === undefined) {
+    return undefined;
+  }
+  return {
+    workflowId,
+    candidateId: candidate.candidateId,
+    nodeId: candidate.nodeId,
+    phaseId: node.phaseId,
+    phase,
+    maxAttempts: candidate.maxAttempts,
+    priority: candidate.priority
+  };
+}
+
 
 // Feature 099 (T489, FR-042) — `mergePhaseRunnerPolicy` stood here. It carried a
 // Git-declaring Phase's pinned runner forward when a *higher-precedence layer*

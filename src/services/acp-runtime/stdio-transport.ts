@@ -1,0 +1,415 @@
+/**
+ * FR-R6-F13 (FR-002, FR-019, research R7) — the stdio transport for one ACP agent process and
+ * the managed child-process primitive shared by maintained ACP stdio bridges.
+ *
+ * - The agent is launched with no shell, in its own process group on POSIX, with the
+ *   environment the host launch resolver built; nothing here reads `process.env`.
+ * - Lines are written through the shared stdin line channel (`src/runner/child-stdin.ts`), which
+ *   attaches the `'error'` listener before any byte (FR-R3-047).
+ * - `write` throws when stdin did not take the line: a line that was not written must never
+ *   look written. A stdin error after a write the stream took is reported as a close, because
+ *   an agent that cannot be written to cannot be driven, even while its process lives.
+ * - stdout and stderr chunks go to their own listeners, unparsed. Framing is the decoder's job.
+ * - The close is reported once, whether the child exits, fails to launch, loses its stdin, or
+ *   is closed.
+ * - `close()` is idempotent: it ends stdin, signals the tree with SIGTERM, escalates to SIGKILL
+ *   after 2 s, and resolves on the exit or after the shared teardown bound, whichever is first.
+ *   A reaped child is never signalled.
+ *
+ * Zero `vscode` imports.
+ */
+import { spawn, type ChildProcess } from 'node:child_process';
+
+import type { AcpTransport } from '../../contracts/acp-runtime';
+import { openStdinLineChannel, type StdinLineChannel } from '../../runner/child-stdin';
+import { spawnCommandFor } from '../../lib/spawn-command';
+import {
+  childIsReaped,
+  processTreeIsGone,
+  processTreeSpawnOptions,
+  signalProcessTree,
+  TEARDOWN_BOUND_MS,
+  trackGroupAtExit
+} from '../../runner/process-tree';
+
+/** The SIGTERM-to-SIGKILL delay, the same as the runner ladder's. */
+const SIGKILL_ESCALATION_MS = 2_000;
+
+/** Thrown by `write` when the agent's stdin did not take the line. Carries no agent data. */
+export class AgentStdinRefusedError extends Error {
+  constructor() {
+    super('agent stdin did not accept the line');
+    this.name = 'AgentStdinRefusedError';
+  }
+}
+
+/** One resolved agent launch: no shell, the env already built by the host. */
+export interface StdioLaunch {
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+}
+
+/** Extended stdio transport carrying process-tree liveness inspection for F09-FR-17 / F09-AC-08. */
+export interface AcpStdioTransport extends AcpTransport {
+  readonly pid: number | undefined;
+  isProcessTreeGone(): boolean;
+  /** Returns observed child `(code, signal)` once exited, or `null` while still alive. */
+  getExitInfo?(): { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null;
+}
+
+export interface ManagedCliExit {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly launchFailed: boolean;
+}
+
+/** Managed CLI child handle used by maintained ACP bridges without importing `child_process`. */
+export interface ManagedCliChild {
+  readonly pid: number | undefined;
+  readonly exited: Promise<ManagedCliExit>;
+  writeStdin(text: string): boolean;
+  endStdin(): void;
+  onStdinBroken?(listener: () => void): void;
+  isStdinBroken?(): boolean;
+  onStdout(listener: (chunk: Uint8Array) => void): void;
+  onStderr(listener: (chunk: Uint8Array) => void): void;
+  pauseStdout?(): void;
+  resumeStdout?(): void;
+  pauseStderr?(): void;
+  resumeStderr?(): void;
+  isProcessTreeGone(): boolean;
+  terminate(): Promise<void>;
+}
+
+function spawnDetachedProcess(input: StdioLaunch): ChildProcess {
+  // Review gap GC-24 -- on win32 a bare name resolves along the child's PATH only, never the cwd.
+  const child = spawn(spawnCommandFor(input.command, input.env), [...input.args], {
+    cwd: input.cwd,
+    env: input.env,
+    shell: false,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    ...processTreeSpawnOptions()
+  });
+  trackGroupAtExit(child);
+  return child;
+}
+
+async function teardownChildTree(
+  child: ChildProcess,
+  channel: StdinLineChannel,
+  exited: Promise<unknown>
+): Promise<void> {
+  channel.end();
+  const timers: NodeJS.Timeout[] = [];
+  const signalTree = (sig: NodeJS.Signals): void => {
+    if (childIsReaped(child)) return;
+    signalProcessTree(child, sig).catch(() => undefined);
+  };
+  if (!childIsReaped(child) && child.pid !== undefined) {
+    signalTree('SIGTERM');
+    timers.push(setTimeout(() => signalTree('SIGKILL'), SIGKILL_ESCALATION_MS));
+  }
+  const bound = new Promise<void>((resolve) => {
+    timers.push(setTimeout(resolve, TEARDOWN_BOUND_MS));
+  });
+  try {
+    await Promise.race([exited, bound]);
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+  }
+}
+
+class StdioTransport implements AcpStdioTransport {
+  private readonly stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly closeListeners: (() => void)[] = [];
+  private readonly exited: Promise<void>;
+  private readonly channel: StdinLineChannel;
+  private closeReported = false;
+  private closing: Promise<void> | null = null;
+  private exitInfo: { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null = null;
+
+  constructor(private readonly child: ChildProcess) {
+    let markExited: () => void = () => undefined;
+    this.exited = new Promise<void>((resolve) => {
+      markExited = resolve;
+    });
+    child.once('exit', (code, signal) => {
+      this.exitInfo = { code, signal };
+      markExited();
+    });
+    child.once('error', () => {
+      markExited();
+      this.reportClose();
+    });
+    child.once('close', () => this.reportClose());
+    this.channel = openStdinLineChannel(child, () => this.reportClose());
+    child.stdout?.on('data', (chunk: Buffer) => this.emit(this.stdoutListeners, chunk));
+    child.stderr?.on('data', (chunk: Buffer) => this.emit(this.stderrListeners, chunk));
+  }
+
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
+  isProcessTreeGone(): boolean {
+    return processTreeIsGone(this.child);
+  }
+
+  getExitInfo(): { readonly code: number | null; readonly signal: NodeJS.Signals | null } | null {
+    return this.exitInfo;
+  }
+
+  write(line: string): void {
+    if (!this.channel.write(line)) throw new AgentStdinRefusedError();
+  }
+
+  onStdout(listener: (chunk: Uint8Array) => void): void {
+    this.stdoutListeners.push(listener);
+  }
+
+  onStderr(listener: (chunk: Uint8Array) => void): void {
+    this.stderrListeners.push(listener);
+  }
+
+  onClose(listener: () => void): void {
+    this.closeListeners.push(listener);
+  }
+
+  pauseStdout(): void {
+    this.child.stdout?.pause();
+  }
+
+  resumeStdout(): void {
+    this.child.stdout?.resume();
+  }
+
+  pauseStderr(): void {
+    this.child.stderr?.pause();
+  }
+
+  resumeStderr(): void {
+    this.child.stderr?.resume();
+  }
+
+  close(): Promise<void> {
+    if (this.closing !== null) return this.closing;
+    // Resume any backpressure-paused stdio streams before teardown so child exit cannot stall on pipe close.
+    this.child.stdout?.resume();
+    this.child.stderr?.resume();
+    this.closing = teardownChildTree(this.child, this.channel, this.exited);
+    return this.closing;
+  }
+
+  private emit(listeners: readonly ((chunk: Uint8Array) => void)[], chunk: Buffer): void {
+    const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    for (const listener of listeners) listener(bytes);
+  }
+
+  private reportClose(): void {
+    if (this.closeReported) return;
+    this.closeReported = true;
+    for (const listener of this.closeListeners) listener();
+  }
+}
+
+class ManagedCliChildImpl implements ManagedCliChild {
+  private readonly stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly stderrListeners: ((chunk: Uint8Array) => void)[] = [];
+  private readonly stdinBrokenListeners: (() => void)[] = [];
+  private readonly channel: StdinLineChannel;
+  readonly exited: Promise<ManagedCliExit>;
+  private terminating: Promise<void> | null = null;
+  private stdinBroken = false;
+
+  constructor(private readonly child: ChildProcess) {
+    let settleExit: (value: ManagedCliExit) => void = () => undefined;
+    let settled = false;
+    const finish = (value: ManagedCliExit): void => {
+      if (settled) return;
+      settled = true;
+      settleExit(value);
+    };
+    this.exited = new Promise<ManagedCliExit>((resolve) => {
+      settleExit = resolve;
+    });
+    child.once('error', () => finish({ code: null, signal: null, launchFailed: true }));
+    child.once('close', (code, signal) => finish({ code, signal, launchFailed: false }));
+    child.once('exit', (code, signal) => {
+      if (!child.stdout && !child.stderr) finish({ code, signal, launchFailed: false });
+    });
+    this.channel = openStdinLineChannel(child, () => {
+      if (this.stdinBroken) return;
+      this.stdinBroken = true;
+      for (const listener of this.stdinBrokenListeners) listener();
+    });
+    child.stdout?.on('data', (chunk: Buffer) => this.emit(this.stdoutListeners, chunk));
+    child.stderr?.on('data', (chunk: Buffer) => this.emit(this.stderrListeners, chunk));
+  }
+
+  get pid(): number | undefined {
+    return this.child.pid;
+  }
+
+  writeStdin(text: string): boolean {
+    return this.channel.write(text);
+  }
+
+  endStdin(): void {
+    this.channel.end();
+  }
+
+  onStdinBroken(listener: () => void): void {
+    if (this.stdinBroken) {
+      listener();
+      return;
+    }
+    this.stdinBrokenListeners.push(listener);
+  }
+
+  isStdinBroken(): boolean {
+    return this.stdinBroken;
+  }
+
+  onStdout(listener: (chunk: Uint8Array) => void): void {
+    this.stdoutListeners.push(listener);
+  }
+
+  onStderr(listener: (chunk: Uint8Array) => void): void {
+    this.stderrListeners.push(listener);
+  }
+
+  pauseStdout(): void {
+    this.child.stdout?.pause();
+  }
+
+  resumeStdout(): void {
+    this.child.stdout?.resume();
+  }
+
+  pauseStderr(): void {
+    this.child.stderr?.pause();
+  }
+
+  resumeStderr(): void {
+    this.child.stderr?.resume();
+  }
+
+  isProcessTreeGone(): boolean {
+    return processTreeIsGone(this.child);
+  }
+
+  terminate(): Promise<void> {
+    if (this.terminating !== null) return this.terminating;
+    this.child.stdout?.resume();
+    this.child.stderr?.resume();
+    this.terminating = teardownChildTree(this.child, this.channel, this.exited);
+    return this.terminating;
+  }
+
+  private emit(listeners: readonly ((chunk: Uint8Array) => void)[], chunk: Buffer): void {
+    const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    for (const listener of listeners) listener(bytes);
+  }
+}
+
+class LaunchFailedStdioTransport implements AcpStdioTransport {
+  readonly pid = undefined;
+  private readonly closeListeners: (() => void)[] = [];
+  private closeDelivered = false;
+  private readonly closePromise: Promise<void> = Promise.resolve();
+
+  constructor() {
+    queueMicrotask(() => {
+      if (this.closeDelivered) return;
+      this.closeDelivered = true;
+      for (const listener of this.closeListeners) listener();
+    });
+  }
+
+  isProcessTreeGone(): boolean {
+    return true;
+  }
+
+  write(_line: string): void {
+    throw new AgentStdinRefusedError();
+  }
+
+  onStdout(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  onStderr(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  onClose(listener: () => void): void {
+    if (this.closeDelivered) {
+      listener();
+      return;
+    }
+    this.closeListeners.push(listener);
+  }
+
+  close(): Promise<void> {
+    if (!this.closeDelivered) {
+      this.closeDelivered = true;
+      for (const listener of this.closeListeners) listener();
+    }
+    return this.closePromise;
+  }
+}
+
+class LaunchFailedManagedCliChild implements ManagedCliChild {
+  readonly pid = undefined;
+  readonly exited: Promise<ManagedCliExit> = Promise.resolve({
+    code: null,
+    signal: null,
+    launchFailed: true
+  });
+
+  writeStdin(_text: string): boolean {
+    return false;
+  }
+
+  endStdin(): void {
+    // Launch never started a process.
+  }
+
+  onStdout(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  onStderr(_listener: (chunk: Uint8Array) => void): void {
+    // Launch never started a process.
+  }
+
+  isProcessTreeGone(): boolean {
+    return true;
+  }
+
+  terminate(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/** Launch the agent and wrap its stdio as an `AcpStdioTransport`. A launch failure is a close. */
+export function spawnStdioTransport(input: StdioLaunch): AcpStdioTransport {
+  try {
+    return new StdioTransport(spawnDetachedProcess(input));
+  } catch {
+    return new LaunchFailedStdioTransport();
+  }
+}
+
+/** Launch a managed CLI child for a maintained ACP bridge, reusing the host process-tree ladder. */
+export function spawnManagedCliChild(input: StdioLaunch): ManagedCliChild {
+  try {
+    return new ManagedCliChildImpl(spawnDetachedProcess(input));
+  } catch {
+    return new LaunchFailedManagedCliChild();
+  }
+}

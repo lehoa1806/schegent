@@ -8,12 +8,15 @@
 import { createHash } from 'node:crypto';
 import {
   SUPPORTED_BACKENDS,
-  isBackendRunnerKind,
-  type BackendRunnerKind
-} from '../runner/backend-runner-factory';
+  isBackendRunnerKind
+} from '../contracts/backend-kinds';
+import {
+  mapMutableBackends,
+  type BackendMap
+} from '../contracts/backend-descriptors';
 import type { ModelCatalogYamlGroup } from '../services/process-yaml/types';
 
-type ModelsConfig = Record<BackendRunnerKind, readonly string[]>;
+type ModelsConfig = BackendMap<readonly string[]>;
 
 // Mirrors the private helper of the same name in `./process-catalog.ts`
 // (`phaseLayerRevision`'s dependency) — not imported, because that one is
@@ -62,7 +65,7 @@ export function groupsFromModelsConfig(config: ModelsConfig): ModelCatalogYamlGr
  * produces.
  */
 export function modelsConfigFromGroups(groups: readonly ModelCatalogYamlGroup[]): ModelsConfig {
-  const out: Record<BackendRunnerKind, string[]> = { claude: [], codex: [], agy: [] };
+  const out = mapMutableBackends<string[]>(() => []);
   for (const group of groups) {
     if (!isBackendRunnerKind(group.backend)) continue;
     for (const modelId of group.models ?? []) {

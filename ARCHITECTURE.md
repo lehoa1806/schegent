@@ -1,1320 +1,1277 @@
 # Schegent Architecture
 
-The execution-repository architecture map. Source code lives under `src/`, the
-Svelte webview under `webview-ui/`, and operator-facing docs under `docs/`.
-This document is normative for module boundaries and trust gates; CLAUDE.md
-remains the authoritative source for code-change hard rules.
+Schegent is a local VS Code extension host that turns catalog definitions into
+queued backend-CLI executions. The product has no listening server and no
+remote control plane: operator actions enter through contributed VS Code
+commands or the sidebar and Dashboard webviews, then cross typed host-side
+boundaries before they may change persisted state or spawn a backend process.
+Remote, multi-user, or service-hosted operation remains behind the expansion architecture gate.
 
-## Purpose
+<!-- Source: package.json -->
+<!-- Source: src/extension.ts -->
+<!-- Source: src/activation/stage2-producers.ts -->
+<!-- Source: src/activation/ui-wiring.ts -->
 
-Schegent is a local-first VS Code extension that drives autonomous Speckit
-workflows through CLI backends (Claude Code, Codex, and Agy). The extension host owns
-orchestration, workspace state, audit evidence, runtime logging, IPC
-validation, and queue control. The Svelte webview is a presentation layer
-that renders host-projected snapshots and dispatches typed commands; the host
-is the single source of truth.
+## Runtime shape
 
-"Local-first" describes storage and control-plane placement; it is not an
-offline AI-execution guarantee. See
-[`docs/concepts/local-first-not-offline.md`](docs/concepts/local-first-not-offline.md).
-Remote control and multi-user operation are blocked by the accepted
-[`expansion architecture gate`](docs/architecture/remote-multi-user-expansion-gate.md);
-raising the local concurrency cap is not a substitute for that design. Feature
-092 narrows one clause of that gate — same-workspace parallel execution for a
-single local operator, N queues draining concurrently — without supplying any
-of the identity, isolation or brokering the remote/multi-user clauses require;
-see the status update at the end of the gate record.
+Activation starts in `src/extension.ts`. It resolves the canonical workspace,
+constructs logging and evidence services, acquires the workspace ownership
+lease, loads workspace state and the effective catalog, composes the queue and
+workflow controller, and finally registers operator commands and webviews. A
+workspace-less window receives only the reduced UI and evidence wiring that can
+operate without a project root.
 
-## System Boundaries
+Stage 2 splits on the ACT, not on construction (FR-R3-136). The graph is built
+eagerly whether or not the workspace is trusted — that is what keeps the
+read-only surfaces working in an untrusted window — and everything that *does*
+something moved into `src/activation/stage2-producers.ts`: the election, the
+terminal-transition replay, the evidence-backlog replay, the catalog refresh, the
+four recovery installers, and the backend capability probe. The producer half
+runs when the workspace is trusted, and exactly once more if trust is granted
+later, through a single `onDidGrantWorkspaceTrust` subscriber. The criterion for
+the split is stated at the top of that module: a unit is a producer if it writes
+to a workspace-influenced path, spawns a child process, or arms a timer that
+fires one of those. Read-side timers stay on the eager side.
 
-```text
-┌──────────────────────────────────────────────────────────────────┐
-│ Operator Workstation (trusted)                                   │
-│                                                                  │
-│ ┌──────────────────────────────────────────────────────────────┐ │
-│ │ VS Code Extension Host (Node 22+, TypeScript 5.x)            │ │
-│ │   • workspace state, IPC validation, audit, runtime log      │ │
-│ │   • controller, queue, scheduler, backend-runner factory     │ │
-│ └──┬────────────────────────────┬──────────────────────────────┘ │
-│    │ host-projected snapshots   │ subprocess                     │
-│    │ + typed IPC commands       │ (shell: false)                 │
-│    ▼                            ▼                                │
-│ ┌──────────────┐    ┌────────────────────────┐                   │
-│ │ Svelte       │    │ Claude/Codex/Agy CLI   │                   │
-│ │ Webview      │    │ subprocess             │                   │
-│ │ (sidebar +   │    │ • stdin prompt         │                   │
-│ │  dashboard)  │    │ • stream-json stdout   │                   │
-│ └──────────────┘    └────────────────────────┘                   │
-└──────────────────────────────────────────────────────────────────┘
-```
+The election moved with them, because acquiring the resource *is* a write:
+`store.ownership.acquire` creates `.schegent/` and writes a generation file, and
+being primary is what authorizes the four installers behind it. Before FR-R3-136
+an untrusted window elected.
 
-**External boundaries:**
+Election precedes recovery (FR-R3-070): the primacy claim is the producer half's
+first statement, taken immediately after the lock and lease managers are
+constructed, and every recovery
+installer — the scheduled-start re-arm, the credit-watchdog reattach, the
+delayed-retry resume, and the persisted-run sweep — is gated on its result. A
+non-primary window installs no recovery timers and leaves persisted deadlines
+addressable for the primary; the resume path additionally claims its queue's
+execution lease before marking anything in flight, so activation ordering is
+defence in depth rather than the only defence. The scheduled-start coordinator
+re-verifies primacy with the authoritative fenced predicate at fire time.
 
-- VS Code APIs are usable in extension-host code and forbidden in `src/headless/` and `src/telemetry/`. Lint regressions under `tests/lint/` enforce this.
-- CLI backends run as subprocesses with `shell: false`, bounded stdout/stderr
-  buffers, timeout/cancellation handling, and one centrally resolved
-  environment policy. The compatibility default inherits; hardened `minimal`
-  and names-only `allowlist` modes apply identically to probes, phase calls,
-  and pre-compaction calls.
-- Workspace files at `<workspaceRoot>/.schegent/` hold per-workspace runtime artifacts: structured audit log, raw transcripts, opt-in verbose diagnostics, runtime log, and the ownership records two extension hosts arbitrate over.
-- `vscode.ExtensionContext.workspaceState` (memento) stores serialized run, queue, and history records. Forward-only migrators upgrade old records. It is a **per-extension-host** cache, so it orders nothing between two hosts; anything two hosts must agree on is arbitrated on disk (see [State](#state-srcstate)).
+The fence reaches the point of effect (FR-R3-077). `WorkspaceStateStore.setRun`
+and `updateQueue` both take a **required** ownership claim and verify it inside
+the serialized link that performs the write, so a revived stale host is refused
+at the commit rather than merely late; a call site that provably holds no lease
+names its reason from a closed set in `src/state/ownership-claim.ts`, and a test
+pins that set. The read side declines a record stamped at a superseded
+generation and records the decline as evidence, which is the answer to the write
+that lands between the verify and the update — the window a memento with no
+conditional write cannot close.
 
-## Module Layout
+Output targets are re-judged where they take effect (FR-R3-079).
+`RunDriver.dispatchObserved` re-walks every declared target's component chain
+immediately before the frozen plan reaches the runner; a refusal fails the Run
+with a named cause recorded in evidence, before the child exists. The frozen
+plan is read, never rewritten.
 
-```text
-src/
-├── activation/   extension-host composition helpers; no workflow policy
-├── audit/        evidence sinks — structured audit, raw transcript, verbose diagnostics, gitignore
-├── commands/     extension command palette and command handlers
-├── catalog/      versioned definition store (manifest + immutable version records); no vscode import
-├── config/       settings schema (single source of truth), phase/pipeline/workflow catalog resolution, validation
-├── contracts/    IPC, audit, monitor, queue-snapshot, state-schema, runner contracts
-├── controller/   workflow state machine, phase runner, sequencer, retry handler, continue gate
-├── engine/       shared engine boundary taxonomy, parity fixtures, current extension adapter
-├── headless/     non-extension-host entrypoints (process/run APIs) — must not import vscode
-├── host-services/ neutral host-service interfaces and VS Code adapter for future desktop host parity
-├── lib/          shared pure helpers, SanitizedLogger, runtime-log sink, retry-condition DSL
-├── monitor/      subprocess progress, stall detection, monitor events, bounded CLI transport capture
-├── parser/       stdout/audit-block/usage/rate-limit/credit-error parsers
-├── queue/        single-active-run queue registry and scheduling primitives
-├── runner/       Claude/Codex/Agy adapters, lazy registry, factory, prompt builder
-├── services/     auto-drain, guarded-run, history-recorder, phase-log, process-yaml, session-cleanup
-├── state/        memento-backed run/queue/history state, forward-only migrators, fenced cross-host ownership records
-├── telemetry/    local process-resource sampling — must not import vscode
-├── ui/           VS Code-facing UI surfaces (sidebar provider, dashboard panel, output channel, status bar)
-└── watchdog/     credit/rate-limit polling for delayed retry recovery
-
-webview-ui/
-├── src/
-│   ├── App.svelte                  sidebar root
-│   ├── main.ts                     sidebar entry
-│   ├── components/                 sidebar Svelte components
-│   ├── dashboard/                  dashboard Svelte components + entry
-│   └── lib/                        IPC helper modules and pure projectors
-└── __tests__/                      vitest suite
-```
-
-## Module Ownership
-
-| Module | Owned responsibility | Must not own |
-|---|---|---|
-| `src/activation/backend-wiring.ts` | Runtime/evidence sinks plus workspace-scoped backend capability/Ping composition | Workflow transitions, IPC routing, or backend invocation |
-| `src/activation/ui-wiring.ts` | Stage-2 dashboard bridge plus VS Code operator-command registration/disposal | Workflow mutation policy, persistence, or IPC validation |
-| `src/activation/workspace-scaffolding.ts` | Activation-time `.specify/` presence notice to the runtime log and the operator | Refusing an enqueue, a drain, or a Run; the notice never gates |
-| `src/controller/phase-control-service.ts` | Operator pause/resume/restart/skip/enable/disable/remove and breakpoint mutation policy | Activation wiring, queue ownership, or audit serialization |
-| `src/controller/workflow-lifecycle-auditor.ts` | Workflow/phase audit taxonomy, envelope construction, and best-effort append handling | Workflow state mutation, dispatch, or UI projection |
-| `src/services/evidence-health/` | Workspace-scoped sink health, bounded causes, and continuation policies | Raw exception text, filesystem paths, or UI rendering |
-| `src/services/session-retention/` | Age/byte pruning for inactive `.schegent/sessions` run groups | Structured audit retention or active-run deletion |
-| `src/services/run-checkpoint-retention.ts` | Age/byte/floor pruning of whole run directories under `<globalStorageUri>/checkpoints/` | Judging whether a checkpoint was valid, reading a `.patch`, or blocking a phase, a run, or activation |
-| `src/services/session-dispatch-policy.ts` | Pure backend-session ownership and continuation/reuse dispatch policy | Persisting session IDs or composing backend argv |
-| `src/services/backend-capability-service.ts` | Bounded host-only CLI availability/model discovery and newest-generation snapshot publication | Constructing invocation runners, persisting capability state, or backend failover policy |
-| `src/services/backend-ping-service.ts` | Memory-only single-flight operator Ping state and paths-free audit evidence | Resolving webview-supplied paths, exposing process output, or persisting health state |
-| `src/runner/spawn-env.ts` | One subprocess environment policy for probes, phases, and compaction | Backend-specific argument construction |
-| `src/contracts/validators/` | Shared IPC validation primitives plus phase-log and metrics domain validators | Command dispatch coverage or downstream business invariants |
-| `src/contracts/sidebar-ipc/` | Focused phase-log, metrics, trust, and host-message IPC type families | Command literals, runtime guards, or routing behavior |
-| `src/ui/sidebar/activity-timing.ts` | Pure elapsed-time and live-activity calculations | Store subscriptions, audit hydration, or snapshot publication |
-| `src/ui/sidebar/audit-tail-state.ts` | Bounded live audit cache, cold-start dedupe/merge, seeding, and snapshot copies | Store subscriptions, workflow timing, or UI publication |
-| `src/ui/sidebar/state-projector.ts` | Public lifecycle/subscription/telemetry-sanitization facade | Domain projection algorithms or mutable timing state |
-| `src/ui/sidebar/state-projector-runtime.ts` | Subscription ordering, debounce/tick lifecycle, audit hydration, and disposal | Snapshot field composition |
-| `src/ui/sidebar/projector-bookkeeping.ts` | Elapsed-time, activity, transition, and per-phase ephemeral bookkeeping | Store or audit I/O |
-| `src/ui/sidebar/snapshot-composer.ts` | Immutable WorkflowSnapshot composition from focused projectors | Subscriptions, subprocesses, or persistence |
-
-`src/host-services/` makes VS Code-owned platform behavior explicit before a
-Rust desktop host exists. Its `types.ts` contract is `vscode`-free and covers
-workspace root/trust, configuration, memento persistence, global storage,
-notifications, command dispatch, file reveal, scheduler, and lifecycle
-disposal. `vscode-host-services.ts` is the current adapter and delegates
-canonical root selection through `src/state/workspace-folder-picker.ts`.
-
-**`src/engine/` no longer exists.** Earlier revisions of this document
-described it as a shared workflow control boundary that a future Rust desktop
-host would target, with a `CurrentExtensionEngineAdapter` wrapping the
-TypeScript handlers and rejecting unwired commands as
-`engine-command-unavailable`. It never became the controller path and was
-removed along with the Rust contracts; `tests/unit/build/release-qualification.test.ts`
-now asserts `src/engine/index.ts` is **absent**, so it cannot come back by
-accident. The description is recorded here as removed rather than deleted
-outright because it survived in this file long enough to be built against.
-
-`src/host-services/` above is the boundary that actually exists. It carries
-the vscode-free contract; there is no second abstraction layer beneath it.
-
-## Primary Flow
+The production **runtime value-edge** dependency direction is intentionally one-way
+(enforced across the eight governed layers — `controller -> services -> {queue, runner, metrics} -> {parser, state} -> config -> {contracts, lib}` — by
+`tests/lint/layer-dependency-direction.test.ts`, with remaining legacy reverse value edges frozen under a shrink-only `LAYER_IMPORT_ALLOWLIST` and `contracts/` type-only reverse edges ratcheted under `CONTRACTS_REVERSE_TYPE_EDGE_CEILINGS`):
 
 ```text
-operator action / IPC      ┌─────────────────────────────────────┐
-   │                       │ src/ui/sidebar/message-router.ts    │
-   ▼                       │   workspace-trust gate (closed-fail)│
-┌───────────────┐          │   primary-host gate (MUTATING_*)    │
-│ src/commands/ │──────────▶│   ipc-validator.ts (typed payload)  │
-└───────────────┘          └─────────────┬───────────────────────┘
-                                         │ accepted command
-                                         ▼
-                          ┌──────────────────────────────────┐
-                          │ src/services/guarded-run-service │
-                          │   + queue/queue-manager          │
-                          └─────────────┬────────────────────┘
-                                        │ promote pending → active
-                                        ▼
-                          ┌──────────────────────────────────┐
-                          │ src/controller/workflow-controller│
-                          │   one RunSession per queue        │
-                          │   drives phases via phase-runner  │
-                          └─────────────┬────────────────────┘
-                                        │ per-phase invocation
-                                        ▼
-                          ┌──────────────────────────────────┐
-                          │ src/controller/phase-runner       │
-                          │   phase-start audit emit          │
-                          │   raw-transcript bracket          │
-                          │   build prompt, invoke runner     │
-                          │   parse stdout, classify outcome  │
-                          │   phase-end audit emit            │
-                          └─────────────┬────────────────────┘
-                                        │ outcome
-                                        ▼
-                          ┌──────────────────────────────────┐
-                          │ src/runner/{claude,codex,agy}-cli │
-                          │   subprocess: shell:false         │
-                          │   bounded buffers, env scrubbed   │
-                          └─────────────┬────────────────────┘
-                                        │ stdout/stderr/exit
-                                        ▼
-                          ┌──────────────────────────────────┐
-                          │ src/parser/*                      │
-                          │   precedence: fatal → rate-limit  │
-                          │   → non-zero exit → contract      │
-                          │   blocks → remaining issues       │
-                          └─────────────┬────────────────────┘
-                                        │
-                                        ▼
-                          ┌──────────────────────────────────┐
-                          │ src/state/workspace-state         │
-                          │   serialize run/queue/history     │
-                          │   forward-only migration          │
-                          └─────────────┬────────────────────┘
-                                        │ snapshot
-                                        ▼
-                          ┌──────────────────────────────────┐
-                          │ src/ui/sidebar/* projectors       │
-                          │   pure snapshot → webview shape   │
-                          └─────────────┬────────────────────┘
-                                        │ postMessage
-                                        ▼
-                                Svelte webview render
+VS Code commands / sidebar / Dashboard
+                    |
+                    v
+      validation + trust + primacy gates
+                    |
+                    v
+         catalog and run-plan services
+                    |
+                    v
+        queue admission and scheduling
+                    |
+                    v
+        workflow controller / run driver
+                    |
+                    v
+       backend runner -> local CLI process
+                    |
+                    v
+     state, audit, transcript, runtime log
 ```
 
-The webview command router is one **primary adapter**, not the only one.
-`src/headless/` is a second adapter over the same services: it validates its
-own arguments, then calls the identical service functions the router calls.
-Both enter at the service layer, so neither owns validation the other lacks:
+### System and ownership boundaries (`FR-R8-04`)
 
-```text
-   webview IPC                              in-process caller
-        │                                          │
-        ▼                                          ▼
-┌────────────────────────┐             ┌──────────────────────────┐
-│ src/ui/sidebar/        │             │ src/headless/*-api.ts    │
-│   message-router.ts    │             │   process-api-validators │
-│   ipc-validator.ts     │             │   → BoundaryRefusal      │
-└───────────┬────────────┘             └────────────┬─────────────┘
-            │                                       │
-            └───────────────┬───────────────────────┘
-                            ▼
-        ┌────────────────────────────────────────────────┐
-        │ shared services (adapter-free, vscode-free)     │
-        │   services/process-yaml/preflight-service.ts    │
-        │   services/process-yaml/export-service.ts       │
-        │   services/workflow-execution/                  │
-        │       continuation-service.ts                   │
-        │   config/*-definition-validator.ts              │
-        └────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    U["Operator and VS Code Workspace Trust"]
+    UI["Svelte sidebar and dashboard"]
+    Router["Host validators, command router and permissions"]
+    Catalog["Versioned catalog and frozen workflow closures"]
+    Engine["Desktop workflow composition, control ledger, queues and run driver"]
+    Guard["Phase runner, consent, scanner/spawn admission and live fence"]
+    ACP["ACP over stdio (bounded stream + authority gate)"]
+    Vendors["Claude / Codex bridge or native Agy CLI"]
+    Model["Configured model provider"]
+    DB[("SQLite under VS Code global storage (v9)")]
+    Files[("Workspace files, Git lanes and .schegent evidence")]
+    OTLP["Optional user-authorized OTLP collector"]
+    U --> UI
+    U --> Router
+    UI -->|"validated IPC v3"| Router
+    Router --> Catalog
+    Router --> Engine
+    Catalog -->|"immutable FrozenWorkflowClosure"| Engine
+    Engine <-->|"BEGIN IMMEDIATE + ownership fence"| DB
+    Engine --> Guard --> ACP --> Vendors
+    Vendors --> Model
+    Vendors --> Files
+    Guard --> Files
+    Engine -->|"revisioned v4 snapshots, logs and CMD_ACK"| UI
+    DB -->|"redacted metadata-only metrics"| OTLP
 ```
 
-## Execution Envelope
+The system boundary diagram tracks the same ownership commitments tested in
+[`docs/operations/production-workflow-integration-matrix.md`](docs/operations/production-workflow-integration-matrix.md):
+desktop activation (`src/activation/sqlite-cutover-wiring.ts`) constructs
+`ProductionWorkflowComposition` exclusively through
+`createDesktopWorkflowComposition`, making Workspace Trust, live filesystem
+primacy/queue fencing (`createDesktopOwnershipFenceForStore`), durable SQLite
+handoffs, `PhaseHandoffCoordinator`, and `post-cutover-strict` authority
+mandatory at compile time and runtime.
 
-`ExecutionEnvelope` ([src/contracts/run-request.ts](src/contracts/run-request.ts))
-is the runtime contract for a composed run: **the accepted request is the
-executed request.** It carries the frozen Pipeline snapshot, the bound contract
-inputs, the supplemental context, the declared output targets, the operator's
-free-text instructions, and the freeze timestamp.
-[validateRunRequest()](src/services/run-request/run-request-validator.ts) is its
-only construction site — there is no other constructor, no cast, and no partial.
-`FrozenRunPlan` is an alias of it, retained so pre-existing imports keep
-compiling; it is not a sibling type.
+`src/activation/` is the composition root, **together with `wireStage2()` in
+`src/extension.ts`, which is still part of it.** Late-bound `bind[A-Z]*` setters
+returned by `src/activation/` wiring modules are checked for live call sites in
+`src/extension.ts` / `src/activation/` by
+`tests/lint/activation-late-binding-wiring-census.test.ts`. Domain modules do not construct VS
+Code adapters themselves (the small `vscode` accessors still in `src/state/` — trust resolution, folder picking, and confirmation config — are tracked for relocation).
 
-It is consumed **by reference**. A component that needs part of the request
-takes the whole envelope and reads what it needs; it does not copy fields out of
-it into its own parameters. That is the rule the type exists to enforce, and it
-is what makes adding a field to the request a one-place change rather than an
-edit to every seam between validation and the CLI. Feature 087 froze five fields
-and read one of them on the way to the backend — the other four were persisted
-and dropped at the factory seam — and four new optional scalars on `PromptInputs`
-would have closed that gap and reopened it on the next field.
+That sentence used to stop at the first clause, and it overstated the shipped shape:
+`src/activation/` was twelve focused modules totalling ~2,200 lines while
+`wireStage2` was a single 1,221-line function doing the same kind of work in the
+entry file. `FR-R3-119` reconciled the two by moving, not by rewording — the largest
+independent span became `src/activation/sidebar-router-wiring.ts` — and by pinning
+the remainder under a shrink-only bound in `tests/lint/source-loc-budget.test.ts`, so
+the sentence becomes unqualifiedly true by extraction rather than by editing. Until
+it does, the qualification stays. The measurements, the waive-or-extract decision and
+the mutation that corrected the bound's first draft are in
+[Composition root extraction](docs/architecture/composition-root-extraction.md). `src/host-services/` holds one
+adapter, the catalog filesystem adapter; configuration, storage, notification,
+command, trust and lifecycle facilities are resolved at the composition root by
+the module that needs them, which is the only composition model that ships. It
+once also held a nine-member `HostServices` facade over those facilities, reached
+by nothing but its own unit test; the measurement that retired it is in
+[HostServices facade removal](docs/architecture/host-services-facade-removal.md).
+`src/headless/` exposes
+process validation/import/export and run-launch entrypoints over the same
+services without importing `vscode`.
 
-```text
-  validateRunRequest()            single construction site
-        │  ExecutionEnvelope
-        ▼
-  queue item `runPlan`            persisted with the request
-        │
-        ▼
-  workflow-run-factory            attaches it whole: `run.envelope`
-        │                         no re-resolve, no narrowing
-        ▼
-  run-driver ──────────────┬───▶ phase-runner ──▶ prompt-builder
-        │                  │       (carrier only)   renders the request
-        │                  │
-        │                  └───▶ `PhaseRunInputs.envelope`
-        ▼
-  resolveRunOutputs()             probes `run.envelope.outputs`
+<!-- Source: src/extension.ts -->
+<!-- Source: src/activation/backend-wiring.ts -->
+<!-- Source: src/activation/ui-wiring.ts -->
+<!-- Source: src/headless/process-definition-api.ts -->
+<!-- Source: src/headless/process-yaml-api.ts -->
+<!-- Source: src/headless/pipeline-run-api.ts -->
+<!-- Source: src/headless/workflow-run-api.ts -->
+
+## Source ownership map
+
+Every top-level production directory has one primary architectural role. The
+table is an ownership map, not permission for cross-layer shortcuts.
+
+| Directory | Primary responsibility |
+|---|---|
+| `src/activation/` | Extension-host composition and lifecycle wiring. |
+| `src/audit/` | Structured audit envelopes, rotation, raw transcripts, and diagnostic evidence writers. |
+| `src/catalog/` | Versioned Phase and Workflow catalog persistence and lifecycle state (plus transitional internal Pipeline loader compatibility). |
+| `src/commands/` | Contributed VS Code command handlers. |
+| `src/config/` | Settings schemas, effective catalog projections, Pipeline snapshots, and definition validators. |
+| `src/contracts/` | Shared host/webview, runner, state, audit, and catalog types plus validators. |
+| `src/controller/` | Run and Phase orchestration, retries, pause/resume controls, and terminal transitions. |
+| `src/headless/` | VS Code-independent facades over process, run and Round 6 services. They began as seams for parity tests and non-editor callers, and they are now also production facades: `src/activation/sqlite-cutover-wiring.ts` and `src/activation/round6-visibility-wiring.ts` import them, and `src/ui/sidebar/commands/` imports their types and the usage-accounting query. Nothing is published from them. |
+| `src/host-services/` | The catalog filesystem adapter, on the checked `safe-open` path. Not a general host facade: every other host facility is constructed where it is used. |
+| `src/lib/` | Cross-cutting redaction, path-safety, runtime-log, and small utility modules. |
+| `src/metrics/` | Read-only derivation of task, phase, cost, and coverage metrics from retained evidence. |
+| `src/monitor/` | Bounded subprocess activity, transport, and progress observation. |
+| `src/parser/` | Backend output, audit line, usage, reset-time, rate-limit, and error parsing. |
+| `src/queue/` | Queue registry, task lifecycle, admission capacity, ordering, and scheduling state. |
+| `src/runner/` | Backend-specific argv construction, spawn environment, prompt composition, and output collection. |
+| `src/services/` | Application services for guarded starts, process YAML, checkpoints, retention, and projections, plus the Round 6 stack (SQLite store, ACP runtime, lanes, reporting, telemetry export). The subdirectories are listed in the next table. |
+| `src/state/` | Workspace memento records, forward migrations, ownership leases, run history, and recovery journals. |
+| `src/telemetry/` | In-memory local process resource sampling and platform shims. |
+| `src/ui/` | Status bar, notifications, sidebar IPC, Dashboard bridge, HTML, CSP, and immutable view projections. |
+| `src/watchdog/` | Credit polling: `/status` classification, the per-Run 24-hour polling window, and the poll timer. |
+
+<!-- Source: src -->
+
+### Services subsystems
+
+`src/services/` holds many loose files for single-purpose services, and these
+subdirectories for larger subsystems. Features named `F<NN>` are Round 6 features.
+
+| Subdirectory | Purpose |
+|---|---|
+| `src/services/acp-runtime/` | Agent Client Protocol client: connection, stdio transport and bridge, built-in agent profiles, and the fail-closed permission policy (F13). |
+| `src/services/artifact-lifecycle/` | Artifact records, pins, availability, deletion plans, and preservation of legacy artifacts (F05). |
+| `src/services/audit-export/` | Shared schema-v3 metadata-only counts-only audit export sanitizer used by audit export commands and diagnostics bundles. |
+| `src/services/change-review/` | Read-only review of the changes a Run made: diff inventory, comparison revisions, content handles, and the view-request gate (F12). |
+| `src/services/containment-qualification/` | Per-backend containment qualification, acceptance bindings, the spawn admission gate, and `AcpAuthorityGate` (F09). |
+| `src/services/decision-record/` | Opens a queue row's `decisions.md` through the root-bounded safe open for a read-only presenter. |
+| `src/services/diagnostics-bundle/` | Plans, collects and writes a redacted diagnostics bundle for one Run. |
+| `src/services/evidence-health/` | Tracks the health of each evidence sink (audit, transcript, runtime log, and others). |
+| `src/services/evidence-maintenance/` | Scheduled pass that runs the session retention sweep and the transport log pass. |
+| `src/services/execution-lanes/` | Isolated execution lanes: lane lifecycle, candidate freezing, the integration store and requests, and landing (F10). |
+| `src/services/failed-row-census/` | Read-only census of how each failed queue row was later resolved. |
+| `src/services/failure-record/` | Writes and retains the failure record for a failed Phase and builds the matching notice. |
+| `src/services/history/` | Resolves the audit pointer of a history entry and maintains history descriptions. |
+| `src/services/nested-repo-sync/` | Local transactional sync with compensating rollback across the workspace repository and `repo/`. |
+| `src/services/phase-context/` | Phase-context handoff: manifests, acceptance, delivery plans, review-loop history, and attempt result publication (F15). |
+| `src/services/phase-log/` | Phase log selection, display projection, and the live-log batcher, cursor and segment index (F07). |
+| `src/services/process-yaml/` | Import, export and preflight of Phase, Workflow and model-catalog YAML packages. |
+| `src/services/recovery-handoff/` | Recovery handoff envelopes, identity, pins, and settlement (F08). |
+| `src/services/reporting/` | Report engine, saved reports, off-thread typed read-only SQLite snapshot worker (`dist/run-snapshot.worker.js`, bounded with V8 `resourceLimits`), and the CSV/JSON export pipeline over the run store (F11). |
+| `src/services/run-output/` | Resolves and probes the declared outputs of a Run, with a per-check time bound. |
+| `src/services/run-request/` | Validates Run request inputs, output targets, and workspace containment. |
+| `src/services/runtime-resource-budgets/` | Bounded-window primitive, resource inventory, and pressure status (F03). |
+| `src/services/session-cleanup/` | Best-effort removal of a Run's session tree and raw transcript. |
+| `src/services/session-retention/` | Age and size retention sweep over session artifacts. |
+| `src/services/shared-memory-storage/` | Shared storage contract boundary: consumer projections, untrusted-workspace read-only guard, and cross-feature fixtures (F02). |
+| `src/services/sqlite-store/` | The `node:sqlite` operational store: driver, location resolver, schema and migrations, writer coordination, transaction units, backup and restore (F04). |
+| `src/services/telemetry-export/` | Optional OTLP/HTTP JSON metrics exporter: destination policy, mapping, batching, retry, and the transport (F14-A). |
+| `src/services/telemetry-host/` | Host side of export: SQLite-backed durable ledger, cardinality dictionary and private file spool (F14-B). |
+| `src/services/usage-accounting/` | Revisioned usage and cost ledger, corrections, and bounded aggregate reads (F06). |
+| `src/services/workflow-execution/` | Composable Workflow execution: binding resolution, condition evaluation, connected Runs, control ledger, and continuation. |
+
+<!-- Source: src/services/index.ts -->
+<!-- Source: src/services/sqlite-store/index.ts -->
+<!-- Source: src/services/acp-runtime/index.ts -->
+<!-- Source: src/services/execution-lanes/index.ts -->
+<!-- Source: src/services/telemetry-export/index.ts -->
+<!-- Source: src/services/usage-accounting -->
+
+## Operator request boundary
+
+There are two interactive entry paths. Contributed commands are registered by
+the activation wiring and call command handlers directly. Webview requests are
+typed `SidebarCommand` values carrying a known command type and correlation ID;
+the sidebar router dispatches them through the handler registry.
+
+For every command classified as mutating, the sidebar route checks Workspace
+Trust first and authoritative-window primacy second. Both checks fail closed:
+an absent callback, thrown check, or non-true answer rejects the mutation. The
+mutation executor serializes acknowledged work and preserves correlation IDs.
+Read-only commands do not acquire mutation authority merely because they share
+the same transport.
+
+Direct command-palette commands have their own guards and must be evaluated
+individually. Queue admission goes through `GuardedRunService`, which validates
+the request, refuses a fresh foreign workspace lock, addresses the requested
+queue's pause state, and enforces the scheduled-start horizon. Reset and Git
+approval have explicit host dialogs rather than relying on a webview click.
+
+The acknowledgement a route posts is the host command's own answer, narrowed to
+one closed vocabulary — `accepted`, `no-op`, `refused`, `failed` — by a single
+converter rather than by each route. Eligibility is decided once, host-side, and
+the route reports that decision; a second oracle at the boundary would be a
+second way to be wrong. Two shapes carry no value of their own and are converted
+in the same place: `undefined` from the Workspace Trust gate becomes a refusal,
+and a result no reading covers becomes `failed`. The asymmetry is deliberate —
+an unrecognized result is a wiring defect, and a false `failed` is recoverable
+where a false `accepted` is not. Non-accepting reasons are codes, never error
+messages, because the reason crosses to the webview and a message from that
+layer carries paths; the sanitized message goes to the log.
+
+A confirmable action's key is likewise one declaration. `src/contracts/action-keys.ts`
+holds the tuple; the host allowlist is a set built over it and the webview's
+`ActionKey` union is a generated whole-file mirror of it, so the two sides cannot
+be edited apart without a `contracts:check` failure that names the stale file.
+
+<!-- Source: src/contracts/sidebar-ipc.ts -->
+<!-- Source: src/contracts/sidebar-command-metadata.ts -->
+<!-- Source: src/contracts/command-outcome.ts -->
+<!-- Source: src/contracts/action-keys.ts -->
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/ui/sidebar/mutation-command-executor.ts -->
+<!-- Source: src/services/guarded-run-service.ts -->
+<!-- Source: src/commands/reset.ts -->
+<!-- Source: src/activation/git-approval.ts -->
+
+## Catalog and immutable execution plans
+
+The public catalog and Builder surface expose two definition kinds: Phase and
+composable Workflow (Feature 260 / Round 5 retired Pipeline as a user-facing
+third kind, while `loadCatalog` retains `'pipeline'` as an internal execution
+and migration compatibility substrate; a few older user-facing Pipeline surfaces remain, listed in
+[Current limitations](docs/explanation/core-concepts.md#current-limitations)). Each kind has versioned published
+content, an optional draft, and lifecycle state. The effective projection
+supplies only runtime-eligible definitions. Lifecycle writes use expected
+versions or revisions so stale editors are rejected rather than overwriting a
+newer decision.
+
+A composable `Workflow` DAG contains nodes whose `target.kind` is either
+`'phase'` or `'workflow'` (nested child workflow invocation). A Workflow Run
+passes through these hops, in order. Files are under
+`src/services/workflow-execution/` unless a full path is given.
+
+1. `launchWorkflow` (`workflow-launcher.ts`) calls `validateRunRequest`
+   (`src/services/run-request/run-request-validator.ts`).
+2. Validation calls `createFrozenWorkflowClosure`
+   (`src/config/pipeline-snapshot.ts`). It snapshots the root Workflow, every
+   transitively referenced child Workflow and every referenced Phase into an
+   immutable `FrozenWorkflowClosure`. `launchComposableWorkflow`
+   (`workflow-launcher.ts`) then starts the connected run.
+3. `dispatchComposableNode` (`connected-run-coordinator.ts`) dispatches each
+   ready node. It claims the node with a compare-and-set on the connected-run
+   record, then calls its `dispatchPhase` dependency.
+4. For a Phase node, `startPhaseAttempt` (`phase-attempt-start.ts`) builds the
+   attempt's transient `RunRequest` (`buildPhaseAttemptRequest`) and calls
+   `startPhaseNodeRun` (`node-run-starter.ts`). That synthesizes the Phase's
+   snapshot, adds it to the request and calls `startPipelineRun` in the same
+   file, which validates the request into an immutable `ExecutionEnvelope`. The envelope holds the expanded
+   snapshot, the frozen inputs, supplemental inputs, outputs, instructions,
+   timestamp and published catalog version.
+5. `GuardedRunService.scheduleOrEnqueue`
+   (`src/services/guarded-run-service.ts`) hands the attempt to
+   `QueueManager.enqueue` (`src/queue/queue-manager.ts`).
+6. `WorkspaceStateStore` (`src/state/workspace-state.ts`) holds the queue under
+   `schegent.queue`, and the `ConnectedWorkflowRun` records with their per-node
+   `WorkflowInvocationFrame` entries under `schegent.connectedRuns`. Its
+   `compareAndSetConnectedRun` is the claim in hop 3.
+7. Evidence is written by `AuditLogWriter` (`src/audit/audit-log-writer.ts`)
+   and `RawTranscriptWriter` (`src/audit/raw-transcript-writer.ts`).
+
+The enqueue boundary persists the frozen snapshot, and execution consumes that
+frozen value instead of re-reading a changed live catalog. For composable
+Workflows, launch first prepares the unstarted control-ledger root (`prepareRootLink`
+/ `activateRootLink`) and admits the initial attempt (`prepareAttempt` / `commitAttempt`),
+then `admitComposableWorkflowLaunchAtomically` publishes the connected run parent,
+the first queue task, and the linked active control-ledger transition in one
+atomic SQLite batch under the live ownership fence (`FR-R8-01` `01-02`, `01-09`).
+On restart, recovery classifies each ledger root's parent with tri-state presence
+(`present` | `unreadable-refused` | `absent`): only genuinely `absent` unstarted
+roots are eligible for orphan cleanup, while `unreadable-refused` (e.g. corrupt or
+future-schema) parents and their linked permits/waiters are preserved untouched and
+surfaced via metadata-only diagnostics:
+
+```mermaid
+flowchart TD
+    A["Author or import Phase / Workflow"] --> B["Preflight YAML, validate graph and publish version"]
+    B --> C["Launch via CMD_LAUNCH_WORKFLOW or headless API"]
+    C --> D{"Validate IPC v3, trust, primacy, live fence, inputs and 20-root cap"}
+    D -->|refused| N["Return typed refusal + CMD_ACK rejected (0 effects)"]
+    D -->|accepted| E["Freeze FrozenWorkflowClosure + prepareRootLink unstarted control root & attempt"]
+    E -->|crash or restart| R["Startup recovery: tri-state parent check preserves refused/future parents; cleans absent unstarted orphans"]
+    E --> F["Atomic SQLite publication batch: connected parent + first queue item + activateRootLink"]
+    F --> G{"Primary drain, queue lease, consent, handoff eligibility and quota"}
+    G -->|deferred| W["Wait on queue, retry deadline or quota wakeup (spawnedDirectly: false)"]
+    W --> G
+    G -->|admitted| H["Dispatch ACP turn via SpawnGatedRunner + AcpAuthorityGate"]
+    H --> I["Bounded stream buffer + usage parser + ResultOperator contract evaluation"]
+    I -->|next node / Repeat / ForEach / Candidate fallback| G
+    I -->|retryable or freeze failed| W
+    I -->|uncertain effect or intervention| P["Pause (recovery-uncertain-effect) + hold permit; operator recovers"]
+    I -->|terminal| K["Settle attempt, run, history, audit and lane candidate"]
+    P -->|validated resume or schegent.recoverExecutionLane| G
+    K --> L["Project revisioned v4 snapshot and usage metrics to editor"]
 ```
 
-Properties worth knowing before changing any of it:
-
-- **One construction site, enforced.**
-  [tests/lint/no-envelope-reconstruction.test.ts](tests/lint/no-envelope-reconstruction.test.ts)
-  fails the build on an envelope literal, assertion, or spread-rebuild anywhere
-  in `src/` outside the validator and the declaration.
-- **The prompt is derivable from the envelope alone.** The request sections read
-  the same regardless of phase, iteration, or feature directory, in one
-  documented order: bound inputs, supplemental context, declared output targets,
-  operator instructions. Order within each section is the envelope's frozen
-  order, which is the operator's composition order — never sorted.
-- **Operator content is carried, never interpolated.** Instructions, input
-  values, and supplemental text are untrusted. They appear under headings that
-  name whose words they are, positioned after Schegent's own `OUTPUT CONTRACT:`
-  block; no Schegent-authored contract line is built from them.
-- **Outputs are stated, then probed, from the same array.** `prompt-builder`
-  tells the backend the declared targets and `resolveRunOutputs` looks for those
-  targets — literally the same array on the same object, not a second read of
-  the queue row, which may already be gone by the time a run completes.
-- **Nothing envelope-derived reaches the structured audit log.** Phase events
-  keep carrying bounded identifiers and counts. Paths, brief text, targets, and
-  instructions stay out of `.schegent/audit.log` (the standing workspace-root
-  rule, restated for this material).
-- **The legacy path is a discriminated choice, not a fallback.** A queue item
-  with no `runPlan` produces a Run with no `envelope` key at all and resolves its
-  Pipeline exactly as it did before. The two branches never merge in either
-  direction.
-
-### Where the rest of the runtime contract lives
-
-The envelope is the whole runtime contract, but three of its elements are
-reached through the Run rather than through a prompt section, which makes them
-easy to mistake for state resolved somewhere else. They are not.
-
-- **Model and runner policy is inside the snapshot.**
-  [snapshotPhaseDef()](src/config/pipeline-snapshot.ts) resolves each phase's
-  effective `runner`, `sideEffects`, `evidencePolicy` and `promptVersion` at
-  validation and freezes them into `envelope.pipeline.phases`. Nothing
-  downstream re-resolves them; `run.defaultRunnerKind` is a run-level fallback
-  for partially migrated snapshots, not the authority for a phase that has one.
-  Since feature 098 the declared side effects and evidence policy are **declared by
-  the Phase, never derived from its id**: `sideEffects` defaults to `workspace`
-  and `evidencePolicy` to `required` when the definition omits them (FR-005),
-  and both defaults are literals in that one function. The derivation they
-  replaced asked whether the host recognised the id and answered `unrestricted`
-  for every Phase it did not — which, for imported Phases, was all of them. A
-  `sideEffects: git` declaration additionally requires a Git-capable runner
-  ([phase-runner-policy.ts](src/config/phase-runner-policy.ts)), enforced three
-  times — at save, again when the catalog resolves the row, and once more before
-  the phase runs — and every time against the declaration. There is deliberately
-  no replacement id list (FR-008): an id carries no authority, so a Phase named
-  `finalize` is admitted or refused on exactly the terms of one named anything
-  else.
-- **The mutation plan is a projection, not a second source.**
-  [buildMutationPlan()](src/services/mutation-plan.ts) is a pure function of
-  that frozen phase array — `run.mutationPlan` is a memoized derivation of
-  `run.envelope.pipeline`, and `run.pipeline` **is** `run.envelope.pipeline` by
-  identity on a composed run. This is deliberately not stored on the envelope:
-  a persisted copy of a derived value is the second-source-of-truth shape the
-  Workflow-ports rule already forbids.
-- **The approval receipt is minted after the envelope and still cannot drift
-  from it.** A `GitApprovalReceipt` records an operator's answer to a modal, so
-  it necessarily comes later than validation. It binds by `planFingerprint`, a
-  hash over the frozen phases, so an approval can only ever match the exact
-  contract it was shown. `run-driver.ts` re-checks that binding per phase before
-  any git-capable phase runs.
-
-[tests/integration/execution-envelope/runtime-contract-completeness.test.ts](tests/integration/execution-envelope/runtime-contract-completeness.test.ts)
-pins all three, and pins that the envelope survives `workspaceState`
-persistence with every section intact — a member that does not survive
-`JSON.stringify` would be a run that executes one contract before a window
-reload and a smaller one afterwards.
-
-### Runs that predate the envelope
-
-A composed Run already in flight when this contract landed carries no
-`envelope`, because the field did not exist when it was created. Since the
-execution path reads the envelope and nothing else, such a Run would be probed
-for no outputs at all. `resumeExistingOnQueue()` in
-[workflow-controller.ts](src/controller/workflow-controller.ts) repairs it once,
-on the way back into execution, by attaching the queue row's `runPlan` — the
-same envelope `validateRunRequest()` froze for that Run, aliased rather than
-rebuilt, and safe to read because nothing under `src/` writes `runPlan` after
-enqueue.
-
-This is **not** a general licence to consult the queue row. It is guarded on
-`run.envelope` being absent, so a Run created after this contract never reaches
-it, and it sits alongside the two backfills that were already there for the same
-reason (the pinned runner kind and the pre-009 Pipeline snapshot). Adding a
-queue-row read anywhere on the execution path itself is the defect this contract
-closed.
-
-## Subsystems
-
-### Controller (`src/controller/`)
-
-[workflow-controller.ts](src/controller/workflow-controller.ts) owns the run
-state machine, lock acquisition, and the phase-by-phase execution loop. It
-delegates per-phase work to:
-
-- [phase-runner.ts](src/controller/phase-runner.ts) — boundary between
-  orchestration and CLI execution. Owns `phase-start` / `phase-end` audit
-  emission, raw-transcript bracketing, fatal-signature classification,
-  rate-limit classification, phase-message sidecar parsing (with the
-  canonical-path containment guard from spec 056 Track 2), retry-condition
-  evaluation (sandboxed DSL), and timeout/cancel mapping. It **carries** the
-  [Execution Envelope](#execution-envelope) to the prompt seam and does not read
-  its members.
-- [phase-sequencer.ts](src/controller/phase-sequencer.ts) — iteration
-  sequencing primitives extracted in feature 047.
-- [retry-handler.ts](src/controller/retry-handler.ts) — retry orchestration,
-  clamped by `DELAYED_RETRY_CAP = 5` (in [retry-constants.ts](src/controller/retry-constants.ts)).
-- [is-continue-gate.ts](src/controller/is-continue-gate.ts) — single
-  source-of-truth for whether `--continue` may be passed to Claude on the
-  next phase invocation. `request.isContinue === true` is the only path that
-  inserts the `-c` flag.
-- [rate-limit-backoff.ts](src/controller/rate-limit-backoff.ts) and
-  [breakpoint-accessor.ts](src/controller/breakpoint-accessor.ts) — supporting
-  collaborators.
-- [schedule-watchdog.ts](src/controller/schedule-watchdog.ts) — the recovery
-  sweep for scheduled starts no in-process timer will fire. It was a documented
-  no-op from feature 030 until FR-R3-002; `tick()` now scans every
-  `QueueState` for an elapsed `scheduledStartAt` on an `idle-pending` queue
-  with no armed timer, and promotes it through the **same**
-  `promoteScheduledQueue` hop the `ScheduledStartCoordinator`'s `onFire` uses.
-  It asks `AutoDrainCoordinator.drainIfIdle(queueId)` rather than deciding
-  eligibility itself, so it is not a second idle-pending enforcement site.
-
-Feature 057 will further decompose `phase-runner.ts` into sidecar reader,
-prompt assembler, and continue-gate coordinator; see
-[specs/057-phase-runner-decomposition/plan.md](../specs/057-phase-runner-decomposition/plan.md).
-
-### Runner (`src/runner/`)
-
-[backend-runner-registry.ts](src/runner/backend-runner-registry.ts) lazily
-constructs and caches a concrete `BackendRunner` per kind through
-[backend-runner-factory.ts](src/runner/backend-runner-factory.ts).
-`PhaseRunner` resolves the effective kind once per invocation from the phase
-override and global default, and `RunDriver` clears backend-owned session
-state before a runner transition.
-
-[backend-capability-service.ts](src/services/backend-capability-service.ts)
-owns short-lived availability and model-discovery subprocesses separately
-from the lazy runner registry. It publishes the newest completed scan to the
-sidebar, and `RunDriver` reuses its bounded availability probe before the first
-phase. Probe processes use `shell: false`, the invocation cwd/environment
-policy, a configurable 1–30 second timeout, 64 KiB output retention, and
-TERM→KILL cleanup. Capability results are ephemeral and do not alter persisted
-workflow snapshots.
-
-[backend-ping-service.ts](src/services/backend-ping-service.ts) reuses the
-same host-resolved probe path for an operator-requested Ping. The read-only
-`CMD_PING_BACKEND` payload contains a runner kind only; it never accepts an
-executable path. One host-local Ping may run at a time, state remains
-memory-only, and every accepted or rejected attempt appends a paths-free
-`backend-ping` record through the workspace audit sink. The webview consumes
-only the bounded classification, timing, latency, and optional numeric exit
-code—never subprocess output, environment data, paths, or stack traces.
-
-- [claude-cli.ts](src/runner/claude-cli.ts) — invokes Claude with `shell: false`,
-  bounded stdout and stderr for parsing, a backpressured disk tee for the
-  verbatim raw transcript, timeout/cancellation handling, optional safer
-  prompt transports, optional verbose-diagnostic flags, and a strict
-  `request.isContinue === true` gate for `-c`.
-- [codex-cli.ts](src/runner/codex-cli.ts) — same `BackendRunner` contract;
-  uses stdin transport and `codex exec --json --sandbox workspace-write`.
-  Does not invent
-  Claude-specific continuation or verbose-diagnostic behavior.
-- [agy-cli.ts](src/runner/agy-cli.ts) — uses stdin transport and
-  `--output-format stream-json`, continues with `--conversation <id>`, and
-  caps unsupported `xhigh`/`max` effort values to `high` with a warning.
-- [prompt-builder.ts](src/runner/prompt-builder.ts) — composes the phase
-  prompt template, previous-iteration sidecar context, per-phase metadata,
-  and — for a composed run — the request itself from the
-  [Execution Envelope](#execution-envelope): bound inputs, supplemental
-  context, declared output targets, and operator instructions, appended after
-  the feature description and omitted section by section when empty. Takes the
-  envelope as one field rather than four scalars. Pure module.
-
-### Parsers (`src/parser/`)
-
-Each parser is hot-path-aware and avoids broad JSON parsing:
-
-- [stdout-parser.ts](src/parser/stdout-parser.ts) — classifies output
-  precedence: fatal signature → rate limit → non-zero exit → contract blocks
-  → remaining issues.
-- [audit-log-parser.ts](src/parser/audit-log-parser.ts) — parses the
-  model-authored constitution audit block. Unknown event types and future
-  schema versions are preserved by readers instead of dropped (CLAUDE.md
-  hard rule).
-- [rate-limit-reset-extractor.ts](src/parser/rate-limit-reset-extractor.ts) —
-  extracts dynamic reset timestamps from plain and stream-json output
-  without parsing common allow events on the hot path.
-- [invocation-usage.ts](src/parser/invocation-usage.ts) — extracts numeric
-  fields from stream-json `result` rows. Only finite non-negative numbers
-  and integers are accepted; the host-owned `durationMs` remains canonical,
-  CLI-reported duration recorded separately as `cliDurationMs`.
-- [credit-error-detector.ts](src/parser/credit-error-detector.ts) — detects
-  credit-exhaustion patterns for the watchdog polling layer.
-
-### Audit and Logging (`src/audit/`, `src/lib/`)
-
-Six distinct sinks with different sanitization postures:
-
-| Sink | Path | Sanitized? | Read back via IPC? |
-|---|---|---|---|
-| Structured audit log | `<workspaceRoot>/.schegent/audit.log` | Yes (single point) | Yes (audit-tail projector) |
-| Raw transcript | `<workspaceRoot>/.schegent/sessions/raw-<runId>.log` | No (intentional) | Never |
-| Verbose diagnostics | `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-N/` | No (intentional, opt-in via `schegent.logging.verbose`) | Never |
-| Runtime log | `<workspaceRoot>/.schegent/syslog` (configurable) | Yes (single point) | No (operator opens file) |
-| CLI transport capture | `<workspaceRoot>/.schegent/cli-transport.log` (+ `.1`…`.3`) | Yes (single point; paths retained) | Never |
-| Metrics rollup | `<workspaceRoot>/.schegent/metrics-rollup.jsonl` | N/A — carries no free text to sanitize | Yes (composed into `CMD_READ_METRICS` totals) |
-
-The structured audit log records what Schegent *did*; a line of CLI stdout is
-content Schegent was merely *transporting*. Those two were conflated until
-FR-R3-007: the monitor wrote one `monitor-stdout-line` audit entry per line,
-which measured 93.2% of `audit.log` by bytes and was read by nothing. Because
-the audit log's retention budget is what bounds the metrics horizon, spending it
-on transport capped that horizon at roughly forty runs — against spec 073's
-SC-001, which asks the dashboard to cover the full retention window. The
-per-line writers are gone from both streams; the counts they carried are now the
-`monitor-invocation-summary` aggregate (`stdoutLines`, `stderrLines`,
-`firstOutputAt`, `lastOutputAt`), and the content goes to the transport sink.
-
-`monitor-stdout-line` and `monitor-stderr-line` stay registered in
-`ALL_AUDIT_EVENT_TYPES` permanently, as **read-only event types with no
-writer**. Rotated archives on operator disks are full of them, and the parser's
-warn-and-preserve rule would turn one archive read into a stream of
-`unknown eventType` warnings if the registry entries were dropped. Retiring a
-writer is not an envelope change, so `AUDIT_SCHEMA_VERSION` stays `3`.
-
-Raw transcripts and verbose-diagnostic trees share one retention owner. It
-groups artifacts by run, protects running and paused runs, and prunes only
-complete inactive-run groups by age and total-byte budget. Sweeps run at
-activation, after terminal runs, and after policy changes. The structured
-audit log is outside the managed root and is never pruned by this service.
-
-**The recovery-checkpoint store is the second retention owner, and the only sink
-outside the workspace.** `<globalStorageUri>/checkpoints/<runId>/` holds a
-`git diff --binary HEAD` per Git-capable phase — unredacted source, in a
-directory `.schegent/.gitignore` does not reach, the session sweep does not
-visit, and every workspace the extension has ever opened writes into.
-`RunCheckpointService.prune()` bounds one directory to 20 artifacts and is only
-ever called with the directory of the run that just wrote, so until FR-R3-012 the
-*number* of directories had no bound at all.
-[run-checkpoint-retention.ts](src/services/run-checkpoint-retention.ts) supplies
-the outer one: 14 days, 256 MiB total, and a floor of the ten newest directories
-held back from the **size** bound but deliberately not from the **age** bound,
-since a floor covering both leaves a residue of ancient diffs nothing can reap.
-Both are code-resident constants rather than settings — a wrong value here is
-silent data loss in a directory an operator never opens — and both are age- and
-volume-based rather than lifecycle-based, because a completed run's patch is
-exactly what is wanted when that run turned out badly.
-
-The sweep is scheduled at activation and not awaited; it never throws, so a
-retention fault costs a sweep rather than a phase, a run, or the activation that
-scheduled it. Every candidate is proven contained against the checkpoint root
-through the one oracle in
-[path-containment.ts](src/lib/path-containment.ts) immediately before `rm` —
-the root check cannot answer for a run directory that is itself a link out of the
-store — and measurement uses `lstat`, so a symlink planted inside one is an entry
-rather than a tree to descend. Counts, bytes, and the triggering bound go to the
-sanitized runtime log; nothing about retention reaches `audit.log`, which never
-carries a workspace path. It is strictly a volume bound: it does not read a
-`.patch`, does not judge whether an artifact was valid, and treats a
-`.declined.json` marker as an ordinary artifact, because FR-R3-004 owns what a
-decline means and the marker is the evidence that a checkpoint was declined.
-Operator-facing policy and the by-hand `git apply` procedure live in
-[docs/operations/recovery-checkpoints.md](docs/operations/recovery-checkpoints.md).
-
-**The metrics rollup is the one sink with no retention policy at all**, and
-that is its entire purpose (FR-R3-009). Every other figure the dashboard shows
-is a fold over the audit corpus, so it reports the *rotation window* rather than
-the history — when the eleventh archive or the ninety-first day prunes the
-oldest evidence, a *cumulative* total goes down. A total that goes down is not a
-short window; it is a wrong number, and nothing in the view distinguished the
-two. `.schegent/metrics-rollup.jsonl` is append-only JSON Lines, one record per
-terminal run, written by `MetricsRollupWriter` at the terminal transition while
-the evidence is still present. A record holds a run id, a terminal status, two
-timestamps, six integer counters and an optional cost — ids, counters, and
-money, with no description, no path, and no CLI output, which is why the
-sanitization column above reads N/A rather than "yes". At roughly 200 bytes per
-run it is measured in bytes per day, so it is bounded by how much work a
-workspace actually does rather than by a budget that has to be spent against
-anything else.
-
-Three properties make it durable rather than merely persisted. It is **never
-recomputed**: a rebuild from a corpus that has since been pruned would inherit
-exactly the defect the rollup removes, so the reader treats the file as
-authoritative for its own range and attempts no backfill over missing days. It
-is **forward-only**: records are never rewritten, a schema change adds a version
-marker and a reader branch, and a record from a newer writer is read rather than
-refused, because refusing one makes a total drop for an operator who downgraded.
-And the append is **idempotent on run id** — the terminal transition is reached
-both live and by crash replay, and a second record for one run is
-indistinguishable from a second run.
-
-Those three owners — session artifacts, checkpoints, the rollup's deliberate
-absence of one — are the ones with interesting *reasons*, not the whole set. A
-workspace also carries audit rotation and archive retention, runtime-log and
-CLI-capture generations, the ownership registry's generational prune, and the
-per-queue history cap, each bounded by a different rule and triggered by a
-different event. Enumerating them here would duplicate a table that has to stay
-correct for operators rather than for readers of this document, so the inventory
-— every store with its location, bound, deletion trigger, and whether the data
-is recoverable — lives in
-[docs/operations/data-retention-and-deletion.md](docs/operations/data-retention-and-deletion.md),
-alongside the procedures for removing each on purpose. That page is also the one
-place the out-of-workspace `globalStorageUri` paths are written down per
-platform.
-
-`readMetrics` composes the rollup with the fold and deduplicates by run id, so
-neither range double-counts the runs they overlap on and a workspace that
-predates the file still reports its older runs from the log. `MetricsCoverage`
-then states the two horizons **separately** on the IPC contract: the totals
-window is the rollup's range, and the detail window is the scanned corpus's.
-Naming only one would leave a figure presented as all-time when it is not, which
-was the half of the defect that no amount of durable storage fixes.
-
-`EvidenceHealthMonitor` is the workspace-scoped owner for sink availability.
-It projects normalized, paths-free health for structured audit, raw transcript,
-runtime log, and metrics rollup. Structured-audit failure is a run-control
-boundary: the phase runner throws `RequiredEvidenceUnavailableError`, the run
-driver persists a sanitized terminal failure, and auto-drain remains stopped.
-Raw-transcript, runtime-log, and metrics-rollup failures are
-availability-preserving but visibly degraded. Health stays sticky until
-workspace wiring is recreated because a later successful write cannot
-reconstruct missing evidence. The rollup earns a sink of its own precisely
-because its failure is otherwise silent: a run whose append failed still
-executes and still completes, and its contribution to the totals then lasts only
-as long as its audit evidence — so the degraded badge is the operator's warning
-that a total may regress at the next prune.
-
-- [audit-log-writer.ts](src/audit/audit-log-writer.ts) — structured
-  append-only writer. Every audit record passes through `SanitizedLogger`
-  before reaching disk. Rotation/archive preserves history; existing
-  records are never rewritten.
-- [raw-transcript-writer.ts](src/audit/raw-transcript-writer.ts) —
-  verbatim prompts, stdout, stderr, and exit status. Best-effort,
-  intentionally unredacted, never surfaced through webview IPC. Subprocess
-  chunks are backpressured into mode-`0600` stdout/stderr spools under the
-  OS-managed temporary directory, streamed into the append-only transcript at
-  invocation end, and removed; abandoned spools are scavenged by owner PID;
-  the transcript therefore remains complete even when parser buffers truncate.
-- [verbose-diagnostic-writer.ts](src/audit/verbose-diagnostic-writer.ts) —
-  opt-in diagnostic payloads. Diagnostic write failures fold into phase
-  warnings; they never fail a run.
-- [schegent-gitignore.ts](src/audit/schegent-gitignore.ts) — writes a
-  best-effort `.schegent/.gitignore` (containing `*`) the first time the
-  runtime writers create `.schegent/`. Operator-managed ignore files are
-  never overwritten.
-- [verbose-diagnostic-path.ts](src/audit/verbose-diagnostic-path.ts) —
-  pure path composer; also used by the canonical sidecar-path
-  computation in `phase-runner.ts`.
-
-Sanitization is centralized in [src/lib/logger.ts](src/lib/logger.ts).
-`SECRET_PATTERNS` is the **single source of truth** redaction set;
-pre-compiled case-sensitive and case-insensitive unions hot-path the
-sanitize call. The set currently covers Anthropic / OpenAI keys
-(`sk-`, `sk-ant-`, `sk-proj-`, `sk-svcacct-`), GitHub PATs (`ghp_`,
-`github_pat_`), Slack tokens (`xox[baprs]-`), AWS long-lived keys
-(`AKIA…`) and STS session keys (`ASIA…`), Google API keys (`AIza…`),
-Google OAuth tokens (`ya29.…`), Stripe live/test/restricted keys
-(`[rs]k_(live|test)_…`), GCP service-account JSON snippets, standalone
-PEM private-key headers (RSA / DSA / EC / OPENSSH / PGP / ENCRYPTED),
-`Bearer` and `Authorization` headers, `api_key` / `apikey` / `api-key`,
-`x-api-key` / `X-API-Key`, JWTs (`eyJ…`), and generic
-`SECRET|TOKEN|PASSWORD|API_KEY|ACCESS_KEY=value` env-style assignments.
-
-[src/lib/runtime-log/](src/lib/runtime-log/) is the sanitized runtime log
-sink. It registers on `SanitizedLogger`, re-reads runtime-log settings on
-every emit (never cached on long-lived objects), and rotates by configured
-size/generation policy (`schegent.logging.runtimeLogMaxBytes`,
-`schegent.logging.runtimeLogMaxGenerations`).
-
-[src/monitor/cli-transport-sink.ts](src/monitor/cli-transport-sink.ts) owns the
-transport tier. It lives beside the monitor rather than under `src/audit/`
-because it is not evidence of a decision — it is a bounded convenience copy of
-the subprocess's own output. Three properties follow from that, and each is
-deliberate: it is **best-effort** (a write failure warns once per (path, cause)
-and the phase continues, matching `verbose-diagnostic-writer` rather than the
-audit writer); it is **bounded by its own rotation** (`CLI_TRANSPORT_MAX_BYTES`
-5 MiB × `CLI_TRANSPORT_MAX_GENERATIONS` 3, code-resident precisely so no
-operator setting can let one sink starve the other's budget); and it is
-**sanitized** through the same `SECRET_PATTERNS` set, applied inside the sink so
-a per-line caller cannot forget it. Paths are the one difference from the audit
-log: `audit.log` refuses to carry a workspace path at all, while raw CLI output
-names the files the CLI touched and stripping them would leave a record no
-operator could use. Rotation renames and unlinks are proven against the
-workspace root through the one containment oracle in
-[src/lib/path-containment.ts](src/lib/path-containment.ts). Record format is one
-physical line per record — `<ISO-8601>\t<runId>\t<phase>\t<stream>\t<line>` —
-with content last, so `cut -f5-` recovers the CLI's own bytes and no per-line
-truncation is applied.
-
-### State (`src/state/`)
-
-[workspace-state.ts](src/state/workspace-state.ts) is the memento-backed
-serialization layer. The numeric schema version `STATE_SCHEMA_VERSION = 13`
-lives in [src/contracts/state-schema.ts](src/contracts/state-schema.ts);
-forward-only migrators handle 1→2 (feature 011), 2→3
-([queue-state-migrator.ts](src/state/queue-state-migrator.ts)),
-5→6 (feature 030), 9→10 (feature 092, `migrateV9ToV10`, which lifts the
-singleton queue record into `Record<queueId, QueueState>`), 10→11
-([run-state-migrator.ts](src/state/run-state-migrator.ts), feature 093,
-`migrateV10ToV11`, which does the same to the run record so two queues can hold
-two live Runs), 11→12
-([history-state-migrator.ts](src/state/history-state-migrator.ts), FR-R3-010,
-`migrateV11ToV12`, which partitions `KEYS.history` by queue and re-reads the cap
-as per-queue depth) and 12→13 (FR-R3-011, `migrateV12ToV13`, which collapses the
-three pause representations into `QueueState.queueLifecycle`). The full
-per-version rationale lives beside the constant, not here. A persisted version
-*above* `STATE_SCHEMA_VERSION` is refused, not rolled back. `setRun()` enforces
-paired invariants for manual pause and retry state so the scheduler cannot
-persist one-sided resumption data.
-
-`initialize()` no longer runs a pause reconciler.
-`reconcileQueuePauseStateIfDivergent()` is deleted, along with the startup write
-it performed, because the divergence it repaired is now unrepresentable rather
-than merely checked for — see
-[One persisted answer to "is this queue paused"](#one-persisted-answer-to-is-this-queue-paused-fr-r3-011).
-
-[workflow-run.ts](src/state/workflow-run.ts) carries the composed run's
-[Execution Envelope](#execution-envelope) on the optional `envelope` field —
-additive, so no version bump. `run.pipeline` and `run.envelope.pipeline` are the
-same object in memory and serialize twice on disk; that duplication is the
-accepted cost of consuming the request by reference rather than harvesting
-fields from it. `runInputs` remains as a legacy projection and nothing under
-`src/` reads it.
-
-Two further optional fields on the same record answer "is this run working or
-hung, and how far along is it" from the persisted state rather than from window
-memory (FR-R3-008, blueprint finding DATA-02). Both are additive, so no version
-bump, and absence on a record means **unknown** — never zero and never stale.
-
-`liveness` is `{ lastActivityAt, stdoutLines, stderrLines }`: a timestamp and two
-bounded counters, no line content and no path. It exists because
-`lastTransitionAt` moves only at status transitions, so a phase streaming output
-productively for 3.6 h and a phase dead for 3.6 h were indistinguishable in the
-record, while the reading that *could* tell them apart —
-`CliMonitorState`/`liveActivity` — is computed in memory and discarded on window
-reload. `lastTransitionAt` remains transition-only and is **not** a heartbeat: the
-lifecycle auditor's `durationMs`, the staleness reclaim, and the history
-recorder's `completedAt` all read it as "when the status last changed".
-
-The write is **coalesced**, not per line. `ClaudeCliMonitor` notes every chunk to
-[activity-coalescer.ts](src/monitor/activity-coalescer.ts), which forwards at most
-one observation per `ACTIVITY_COALESCE_INTERVAL_MS` (15 s) per Run — a bound of
-`1 + floor(elapsed / interval)` writes whatever the line count, so this field does
-not reintroduce FR-R3-007's amplification in a medium (`globalState`) with no
-rotation. Dropped observations are discarded rather than buffered; there is no
-timer, because one would fire after the phase ended. The write itself is
-`WorkflowController.recordRunActivity` → `setRun(queueId, …)` on the existing
-serialize chain, skipped for a terminal Run and never moved backwards. The
-persisted stamp therefore trails true last output by up to one interval; exact
-end-of-phase totals stay in `monitor-invocation-summary`.
-
-`plannedTotal` is `{ phaseCount, iterationCap, maxPhaseInvocations }`, frozen at
-run creation beside the `pipeline` snapshot. `loop.maxIterations` is a live
-setting, so a denominator derived on read would move under a Run already in
-flight — lowering the setting from 5 to 2 mid-run would make every in-flight Run's
-progress jump. [run-planned-total.ts](src/services/run-planned-total.ts) owns all
-of the arithmetic for the three call sites that must agree: the factory freezes
-the total, `PhaseControlService` refreshes it **in the same write** that changes
-`phaseOverrides`, and the snapshot projector computes the numerator. Numerator and
-denominator exclude the same override set, so the fraction cannot exceed one;
-`phaseCount` counts distinct phase ids (what the numerator can reach) while
-`maxPhaseInvocations` counts positions weighted by the frozen cap (a ceiling on
-CLI invocations, not a forecast).
-
-[history-store.ts](src/state/history-store.ts) and
-[history-entry.ts](src/state/history-entry.ts) own the rolling history
-window.
-
-**History is partitioned by queue** (FR-R3-010). `KEYS.history` holds a
-`Record<queueId, HistoryEntry[]>`, each partition capped at
-`HISTORY_CAP_PER_QUEUE` (50), reached from the flat `HistoryEntry[]` by the
-forward-only v11 → v12 migration in
-[history-state-migrator.ts](src/state/history-state-migrator.ts). The flat array
-carried one cap for the workspace, so under concurrent queues a busy queue's
-completions evicted a quiet queue's records and nothing in the product said so;
-the workspace now holds cap × queues. `append(queueId, entry)` is a whole-map
-read-modify-write on the store's existing serialize chain — the only write path
-for this key — and dedupes on `runId` + `terminalStatus` **within the target
-partition**, so a retried completion costs no write at all. `list()` folds every
-partition for the workspace-wide view; `listForQueue(queueId)` is the per-queue
-one. A legacy row whose Task resolves to no queue is filed under
-`__unattributed__`, which is an ordinary partition rather than a tombstone: the
-migration emits an audit event naming the count and never re-caps, because a
-forward-only step that *deletes* records is the one kind that cannot be
-re-attempted after a crash.
-
-**The pointer is `runId:<runId>`**, minted by `buildAuditLogPointer` and read by
-[audit-pointer-resolver.ts](src/services/history/audit-pointer-resolver.ts) —
-never a path, so nothing machine-specific reaches persisted state or the
-webview. Resolution streams the corpus oldest-first (archives matching the
-writer's own naming, then the live log), returns at most
-`MAX_RESOLVED_ENTRIES` (500) entries sorted by timestamp, and reports parse
-warnings as a count rather than text. **Two retention policies govern one
-drill-down and they are independent by design**: audit evidence prunes at 10
-archives or 90 days, while a history row lives until its queue's cap evicts it,
-so a row outliving its evidence is expected rather than a fault. The resolver
-therefore separates `evidence-expired` (the corpus starts after this run
-completed) from `no-evidence-recorded` (the corpus covers the run and holds
-nothing for it) from `unaddressable` (a pointer an older build minted), and the
-webview renders all three as information while only a genuine resolution failure
-renders as an error. A pointer is read verbatim and never repaired from the run
-id being asked about, which would turn "cannot address this" into a fabricated
-success. The `historyPointer` evidence sink is `continue-degraded` and degrades
-only on `corpus-unreadable`; a full description no longer lives in the memento
-at all but under `.schegent/history/<runId>.txt` via
-[history-description-store.ts](src/services/history/history-description-store.ts),
-whose reads, writes, and evictions all route through the containment oracle in
-[src/lib/path-containment.ts](src/lib/path-containment.ts).
-
-[lock.ts](src/state/lock.ts) provides the workspace lock
-acquisition wrapper, which since feature 092 arbitrates **window primacy**
-only. Per-queue **execution** leases live in
-[execution-lease.ts](src/state/execution-lease.ts) — at most one holder per
-queue, N concurrently per workspace, reusing the lock module's 5 s heartbeat
-and 15 s staleness threshold.
-
-Both leases are arbitrated by
-[ownership-registry.ts](src/state/ownership-registry.ts) over the storage seam
-in [ownership-fs.ts](src/state/ownership-fs.ts), and neither is decided in the
-memento (FR-R3-003). Acquisition is an exclusive create (`O_CREAT|O_EXCL`) of a
-generation-numbered record under `<workspaceRoot>/.schegent/ownership/`, so two
-hosts racing for one resource produce one winner in the kernel rather than two
-winners in two caches. The generation number *is* the fencing token — a holder
-carries it and re-checks it at the point of effect through
-`WorkspaceStateStore.verifyClaim()` / `writeGuarded()`, so a host that stalled
-past the staleness threshold, was reclaimed, and then revived has its writes
-rejected rather than merely landing late. Every failure resolves to a refusal to
-acquire; nothing assumes acquired. `KEYS.lock` and `KEYS.executionLeases` remain
-as per-host advisory **mirrors** for the synchronous readers on projection paths
-that cannot await, and every one of those reads is additionally gated on this
-window holding a fence. The mechanism, the platform property it rests on, and
-the alternatives rejected are recorded in
-[docs/architecture/workspace-ownership-fencing.md](docs/architecture/workspace-ownership-fencing.md);
-production wiring is pinned by
-[tests/lint/ownership-registry-wiring.test.ts](tests/lint/ownership-registry-wiring.test.ts).
-
-[workspace-folder-picker.ts](src/state/workspace-folder-picker.ts) is the
-single source of truth for the canonical workspace folder in multi-root
-workspaces (feature 058). It memoizes `vscode.workspace.workspaceFolders[0]`
-and lazily subscribes to `onDidChangeWorkspaceFolders` for cache
-invalidation. All host code routes through `getCanonicalWorkspaceRoot()`;
-direct `workspaceFolders[0]` reads are forbidden outside this module and
-guarded by the lint regression at
-[tests/lint/no-direct-first-workspace-folder.test.ts](tests/lint/no-direct-first-workspace-folder.test.ts).
-[multi-root-warning.ts](src/state/multi-root-warning.ts) consumes the picker
-and emits a one-shot activation-time toast plus a `multi-root.warning-shown`
-audit event (payload: `folderCount`, `canonicalFolderName` — name only,
-never `fsPath`). Suppressible per-workspace via
-`schegent.multiRoot.suppressWarning` (`window`-scoped boolean).
-
-[capability-trust-resolver.ts](src/state/capability-trust-resolver.ts) is
-the host-only resolver for the per-capability trust scopes introduced in
-feature 059. Two remain — `schegent.trust.allowCustomPhases` and
-`schegent.trust.allowCustomRetryConditions` — both keyed on document
-**content**. `allowPipelineOverrides` and `allowWorkflowOverrides` were retired
-by feature 099 along with the layer tier they gated. Each call re-reads
-`vscode.workspace.isTrusted` and the relevant setting via
-`getConfiguration().inspect(key)` — no value is cached across
-configuration or workspace-trust changes. Resolution follows a four-step
-ladder: **workspace-trust ceiling → workspace-scope → user-scope →
-default-allow**. The ceiling is never widened; user-scope cannot
-override workspace-scope. The resolver subscribes to
-`onDidGrantWorkspaceTrust` and `onDidChangeConfiguration` and kicks the
-state projector so the webview reflects projection changes immediately.
-Save handlers consult the resolver before mutating the catalog and emit
-a `trust.capability-denied` audit event on denial (payload bounded to
-closed enums + workspace basename).
-
-### Queue (`src/queue/`)
-
-Feature 030 pinned this to one queue and one in-flight run; feature 092 supplies
-the state migration and scheduler design that hard rule required and reopens it.
-The public registry in [queue-registry.ts](src/queue/queue-registry.ts) holds up
-to `MAX_QUEUES = 20` entries with its id, uniqueness and position-compaction
-rules intact, and [queue-manager.ts](src/queue/queue-manager.ts) splits capacity
-into `hasQueueCapacity(queueId)` (one in-flight run per queue — a queue is still
-sequential) and `hasWorkspaceCapacity()` (`schegent.queue.globalConcurrencyCap`,
-default `1`, range `[1, 20]`). The default is `1`, not the range's midpoint or
-its ceiling: the 2026-08-18 defaults change lowered it from `3` to close review
-finding REL-02 — see the [principal architecture
-review](docs/operations/superseded-architecture-review.md) — so that
-concurrency is a thing an operator turns on deliberately, having read what two
-Runs sharing one worktree costs — see
-[Recovery checkpoints](docs/operations/recovery-checkpoints.md). Not feature
-098: that number belongs to the runtime-only catalog, cited elsewhere in this
-file, which never touched this setting. The range is unchanged. `DEFAULT_GLOBAL_CONCURRENCY_CAP` in
-[workspace-state.ts](src/state/workspace-state.ts) is the constant; this line is
-pinned against it by
-[architecture-doc-schema-parity.test.ts](tests/lint/architecture-doc-schema-parity.test.ts).
-The formerly deprecated CRUD helpers are
-un-deprecated. Widening further still requires both halves — a migration and a
-scheduler that answers for the new entries (CLAUDE.md hard rule).
-
-#### One persisted answer to "is this queue paused" (FR-R3-011)
-
-Pausedness used to be written three times across two memento keys:
-`QueueRegistryEntry.state` and its `pauseSource` in `KEYS.queueRegistry`, and
-`QueueState.queueLifecycle` plus the legacy `QueueState.paused` / `pausedReason`
-mirrors in `KEYS.queue`. A `Memento` offers no multi-key transaction, so every
-pause was two writes with a window between them, and a window disposed inside
-that window left the pair split.
-`reconcileQueuePauseStateIfDivergent()` in
-[workspace-state.ts](src/state/workspace-state.ts) ran at store initialization to
-repair exactly that, and its existence was the evidence the three could disagree.
-
-The surviving representation is `QueueState.queueLifecycle === 'operator-paused'`
-with `QueueState.pauseSource` beside it — one entry of one key, so a pause is one
-write and a split pair is unrepresentable rather than repaired. The registry's
-`state` and `pauseSource` are **derived on read** by `projectQueueRegistry()` in
-[queue-registry.ts](src/queue/queue-registry.ts), which every registry-facing
-surface reaches through `store.getProjectedQueueRegistry()`; `setQueueRegistry()`
-strips both fields on the way to disk, so a caller that spreads a projected entry
-into a rename or a reorder cannot quietly recreate the second copy. `paused` and
-`pausedReason` are **migration input only** —
-[no-legacy-pause-mirror-write.test.ts](tests/lint/no-legacy-pause-mirror-write.test.ts)
-fails the build on a live write and on a live read outside a named allowlist,
-because a live read is the more dangerous half: an absent mirror reads
-`undefined`, so a paused queue would drain.
-
-The reconciler is deleted rather than tightened. It re-derived `queueLifecycle`
-from the `(inFlightId, registry pause, pending count)` triple, which made it a
-fourth writer of the discriminator and let it overwrite a legitimately held
-`idle-pending` on the strength of a disagreement between the two values it was
-comparing. Existing workspaces cross over through the forward-only
-`migrateV12ToV13()` in
-[queue-state-migrator.ts](src/state/queue-state-migrator.ts), whose per-entry
-winner is **any representation reading paused wins**: the two directions are not
-symmetric, since resolving to paused costs an operator one Resume click and
-resolving the other way starts work nobody asked for. A queue that resolves to
-not-paused keeps its existing lifecycle verbatim, `scheduledStartAt` and all.
-
-Attribution survives the collapse on `pauseSource` rather than on a registry
-column: `cascadedPause()` is a no-op against an operator pause and never demotes
-it, and `cascadedResume()` lifts a pause only when the source is `'cascade'`.
-`AutoDrainCoordinator` step 2 refuses on the same discriminator step 1 reads, so
-the drain is not a second place where pausedness is decided — it previously
-consulted the retired `paused` mirror. Coverage:
-[queue-pause-collapse.test.ts](tests/unit/state/queue-pause-collapse.test.ts) over
-every disagreement combination, and
-[single-representation.test.ts](tests/integration/queue-pause/single-representation.test.ts)
-over precedence and drain refusal against a real store.
-
-### Config (`src/config/`)
-
-[settings-schema.ts](src/config/settings-schema.ts) is the typed
-single-source-of-truth description of every Schegent setting (added by
-spec 056 Track 3). [settings-schema-validator.ts](src/config/settings-schema-validator.ts)
-validates host writes against the schema and is reused by parity tests
-against `package.json contributions.configuration` and webview defaults.
-
-[general-settings.ts](src/config/general-settings.ts) performs full-batch
-validation before any write; partial-write failures attempt compensating
-rollback of already-touched keys and return a rollback-specific failure
-when rollback itself fails. [pipeline-config.ts](src/config/pipeline-config.ts)
-and [pipeline-config-loader.ts](src/config/pipeline-config-loader.ts) resolve
-the pipeline catalog from a store snapshot.
-[workflow-catalog.ts](src/config/workflow-catalog.ts) and
-[workflow-graph-validator.ts](src/config/workflow-graph-validator.ts) own the
-third definition family — saved Workflow *graphs* whose nodes are Pipelines,
-which are documents and not executions. This is a different thing from the
-run-side `WorkflowRun`, which is unchanged; both senses of the word are
-recorded in [docs/reference/glossary.md](docs/reference/glossary.md).
-[workflow-graph.ts](src/config/workflow-graph.ts) holds the pure graph
-algorithms with no Pipeline knowledge, and
-[workflow-derived-ports.ts](src/config/workflow-derived-ports.ts) derives a
-Workflow's own ports on read rather than storing them. The full contract is in
-the workspace-root [ARCHITECTURE.md](../ARCHITECTURE.md).
-
-**All three families ship an empty built-in layer** (feature
-098-runtime-only-catalog). `BUILT_IN_PHASES`, `BUILT_IN_PIPELINES` and
-`BUILT_IN_WORKFLOWS` are each `Object.freeze([])` and
-`schegent.defaultPipelineId` defaults to `''`, so a fresh install resolves no
-Phase, no Pipeline, no Workflow and no Model until the operator imports a
-document. `EMPTY_CATALOG` replaces the deleted `BUILT_IN_CATALOG` as the
-unresolvable-catalog fallback, and `BUILT_IN_PIPELINE_ID` is deleted with no
-successor: a launch that resolves no Pipeline is refused with `catalog-empty`
-([empty-catalog-guidance.ts](src/contracts/empty-catalog-guidance.ts)) rather
-than defaulted. `examples/` is the only process content in the package.
-
-**Feature 099 (FR-R3-015) then collapsed the layer tier itself.** With every
-layer but one empty, three-scope precedence was arbitration with no second
-party, so it was deleted rather than left as a one-armed union: the three
-`DefinitionScope` types and their `Writable` twins, the `shadowed` arm of all
-three `SourceStatus` unions, `phase-precedence.ts` and `PhasePrecedenceLayer`
-whole, and the `PRESENCE_SCAN_ORDER` iteration are gone. A `SourceStatus` is now
-`effective` or `invalid`. The `scope` field left all three save envelopes and is
-**refused rather than tolerated** on ingress, and three rungs left each of the
-save-gate tables in `cmd-save-phases.ts` and `cmd-save-pipelines.ts` (inline code
-because feature 100 then deleted both — see below) — built-in immutability, which
-had no layer left to protect, and the two `allow*Overrides` capability gates,
-which asked which layer could redefine another. Definitions moved out of
-`settings.json` entirely and into the
-versioned catalog store under `.schegent/catalog/`; `schegent.phases`,
-`schegent.pipelines`, and `schegent.workflows` are **deleted, not drained**
-(there is no installed base to migrate), and the operator re-imports from YAML.
-Workspace Trust is the single remaining gate: an untrusted workspace gets no
-store at all, and the Builder reports the trust gate rather than an empty
-catalog.
-
-[src/catalog/](src/catalog/) is the store. It takes **no `vscode` import** —
-the filesystem and workspace root arrive as ports, enforced by
-`tests/lint/catalog-purity.test.ts` — and it never validates a definition; it
-stores and returns bodies. `manifest.json` is the only mutable file and the
-single ordering point, version records are immutable at
-`<kind>/<id>/v<N>.json`, and a SHA-256 `contentHash` over canonical JSON
-short-circuits a save whose content is unchanged. Writes are temp-plus-rename
-per file with no cross-file transaction, in **record-then-manifest** order: an
-unreferenced record is *collectable* rather than an error, a manifest entry
-naming an absent record is a reported integrity fault that costs exactly one
-definition, and a partial write stays written with no compensating delete. The
-full contract is in the workspace-root
-[ARCHITECTURE.md](../ARCHITECTURE.md).
-
-**Feature 100 (FR-R3-016) gave the store's two inert lifecycle fields meaning.**
-Editing a definition and making it live are now separate operator acts: a save
-writes a **draft**, and only an explicit publish moves the active pointer, so
-nothing runs because someone typed in it. A definition is `'draft'`,
-`'active'`, or `'active-with-draft'` — derived from the two manifest pointers by
-one shared projection in
-[catalog-lifecycle.ts](src/contracts/catalog-lifecycle.ts), with no fourth arm
-because a definition with neither pointer has no manifest entry at all. The five
-per-definition operations and the package publish reach the host as six IPC
-commands through the single dispatch module
-[cmd-catalog-lifecycle.ts](src/ui/sidebar/commands/cmd-catalog-lifecycle.ts),
-which checks the per-definition `expectedDraftVersion` **before** any capability
-so a stale untrusted write reports the staleness. The three whole-array
-`CMD_SAVE_*` commands and the mutation-intent algebra are deleted: a
-per-definition operation declares its intent by being the command it is, so there
-is no diff to reconcile a declaration against. Import now writes a draft rather
-than something runnable, which is why the import-presence scan counts Draft as a
-claim on an id and why the preflight augmentation carve-out extends to publish.
-The full contract — states, refusals, retention interaction, and the three
-system-scoped audit events with their closed payload — is in the workspace-root
-[ARCHITECTURE.md](../ARCHITECTURE.md).
-
-[src/services/process-yaml/](src/services/process-yaml/) is the portable
-exchange format for all three of those families — `schegent/v1` `Phase`,
-`Pipeline`, and `Workflow` documents. The latter two optionally carry the
-complete definitions of what they reference, so one file is a runnable package:
-a Pipeline document may include its Phases, and a Workflow document may include
-its Pipelines **and**, through them, those Pipelines' Phases. Because a Workflow
-has two levels of dependency where a Pipeline has one, it has its own inclusion
-vocabulary rather than reusing the Pipeline's: `references-only`,
-`include-pipelines`, `include-closure`. Each mode is still a single choice that
-fixes the depth —
-[workflow-export-closure.ts](src/services/process-yaml/workflow-export-closure.ts)
-resolves node → Pipeline → Phase and de-duplicates, so a Phase reached by two
-Pipelines is written once and a Pipeline reached by two nodes likewise. The service imports no `vscode` and no configuration,
-and it imports the catalogs' own field bounds from
-[process-definition-validator.ts](src/config/process-definition-validator.ts),
-[pipeline-definition-validator.ts](src/config/pipeline-definition-validator.ts),
-and
-[workflow-definition-validator.ts](src/config/workflow-definition-validator.ts)
-rather than restating them, so the format cannot drift from what the catalogs
-accept. The scanner reads a deliberately small YAML subset rather than
-delegating to a general parser, and
-[scalar-style.ts](src/services/process-yaml/scalar-style.ts) is the single rule
-both the scanner and the serializer consult, so what one refuses to write the
-other refuses to read.
-
-A Workflow's conditions cross the format as **structured data** —
-`{ left, operator, right }` over a closed operand set — never as a string. There
-is no expression language in a Workflow document, so there is nothing to parse
-on import and nothing to sandbox; the graph validator compares the fields and
-the runtime compares them again. The one field on the whole exchange path that
-*is* an expression, a Phase's `retryCondition`, stays inert text here: the
-service validates its presence, carries it verbatim, and lets
-[retry-condition.ts](src/lib/retry-condition.ts) be the only thing that ever
-reads it, at run time.
-
-Two oracles answer two different questions about the same catalog, and never
-from one read:
-[import-planner.ts](src/services/process-yaml/import-planner.ts) answers
-*presence* — scanning stored rows at every status, `invalid` included, so a
-write cannot silently destroy authored work — while
-[package-resolver.ts](src/services/process-yaml/package-resolver.ts) answers
-*resolution* against the effective catalog, because an invalid row is not what
-runs. A package can therefore legitimately show a Phase row as `skip`
-beside a Pipeline row `blocked` on that same id. With three levels the blocked
-reason also propagates: a Workflow blocked because its Pipeline is blocked
-reports the chain to its root cause, so the operator is pointed at the Phase to
-fix rather than at the intermediate. Export reads the *effective* catalog for
-the opposite reason — what it writes must be the definition that actually runs.
-The full rationale is in the workspace-root
-[ARCHITECTURE.md](../ARCHITECTURE.md).
-
-### IPC and Webview (`src/contracts/`, `src/ui/sidebar/`, `src/ui/dashboard/`)
-
-[contracts/sidebar-ipc.ts](src/contracts/sidebar-ipc.ts) defines every
-host↔webview message shape. [ipc-validator.ts](src/ui/sidebar/ipc-validator.ts)
-provides hand-rolled type guards for each payload.
-
-[message-router.ts](src/ui/sidebar/message-router.ts) is the host IPC
-router with a two-tier gate:
-
-1. **Workspace-trust gate** — closed-fail; missing trust information is
-   treated as untrusted.
-2. **Primary-host gate** — `MUTATING_COMMANDS` is the pinned list of IPC
-   commands that may mutate workspace state. Commands not on the list
-   are read-only and may execute from secondary VS Code windows.
-
-`MUTATING_COMMANDS` is pinned by
-[tests/unit/ui/sidebar/mutating-commands-pinned-list.test.ts](tests/unit/ui/sidebar/mutating-commands-pinned-list.test.ts);
-adding a mutating command without updating both lists is a hard rule
-violation (CLAUDE.md). The four config-save commands
-(`saveGeneralSettings`, `saveModels`, `savePhases`, `savePipelines`)
-were added to the gate in spec 056 Track 1.
-
-The process exchange adds two commands and **neither** is mutating:
-`CMD_EXPORT_PROCESS_YAML` writes a file the operator named in a host dialog and
-changes no extension state, and `CMD_PREFLIGHT_PROCESS_YAML` reads one chosen
-document and returns a plan. The import commits through the pre-existing catalog
-saves, so it inherits their revision gate, mutation-intent check, and trust gate
-rather than declaring a second write path: a Phase document through
-`CMD_SAVE_PHASES`, a Pipeline package through **both** — Phases first, then
-`CMD_SAVE_PIPELINES` — and a Workflow package through all **three**, adding
-`CMD_SAVE_WORKFLOWS` last. Each write carries its own `expectedRevision` and its
-own single `import-package` intent naming that layer's target set; a document
-supplying fewer layers performs fewer writes and never merges two into one
-intent to save a write. The order is load-bearing (a Pipeline written first would
-reference Phases the catalog does not yet have, and a Workflow written first
-would reference Pipelines it does not yet have), and a rejection stops the
-sequence without retracting what already landed. Whichever prefix landed stays
-written and the outcome is reported as partial — re-running the same document is
-the recovery path, because the presence scan turns the already-written rows into
-`skip` rows, so the retry is self-healing at whatever depth it stopped. There is
-no compensating delete: it would remove rows an operator may already have edited,
-on a failure path where no operator confirmed a destructive write. Both dialogs are
-injected seams wired in [src/extension.ts](src/extension.ts), so no filesystem
-path crosses the IPC boundary in either direction. Operator documentation:
-[docs/features/phase-yaml-exchange.md](docs/features/phase-yaml-exchange.md).
-
-Individual command handlers live under
-[src/ui/sidebar/commands/](src/ui/sidebar/commands/) (~45 files).
-[sidebar-view-provider.ts](src/ui/sidebar/sidebar-view-provider.ts)
-mounts the webview. [csp.ts](src/ui/sidebar/csp.ts) and
-[html.ts](src/ui/sidebar/html.ts) generate the strict CSP HTML scaffold
-(no `unsafe-inline`, no `unsafe-eval`, nonce-based scripts).
-
-The dashboard panel is the operator-facing detail surface
-([src/ui/dashboard/](src/ui/dashboard/)). Bridge, HTML scaffold, and
-panel lifecycle are split into three files.
-
-Webview projectors are pure — they consume already-snapshotted host
-state and produce display-shaped output:
-[state-projector.ts](src/ui/sidebar/state-projector.ts),
-[queue-projector.ts](src/ui/sidebar/queue-projector.ts),
-[phase-projector.ts](src/ui/sidebar/phase-projector.ts),
-[history-projector.ts](src/ui/sidebar/history-projector.ts),
-[monitor-projector.ts](src/ui/sidebar/monitor-projector.ts),
-[audit-tail-projector.ts](src/ui/sidebar/audit-tail-projector.ts), and
-[run-projector.ts](src/ui/sidebar/run-projector.ts).
-[projector-memo.ts](src/ui/sidebar/projector-memo.ts) and
-[projector-handle.ts](src/ui/sidebar/projector-handle.ts) provide
-memoization plumbing.
-
-Every Svelte component is limited to 500 physical lines by a repository-wide
-lint gate. Large operator surfaces retain state and IPC ownership in their
-existing parents while typed semantic leaves own metric panels, pipeline and
-phase editors, queue regions, dashboard panes, and activity-feed regions.
-Leaves communicate through props and callbacks; they do not introduce global
-stores or duplicate host-command call sites.
-
-### Headless Entrypoints (`src/headless/`)
-
-`src/headless/` holds the **process and run entrypoints** — the second
-primary adapter described under Primary Flow. They are in-process functions
-reachable only by a caller that already holds a reference; feature 089 added no
-command, palette entry, executable, or listener for them.
-
-| Entrypoint | Module | Calls |
-|---|---|---|
-| `validateProcessDefinition` | [process-definition-api.ts](src/headless/process-definition-api.ts) | `config/{phase,pipeline,workflow}-definition-validator.ts` |
-| `previewProcessDocument` | [process-yaml-api.ts](src/headless/process-yaml-api.ts) | `services/process-yaml/preflight-service.ts` |
-| `importProcessDocument` | [process-yaml-api.ts](src/headless/process-yaml-api.ts) | preflight, then the ordered per-layer catalog writes |
-| `exportProcessDefinitions` | [process-yaml-api.ts](src/headless/process-yaml-api.ts) | `services/process-yaml/export-service.ts` |
-| `launchPipelineRun` | [pipeline-run-api.ts](src/headless/pipeline-run-api.ts) | `services/guarded-run-service.ts` + the queue |
-| `continueWorkflowRun` | [workflow-run-api.ts](src/headless/workflow-run-api.ts) | `services/workflow-execution/continuation-service.ts` |
-
-[process-api-validators.ts](src/headless/process-api-validators.ts) is the
-adapter's own boundary: `checkDefinitionArgs`, `checkDocumentBytes`,
-`checkExportSelection`, `checkRunRequest`, `checkContinuationArgs`, and
-`checkWorkspaceRoot` each return a `BoundaryRefusal` or `null`. It is the
-headless counterpart to `ipc-validator.ts`, not a replacement for the domain
-validation underneath — an argument that survives it still faces the same
-service-layer rules a webview payload does.
-
-Those three services under `src/services/` were extracted from the webview
-command handlers in feature 089's Phase 1 so both adapters call one
-implementation rather than two that drift: `preflight-service.ts` (import
-preflight, from a 509-line handler), `export-service.ts` (document
-serialization, from 473 lines), and `continuation-service.ts` (Workflow
-continuation, from 138 lines). The handlers remain, reduced to adapter
-concerns.
-
-`src/headless/` and `src/telemetry/` MUST NOT import `vscode`;
-one lint regression per directory enforces it —
-[no-vscode-import-in-headless.test.ts](tests/lint/no-vscode-import-in-headless.test.ts)
-and [no-vscode-import-in-telemetry.test.ts](tests/lint/no-vscode-import-in-telemetry.test.ts).
-That constraint is what makes the second adapter possible: a headless caller
-supplies host ports explicitly instead of inheriting an extension host.
-
-### Monitor, Telemetry, Watchdog
-
-- [src/monitor/](src/monitor/) tracks subprocess progress, stdout/stderr
-  lines, stalls, rate limits, cancellation, completion, and failure.
-  Monitor failures never become workflow failures. Per FR-R3-007 the line
-  *content* goes to the bounded transport sink and the line *counts* to the
-  `monitor-invocation-summary` audit event; the two chunk handlers no longer
-  write an audit entry each. The judgements the monitor makes about an
-  invocation stay audit events — `monitor-rate-limited` is still written from
-  the stderr handler, on the raw line, beside the transport hand-off. Per
-  FR-R3-008 both chunk handlers additionally note the chunk to
-  `ActivityCoalescer`, which is the only thing that turns output into a
-  persisted `WorkflowRun.liveness` stamp; the monitor supplies counters and a
-  timestamp and decides nothing about when a write happens.
-- [src/metrics/](src/metrics/) derives read-only dashboard metrics (task
-  records, phase records, phase-type aggregates, cost timeline) from
-  `.schegent/audit.log` on each `CMD_READ_METRICS` call; see spec 073.
-  Per-run **detail** has no persistent storage of its own, so its horizon is
-  whatever the audit log's rotation retains — which is why transport capture
-  was moved out of it and given its own budget. **Cumulative totals** are the
-  exception: since FR-R3-009 they compose that fold with the append-only
-  `.schegent/metrics-rollup.jsonl` rollup, deduplicated by run id, so they
-  survive rotation instead of shrinking with it. `metrics-rollup.ts` owns the
-  record shape, the parser, and the composition; `-writer.ts` owns the
-  idempotent append; `-reader.ts` owns the tolerant read. `MetricsCoverage`
-  reports the totals window and the detail window separately, because a figure
-  whose range is unstated reads as all-time whether or not it is one.
-- [src/telemetry/](src/telemetry/) samples local process resource usage
-  for operator display. Must remain vscode-free; sensitive telemetry is
-  not persisted. Platform shims live in [src/telemetry/platform/](src/telemetry/platform/).
-- [src/watchdog/credit-watchdog.ts](src/watchdog/credit-watchdog.ts)
-  polls credit/rate-limit state for delayed retry recovery, bounded by
-  configured caps and dynamic reset timestamps. The dynamic reset
-  backoff is never capped below the CLI-reported reset timestamp plus
-  buffer (CLAUDE.md hard rule).
-
-## Trust Boundaries
-
-```text
-        untrusted             trusted host                   trusted host
-      ┌─────────────┐       ┌─────────────────┐            ┌──────────────┐
-      │ webview IPC │──IPC─▶│ message-router  │──audit────▶│ audit writer │
-      └─────────────┘       │ (gate + valid.) │            └──────────────┘
-                            └────────┬────────┘
-                                     │
-                                     ▼
-                            ┌──────────────────┐
-       attacker-influenced  │ phase-runner     │
-       CLI stdout ────────▶│ sidecar reader   │── canonical path check
-                            │ (canonical-path  │   path-outside-run-dir
-                            │  containment)    │── missing-canonical-sidecar
-                            └──────────────────┘
-```
-
-**Gates:**
-
-- Workspace-trust gate at the IPC router boundary. Closed-fail on
-  missing trust information.
-- Primary-host gate via `MUTATING_COMMANDS` for state-mutating IPC.
-- Webview CSP is nonce-based with no `unsafe-inline` or `unsafe-eval`.
-- Phase-message sidecar canonical containment (spec 056 Track 2)
-  rejects audit-reported paths that do not canonicalize to the
-  host-computed canonical path under `<workspaceRoot>/.schegent/
-  sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/
-  phase-message.env`. Rejection reasons: `path-outside-run-dir`,
-  `missing-canonical-sidecar`.
-- Operator-authored `retryCondition` expressions are parsed by a
-  sandboxed DSL evaluator that accepts identifiers, signed numerics,
-  comparison operators, and boolean combinators. Arithmetic, function
-  calls, member access, and I/O are rejected at parse time.
-- Subprocesses are spawned with `shell: false` and bounded buffers.
-
-For the full operator threat model see
-[docs/security/threat-model.md](docs/security/threat-model.md).
+A Phase definition's `sideEffects` declaration selects mutation planning,
+operator consent, rollback checkpoint behavior, and the refusal of a
+Git-capable phase on a runner that cannot perform Git writes. It does not
+restrict the spawned process by itself; actual backend permission posture comes
+from the argv used by that backend adapter.
+
+<!-- Source: src/catalog/catalog-store.ts -->
+<!-- Source: src/contracts/catalog-lifecycle.ts -->
+<!-- Source: src/contracts/run-request.ts -->
+<!-- Source: src/services/run-request/run-request-validator.ts -->
+<!-- Source: src/services/workflow-run-factory.ts -->
+<!-- Source: src/services/mutation-plan.ts -->
+
+## Queues, Runs, and scheduling
+
+The queue registry contains at least one queue and at most `MAX_QUEUES = 20`.
+Each queue is sequential: it can have at most one in-flight Task. Workspace-wide
+capacity is independent and is held in workspace state under
+`schegent.queue.globalConcurrencyCap`, default `1`, range `[1, 20]`. It is not a
+`settings.json` key: the value is chosen in the Settings page's Queues section,
+saved through `CMD_SAVE_QUEUE_SETTINGS`, and read back from that same memento by
+the predicates the drain gates on. The default keeps parallel work opt-in;
+raising the value allows different queues to run at the same time against the
+same operator-owned working tree.
+
+Queue state is addressed by queue ID. Pending Tasks retain order, one task may
+be marked in flight, and queue lifecycle distinguishes ordinary idle state,
+held `idle-pending`, active execution, and operator pause. An explicit start
+intent decides whether enqueueing should start now, schedule a start, cancel a
+schedule, or remain queued. Scheduled starts beyond seven days are refused
+before any queue write.
+
+The auto-drain coordinator is the single policy site that turns eligible queued
+work into run admission. It checks queue and workspace capacity, claims a
+per-queue execution lease, asks the controller to admit the task, and releases
+or transitions ownership at the appropriate terminal boundary. A paused queue
+does not block a sibling queue, and a queue never runs two Tasks concurrently.
+
+**A queue can stop itself on a failed Task (FR-R3-156).** `drainQueueOnce` asks
+nine ordered questions before starting a Task; the ninth, step 2a, sits between
+the operator-pause check and the pending-head selection. It derives a per-queue
+`QueueFailurePolicy` (`halt-on-failure`, the workspace default, or `continue`)
+from `QueueState.failurePolicy` and evaluates `evaluateQueueHalt` over the
+queue's current rows (`src/queue/queue-halt-policy.ts`): under `halt-on-failure`,
+a row that ended `failed` refuses every further start on that queue until an
+operator retries or removes it, with `canceled` explicitly excluded from the
+blocking set. Nothing about the halt is stored — it is recomputed from the
+queue's own rows on every drain attempt, so retrying or removing the failed row
+clears it with no code of its own. The check reads only state step 1 already
+fetched, costs no additional store call, and sits before the execution-lease
+acquire, so a halted queue's lease is never touched and no other queue's drain
+is affected. `QueueStartFailure` (`src/services/queue-start-failure-registry.ts`)
+is a discriminated union of the pre-existing admission-refusal variant and a new
+`halted` variant carrying the failed Task's id and sanitized name, reported
+through the same queue-surface channel an admission refusal already used — no
+new lifecycle value, no new audit event.
+
+**Task status transitions are one closed table (FR-R3-153).** `QueueManager`'s
+status writers — `markInFlight`, `pause`, `finish`, and `retry` — and
+`restart-canceled-task.ts`'s return-to-pending writer each consult
+`decideTaskTransition` (`src/queue/task-transition-decision.ts`), a pure,
+effect-free classifier mirroring `decidePhaseControl`'s shape exactly, before
+writing anything. It reads a task's current status and (for `mark-in-flight`)
+whether the queue's one execution slot already belongs to a different task, and
+returns either eligibility or one reason from a closed vocabulary —
+`task-not-found`, `illegal-source-status`, `in-flight-ownership-conflict` —
+folded into the existing `QueueMutationRejectReason` union rather than a
+second, parallel type. FR-R3-161 removed a fourth reason and the input that
+produced it: the classifier used to also read whether the addressed queue owned
+the task, but every caller resolves the row out of the queue it addresses and
+derived that answer from the same resolution, so the input was a tautology and
+`queue-mismatch` a refusal nothing could return. The queue manager's runtime
+copy of the vocabulary went with it — the set it classifies rejections with is
+now derived from the union itself, so the two cannot drift. A census test
+(`tests/lint/task-transition-decision-census.test.ts`) fails if a future
+writer bypasses it. The one safety invariant this closes is a *different*
+task stealing a queue's one execution slot; `mark-in-flight`'s own source-
+status allowlist stays wide open to `pending`, `in-flight`, `paused`, and
+`failed` because this product's own resume mechanisms legitimately re-admit
+a task from each of those statuses (a delayed-retry countdown that never
+moved the row off `in-flight`, an operator resume after a mid-phase pause
+that did, and a direct resume of a halted, `failed` run) — only `completed`
+and `canceled` are finished in both senses and stay refused, the same split
+`isOperableRunStatus` already draws for Runs. Deletion (any visible status to
+absent) is a row removal, not a status write, and is not decided by this
+classifier — it stays `task-deletion.ts`'s concern, which already brings an
+in-flight task's run to cancellation and releases its execution lease before
+the row is removed, for any Run status short of terminal. FR-R3-161 made that
+the *only* deletion route. A second one existed — `QueueManager.remove`, its
+storage primitive `WorkspaceStateStore.removePendingRequest`, and a
+`queueRemover` capability the sidebar router declared and the wiring supplied —
+which dropped the row without cancelling the run, releasing the lease, or
+refreshing the queue's lifecycle, and reported "no such task" and "not
+removable" as one boolean. It was reachable only through a fallback branch the
+wiring made unreachable; all five sites are gone, and an unwired host now
+refuses `CMD_REMOVE_QUEUE_ITEM` with `queue-ops-unavailable` rather than
+deleting a task a weaker way.
+
+**What a Run leaves on its Task is one concept, not two lines.** A queue's
+single execution slot means a Run is disposed as soon as the next Task starts,
+so anything about a finished Task that must outlive it is copied onto the row at
+the moment it ends: `terminalCapture` (`src/queue/terminal-capture.ts`) pairs
+the settled-phase count (FR-R3-158) with the degraded-phase list (FR-R3-157) and
+`finish` spreads both into the same object literal as the terminal status, so no
+reader observes a row carrying the status but not the evidence. `retry` drops
+both together through `withoutTerminalCapture`, since a fresh attempt is not
+degraded by, and has not reached the phase count of, a previous one — and both
+are *removed* rather than emptied, so a pre-feature record still re-persists
+byte-identical. A `continue-degraded` Phase produces a Task that **completed**,
+so it does not halt its queue under `halt-on-failure`; that trade is the reason
+the durable mark exists, and a Phase whose unsatisfied condition should stop the
+queue declares `fail` instead.
+
+**Queue cleanup is addressed, and workspace-wide reset is a separate
+operation (FR-R3-150).** Queue Detail's Clean All clears *the queue the
+operator is looking at* via `CMD_CLEAR_QUEUE { queueId }`, handled by
+`src/commands/clear-queue.ts`; `schegent.clearAll` remains the one
+workspace-wide reset and is no longer reachable from Queue Detail. The two
+are deliberately distinct rather than one command with an optional
+`queueId`, at every layer: separate IPC commands, separate orchestrators,
+and separate audit events (`queue-cleared` vs `queue-cleared-all`), because
+an omitted or defaulted queue id is precisely the failure this closes — an
+operator wiping one queue and silently resetting the workspace. The
+`no-unaddressed-queue-command.test.ts` gate fails the build on a webview
+queue-lifecycle sender that does not name its queue.
+
+The queue-scoped orchestrator mirrors the workspace-wide one's sequence —
+confirm, cancel active work, wait for a bounded runner acknowledgement,
+write once, emit — but every step is addressed. Its runner-ack probe
+(`src/controller/queue-runner-ack.ts`) races the queue-addressed
+`controller.isDriving(queueId)` rather than the workspace-wide
+`controller.running` getter, so cleaning one queue never waits on, or
+reports on, a sibling's still-executing Run; the poll budget and the
+runner-state vocabulary the two probes share live in
+`src/controller/runner-ack-shared.ts` so a change to either is made once.
+The state write is a single `QueueManager.clearQueue(queueId)` memento
+write that clears that queue's tasks, in-flight id, pause fields, and
+scheduled start together and settles its lifecycle at `active-empty` —
+one write, so no reader observes a half-cleared queue. Cancelling an armed
+scheduled start is unconditional rather than gated on the queue having
+tasks, because a schedule is itself state Clean All promises to clear
+(LC-Q-05), and a queue whose only remaining state is an armed schedule is
+therefore not a no-op.
+
+The workspace-wide reset (`clearAll`) is a separate method, not a loop over
+the queue-scoped one, and both statements above hold for it per queue: it
+disarms every armed timer before it writes, settles each queue's lifecycle
+and schedule fields in the same write that empties it, counts an armed
+schedule as dirty state, and reports `scheduleCleared` on its result and in
+its `queue-cleared-all` history entry. It stays a separate method because it
+runs one workspace-wide runner-ack probe rather than one per queue, it
+iterates queue *states* where the queue-scoped path refuses ids absent from
+the *registry*, and it alone resets the workspace-wide watchdog backoff that
+FR-007 keeps out of the queue-scoped path. The one lifecycle its per-queue
+write preserves is `operator-paused`, because the pause release is a later
+step that also clears `pauseSource`, resumes the queue's matching Run, and
+records the mutation — and that step's own already-not-paused early return
+would swallow all three if the emptying write settled the lifecycle first.
+What the two methods do share is the per-queue field write and the no-op
+predicate, and those live in `src/queue/queue-reset-settle.ts` as two pure
+functions — pure so each method still issues its own single `updateQueue`
+call, which is what keeps the one-write invariant above intact.
+
+<!-- Source: src/queue/queue-registry.ts -->
+<!-- Source: src/queue/queue-manager.ts -->
+<!-- Source: src/queue/queue-reset-settle.ts -->
+<!-- Source: src/queue/feature-request.ts -->
+<!-- Source: src/queue/task-transition-decision.ts -->
+<!-- Source: src/queue/terminal-capture.ts -->
+<!-- Source: src/commands/clear-queue.ts -->
+<!-- Source: src/controller/queue-runner-ack.ts -->
+<!-- Source: src/controller/runner-ack-shared.ts -->
+<!-- Source: src/services/auto-drain-coordinator.ts -->
+<!-- Source: src/services/guarded-run-service.ts -->
+<!-- Source: src/services/queue-start-failure-registry.ts -->
+<!-- Source: src/contracts/queue-failure-policy.ts -->
+<!-- Source: src/queue/queue-halt-policy.ts -->
+<!-- Source: src/state/execution-lease.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/controller/task-deletion.ts -->
+<!-- Source: src/commands/restart-canceled-task.ts -->
+
+## Controller and Phase execution
+
+`SchegentWorkflowController` owns active Run sessions and delegates one Phase
+at a time to `RunDriver` and `PhaseRunner`. A `WorkflowRun` carries the immutable
+Pipeline snapshot, phase cursor, iteration and retry state, pause controls,
+breakpoints, mutation-plan decision, transcript mode, and terminal status.
+Catalog edits made after admission therefore affect later Runs, never the
+in-flight snapshot.
+
+The Phase runner resolves the pinned backend, constructs the prompt, starts the
+raw evidence sink when enabled, invokes the runner, and classifies bounded
+stdout and stderr. The controller records liveness, advances successful phases,
+applies bounded delayed retry policy, pauses on operator or breakpoint control,
+and hands terminal Runs to history and cleanup services. A terminal transition
+journal makes a partially completed terminal write recoverable at activation;
+it journals the sanitized run description (FR-R3-071) so crash-replay records
+the operator's text, and it clears once the queue projection has landed and
+history is durable, and is dropped without writing anything when its Run has
+moved on since it was journalled (resumed, re-run or in another status).
+History replay resolves descriptions through the sidecar
+description store's typed read — the host commands and the sidebar rerun
+surface share one resolver, and force retains its meaning of "replay the
+truncated preview knowingly".
+
+Each backend invocation carries two independent bounds (FR-R3-075): an idle
+window (`schegent.invocation.idleTimeoutSeconds`, reset by output, suspended
+under sink backpressure) and an absolute wall-clock deadline
+(`schegent.invocation.maxDurationSeconds`, armed once at spawn and never
+reset). Evidence distinguishes the two terminations — `timeout` for a child
+that went quiet, `deadline` for one that ran long — end to end: raw output,
+monitor events, transcript, and the phase-end audit record.
+
+Feature 211 added the only thing either bound writes *before* it fires. The
+monitor arms a third timer per invocation, at `APPROACH_THRESHOLD_FRACTION`
+(0.8) of the wall-clock bound, and appends one `monitor-deadline-approaching`
+record when it crosses — elapsed as observed, the bound, the invocation id, and
+whether it was a helper. It is deliberately not a `StallDetector`: that one
+suspends under sink backpressure and banks the paused time, and a warning that
+inherited those semantics would arrive after the kill it exists to predict. The
+record is informational and terminal-adjacent only in subject: it changes no
+status, stops nothing, and the deadline it observes is unchanged.
+
+Workflows compose Phase and child Workflow nodes (`FR-R5-F02`). At run admission,
+`validateRunRequest()` freezes the complete transitive `FrozenWorkflowClosure`,
+through `createFrozenWorkflowClosure()`,
+(`workflowsById`, `phasesById`, `definitionDigestsById`, `catalogVersionsById`)
+into the `ExecutionEnvelope` (`FrozenRunPlan`). Connected-run state tracks
+hierarchical `WorkflowInvocationFrame` call/return occurrences, per-node
+`NodeAttemptRecord` attempts, `pendingHandoff`, and append-only
+`InvocationInputEnvelope` continuation records (`acceptedAt`) so child Workflow
+calls execute within the root run's bound `queueId` and manual handoff edits
+never mutate or reconstruct the frozen closure. Conditions are structured data
+rather than evaluated operator-authored source.
+
+Nested Workflow runtime controls and restart recovery (`FR-R5-F03`) are governed
+by `workflow-control-transition-table.ts`, `WorkflowControlService`,
+`WorkflowRecoveryService`, and `workflow-control-projector.ts` under
+`src/services/workflow-execution/`. Control operations (`pause`, `resume`, root
+and child-only `cancel`, `retry-phase`, `retry-invocation`, `continue-handoff`)
+execute inside a per-queue serialized mutation boundary with `expectedRevision`
+compare-and-set, bounded `commandId` idempotency receipts (`MAX_COMMAND_RECEIPTS = 64`),
+and paired `InvocationControlMarkers`. Restart recovery reconciles persisted
+`ConnectedWorkflowRun` records into explicit `RecoveryDispositionRecord`
+outcomes (`clean-handoff`, `pending-dispatch-recovered`,
+`settled-from-evidence`, `uncertain-effect-paused`, `orphaned-canceled`) without
+blind replay, and publishes authoritative `WorkflowRunControlProjection` and
+bounded `AncestryEvidenceMetadata` contracts identically across host and
+`src/headless/workflow-run-api.ts` entry points.
+
+**Operator Phase controls are one authoritative state machine (FR-R3-151).**
+`PhaseControlService` is the sole writer for every operator-driven Phase
+mutation — pause, resume, restart, skip, disable, enable, delete, and
+set/clear breakpoint — sitting between `SchegentWorkflowController` (the
+public facade the sidebar commands call) and the store. Before writing
+anything, each of those methods consults `decidePhaseControl`
+(`src/controller/phase-control-decision.ts`), a pure, effect-free classifier
+that reads the target's frozen Run, its current Phase/index, completed-phase
+ledger, pause/retry markers, and Phase overrides, and returns either
+eligibility or one reason from a closed vocabulary — `run-terminal`,
+`phase-not-active`, `phase-already-started`, `phase-not-future`,
+`no-disabled-override`, `run-failed` (FR-R4-F20: Skip of a failed Run), and
+the reasons the service already returned before this feature. The
+classifier is the only place this eligibility logic lives;
+a census test (`tests/lint/phase-control-decision-census.test.ts`) fails if a
+future mutation method bypasses it. It reads `run.pipeline` and never writes
+or retargets it — transition-specific writes (the override array, iteration
+reset, audit events, drain/resume triggers) stay in `PhaseControlService`
+after eligibility is established. Delete's own eligibility is deliberately
+unnarrowed by the classifier (any visible Phase state remains a valid
+target, Feature 022 FR-008–FR-013); the classifier's `'delete'` branch is a
+pass-through kept only so Delete is still routed through the shared decision
+point. Restarting a **canceled Task** (`CMD_RESTART_CANCELED_TASK`) is a
+separate, Task-level fresh-Run operation (Feature 017 FR-034) and is not a
+path through this classifier — completing it never grants permission to
+restart a Phase inside a terminal Run.
+
+**The retry-cap outcome is per-Phase and three-valued (FR-R3-157).** When a
+Phase's `retryCondition` is still truthy at its final allowed iteration, the
+Phase decides between `fail` (end failed, with the cap-exhausted cause),
+`continue` (advance, with the explicit unverified warning), and
+`continue-degraded` (advance exactly as `continue` does, *and* record on the
+**Task** that this Phase's condition was never satisfied). `phase-sequencer.ts`
+resolves that once, through `resolveRetryCapOutcome`
+(`src/contracts/retry-cap-outcome.ts`), and hands `decideRetry` the answer
+already resolved — the classifier receives an outcome, it does not derive one.
+Precedence runs the Phase's own `onRetryCap`, then its deprecated boolean
+`forceContinueOnRetryCap` under the mapping that boolean always had
+(`true` → `continue`, `false` → `fail`), then the workspace default
+`schegent.retry.forceContinueOnCap` under the same mapping, then `fail`; so
+every definition file already on disk keeps its behaviour and none needs editing,
+now or later. The resolver is the **only** reader of either spelling, and
+`tests/lint/retry-cap-resolution-site.test.ts` fails on a second one, because a
+second reader would disagree with the first exactly on a Phase declaring both.
+It sits in `contracts/` rather than `controller/` because the Phase editor needs
+the same answer to render its control, and a webview copy of the precedence
+would be that second reader. The `fail` path — behaviour, warning text, and
+cause value — is unchanged by this feature.
+
+The sidebar projection follows the same override, not just the completed-
+phase ledger: `ui/sidebar/phase-projector.ts#buildPhasesFromRun` marks a
+future Phase carrying a `disabled` override as `disabled` at tile
+construction, before the runner ever reaches it, rather than only once a
+matching entry lands in `phasesCompleted`. A Phase that instead executed and
+was skipped while active still reads `skipped` from that ledger, so the two
+paths to a bypassed Phase remain visually distinct.
+
+**A Run completes only when its last Phase finishes (FR-R3-199).** A required
+last Phase with no `retryCondition` that ends `issues_remain` — remaining
+issues, open questions, or an exit 0 with no contract block and no
+backgrounded task open at its last result (FR-R3-198) — halts the Run
+`failed` with `currentPhase` still on it, so a resume re-runs it. It used to
+advance to `done` like a clean Phase: the Run read `completed`, the queue
+started its next Task, and `errors-only` retention deleted the transcript. A
+verify Phase that ends the bugfix Workflow still pauses instead.
+
+<!-- Source: src/controller/phase.ts -->
+<!-- Source: src/controller/workflow-controller.ts -->
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/controller/phase-control-service.ts -->
+<!-- Source: src/controller/phase-control-decision.ts -->
+<!-- Source: src/controller/phase-sequencer.ts -->
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
+<!-- Source: src/ui/sidebar/phase-projector.ts -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: src/services/retry-coordinator.ts -->
+<!-- Source: src/services/terminal-transition-coordinator.ts -->
+<!-- Source: src/state/workflow-run.ts -->
+<!-- Source: src/state/connected-workflow-run.ts -->
+<!-- Source: src/services/workflow-execution/continuation-service.ts -->
+
+## Backend process boundary
+
+The supported runner kinds are `claude`, `codex`, and `agy`; `claude` is the
+default. All adapters spawn with `shell: false`, receive prompts over stdin, use
+the shared environment builder, and return the common `BackendRunner` result.
+They do not have equal authority. In a running extension these CLI adapters
+are wrapped by the ACP dispatch layer described below, which carries every new
+invocation; the CLI adapters are the inner runners behind it.
+
+Claude and Agy disable their CLI approval prompts and therefore act without
+asking through those CLIs. Codex runs non-interactively with an OS-enforced
+`workspace-write` sandbox whose Git metadata is read-only. Runner selection is
+resolved when a Run is created and frozen in its Pipeline snapshot. CLI path
+resolution is backend-specific; the spawn environment follows the configured
+minimal, allowlist, or inherit policy.
+
+Output is bounded before it reaches parsers or UI projections. Structured audit
+events do not receive arbitrary subprocess output. Raw transcripts, when
+enabled, are a separate evidence class and may contain sensitive backend output.
+
+**Backend identity is separate from backend construction (FR-R3-089).** The
+backend enum — `BackendRunnerKind`, `SUPPORTED_BACKENDS`, `DEFAULT_BACKEND`,
+`isBackendRunnerKind` — lives in `src/contracts/backend-kinds.ts`, a leaf module
+that imports nothing. The runner family keeps construction. Before the move,
+validators in `config/` and `services/` that only needed to know *which backend
+names exist* imported them from the module that knows *how to build one*, and the
+visible symptom was a module cycle: `services/backend-containment-policy.ts`
+took `SUPPORTED_BACKENDS` from the factory as a value while the factory imported
+`judgeBackendContainment` from the policy.
+
+**The cycle is gone as a consequence of the move**, not as a separate fix: the
+policy now reads identity from contracts, so only the `factory → policy` edge
+remains and it is acyclic.
+
+**The stated limit is retired (`FR-R3-128`, 2026-08-27).** This paragraph used to
+end by admitting that the repository shipped no dependency-cycle checker, so the
+claim rested on one directional assertion plus inspection, and *"a cycle elsewhere
+in the tree would not be caught by either"*. That admission was honest and is now
+false, which is the one way a true statement goes wrong.
+`tests/lint/import-graph-acyclic.test.ts` walks the whole first-party graph — 673
+modules and 1,484 value edges as of 2026-08-27 — and fails on any cycle. No
+`madge`-class dependency was added: it reads relative static imports with one
+regex per file, excludes type-only edges (erased at compile time, and legitimately
+circular in a recursive type model) and dynamic imports (a deliberate deferral, and
+the technique used to break a cycle).
+
+It found one on its first run, which is the argument for having built it:
+`ui/sidebar/state-projector.ts` and `state-projector-runtime.ts` imported each
+other over a single constant, and neither existing gate could see it — both files
+are in `ui/`, so `dependency-direction.test.ts`'s leaf-to-acting rule never looked.
+The constant moved to the module that consumes it as a default.
+
+**Layer-level value-import direction and `state/` isolation (`FR-R7-07`).**
+File-level acyclicity alone still permits bidirectional *layer* cycles (`state <-> queue`,
+`state <-> services`). `tests/lint/architecture-layers.ts` now declares the
+extensible per-layer allowed value-import map (`LAYER_ALLOWED_VALUE_IMPORTS`) and
+shrink-only, filing-attributed exception list (`LAYER_IMPORT_ALLOWLIST`), enforced
+by `tests/lint/layer-dependency-direction.test.ts` with non-vacuity mutation
+controls. `src/state/` may value-import only `contracts/`, `lib/`, within `state/`,
+and the non-acting `config/` and `audit/` layers (outside `ACTING_LAYERS` per
+`architecture-layers.ts`); it starts green with an empty allowlist (zero
+exceptions) and permanently enforces that no `src/state/` module transitively
+value-imports `queue/`, `parser/`, `services/`, `controller/`, or `ui/`. Shared
+pure queue shapes/helpers (`src/contracts/queue-registry.ts`,
+`src/contracts/queue-feature-request-helpers.ts`,
+`src/contracts/queue-lifecycle-refresh.ts`), `isSessionIdShape`
+(`src/lib/session-id-shape.ts`), and pure JSON/value helpers
+(`src/lib/operational-value-helpers.ts`) live in leaf layers; `buildMutationPlan`
+lives in `src/state/mutation-plan.ts`; and `SqliteOperationalBacking` takes its
+connection and store through `state/`-owned ports (`src/state/sqlite-operational-port.ts`,
+`src/state/sqlite-operational-rows.ts`). Non-state acting-layer cycles (such as
+`controller <-> services`) remain for their own successor filings.
+
+**Agent capability boundary (FR-R3-086).** A Phase may declare a capability set —
+`workspace-write`, `outside-workspace-write`, `process-spawn`, `network` — frozen
+into the Run's plan snapshot. `services/capability-enforcement-plan.ts` translates
+it into the chosen backend's own enforcement flags, so the backend's permission
+engine refuses at the attempt. **Omission means every capability**, and the plan
+turns that into each adapter's current argv byte for byte, so a phase that
+declares nothing spawns exactly as it did before. A capability the backend cannot
+express refuses the phase before it starts, via
+`controller/capability-decision-recorder.ts`, recording `capability-refused` first.
+A set the backend **can** enforce is recorded too, as `capability-applied`: the
+bound lives in argv and `argv` is an omitted key in `audit/audit-payload.ts` by
+design, so without that event a successful narrowing would be indistinguishable
+in evidence from no narrowing at all. The two are mutually exclusive, and a phase
+that declares nothing emits neither.
+The limits — the host does not observe tool calls, and `agy` can express one of
+four — are stated in `docs/security/threat-model.md` beside what it does bound.
+
+**ACP dispatch (FR-R6-F13, FR-R6-F09).** `createBackendRunner` wraps the
+constructed CLI runner in `AcpBackedRunner` (`src/runner/acp-backed-runner.ts`)
+whenever its `acpDispatch.enabled` option is `true`. The activation wiring in
+`src/activation/acp-execution-wiring.ts` builds that option with `enabled: true`
+as a literal: ACP is the default execution path, and there is no setting that
+turns it off. `schegent.acp.profile` only selects the agent profile (`auto` maps
+`claude`, `codex` and `agy` to `claude-acp-bridge`, `codex-acp-bridge` and
+`agy-acp-native`); naming a profile that does not match the Run's backend refuses
+with `acp-profile-mismatch`. Profiles are host constants, and the setting is
+`application`-scoped so repository files cannot install one. For each invocation
+the runner opens one connection through `src/services/acp-runtime/`, which
+launches the agent over a stdio transport with `shell: false` in its own process
+group; for `claude` and `codex` the agent is the maintained bridge
+`dist/acp-stdio-bridge.js` wrapping the CLI. An ACP refusal, disconnect or error
+ends the attempt and never falls back to the CLI. The ACP result is not accepted
+as is: the host's own result validation still runs. The connection layout,
+limits and refusals are in `docs/operations/acp-runtime.md`.
+
+Authority over the agent's callbacks is the host's, not the agent's. The client
+advertises no filesystem and no terminal method, so the one agent-initiated
+request it answers is `session/request_permission`; any other is refused with
+`-32601`. `AcpAuthorityGate`
+(`src/services/containment-qualification/acp-authority-gate.ts`) binds each ACP
+session to one attempt and connection generation. On every permission request it
+re-checks workspace trust, window primacy and ownership generation, the Phase's
+declared capabilities and a replayed `toolCallId`. The runner also asks the gate
+to authorize each `file://` resource link before it goes into a prompt: the path
+must be inside the execution root and must not be a SQLite database or its WAL
+files, `.schegent/` or a credential file, unless a declared upstream input or
+output names it. The gate's decision type covers permission, filesystem, terminal, and resource-link
+checks; `src/activation/acp-execution-wiring.ts` supplies `protectedDatabasePaths`
+from the active SQLite cutover coordinator (`getDatabaseProtectedPaths()`) so the
+store and its WAL/SHM sidecars are rejected explicitly alongside root containment,
+while filesystem and terminal agent methods remain unadvertised (`-32601`). Each decision is a bounded receipt without tool arguments
+or paths, kept in memory and, when a SQLite store is attached, inserted into
+`acp_authorization_receipts`. The permission policy the gate supplies answers
+with an `allow_once` option only when the gate allows the request; otherwise the
+policy answers `undecided` and the ACP client falls back to the agent's
+`reject_once` option, then `reject_always`, then `cancelled`. During cancellation
+every answer is `cancelled`. After a turn or a cancel the runner verifies that
+the agent's process group is gone.
+
+The dormant pre-cutover `legacyDrain` bypass has been removed from
+`src/activation/acp-execution-wiring.ts` and `src/runner/acp-backed-runner.ts`;
+every invocation reaching `AcpBackedRunner` goes over ACP with no direct-CLI
+fallback.
+
+**Local evidence controls (FR-R3-085).** `services/retention-disclosure.ts` derives
+the operator-facing retention document from the constants that enforce it;
+`services/evidence-export.ts` produces a manifest checked in both directions with
+an export-side digest chain; `services/evidence-delete.ts` refuses rather than
+races and reports both what it removed and what it retained. All three route
+through the shared containment oracle and act on the resolved path.
+
+<!-- Source: src/contracts/phase-capabilities.ts -->
+<!-- Source: src/services/capability-enforcement-plan.ts -->
+<!-- Source: src/controller/capability-decision-recorder.ts -->
+<!-- Source: src/services/evidence-export.ts -->
+<!-- Source: src/services/evidence-delete.ts -->
+<!-- Source: src/services/retention-disclosure.ts -->
+<!-- Source: src/contracts/backend-kinds.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/runner/acp-backed-runner.ts -->
+<!-- Source: src/activation/acp-execution-wiring.ts -->
+<!-- Source: src/services/acp-runtime/permission-policy.ts -->
+<!-- Source: src/services/containment-qualification/acp-authority-gate.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
+<!-- Source: src/runner/spawn-env.ts -->
+<!-- Source: src/runner/zipped-stream-buffer.ts -->
+<!-- Source: src/parser/stdout-parser.ts -->
+
+## Persistence and ownership
+
+Workspace-scoped durable files live below `.schegent/`; memento-backed state is
+owned by `WorkspaceStateStore` (`src/state/workspace-state.ts`). Since `FR-R7-07`,
+`WorkspaceStateStore` is a thin coordinating facade over cohesive key-family
+modules — `workspace-state-types.ts` (key catalog, constants, types, errors, and
+shared `WorkspaceStateFamilyContext`), `workspace-state-migrations.ts` (forward
+migrations v2–v15), `workspace-state-queue.ts` (queue states, registry, task CRUD,
+concurrency cap and notice), `workspace-state-runs.ts` (Run map, quarantine,
+atomic admission, terminal transition intents), `workspace-state-locks.ts`
+(workspace lock, guarded mirror refresh, execution leases, watchdog, operator
+pseudonym), `workspace-state-history.ts` (per-queue history partitions),
+`workspace-state-grants.ts` (confirmation suppression, Git plan grants, agent
+config grants), and `workspace-state-connected.ts` (connected workflow runs,
+control ledger, reset transaction). The facade exclusively owns the single
+`serialize` / `serializeAcrossKeys` promise chain, the single `MementoWriteGate`,
+and the single `OwnershipRegistry` commit fence, injecting them into every family
+module through `WorkspaceStateFamilyContext` (Hard Rules 57 & 58). Before the
+SQLite cutover below, the host writes whole addressed queue, Run, and history
+maps rather than partially mutating independently serialized fragments. Schema
+upgrades are forward-only. State written by a newer unsupported version is
+refused rather than guessed backward.
+
+**SQLite operational store (FR-R6-F04, FR-R7-10).** Structured operational state moves into
+an embedded `node:sqlite` database, `schegent-state.db`, at
+`<globalStorageUri>/sqlite/<scope>/schegent-state.db` in host global storage, outside
+the workspace (with legacy per-window `storageUri` retained only as a one-time
+relocation source or unwritable-target fallback), where `<scope>` is the 16-hex SHA-256
+prefix of the workspace root. `src/services/sqlite-store/` owns the driver, the
+trusted location resolver, schema bootstrap and migrations, the writer
+coordinator, the atomic transaction units, and backup and restore.
+`src/activation/sqlite-cutover-wiring.ts` wires it at activation; the store is
+opened for writing only in a trusted primary window, and any other window
+attaches a read-only snapshot at most.
+The cutover is staged and resumable: until its `publish-authority` stage
+completes, the legacy Memento and JSON copies stay authoritative. After it,
+`WorkspaceStateStore` delegates Run, Queue, terminal-transition journal, and
+related operational writes to `SqliteOperationalBacking`, which commits schema-9
+per-entity diffs (`operational_queue_meta`, `operational_tasks`,
+`operational_runs`), relational `runs` and `containment_acceptance_bindings`
+projections, and non-entity `operational_kv_documents` in direct serialized
+`BEGIN IMMEDIATE ... COMMIT` transactions with monotonic `revision = revision + 1`
+upserts under `WorkspaceStateStore`'s write chain and `.schegent/ownership/`
+primacy fence, while direct writes to legacy Memento keys are refused (Hard Rule
+58; only `KEYS.lock`, `KEYS.executionLeases`, and `KEYS.operatorPseudonym` pass
+through). Once cutover completes, `KEYS.sqliteCutoverAuthority`
+(`src/state/sqlite-cutover-authority.ts`) persists a durable cutover tombstone in
+legacy Memento so a missing or corrupt database fails closed with
+`durable-store-unavailable` rather than silently resurrecting pre-cutover state;
+`src/state/terminal-transition-journal.ts` preserves opaque or future-version
+sibling journal entries across rewrites and refuses corrupt envelopes. SQLite-level `expectedRevision` Compare-And-Set fencing, `steps` /
+`attempts` rows, and bounded `WriterCoordinator` lanes live in
+`AtomicTransactionUnitsService` (`src/services/sqlite-store/transaction-units.ts`)
+and `WorkflowControlService`, not inside `SqliteOperationalBacking.updateBatch()`.
+The census in `src/contracts/sqlite-store/state-census.ts` classifies each state
+surface: 15 of 20 are `sqlite-authoritative`; window primacy and execution leases
+remain on the filesystem ownership fence (`.schegent/ownership/` plus Memento
+passthrough keys), and the audit log, content-addressed blobs and log segment
+bytes, and UI layout preferences remain external. The store's pragma profile,
+write limits and migration stages are in
+`docs/operations/sqlite-application-store.md`; its schema version is in the
+Schema Versions table below.
+
+The workspace lock decides which VS Code window is authoritative for mutations.
+Its durable ownership record is filesystem-fenced and freshness-aware.
+Containment for the on-disk stores is anchored at the workspace root
+(FR-R3-069), never at a store directory the checkout itself supplies: the
+catalog and ownership adapters take the trusted workspace root and the
+untrusted store directory as separate required parameters, resolve the store
+against the root per operation, and create store chains only through the
+safe-open anchor walk — so a cloned workspace arriving with `.schegent`,
+`.schegent/catalog`, or `.schegent/ownership` symlinked out of the workspace
+refuses instead of adopting the link target as its own boundary, while a link
+that stays inside the workspace is admitted. Each store narrows its own
+directories to owner-only by name, and nothing above them (FR-R3-179): the
+opens walk the resolved path from the workspace root, and for a store an
+in-workspace link relocated, that walk passes through the operator's own
+directories, which are not the store's to change. The
+separate execution lease is per queue and lasts from admission to terminal
+transition. This split prevents a Run from releasing window primacy while still
+letting separate queues carry independent execution ownership. A window's claim
+on a queue is held, lost, released or never held; a loss stops only that queue's
+driver, and it never releases window primacy.
+
+Multi-root workspaces select one canonical folder; other folders remain normal
+VS Code roots but do not receive another Schegent state authority. Trust is a
+ceiling for catalog and sidebar mutations, with capability-specific decisions
+applied only below that ceiling.
+
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/state/workspace-state-types.ts -->
+<!-- Source: src/state/workspace-state-migrations.ts -->
+<!-- Source: src/state/workspace-state-queue.ts -->
+<!-- Source: src/state/workspace-state-runs.ts -->
+<!-- Source: src/state/workspace-state-locks.ts -->
+<!-- Source: src/state/workspace-state-history.ts -->
+<!-- Source: src/state/workspace-state-grants.ts -->
+<!-- Source: src/state/workspace-state-connected.ts -->
+<!-- Source: src/state/mutation-plan.ts -->
+<!-- Source: src/state/sqlite-operational-backing.ts -->
+<!-- Source: src/state/sqlite-cutover-authority.ts -->
+<!-- Source: src/state/terminal-transition-journal.ts -->
+<!-- Source: src/state/sqlite-operational-port.ts -->
+<!-- Source: src/state/sqlite-operational-rows.ts -->
+<!-- Source: src/activation/sqlite-cutover-wiring.ts -->
+<!-- Source: src/services/sqlite-store/index.ts -->
+<!-- Source: src/contracts/sqlite-store/state-census.ts -->
+<!-- Source: src/state/lock.ts -->
+<!-- Source: src/state/ownership-registry.ts -->
+<!-- Source: src/state/execution-lease.ts -->
+<!-- Source: src/state/workspace-folder-picker.ts -->
+<!-- Source: src/state/capability-trust-resolver.ts -->
+
+## Evidence, logs, and metrics
+
+The audit writer serializes metadata-only JSON-line events with a schema version
+and correlation ID, rotates the active file, and prunes archives by bounded
+retention rules. Its append-only behavior is an application write pattern; the
+tamper-evidence is separate and real. Since FR-R3-112 every entry carries the
+previous entry's digest, so a local operator, backend process, or any process
+with filesystem authority may still alter or delete local evidence, but not
+without the break becoming detectable — `npm run audit:verify` names the first
+one. Evident, not impossible: the chain head sits on the same disk, so an actor
+who can edit the log can recompute every later digest; what they cannot do is
+edit one entry and leave the rest consistent.
+
+FR-R4-F03 added three things to the writer's step. **One step, in order** (the only code that writes
+rows): ask the workspace lock who may write, so a window that does not own the workspace records nothing
+and notices the refusal; read the chain's last line as bytes when the end of the log is uncertain, and
+keep a damaged final line as found, with a versioned `audit-integrity-condition` row naming it; then link
+the row to the last row that landed, write it, and only then move the link forward. A rejected write is
+never a predecessor, and the audit sink recovers when an append lands. **A head checkpoint** (the digest
+and position of the newest landed row) is advanced after each landing, ordered between one step and the
+next and never ahead of the log, in the extension's per-user storage outside the workspace, so
+verification can report a history that is shorter than it was or missing. It makes removal of rows at or
+before the checkpoint detectable. It does not stop the same OS user from editing both stores, and it says
+nothing about rows written after it. **Construction is read-only**: the writer's retention sweep is an
+explicit step, run once after trust in the owner window.
+<!-- Source: src/audit/audit-chain.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+
+Raw transcripts are separately configurable and written below
+`.schegent/sessions`. They preserve backend streams for diagnosis and can hold
+source content or secrets that the structured audit projection rejects. The
+sanitized runtime log uses the shared redaction logger; its configured sink is
+restricted to the canonical workspace, extension global storage, or OS
+temporary root. Recovery checkpoints live in extension global storage and can
+contain unredacted Git patches, so they have their own restrictive permissions
+and retention service.
+
+**Evidence at rest is owner-only (FR-R3-179).** Evidence files are declared
+`0o600` and evidence directories `0o700`. `SafeOpenOptions` makes `fileMode`
+required on a writing open and `dirMode` required on one that creates
+directories, so an omitted mode does not compile unless a cast or a computed key
+whose type is wider than one literal hides it from the checker, or a setter with
+no getter declares a mode it never holds. The helper refuses each of those
+before it creates anything, as it does any mode that is not an integer from 0 to
+`0o7777`, and it reads each option and path segment once, so what it checks is
+what it uses. A declared mode applies only when a path is created, so a path an
+earlier release made under the umask is narrowed in place by the one routine
+that narrows a mode, `narrowMode` in `src/lib/narrow-mode.ts`. It only clears
+bits of the mode it read, refuses a symbolic link rather than following it, and
+never recreates or truncates, so a hash-chained log stays the same file.
+`openWithinRoot` narrows the leaf a writing open reaches and, when the open
+declares a `dirMode`, each directory it walks through below the caller's root,
+and returns what it narrowed as path-free notices.
+`src/lib/evidence-narrowing.ts` narrows the rotated generations and archives no
+open reaches, and its `NarrowingReporter` is how a writer says what was
+narrowed: under the writer's name, never a path, each distinct message once, and
+a report that cannot be delivered never fails the write. Every writer that
+narrows reports through it except the verbose diagnostic writer, which keeps its
+own. That writer and the catalog and ownership stores narrow the directories
+they prepare themselves. `tests/lint/evidence-sink-mode-census.test.ts` fails on
+any place `src/` creates a path through `node:fs` or VS Code's `workspace.fs`
+without the helper, or calls `chmod`, `lchmod` or `fchmod` outside
+`narrow-mode.ts`, unless that place carries a stated reason, and a raw call that
+can declare a mode fails without one whatever its reason. Outside the helper, an
+open through it fails too unless its options are a bare literal the census can
+read whole, every key spelled out once as a property or a getter, none spread in
+and none `__proto__`, that declares each mode the open needs: a `fileMode` unless
+its flags only read, and a `dirMode` whenever its `createDirs` may be true,
+whatever its flags. It
+fails any use of the helper's name but a call that spells it, bare or after a
+dot, an import or export under that name, and a type (`typeof openWithinRoot`),
+since it never reads what any other use passes the helper. It reads a mode
+change in every member syntax the source spells: after a dot, in brackets, and
+as a key a declaration or assignment destructures, where a name in brackets or a
+computed key counts when it is a literal string, bare or under parentheses,
+`as`, `satisfies`, `!` or `<T>`. It reads `workspace.fs` after the dotted chain
+that names it: on the workspace `vscode` exports, under any name the import
+gives it or through the module, and on any other value spelled `workspace`. A
+name through which it cannot follow `node:fs` or VS Code's `workspace` fails too
+rather than passing unread: a `node:fs` module handed on untyped or indexed in
+brackets; `vscode`, the workspace it exports, or any workspace's `fs` read any
+way but a dotted member; an import alias; a `require` or `import()` of either
+module or of one named at run time; `require` used any way but a direct call or
+`require.resolve`; and a re-export. It reads syntax, not types, so what lies
+past those forms is outside what it sees, and review is the control for each: a
+cast past a port's declared interface; a `chmod` or a helper whose name the
+source does not spell, as a key any other expression computes or reflection over
+its receiver; a `workspace` the import does not bind, reached other than by that
+dotted chain; a module loaded any other way, such as by `module.require`, a
+function `createRequire` returns or `process.getBuiltinModule`; a file VS Code
+writes other than through `workspace.fs`, such as by `workspace.applyEdit` or a
+document's `save()`; and a path or mode that a process the host spawns creates
+or changes.
+<!-- Source: src/lib/narrow-mode.ts -->
+<!-- Source: src/lib/evidence-narrowing.ts -->
+<!-- Source: src/lib/safe-open.ts -->
+
+Metrics are read-only projections over the retained audit corpus plus durable
+rollups. Detail coverage follows the evidence retention window; cumulative
+rollups prevent already-accounted terminal Runs from disappearing merely
+because an audit archive rotated away. Telemetry samples local process resource
+usage in memory and does not create a remote telemetry channel.
+
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+<!-- Source: src/lib/logger.ts -->
+<!-- Source: src/activation/backend-wiring.ts -->
+<!-- Source: src/services/run-checkpoint-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
+<!-- Source: src/metrics/metrics-service.ts -->
+<!-- Source: src/metrics/metrics-rollup.ts -->
+<!-- Source: src/telemetry/telemetry-sampler.ts -->
+
+## Failure and recovery model
+
+Failures remain explicit state. Backend nonzero exits, detected rate limits,
+credit exhaustion, timeouts, cancellation, evidence degradation, stale
+ownership, and invalid input take distinct paths. Sanitized errors are stored
+on the Run; unbounded raw strings do not cross into structured audit or webview
+state. Rate-limit retry is capped and delayed: a delayed retry's deadline lives on
+the retry coordinator's own timer, and the credit watchdog polls credits only,
+for Runs paused for credits, and reattaches that poll after activation. Every
+unattended resume goes through one eligibility decision and one capacity method.
+
+Run mutation checkpoints bracket Git-capable phases. The mutation ledger
+attributes observed changes to one Run, and the checkpoint service records the
+patch needed for operator recovery. Checkpoint creation is not proof that a
+backend stayed within an intended file set. Terminal transition recovery,
+scheduled-start reattachment, and ownership reconciliation are activation-time
+repairs over persisted intent.
+
+Evidence sinks are best-effort where losing evidence must not corrupt workflow
+state, but their health is projected so degradation is visible. State writes
+that define admission, queue ownership, or terminal completion are not silently
+reclassified as optional evidence.
+
+<!-- Source: src/controller/retry-handler.ts -->
+<!-- Source: src/watchdog/credit-watchdog.ts -->
+<!-- Source: src/services/retry-coordinator.ts -->
+<!-- Source: src/services/unattended-eligibility.ts -->
+<!-- Source: src/services/run-checkpoint-service.ts -->
+<!-- Source: src/services/run-mutation-ledger.ts -->
+<!-- Source: src/services/terminal-transition-coordinator.ts -->
+<!-- Source: src/services/evidence-health/evidence-health-monitor.ts -->
 
 ## Schema Versions
 
-| Schema | Constant | Current | Migrators |
+The table is the current persisted and wire compatibility contract across all six core version
+families (plus the legacy string workspace state version). Migration arrows and version numbers in
+prose columns are kept as plain text so the Current cells remain the sole numeric code spans on
+their constant rows.
+
+| Store / Boundary | Constant | Current | Compatibility & Refusals |
 |---|---|---|---|
-| Workspace state | `STATE_SCHEMA_VERSION` ([state-schema.ts](src/contracts/state-schema.ts)) | `13` | 1→2 (011), 2→3 ([queue-state-migrator](src/state/queue-state-migrator.ts)), 3→4, 4→5, 5→6 (030), 6→7 (065, `migrateV6ToV7`), 7→8 (transcript retention + terminal-transition journal), 8→9 (088, [`migrateConnectedRuns`](src/state/connected-run-migrator.ts)), 9→10 (092, `migrateV9ToV10` — `KEYS.queue` becomes `Record<queueId, QueueState>`, lockstep asserted per entry, `KEYS.run` untouched), 10→11 (093, [`migrateV10ToV11`](src/state/run-state-migrator.ts) — `KEYS.run` becomes `Record<queueId, WorkflowRun>`), 11→12 (FR-R3-010, [`migrateV11ToV12`](src/state/history-state-migrator.ts) — `KEYS.history` becomes `Record<queueId, HistoryEntry[]>`, capped per queue rather than per workspace, never re-capped on the way past), 12→13 (FR-R3-011, `migrateV12ToV13` — pause collapses to `QueueState.queueLifecycle` + `pauseSource`; any representation reading paused wins) |
-| Audit event envelope | `AUDIT_SCHEMA_VERSION` ([audit-events.ts](src/contracts/audit-events.ts)) | `3` | Additive event types and additive payload fields do not bump the version (per the comment policy). Neither does retiring a *writer*: FR-R3-007 removed the `monitor-stdout-line` / `monitor-stderr-line` writers and left both types registered as read-only, so archived logs keep parsing without a warning |
+| Sidebar IPC contract | `SIDEBAR_IPC_SCHEMA_VERSION` | `3` | Contract schema artifact version (`src/contracts/sidebar-ipc.ts`). Inbound wire messages may omit `schemaVersion` for backwards compatibility; any explicitly supplied mismatch is refused by `validateInboundMessage` with `unsupported-ipc-schema-version`. |
+| Sidebar / Dashboard snapshot body (`src/ui/sidebar/snapshot.ts`) | `SCHEMA_VERSION` | `4` | Carried on `WorkflowSnapshot`. Host `SnapshotTransport` (`src/ui/sidebar/snapshot-transport.ts`) uses `isWorkflowSnapshot` to skip delta encoding and forward non-matching shapes as full snapshots; the webview receiver (`reconcileSnapshotMessage` in `webview-ui/src/lib/snapshot-merge.ts`) validates the schema version, returns `unknown-schema`, and renders `IncompatibleSnapshotNotice`. |
+| Workspace state numeric (`schegent.schemaVersionNumeric`) | `STATE_SCHEMA_VERSION` | `15` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14, 14→15 (credit-pause default). Future or malformed numeric values throw `UnsupportedStateSchemaVersionError` (`UNSUPPORTED_NUMERIC_STATE_VERSION` / `MALFORMED_NUMERIC_STATE_VERSION`). |
+| Workspace state legacy string (`schegent.schemaVersion`, `src/state/workspace-state.ts`) | `SCHEMA_VERSION` | `1.0.0` | Same-major strings upgrade forward in place; incompatible major strings or corrupted non-string values throw `UnsupportedStateSchemaVersionError` (`UNSUPPORTED_LEGACY_STATE_VERSION` / `MALFORMED_LEGACY_STATE_VERSION`). |
+| SQLite operational store | `SQLITE_SCHEMA_CURRENT_VERSION` | `9` | Forward-only migrations 1 to 9 applied by `schema-bootstrap.ts`; Migration 9 (`009_fr_r7_02_operational_per_entity_rows`) is non-additive, a database written by a newer schema or unreadable version throws `SqliteUnsupportedSchemaError` (`UNSUPPORTED_FUTURE_SCHEMA_VERSION`), and rollback uses a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
+| SQLite operational store reader floor | `SQLITE_MIN_READER_VERSION` | `9` | Older builds below the reader floor (or reading an unreadable floor) fail closed at open with `SqliteUnsupportedSchemaError` (`UNSUPPORTED_MIN_READER_VERSION`) without modifying the database; downgrade requires restoring a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
+| Process-YAML exchange (`Phase`, `Workflow`, `ModelCatalog`) | `PHASE_YAML_API_VERSION` | `schegent/v1` | Enforced across `validatePhaseDocument`, `parseWorkflowPackage`, `parseModelCatalogDocument`, and `preflightProcessDocument`; missing or unsupported `apiVersion` returns typed `DocumentRefusal` `{ code: 'unsupported-version' }`. |
+| Audit event envelope (and checkpoint) | `AUDIT_SCHEMA_VERSION` | `3` | Additive event types and payload fields retain the current envelope version; `parseAuditLogLineDetailed` warns and preserves newer-schema rows, `readSpendReplay` marks spans containing newer `phase-end` rows as `unknown-row-schema` lower bounds, and `audit-checkpoint.ts` (`CHECKPOINT_VERSION`, version 1) refuses unknown checkpoint versions with `{ status: 'unreadable', reason: 'version-unknown' }` (`checkpoint-version-unknown`). |
 
-State migrators are forward-only and tolerate old records. Versions
-exceeding the runtime version raise an explicit "Update the extension"
-error rather than silently overwriting. CLAUDE.md hard rule:
-"Never bypass the v2 → v3 state migration or any later forward-only
-migration."
+Workspace migration history includes the legacy Run lift, queue-registry lift,
+breakpoint additions, queue coalescing, explicit queue lifecycle, frozen
+evidence and mutation metadata, connected Runs, queue/run/history map
+pluralization, and the final collapse to one persisted pause answer. A downgrade
+migrator is intentionally absent.
 
-## Extension Points
+<!-- Source: src/contracts/sidebar-ipc.ts -->
+<!-- Source: src/ui/sidebar/snapshot.ts -->
+<!-- Source: src/contracts/state-schema.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/contracts/sqlite-store/schema-types.ts -->
+<!-- Source: src/services/process-yaml/types.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
+<!-- Source: src/state/workflow-run-migrator.ts -->
+<!-- Source: src/state/queue-state-migrator.ts -->
+<!-- Source: src/state/connected-run-migrator.ts -->
+<!-- Source: src/state/run-state-migrator.ts -->
+<!-- Source: src/state/history-state-migrator.ts -->
 
-| Surface | Update |
-|---|---|
-| New backend runner | Implement [`BackendRunner`](src/contracts/backend-runner.ts); register in [`backend-runner-factory.ts`](src/runner/backend-runner-factory.ts); controller semantics unchanged. |
-| New mutating IPC command | Add to `MUTATING_COMMANDS` in [`message-router.ts`](src/ui/sidebar/message-router.ts); add a payload validator in [`ipc-validator.ts`](src/ui/sidebar/ipc-validator.ts); update the pinned-list test; add a webview helper or button. |
-| New phase tunable | Add to the Phase validator's authored-field allowlist, the catalog resolution, the IPC contract, and the operations docs in one change. It is a field on the stored definition, not a setting. |
-| New runtime sink | Use `SanitizedLogger` unless the threat model declares the sink intentionally unredacted and local-only. |
-| New persisted state field | Add a forward-only migrator; ensure parser tolerance for old records; bump `STATE_SCHEMA_VERSION` if shape changes; update docs. |
-| New audit event type | Define in [`audit-events.ts`](src/contracts/audit-events.ts); readers preserve unknown types (CLAUDE.md hard rule). |
-| New secret pattern | Add to `SECRET_PATTERNS` in [`logger.ts`](src/lib/logger.ts) — adding to the array auto-extends the precompiled union. Do not fork the redaction set. |
+## Extension points and review obligations
 
-## Reliability Invariants
+### Extending workflows and adding a built-in backend (`FR-R8-04` `04-05`)
 
-- Workspace locks are released through the lock manager; retained locks are intentional pause exits only. Window primacy is acquired at activation and released at disposal — no Run-scoped path releases it (FR-028, SC-009).
-- Both leases are acquired by exclusive create against the on-disk ownership record and carry a monotonic fencing token checked at the point of effect; storage that cannot answer refuses the acquisition rather than assuming it.
-- Phase timeout, cancellation, fatal signatures, rate limits, and parser failures map to explicit outcomes.
-- A clean token from truncated parser buffers fails closed as a terminal failure because fatal evidence may exist in the discarded middle.
-- Runtime artifact writes are best-effort unless the artifact is the structured audit record required for evidence.
-- The controller owns `WorkflowRun` mutation. Webview and services request transitions through host commands or controller methods.
-- Settings writes are validated before mutation and attempt rollback on partial failure.
-- Queue removal is not rolled back by session-cleanup I/O failure.
-- The audit log is append-only across every code path; task and phase deletion never erase `.schegent/audit.log`.
+An operator or contributor can add a new authored **Workflow** over existing
+Phases without modifying host code: author or import `schegent/v1` YAML, run
+`preflightProcessDocument` / catalog validation, publish, and execute through
+the normal `ProductionWorkflowComposition` launch path (exercised end-to-end
+in `tests/integration/extension-point-exercise.test.ts`).
 
-## Performance Notes
+Adding a fourth **built-in backend** is governed by the expansion freeze
+(`tests/lint/expansion-freeze.test.ts`) and requires coordinated changes across
+the exact 18 canonical and behavioral production sites tracked by
+`tests/fixtures/backend-recipe-sites.ts` (enforced by
+`tests/lint/backend-recipe-sites.test.ts`):
 
-- Hot parsers avoid broad JSON parsing. `rate-limit-reset-extractor` filters common allow events before parse; `invocation-usage` parses only short lines containing both `"type"` and `"result"`.
-- Runner parsing buffers are bounded head/tail windows so malformed or noisy CLI output cannot grow memory without limit; the independent raw-transcript tee applies disk-stream backpressure.
-- The sanitization hot path uses two precompiled regex unions (case-sensitive and case-insensitive) — each `SanitizedLogger.sanitize()` call costs two regex passes, not N (where N is the number of patterns).
-- Snapshot projection and phase-log display projection are pure and testable. The UI consumes already-projected state rather than walking disk state or live controller structures.
-- Performance budgets are pinned in `tests/perf/budgets.json` (feature 049).
+1. **Identity, pure-data descriptor, and manifest** (owner: contracts & manifest — `src/contracts/backend-kinds.ts`, `src/contracts/backend-descriptors.ts`, `src/contracts/backend-runner.ts`, `package.json`, plus regenerated `webview-ui/src/lib/generated/backend-descriptors.ts` via `npm run contracts:generate`). Every descriptor field uses explicit sentinels (`null`, `false`, `'none'`, `[]`) rather than optional omissions.
+2. **Subprocess construction and CLI adapter** (owner: runner — `src/runner/backend-runner-factory.ts` exhaustive switch plus `src/runner/<backend>-cli.ts` implementing `BackendRunner`, `shell: false`, `spawn-env.ts`, bounded `ZippedStreamBuffer`, and `AbortSignal` cancellation).
+3. **ACP transport, spawn qualification, and audit posture** (owner: runner, ACP runtime & containment qualification — `src/runner/acp-backed-runner.ts`, `src/runner/acp-runner-stream-helpers.ts`, `src/services/acp-runtime/bridges/acp-stdio-bridge.ts`, `src/services/acp-runtime/profiles.ts`, `src/controller/native-review.ts`, `src/services/containment-qualification/spawn-admission-gate.ts`, `src/runner/spawn-gated-runner.ts`, `src/audit/audit-payload-acp-vocab.ts`).
+4. **Capability withholding and usage/spend extraction** (owner: policy & parser — `src/services/capability-enforcement-plan.ts` and `src/parser/invocation-usage.ts`, preserving explicit `unknown`/missing usage rather than synthetic `0` so `evaluateSpend` in `src/services/spend-bound.ts` never reports `within` on unmeasured spend).
 
-## Verification Surface
+### Alternate storage engine obligations
 
-The pre-merge gate is `npm run ci` from `repo/`. It runs host and webview
-typechecks, lint, host unit/integration tests, webview tests,
-deterministic E2E tests, production builds, and VS Code integration
-smoke tests. Targeted tests (`npx vitest run <pattern>`) are useful while
-iterating, but the full gate is the release-level signal.
+Replacing the `node:sqlite` operational store (`src/services/sqlite-store/index.ts`)
+requires an owner for every contract across four boundaries:
 
-`.github/workflows/`:
+1. **Transactions & concurrency** (`src/services/sqlite-store/transaction-units.ts`, `src/services/sqlite-store/writer-coordinator.ts`, `src/state/sqlite-operational-backing.ts`): single primary-window serialized writer fenced by `.schegent/ownership/`, atomic multi-entity commits (connected run + queue row + control root), and `expectedRevision` compare-and-set.
+2. **Forward-only migrations & reader floor** (`src/services/sqlite-store/schema-bootstrap.ts`, `src/contracts/sqlite-store/schema-types.ts`): monotonic schema upgrades (`SQLITE_SCHEMA_CURRENT_VERSION = 9`), fail-closed `SqliteUnsupportedSchemaError` when `min_reader_version` exceeds the running build with zero byte modifications, and untrusted/secondary read-only snapshot isolation (`withZeroMutationReadOnlySqliteConnection`).
+3. **Projections & bounded reads** (`src/state/workspace-state.ts`, `src/services/usage-accounting/accounting-query-worker.ts`, `src/services/reporting/run-snapshot-worker.ts`, `src/services/result-operator.ts`): opaque preservation of malformed or future records alongside healthy sibling writes (`01-08`), plus off-thread typed esbuild worker bundles (`dist/run-snapshot.worker.js`, `dist/accounting-query.worker.js`, `dist/result-operator.worker.js`) bounded by V8 `resourceLimits` and meeting the `<= 50 ms p95` host-thread blocking target at retention limits (`03-03`).
+4. **Backup, verification, and atomic restore** (`src/services/sqlite-store/backup-restore-service.ts`, `src/services/sqlite-store/backup-restore-executor.ts`, `src/headless/backup-restore-api.ts`): consistent online snapshot with SHA-256 manifest (`0600`/`0700`), read-only integrity/FK/schema pre-flight verification, refusal while any Run is non-terminal (`RUN_IN_FLIGHT`), atomic full-table replacement, and distinct `committed_refresh_failed` recovery reporting.
 
-- `pr.yml` — fast PR gate: typecheck + lint + unit + build.
-- `ci.yml` — full gate on a different trigger.
-- `codeql.yml` — security scanning.
-- `full-gate.yml` (added by spec 056 Track 6) — scheduled / manual; runs
-  the deterministic E2E suite and the extension-host integration suite
-  before release-tag merges. `RELEASE.md` documents the release gate.
+### Accidental coupling observed during extension exercise (`04-05`)
 
-Doc-drift lint regressions under `tests/lint/` enforce that operations
-docs do not reference removed symbols and that documented defaults
-match package contributions.
+Exercising a test-only backend profile strictly inside `tests/` highlighted two
+deliberate but real coupling points to review before unfreezing a fourth
+backend: (a) `BackendRunnerKind` is a closed TypeScript union enforced across
+`BACKEND_DESCRIPTORS`, `RunnerLabel`, and `audit-payload-acp-vocab.ts`, so even
+a test-only profile cannot register through `createBackendRunner` without a
+narrow test seam or union change (preventing accidental unreviewed backends at
+compile time, at the cost of testing production seams individually via
+composition/descriptor/admission/parser/bounds ports); and (b) `services/` still
+carries 11 owned `services/ -> controller/` static value edges (0 `services/ -> commands|ui`
+edges remain after relocating counts-only audit export to `src/services/audit-export/`
+and `projectCandidatePhaseIdentity` to `src/contracts/candidate-phase-identity.ts`),
+all locked under `LAYER_IMPORT_ALLOWLIST` in `tests/lint/architecture-layers.ts` so no
+new reverse coupling can accumulate.
+
+### Review obligations for existing boundaries
+
+A new mutating IPC command must join the command
+metadata registry, receive runtime payload validation, and pass through the
+trust and primacy executor. It must also acknowledge what the host command
+answered rather than the fact that it asked: a route that dispatches and then
+acknowledges `accepted` unconditionally reports a refusal as a success, which is
+a defect no test of the host command can catch. A new confirmable action adds
+its key to the canonical tuple, never to one side's copy. A new persisted field
+requires an old-record read story and, when record shape changes, the next
+forward migration.
+
+A new catalog definition or lifecycle operation must preserve the two-kind
+public catalog union (Phase and Workflow), optimistic concurrency, trust
+ordering, published-version history, and immutable execution snapshots
+(`FrozenWorkflowClosure` and `ExecutionEnvelope`). A new destructive filesystem action
+must call the shared path-safety oracle immediately before effect. A new audit
+event keeps payloads bounded and paths-free, while readers continue to tolerate
+unknown event types.
+
+Remote command submission, multiple operators, multiple host processes, tenant
+boundaries, or a service-owned scheduler do not fit the current local ownership
+model. Those changes require the remote/multi-user decision record's threat
+model and exit criteria; increasing local queue concurrency does not silently
+authorize any of them.
+
+<!-- Source: src/contracts/backend-runner.ts -->
+<!-- Source: src/contracts/backend-descriptors.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+<!-- Source: src/services/sqlite-store/index.ts -->
+<!-- Source: src/contracts/sidebar-command-metadata.ts -->
+<!-- Source: src/ui/sidebar/ipc-validator.ts -->
+<!-- Source: src/catalog/catalog-store.ts -->
+<!-- Source: src/lib/path-containment.ts -->
+<!-- Source: src/parser/audit-log-parser.ts -->
+
+## Architectural invariants
+
+The following statements summarize the boundaries the implementation relies
+on:
+
+1. One canonical workspace root owns one local Schegent state tree.
+2. One authoritative window may perform host mutations for that workspace.
+3. Each queue has at most one executing Task; workspace parallelism is bounded
+   independently and remains opt-in.
+4. A validated execution envelope is frozen before enqueue and is the value the
+   controller executes.
+5. Workspace Trust and primacy are checked before mutating sidebar handlers.
+6. Backend subprocess authority is determined by its adapter and operating
+   environment, not by catalog metadata alone.
+7. Structured audit, raw transcripts, runtime logs, checkpoints, and metrics are
+   distinct evidence classes with different sensitivity and retention.
+8. Persisted migrations move forward; an unknown future state version is
+   refused.
+9. Absolute workspace paths and unsanitized backend output do not belong in
+   webview projections or structured audit payloads.
+10. A mutation acknowledgement reports the host's own decision, from one closed
+    outcome vocabulary; the boundary does not re-decide eligibility, and it
+    never reports an unattempted or unrecognized result as accepted.
+11. Remote or multi-user expansion requires a new authority model, not merely a
+    larger local concurrency setting.
+
+<!-- Source: src/extension.ts -->
+<!-- Source: src/contracts/run-request.ts -->
+<!-- Source: src/ui/sidebar/message-router.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/queue/queue-manager.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->

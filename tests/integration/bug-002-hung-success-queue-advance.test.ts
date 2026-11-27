@@ -24,7 +24,7 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { PhaseRunner } from '../../src/controller/phase-runner';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import type {
@@ -101,12 +101,12 @@ describe('Feature 030 BUG-002 — hung-but-successful task does not stall the qu
         stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(CLEAN_STDOUT); b.finalize(); return b; })(),
         stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })()
     }));
-    const phaseRunner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
-      makeFakeAuditWriter(),
-      new SanitizedLogger()
-    );
+    const phaseRunner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: makeFakeAuditWriter(),
+      logger: new SanitizedLogger()
+    });
     const out = await phaseRunner.run({
       phase: 'speckit-implement',
       iteration: 1,

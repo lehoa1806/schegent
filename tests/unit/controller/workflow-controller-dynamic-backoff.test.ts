@@ -7,7 +7,6 @@ import { SchegentWorkflowController } from '../../../src/controller/workflow-con
 // so a test that drives Phases supplies one. See the fixture header for why the
 // ids here are the real Spec Kit ones.
 import { buildSpeckitCatalog } from '../../fixtures/speckit-catalog-fixture';
-import type { DelayedRetryWatchdog } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -21,8 +20,8 @@ import {
   RETRY_BUFFER_MS,
   RETRY_FLOOR_MS,
   TRANSIENT_BACKOFF_MS
-} from '../../../src/controller/retry-constants';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+} from '../../../src/contracts/retry-bounds';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -97,10 +96,6 @@ let queue: QueueManager;
 let runSpy: ReturnType<typeof vi.fn>;
 let controller: SchegentWorkflowController;
 let auditWriter: { append: ReturnType<typeof vi.fn> };
-let watchdog: {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-};
 
 beforeEach(async () => {
   memento = new FakeMemento();
@@ -108,7 +103,7 @@ beforeEach(async () => {
   await store.initialize();
   queue = new QueueManager(store);
   runSpy = vi.fn();
-  const phaseRunner: PhaseRunner = { run: runSpy } as unknown as PhaseRunner;
+  const phaseRunner: PhaseRunner = { run: runSpy, evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   const auditAppend = vi.fn();
   auditAppend.mockImplementation(async (entry: Record<string, unknown>) => ({
     id: 'mock-audit-id',
@@ -116,9 +111,6 @@ beforeEach(async () => {
     ...entry
   }));
   auditWriter = { append: auditAppend };
-  const pauseAndPoll = vi.fn();
-  pauseAndPoll.mockImplementation(async () => {});
-  watchdog = { pauseAndPoll, cancelPendingTimer: vi.fn() };
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -131,8 +123,7 @@ beforeEach(async () => {
     {
       catalog: buildSpeckitCatalog(),
       auditWriter:
-        auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter,
-      watchdog: watchdog as unknown as DelayedRetryWatchdog
+        auditWriter as unknown as import('../../../src/audit/audit-log-writer').AuditLogWriter
     }
   );
 });

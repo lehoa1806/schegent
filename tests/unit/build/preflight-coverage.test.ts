@@ -53,6 +53,24 @@ const PREFLIGHT = 'ci:fast';
  */
 const EXCLUDED: ReadonlyArray<{ readonly script: string; readonly reason: string }> = [
   {
+    script: 'test:coverage',
+    reason:
+      'FR-R3-100 (FR-016) put the host suite under coverage inside `ci`, so the declared ' +
+      'floors finally gate the attested chain. `ci:fast` deliberately reaches the same ' +
+      'tests through `verify:all` -> `test:host` instead: coverage instrumentation is pure ' +
+      'overhead for a fast preflight whose job is to fail early, and the tests it runs are ' +
+      'the identical set. What the preflight cannot catch is a COVERAGE regression, which is ' +
+      'a threshold breach rather than a broken test, and is caught by the gate before release'
+  },
+  {
+    script: 'coverage:headroom',
+    reason:
+      'review gap GC-17 (2026-11-12) checks that the declared host floors sit within five ' +
+      'points of the measured coverage. It reads `coverage/coverage-final.json`, which only ' +
+      '`test:coverage` writes, and that script is excluded above: the preflight has no report ' +
+      'for it to read. Stale floors are caught by the gate before release, like a breach'
+  },
+  {
     script: 'test:e2e',
     reason: 'a separate Vitest project with a 120s per-test timeout; minutes of wall clock per run'
   },
@@ -158,8 +176,16 @@ describe('the preflight chain reaches every gate CI runs', () => {
     );
   });
 
-  it('excludes exactly three scripts, each with a reason', () => {
+  it('excludes exactly five scripts, each with a reason', () => {
+    // The list is asserted by NAME, not by length, so growing it is a visible diff in
+    // the file whose only job is to notice gaps. `test:coverage` joined it under
+    // FR-R3-100: unlike the other three it is not excluded for wall-clock but because
+    // `ci:fast` reaches the identical test set without coverage instrumentation. The
+    // one thing the preflight therefore cannot catch is named in its reason.
+    // `coverage:headroom` (GC-17) reads the report only `test:coverage` writes.
     expect(EXCLUDED.map((entry) => entry.script).sort()).toEqual([
+      'coverage:headroom',
+      'test:coverage',
       'test:e2e',
       'test:integration',
       'test:perf'
@@ -173,8 +199,29 @@ describe('the preflight chain reaches every gate CI runs', () => {
     const preflight = scripts()[PREFLIGHT];
     expect(preflight).toContain('npm run build:host && npm run package:smoke');
     expect(preflight.indexOf('test:visual')).toBeLessThan(preflight.indexOf('package:smoke'));
-    // FR-024 — `verify:all` stays build-free. The preflight calls it, so a build
-    // moved in there would make the preflight build twice.
-    expect(scripts()['verify:all']).not.toContain('npm run build');
+    // FR-024's build-free clause was SUPERSEDED by FR-R3-169 (FR-019) on
+    // 2026-09-06, and this is where that is recorded rather than quietly deleted.
+    //
+    // It read: *"`verify:all` stays build-free. The preflight calls it, so a build
+    // moved in there would make the preflight build twice."* Both halves were true
+    // when written. What has changed is not the cost but the premise: the host
+    // tests that wanted `dist/webview` used to excuse themselves when it was
+    // absent, and the two `no-remote-refs` / `bundle-content` gates added by 208
+    // FAIL instead. A build-free `verify:all` is now a `verify:all` that is red on
+    // a fresh clone, and — measured — `ci:fast` reached the host suite through it
+    // BEFORE `test:visual`, the chain's only other build, ever ran. The ordering
+    // FR-024 assumed was already not holding.
+    //
+    // So the preflight does now build the webview twice, deliberately, for one
+    // `vite build`. Reclaiming it by deleting either build reintroduces the defect
+    // for whichever script is invoked on its own, which is why both are asserted.
+    // `tests/lint/webview-build-precedes-host-suite.test.ts` owns the general rule;
+    // these two lines are the record that the duplication is a decision.
+    expect(scripts()['verify:all']).toContain('npm run build:webview');
+    expect(scripts()['test:visual']).toContain('npm run build:webview');
+    // FR-024's OTHER half is untouched and still asserted: the fast chain runs no
+    // packaging step, so `package:smoke` stays an explicit preflight step after an
+    // explicit host build (FR-023) rather than something `verify:all` drags in.
+    expect(scripts()['verify:all']).not.toContain('package:smoke');
   });
 });

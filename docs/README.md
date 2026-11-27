@@ -1,120 +1,403 @@
-<p align="center">
-  <img src="../assets/banner.png" alt="Schegent Banner" />
-</p>
+# Schegent documentation
 
-# Schegent — Operator Manual
+Do not read this directory from top to bottom. Schegent's documentation serves
+different audiences and most pages are task-specific references. Choose the
+outcome you want, follow one course, and stop when that outcome is complete.
 
-**Schegent** is a VS Code extension that runs the Claude Code CLI as a headless backend to autonomously drive the Spec Driven Development workflow. You enqueue feature work in the sidebar, walk away, and come back to either a finished feature or a paused run waiting for your decision.
+<!-- Source: ../README.md -->
+<!-- Source: courses/use-schegent.md -->
+<!-- Source: courses/develop-schegent.md -->
 
-This manual is the operator's reference. It explains every setting, command, audit event, and feature in detail and shows you how to apply them to real workflows.
+## Choose your path
 
-> If you only have ten minutes, start with [Getting Started → Installation](getting-started/installation.md) and then [Getting Started → Your First Pipeline](getting-started/first-pipeline.md). Come back here when you want depth.
+| Your goal | Audience | Start here | You are done when |
+|---|---|---|---|
+| Run a process without learning the product internals | Operator or process user | [Course: Use Schegent](courses/use-schegent.md) | A Task is queued and you can follow its Run evidence. |
+| Understand and change the product | Extension contributor | [Course: Develop Schegent](courses/develop-schegent.md) | A scoped change passes its relevant checks and is ready for review. |
+| Maintain, package, or release the repository | Maintainer or release engineer | [Contributing](../CONTRIBUTING.md), then [Release process](../RELEASE.md) | The change or release has the required build, test, package, and provenance evidence. |
+| Review trust, privacy, or security boundaries | Security reviewer or operator approving unattended use | [Threat model](security/threat-model.md), then [Security whitepaper](security/whitepaper.md) | The relevant threat, mitigation, residual risk, and backend authority are understood. |
 
-## How to use this manual
+The first two rows are the primary learning paths. Maintainer and security
+documents are specialist branches, not additional chapters every reader must
+complete.
 
-The pages are organized by *what you are trying to do*, not by the order the extension was built.
+## Path 1: use the project
 
-- If you have never used Schegent before → **Getting Started**.
-- If you want to understand what a "run", a "phase", or "the queue" actually is → **Concepts**.
-- If you want to look up a setting, a command, or an audit event → **Reference**.
-- If you want to use a specific feature (breakpoints, custom phases, etc.) → **Features**.
-- If a pipeline is misbehaving and you need to intervene → **Operations**.
-- If you are deciding whether to run Schegent in a sensitive environment → **Security**.
+The operator course is the short path if another person or team already owns
+the process design. It covers only the necessary connections:
 
-## Getting Started
+```text
+VSIX + trusted workspace + authenticated backend CLI
+                         |
+process YAML -> Builder -> active catalog
+operator input -> Queue Add work -> Queue -> backend CLI
+backend result -> Run detail + History + Audit
+```
 
-- [Quickstart & Dashboard Walkthrough](getting-started/quickstart.md) — a visual guide to the dashboard, phases, and pipelines.
-- [Installation](getting-started/installation.md) — install the extension, install the Claude CLI, link your account.
-- [Your First Pipeline](getting-started/first-pipeline.md) — enqueue a feature, watch a run from start to finish.
-- [Sidebar Tour](getting-started/sidebar-tour.md) — every panel in the Schegent sidebar, what it shows, and what you can click.
+Schegent has no hosted control plane, database, or HTTP API to configure. The
+normal operator interfaces are VS Code **Settings**, dashboard **Builder**,
+**Queues**, Add work, and task detail. Configuration is conditional: the default
+Claude runner needs no Schegent setting when an authenticated `claude`
+executable is already on `PATH`; other backends, executable locations, or
+environment policies need their corresponding settings.
 
-## Concepts
+<!-- Source: ../package.json -->
+<!-- Source: ../src/state/workspace-state.ts -->
+<!-- Source: ../webview-ui/src/dashboard/routes.ts -->
+<!-- Source: reference/settings.md -->
 
-The conceptual model you need to use Schegent effectively. None of these pages contain source code — they explain the rules of the system.
+Follow [Course: Use Schegent](courses/use-schegent.md). After the first
+successful Run, keep only these optional branches:
 
-- [Architecture Overview](concepts/architecture-overview.md) — extension host, CLI subprocess, webviews, trust boundaries.
-- [English-only, Not Localizable](concepts/english-only-not-localizable.md) — why the extension ships one language by decision, the measured string surface that covers, and what reversing it would cost.
-- [Local-first, Not Offline](concepts/local-first-not-offline.md) — what stays local, what provider connectivity is still required, and the queue-only degraded-mode boundary.
-- [Pipelines & Phases](concepts/pipeline-and-phases.md) — the Spec Driven Development workflow pipeline, the built-in phases, and how phase overrides work.
-- [The Queue, Tasks, and Runs](concepts/queue-and-runs.md) — how work is ordered, what an in-flight task is, and the difference between a task and a run.
-- [The Workspace Lock](concepts/workspace-lock.md) — why only one run executes at a time, how pause/resume preserves the lock, and what to do when it gets stuck. Includes the [multi-root workspace semantics](concepts/workspace-lock.md#multi-root-workspaces): the first folder is canonical, `schegent.multiRoot.suppressWarning` silences the activation toast, and the `multi-root.warning-shown` audit event records the chosen folder.
-- [Sessions, Logs, and Audit Evidence](concepts/sessions-and-logs.md) — what gets written to disk for each run, where it lives, and what is sanitized.
+- [Operator Incident Recovery Guide](operations/incident-recovery-guide.md) when Schegent refuses to open the SQLite store, quarantines workspace-state writes, or leaves an execution lane stuck.
+- [Operations documentation](operations/README.md) — begins with the bounded 5-item [Operator First-Recovery Required Reading List](operations/README.md#operator-first-recovery-required-reading-list) and separates current runbooks from dated measurements.
+- [Product workflows](how-to/product-workflows.md) for normal Queue, Run, repeat, and audit tasks.
+- [Command Palette reference](reference/commands.md) for exact command titles, guards, and operator results.
+- [Backend operations](operations/backends.md) when selection, authentication, probing, or invocation fails.
+- [Settings](reference/settings.md) when you need an exact setting, default, or reload rule.
+- [Process YAML](operations/process-yaml.md) when you own import/export or process publication.
+- [Core concepts](explanation/core-concepts.md) when you want the product model after using it.
+- [Threat model](security/threat-model.md) before unattended or sensitive execution.
 
-## Features
+## Path 2: develop the project
 
-Each page follows the same structure: what it does, why you'd use it, how it works conceptually, every parameter, two or three real examples, edge cases, and troubleshooting.
+The contributor course first establishes the build and governing rules, then
+traces one request through the system:
 
-### Core orchestration
+```text
+extension activation -> UI/IPC -> validation and frozen plan -> Queue
+-> controller -> backend runner -> state/evidence -> UI projection
+```
 
-- [Phase Log Feed](features/phase-log-feed.md) — the live activity feed beneath each phase, with tool-call and message rendering.
-- [Phase Breakpoints](features/phase-breakpoints.md) — pause a run before a specific phase so you can review and intervene.
-- [Custom Phases](features/custom-phases.md) — add your own pipeline phases and run them through the same audit path as every other phase.
-- [Phase Overrides](features/phase-overrides.md) — change the model, effort, timeout, or loopability of any phase without forking the pipeline.
-- [Phase YAML Exchange](features/phase-yaml-exchange.md) — export a phase to a portable YAML document, and inspect an imported one before it touches your catalog.
+After that common spine, choose one branch—UI/IPC, catalog/YAML, Queue, Run
+lifecycle, backend, ownership/state, security/evidence, or release. You should
+not read the documents for unrelated branches.
 
-### Reliability and recovery
+<!-- Source: ../ARCHITECTURE.md -->
+<!-- Source: ../src/extension.ts -->
+<!-- Source: ../src/services/run-request/run-request-validator.ts -->
+<!-- Source: ../src/services/auto-drain-coordinator.ts -->
+<!-- Source: ../src/controller/workflow-controller.ts -->
 
-- [Context-Preserving Retries](features/context-preserving-retries.md) — retry a phase with `--continue` so Claude resumes the prior context instead of starting fresh.
-- [Aggressive Pause](features/aggressive-pause.md) — what happens when you pause a run mid-phase: the subprocess is killed *after* state is updated.
-- [Rate-Limit Handling](features/rate-limit-handling.md) — how Schegent parses Anthropic's reset hints and schedules dynamic retries instead of fixed backoffs.
-- [Fatal Signatures](features/fatal-signatures.md) — the code-resident "stop the run" patterns plus your operator-additive extensions.
+Follow [Course: Develop Schegent](courses/develop-schegent.md). Its optional
+branches route to the exact operations, reference, and source areas needed for
+the intended change. Use these shared documents only at the point the course
+asks for them:
 
-### Observability
+- [Developer setup](tutorials/developer-setup.md) for a first checkout.
+- [Contributing](../CONTRIBUTING.md) for repository gates and review policy.
+- [Core concepts](explanation/core-concepts.md) and [Glossary](reference/glossary.md) for shared vocabulary.
+- [Schegent Architecture](../ARCHITECTURE.md) for the production dependency map and invariants.
+- [Developer workflows](how-to/developer-workflows.md) for focused and broad verification commands.
 
-- [Verbose Diagnostics](features/verbose-diagnostics.md) — opt-in unredacted per-phase debug/stream/log files for deep troubleshooting.
-- [Telemetry Projection](features/telemetry-projection.md) — the ephemeral PID and status display while a phase is in-flight.
-- [Runtime Logging](features/runtime-logging.md) — the file sink that mirrors the sanitized Output channel for tail and grep.
+## How the documentation is organized
 
-### Productivity
+Document type describes when to read a page; it is not a required sequence.
 
-- [Auto-Compact Override](features/auto-compact-override.md) — control when Claude compacts its context window, per workspace.
+| Type | Read it when | Examples |
+|---|---|---|
+| **Course** | You are new to an audience path and want a complete outcome. | Use Schegent; Develop Schegent. |
+| **Tutorial** | You need one tightly guided setup or demonstration. | Developer setup; shipped Spec-kit workflow. |
+| **How-to** | You already know the goal and need a procedure. | Product workflows; developer workflows. |
+| **Reference** | You need an exact contract, field, setting, event, or layout. | Commands; settings; API and CLI; file layout. |
+| **Explanation** | You need the reason, model, or system relationship behind behavior. | Core concepts; architecture; domain model. |
+| **Decision or operations record** | You are changing or reviewing that specific boundary. | Ownership fencing; release provenance; runtime logging. |
 
-## Reference
+Historical decisions, deep operations notes, and feature-specific pages remain
+available because maintainers need evidence and exact contracts. Their presence
+does not make them onboarding material.
 
-Authoritative lookup tables, derived from the running extension's contributions and source-of-truth contracts.
+## How current a page is
 
-- [Glossary](reference/glossary.md) — the composition, catalog, and run vocabularies, including which of the two senses of "Workflow" is meant where.
-- [Settings](reference/settings.md) — every `schegent.*` configuration key, with type, default, scope, and validation rules.
-- [Commands](reference/commands.md) — every command contributed to the VS Code command palette, plus the internal ones routed only from the sidebar.
-- [Audit Events](reference/audit-events.md) — every structured event written to `.schegent/audit.log`, with payload schema and trigger.
-- [File Layout](reference/file-layout.md) — what lives under `.schegent/` in your workspace and `<globalStorage>/` in your VS Code profile.
+Document *type* above says when to read a page. This says whether to believe its
+present tense. The two are independent: a reference page and a runbook can each be
+current or a record.
 
-## Operations
+| Class | Marker | The test a page must pass to claim it |
+|---|---|---|
+| **Current authority** | none — this is the default | Every present-tense sentence is true of the tree at `HEAD`. A claim about what runs must match what an executable script actually does. |
+| **Historical / terminal record** | `<!-- doc-class: record -->` | It describes something that ran, or was formally proposed, and no longer holds. It carries a dated withdrawal banner saying what went and when. It is never cited as present authority, and its observations are **not** rewritten to agree with today's tree — a recorded observation with a date is evidence, and correcting it is falsification. |
+| **Proposal / decision with trigger** | `<!-- doc-class: proposal -->` | It describes a state that does not exist yet, or a decision not to build one. It names the trigger and the review date that would revisit it. |
 
-Day-2 playbooks for monitoring active work and intervening when something is wrong.
+One marker is machine-read, and only one: `tests/lint/current-control-claims.test.ts`
+checks live pages against facts derived from the tree, and skips a page classified as
+a **record**. It does not skip a proposal, because a proposal describes a state that
+does not exist in the conditional voice that says so — `would`, `if`, `on approval` —
+and a proposal written in the present indicative is making a claim, not a proposal.
+Marking a page `proposal` therefore exempts it from nothing.
 
-- [Monitoring a Run](operations/monitoring.md) — sidebar, status bar, dashboard, and the verbose-diagnostics sink — when to look at which.
-- [Execution Evidence Health](operations/evidence-health.md) — unified audit/raw/runtime/rollup health, fail-closed rules, and the recovery playbook.
-- [Metrics Coverage and the Rollup](operations/metrics.md) — why all-time totals and per-run detail have different horizons, and how to report from the rollup file directly.
-- [Intervention Playbook](operations/intervention.md) — pause, resume, retry-now, skip-phase, cancel, and what each action actually does to the in-flight state.
-- [Troubleshooting](operations/troubleshooting.md) — symptoms, causes, and concrete fixes for the most common operator-facing failure modes.
-- [Trust Scopes](operations/trust-scopes.md) — per-capability trust scopes that narrow Workspace Trust for custom phases, retry-conditions, and pipeline overrides.
+The prose banner is the half a reader sees; the marker is the half the gate sees, and
+a record needs both. A page that keeps present-tense description of a retired control
+must say why in the page itself — an unexplained exception is a defect, not an
+exemption.
 
-## Security
+Which controls are current is not restated here, because restating it is how four
+documents came to disagree. One generated table answers it:
+[current release controls](release/current-release-controls.md).
 
-Schegent runs the Claude CLI with broad workspace capabilities. Before deploying it against sensitive code, read these two pages.
+## Complete index
 
-- [Operator Threat Model](security/threat-model.md) — what we defend against, what we explicitly do not, and which knobs you control.
-- [Security White-Paper](security/whitepaper.md) — operator-facing trust ceiling, audit boundary, and failure-mode summary; designed for a 45-minute read by an enterprise reviewer or operator deciding whether to deploy Schegent.
+Every page in this tree, so that none is reachable only by knowing it exists.
+FR-R3-063 added this: the 2026-08-23 review found 21 of 53 pages with no inbound
+link — in a tree it had itself inventoried — and a page nobody can arrive at also
+drifts unnoticed, because the readers who would catch an error never get there.
+The section lists every page under `docs/`, except a page that the exclusion list in
+`tests/lint/doc-orphan-pages.test.ts` names with its reason, and that gate fails on a page that is
+neither listed nor excluded.
 
-## Architecture decisions
+### Courses
 
-- [Remote, Multi-user, and Parallel Execution Expansion Gate](architecture/remote-multi-user-expansion-gate.md) — mandatory identity, isolation, scheduler, locking, secrets, evidence, injection, and rollback criteria before any non-local expansion.
+- [Use Schegent](courses/use-schegent.md)
+- [Develop Schegent](courses/develop-schegent.md)
 
-## Versioning and updates
+### Tutorials
 
-This manual is versioned alongside the extension. Each major user-visible change ships with an update to the matching page (settings, commands, and audit events drift checks are enforced in CI). If you find a discrepancy between this manual and the running extension, the running extension is authoritative — please open an issue.
+- [Developer setup](tutorials/developer-setup.md)
+- [Run the shipped Spec-kit workflow](tutorials/user-quickstart.md)
 
-## Conventions used in this manual
+### How-to
 
-- Settings are written as their full key: `schegent.logging.verbose`.
-- Commands are written with their VS Code command palette title in **bold** and the raw command id in `code`.
-- File paths are written relative to either the **workspace root** (your project) or **`<globalStorage>`** (per-VS-Code-profile).
-- "Webview" means the Svelte UI that renders inside the VS Code sidebar or dashboard. "Host" means the extension's main process. "Runner" means the spawned Claude CLI subprocess.
-- "Operator" means you — the person using the extension.
+- [Feature guides](how-to/feature-guides.md)
+- [Developer workflows](how-to/developer-workflows.md) — the build, test and verify commands, run from the repository root
+- [Product workflows](how-to/product-workflows.md) — operator workflows that use only surfaces the extension host registers
 
-## Acknowledgements & Prerequisites
+### Concepts and explanation
 
-A special thanks to the [GitHub Spec-Kit](https://github.com/github/spec-kit) team and the [Superpowers](https://github.com/superpowers) team for their phenomenal work. Schegent's default pipeline is heavily inspired by and relies on these platforms. 
+- [Local-first, not offline](concepts/local-first-not-offline.md)
+- [English-only is a product decision](concepts/english-only-not-localizable.md)
+- [Domain model](explanation/domain-model.md)
+- [Architecture](explanation/architecture.md) — the extension host, the webviews, Queues and Runs, and how they fit together
+- [Core concepts](explanation/core-concepts.md) — the domain model as contracts, and where each part is persisted
+- [Sessions, logs, and local evidence](concepts/sessions-and-logs.md) — the several things "session" means, and the privacy and durability of each local file
+- [The agent runs unprompted](concepts/unprompted-agent-not-contained.md) — the accepted product-boundary decision of 2026-08-22
+- [Workspace ownership and execution leases](concepts/workspace-lock.md) — the two lease families, and the question each one answers
 
-**Note on pipelines:** To use the *default pipeline* out-of-the-box, we strongly suggest installing the Spec-Kit and Superpowers plugins/platforms. If you choose to define your own custom pipeline, you must ensure that you have installed the specific skills, platforms, and tools required by your custom phases.
+### Operations
+
+Start at [Operations documentation](operations/README.md) for the bounded 5-item [Operator First-Recovery Required Reading List](operations/README.md#operator-first-recovery-required-reading-list) and task-oriented navigation. Pages below are grouped into active recovery runbooks, active runtime/feature/security guides, and dated historical measurements.
+
+#### Current recovery and incident runbooks
+
+- [Operator Incident Recovery Guide](operations/incident-recovery-guide.md) — **rehearsed 2026-11-24**: symptom-first recovery for future schema refusal, quarantined Memento writer (`GC-04`), and stuck execution lanes (`FR-R7-18`, `N03`)
+- [SQLite application store rollback runbook](operations/sqlite-rollback-runbook.md) — step-by-step operator runbook for online same-version restore and offline schema `N` → `N-1` downgrade rollback across `min_reader_version`, backup file sensitivity/permissions, and post-backup state loss disclosure (`FR-R7-03`)
+- [Recovery from an interrupted run](operations/recovery-checkpoints.md)
+- [Recovery handoff](operations/recovery-handoff.md) — what a recovery handoff protects and why it refuses a delivery: states, pin purposes, the seven resolution reasons, the redelivery refusal order, explanation bounds, future versions, legacy records and the prune fail-safe (`FR-R6-F08`)
+- [Retry contract](operations/retry-contract.md) — **written 2026-10-28**: which failures retry, pause or fail, where each delay comes from, where automatic attempts stop, and how the watchdog handles them, and what Resume, Restart, Skip and a row Retry each do to a failed run
+- [Workflow control flow, repetition, and backend recovery](operations/workflow-control-recovery.md) — candidate recovery blocks, scoped child-Workflow `Repeat`, sequential `ForEach`, durable availability monitoring, and workspace handover (`FR-R5-F35`)
+- [Execution lanes](operations/execution-lanes.md) — what a lane is and is not: the working-tree disclosure, the eight provisioning refusals, the integration lifecycle, fast-forward landing and the hooks it may run, reconciliation, cleanup rules, and what is deferred (`FR-R6-F10`)
+- [Runtime log](operations/runtime-log.md)
+- [Inspect audit logs](operations/inspect-audit-logs.md)
+- [Inspect raw transcripts](operations/inspect-raw-transcripts.md)
+- [Live-log delivery](operations/live-log-delivery.md) — what the live phase-log view can drop and how it reports it: byte bounds, the ten coverage-gap reasons, the six delivery counters, resumable cursors, and the segment index (`FR-R6-F07`)
+- [Built-artifact route diagnosis](operations/built-artifact-route-diagnosis.md)
+
+#### Current runtime, feature, and security operations guides
+
+- [What Schegent keeps on this machine](operations/evidence-retention-disclosure.md) — every artifact
+  retained locally, whether its content is redacted, and the bound on each, derived from the constants
+  that enforce them rather than restated (FR-R3-085)
+- [What stops an unattended run](operations/autonomy-bounds-disclosure.md) — every bound on
+  autonomy in one table, including the per-run spend bound and which denomination applies to which
+  backend, derived from the constants that enforce them (FR-R3-112)
+- [Artifact lifecycle, storage and recovery](operations/artifact-lifecycle.md) — what Schegent may delete, why it kept something, and what an interrupted deletion or legacy catalog migration leaves behind
+- [Backends](operations/backends.md)
+- [Configuration](operations/configuration.md)
+- [Contract generation](operations/contract-generation.md)
+- [Dashboard UI](operations/dashboard-ui.md)
+- [Data retention and deletion](operations/data-retention-and-deletion.md)
+- [Gate recording](operations/gate-recording.md) — **declared 2026-10-02**: what a `npm run gate:record` record is and is not, and the rule that binds a bot-proposed dependency change to one, with how to perform it; the recording cadence for every merge into `develop`, and `npm run gate:distance`, which reports how far the record is from `HEAD`
+- [Interactive verification register](operations/interactive-verification-register.md) — **opened 2026-09-06**: the interactive dev-host evidence specs `067` and `068` still owe, who owes it, what would close it, and the date it is re-read on
+- [Dependency advisory comparison](operations/dependency-advisory-comparison.md) — **declared 2026-10-30**: `npm run security:advisory-diff`, which tells whether a candidate commit introduced or worsened a dependency advisory against an explicit base commit; report-only, not part of `npm run gate`, and it leaves `npm run security:audit` as it was
+- [Licenses](operations/licenses.md)
+- [Live-canary cadence](operations/live-canary-cadence.md) — **declared 2026-08-27**: when the live backend canary must run, who owns it, and the cost bound. A live run was made on 2026-10-19; the dated deferral stays open until the operator's review
+- [Multi-queue concurrency](operations/multi-queue-concurrency.md)
+- [Phase and task management](operations/phase-task-management.md) — the Phase controls, what each refusal means, and what Disable and Enable now say when the host refuses them (FR-R5-F19)
+- [Run status transitions and atomic admission](operations/run-status-transitions.md) — the exhaustive Run status transition table, actor classes, typed error hierarchy, and single-transaction atomic admission invariant (FR-R7-01)
+- [Process YAML](operations/process-yaml.md)
+- [Production workflow integration and support boundary matrix](operations/production-workflow-integration-matrix.md) — entry-point wiring census, production collaborator composition, seven-category refusal taxonomy, eight-checkpoint recovery, and F08/F01-B seams (`FR-R6-F01`)
+- [Shared memory and storage contracts](operations/shared-memory-storage-contracts.md) — C1 field dictionary, current-record mappings, C2 single-authority inventory, 15-feature consumer mapping, C4 retention inventory, and acceptance fixtures (`FR-R6-F02`)
+- [Runtime resource budgets and qualification](operations/runtime-resource-budgets.md) — runtime resource inventory, FR-015 common queue and query bounds, registered qualification targets, current-store migration baselines, and pending joint qualification (`FR-R6-F03`)
+- [SQLite application store and structured-state migration](operations/sqlite-application-store.md) — `node:sqlite` engine qualification, `STRICT` operational and domain schema (through Migration 9 per-entity Task and Run rows), seven `BEGIN IMMEDIATE` transaction units, bounded writer queue and WAL checkpoint policy, seven-stage migration and quarantine pipeline, and online backup/restore verification (`FR-R6-F04`, `FR-R7-02`)
+- [Usage and metrics accounting](operations/usage-accounting.md) — how a usage or cost total is built and how far to trust it: completeness and coverage, reported and estimated cost lanes, currencies and credits, unattributed and historical observations, corrections and revisions, the legacy epoch, gaps, and limits (`FR-R6-F06`)
+- [Historical reports and exports](operations/historical-reporting.md) — what a report reads and how far it goes: the six views, the bounds and their typed outcomes, export destinations, publication and reconciliation, the CSV profile and JSON as the exact format, saved reports and reproduction, trust, and what is deferred (`FR-R6-F11`, `FR-R7-17`)
+- [Change review](operations/change-review.md) — reviewing an integration request's change set before approval or landing: the four states and their reasons, display-only eligibility, change kinds, bounds, placeholders, the editor opener and its fallback, the headless port, and what is deferred (`FR-R6-F12`)
+- [ACP agent runtime](operations/acp-runtime.md) — the host-owned ACP client: lifecycle, prompt outcomes, the refusal and failure reasons, bounds, cancellation and permissions, identities and history, host locality classification (`local` vs `remote`), event mapping, and platform qualification (`FR-R6-F13`, `FR-R7-14`)
+- [Optional OpenTelemetry export](operations/telemetry-export.md) — the opt-in metrics exporter: what is and is never exported, the profile and its refusal reasons, the instruments, corrections and coverage outcomes, the overflow set, delivery bounds and dispositions, health, the retransmission and label limits, and what was not observed (`FR-R6-F14`)
+- [Phase-to-phase context handoff](operations/phase-context-handoff.md) — the opt-in handoff between two workflow phases: shipped F15-B production persistence and ACP prompt delivery, disabled versus opted-in transition traces, selection and omission reasons, limits, revisions, approval and dispatch records, review-loop verification, and remaining limits (`FR-R6-F15`, `FR-R7-14`)
+- [Release notes](operations/release-notes.md)
+- [Trust scopes](operations/trust-scopes.md)
+- [VSIX allowlist derivation](operations/vsix-allowlist-derivation.md)
+- [Workspace Trust](operations/workspace-trust.md) — what stays available, what refuses, and what granting trust runs, in a window VS Code has not trusted
+- [Running Schegent on a repository you do not trust](operations/untrusted-repositories.md) — owns the rule; the threat model and the quickstart link here
+
+#### Dated measurements and historical observations
+
+- [Sidebar cancellation latency measurement](operations/cancellation-latency-measurement.md) — **measured 2026-11-24**: sidebar cancellation dispatch/ACK latency behind held start and teardown mutations and ordering decision (`FR-R7-18`, `N01`)
+- [Stage 2 startup and 5 MiB audit chain verification measurement](operations/startup-and-audit-verification-measurement.md) — **measured 2026-11-24**: Stage 2 activation sub-stage timings with sidebar open and 5 MiB whole-file / multi-archive audit verification latency and responsiveness (`FR-R7-18`, `N05`)
+- [Asynchronous test flakiness remediation and isolated-vs-loaded measurement](operations/async-test-flakiness-measurement.md) — **measured 2026-11-24**: split multi-invariant tests, deterministic wait replacements, wait-lint hardening, and repeated isolated versus loaded run comparison (`FR-R7-18`, `N06`)
+- [SQLite large restore measurement and ownership fencing](operations/sqlite-large-restore-measurement.md) — **measured 2026-11-23**: legacy JS materialization versus SQLite-native `ATTACH` + `INSERT INTO ... SELECT` restore timings, peak RSS, event-loop delay, heartbeat continuity, logger latency, and calibrated 512 MiB maintenance envelope (`FR-R7-14`, `14-03`)
+- [Historical reporting query latency measurement](operations/historical-reporting-measurement.md) — **measured 2026-11-23**: 100,000-attempt reference fixture first-page, isolated warm capture, sliced event-loop gap, later-page, cancellation, deadline, and working-data measurements against preserved `NFR-002`/`NFR-005` SHOULD targets (`FR-R7-17`, `R7-17-02`)
+- [Legacy Pipeline compatibility caller inventory](operations/legacy-pipeline-caller-inventory.md) — **inventoried 2026-11-23**: exact host (`src/`) and webview (`webview-ui/src/`) file counts, surface categories, and retirement prerequisites for remaining internal `Pipeline` compatibility callers (`FR-R7-14`, `14-21`)
+- [SQLite operational state commit latency measurement](operations/sqlite-operational-commit-latency-measurement.md) — **measured 2026-11-19**: host-thread write-commit, read-view, prune, and event-loop delay distributions on `WAL` + `synchronous = FULL` across four workload tiers, the pre-declared Round 6 decision gate that triggered Migration 9, and before/after Schema 8 → Schema 9 verification (`FR-R7-02`)
+- [Webview snapshot cost, render cost and persisted-state growth](operations/webview-snapshot-cost-measurement.md) — **measured 2026-10-31**: what the state snapshot costs the host and the webview per workload, how many snapshots a hidden sidebar is sent, how persisted records grow, the adoption decision against a threshold declared first, and the retention options that are documented and not implemented
+- [Transport-sink descriptor measurement](operations/transport-descriptor-measurement.md) — **measured 2026-08-28**: the sink's own append-handle count across 200 build/teardown cycles, 200 repoint/rotation cycles and 2,000 sustained records, and how it relates to the flat process-wide delta the large-workspace record reports
+- [Concurrent-run isolation measurement](operations/concurrent-run-isolation-measurement.md) — attribution outcomes at concurrency 1/2/4/8, and the recommended cap of 2
+- [Large-workspace resource measurement](operations/large-workspace-resource-measurement.md) — **measured 2026-08-27**: resident/retained, descriptors and Git behaviour at concurrency 1/2/4/8 on 2,000 tracked files, plus activation percentiles and the release-claim floor they establish
+- [Concurrent-run resource measurement](operations/concurrent-run-resource-measurement.md)
+- [Platform observation record](operations/platform-observation-record.md)
+- [Counts the round-3 documents assert](operations/asserted-counts-sweep.md) — what was examined, and why the mechanism is the size it is (FR-R3-067)
+- [Duplicate-authority detection: the threshold measurements](operations/duplicate-authority-threshold-measurement.md) — the measurements behind the threshold (FR-R3-066)
+- [Lazy-route wait budget](operations/lazy-route-wait-budget.md) — the sweep, and what was observed (FR-R3-068)
+- [Visual gate preflight observations](operations/visual-gate-preflight-observations.md) — the recorded observations behind the preflight (FR-R3-065)
+- [Single-task queue migration](operations/single-task-queue-migration.md)
+- [Merge-gate observation](operations/merge-gate-observation.md)
+- [Release provenance observation](operations/release-provenance-observation.md)
+
+### Architecture and decisions
+
+- [Agent capability posture](architecture/agent-capability-posture.md) — **decided, shipped 2026-08-24** (shape 3: uncontained backends refused by default, `schegent.backend.uncontainedBackends` is the opt-in, per backend since FR-R3-125)
+- [Backend containment qualification](architecture/backend-containment-qualification.md) — **qualified 2026-08-27**: what OS-enforced containment is actually available per backend and platform, and why Agy's `--sandbox` is available and not requested by default
+- [English-only is a product decision](concepts/english-only-not-localizable.md) — **decided 2026-08-22, re-taken 2026-10-21: English only** (1,122 distinct user-visible strings measured; what would reopen it, and its review date)
+- [High-coupling ownership boundaries and headless facade inventory](architecture/high-coupling-ownership-and-facades.md) — **measured 2026-11-24**: host layer ownership for high-coupling hotspots, store-keyed lifecycle disposal boundaries, and AST-verified caller inventory of all 15 `src/headless/` modules (`FR-R7-18`, `N08`)
+- [HostServices facade removal](architecture/host-services-facade-removal.md) — **decided 2026-08-29: deleted** (a nine-member host facade no installed extension could reach; two of its members had no caller at either end, and `tests/lint/adapter-module-reachability.test.ts` now fails the next one)
+- [Native binding decision](architecture/native-binding-decision.md) — **decided 2026-08-25: no** (the `openat`, `renameat`, Job Object and reparse-tag residuals are permanent stated limits)
+- [Local queue parallelism ratification](architecture/local-queue-parallelism-ratification.md)
+- [Per-Run execution isolation decision](architecture/run-isolation-decision.md) — **shape accepted 2026-08-27: per-Run Git worktree; implementation gated** (§9 carries the entry conditions and the 2026-11-27 review trigger)
+- [Remote multi-user expansion gate](architecture/remote-multi-user-expansion-gate.md)
+- [Webview dead surface removal](architecture/webview-dead-surface-removal.md) — **decided 2026-08-29: deleted** (ten Svelte components, 1,685 lines, each measured unreachable from both bundle entry points; the gate that allowlisted them is retired and `tests/lint/svelte-surface-reachability.test.ts` now needs an owner and an expiry date for any new exemption)
+- [Workspace ownership fencing](architecture/workspace-ownership-fencing.md)
+- [The composition root, decided](architecture/composition-root-extraction.md) — **decided 2026-08-27** (FR-R3-119)
+- [Distribution posture](architecture/distribution-posture.md) — **decided 2026-08-27** (FR-R3-120)
+- [Durability of the evidence writes](architecture/durability-decision.md) — **decided 2026-08-26, extended 2026-10-31** (FR-R3-111, FR-R4-F07)
+- [Declined: an encrypted evidence store](architecture/evidence-encryption-declination.md) — **declined 2026-08-27, with a reversal trigger** (FR-R3-127)
+- [The phase verdict default](architecture/phase-verdict-default.md) — **decided 2026-08-27** (FR-R3-117)
+
+### Development
+
+- [Absent-field assertion classification](development/absent-field-classification.md) — how an
+  absent-field assertion is judged against a payload contract, how a contradiction is resolved, and
+  what the gate that produces the register does not read (FR-R3-167)
+- [Contract descriptors](development/contract-descriptors.md) — single-source IPC and snapshot
+  descriptors, generation commands, and parity-test retirement record (FR-R7-05)
+- [Contributor setup rehearsal](development/contributor-setup-rehearsal.md) — clean paired-checkout and
+  standalone setup rehearsal, missing-webview diagnostic, focused regression command, and envelope-only
+  governance checks (FR-R8-03 / 03-06)
+- [Coverage measurements](development/coverage-measurements.md)
+- [Gate integrity measurements](development/gate-integrity-measurements.md) — the vacuity detector's
+  false-negative rate, the zero-offender enumeration, the product-versus-suite coverage split, and the
+  re-verified webview dead-code classification (FR-R3-088)
+- [IPC validator fuzz: the hazard map](development/ipc-fuzz-hazard-map.md) — which of the six
+  adversarial input classes the example suite already drives at `validateInboundMessage`, the two
+  construction notes that decide whether a generated case is real or inert, and what the property
+  deliberately does not cover (FR-R3-168)
+- [Lint and type-aware rules](development/lint-and-type-aware-rules.md)
+- [Parser and timing coverage inventory](development/parser-and-timing-coverage-inventory.md) — which
+  seeded tests guard each parser and settings boundary, which tests wait on a real timer, and which
+  control the clock, each count with the command that reproduces it and an owner for every gap
+  (FR-R4-F12)
+- [Section references are checked by `docs:check`](development/section-reference-check.md) —
+  **decided 2026-10-20**: in live documents, a link fragment or `§` marker naming a section of
+  another file must name a heading that file has. The rule was fixed before the count, and the count
+  it rests on was ten live failures against a threshold of ten, corrected the same day from a first
+  count of nine. The page also gives what the check leaves out and what would reopen the decision
+  (FR-R3-184)
+- [Size-gate entry condition](development/size-gate-entry-condition.md) — **decided 2026-10-01**:
+  every `src/` file of 1,000 lines or more carries a ceiling or a waiver in the size gate's table. The
+  measured distribution, each rejected threshold with the count it would have captured, and what
+  would move it (FR-R3-183)
+- [Spec Kit template provenance](development/template-provenance.md) — which templates the artifact
+  criteria were derived from, at which hashes, what state each is in, and the upstream revision that is
+  still pending qualification (FR-R4-F12)
+- [The devcontainer question](development/devcontainer-declination.md) — **declined 2026-08-28** (FR-R3-132)
+- [Lint gate census](development/lint-gate-census.md) — one line per gate, generated, with the current dated count
+- [Verification tiers](development/verification-tiers.md) — four tiers, cheapest first, and what each one does not establish (FR-R3-132, FR-R7-08)
+
+### Release
+
+- [Release documentation](release/README.md) — index of live release gates, qualification matrices, advisory dispositions, and retired hosted-CI records alongside [RELEASE.md](../RELEASE.md)
+- [Current release controls](release/current-release-controls.md) — what actually runs today, derived
+  from the tree rather than written down. The single present-tense authority; four pages used to answer
+  this question independently and all four were wrong (FR-R3-138)
+- [Canary credentials: an itemized request](release/canary-credential-request.md) — what *a* scheduled
+  backend canary would need to run a live phase, per credential, with the cost of a leak. A record: the
+  schedule it was written for went with the workflows on 2026-08-26 (FR-R3-084, FR-R3-099)
+- [Assistive-technology matrix](release/accessibility-at-matrix.md) — what real screen-reader testing
+  has been done per platform, and where the honest answer is **untested** (FR-R3-091)
+- [Held major dependency upgrades](release/held-major-upgrades.md) — the deliberate holds, why each is
+  held, and when it was last re-examined. A held upgrade with no review date is indistinguishable from a
+  forgotten one (FR-R3-090).
+- [Advisory dispositions](release/advisory-dispositions.md) — the tracked list of recorded decisions about
+  dependency advisories: what each field means, the `rationale` release preparation requires, and what
+  a disposition does not do. `accepted` is a label, not a waiver (FR-R4-F09).
+- [Qualification matrix](release/qualification-matrix.md) — Node 22 and 24 on macOS, Linux and Windows:
+  each cell is either observed, with the five facts of an observation, or `unobserved` with its
+  prerequisite. Never a bare "passed" (FR-R4-F09).
+- [Preview release-candidate evidence](release/preview-rc-evidence.md) — Round 8 engineering preview
+  candidate host tuple, VSIX smoke package metrics and digest, advisory posture, feature verification
+  summary, and explicitly unqualified release prerequisites (FR-R8-03 / 03-08)
+- [Node 22 floor record](release/node-floor-record.md) — the last run of the plain-Node toolchain on
+  the declared Node 22 floor, its failures, and what that run does not show. It is not a
+  qualification cell (FR-R5-F21).
+- [GitHub Actions: terminal record](release/actions-terminal-record.md) — retired by operator decision on 2026-08-26 (FR-R3-099)
+- [Backend qualification log](release/backend-qualification-log.md) — whether the canary has ever produced a result, and what it said
+- [Withdrawn CI-dependent controls](release/withdrawn-ci-controls.md) — what each control was, and what replaced it (FR-R3-099)
+
+### Reference
+
+- [Reference documents](reference/README.md) — what is authoritative for what
+- [API and command reference](reference/api-and-cli.md) — every command surface the extension ships
+- [Audit events](reference/audit-events.md) — the structured audit record and its event types
+- [Command Palette reference](reference/commands.md) — the manifest-parity index of every contributed command
+- [File layout](reference/file-layout.md) — where durable state lives
+- [Glossary](reference/glossary.md) — the vocabularies for authored, queued and running work
+- [Settings reference](reference/settings.md) — every `schegent.*` setting
+- [System configuration](reference/system-config.md) — how configuration reaches the product
+- [Composable Workflow YAML grammar](reference/workflow-yaml-grammar.md) — canonical key ordering, closed field sets, and validation boundaries for `kind: Workflow` documents (`FR-R5-F04`)
+- [Workflow execution runtime](workflow-execution-runtime.md) — frozen transitive closure execution, occurrence identity, scoped bindings, routing and handoff semantics (`FR-R5-F02`)
+
+### Security
+
+- [Operator threat model](security/threat-model.md) — the threat catalog, with each mitigation and its residual risk
+- [Security white paper](security/whitepaper.md) — how the extension coordinates local CLI processes, and the limits of what it does about them
+- [CSP supply-chain policy](security/csp-supply-chain-record.md) — what it decided, and what enforces it
+- [Prototype-rebuild census](security/prototype-rebuild-census.md) — every place that rebuilds an object by copying enumerated keys
+
+### Features
+
+- [Custom Phases and Workflows](features/custom-phases.md) — the empty catalog, and how definitions are imported or authored
+- [Process YAML exchange format](features/phase-yaml-exchange.md) — portable YAML for Phase, Workflow and ModelCatalog
+
+### Other
+
+- [Asset report](ASSET_REPORT.md)
+- [Workflow control flow acceptance verification report](verification/workflow-control-acceptance.md) — 36-criterion acceptance matrix (`AC-01`–`AC-36`), integrated prerequisite commits (`F23`–`F34`), schema compatibility, and measured bounds (`FR-R5-F35`)
+
+## Current onboarding constraints
+
+These constraints explain why the courses include explicit stop-and-check
+steps:
+
+- Schegent ships an empty active catalog. Operators need a reviewed process
+  YAML package or must author and publish definitions before launching work.
+- The engineering-preview VSIX route is a local `npm run build`, then
+  `npm run package`, from a checkout installed by the canonical sequence in
+  [Prepare a checkout](../CONTRIBUTING.md#prepare-a-checkout). The package step
+  refuses when the module graphs the build writes are absent. No tag or GitHub
+  Release publishes a VSIX; [RELEASE.md](../RELEASE.md) says what a release is.
+- The bundled Spec-kit example is a real, Git-mutating development workflow,
+  not a harmless first-run sample. Use it only in a disposable checkout after
+  review.
+- Sensitive contributor changes are governed by the hard rules in
+  `docs/hard-rules.md` in the planning envelope, one directory above this
+  checkout; read the rows of its index that your change touches. `../AGENTS.md`
+  orients you and points at it. A standalone execution-repository clone does
+  not contain either parent file, so contributors must obtain the planning
+  envelope instead of guessing at the rules.
+
+<!-- Source: ../src/config/pipeline-config.ts -->
+<!-- Source: ../RELEASE.md -->
+<!-- Source: ../examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: ../AGENTS.md -->
+<!-- Source: ../../AGENTS.md -->
+
+Return to the [project README](../README.md) for the product overview.

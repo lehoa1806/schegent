@@ -4,7 +4,7 @@
 import type { WorkflowRun, WorkspaceLock } from '../../state/workflow-run';
 import type { RunOutputRecord } from '../../contracts/run-results';
 import { STALENESS_THRESHOLD_MS } from '../../state/lock';
-import { countCompletedInPlan } from '../../services/run-planned-total';
+import { settledPhaseProgress } from '../../services/run-planned-total';
 import {
   IDLE_DELAYED_RETRY,
   type ActiveFeatureSummary,
@@ -96,19 +96,27 @@ export function projectRunLiveness(run: WorkflowRun | null): RunLivenessProjecti
  *
  * A plan with nothing left to run reports 100 rather than dividing by zero: a
  * Run whose every phase is overridden has, correctly, nothing outstanding.
+ *
+ * FR-R3-158 (D1) — the pair itself now comes from `settledPhaseProgress`, which
+ * is the only place the numerator and the denominator are put together. This
+ * function used to be that place; when the feature gave Task rows the same
+ * figure, leaving the pairing here would have meant two sites pairing two
+ * numbers, which is the shape that lets a count outgrow its total. What stays
+ * here is what is genuinely this projection's own: the percent clamp, and the
+ * two context fields read off the Run's frozen total.
  */
 export function projectRunProgress(run: WorkflowRun | null): RunProgressProjection | null {
   if (!run) return null;
   const total = run.plannedTotal;
-  if (!total) return null;
-  const completed = countCompletedInPlan(run);
+  const progress = settledPhaseProgress(run);
+  if (!total || !progress) return null;
   const percent =
-    total.phaseCount === 0
+    progress.total === 0
       ? 100
-      : Math.min(100, Math.max(0, Math.round((completed / total.phaseCount) * 100)));
+      : Math.min(100, Math.max(0, Math.round((progress.settled / progress.total) * 100)));
   return Object.freeze({
-    phasesCompleted: completed,
-    phaseCount: total.phaseCount,
+    phasesCompleted: progress.settled,
+    phaseCount: progress.total,
     iterationCap: total.iterationCap,
     maxPhaseInvocations: total.maxPhaseInvocations,
     percent

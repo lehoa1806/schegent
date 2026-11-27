@@ -100,21 +100,80 @@ describe('HistorySection', () => {
     expect(ids).toEqual(['r-newest', 'r-middle', 'r-oldest']);
   });
 
+  it('draws the runs as one table, a row for each run and a column for each fact', () => {
+    const { container } = render(HistorySection, {
+      props: { rows: [entry({ runId: 'r-1' }), entry({ runId: 'r-2' })], isPrimary: true }
+    });
+
+    const table = container.querySelector('table');
+    expect(table?.querySelector('caption')?.textContent.trim()).toBe('Runs, newest first');
+    const columns = [...container.querySelectorAll<HTMLElement>('thead th[scope="col"]')].map(
+      (header) => header.textContent.trim()
+    );
+    expect(columns).toEqual(['Run', 'Queue', 'Status', 'Duration', 'Updated', 'Actions']);
+    expect(container.querySelectorAll('tbody tr[data-history-row]')).toHaveLength(2);
+  });
+
+  // Before the redesign the ledger and the compact list drew different rows,
+  // and the row's required `variant` prop said which. Both draw the same table
+  // row now, but the prop stays, and a ledger row still says it is one
+  // (decision 3 of the port review, 2026-11-14).
+  it('marks every row of the ledger as a ledger row', () => {
+    const { container } = render(HistorySection, {
+      props: { rows: [entry({ runId: 'r-1' }), entry({ runId: 'r-2' })], isPrimary: true, variant: 'ledger' }
+    });
+
+    const rows = [...container.querySelectorAll('tbody tr[data-history-row]')];
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.classList.contains('ledger'))).toEqual([true, true]);
+  });
+
+  it('leaves the rows of a compact section unmarked', () => {
+    const { container } = render(HistorySection, { props: { rows: [entry()], isPrimary: true } });
+
+    const row = container.querySelector('tbody tr[data-history-row]');
+    expect(row).not.toBeNull();
+    expect(row?.classList.contains('ledger')).toBe(false);
+  });
+
   it('renders status badge, duration, last-updated for each entry', () => {
     const e = entry({ durationMs: 65_000, status: 'failed' });
     const { getByTestId } = render(HistorySection, { props: { rows: [e], isPrimary: true } });
-    expect(getByTestId('history-item-r-1-status').textContent).toContain('failed');
+    // A chip in words, capitalised, never the raw status value.
+    expect(getByTestId('history-item-r-1-status').textContent.trim()).toBe('Failed');
     expect(getByTestId('history-item-r-1-duration').textContent).toMatch(/1m\s+5s/);
     expect(getByTestId('history-item-r-1-completed-at')).not.toBeNull();
   });
 
-  it('renders Rerun / Open Audit Log / Open Details buttons per entry', () => {
+  it('renders Open Details / Open Audit Log before Rerun inside the row SgMenu', () => {
     const { getByTestId } = render(HistorySection, {
       props: { rows: [entry()], isPrimary: true }
     });
-    expect(getByTestId('history-item-rerun-r-1')).not.toBeNull();
-    expect(getByTestId('history-item-open-audit-r-1')).not.toBeNull();
-    expect(getByTestId('history-item-open-details-r-1')).not.toBeNull();
+    const rerun = getByTestId('history-item-rerun-r-1');
+    const audit = getByTestId('history-item-open-audit-r-1');
+    const details = getByTestId('history-item-open-details-r-1');
+    const menuWithoutSelect = audit.closest('[role="menu"]') as HTMLElement | null;
+    expect(menuWithoutSelect).not.toBeNull();
+    expect([...menuWithoutSelect!.children].map((el) => el.getAttribute('data-testid'))).toEqual([
+      'history-item-open-audit-r-1',
+      'history-item-rerun-r-1'
+    ]);
+    expect(details).not.toBeNull();
+    expect(rerun).not.toBeNull();
+    cleanup();
+
+    const withSelect = render(HistorySection, {
+      props: { rows: [entry()], isPrimary: true, onTaskSelect: vi.fn() }
+    });
+    const menuWithSelect = withSelect
+      .getByTestId('history-item-open-details-r-1')
+      .closest('[role="menu"]') as HTMLElement | null;
+    expect(menuWithSelect).not.toBeNull();
+    expect([...menuWithSelect!.children].map((el) => el.getAttribute('data-testid'))).toEqual([
+      'history-item-open-details-r-1',
+      'history-item-open-audit-r-1',
+      'history-item-rerun-r-1'
+    ]);
   });
 
   it('Rerun is aria-disabled when isPrimary === false; Open Audit Log / Open Details remain enabled', () => {
@@ -220,7 +279,7 @@ describe('HistorySection', () => {
     const { getByTestId } = render(HistorySection, {
       props: { rows: [entry({ status: 'canceled' })], isPrimary: true }
     });
-    expect(getByTestId('history-item-r-1-status').textContent).toContain('canceled');
+    expect(getByTestId('history-item-r-1-status').textContent.trim()).toBe('Canceled');
   });
 
   it('uses VS Code theme variables for status badges (no hardcoded hex/rgb)', async () => {

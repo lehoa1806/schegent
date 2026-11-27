@@ -4,7 +4,9 @@
 //   - Allowlist enforcement: unknown keys rejected, no write attempted.
 //   - Per-key runtime type check (string/number/boolean/array-of-string).
 //   - `fatalSignatures` MUST be an array of non-empty strings.
-//   - All writes target `ConfigurationTarget.Workspace` only (FR-020).
+//   - Each write targets the layer its manifest scope declares: `Global` for
+//     `application`-scoped keys, `Workspace` otherwise (FR-R3-051 / M-05,
+//     superseding the original FR-020 "Workspace only").
 //   - Transactional semantics: if ANY key fails validation, NO key is
 //     written (matches contracts/general-settings-ipc.md).
 //   - `readGeneralSettings()` projects the current effective workspace
@@ -82,7 +84,13 @@ function makeConfig(opts: {
   return fake as unknown as GeneralSettingsConfig;
 }
 
-const CONFIGURATION_TARGET_WORKSPACE = 2; // vscode.ConfigurationTarget.Workspace
+// FR-R3-051 (M-06) — imported, not restated. A local copy of a constant the
+// source already exports is the same defect this feature is removing elsewhere:
+// it agrees until it doesn't, and nothing checks.
+import {
+  CONFIGURATION_TARGET_WORKSPACE,
+  CONFIGURATION_TARGET_GLOBAL
+} from '../../../src/config/general-settings';
 
 describe('Feature 011 — general-settings allowlist', () => {
   it('ALLOWED_KEYS contains exactly the scalar keys (unprefixed)', () => {
@@ -93,15 +101,14 @@ describe('Feature 011 — general-settings allowlist', () => {
         'agy.path',
         'logging.verbose',
         'loop.maxIterations',
-        'invocation.timeoutSeconds',
+        'invocation.idleTimeoutSeconds',
+        'invocation.maxDurationSeconds',
         'watchdog.pollIntervalMinutes',
         'audit.rotation.sizeMB',
         'audit.rotation.maxAgeDays',
-        'defaultPipelineId',
+        'defaultWorkflowId',
         'fatalSignatures',
         'claude.autoCompactPctOverride',
-        'queue.globalConcurrencyCap',
-        'queue.defaultQueueId',
         'logging.runtimeLogLevel',
         'logging.runtimeLogFilePath',
         'logging.rawTranscriptMode',
@@ -110,7 +117,29 @@ describe('Feature 011 — general-settings allowlist', () => {
         'logging.sessionRetentionMaxAgeDays',
         'logging.sessionRetentionMaxBytes',
         'retry.maxAttempts',
-        'retry.forceContinueOnCap'
+        'retry.forceContinueOnCap',
+        // FR-R3-143 (T025) — six manifest settings the tab could not offer
+        // because nothing here accepted them. The two `window`-scoped ones are
+        // the first of that scope in `KEY_SPECS`.
+        'cli.inheritEnvironment',
+        'cli.environmentMode',
+        'cli.environmentAllowlist',
+        'backend.probeTimeoutSeconds',
+        'ui.confirmations.enable',
+        'multiRoot.suppressWarning',
+        // FR-R3-144 (T006) — which backend runs, and the two denominations a
+        // spend bound can be set in. `backend.uncontainedBackends` is NOT here
+        // and is not an oversight: an entry would make it a whole-array write
+        // through this same batch, and a whole-array payload cannot tell a
+        // revoke from a stale draft. It has its own per-backend command.
+        'backend.runner',
+        'spend.maxUsdPerRun',
+        'spend.maxTokensPerRun',
+        // Feature 195 (T008) — the workspace default a queue follows when it
+        // states no opinion of its own.
+        'queue.haltOnTaskFailure',
+        // FR-R4-F04 (feature 251, FR-001) — which CLI transport lines a Run keeps.
+        'logging.transportCaptureMode'
       ])
     );
   });
@@ -228,9 +257,18 @@ describe('Feature 011 — general-settings transactional accept/reject', () => {
     });
     expect(result.ok).toBe(true);
     expect(fake.updateCalls).toHaveLength(3);
-    for (const call of fake.updateCalls) {
-      expect(call.target).toBe(CONFIGURATION_TARGET_WORKSPACE);
-    }
+    // FR-R3-051 (M-05) — this loop used to assert every key went to the
+    // WORKSPACE target, `cli.path` included. That is the defect, asserted as
+    // correct: `cli.path` is `application`-scoped and has no workspace layer in
+    // real VS Code. Made scope-aware rather than dropped, so it now distinguishes
+    // the two targets instead of accepting either.
+    expect(
+      fake.updateCalls.map((call) => [call.key, call.target] as const)
+    ).toEqual([
+      ['loop.maxIterations', CONFIGURATION_TARGET_WORKSPACE],
+      ['logging.verbose', CONFIGURATION_TARGET_WORKSPACE],
+      ['cli.path', CONFIGURATION_TARGET_GLOBAL]
+    ]);
   });
 });
 
@@ -297,14 +335,13 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
         'cli.path': 'claude',
         'logging.verbose': false,
         'loop.maxIterations': 10,
-        'invocation.timeoutSeconds': 5400,
+        'invocation.idleTimeoutSeconds': 5400,
+        'invocation.maxDurationSeconds': 21600,
         'watchdog.pollIntervalMinutes': 30,
         'audit.rotation.sizeMB': 5,
         'audit.rotation.maxAgeDays': 30,
-        'defaultPipelineId': 'speckit-new-feature',
+        'defaultWorkflowId': 'speckit-new-feature',
         'fatalSignatures': [],
-        'queue.globalConcurrencyCap': 1,
-        'queue.defaultQueueId': 'default'
       }
     });
     const snap = readGeneralSettings(config);
@@ -312,8 +349,6 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
     expect(snap.loggingVerbose).toBe(false);
     expect(snap.loopMaxIterations).toBe(10);
     expect(snap.fatalSignatures).toEqual([]);
-    expect(snap.queueGlobalConcurrencyCap).toBe(1);
-    expect(snap.queueDefaultQueueId).toBe('default');
     expect(snap.scopes.cliPath).toBe('default');
     expect(snap.scopes.fatalSignatures).toBe('default');
   });
@@ -351,73 +386,59 @@ describe('Feature 011 — readGeneralSettings projects current values + scopes',
     const config = makeConfig({
       workspace: {
         'loop.maxIterations': 51,
-        'invocation.timeoutSeconds': 29
+        'invocation.idleTimeoutSeconds': 29
       }
     });
     const snap = readGeneralSettings(config);
     expect(snap.loopMaxIterations).toBe(10);
-    expect(snap.invocationTimeoutSeconds).toBe(5400);
+    expect(snap.invocationIdleTimeoutSeconds).toBe(5400);
   });
 });
 
-describe('Feature 017 — queue settings validation', () => {
-  it('accepts queue global concurrency cap in [1, 1] (Feature 056 Track 4)', async () => {
+describe('FR-R3-145 (T1570) — the queue settings are not configuration', () => {
+  // This block replaces `Feature 017 — queue settings validation`, five cases
+  // that wrote `queue.globalConcurrencyCap` and `queue.defaultQueueId` through
+  // `writeGeneralSettings` and asserted the bound `[1, 20]` on the way in. Every
+  // one of them passed against a configuration key that no scheduling path read:
+  // `hasExecutionCapacity` and `hasWorkspaceCapacity` gate on the workspace
+  // memento, which the Settings page's Queues section writes through
+  // `CMD_SAVE_QUEUE_SETTINGS`.
+  // The configuration key is gone, so the only honest assertion left about it is
+  // that it is refused. The bound those five cases were built to protect is
+  // enforced at the IPC boundary by `validateSaveQueueSettings` in
+  // `src/contracts/validators/queue-management.ts` and again in
+  // `QueueManager.saveQueueSettings`; both are covered where they live.
+  it('refuses the removed queue keys as unknown rather than validating them', async () => {
+    for (const key of ['queue.globalConcurrencyCap', 'queue.defaultQueueId']) {
+      const result = await writeGeneralSettings(makeConfig(), { [key]: 1 });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe(`unknown-key:${key}`);
+    }
+  });
+
+  it('writes nothing to configuration when a removed queue key is supplied', async () => {
+    // The refusal has to be a refusal, not a partial write. `writeGeneralSettings`
+    // validates the whole batch before it updates anything, and this is the
+    // property that made removing the key safe: a caller still passing it gets
+    // an error, not a half-applied settings save.
     const config = makeConfig();
     const fake = config as unknown as FakeWorkspaceConfig;
-    const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 1 });
-    expect(result.ok).toBe(true);
-    expect(fake.updateCalls).toEqual([
-      { key: 'queue.globalConcurrencyCap', value: 1, target: CONFIGURATION_TARGET_WORKSPACE }
-    ]);
-  });
-
-  // Feature 092 (T039b, US2, FR-026/FR-027) — the bound widened from `[1, 1]`
-  // to `[1, 20]`, so the value this test used as its out-of-range example is
-  // now a legal one. Widening the bound without moving the example would have
-  // left the guard asserting nothing.
-  it('accepts a queue global concurrency cap inside [1, 20]', async () => {
-    const config = makeConfig();
-    const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 2 });
-    expect(result.ok).toBe(true);
-  });
-
-  it('accepts the upper bound 20', async () => {
-    const config = makeConfig();
-    const result = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 20 });
-    expect(result.ok).toBe(true);
-  });
-
-  it('rejects queue global concurrency cap outside [1, 20] (Feature 092)', async () => {
-    const config = makeConfig();
-    const above = await writeGeneralSettings(config, { 'queue.globalConcurrencyCap': 21 });
-    expect(above.ok).toBe(false);
-    if (!above.ok) expect(above.reason).toBe('out-of-range:queue.globalConcurrencyCap');
-
-    const below = await writeGeneralSettings(makeConfig(), {
-      'queue.globalConcurrencyCap': 0
+    const result = await writeGeneralSettings(config, {
+      'logging.verbose': true,
+      'queue.globalConcurrencyCap': 2
     });
-    expect(below.ok).toBe(false);
-    if (!below.ok) expect(below.reason).toBe('out-of-range:queue.globalConcurrencyCap');
+    expect(result.ok).toBe(false);
+    expect(fake.updateCalls).toEqual([]);
   });
 
-  it('accepts queue default id as a string', async () => {
-    const config = makeConfig();
-    const result = await writeGeneralSettings(config, { 'queue.defaultQueueId': 'default' });
-    expect(result.ok).toBe(true);
-  });
-
-  it('projects malformed queue cap to the default cap', () => {
-    // Feature 092 (T055, FR-026/FR-027) — the default moved from 1 to 3;
-    // feature 098 (REL-02) moved it back to 1 for the shared-worktree
-    // checkpoint reason. The projection behaviour is unchanged across both:
-    // an out-of-range *configuration* read still falls back to the declared
-    // default. (`WorkspaceStateStore`'s persisted-value reader is the one
-    // that stopped saturating; these are different surfaces with different
-    // failure modes.)
-    const config = makeConfig({ workspace: { 'queue.globalConcurrencyCap': 100 } });
-    const snap = readGeneralSettings(config);
-    expect(snap.queueGlobalConcurrencyCap).toBe(1);
-  });
+  // FR-R3-145 (T1570) — 'projects malformed queue cap to the default cap' stood
+  // here. It asserted that an out-of-range *configuration* read fell back to the
+  // declared default, which was true and which nothing depended on: no scheduling
+  // path read that configuration. The behaviour that matters — an out-of-range
+  // *persisted* cap being refused rather than saturated — is
+  // `WorkspaceStateStore`'s, and is covered in
+  // `tests/unit/state/workspace-state.test.ts`. A different surface with a
+  // different failure mode, which is why deleting this one loses no coverage.
 });
 
 describe('Feature 011 — empty updates', () => {
@@ -475,7 +496,7 @@ describe('Feature 011 — writeGeneralSettings surfaces underlying errors', () =
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toBe('write-failed:logging.verbose:settings.json: EBUSY');
+    expect(result.reason).toBe('write-failed:logging.verbose');
     expect(fake.updateCalls).toEqual([
       { key: 'loop.maxIterations', value: 7, target: CONFIGURATION_TARGET_WORKSPACE },
       { key: 'logging.verbose', value: true, target: CONFIGURATION_TARGET_WORKSPACE },
@@ -512,6 +533,187 @@ describe('Feature 011 — writeGeneralSettings surfaces underlying errors', () =
     const after = readGeneralSettings(config);
     expect(after.loopMaxIterations).toBe(10);
     expect(after.scopes.loopMaxIterations).toBe('default');
+  });
+});
+
+// FR-R4-F05 (FR-011; the brief's "never leak exception substrings to IPC") — the reason a failed
+// write returns reaches the sidebar acknowledgement. It used to end in the exception's text
+// (`write-failed:<key>:<message>`, and the rollback form's own `:<detail>`), and a settings-file
+// fault names a path. The reason is now the key and the stage only; the exception goes to the
+// `onWriteFailure` hook, which the host wires to the sanitizing logger.
+describe('FR-R4-F05 — a failed settings write answers a code, never the exception', () => {
+  // A synthetic home directory: a real OS fault from the settings file names one.
+  const WRITE_FAULT_PATH = '/synthetic/home/user-252/.vscode/settings.json';
+  const ROLLBACK_FAULT_PATH = '/synthetic/home/user-253/.vscode/settings.json';
+  const writeFault = (): Error =>
+    new Error(`EACCES: permission denied, open '${WRITE_FAULT_PATH}'`);
+  const rollbackFault = (): Error =>
+    new Error(`EBUSY: resource busy, rename '${ROLLBACK_FAULT_PATH}'`);
+
+  /** A config whose update of `failingKey` throws `fault()`; every other key writes normally. */
+  function configFailingOn(failingKey: string, fault: () => Error): GeneralSettingsConfig {
+    const config = makeConfig({
+      defaults: { 'loop.maxIterations': 10, 'logging.verbose': false },
+      workspace: { 'loop.maxIterations': 3 }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    vi.spyOn(fake, 'update').mockImplementation(async (key, value, target) => {
+      if (key === failingKey) {
+        fake.updateCalls.push({ key, value, target });
+        throw fault();
+      }
+      return update(key, value, target);
+    });
+    return config;
+  }
+
+  it('answers write-failed:<key> with no text from the exception', async () => {
+    const config = configFailingOn('logging.verbose', writeFault);
+
+    const result = await writeGeneralSettings(config, { 'logging.verbose': true });
+
+    expect(result).toEqual({ ok: false, reason: 'write-failed:logging.verbose' });
+  });
+
+  it('answers clear-failed:<key> for a failed clear, as before', async () => {
+    const config = configFailingOn('claude.autoCompactPctOverride', writeFault);
+
+    const result = await writeGeneralSettings(config, { 'claude.autoCompactPctOverride': null });
+
+    expect(result).toEqual({ ok: false, reason: 'clear-failed:claude.autoCompactPctOverride' });
+  });
+
+  it('answers rollback-failed with the keys and the primary code, and no text from either exception', async () => {
+    // The first key writes, the second fails, and the compensating restore of the first fails too.
+    const config = makeConfig({
+      defaults: { 'loop.maxIterations': 10, 'logging.verbose': false },
+      workspace: { 'loop.maxIterations': 3 }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    let loopWrites = 0;
+    vi.spyOn(fake, 'update').mockImplementation(async (key, value, target) => {
+      if (key === 'logging.verbose') throw writeFault();
+      if (key === 'loop.maxIterations') {
+        loopWrites += 1;
+        if (loopWrites > 1) throw rollbackFault();
+      }
+      return update(key, value, target);
+    });
+
+    const result = await writeGeneralSettings(config, {
+      'loop.maxIterations': 7,
+      'logging.verbose': true
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'rollback-failed:loop.maxIterations:after:write-failed:logging.verbose'
+    });
+    expect(JSON.stringify(result)).not.toMatch(/user-25[23]|EACCES|EBUSY/);
+  });
+
+  it('hands the write failure to onWriteFailure with its key, its stage and the exception', async () => {
+    const fault = writeFault();
+    const config = configFailingOn('logging.verbose', () => fault);
+    const onWriteFailure = vi.fn();
+
+    await writeGeneralSettings(config, { 'logging.verbose': true }, { onWriteFailure });
+
+    expect(onWriteFailure).toHaveBeenCalledTimes(1);
+    expect(onWriteFailure).toHaveBeenCalledWith({
+      key: 'logging.verbose',
+      stage: 'write',
+      error: fault
+    });
+  });
+
+  it('hands the clear failure to onWriteFailure at the clear stage', async () => {
+    const fault = writeFault();
+    const config = configFailingOn('claude.autoCompactPctOverride', () => fault);
+    const onWriteFailure = vi.fn();
+
+    await writeGeneralSettings(config, { 'claude.autoCompactPctOverride': null }, { onWriteFailure });
+
+    expect(onWriteFailure).toHaveBeenCalledTimes(1);
+    expect(onWriteFailure).toHaveBeenCalledWith({
+      key: 'claude.autoCompactPctOverride',
+      stage: 'clear',
+      error: fault
+    });
+  });
+
+  it('hands both the write failure and the rollback failure to onWriteFailure, in order', async () => {
+    const primary = writeFault();
+    const restore = rollbackFault();
+    const config = makeConfig({
+      defaults: { 'loop.maxIterations': 10, 'logging.verbose': false },
+      workspace: { 'loop.maxIterations': 3 }
+    });
+    const fake = config as unknown as FakeWorkspaceConfig;
+    const update = fake.update.bind(fake);
+    let loopWrites = 0;
+    vi.spyOn(fake, 'update').mockImplementation(async (key, value, target) => {
+      if (key === 'logging.verbose') throw primary;
+      if (key === 'loop.maxIterations') {
+        loopWrites += 1;
+        if (loopWrites > 1) throw restore;
+      }
+      return update(key, value, target);
+    });
+    const onWriteFailure = vi.fn();
+
+    await writeGeneralSettings(
+      config,
+      { 'loop.maxIterations': 7, 'logging.verbose': true },
+      { onWriteFailure }
+    );
+
+    expect(onWriteFailure.mock.calls).toEqual([
+      [{ key: 'logging.verbose', stage: 'write', error: primary }],
+      [{ key: 'loop.maxIterations', stage: 'rollback', error: restore }]
+    ]);
+  });
+
+  it('does not let a throwing onWriteFailure change the answer', async () => {
+    const config = configFailingOn('logging.verbose', writeFault);
+
+    const result = await writeGeneralSettings(
+      config,
+      { 'logging.verbose': true },
+      {
+        onWriteFailure: () => {
+          throw new Error('the hook itself failed');
+        }
+      }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'write-failed:logging.verbose' });
+  });
+
+  it('calls onWriteFailure for neither a success nor a validation refusal', async () => {
+    const onWriteFailure = vi.fn();
+
+    const written = await writeGeneralSettings(makeConfig(), { 'loop.maxIterations': 7 }, { onWriteFailure });
+    const refused = await writeGeneralSettings(makeConfig(), { 'loop.maxIterations': 'x' }, { onWriteFailure });
+
+    expect(written.ok).toBe(true);
+    expect(refused.ok).toBe(false);
+    expect(onWriteFailure).not.toHaveBeenCalled();
+  });
+
+  it('is supplied by the production wiring, which logs a described, sanitized failure', () => {
+    // The cases above prove the writer calls the hook; this one proves something hands it one. The
+    // sidebar no longer receives the exception, so a missing hook would leave the detail nowhere.
+    const wiring = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', '..', 'src', 'activation', 'sidebar-router-wiring.ts'),
+      'utf8'
+    );
+
+    expect(wiring).toMatch(
+      /onWriteFailure:[\s\S]{0,300}?describeFailure\(error, \(value\) => logger\.sanitize\(value\)\)/
+    );
   });
 });
 
@@ -1023,8 +1225,11 @@ describe('Feature 019 — writeGeneralSettings hook onRuntimeLogSettingChanged',
 //      than silently doing nothing.
 // ---------------------------------------------------------------------------
 
-describe('Feature 098 (T043) — the default-Pipeline setting ships unset', () => {
-  const SETTING_KEY = 'schegent.defaultPipelineId';
+// Feature 285 (OD-2, FR-001): the setting is `schegent.defaultWorkflowId` now, and the four
+// declarations below hold for it. The deprecated key is pinned at the end of the block.
+describe('Feature 098 (T043) — the default-Workflow setting ships unset', () => {
+  const SETTING_KEY = 'schegent.defaultWorkflowId';
+  const DEPRECATED_KEY = 'schegent.defaultPipelineId';
 
   it('reads as the empty string in all four declarations on a fresh install', async () => {
     // 1 — the package manifest, the surface VS Code renders in its Settings UI.
@@ -1042,22 +1247,22 @@ describe('Feature 098 (T043) — the default-Pipeline setting ships unset', () =
 
     // 3 — the settings accessor, asserted through what it answers rather than
     // through `KEY_SPECS`: a config that holds nothing is a fresh install.
-    expect(readGeneralSettings(makeConfig()).defaultPipelineId).toBe('');
+    expect(readGeneralSettings(makeConfig()).defaultWorkflowId).toBe('');
 
     // 4 — the idle view, both halves. The host projection and the webview
     // projection are separate literals and `settings-defaults-parity.test.ts`
     // exists because they have drifted before.
     const hostIdle = await import('../../../src/ui/sidebar/snapshot.js');
     const webviewIdle = await import('../../../webview-ui/src/lib/snapshot-types.js');
-    expect(hostIdle.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
-    expect(webviewIdle.IDLE_GENERAL_SETTINGS.defaultPipelineId).toBe('');
+    expect(hostIdle.IDLE_GENERAL_SETTINGS.defaultWorkflowId).toBe('');
+    expect(webviewIdle.IDLE_GENERAL_SETTINGS.defaultWorkflowId).toBe('');
   });
 
   it('keeps the declared type `string`, so the unset value crosses the boundary as a value', () => {
     // FR-033a. "Unset" is deliberately not `undefined` or a missing key: the
     // field is non-optional in the IPC contract, and making it optional to
     // express absence would have every consumer handle two shapes of nothing.
-    expect(typeof readGeneralSettings(makeConfig()).defaultPipelineId).toBe('string');
+    expect(typeof readGeneralSettings(makeConfig()).defaultWorkflowId).toBe('string');
     expect(SETTINGS_SCHEMA[SETTING_KEY].type).toBe('string');
   });
 
@@ -1100,5 +1305,48 @@ describe('Feature 098 (T043) — the default-Pipeline setting ships unset', () =
     expect(describePipelineRefusal(resolution.refusal)).toBe(
       "pipeline '' is not in the effective catalog"
     );
+  });
+
+  it('keeps the old key as a deprecated alias that names its replacement (FR-004)', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'package.json'), 'utf8')
+    ) as {
+      contributes: {
+        configuration: {
+          properties: Record<
+            string,
+            { deprecationMessage?: string; markdownDeprecationMessage?: string; default?: unknown }
+          >;
+        };
+      };
+    };
+    const deprecated = manifest.contributes.configuration.properties[DEPRECATED_KEY];
+    expect(deprecated.default).toBe('');
+    expect(deprecated.deprecationMessage).toContain(SETTING_KEY);
+    // The settings editor renders the Markdown message where one is given (FR-004).
+    expect(deprecated.markdownDeprecationMessage).toContain(`\`${SETTING_KEY}\``);
+    expect(SETTINGS_SCHEMA[DEPRECATED_KEY].default).toBe('');
+    // The Settings tab edits the new key only, so the old one is no General settings key.
+    expect(ALLOWED_KEYS).not.toContain('defaultPipelineId');
+    expect(ALLOWED_KEYS).toContain('defaultWorkflowId');
+  });
+
+  it('describes what the default does and when the old key still counts (FR-004, FR-006a)', () => {
+    // The default preselects a Workflow in the Queue's Add work composer, and nothing else
+    // launches from it. The manifest says so and names the deprecated key, because the Settings
+    // tab shows the new key only while the old one can still be the answer. The Settings tab's
+    // own text is pinned in the webview tests (GeneralSettingsTab.autocompact.test.ts).
+    const manifest = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '..', '..', '..', 'package.json'), 'utf8')
+    ) as {
+      contributes: {
+        configuration: { properties: Record<string, { markdownDescription?: string }> };
+      };
+    };
+    const manifestText =
+      manifest.contributes.configuration.properties[SETTING_KEY].markdownDescription;
+    expect(manifestText).toContain('**Add work**');
+    expect(manifestText).toContain(`\`${DEPRECATED_KEY}\``);
+    expect(manifestText).not.toContain('enqueued without');
   });
 });

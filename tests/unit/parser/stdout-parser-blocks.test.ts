@@ -4,8 +4,27 @@ import {
   extractRemainingIssues,
   parseInvocation
 } from '../../../src/parser/stdout-parser';
+import { NO_REGION, parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import type { AuditEntryFields } from '../../../src/audit/audit-entry';
 
+// Most stdouts below carry no audit block, so each of those parses passes NO_REGION, as
+// phase-runner.ts would for such a stdout. `validAudit` stands in for the block.
+//
+// FR-R4-F12 (FR-002): a completion token is read only in the trailing region of a complete block,
+// so the stdouts that stand for a finished run carry `COMPLETE_BLOCK` and take their region from
+// `parseAuditLogBlock`, as the production call site does.
+const COMPLETE_BLOCK = [
+  '=== SCHEGENT AUDIT LOG ===',
+  'phase: speckit-specify',
+  'files_created: ["specs/001-mock/spec.md"]',
+  'files_modified: []',
+  'files_deleted: []',
+  'commands_executed: ["mock specify"]',
+  'network_calls: ["none"]',
+  'ruleset_switches: ["none"]',
+  'notes: mock',
+  '=== END AUDIT LOG ==='
+];
 const validAudit: AuditEntryFields = {
   phase: 'speckit-specify',
   filesCreated: ['specs/001-mock/spec.md'],
@@ -78,10 +97,52 @@ describe('extractRemainingIssues', () => {
   it('returns an empty array when no heading is present', () => {
     expect(extractRemainingIssues('All good')).toEqual([]);
   });
+
+  it('extracts bullets and tagged bullets with 20,000 and 40,000 interior spaces in linear time (FR-R5-F14, NS-01)', () => {
+    const spaces20k = ' '.repeat(20_000);
+    const spaces40k = ' '.repeat(40_000);
+
+    const start20k = performance.now();
+    const q20k = extractOpenQuestions(`Open questions:\n- first${spaces20k}question?\n- ${spaces20k}second?`);
+    const i20k = extractRemainingIssues(`Remaining issues:\n- [coverage] gap${spaces20k}detail\n- plain${spaces20k}issue`);
+    const elapsed20k = performance.now() - start20k;
+
+    const start40k = performance.now();
+    const q40k = extractOpenQuestions(`Open questions:\n- first${spaces40k}question?\n- ${spaces40k}second?`);
+    const i40k = extractRemainingIssues(`Remaining issues:\n- [coverage] gap${spaces40k}detail\n- plain${spaces40k}issue`);
+    const elapsed40k = performance.now() - start40k;
+
+    expect(q20k).toEqual([`first${spaces20k}question?`, 'second?']);
+    expect(i20k).toEqual([
+      { tag: 'coverage', summary: `gap${spaces20k}detail` },
+      { summary: `plain${spaces20k}issue` }
+    ]);
+    expect(q40k).toEqual([`first${spaces40k}question?`, 'second?']);
+    expect(i40k).toEqual([
+      { tag: 'coverage', summary: `gap${spaces40k}detail` },
+      { summary: `plain${spaces40k}issue` }
+    ]);
+    expect(elapsed20k).toBeLessThan(50);
+    expect(elapsed40k).toBeLessThan(50);
+  });
 });
 
 describe('parseInvocation — block mutual exclusion and edge cases', () => {
   it('returns clean when termination token is alone with audit', () => {
+    const stdout = ['work done', ...COMPLETE_BLOCK, '[SCHEGENT_STATUS: CLEAR]'].join('\n');
+    const result = parseInvocation({
+      stdout,
+      stderr: '',
+      exitCode: 0,
+      rateLimit: { matched: false, cause: '' },
+      auditEntry: validAudit,
+      auditWarnings: [],
+      region: parseAuditLogBlock(stdout).region
+    });
+    expect(result.kind).toBe('clean');
+  });
+
+  it('does not return clean for a token with no audit block before it (FR-R4-F12)', () => {
     const stdout = ['work done', '[SCHEGENT_STATUS: CLEAR]'].join('\n');
     const result = parseInvocation({
       stdout,
@@ -89,19 +150,23 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
-    expect(result.kind).toBe('clean');
+    expect(result.kind).toBe('remaining_issues');
   });
 
   it('returns clean with missing audit entry when token present but audit missing', () => {
+    // A complete pair whose body the entry parser could not read: a region, and a null entry.
+    const stdout = ['=== SCHEGENT AUDIT LOG ===', 'phase: speckit-specify', '=== END AUDIT LOG ===', '[SCHEGENT_STATUS: CLEAR]'].join('\n');
     const result = parseInvocation({
-      stdout: '[SCHEGENT_STATUS: CLEAR]',
+      stdout,
       stderr: '',
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: null,
-      auditWarnings: []
+      auditWarnings: [],
+      region: parseAuditLogBlock(stdout).region
     });
     expect(result.kind).toBe('clean');
     if (result.kind === 'clean') {
@@ -117,7 +182,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('open_questions');
     if (result.kind === 'open_questions') {
@@ -133,7 +199,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('remaining_issues');
     if (result.kind === 'remaining_issues') {
@@ -148,7 +215,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 1,
       rateLimit: { matched: true, cause: 'rate_limit' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('rate_limited');
   });
@@ -160,7 +228,8 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('remaining_issues');
     if (result.kind === 'remaining_issues') {
@@ -169,14 +238,15 @@ describe('parseInvocation — block mutual exclusion and edge cases', () => {
   });
 
   it('warns when multiple contract blocks coexist but still resolves', () => {
-    const stdout = ['[SCHEGENT_STATUS: CLEAR]', 'Open questions:', '- ambiguous'].join('\n');
+    const stdout = [...COMPLETE_BLOCK, '[SCHEGENT_STATUS: CLEAR]', 'Open questions:', '- ambiguous'].join('\n');
     const result = parseInvocation({
       stdout,
       stderr: '',
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: parseAuditLogBlock(stdout).region
     });
     expect(result.kind).toBe('clean');
   });
@@ -193,7 +263,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('malformed');
     if (result.kind === 'malformed') {
@@ -210,7 +281,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 1,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('malformed');
     if (result.kind === 'malformed') {
@@ -219,14 +291,15 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
   });
 
   it('preserves clean classification when no fatal signature matches', () => {
-    const stdout = ['[SCHEGENT_STATUS: CLEAR]'].join('\n');
+    const stdout = [...COMPLETE_BLOCK, '[SCHEGENT_STATUS: CLEAR]'].join('\n');
     const result = parseInvocation({
       stdout,
       stderr: 'noise without the fatal substring',
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: parseAuditLogBlock(stdout).region
     });
     expect(result.kind).toBe('clean');
   });
@@ -239,7 +312,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('open_questions');
   });
@@ -252,7 +326,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 0,
       rateLimit: { matched: false, cause: '' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('remaining_issues');
   });
@@ -265,7 +340,8 @@ describe('parseInvocation — fatal-signature precedence (010, T011/T014)', () =
       exitCode: 1,
       rateLimit: { matched: true, cause: 'rate-limit' },
       auditEntry: validAudit,
-      auditWarnings: []
+      auditWarnings: [],
+      region: NO_REGION
     });
     expect(result.kind).toBe('malformed');
     if (result.kind === 'malformed') {

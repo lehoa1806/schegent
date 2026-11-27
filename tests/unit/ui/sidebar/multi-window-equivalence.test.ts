@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unfencedCommit } from '../../../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { StateProjector } from '../../../../src/ui/sidebar/state-projector';
-import { MessageRouter, type QueueOps, type QueueRemover, type RouterDeps } from '../../../../src/ui/sidebar/message-router';
+import { MessageRouter, type QueueOps, type RouterDeps } from '../../../../src/ui/sidebar/message-router';
 import {
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
-  CMD_RETRY_ACTIVE_RUN,
+  CMD_RETRY_PHASE_NOW,
   CMD_RETRY_QUEUE_ITEM,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_OPEN_AUDIT_LOG,
@@ -19,7 +20,7 @@ import { AuditLogWriter } from '../../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { WorkflowRun } from '../../../../src/state/workflow-run';
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -101,7 +102,7 @@ afterEach(async () => {
 
 describe('Multi-window equivalence (T068 / SC-014)', () => {
   it('two projectors with the same store inputs produce byte-equal deterministic cores', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     await store.setQueue({
       paused: false,
       pausedReason: null,
@@ -171,18 +172,15 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
 
   it('rejects mutating commands when isPrimary returns false on the secondary router', async () => {
     const acks: CommandAckMessage[] = [];
-    const queueRemover: QueueRemover = { remove: async () => true };
     const queueOps: QueueOps = {
       retry: async () => ({ ok: true }),
       moveUp: async () => ({ ok: true }),
       moveDown: async () => ({ ok: true }),
-      clearCompleted: async () => ({ removed: 0 }),
-      clearFailed: async () => ({ removed: 0 }),
+      clearCompleted: async () => ({ ok: true, removed: 0 }),
       setQueuePausedState: async () => ({ ok: true, queueId: 'default' })
     };
     const router = new MessageRouter({
       executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-      queueRemover,
       queueOps,
       isPrimary: () => false,
       isTrusted: () => true,
@@ -203,7 +201,12 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
     const mutating = [
       { type: CMD_PAUSE_QUEUE, payload: { reason: null }, correlationId: 'c1' },
       { type: CMD_RESUME_QUEUE, payload: undefined, correlationId: 'c2' },
-      { type: CMD_RETRY_ACTIVE_RUN, payload: undefined, correlationId: 'c3' },
+      // `CMD_RETRY_ACTIVE_RUN` held this slot until the lifecycle round-check
+      // of 2026-08-30 (finding D) deleted it. `CMD_RETRY_PHASE_NOW` replaces it
+      // rather than the slot being dropped: the sample needs a run-control
+      // command to prove the primacy guard rejects that family too, and this is
+      // the one an operator can now actually reach.
+      { type: CMD_RETRY_PHASE_NOW, payload: { queueId: 'default' }, correlationId: 'c3' },
       { type: CMD_RETRY_QUEUE_ITEM, payload: { id: 'q-x' }, correlationId: 'c4' },
       { type: CMD_REMOVE_QUEUE_ITEM, payload: { id: 'q-y' }, correlationId: 'c5' }
     ] as const;
@@ -222,7 +225,6 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
     const acks: CommandAckMessage[] = [];
     const router = new MessageRouter({
       executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-      queueRemover: { remove: async () => true },
       isPrimary: () => false,
       isTrusted: () => true,
       logger: {
@@ -250,7 +252,7 @@ describe('Multi-window equivalence (T068 / SC-014)', () => {
   });
 
   it('lock heartbeat staleness flips secondary back to primary readonly behavior', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, runningRun());
+    await store.setRun(DEFAULT_QUEUE_ID, runningRun(), unfencedCommit('test-fixture'));
     await store.setLock({
       ownerId: 'window-A',
       acquiredAt: 1_700_000_000_000,

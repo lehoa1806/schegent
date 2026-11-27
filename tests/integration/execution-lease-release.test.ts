@@ -55,7 +55,8 @@ import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-sta
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/state/lock';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { createQueue } from '../../src/queue/queue-registry';
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { ClaudeCliRunner } from '../../src/runner/claude-cli';
 import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/invocation-result';
@@ -92,9 +93,12 @@ const noopScheduler: Scheduler = {
   }
 };
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -106,7 +110,8 @@ const cleanStdout = (phase: string): string =>
     'open_questions: 0',
     'critical_issues: 0',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 const buffer = (text: string): ZippedStreamBuffer => {
@@ -196,7 +201,7 @@ async function makeWorkspace(tmpRoot: string, mode: TerminalMode): Promise<Works
   const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
 
   const controller = new SchegentWorkflowController(
-    new PhaseRunner(runner, new PromptBuilder(), audit, logger),
+    new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger }),
     store,
     queue,
     statusBar,
@@ -211,7 +216,8 @@ async function makeWorkspace(tmpRoot: string, mode: TerminalMode): Promise<Works
         release: async (queueId: string) => {
           released.push(queueId);
           await leaseManager.release(queueId);
-        }
+        },
+        claimFor: (queueId: string) => leaseManager.claimFor(queueId)
       }
     }
   );

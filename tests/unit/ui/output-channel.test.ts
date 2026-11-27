@@ -51,4 +51,16 @@ describe('SchegentOutputChannel', () => {
     out.dispose();
     expect(channel.dispose).toHaveBeenCalled();
   });
+
+  it('dispose unregisters its sink, so a channel built after it is the only one written', () => {
+    // Stage 2 builds one per wiring, against the one logger activation made.
+    const first = makeChannel();
+    const second = makeChannel();
+    const logger = new SanitizedLogger();
+    new SchegentOutputChannel(first, logger).dispose();
+    new SchegentOutputChannel(second, logger);
+    logger.info('phase started');
+    expect(first.lines).toHaveLength(0);
+    expect(second.lines).toHaveLength(1);
+  });
 });

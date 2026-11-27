@@ -10,7 +10,7 @@
 //
 // Two properties, and the second is the reason the first has to be one write:
 //
-//   - **Same write.** `phaseOverrides` and `plannedTotal` land in one `setRun`.
+//   - **Same write.** `phaseOverrides` and `plannedTotal` land in one `updateRun`.
 //     A follow-up write would leave a window in which the persisted record says
 //     a phase is skipped and the denominator still counts it, and a window is all
 //     a reload needs to be observed.
@@ -21,6 +21,7 @@
 //     rather than asserting the arithmetic in isolation.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -35,7 +36,7 @@ import type { PhaseResult, WorkflowRun } from '../../../src/state/workflow-run';
 // header for why the ids are the real Spec Kit ones.
 import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 import type { Memento } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { projectRunProgress } from '../../../src/ui/sidebar/run-projector';
 
 class FakeMemento implements Memento {
@@ -94,7 +95,7 @@ beforeEach(async () => {
   await store.initialize();
   queue = new QueueManager(store);
   controller = new SchegentWorkflowController(
-    { run: vi.fn() } as unknown as PhaseRunner,
+    { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner,
     store,
     queue,
     { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar,
@@ -152,7 +153,7 @@ async function seedRun(extra: Partial<WorkflowRun> = {}): Promise<WorkflowRun> {
     resumeTargetPhaseId: null,
     ...extra
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
   return run;
 }
 
@@ -163,13 +164,14 @@ function percentOf(run: WorkflowRun | null): number {
 }
 
 describe('FR-R3-008 — an override adjusts the recorded total in the same write', () => {
-  it('writes the narrowed total and the new override together, in one setRun', async () => {
+  it('writes the narrowed total and the new override together, in one updateRun', async () => {
     await seedRun();
     const writes: WorkflowRun[] = [];
-    const passThrough = store.setRun.bind(store);
-    vi.spyOn(store, 'setRun').mockImplementation(async (queueId, run) => {
-      if (run) writes.push(run);
-      return passThrough(queueId, run);
+    const passThrough = store.updateRun.bind(store);
+    vi.spyOn(store, 'updateRun').mockImplementation(async (queueId, update, claim) => {
+      const written = await passThrough(queueId, update, claim);
+      writes.push(written);
+      return written;
     });
 
     expect(await controller.disablePhase('speckit-tasks')).toEqual({ ok: true });
@@ -189,26 +191,34 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
     });
   });
 
-  it.each([
-    ['skipPhase', (c: SchegentWorkflowController) => c.skipPhase('speckit-plan')],
-    ['disablePhase', (c: SchegentWorkflowController) => c.disablePhase('speckit-plan')]
-  ])('narrows the total and raises progress when %s overrides a remaining phase', async (
-    _name,
-    act
-  ) => {
-    await seedRun();
-    const before = percentOf(store.getRun(DEFAULT_QUEUE_ID));
-    expect(before, '1 of 4').toBe(25);
+  // FR-R3-151 — `skipPhase` used to be parameterized here alongside
+  // `disablePhase` because, before that feature, Skip accepted any Phase id
+  // regardless of activeness and so could "override a remaining phase" the
+  // same way Disable can. FR-R3-151's authoritative operation matrix
+  // restricts Skip to the Task's current active Phase only (spec.md FR-004;
+  // `PhaseControlService.skipPhase` now refuses a non-active target with
+  // `phase-not-active` via the shared classifier) — Disable is the operation
+  // that legitimately targets a future/remaining Phase, so it is the only
+  // case left in this table. `tests/unit/controller/workflow-controller-
+  // skip-phase.test.ts` covers Skip's own (active-phase-only) scope.
+  it.each([['disablePhase', (c: SchegentWorkflowController) => c.disablePhase('speckit-plan')]])(
+    'narrows the total and raises progress when %s overrides a remaining phase',
+    async (_name, act) => {
+      await seedRun();
+      const before = percentOf(store.getRun(DEFAULT_QUEUE_ID));
+      expect(before, '1 of 4').toBe(25);
 
-    expect(await act(controller)).toEqual({ ok: true });
+      expect(await act(controller)).toEqual({ ok: true });
 
-    const after = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(after.plannedTotal!.phaseCount, 'the overridden phase left the plan').toBe(3);
-    // Fewer phases left to do, the same one done: progress rises. It must not
-    // fall, which is what a numerator-only or denominator-only change would do.
-    expect(percentOf(after), '1 of 3').toBe(33);
-    expect(percentOf(after)).toBeGreaterThan(before);
-  });
+      const after = store.getRun(DEFAULT_QUEUE_ID)!;
+      expect(after.plannedTotal!.phaseCount, 'the overridden phase left the plan').toBe(3);
+      // Fewer phases left to do, the same one done: progress rises. It must
+      // not fall, which is what a numerator-only or denominator-only change
+      // would do.
+      expect(percentOf(after), '1 of 3').toBe(33);
+      expect(percentOf(after)).toBeGreaterThan(before);
+    }
+  );
 
   it('narrows the total when a remaining phase is removed', async () => {
     const run = await seedRun();
@@ -239,7 +249,9 @@ describe('FR-R3-008 — an override adjusts the recorded total in the same write
         settled('speckit-plan', 'skipped'),
         settled('speckit-tasks', 'skipped')
       ]
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
 
     const done = store.getRun(DEFAULT_QUEUE_ID)!;
     // Four settled records against a denominator of two, and still 100 — because

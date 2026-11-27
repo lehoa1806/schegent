@@ -228,8 +228,11 @@ describe('Feature 103 T080 — no workspace root reaches the surface (FR-047)', 
 
   it('a failed write logs the code and the relative reference, not the absolute path', async () => {
     const { logger: log, sink } = logger();
-    // `.schegent` as a file, so the recursive mkdir fails with ENOTDIR — and
-    // the message Node attaches quotes the absolute directory it tried to make.
+    // `.schegent` as a file. Under FR-R3-080 (T1063) the write goes through the
+    // checked walk, which reports the CONDITION (`not-a-directory`) rather than
+    // the syscall's errno — strictly more informative, and the property this
+    // test exists for is unchanged: whatever is reported, the absolute path
+    // Node would have quoted must not reach the line.
     writeFileSync(path.join(root, '.schegent'), 'not a directory');
     const store = new HistoryDescriptionStore({ workspaceRoot: root, logger: log });
 
@@ -238,7 +241,7 @@ describe('Feature 103 T080 — no workspace root reaches the surface (FR-047)', 
     expect(ref).toBeNull();
     expect(sink.lines).toHaveLength(1);
     const [line] = sink.lines;
-    expect(line).toContain('ENOTDIR');
+    expect(line).toContain('not-a-directory');
     expect(line).toContain(`.schegent/history/${RUN_ID}.txt`);
     expect(line, 'the workspace root reached a log line').not.toContain(root);
     expect(line).not.toContain(os.tmpdir());

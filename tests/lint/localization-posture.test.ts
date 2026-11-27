@@ -156,12 +156,14 @@ describe('localization posture', () => {
     const fieldRow = read(
       'webview-ui/src/components/settings/general/GeneralSettingFieldRow.svelte'
     );
-    // Pinned as whole option elements: the bare word `Off` already appears in
-    // this file's `loggingVerbose` label, so a substring check would pass
-    // without proving the select label survived.
-    expect(fieldRow).toContain('<option value="always">Always retain</option>');
-    expect(fieldRow).toContain('<option value="errors-only">Errors only</option>');
-    expect(fieldRow).toContain('<option value="off">Off</option>');
+    // Pinned as whole option elements: the bare words `Always` and `Never`
+    // could appear anywhere in this file, so a substring check would pass
+    // without proving the select's labels survived. The words are the
+    // redesign's; "Unless the run completes" is when `errors-only` drops a
+    // raw transcript.
+    expect(fieldRow).toContain('<option value="errors-only">Unless the run completes</option>');
+    expect(fieldRow).toContain('<option value="always">Always</option>');
+    expect(fieldRow).toContain('<option value="off">Never</option>');
 
     const costChart = read('webview-ui/src/components/MetricsDashboard/MetricsCostChart.svelte');
     expect(costChart).toContain('Hover or focus a point on the chart for exact values.');

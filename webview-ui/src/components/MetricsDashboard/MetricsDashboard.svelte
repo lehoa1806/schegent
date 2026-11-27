@@ -6,20 +6,30 @@
     PhaseTypeAggregate,
     TaskRecord
   } from '../../lib/messages';
-  import { readMetrics } from '../../lib/metrics-ipc';
+  import { readMetrics, type ReadMetricsResult } from '../../lib/metrics-ipc';
   import { formatAbsoluteTime } from '../../lib/format';
+  import '../../lib/sg/sg-metrics.css';
   import './metrics-shared.css';
   import MetricsCumulativeTotals from './MetricsCumulativeTotals.svelte';
   import MetricsSummary from './MetricsSummary.svelte';
   import MetricsTaskTable, { type MetricsSortKey } from './MetricsTaskTable.svelte';
   import MetricsPhaseAnalytics from './MetricsPhaseAnalytics.svelte';
   import MetricsCostChart from './MetricsCostChart.svelte';
+  import HistoricalReportsPanel from './HistoricalReportsPanel.svelte';
 
   interface Props { active: boolean }
   const { active }: Props = $props();
   const PAGE_SIZE = 200;
 
+  type SurfaceMode = 'rollup' | 'reports';
+  /** The tab order, which the arrow keys walk. */
+  const SURFACE_MODES: readonly SurfaceMode[] = ['rollup', 'reports'];
+  let surfaceMode = $state<SurfaceMode>('rollup');
+
   let loading = $state(false);
+  // FR-R4-F05 (O1, O7) — the sentence for a refused read, or null. Only a refusal sets it:
+  // a read that fails for any other reason keeps showing what it showed before.
+  let refusal = $state<string | null>(null);
   let loaded = $state(false);
   let tasks = $state<readonly TaskRecord[]>([]);
   let phaseTypeAggregates = $state<readonly PhaseTypeAggregate[]>([]);
@@ -38,12 +48,28 @@
   let expandedRunIds = $state<ReadonlySet<string>>(new Set());
   let activePointIndex = $state<number | null>(null);
 
+  // FR-R4-F05 (I6, I8, FR-024) — a late answer replaces the not-yet-known text through the same
+  // path as an on-time one; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+
   async function fetchMetrics(): Promise<void> {
     loading = true;
-    const result = await readMetrics({ includeArchives });
+    const result = await readMetrics(
+      { includeArchives },
+      { signal: lifetime.signal, onLateOutcome: showMetrics }
+    );
     loading = false;
     loaded = true;
-    if (result.outcome !== 'success') return;
+    showMetrics(result);
+  }
+
+  function showMetrics(result: ReadMetricsResult): void {
+    if (result.outcome !== 'success') {
+      refusal = result.refusalText ?? null;
+      return;
+    }
+    refusal = null;
     tasks = result.tasks;
     phaseTypeAggregates = result.phaseTypeAggregates;
     costTimeline = result.costTimeline;
@@ -56,6 +82,30 @@
   $effect(() => {
     if (active && !loaded && !loading) void fetchMetrics();
   });
+
+  // The scope switch has two settings; pressing the one already set reads nothing.
+  function setIncludeArchives(next: boolean): void {
+    if (includeArchives === next) return;
+    includeArchives = next;
+    void fetchMetrics();
+  }
+
+  // Arrow keys move along the tabs, Home and End jump to either end, and focus
+  // follows the selection.
+  function onTabKeydown(event: KeyboardEvent): void {
+    const current = SURFACE_MODES.indexOf(surfaceMode);
+    let next: number;
+    if (event.key === 'ArrowRight') next = (current + 1) % SURFACE_MODES.length;
+    else if (event.key === 'ArrowLeft') next = (current - 1 + SURFACE_MODES.length) % SURFACE_MODES.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = SURFACE_MODES.length - 1;
+    else return;
+    const mode = SURFACE_MODES.at(next);
+    if (mode === undefined) return;
+    event.preventDefault();
+    surfaceMode = mode;
+    queueMicrotask(() => document.getElementById(`metrics-tab-${mode}`)?.focus());
+  }
 
   const totalTasksCompleted = $derived(tasks.filter((task) => task.status === 'completed').length);
   const totalElapsedMs = $derived(tasks.reduce((sum, task) => sum + task.durationMs, 0));
@@ -137,155 +187,143 @@
 </script>
 
 <main class="metrics" aria-label="Metrics" data-testid="metrics-section">
-  <header class="metrics-header">
-    <div>
-      <h1>Metrics Dashboard</h1>
-      <p>Actionable throughput, cost, and phase performance from the append-only audit log.</p>
-    </div>
-    <div class="metrics-toolbar" data-testid="metrics-toolbar">
-      <button type="button" class="metrics-action" data-testid="metrics-refresh"
-        disabled={loading} onclick={() => void fetchMetrics()}>
-        {loading ? 'Scanning…' : 'Refresh'}
-      </button>
-      <label class="metrics-archived-toggle">
-        <input type="checkbox" data-testid="metrics-include-archived"
-          checked={includeArchives} onchange={() => { includeArchives = !includeArchives; void fetchMetrics(); }} />
-        Include archived history
-      </label>
-      {#if loaded}
-        <span class="coverage-window" data-testid="metrics-coverage-window">
-          {detailWindow}
-        </span>
-      {/if}
-    </div>
-  </header>
-
-  {#if !loaded}
-    <div class="metrics-loading" data-testid="metrics-loading" role="status">
-      <span class="status-line">Scanning audit history…</span>
-      <div class="metrics-skeleton" aria-hidden="true">
-        <span></span><span></span><span></span><span></span>
+  <div class="page">
+    <div class="phead">
+      <div>
+        <h1>Metrics</h1>
+        <div class="purpose">Throughput, time and cost from the audit log.</div>
       </div>
     </div>
-  {:else}
-    <!-- FR-R3-009 — cumulative totals stand above the log-derived detail and
-         survive a retention prune, so they are rendered whenever the rollup has
-         anything to report, including when the detail below is empty. -->
-    {#if cumulative !== undefined && coverage !== undefined && (cumulative.runs > 0 || coverage.totals.available)}
-      <MetricsCumulativeTotals {cumulative} {coverage} />
+
+    {#if refusal !== null}
+      <div class="attn warn metrics-refusal" role="status" data-testid="metrics-refusal">
+        <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+        <p class="body small">{refusal}</p>
+      </div>
     {/if}
 
-    {#if tasks.length === 0}
-      <p class="empty" data-testid="metrics-empty">
-        {#if cumulative !== undefined && cumulative.runs > 0}
-          Per-run detail for the runs counted above is no longer in the retained
-          audit log. Cumulative totals remain available; the runs themselves have
-          been pruned by retention.
+    <div class="tabs" role="tablist" aria-label="Metrics views">
+      <button type="button" role="tab" id="metrics-tab-rollup" class="tab"
+        aria-selected={surfaceMode === 'rollup'} aria-controls="metrics-panel"
+        tabindex={surfaceMode === 'rollup' ? 0 : -1} data-testid="metrics-mode-rollup"
+        onkeydown={onTabKeydown} onclick={() => { surfaceMode = 'rollup'; }}>Overview</button>
+      <button type="button" role="tab" id="metrics-tab-reports" class="tab"
+        aria-selected={surfaceMode === 'reports'} aria-controls="metrics-panel"
+        tabindex={surfaceMode === 'reports' ? 0 : -1} data-testid="metrics-mode-reports"
+        onkeydown={onTabKeydown} onclick={() => { surfaceMode = 'reports'; }}>Reports</button>
+    </div>
+
+    <div role="tabpanel" id="metrics-panel" aria-labelledby="metrics-tab-{surfaceMode}">
+      {#if surfaceMode === 'reports'}
+        <HistoricalReportsPanel />
+      {:else}
+        <!-- Overview-only scope switch and refresh live inside the Overview tab toolbar so
+             switching between Overview and Reports leaves the page header unchanged. -->
+        <div class="toolbar metrics-toolbar" data-testid="metrics-toolbar">
+          <div class="seg" role="group" aria-label="Run detail scope">
+            <button type="button" aria-pressed={!includeArchives}
+              onclick={() => setIncludeArchives(false)}>Live log</button>
+            <button type="button" aria-pressed={includeArchives} data-testid="metrics-include-archived"
+              onclick={() => setIncludeArchives(true)}>With archives</button>
+          </div>
+          <div class="push">
+            <button type="button" class="icon-btn refresh" aria-label="Refresh metrics" title="Refresh"
+              data-testid="metrics-refresh" disabled={loading} onclick={() => void fetchMetrics()}>
+              <svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>
+            </button>
+          </div>
+        </div>
+        {#if !loaded}
+        <div class="metrics-loading" data-testid="metrics-loading" role="status">
+          <span class="muted">Scanning audit history…</span>
+          <div class="grid g4 metrics-skeleton" aria-hidden="true">
+            <span class="tile"></span><span class="tile"></span><span class="tile"></span><span class="tile"></span>
+          </div>
+        </div>
         {:else}
-          No workflow runs recorded yet. Start a task from Queues to populate this view.
+        <!-- FR-R3-009 — cumulative totals stand above the log-derived detail and
+             survive a retention prune, so they are rendered whenever the rollup has
+             anything to report, including when the detail below is empty. -->
+        {#if cumulative !== undefined && coverage !== undefined && (cumulative.runs > 0 || coverage.totals.available)}
+          <MetricsCumulativeTotals {cumulative} {coverage} />
         {/if}
-      </p>
-    {:else}
-      <MetricsSummary tasksCompleted={totalTasksCompleted} elapsedMs={totalElapsedMs}
-        {totalCostUsd} backendInvocations={totalBackendInvocations} />
-      <MetricsTaskTable tasks={pagedTasks} {expandedRunIds} {currentPage} {pageCount}
-        {ariaSort} onSort={toggleSort}
-        {onExpandToggleClick} onPageChange={goToPage} />
-      <MetricsPhaseAnalytics aggregates={phaseTypeAggregates} />
-      <MetricsCostChart timeline={costTimeline} {activePointIndex}
-        onActivePointChange={(index) => { activePointIndex = index; }} />
-    {/if}
-  {/if}
+
+        <!-- Everything from here down is folded from the retained audit log, which
+             retention prunes: the line says how far back it reaches. -->
+        <div class="detail-head">
+          <p class="small muted" data-testid="metrics-coverage-window">{detailWindow}</p>
+          {#if tasks.length > 0}
+            <MetricsSummary tasksCompleted={totalTasksCompleted} elapsedMs={totalElapsedMs}
+              {totalCostUsd} backendInvocations={totalBackendInvocations} />
+          {/if}
+        </div>
+
+        {#if tasks.length === 0}
+          <p class="empty" data-testid="metrics-empty">
+            {#if cumulative !== undefined && cumulative.runs > 0}
+              Per-run detail for the runs counted above is no longer in the retained
+              audit log. Cumulative totals remain available; the runs themselves have
+              been pruned by retention.
+            {:else}
+              No Workflow runs recorded yet. Start a task from Queues to populate this view.
+            {/if}
+          </p>
+        {:else}
+          <MetricsCostChart timeline={costTimeline} {activePointIndex}
+            onActivePointChange={(index) => { activePointIndex = index; }} />
+          <MetricsPhaseAnalytics aggregates={phaseTypeAggregates} />
+          <MetricsTaskTable tasks={pagedTasks} {expandedRunIds} {currentPage} {pageCount}
+            {ariaSort} onSort={toggleSort}
+            {onExpandToggleClick} onPageChange={goToPage} />
+        {/if}
+        {/if}
+      {/if}
+    </div>
+  </div>
 </main>
 
 <style>
+  /* The page scrolls inside the route, as on History. */
   .metrics {
     display: flex;
     flex: 1;
-    flex-direction: column;
-    gap: 16px;
-    width: 100%;
-    max-width: 1440px;
-    margin: 0;
-    box-sizing: border-box;
-    padding: var(--schegent-space-4) var(--schegent-space-5) var(--schegent-space-5);
-    overflow-y: auto;
+    min-height: 0;
   }
-  .metrics-header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 20px;
-    padding-bottom: 4px;
+  .tabs { align-items: center; }
+  .tab:hover { color: var(--schegent-fg); }
+  .metrics-refusal { margin-bottom: var(--schegent-space-3); }
+  .metrics-refusal .body { margin: 0; }
+  /* Turns while a read is in flight, which is exactly while the button is disabled. */
+  @media (prefers-reduced-motion: no-preference) {
+    .refresh:disabled .i { animation: metrics-turn 0.9s linear infinite; }
   }
-  .metrics-header h1 {
-    margin: 0;
-    font-size: var(--schegent-text-heading);
-    font-weight: 650;
-    letter-spacing: -0.025em;
+  @keyframes metrics-turn {
+    to { transform: rotate(360deg); }
   }
-  .metrics-header p {
-    margin: 5px 0 0;
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-secondary);
-  }
-  .status-line { margin: 0; color: var(--schegent-muted-fg); }
-  .metrics-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-gap); }
-  .metrics-action {
-    padding: 4px 10px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-secondary-bg);
-    color: var(--schegent-button-secondary-fg);
-    cursor: pointer;
-  }
-  .metrics-action:disabled { opacity: 0.6; cursor: not-allowed; }
-  .metrics-archived-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--schegent-muted-fg);
-    font-size: 0.9em;
-  }
-  .coverage-window { color: var(--schegent-muted-fg); font-size: 0.85em; }
   .metrics-loading {
     display: grid;
-    gap: 14px;
-    padding: 16px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-surface);
+    gap: var(--schegent-space-3);
   }
-  .metrics-skeleton {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: var(--schegent-gap);
-  }
-  .metrics-skeleton span {
-    height: 72px;
-    border-radius: var(--schegent-radius);
+  /* As tall as a loaded tile at any font size: its border and padding, the value's margins, and
+     the label, value and context lines at the sheet's 1.45 line height. */
+  .metrics-skeleton .tile {
+    height: calc(
+      2px + 2 * var(--schegent-space-3) + 2 * var(--schegent-space-0-5) +
+        1.45 * (2 * var(--schegent-text-secondary) + var(--schegent-text-display))
+    );
+    box-sizing: border-box;
     background: var(--schegent-surface-subtle);
   }
-  .metrics > .empty {
-    max-width: 54ch;
-    padding: 28px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-surface);
-    font-style: normal;
-    line-height: 1.5;
+  .detail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--schegent-space-1) var(--schegent-space-4);
+    margin-top: var(--schegent-space-4-5);
   }
-
-  @media (max-width: 780px) {
-    .metrics {
-      padding: 16px;
-    }
-    .metrics-header {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-    .metrics-skeleton {
-      grid-template-columns: 1fr 1fr;
-    }
+  .detail-head p { margin: 0; }
+  .page .empty {
+    margin-top: var(--schegent-space-3);
   }
 </style>

@@ -1,0 +1,534 @@
+// FR-R6-F11 (T044; NFR-002, NFR-004, NFR-005; research R1, R9) — historical reports at 25,000
+// roots and 100,000 attempts.
+//
+// The fixture is 25,000 roots of four attempts each, over two steps, one root a minute back from
+// the cutoff, so every root is inside one 30-day range, in a file-backed store under the OS
+// temp directory (quickstart section 3). Each measured query is `execution-summary`
+// at the 200-row page bound: all 100,000 attempts captured and aggregated into 25,000 rows, 125
+// pages. `attempt-detail` over the same range is pinned to end `limited` with `working-data`: its
+// 100,000 rows on top of the captured population pass the shared 32 MiB budget (R11), and the cap
+// is a visible outcome, never a shortened success (US4 scenario 3).
+//
+// Measured, printed, and enforced (FR-R7-14 14-19):
+//   - first-page reads (capture, aggregation and the first page), 3 warm-up and 20 measured,
+//     asserted against FIRST_PAGE_P95_BUDGET_MS (1,000 ms);
+//   - later-page reads, through the F03 sampler (20 warm-up, 200 measured), asserted against
+//     LATER_PAGE_P95_BUDGET_MS (50 ms) so fast cursor reads cannot mask opening delay;
+//   - the capture, timed around the read pool call (research R1: one unsliced read);
+//   - host work per scheduled slice, as the gaps between back-to-back `setImmediate` probes while
+//     one report is built: each gap is the host work done between two yields, the capture included.
+// Also asserted: cancellation acknowledged within 1 s (NFR-004), the deadline ending `limited`
+// with `deadline-exceeded`, `attempt-detail` ending `limited` with `working-data`, and the work
+// yielding more than once. Slice p95 (NFR-005) remains recorded as an informational SHOULD.
+
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
+import {
+  SQLITE_BENCHMARK_MEASURED_SAMPLES,
+  SQLITE_BENCHMARK_WARMUP_SAMPLES
+} from '../../src/contracts/sqlite-store/schema-types';
+import type { ReportResult } from '../../src/contracts/reporting/report-outcomes';
+import type { ReportPage } from '../../src/contracts/reporting/report-rows';
+import { createReportingService, type ReportingService } from '../../src/services/reporting/index';
+import { NodeSqliteConnection, SchemaBootstrapService, measureOperationDistribution } from '../../src/services/sqlite-store';
+import { seedAttempt, seedRun } from '../unit/reporting/report-fixture';
+
+const NOW = 1_800_000_000_000;
+const MINUTE = 60_000;
+const DAY = 86_400_000;
+const ROOT_COUNT = 25_000;
+const ATTEMPTS_PER_ROOT = 4;
+const PAGE_ROWS = 200;
+const FIRST_PAGE_WARMUP = 3;
+const FIRST_PAGE_MEASURED = 20;
+const FIRST_PAGE_SHOULD_P95_MS = 500;
+const LATER_PAGE_SHOULD_P95_MS = 500;
+const SLICED_GAP_SHOULD_P95_MS = 10;
+const CANCEL_ACK_MUST_MS = 1_000;
+const QUERY_DEADLINE_MS = 5_000;
+const FIRST_PAGE_P95_BUDGET_MS = 1_000;
+const LATER_PAGE_P95_BUDGET_MS = 50;
+const CANCEL_ACK_BUDGET_MS = 1_000;
+const TEST_TIMEOUT_MS = 900_000;
+const QUERY = Object.freeze({
+  view: 'execution-summary',
+  range: Object.freeze({ startMs: NOW - 30 * DAY, endMs: NOW }),
+  pageSize: PAGE_ROWS
+});
+
+function seedFixture(conn: NodeSqliteConnection): void {
+  conn.exec('BEGIN');
+  for (let root = 0; root < ROOT_COUNT; root += 1) {
+    const runId = `root-${String(root).padStart(5, '0')}`;
+    const createdAtMs = NOW - (root + 1) * MINUTE;
+    seedRun(conn, {
+      runId,
+      createdAtMs,
+      workflowId: `wf-${String(root % 20)}`,
+      frozenClosureId: `fz-${String(root % 7)}`,
+      status: root % 10 === 0 ? 'failed' : 'succeeded',
+      startedAtMs: createdAtMs,
+      completedAtMs: createdAtMs + 30_000
+    });
+    for (let attempt = 0; attempt < ATTEMPTS_PER_ROOT; attempt += 1) {
+      seedAttempt(conn, {
+        attemptId: `${runId}-a${String(attempt)}`,
+        runId,
+        stepIndex: attempt % 2,
+        attemptNumber: Math.floor(attempt / 2) + 1,
+        startedAtMs: createdAtMs + attempt * 1_000,
+        completedAtMs: createdAtMs + attempt * 1_000 + 500,
+        exitCode: 0
+      });
+    }
+  }
+  conn.exec('COMMIT');
+}
+
+function percentile(samples: readonly number[], fraction: number): number {
+  const sorted = [...samples].sort((left, right) => left - right);
+  return sorted.at(Math.max(0, Math.ceil(fraction * sorted.length) - 1)) ?? Number.NaN;
+}
+
+function rounded(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+function pageOf(result: ReportResult<ReportPage>): ReportPage {
+  if (!result.ok) throw new Error(`expected a page, got ${JSON.stringify(result)}`);
+  return result.value;
+}
+
+interface GapSample {
+  readonly startMs: number;
+  readonly endMs: number;
+  readonly durationMs: number;
+}
+
+interface CaptureWindow {
+  readonly startMs: number;
+  readonly endMs: number;
+}
+
+/** Excludes at most one gap: the single gap spanning the synchronous capture window. */
+function excludeSingleCaptureGap(
+  gapSamples: readonly GapSample[],
+  captureWindow: CaptureWindow,
+  captureMs: number
+): { readonly excludedIndex: number; readonly slicedGaps: readonly number[] } {
+  const overlappingIndex = gapSamples.findIndex(
+    (sample) => sample.startMs <= captureWindow.startMs && sample.endMs >= captureWindow.endMs
+  );
+  const excludedIndex =
+    overlappingIndex !== -1
+      ? overlappingIndex
+      : gapSamples.reduce(
+          (best, sample, idx) =>
+            sample.durationMs >= captureMs &&
+            (best === -1 || sample.durationMs > (gapSamples[best]?.durationMs ?? -1))
+              ? idx
+              : best,
+          -1
+        );
+  const slicedGaps = gapSamples
+    .filter((_, idx) => idx !== excludedIndex)
+    .map((sample) => sample.durationMs);
+  return { excludedIndex, slicedGaps };
+}
+
+/** Records the gap between back-to-back `setImmediate` callbacks until `stop` is called. */
+function probeGaps(): { readonly stop: () => readonly GapSample[] } {
+  const gaps: GapSample[] = [];
+  let last = performance.now();
+  let running = true;
+  let timer: NodeJS.Immediate | null = null;
+  const tick = (): void => {
+    timer = null;
+    if (!running) return;
+    const now = performance.now();
+    gaps.push({ startMs: last, endMs: now, durationMs: now - last });
+    last = now;
+    timer = setImmediate(tick);
+  };
+  timer = setImmediate(tick);
+  return {
+    stop: () => {
+      running = false;
+      if (timer !== null) {
+        clearImmediate(timer);
+        timer = null;
+      }
+      return [...gaps];
+    }
+  };
+}
+
+describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR-002, NFR-004, NFR-005)', () => {
+  let storeDir: string | undefined;
+
+  afterAll(() => {
+    if (storeDir !== undefined) fs.rmSync(storeDir, { recursive: true, force: true });
+  });
+
+  it(
+    'enforces separate first-page and later-page p95 budgets, cancels within 1 s and ends at the deadline',
+    async () => {
+      storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schegent-310-perf-'));
+      const conn = new NodeSqliteConnection({ databasePath: path.join(storeDir, 'runs.sqlite') });
+      SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
+      const seedStarted = performance.now();
+      seedFixture(conn);
+      const seedMs = performance.now() - seedStarted;
+      expect(Number(conn.scalar('SELECT count(*) FROM attempts'))).toBe(ROOT_COUNT * ATTEMPTS_PER_ROOT);
+
+      let lastCaptureMs = Number.NaN;
+      let lastCaptureWindow: CaptureWindow = { startMs: Number.NaN, endMs: Number.NaN };
+      const measuredCaptureMs: number[] = [];
+      let recordCaptureSample = false;
+      const readPool = {
+        withReadConnection: <T>(fallback: NodeSqliteConnection, read: (source: NodeSqliteConnection) => T): T => {
+          const started = performance.now();
+          try {
+            return read(fallback);
+          } finally {
+            const ended = performance.now();
+            lastCaptureMs = ended - started;
+            lastCaptureWindow = { startMs: started, endMs: ended };
+            if (recordCaptureSample) measuredCaptureMs.push(lastCaptureMs);
+          }
+        }
+      };
+      const serviceWith = (queryDeadlineMs?: number, useSnapshotWorker = false): ReportingService =>
+        createReportingService({
+          conn,
+          readPool,
+          useSnapshotWorker,
+          workspaceId: 'ws-1',
+          workspaceRoot: os.tmpdir(),
+          nowMs: () => NOW,
+          monotonicMs: () => performance.now(),
+          hostTimezone: 'UTC',
+          accounting: null,
+          bounds: queryDeadlineMs === undefined ? {} : { queryDeadlineMs }
+        });
+      const service = serviceWith(undefined, false);
+
+      const firstPageMs: number[] = [];
+      for (let sample = 0; sample < FIRST_PAGE_WARMUP + FIRST_PAGE_MEASURED; sample += 1) {
+        recordCaptureSample = sample >= FIRST_PAGE_WARMUP;
+        const started = performance.now();
+        const page = pageOf(await service.runReport(QUERY));
+        const elapsed = performance.now() - started;
+        recordCaptureSample = false;
+        if (sample >= FIRST_PAGE_WARMUP) firstPageMs.push(elapsed);
+        expect(page.rowCount).toBe(ROOT_COUNT);
+        expect(service.closeReport({ reportId: page.reportId }).ok).toBe(true);
+      }
+
+      const probe = probeGaps();
+      const probed = pageOf(await service.runReport(QUERY));
+      const gapSamples = probe.stop();
+      const gaps = gapSamples.map((sample) => sample.durationMs);
+      const probedCaptureMs = lastCaptureMs;
+      const probedCaptureWindow = lastCaptureWindow;
+      const probedBytes = service.resources().reservedBytes;
+      const firstCursor = probed.cursor;
+      if (firstCursor === null) throw new Error('expected more than one page');
+      let cursor: string = firstCursor;
+      let maxPageBytes = 0;
+      const later = measureOperationDistribution({
+        operationName: 'historical_report_later_page',
+        warmupSamples: SQLITE_BENCHMARK_WARMUP_SAMPLES,
+        measuredSamples: SQLITE_BENCHMARK_MEASURED_SAMPLES,
+        step: () => {
+          const page = pageOf(service.readPage({ cursor }));
+          maxPageBytes = Math.max(maxPageBytes, Buffer.byteLength(JSON.stringify(page), 'utf8'));
+          cursor = page.cursor ?? firstCursor;
+        }
+      });
+      service.closeReport({ reportId: probed.reportId });
+
+      const controller = new AbortController();
+      let abortedAt = Number.NaN;
+      setTimeout(() => {
+        abortedAt = performance.now();
+        controller.abort();
+      }, 0);
+      const cancelled = await service.runReport(QUERY, controller.signal);
+      const cancelAckMs = performance.now() - abortedAt;
+
+      const deadlined = await serviceWith(1, false).runReport(QUERY);
+      const attemptDetail = await service.runReport({ ...QUERY, view: 'attempt-detail' });
+
+      const { excludedIndex: captureGapIndex, slicedGaps } = excludeSingleCaptureGap(
+        gapSamples,
+        probedCaptureWindow,
+        probedCaptureMs
+      );
+      const firstPageP50Ms = rounded(percentile(firstPageMs, 0.5));
+      const firstPageP95Ms = rounded(percentile(firstPageMs, 0.95));
+      const firstPageMaxMs = rounded(Math.max(...firstPageMs));
+      const captureP50Ms = rounded(percentile(measuredCaptureMs, 0.5));
+      const captureP95Ms = rounded(percentile(measuredCaptureMs, 0.95));
+      const captureMaxMs = rounded(Math.max(...measuredCaptureMs));
+      const slicedP95Ms = rounded(percentile(slicedGaps, 0.95));
+      const specTargets = {
+        firstPageShouldP95Ms: FIRST_PAGE_SHOULD_P95_MS,
+        laterPageShouldP95Ms: LATER_PAGE_SHOULD_P95_MS,
+        slicedGapShouldP95Ms: SLICED_GAP_SHOULD_P95_MS,
+        cancelAckMustMs: CANCEL_ACK_MUST_MS,
+        queryDeadlineMs: QUERY_DEADLINE_MS
+      };
+      const verdicts = {
+        firstPageShouldMet: firstPageP95Ms <= FIRST_PAGE_SHOULD_P95_MS,
+        laterPageShouldMet: later.p95Ms <= LATER_PAGE_SHOULD_P95_MS,
+        slicedGapShouldMet: slicedP95Ms <= SLICED_GAP_SHOULD_P95_MS,
+        cancelAckMustMet: cancelAckMs <= CANCEL_ACK_MUST_MS
+      };
+      const cpus = os.cpus();
+      const result = {
+        hardware: {
+          platform: `${os.platform()}-${os.arch()}`,
+          osRelease: os.release(),
+          cpuModel: cpus.at(0)?.model ?? 'unknown',
+          cpuCount: cpus.length,
+          totalMemoryMiB: Math.round(os.totalmem() / (1024 * 1024)),
+          node: process.version
+        },
+        platform: `${os.platform()}-${os.arch()}`,
+        node: process.version,
+        fixture: {
+          runCount: ROOT_COUNT,
+          roots: ROOT_COUNT,
+          attemptCount: ROOT_COUNT * ATTEMPTS_PER_ROOT,
+          attempts: ROOT_COUNT * ATTEMPTS_PER_ROOT,
+          pageRows: PAGE_ROWS
+        },
+        warmup: {
+          firstPageWarmupIterations: FIRST_PAGE_WARMUP,
+          firstPageMeasuredIterations: FIRST_PAGE_MEASURED,
+          laterPageWarmupIterations: SQLITE_BENCHMARK_WARMUP_SAMPLES,
+          laterPageMeasuredIterations: SQLITE_BENCHMARK_MEASURED_SAMPLES
+        },
+        specTargets,
+        verdicts,
+        budgets: {
+          firstPageP95BudgetMs: FIRST_PAGE_P95_BUDGET_MS,
+          laterPageP95BudgetMs: LATER_PAGE_P95_BUDGET_MS,
+          cancelAckBudgetMs: CANCEL_ACK_BUDGET_MS
+        },
+        seed: { ms: Number(seedMs.toFixed(0)) },
+        firstPage: { p50Ms: firstPageP50Ms, p95Ms: firstPageP95Ms, maxMs: firstPageMaxMs },
+        laterPage: { p50Ms: later.p50Ms, p95Ms: later.p95Ms, p99Ms: later.p99Ms, maxMs: later.maxMs, maxBytes: maxPageBytes },
+        capture: {
+          sampleCount: measuredCaptureMs.length,
+          p50Ms: captureP50Ms,
+          p95Ms: captureP95Ms,
+          maxMs: captureMaxMs,
+          probedCaptureMs: rounded(probedCaptureMs)
+        },
+        workingData: { executionSummaryBytes: probedBytes },
+        slices: {
+          count: gaps.length,
+          p95Ms: rounded(percentile(gaps, 0.95)),
+          maxMs: rounded(Math.max(...gaps)),
+          largestMs: [...gaps].sort((left, right) => right - left).slice(0, 4).map(rounded),
+          slicedP95Ms
+        },
+        cancel: { outcome: cancelled.ok ? 'complete' : cancelled.outcome, ackMs: rounded(cancelAckMs) },
+        deadline: deadlined,
+        attemptDetail
+      };
+      console.info(JSON.stringify(result));
+
+      expect(measuredCaptureMs).toHaveLength(FIRST_PAGE_MEASURED);
+      expect(captureGapIndex).toBeGreaterThanOrEqual(0);
+      expect(slicedGaps).toHaveLength(gaps.length - 1);
+      expect(slicedGaps.length).toBeGreaterThan(0);
+      expect(firstPageP95Ms).toBeLessThanOrEqual(FIRST_PAGE_P95_BUDGET_MS);
+      expect(later.failureCount).toBe(0);
+      expect(later.p95Ms).toBeLessThanOrEqual(LATER_PAGE_P95_BUDGET_MS);
+      expect(cancelled).toEqual({ ok: false, outcome: 'cancelled' });
+      expect(cancelAckMs).toBeLessThanOrEqual(CANCEL_ACK_BUDGET_MS);
+      expect(deadlined).toEqual({ ok: false, outcome: 'limited', limit: 'deadline-exceeded' });
+      expect(attemptDetail).toEqual({ ok: false, outcome: 'limited', limit: 'working-data' });
+      expect(service.resources()).toMatchObject({ executing: 0, waiting: 0, reservedBytes: 0, liveReports: 0 });
+      expect(gaps.length).toBeGreaterThan(1);
+      await service.close?.();
+      conn.close();
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it(
+    'offloads file-backed run capture to the chunked read-only worker with bounded end-to-end event-loop latency, RSS, cancellation, and WAL checkpoint freedom (Post-merge Finding 5)',
+    async () => {
+      const workerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schegent-310-worker-perf-'));
+      const dbPath = path.join(workerDir, 'runs.sqlite');
+      const conn = new NodeSqliteConnection({ databasePath: dbPath });
+      try {
+        SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
+        seedFixture(conn);
+        // Checkpoint after seeding so WAL starts clean before comparing capture traffic.
+        conn.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+
+        const workerMetrics: { queueWaitMs: number; sqlReadMs: number; totalWorkerMs: number }[] = [];
+        const service = createReportingService({
+          conn,
+          workspaceId: 'ws-1',
+          workspaceRoot: os.tmpdir(),
+          nowMs: () => NOW,
+          monotonicMs: () => performance.now(),
+          hostTimezone: 'UTC',
+          accounting: null,
+          onSnapshotWorkerMetrics: (m) => workerMetrics.push(m)
+        });
+
+        const rssBeforeMiB = Number((process.memoryUsage().rss / (1024 * 1024)).toFixed(1));
+        const firstPageMs: number[] = [];
+        const allEndToEndMaxGaps: number[] = [];
+        const allEndToEndP95Gaps: number[] = [];
+        let peakRssBytes = process.memoryUsage().rss;
+
+        for (let sample = 0; sample < FIRST_PAGE_WARMUP + FIRST_PAGE_MEASURED; sample += 1) {
+          const probe = probeGaps();
+          const started = performance.now();
+          const page = pageOf(await service.runReport(QUERY));
+          const elapsed = performance.now() - started;
+          const gapSamples = probe.stop().map((s) => s.durationMs);
+          peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
+
+          expect(page.rowCount).toBe(ROOT_COUNT);
+          expect(service.closeReport({ reportId: page.reportId }).ok).toBe(true);
+          if (sample >= FIRST_PAGE_WARMUP) {
+            firstPageMs.push(elapsed);
+            allEndToEndMaxGaps.push(Math.max(...gapSamples));
+            allEndToEndP95Gaps.push(percentile(gapSamples, 0.95));
+          }
+        }
+
+        // Measure concurrent settlement writes and WAL checkpoint completion during a full worker capture.
+        const settlementWriteLatenciesMs: number[] = [];
+        let writeSeq = 0;
+        const writeInterval = setInterval(() => {
+          const wStart = performance.now();
+          writeSeq += 1;
+          seedRun(conn, {
+            runId: `settle-concurrent-${String(writeSeq)}`,
+            createdAtMs: NOW + writeSeq * 1_000,
+            workflowId: 'wf-live',
+            status: 'succeeded',
+            startedAtMs: NOW + writeSeq * 1_000,
+            completedAtMs: NOW + writeSeq * 1_000 + 50
+          });
+          settlementWriteLatenciesMs.push(performance.now() - wStart);
+        }, 15);
+        let concurrentPage: ReportPage;
+        try {
+          concurrentPage = pageOf(await service.runReport(QUERY));
+        } finally {
+          clearInterval(writeInterval);
+        }
+        expect(concurrentPage.rowCount).toBe(ROOT_COUNT);
+        expect(service.closeReport({ reportId: concurrentPage.reportId }).ok).toBe(true);
+
+        // Immediately after capture completes, the worker's read transaction is already closed so
+        // `PRAGMA wal_checkpoint(TRUNCATE)` completes with busy = 0 (no pinned WAL snapshot).
+        const checkpoint = conn.get<{ busy: number; log: number; checkpointed: number }>(
+          'PRAGMA wal_checkpoint(TRUNCATE)'
+        );
+        expect(checkpoint?.busy).toBe(0);
+
+        // Measure mid-capture cancellation acknowledgement from request start (aborting 20 ms in).
+        const cancelController = new AbortController();
+        let abortedAt = Number.NaN;
+        const abortTimer = setTimeout(() => {
+          abortedAt = performance.now();
+          cancelController.abort();
+        }, 20);
+        const cancelled = await service.runReport(QUERY, cancelController.signal);
+        clearTimeout(abortTimer);
+        const cancelAckMs = performance.now() - abortedAt;
+
+        const deadlinedService = createReportingService({
+          conn,
+          workspaceId: 'ws-1',
+          workspaceRoot: os.tmpdir(),
+          nowMs: () => NOW,
+          monotonicMs: () => performance.now(),
+          hostTimezone: 'UTC',
+          accounting: null,
+          bounds: { queryDeadlineMs: 1 }
+        });
+        const deadlined = await deadlinedService.runReport(QUERY);
+        await deadlinedService.close?.();
+
+        const rssPeakMiB = Number((peakRssBytes / (1024 * 1024)).toFixed(1));
+        const workerSummary = {
+          mode: 'read-only-chunked-worker',
+          firstPage: {
+            p50Ms: rounded(percentile(firstPageMs, 0.5)),
+            p95Ms: rounded(percentile(firstPageMs, 0.95)),
+            maxMs: rounded(Math.max(...firstPageMs))
+          },
+          endToEndHostGap: {
+            p95OfP95Ms: rounded(percentile(allEndToEndP95Gaps, 0.95)),
+            p95OfMaxMs: rounded(percentile(allEndToEndMaxGaps, 0.95)),
+            worstMaxMs: rounded(Math.max(...allEndToEndMaxGaps))
+          },
+          workerSqlReadP95Ms: rounded(percentile(workerMetrics.map((m) => m.sqlReadMs), 0.95)),
+          workerTotalP95Ms: rounded(percentile(workerMetrics.map((m) => m.totalWorkerMs), 0.95)),
+          rssBeforeMiB,
+          rssPeakMiB,
+          rssDeltaMiB: Number((rssPeakMiB - rssBeforeMiB).toFixed(1)),
+          concurrentSettlementWrites: {
+            count: settlementWriteLatenciesMs.length,
+            maxMs: settlementWriteLatenciesMs.length > 0 ? rounded(Math.max(...settlementWriteLatenciesMs)) : 0
+          },
+          walCheckpointBusyAfterCapture: checkpoint?.busy ?? -1,
+          cancelAckMs: rounded(cancelAckMs)
+        };
+        console.info('[Post-merge Finding 5 worker benchmark]', JSON.stringify(workerSummary));
+
+        expect(workerSummary.firstPage.p95Ms).toBeLessThanOrEqual(FIRST_PAGE_P95_BUDGET_MS);
+        // True end-to-end host event-loop blocking (INCLUDING capture) stays well under 50 ms p95!
+        expect(workerSummary.endToEndHostGap.p95OfP95Ms).toBeLessThanOrEqual(50);
+        expect(workerSummary.endToEndHostGap.p95OfMaxMs).toBeLessThanOrEqual(80);
+        expect(cancelled).toEqual({ ok: false, outcome: 'cancelled' });
+        expect(cancelAckMs).toBeLessThanOrEqual(CANCEL_ACK_BUDGET_MS);
+        expect(deadlined).toEqual({ ok: false, outcome: 'limited', limit: 'deadline-exceeded' });
+        expect(service.resources()).toMatchObject({ executing: 0, waiting: 0, reservedBytes: 0, liveReports: 0 });
+        await service.close?.();
+      } finally {
+        conn.close();
+        fs.rmSync(workerDir, { recursive: true, force: true });
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it('drops only the single capture-spanning gap and preserves additional long event-loop stalls in slicedP95Ms (CR-310-3)', () => {
+    const samples: readonly GapSample[] = [
+      { startMs: 0, endMs: 341.85, durationMs: 341.85 },
+      { startMs: 341.85, endMs: 663.85, durationMs: 322 },
+      { startMs: 663.85, endMs: 680.98, durationMs: 17.13 },
+      { startMs: 680.98, endMs: 691.8, durationMs: 10.82 },
+      ...Array.from({ length: 16 }, (_, idx) => ({
+        startMs: 700 + idx * 5,
+        endMs: 705 + idx * 5,
+        durationMs: 5
+      }))
+    ];
+    const { excludedIndex, slicedGaps } = excludeSingleCaptureGap(
+      samples,
+      { startMs: 10, endMs: 323.7 },
+      313.7
+    );
+    expect(excludedIndex).toBe(0);
+    expect(slicedGaps).toHaveLength(samples.length - 1);
+    expect(slicedGaps).toContain(322);
+    expect(rounded(percentile(slicedGaps, 0.95))).toBe(322);
+  });
+});

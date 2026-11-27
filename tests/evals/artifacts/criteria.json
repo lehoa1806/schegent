@@ -1,0 +1,168 @@
+{
+  "criteriaVersion": 1,
+  "templateProvenance": {
+    "id": "spec-kit-1.2.3+schegent-1",
+    "specKitVersion": "1.2.3",
+    "templates": {
+      "spec": "sha256:3945437fc35cd30a5b2bf7beea680337c3516826d3efa5a6b92c4a7eca1ba28e",
+      "plan": "sha256:7e637502d41eccf0ca672496636365691fdca62ef37b27ec07fcb412dbfa90d4",
+      "tasks": "sha256:0c6462e7b74688ddce42cdf5877434d50083e1459e44b1bf5a42d350784f9c43"
+    }
+  },
+  "criteria": [
+    {
+      "id": "SPEC-01",
+      "artifact": "spec",
+      "description": "The four mandatory headings are present.",
+      "check": "required-heading",
+      "params": {
+        "prefixes": [
+          "## User Scenarios & Testing",
+          "## Requirements",
+          "### Functional Requirements",
+          "## Success Criteria"
+        ]
+      }
+    },
+    {
+      "id": "SPEC-02",
+      "artifact": "spec",
+      "description": "Every functional requirement id is unique.",
+      "check": "id-unique",
+      "params": {
+        "pattern": "^- \\*\\*(FR-\\d{3})\\*\\*"
+      }
+    },
+    {
+      "id": "SPEC-03",
+      "artifact": "spec",
+      "description": "Every success criterion id is unique.",
+      "check": "id-unique",
+      "params": {
+        "pattern": "^- \\*\\*(SC-\\d{3})\\*\\*"
+      }
+    },
+    {
+      "id": "SPEC-04",
+      "artifact": "spec",
+      "description": "Every user story heading carries a priority.",
+      "check": "line-shape",
+      "params": {
+        "selector": "^### User Story",
+        "patterns": [
+          "\\(Priority: P\\d\\)"
+        ]
+      }
+    },
+    {
+      "id": "SPEC-05",
+      "artifact": "spec",
+      "description": "Every numbered acceptance scenario carries Given, When and Then.",
+      "check": "line-shape",
+      "params": {
+        "selector": "^\\d+\\. \\*\\*Given\\*\\*",
+        "patterns": [
+          "\\*\\*When\\*\\*",
+          "\\*\\*Then\\*\\*"
+        ]
+      }
+    },
+    {
+      "id": "SPEC-06",
+      "artifact": "spec",
+      "description": "At most three clarification markers remain.",
+      "check": "max-count",
+      "params": {
+        "text": "[NEEDS CLARIFICATION",
+        "max": 3
+      }
+    },
+    {
+      "id": "PLAN-01",
+      "artifact": "plan",
+      "description": "The four mandatory headings are present.",
+      "check": "required-heading",
+      "params": {
+        "prefixes": [
+          "## Summary",
+          "## Technical Context",
+          "## Constitution Check",
+          "## Project Structure"
+        ]
+      }
+    },
+    {
+      "id": "PLAN-02",
+      "artifact": "plan",
+      "description": "No template residue remains.",
+      "check": "forbidden-text",
+      "params": {
+        "texts": [
+          "[REMOVE IF UNUSED]",
+          "# Option 1:",
+          "ACTION REQUIRED",
+          "[FEATURE]",
+          "[###-feature-name]"
+        ]
+      }
+    },
+    {
+      "id": "PLAN-03",
+      "artifact": "plan",
+      "description": "The structure decision is stated.",
+      "check": "required-heading",
+      "params": {
+        "prefixes": [
+          "**Structure Decision**"
+        ]
+      }
+    },
+    {
+      "id": "TASK-01",
+      "artifact": "tasks",
+      "description": "Every checkbox line opens with a task id.",
+      "check": "id-format",
+      "params": {
+        "selector": "^- \\[",
+        "patterns": [
+          "^- \\[[ xX]\\] T\\d{3} (\\[P\\] )?(\\[US\\d+\\] )?\\S"
+        ]
+      }
+    },
+    {
+      "id": "TASK-02",
+      "artifact": "tasks",
+      "description": "Task ids are unique and strictly increasing.",
+      "check": "id-unique",
+      "params": {
+        "pattern": "^- \\[[ xX]\\] (T\\d{3})",
+        "increasing": true
+      }
+    },
+    {
+      "id": "TASK-03",
+      "artifact": "tasks",
+      "description": "At least one phase heading is present.",
+      "check": "required-heading",
+      "params": {
+        "prefixes": [
+          "## Phase"
+        ]
+      }
+    },
+    {
+      "id": "TASK-04",
+      "artifact": "tasks",
+      "description": "Every task in a story or implementation phase names a path.",
+      "check": "each-line-matches",
+      "params": {
+        "scopeHeadingContains": [
+          "User Story",
+          "Implementation"
+        ],
+        "selector": "^- \\[[ xX]\\] T\\d{3}",
+        "requirePathToken": true
+      }
+    }
+  ]
+}

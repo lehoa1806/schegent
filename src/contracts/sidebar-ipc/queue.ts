@@ -3,7 +3,7 @@
 // Lives in a sub-module for the same reason `workflow-run.ts` and
 // `run-launcher.ts` do: the barrel is at its LOC ceiling, and only the five
 // mandatory registration edits per command belong there (the literal, the
-// `SIDEBAR_COMMAND_TYPES` entry, the type re-export, the `SidebarCommand`
+// `COMMAND_TYPES` entry, the type re-export, the `SidebarCommand`
 // member, and the `COMMAND_GUARDS` entry). See
 // specs/092-multi-queue-concurrency/contracts/queue-registry-and-migration.md.
 //
@@ -26,48 +26,16 @@
 //   * **No filesystem path crosses this boundary**, in either direction — the
 //     same rule the process-YAML and connected-run families hold.
 
-import type {
-  CMD_CREATE_QUEUE,
-  CMD_DELETE_QUEUE,
-  CMD_MOVE_TASK,
-  CMD_RENAME_QUEUE,
-  CMD_SAVE_QUEUE_SETTINGS,
-  CommandBase
-} from '../sidebar-ipc';
-
-export interface CreateQueueCommand extends CommandBase<typeof CMD_CREATE_QUEUE> {
-  readonly payload: { readonly name: string };
-}
-
-export interface RenameQueueCommand extends CommandBase<typeof CMD_RENAME_QUEUE> {
-  readonly payload: { readonly queueId: string; readonly name: string };
-}
-
-/**
- * Feature 092 (US1, FR-014) — two-phase, like `RemoveTaskPhaseCommand`.
- *
- * Without `confirmed`, the host answers `rejected` / `confirmation-required`
- * and returns the impact — the pending-Task count and every connected run
- * bound to the queue — so the webview can name it in the prompt. The host
- * stays the single oracle for that count; the webview never derives it from
- * a snapshot that may have moved on.
- */
-export interface DeleteQueueCommand extends CommandBase<typeof CMD_DELETE_QUEUE> {
-  readonly payload: { readonly queueId: string; readonly confirmed?: true };
-}
-
-export interface SaveQueueSettingsCommand extends CommandBase<typeof CMD_SAVE_QUEUE_SETTINGS> {
-  readonly payload: {
-    readonly globalConcurrencyCap: number;
-    readonly defaultQueueId: string;
-  };
-}
-
-/** Feature 092 (US1, FR-017) — move a pending Task to another queue. */
-export interface MoveTaskCommand extends CommandBase<typeof CMD_MOVE_TASK> {
-  readonly payload: {
-    readonly taskId: string;
-    readonly targetQueueId: string;
-    readonly position?: number;
-  };
-}
+// Queue command interfaces are generated from
+// `scripts/contracts/ipc-descriptors/queue-management.mjs` into
+// `src/contracts/generated/sidebar-ipc-types.ts`. Re-exported here so existing
+// imports from `src/contracts/sidebar-ipc/queue` remain stable.
+export type {
+  CreateQueueCommand,
+  RenameQueueCommand,
+  DeleteQueueCommand,
+  SaveQueueSettingsCommand,
+  MoveTaskCommand,
+  SetQueueFailurePolicyCommand,
+  AttestTaskCompletedCommand
+} from '../generated/sidebar-ipc-types';

@@ -1,0 +1,370 @@
+// FR-R5-F32 (F32-T02, F32-T03, F32-T07) — Component tests for CandidateBlockEditor
+// and candidate-block canvas path layout helpers.
+
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { cleanup, fireEvent, render, within } from '@testing-library/svelte';
+import { tick } from 'svelte';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { PortablePhaseDefinition } from '../../lib/snapshot-types';
+import CandidateBlockEditor from '../PipelineBuilderEditors/CandidateBlockEditor.svelte';
+import WorkflowFlowCanvas from '../PipelineBuilderEditors/WorkflowFlowCanvas.svelte';
+import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
+import {
+  addCandidateRow,
+  enableCandidateBlockControl,
+  moveCandidateRow,
+  removeCandidateRow,
+  toSaveWorkflowRow
+} from '../PipelineBuilderEditors/workflow-catalog-state';
+import { describeCandidateBlockCanvasPath } from '../PipelineBuilderEditors/workflow-flow-layout';
+
+const PHASES: readonly PortablePhaseDefinition[] = [
+  {
+    phaseId: 'phase-claude-impl',
+    name: 'Claude Implementer',
+    version: 1,
+    instruction: 'Implement the requested feature using strict TDD and clean commits.',
+    runner: 'claude',
+    model: 'claude-sonnet-4-5',
+    retryCondition: 'verification-failed'
+  },
+  {
+    phaseId: 'phase-codex-impl',
+    name: 'Codex Implementer',
+    version: 1,
+    instruction: 'Implement fallback solution with minimal footprint.',
+    runner: 'codex',
+    model: 'gpt-5-codex'
+  }
+];
+
+function makeDraftWorkflow(overrides: Partial<MutableWorkflow> = {}): MutableWorkflow {
+  return {
+    sourceKey: 'draft:wf-cand-1',
+    persisted: false,
+    sourceStatus: 'effective',
+    sourceErrors: [],
+    derivedInputs: [],
+    derivedOutputs: [],
+    workflowId: 'wf-cand-1',
+    name: 'Candidate Block Workflow',
+    description: 'Ordered fallback candidate block.',
+    version: 1,
+    nodes: [
+      { nodeId: 'cand-node-1', kind: 'phase', phaseId: 'phase-claude-impl' },
+      { nodeId: 'cand-node-2', kind: 'phase', phaseId: 'phase-codex-impl' }
+    ],
+    connections: [],
+    startNodeIds: ['cand-node-1'],
+    ...overrides
+  };
+}
+
+afterEach(() => {
+  cleanup();
+});
+
+describe('CandidateBlockEditor — authoring & read-only Phase binding (F32-T02)', () => {
+  it('enables candidate-block mode, binds Phase nodes, and renders Phase identity read-only', async () => {
+    let current = makeDraftWorkflow();
+    const { getByTestId, rerender } = render(CandidateBlockEditor, {
+      props: {
+        row: current,
+        phases: PHASES,
+        readonly: false,
+        onedit: (edit) => {
+          current = edit(current);
+        }
+      }
+    });
+
+    await fireEvent.click(getByTestId('candidate-block-enable'));
+    await rerender({
+      row: current,
+      phases: PHASES,
+      readonly: false,
+      onedit: (edit) => {
+        current = edit(current);
+      }
+    });
+
+    expect(current.control?.kind).toBe('candidate-block');
+    expect(current.control?.candidates.length).toBe(2);
+    expect(getByTestId('candidate-row-id-0').textContent).toBe('candidate-1');
+    expect(getByTestId('candidate-row-id-1').textContent).toBe('candidate-2');
+
+    // Read-only Phase identity is displayed without creating editable Phase instruction inputs
+    const identity0 = getByTestId('candidate-row-phase-identity-0');
+    expect(identity0.getAttribute('data-readonly')).toBe('true');
+    expect(identity0.querySelectorAll('input, textarea').length).toBe(0);
+    expect(getByTestId('candidate-row-runner-0').textContent).toContain('claude');
+    expect(getByTestId('candidate-row-model-0').textContent).toContain('claude-sonnet-4-5');
+    expect(getByTestId('candidate-row-instruction-summary-0').textContent).toContain(
+      'Implement the requested feature using strict TDD'
+    );
+  });
+
+  it('adds up to 8 candidate rows with stable IDs, reorders without losing selection, and prevents removing the last row', async () => {
+    let current = enableCandidateBlockControl(
+      makeDraftWorkflow({
+        nodes: [{ nodeId: 'cand-node-1', kind: 'phase', phaseId: 'phase-claude-impl' }]
+      }),
+      'phase-claude-impl'
+    );
+    expect(current.control?.candidates.length).toBe(1);
+
+    // Removing when only 1 candidate exists is a no-op
+    current = removeCandidateRow(current, 0);
+    expect(current.control?.candidates.length).toBe(1);
+
+    // Add up to 8 candidates
+    for (let i = 0; i < 10; i++) {
+      current = addCandidateRow(current, i % 2 === 0 ? 'phase-codex-impl' : 'phase-claude-impl');
+    }
+    expect(current.control?.candidates.length).toBe(8);
+    const idsBefore = (current.control?.candidates ?? []).map((c) => c.candidateId);
+    expect(new Set(idsBefore).size).toBe(8);
+
+    // Reorder candidate-2 to index 0 and verify stable candidateId
+    const reordered = moveCandidateRow(current, 1, -1);
+    expect(reordered.control?.candidates[0]?.candidateId).toBe(idsBefore[1]);
+    expect(reordered.control?.candidates[1]?.candidateId).toBe(idsBefore[0]);
+  });
+
+  it('updates candidate maxAttempts (1..20), allowUnverifiedTrial, availabilityPolicy, maxDispatches (1..40), monitoringWindowMs, and strict-usd ceiling', async () => {
+    let current = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const { getByTestId, rerender } = render(CandidateBlockEditor, {
+      props: {
+        row: current,
+        phases: PHASES,
+        readonly: false,
+        onedit: (edit) => {
+          current = edit(current);
+        }
+      }
+    });
+
+    await fireEvent.change(getByTestId('candidate-block-availability-policy'), {
+      target: { value: 'wait-for-selected' }
+    });
+    await fireEvent.input(getByTestId('candidate-block-max-dispatches'), {
+      target: { value: '25' }
+    });
+    await fireEvent.input(getByTestId('candidate-block-monitoring-window-ms'), {
+      target: { value: '120000' }
+    });
+    await fireEvent.input(getByTestId('candidate-block-max-microusd'), {
+      target: { value: '500000' }
+    });
+    await fireEvent.input(getByTestId('candidate-row-max-attempts-0'), {
+      target: { value: '5' }
+    });
+    await fireEvent.click(getByTestId('candidate-row-allow-unverified-trial-0'));
+
+    await rerender({
+      row: current,
+      phases: PHASES,
+      readonly: false,
+      onedit: (edit) => {
+        current = edit(current);
+      }
+    });
+
+    const saved = toSaveWorkflowRow(current);
+    expect(saved.control?.availabilityPolicy).toBe('wait-for-selected');
+    expect(saved.control?.maxDispatches).toBe(25);
+    expect(saved.control?.monitoringWindowMs).toBe(120000);
+    expect(saved.control?.budget).toEqual({ mode: 'strict-usd', limitMicrousd: 500000 });
+    expect(saved.control?.candidates[0]?.maxAttempts).toBe(5);
+    expect(saved.control?.candidates[0]?.allowUnverifiedTrial).toBe(true);
+  });
+});
+
+describe('CandidateBlockEditor — collapsed/expanded canvas path & focus preservation (F32-T03)', () => {
+  it('describes exclusive single-active candidate selection, retry adornments, validated return path, and terminal exits without cyclic edges', async () => {
+    let current = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const path = describeCandidateBlockCanvasPath(current.control, current.nodes, PHASES);
+    expect(path).not.toBeNull();
+    expect(path?.selectionMode).toBe('exclusive-single-active');
+    expect(path?.validatedReturnPath).toBe('Single validated candidate return');
+    expect(path?.terminalExits).toEqual(['failed', 'intervention-required']);
+    expect(path?.hasCyclicEdges).toBe(false);
+    expect(path?.candidates[0]?.retrySummary).toContain('Up to 3 attempts');
+
+    const { getByTestId, queryByTestId } = render(CandidateBlockEditor, {
+      props: {
+        row: current,
+        phases: PHASES,
+        readonly: false,
+        onedit: (edit) => {
+          current = edit(current);
+        }
+      }
+    });
+
+    // Select candidate-2 before collapsing
+    await fireEvent.click(getByTestId('candidate-row-select-candidate-2'));
+    expect(getByTestId('candidate-row-select-candidate-2').getAttribute('aria-pressed')).toBe(
+      'true'
+    );
+
+    // Collapse and re-expand
+    const toggle = getByTestId('candidate-block-expand-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    await fireEvent.click(toggle);
+    await tick();
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(getByTestId('candidate-block-collapsed-view')).toBeTruthy();
+    expect(queryByTestId('candidate-block-expanded-view')).toBeNull();
+
+    await fireEvent.click(toggle);
+    await tick();
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(getByTestId('candidate-row-select-candidate-2').getAttribute('aria-pressed')).toBe(
+      'true'
+    );
+  });
+});
+
+// Decisions 9 and 10 of the redesign review. The editor sits under the inspector's own
+// "Candidate block" summary, so it is named the same and carries no heading of its own. Its
+// controls are drawn the way the rest of the inspector draws them: sprite icons on its icon
+// buttons, and each value in the shared field, a caption over its input.
+describe('CandidateBlockEditor — drawn the way the rest of the inspector is', () => {
+  function renderEnabled() {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    return render(CandidateBlockEditor, {
+      props: { row, phases: PHASES, readonly: false, onedit: () => undefined }
+    });
+  }
+
+  it('is the region named like the summary above it, with no heading of its own', () => {
+    const { getByRole, getByTestId } = renderEnabled();
+    const editor = getByRole('region', { name: 'Candidate block' });
+    expect(editor).toBe(getByTestId('candidate-block-editor'));
+    expect(within(editor).queryAllByRole('heading')).toEqual([]);
+  });
+
+  it.each([
+    ['candidate-row-up-1', '#i-up', 'Move candidate candidate-2 earlier'],
+    ['candidate-row-down-0', '#i-down', 'Move candidate candidate-1 later'],
+    ['candidate-row-remove-0', '#i-x', 'Remove candidate candidate-1']
+  ])('draws %s as the sprite icon %s and keeps its name', (testId, href, name) => {
+    const { getByTestId } = renderEnabled();
+    const button = getByTestId(testId);
+    expect(button.textContent.trim()).toBe('');
+    expect(button.querySelector('use')?.getAttribute('href')).toBe(href);
+    expect(button.getAttribute('aria-label')).toBe(name);
+  });
+
+  it('draws Add candidate with the plus icon and no glyph in its words', () => {
+    const { getByTestId } = renderEnabled();
+    const add = getByTestId('candidate-block-add-row');
+    expect(add.textContent.trim()).toBe('Add candidate');
+    expect(add.querySelector('use')?.getAttribute('href')).toBe('#i-plus');
+  });
+
+  it('puts every value in the shared field, a caption over its input', () => {
+    const { getByTestId } = renderEnabled();
+    const controls = getByTestId('candidate-block-expanded-view').querySelectorAll(
+      'input:not([type="checkbox"]), select'
+    );
+    // Four block policies, then four per candidate.
+    expect(controls).toHaveLength(12);
+    for (const control of controls) {
+      const field = control.closest('label');
+      expect(field?.classList.contains('field')).toBe(true);
+      expect(field?.firstElementChild?.tagName).toBe('SPAN');
+      expect(field?.firstElementChild?.textContent.trim()).not.toBe('');
+      expect(control.classList.contains('input')).toBe(true);
+    }
+  });
+
+  // A pill holds a short value, and this one held a sentence, which wrapped inside the inspector
+  // at every width: two lines in a fully rounded badge.
+  it('states its selection mode as a line of text and keeps the pills for short values', () => {
+    const { getByTestId } = renderEnabled();
+    const mode = getByTestId('candidate-block-selection-mode');
+    expect(mode.tagName).toBe('P');
+    expect(mode.classList.contains('wf-badge')).toBe(false);
+    expect(mode.textContent.trim()).toBe(
+      'Exclusive single-active candidate selection (no parallel execution)'
+    );
+    for (const testId of ['candidate-block-return-path', 'candidate-block-terminal-exits']) {
+      expect(getByTestId(testId).classList.contains('wf-badge')).toBe(true);
+    }
+  });
+
+  // jsdom applies no component CSS, so the rules are read from the component's source.
+  it('borders its parts with the redesign tokens and rings the selected candidate', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(
+      join(here, '..', 'PipelineBuilderEditors', 'CandidateBlockEditor.svelte'),
+      'utf8'
+    );
+    const style = /<style>([\s\S]*?)<\/style>/.exec(source);
+    expect(style).not.toBeNull();
+    const rules = style ? style[1] : '';
+    expect(rules).not.toContain('--vscode-');
+    expect(rules).toMatch(
+      /\.cb-candidate-row\.is-selected \{ border-color: var\(--schegent-focus-border\); box-shadow: var\(--schegent-ring-selected\); \}/
+    );
+  });
+});
+
+// Fields and pills are captioned in sentence case, as the rest of the builder and the mockups
+// caption them. Phase stays capitalised: it is the product's noun, as M2 writes "from Phase".
+describe('the Candidate Block reads in sentence case', () => {
+  it('captions every field of the editor in sentence case', () => {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const { getByTestId } = render(CandidateBlockEditor, {
+      props: { row, phases: PHASES, readonly: false, onedit: () => undefined }
+    });
+    const controls = getByTestId('candidate-block-expanded-view').querySelectorAll(
+      'input:not([type="checkbox"]), select'
+    );
+    const captions = [...controls].map((control) =>
+      control.closest('label')?.firstElementChild?.textContent.trim()
+    );
+    expect([...new Set(captions)]).toEqual([
+      'Availability policy',
+      'Max dispatches (1–40)',
+      'Monitoring window (ms)',
+      'Spend ceiling (micro-USD, optional)',
+      'Bound Phase',
+      'Priority',
+      'Max attempts (1–20)',
+      'Initial retry delay (ms)'
+    ]);
+  });
+
+  it('names the block on the canvas the way the editor names it', () => {
+    const row = enableCandidateBlockControl(makeDraftWorkflow(), 'phase-claude-impl');
+    const { getByTestId } = render(WorkflowFlowCanvas, {
+      props: {
+        nodes: row.nodes,
+        connections: row.connections,
+        startNodeIds: row.startNodeIds,
+        control: row.control,
+        pipelines: [],
+        phases: PHASES,
+        nodeDefects: [],
+        connectionDefects: [],
+        readonly: false,
+        selection: null,
+        onselect: () => undefined,
+        oninsertafter: () => undefined,
+        onsplice: () => undefined,
+        onnodemove: () => undefined,
+        onnoderemove: () => undefined
+      }
+    });
+    expect(getByTestId('workflow-canvas-candidate-selection-mode').textContent.trim()).toBe(
+      'Candidate block · Exclusive single-active selection'
+    );
+  });
+});

@@ -19,10 +19,10 @@
 //       VS Code re-activation against the persisted state).
 //   (d) assert pending head-of-queue invariant, lifecycle is
 //       `idle-pending`, `scheduledStartAt === null`.
-//   (e) the webview re-renders; the chooser is NOT auto-opened — the
-//       `QueueInputForm.svelte` only mounts the chooser when there is an
-//       in-flight draft (`pendingDraft !== null`), and across reloads the
-//       draft is not persisted. Instead the queue panel exposes the
+//   (e) the webview re-renders; the chooser is NOT auto-opened — no
+//       submission surface mounts it (BUG-001, FR-018; the Queue form that
+//       once did was retired by feature 285), and across reloads no
+//       draft is persisted. Instead the queue panel exposes the
 //       `Start queue` affordance via `ScheduledStartIndicator` (when
 //       `scheduledStartAt != null`) or a `Start queue` button (when
 //       `scheduledStartAt === null`, per T051).
@@ -68,7 +68,8 @@ async function openWorkspace(memento: FakeMemento, clock: MutableClock): Promise
     store,
     queue,
     executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
   const coordinator = new ScheduledStartCoordinator({
     store,
@@ -93,6 +94,9 @@ async function openWorkspace(memento: FakeMemento, clock: MutableClock): Promise
     clearTimer: fakeTimer.clearTimer
   });
   const service = new GuardedRunService({
+    // FR-R3-136 (FR-008) — this suite exercises a trusted workspace; the
+    // untrusted rows live in the trust-specific describe block.
+    isWorkspaceTrusted: () => true,
     lock,
     queue,
     controller: controller as unknown as SchegentWorkflowController,
@@ -149,10 +153,8 @@ describe('Feature 065 (T050 / Q12 / FR-018) — offline window-close', () => {
     // live only on the webview component. Across a workspace reload,
     // the queue's pending draft is gone (it was the textarea, not the
     // queue), and the queue's persisted state has no marker that would
-    // cause the chooser to auto-mount. The webview only mounts the
-    // chooser when `pendingDraft !== null && lifecycle === 'active-empty'`
-    // (per QueueInputForm.svelte), and `idle-pending` fails that gate.
-    // We assert the host-side contract: the persisted state has nothing
+    // cause the chooser to auto-mount. No submission surface mounts the
+    // chooser (BUG-001, FR-018). We assert the host-side contract: the persisted state has nothing
     // that would force the webview to surface the chooser.
     expect(queue.queueLifecycle).not.toBe('active-empty');
   });

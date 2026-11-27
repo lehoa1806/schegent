@@ -1,0 +1,217 @@
+// The hooks a Workflow control needs from the window that runs it.
+//
+// `WorkflowControlService` is shared with the headless entrypoint and imports no controller, so
+// what can only be answered here (stop this leaf, whose claim is this queue) reaches it as optional
+// hooks. The controller is taken through a structural port for the same reason: this module stays
+// free of `vscode`, like the rest of the directory.
+
+import { errorMessage } from '../../lib/errors';
+import type { SanitizedLogger } from '../../lib/logger';
+import type { ResolvedPortValue } from '../../contracts/run-request';
+import type { WorkflowLeafTarget } from '../../contracts/workflow-leaf-target';
+import { isWorkflowNodeTerminalStatus } from '../../contracts/workflow-definitions';
+import { connectedRunOwnsQueueItem } from '../../state/connected-workflow-run';
+import type { WorkflowRun } from '../../state/workflow-run';
+import type { WorkspaceStateStore } from '../../state/workspace-state';
+import type { ExecutionLeasePort } from '../auto-drain-coordinator';
+import {
+  isQueueOwnershipLostOnDisk,
+  type AuthoritativeOwnershipStorePort
+} from '../execution-lease-release';
+import type { WorkflowControlServiceDeps } from './workflow-control-service';
+
+export interface WorkflowLeafControlPort {
+  cancelActive?(queueId: string): void;
+  cancelPendingRetry(queueId: string): void;
+  isDriving(queueId: string): boolean;
+  drainQueuedWork(queueId: string): Promise<void>;
+}
+
+export interface WorkflowLeafControlDeps {
+  readonly controller: WorkflowLeafControlPort;
+  /** Stops one leaf and settles what is under it; `workflow-leaf-end.ts` holds the ordering. */
+  readonly endLeaf: (target: WorkflowLeafTarget) => Promise<void>;
+  readonly executionLease: Pick<ExecutionLeasePort, 'tenureOf' | 'isForeignLeaseHeld'>;
+  readonly logger: Pick<SanitizedLogger, 'warn'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getConnectedRun' | 'getQueueRegistry'> &
+    Partial<Pick<WorkspaceStateStore, 'getQueue' | 'getRunMap' | 'getHistory'>> &
+    AuthoritativeOwnershipStorePort;
+}
+
+export type WorkflowLeafControlHooks = Required<
+  Pick<
+    WorkflowControlServiceDeps,
+    | 'abortActiveLeaf'
+    | 'cancelRetryTimer'
+    | 'releaseQueueLease'
+    | 'verifyLeaseFence'
+    | 'isQueuePresent'
+  >
+> &
+  Pick<
+    WorkflowControlServiceDeps,
+    'cancelOrphanedQueueItem' | 'isQueueOrTaskPresent' | 'checkDurableAttemptEvidence'
+  >;
+
+function buildDeclaredOutputsFromRun(
+  runOutputs: WorkflowRun['runOutputs']
+): Readonly<Record<string, ResolvedPortValue>> {
+  const out: Record<string, ResolvedPortValue> = {};
+  for (const record of runOutputs ?? []) {
+    if (record.status !== 'resolved' || record.reference === undefined) continue;
+    out[record.name] = Object.freeze({
+      portId: record.name,
+      type: 'file',
+      value: record.reference
+    });
+  }
+  return Object.freeze(out);
+}
+
+/**
+ * Offer a queue its work, once. The drain is edge-triggered, so a command that frees a queue or
+ * queues a leaf with no driver on the stack owes it this. A driver still on its way out schedules a
+ * drain of its own, after its release, so it is left to do so. What the drain then does with the
+ * offer is its own decision: a queue held for a Start stays held.
+ */
+export function createWorkflowQueueWake(
+  deps: Pick<WorkflowLeafControlDeps, 'controller' | 'logger'>
+): (queueId: string) => void {
+  const { controller, logger } = deps;
+  return (queueId) => {
+    if (controller.isDriving(queueId)) return;
+    void controller.drainQueuedWork(queueId).catch((error: unknown) => {
+      logger.warn(`workflow-leaf-control: drain of a Workflow's queue failed: ${errorMessage(error)}`);
+    });
+  };
+}
+
+export function createWorkflowLeafControlHooks(
+  deps: WorkflowLeafControlDeps
+): WorkflowLeafControlHooks {
+  const { controller, endLeaf, executionLease, store } = deps;
+  const stopLocalOnly = (queueId: string, taskId: string): void => {
+    const current = store.getRun(queueId);
+    if (current?.featureId === taskId) {
+      controller.cancelActive?.(queueId);
+      controller.cancelPendingRetry(queueId);
+    }
+  };
+  return {
+    abortActiveLeaf: async (leaf) => {
+      if (leaf.queueItemId === undefined) return;
+      if (leaf.localOnly === true) {
+        stopLocalOnly(leaf.queueId, leaf.queueItemId);
+        return;
+      }
+      await endLeaf({ queueId: leaf.queueId, taskId: leaf.queueItemId });
+    },
+
+    // Asked once per frame, and the timer belongs to the queue's Run rather than to a frame, so it
+    // is canceled only when that Run is a leaf of this Workflow. An unrelated Task's countdown stays.
+    cancelRetryTimer: (queueId, runId) => {
+      const current = store.getRun(queueId);
+      const owner = store.getConnectedRun(runId);
+      if (current === null || owner === null) return;
+      if (connectedRunOwnsQueueItem(owner, current.featureId)) {
+        controller.cancelPendingRetry(queueId);
+      }
+    },
+
+    // "Not lost to a rival", never "held": a queue between two leaves holds no lease at all.
+    // Also verify authoritative workspace primacy and `.schegent/ownership/` queue state before
+    // any pre-CAS leaf cancellation can touch a rival window's Run or queue row.
+    verifyLeaseFence: async (queueId) =>
+      !(await isQueueOwnershipLostOnDisk({ executionLease, store }, queueId)),
+
+    isQueuePresent: (queueId) =>
+      store.getQueueRegistry().entries.some((entry) => entry.id === queueId),
+
+    cancelOrphanedQueueItem: async (target) => {
+      if (await isQueueOwnershipLostOnDisk({ executionLease, store }, target.queueId)) {
+        stopLocalOnly(target.queueId, target.taskId);
+        return;
+      }
+      await endLeaf(target);
+    },
+
+    isQueueOrTaskPresent: (queueId, taskId) => {
+      if (!store.getQueueRegistry().entries.some((entry) => entry.id === queueId)) {
+        return false;
+      }
+      const currentRun = store.getRun(queueId);
+      if (
+        currentRun !== null &&
+        currentRun.featureId === taskId &&
+        !isWorkflowNodeTerminalStatus(currentRun.status)
+      ) {
+        return true;
+      }
+      if (store.getQueue !== undefined) {
+        return store
+          .getQueue(queueId)
+          .requests.some(
+            (req) =>
+              req.id === taskId &&
+              req.status !== 'canceled' &&
+              req.status !== 'completed' &&
+              req.status !== 'failed'
+          );
+      }
+      return false;
+    },
+
+    checkDurableAttemptEvidence: (_workflowRun, _frame, attempt) => {
+      if (attempt.queueItemId === undefined) return { completed: false };
+      if (store.getRunMap !== undefined) {
+        const liveMatch = Object.values(store.getRunMap()).find(
+          (candidate) => candidate.featureId === attempt.queueItemId
+        );
+        if (liveMatch !== undefined && isWorkflowNodeTerminalStatus(liveMatch.status)) {
+          return {
+            completed: true,
+            status: liveMatch.status,
+            declaredOutputs: buildDeclaredOutputsFromRun(liveMatch.runOutputs),
+            completedAt: liveMatch.lastTransitionAt
+          };
+        }
+      }
+      if (store.getHistory !== undefined) {
+        const historyEntries = store.getHistory() as readonly {
+          readonly featureId?: string;
+          readonly terminalStatus?: string;
+          readonly completedAt?: string;
+          readonly runOutputs?: WorkflowRun['runOutputs'];
+        }[];
+        const historyMatch = historyEntries.find(
+          (entry) => entry.featureId === attempt.queueItemId
+        );
+        if (
+          historyMatch !== undefined &&
+          isWorkflowNodeTerminalStatus(historyMatch.terminalStatus)
+        ) {
+          const parsedCompletedAt =
+            typeof historyMatch.completedAt === 'string'
+              ? Date.parse(historyMatch.completedAt)
+              : Number.NaN;
+          return {
+            completed: true,
+            status: historyMatch.terminalStatus,
+            declaredOutputs: buildDeclaredOutputsFromRun(historyMatch.runOutputs),
+            completedAt: Number.isFinite(parsedCompletedAt) ? parsedCompletedAt : Date.now()
+          };
+        }
+      }
+      return { completed: false };
+    },
+
+    // Named for the service's contract: it calls this once, when the root has ended, after the
+    // commit. In this window that moment is a wake, and no lease is released here. Leases are held
+    // per leaf, and each is given back by the driver's terminal funnel or by `endWorkflowLeaf`, so
+    // none is left for the Workflow. A release from here could not tell a leaf's lease from one the
+    // drain has just taken for the next Task, and every Run in a window shares one owner id.
+    //
+    // The wake is what remains owed, for a queue that had work waiting behind a leaf with no driver.
+    releaseQueueLease: createWorkflowQueueWake(deps)
+  };
+}

@@ -1,0 +1,37 @@
+<script lang="ts">
+  import GeneralSettingFieldRow from './GeneralSettingFieldRow.svelte';
+  import type { SettingsGroupProps } from './field-types';
+
+  let {
+    fields,
+    transportUsage,
+    draft = $bindable(),
+    statusByKey,
+    workflows,
+    fieldChanged,
+    fieldScopeLabel
+  }: SettingsGroupProps = $props();
+</script>
+
+<!--
+  FR-R3-143 (T007) — `open` is not a style choice. A collapsed group would put
+  every description key in `orphanKeys` (hover-text-coverage collects the DOM
+  unfiltered) and would hide its controls from the 44px touch-target check,
+  which skips 0x0 rects.
+-->
+<details class="section settings-group" data-testid="settings-group-audit-logging" open>
+  <summary>Audit, transcripts, and runtime logging</summary>
+  <div class="field-list">
+    {#each fields as spec (spec.key)}
+      <GeneralSettingFieldRow
+        {spec}
+        bind:draft
+        status={statusByKey[spec.key]}
+        changed={fieldChanged(spec.key)}
+        scopeLabel={fieldScopeLabel(spec.key)}
+        {workflows}
+        transportUsage={spec.key === 'transportCaptureMode' ? transportUsage : undefined}
+      />
+    {/each}
+  </div>
+</details>

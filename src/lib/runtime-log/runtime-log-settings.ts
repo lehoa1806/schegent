@@ -104,7 +104,7 @@ function warnPathOnce(
   // in the fallback log can match it to the rejected path.
   if (cause === 'absolute-outside-allowed-roots') {
     logger.warn(
-      `schegent.logging.runtimeLogFilePath: rejected absolute path outside allowed roots (workspace, globalStorage, tmpdir, home); runtime log disabled until corrected.`
+      `schegent.logging.runtimeLogFilePath: rejected absolute path outside allowed roots (workspace, globalStorage, tmpdir; the home directory is not one); runtime log disabled until corrected.`
     );
     return;
   }
@@ -177,7 +177,9 @@ export function readRuntimeLogSettings(
  *
  * `allowedAbsoluteRootsProvider` (optional) supplies the set of roots
  * an operator-supplied absolute path must descend from. The host wires
- * this with `[workspaceRoot, globalStorage, tmpdir, homedir]`; unit
+ * this with `allowedRuntimeLogRoots` in `backend-wiring.ts`: the
+ * workspace root (when a folder is open), globalStorage and tmpdir. The
+ * home directory is deliberately excluded (Feature 098, SEC-03). Unit
  * tests can omit it to preserve the historical permissive behavior.
  */
 export function createRuntimeLogAccessor(

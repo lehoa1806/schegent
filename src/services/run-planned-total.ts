@@ -1,5 +1,6 @@
 import { isLoopPhase } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
+import type { TaskPhaseProgressProjection } from '../contracts/snapshot-projections';
 import type { PhaseOverride, RunPlannedTotal, WorkflowRun } from '../state/workflow-run';
 
 /**
@@ -180,4 +181,60 @@ export function countCompletedInPlan(run: WorkflowRun): number {
     settled.add(result.phase);
   }
   return settled.size;
+}
+
+/**
+ * FR-R3-158 (FR-003a) — the numerator and its denominator, paired here and
+ * nowhere else.
+ *
+ * This adds no arithmetic. `countCompletedInPlan` and the recorded
+ * `plannedTotal` are called exactly as they stand, and every rule the pair
+ * inherits — the settled-outcome set, the override exclusion applied to both
+ * sides, counting distinct ids rather than records — stays where it already
+ * lives. What is new is only that the two are handed over **together**.
+ *
+ * That is the point, and it is this module's own note about a numerator and a
+ * denominator derived by two different rules, applied one layer out. Before
+ * this, the only site that paired them was the Run projector; a Task row wanting
+ * the same figure had to obtain a total some other way, and the way it reached
+ * for — the length of a pipeline it looked up itself — does not subtract
+ * overrides. Six of five is what that produces. A caller that cannot get one
+ * number without the other cannot reproduce it.
+ *
+ * `null` means **unknown**, never "settled nothing". It is returned for no Run
+ * at all and for a Run that froze no plan: there is no denominator to report
+ * against, and `{ settled: 0, total: 0 }` renders as a complete run of nothing.
+ * A Run that genuinely settled no phase returns `{ settled: 0, total: N }`.
+ */
+export function settledPhaseProgress(
+  run: WorkflowRun | null | undefined
+): TaskPhaseProgressProjection | null {
+  const total = run?.plannedTotal;
+  if (!run || !total) return null;
+  return Object.freeze({ settled: countCompletedInPlan(run), total: total.phaseCount });
+}
+
+/**
+ * FR-R3-158 (FR-009) — the spreadable patch that records a Run's settled-phase
+ * pair onto the Task record it belongs to, for use in the *same* object literal
+ * that writes the terminal status.
+ *
+ * Spread-shaped on `plannedTotalPatch`'s precedent directly above, and for the
+ * same reason: the two cases the call site faces are one line rather than a
+ * branch, and an unknown pair writes **no key at all**. That distinction is the
+ * whole contract. Absence means unknown; `{ settled: 0, total: N }` means a Run
+ * that genuinely settled nothing; and `{ settled: 0, total: 0 }` — what a
+ * non-optional zero default would produce — reads as a complete run of nothing
+ * and is never written.
+ *
+ * The capture has to happen at the terminal transition because Runs are held one
+ * per queue: the next task to start replaces the Run that knows the figure, and
+ * a row asked afterwards has nothing to answer from. That disposal erasing the
+ * count is the defect this feature exists to end.
+ */
+export function phaseProgressPatch(
+  run: WorkflowRun | null | undefined
+): { phaseProgress?: TaskPhaseProgressProjection } {
+  const progress = settledPhaseProgress(run);
+  return progress === null ? {} : { phaseProgress: progress };
 }

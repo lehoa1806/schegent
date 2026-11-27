@@ -22,9 +22,9 @@
  *       `QueueRegistryEntry.pauseSource: 'operator' | 'cascade' | null`
  *       (defaults to `'operator'` when `state === 'manually-paused'`, else
  *       `null`). Extends `ManualPauseCause` union with `'breakpoint-paused'`.
- *       Legacy v4 records are forward-migrated by `migrateV4ToV5()` and
- *       `migrateQueueRegistryV4ToV5()` in
- *       `src/state/workflow-run-migrator.ts`. Down-migration is unsupported.
+ *       Legacy v4 records are forward-migrated by `migrateLegacyRun()` in
+ *       `src/state/workflow-run-migrator.ts` and `migrateV12ToV13()` in
+ *       `src/state/queue-state-migrator.ts`. Down-migration is unsupported.
  *   6 — feature 030: collapses the multi-queue `QueueRegistry` to a single
  *       entry with `id === 'default'`. Pending tasks across pre-migration
  *       source queues are coalesced into the unified queue, preserving each
@@ -161,8 +161,29 @@
  *       overwrites on every read. Migrator: `migrateV12ToV13()` in
  *       `src/state/queue-state-migrator.ts`. Forward-only: a persisted version
  *       above 13 is refused rather than silently unpausing queues.
+ *
+ *  14 — FR-R3-117. `hostVerification` changed what an ABSENT value means: it used
+ *       to mean `model-token` (self-report) and now means the resolved default,
+ *       which is `exit-code` for any Phase whose resolved `sideEffects` is other
+ *       than `'none'`. A snapshot written at v13 or earlier stores the value the
+ *       old rule produced, and reading it under the new rule would guess. So the
+ *       migrator stamps the RESOLVED value and its provenance into every phase of
+ *       every persisted plan snapshot. Migrator: `migrateRunVerdictBasis()` in
+ *       `src/state/host-verification-migrator.ts`. Forward-only.
+ *
+ *       Note the direction carefully: a v<=13 snapshot's absent `hostVerification`
+ *       meant self-report, so the migration PRESERVES that Run's original verdict
+ *       basis rather than retroactively tightening a plan the operator already
+ *       approved. A frozen plan is never retargeted in flight; the new default
+ *       applies to plans frozen after the upgrade.
+ *
+ *  15 — FR-R4-F02: `WorkflowRun.creditPause` and `WatchdogState.lastPollOutcome`. The step
+ *       writes `creditPause: null` on every Run lacking the key and `lastPollOutcome: null` on an
+ *       existing watchdog record, once and idempotently, before the stamp.
+ *       Migrator: `migrateV14ToV15()` in `src/state/credit-pause-state.ts`, run by the store's
+ *       ladder step. Forward-only.
  */
-export const STATE_SCHEMA_VERSION = 13 as const;
+export const STATE_SCHEMA_VERSION = 15 as const;
 
 export const STATE_SCHEMA_VERSION_V2 = 2 as const;
 export const STATE_SCHEMA_VERSION_V3 = 3 as const;
@@ -176,6 +197,8 @@ export const STATE_SCHEMA_VERSION_V10 = 10 as const;
 export const STATE_SCHEMA_VERSION_V11 = 11 as const;
 export const STATE_SCHEMA_VERSION_V12 = 12 as const;
 export const STATE_SCHEMA_VERSION_V13 = 13 as const;
+export const STATE_SCHEMA_VERSION_V14 = 14 as const;
+export const STATE_SCHEMA_VERSION_V15 = 15 as const;
 
 export interface VersionedRecord {
   readonly schemaVersion: number;

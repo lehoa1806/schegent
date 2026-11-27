@@ -13,11 +13,15 @@
 
 import {
   PHASE_RETRY_CONDITION_MAX_LEN,
-  type PhaseDefinition
+  type PhaseDefinition,
+  type PhaseSourceRecord
 } from '../../contracts/process-definitions';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import { freezeResultContract } from '../../contracts/decision-results';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import type { BackendMap } from '../../contracts/backend-descriptors';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import { NO_BUILDER_LIFECYCLE, type BuilderLifecycleLookup } from './builder-lifecycle';
+import { projectAuthoredDisplay } from './display-projection';
 import type { PhaseCatalogProjection } from './snapshot';
 
 type Sanitize = (value: string) => string;
@@ -35,7 +39,7 @@ const INSTRUCTION_MAX = 8192;
 
 export interface PhaseCatalogComposeOptions {
   readonly sanitize: Sanitize;
-  readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  readonly availableModels: BackendMap<readonly string[]>;
   readonly defaultRunnerKind: BackendRunnerKind;
   /**
    * Feature 101 (T014) — the lifecycle facts for this kind. Optional so a host
@@ -81,7 +85,50 @@ function projectPhaseDefinition(
         }
       : {}),
     ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
-    ...(definition.runner !== undefined ? { runner: definition.runner } : {})
+    ...(definition.runner !== undefined ? { runner: definition.runner } : {}),
+    // The containment and bound declarations. THESE WERE MISSING, and the Builder
+    // is why it mattered: it fills its editor from the projected definition and
+    // serialises the result back as the save body, so a declaration that never
+    // arrives cannot be saved — it is dropped on a save the operator is told
+    // succeeded. Six of them reached the webview anyway, by accident, because
+    // `recognizedDisplay` copies every authored scalar onto `display`;
+    // `capabilities` is the sole array-valued authored field and could not use
+    // that route, so a narrowed authority silently widened back to
+    // `DEFAULT_CAPABILITY_SET` (every capability) on an unrelated edit.
+    //
+    // Enums and numbers, already validated to their declared sets and bounds by
+    // `validatePhaseDefinition` — there is no free text here to sanitize, and
+    // copying a value is not deciding anything with it, so this stays plumbing in
+    // the sense `authored-fields-have-readers.test.ts` means.
+    ...(definition.sideEffects !== undefined ? { sideEffects: definition.sideEffects } : {}),
+    ...(definition.evidencePolicy !== undefined
+      ? { evidencePolicy: definition.evidencePolicy }
+      : {}),
+    ...(definition.hostVerification !== undefined
+      ? { hostVerification: definition.hostVerification }
+      : {}),
+    ...(definition.capabilities !== undefined
+      ? { capabilities: Object.freeze([...definition.capabilities]) }
+      : {}),
+    ...(definition.spendBoundUsd !== undefined
+      ? { spendBoundUsd: definition.spendBoundUsd }
+      : {}),
+    ...(definition.spendBoundTokens !== undefined
+      ? { spendBoundTokens: definition.spendBoundTokens }
+      : {}),
+    ...(definition.forceContinueOnRetryCap !== undefined
+      ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
+      : {}),
+    // FR-R3-157 — projected as a value, not as text: it is a closed enum the
+    // validator has already checked, so there is nothing here for `sanitize` to
+    // bound. Carried beside the boolean rather than in place of it, because the
+    // Builder serializes what it was shown: a projection that dropped either
+    // form would silently rewrite the author's phase on the next save.
+    ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {}),
+    ...(definition.nativeReview !== undefined ? { nativeReview: definition.nativeReview } : {}),
+    ...(definition.resultContract !== undefined
+      ? { resultContract: freezeResultContract(definition.resultContract) }
+      : {})
   };
   return Object.freeze(
     definition.instruction !== undefined
@@ -90,28 +137,24 @@ function projectPhaseDefinition(
   );
 }
 
+/** The character cap for one authored Phase field's text, in `display` and in a list. */
+function phaseDisplayMax(field: string): number {
+  return field === 'instruction'
+    ? INSTRUCTION_MAX
+    : field === 'retryCondition'
+      ? PHASE_RETRY_CONDITION_MAX_LEN
+      : field === 'description'
+        ? DESCRIPTION_MAX
+        : field === 'skill'
+          ? SKILL_MAX
+          : MODEL_MAX;
+}
+
 function projectDisplay(
   display: Readonly<Record<string, unknown>>,
   sanitize: Sanitize
 ): Readonly<Record<string, unknown>> {
-  const projected: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(display)) {
-    if (typeof value === 'string') {
-      const max = field === 'instruction'
-        ? INSTRUCTION_MAX
-        : field === 'retryCondition'
-          ? PHASE_RETRY_CONDITION_MAX_LEN
-          : field === 'description'
-            ? DESCRIPTION_MAX
-            : field === 'skill'
-              ? SKILL_MAX
-              : MODEL_MAX;
-      projected[field] = catalogText(value, sanitize, max);
-    } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
-      projected[field] = value;
-    }
-  }
-  return Object.freeze(projected);
+  return projectAuthoredDisplay(display, sanitize, phaseDisplayMax);
 }
 
 /** Projects the resolved Phase catalog, or `undefined` when the host has none. */
@@ -122,34 +165,51 @@ export function composePhaseCatalogProjection(
   if (!phaseCatalog) return undefined;
   const { sanitize, availableModels, defaultRunnerKind } = options;
   const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
+  const projectRecord = (record: PhaseSourceRecord) => {
+    const definition = record.definition
+      ? projectPhaseDefinition(record.definition, sanitize)
+      : null;
+    const runner = definition?.runner ?? defaultRunnerKind;
+    // Keyed by the record's own `phaseId`, not by its `key`: the key carries a
+    // positional suffix for the Library's repair affordance, and the manifest
+    // knows a definition only by its id.
+    const lifecycle = lifecycleOf(record.phaseId);
+    return Object.freeze({
+      key: catalogText(record.key, sanitize, KEY_MAX),
+      phaseId: catalogText(record.phaseId, sanitize, PHASE_ID_MAX),
+      status: record.status,
+      definition,
+      display: projectDisplay(record.display, sanitize),
+      errors: Object.freeze(record.errors.map((error) => Object.freeze({
+        field: catalogText(error.field, sanitize, FIELD_MAX),
+        code: catalogText(error.code, sanitize, CODE_MAX),
+        message: catalogText(error.message, sanitize, MESSAGE_MAX)
+      }))),
+      ...(definition?.model !== undefined
+        ? { modelAvailable: (availableModels[runner] ?? []).includes(definition.model) }
+        : {}),
+      ...(lifecycle !== undefined ? { lifecycle } : {})
+    });
+  };
   return Object.freeze({
     state: 'ready' as const,
-    records: Object.freeze(phaseCatalog.records.map((record) => {
-      const definition = record.definition
-        ? projectPhaseDefinition(record.definition, sanitize)
-        : null;
-      const runner = definition?.runner ?? defaultRunnerKind;
-      // Keyed by the record's own `phaseId`, not by its `key`: the key carries a
-      // positional suffix for the Library's repair affordance, and the manifest
-      // knows a definition only by its id.
-      const lifecycle = lifecycleOf(record.phaseId);
-      return Object.freeze({
-        key: catalogText(record.key, sanitize, KEY_MAX),
-        phaseId: catalogText(record.phaseId, sanitize, PHASE_ID_MAX),
-        status: record.status,
-        definition,
-        display: projectDisplay(record.display, sanitize),
-        errors: Object.freeze(record.errors.map((error) => Object.freeze({
-          field: catalogText(error.field, sanitize, FIELD_MAX),
-          code: catalogText(error.code, sanitize, CODE_MAX),
-          message: catalogText(error.message, sanitize, MESSAGE_MAX)
-        }))),
-        ...(definition?.model !== undefined
-          ? { modelAvailable: (availableModels[runner] ?? []).includes(definition.model) }
-          : {}),
-        ...(lifecycle !== undefined ? { lifecycle } : {})
-      });
-    })),
+    // BUG-001 (101) — the resolved rows, then the saved-but-unpublished ones. Both go
+    // through the same projector, so a draft row is sanitized and capped by the
+    // code that has always done it rather than by a second path beside it.
+    //
+    // Appended rather than interleaved because that is where the row already sat:
+    // an unsaved new Phase is added at the end of the editor's list, so a save
+    // leaves it exactly where the operator last saw it. `lifecycle` needs no
+    // special handling — the lookup is keyed by definition id, and a draft-only
+    // definition has an entry like any other.
+    //
+    // `effective` below is untouched: a draft is not part of what runs (100
+    // FR-007), and the launch surface reads a record's `lifecycle.state` before it
+    // offers anything, so a `draft` row contributes no launchable.
+    records: Object.freeze([
+      ...phaseCatalog.records.map(projectRecord),
+      ...phaseCatalog.draftOnlyRecords.map(projectRecord)
+    ]),
     effective: Object.freeze(
       phaseCatalog.effective.map((definition) => projectPhaseDefinition(definition, sanitize))
     ),

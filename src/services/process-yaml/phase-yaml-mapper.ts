@@ -36,6 +36,17 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
   const common = {
     ...(definition.runner !== undefined ? { runner: definition.runner } : {}),
     ...(definition.sideEffects !== undefined ? { sideEffects: definition.sideEffects } : {}),
+    // FR-R3-058 — both directions, or the round-trip drops it silently. The
+    // bijection test is what caught this: adding the key to the writer's order
+    // and the reader's grammar is not the same as carrying the value.
+    ...(definition.hostVerification !== undefined
+      ? { hostVerification: definition.hostVerification }
+      : {}),
+    // FR-R3-086 — both directions, for the reason stated above: a narrowed phase
+    // that round-trips through YAML must not come back unbounded.
+    ...(definition.capabilities !== undefined
+      ? { capabilities: definition.capabilities }
+      : {}),
     ...(definition.evidencePolicy !== undefined
       ? { evidencePolicy: definition.evidencePolicy }
       : {}),
@@ -44,14 +55,31 @@ export function documentFromPhaseDefinition(definition: PhaseDefinition): PhaseY
     ...(definition.timeoutSeconds !== undefined
       ? { timeoutSeconds: definition.timeoutSeconds }
       : {}),
+    // FR-R3-112 — both directions, for the reason `hostVerification` states above: a key in the
+    // writer's order and the reader's grammar is not the same as carrying the value.
+    ...(definition.spendBoundUsd !== undefined
+      ? { spendBoundUsd: definition.spendBoundUsd }
+      : {}),
+    ...(definition.spendBoundTokens !== undefined
+      ? { spendBoundTokens: definition.spendBoundTokens }
+      : {}),
     ...(definition.loopable !== undefined ? { loopable: definition.loopable } : {}),
     ...(definition.isRequired !== undefined ? { isRequired: definition.isRequired } : {}),
     ...(definition.forceContinueOnRetryCap !== undefined
       ? { forceContinueOnRetryCap: definition.forceContinueOnRetryCap }
       : {}),
+    // FR-R3-157 — carried independently of the boolean above, and never folded
+    // into it. A mapper that wrote one from the other would be a second
+    // resolution site (FR-007), and it would also destroy the round trip: a
+    // phase carrying both would come back carrying one.
+    ...(definition.onRetryCap !== undefined ? { onRetryCap: definition.onRetryCap } : {}),
     ...(definition.retryCondition !== undefined
       ? { retryCondition: definition.retryCondition }
-      : {})
+      : {}),
+    ...(definition.resultContract !== undefined
+      ? { resultContract: definition.resultContract }
+      : {}),
+    ...(definition.nativeReview !== undefined ? { nativeReview: definition.nativeReview } : {})
   };
   const spec: PhaseYamlSpec =
     definition.instruction !== undefined
@@ -87,15 +115,24 @@ export function phaseDefinitionFromDocument(document: PhaseYamlDocument): PhaseD
     ...(spec.model !== undefined ? { model: spec.model } : {}),
     ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
     ...(spec.timeoutSeconds !== undefined ? { timeoutSeconds: spec.timeoutSeconds } : {}),
+    ...(spec.spendBoundUsd !== undefined ? { spendBoundUsd: spec.spendBoundUsd } : {}),
+    ...(spec.spendBoundTokens !== undefined ? { spendBoundTokens: spec.spendBoundTokens } : {}),
     ...(spec.loopable !== undefined ? { loopable: spec.loopable } : {}),
     ...(spec.retryCondition !== undefined ? { retryCondition: spec.retryCondition } : {}),
     ...(spec.isRequired !== undefined ? { isRequired: spec.isRequired } : {}),
     ...(spec.forceContinueOnRetryCap !== undefined
       ? { forceContinueOnRetryCap: spec.forceContinueOnRetryCap }
       : {}),
+    ...(spec.onRetryCap !== undefined ? { onRetryCap: spec.onRetryCap } : {}),
     ...(spec.runner !== undefined ? { runner: spec.runner } : {}),
     ...(spec.sideEffects !== undefined ? { sideEffects: spec.sideEffects } : {}),
-    ...(spec.evidencePolicy !== undefined ? { evidencePolicy: spec.evidencePolicy } : {})
+    ...(spec.evidencePolicy !== undefined ? { evidencePolicy: spec.evidencePolicy } : {}),
+    ...(spec.hostVerification !== undefined
+      ? { hostVerification: spec.hostVerification }
+      : {}),
+    ...(spec.capabilities !== undefined ? { capabilities: spec.capabilities } : {}),
+    ...(spec.resultContract !== undefined ? { resultContract: spec.resultContract } : {}),
+    ...(spec.nativeReview !== undefined ? { nativeReview: spec.nativeReview } : {})
   };
   return spec.instruction !== undefined
     ? { ...common, instruction: spec.instruction }

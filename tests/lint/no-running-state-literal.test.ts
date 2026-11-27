@@ -9,12 +9,42 @@ const SCAN_ROOTS = [
 ] as const;
 
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
+  // FR-R3-054 — comment-only. Explains that a signalled process tree may leave
+  // descendants "still running"; it does not compare a status literal. Added
+  // rather than reworded: this gate's allowlist exists for exactly this case and
+  // carries sixteen such precedents, and writing a worse comment to satisfy a text
+  // match is the wrong trade.
+  //
+  // `src/runner/process-lifecycle-runner.ts` was struck 2026-08-25 (FR-R3-083):
+  // extracting the escalation ladder into `process-tree.ts` took the phrase with
+  // it, and `allowlist-entries-still-apply.test.ts` caught the entry excusing
+  // something that file no longer does. Recorded rather than deleted silently —
+  // the allowlist is expected to shrink, and which line went is how that stays
+  // checkable.
+  'src/runner/process-tree.ts',
   'src/commands/cancel.ts',
   'src/commands/auto.ts',
   // Feature 063 — references `controller.running` (a WorkflowController
   // property accessor used by the Clean All probe loop), not the pinned
   // status discriminator literal "running".
   'src/commands/clear-all.ts',
+  // FR-R3-150 (T1620) — comment-only, contrasting the queue-scoped probe's
+  // `controller.isDriving(queueId)` against the workspace-wide
+  // `controller.running` getter `clear-all.ts` uses. Same accessor name,
+  // never the pinned status discriminator literal.
+  'src/commands/clear-queue.ts',
+  // FR-R3-150 (T1620) — references `driver.running` via
+  // `SchegentWorkflowController.isDriving`, the same boolean accessor
+  // `run-session.ts` and `clear-all.ts` are already listed here for; never
+  // the pinned per-task status discriminator literal.
+  'src/controller/queue-runner-ack.ts',
+  // FR-R3-150 (code-review finding) — the shared module `clear-all.ts` and
+  // `queue-runner-ack.ts` both import from. Its header comment names
+  // `controller.running` (contrasting it with `isDriving(queueId)`, the same
+  // pairing the two entries above document) and its own `sleep` doc line
+  // says "the driver's own running flag" — both prose, never the pinned
+  // status discriminator literal, and this module holds no status field.
+  'src/controller/runner-ack-shared.ts',
   // Feature FR-R3-006 — operator-facing confirmation and refusal copy ("Any
   // running phase is cancelled first", "a phase is still running"), plus one
   // comment. Same reason `webview-ui/src/lib/action-copy.ts` is here, and this
@@ -39,6 +69,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'src/contracts/backend-runner.ts',
   'src/contracts/generated/boundary-contracts.ts',
   'src/contracts/generated/schemas/state.schema.json',
+  // FR-R3-198 — the continuation note a resume's prompt carries says the work
+  // the previous turn started in the background "was still running", plus its
+  // docblock's paraphrase of it. The words are the contract's (N2), pinned by
+  // the module's unit test: a sentence the model reads, never the pinned
+  // per-task status discriminator, which this module neither reads nor writes.
+  // Same class as `src/commands/reset.ts` above.
+  'src/controller/incomplete-turn-resume.ts',
   // Operator-command extraction — reads `driver.running`, the boolean accessor
   // that reports whether this queue's session is mid-drive, to refuse a manual
   // retry that is already under way. Same reason `src/controller/run-session.ts`
@@ -46,6 +83,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // substring, never the pinned per-task status discriminator. Moved verbatim
   // out of `src/controller/workflow-controller.ts`, which is already listed.
   'src/controller/manual-retry-override.ts',
+  // FR-R3-151 — the Pause/Resume eligibility check moved here from
+  // `phase-control-service.ts` (already listed below) when this feature
+  // centralized every Phase-control operation behind one classifier: reads
+  // `run.status !== 'running'` to decide whether the Task is in-flight, the
+  // same pinned discriminator the sibling entry below already compares
+  // against, never assigned here.
+  'src/controller/phase-control-decision.ts',
   // P4 extraction — owns phase mutation policy and therefore transitions a
   // resumed/restarted phase back to the canonical running workflow status.
   'src/controller/phase-control-service.ts',
@@ -65,11 +109,43 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `manual-retry-override.ts` above because the two are here for different
   // reasons and a single shared comment would misdescribe one of them.
   'src/controller/task-deletion.ts',
+  // FR-R3-119 (2026-09-04) — the unexpected-start-failure path, extracted from
+  // `workflow-controller.ts` under the composition-root LOC bound. Same read as
+  // `task-deletion.ts`'s and it moved verbatim: `activeRun.status === 'running'`
+  // decides whether a start failure has a live Run to fail, or whether the Run
+  // never got as far as being persisted. A read, never a write.
+  'src/controller/unexpected-start-failure.ts',
   'src/controller/workflow-controller.ts',
-  'src/extension.ts',
+  // `src/extension.ts` was struck 2026-08-28 (FR-R3-136): the composition root
+  // held two occurrences and this feature moved both out. The resume sweep's
+  // `run.status === 'running'` filter went to `stage2-producers.ts` (listed
+  // below), and extracting `wireTrustGrant` into `trust-grant-wiring.ts` took the
+  // last one — a log line, since reworded there. Recorded rather than deleted
+  // silently, same as the `process-lifecycle-runner.ts` strike above: the file
+  // has no occurrence left, so an entry for it would have been the exemption
+  // outliving its reason that the staleness check below exists to catch.
+  // FR-R3-119 — the audit writer and its quarantine drain moved to `src/activation/evidence-wiring.ts`.
+  'src/activation/evidence-wiring.ts',
+  // FR-R3-119 — the clock-driven work moved to `src/activation/scheduled-work-wiring.ts`.
+  'src/activation/scheduled-work-wiring.ts',
+  // FR-R3-136 — the persisted-run resume sweep moved out of `src/extension.ts`
+  // (struck above) into `src/activation/stage2-producers.ts`, taking the
+  // `run.status === 'running'` filter with it. Listed for exactly the reason
+  // `extension.ts` used to be: the filter belongs on THIS side of the boundary
+  // because `services/resume-decision.ts` must not know the status vocabulary,
+  // and the comment beside the call says so.
+  'src/activation/stage2-producers.ts',
   'src/monitor/claude-cli-monitor.ts',
   'src/monitor/monitor-state.ts',
   'src/queue/queue-manager.ts',
+  // The `queueLifecycle` writer for transitions that move work in or out of a
+  // queue. The literal is the lifecycle discriminator, not the pinned task-status
+  // projection; extracted from `queue-manager.ts` above so both it and
+  // `commands/restart-canceled-task.ts` share one definition of the held/unheld
+  // distinction.
+  // FR-R7-07 — relocated from `src/queue/queue-lifecycle-refresh.ts` to `src/contracts/`
+  // so `src/state/` can refresh unheld queue lifecycles without value-importing `src/queue/`.
+  'src/contracts/queue-lifecycle-refresh.ts',
   // Feature 065 — `QueueLifecycle = 'running' | ...` union (FR-001..FR-005).
   // The literal is the lifecycle discriminator, not the pinned task-status
   // projection, and is required by the lifecycle entity.
@@ -91,12 +167,60 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // happens to share the substring, never the pinned per-task status
   // discriminator, which this file neither reads nor writes.
   'src/services/auto-drain-coordinator.ts',
+  // Feature 203 (D1, D7, FR-016) — the phase-log empty-kind vocabulary and the
+  // phase-granularity progress discriminator it is derived from. Neither is the
+  // pinned per-task status projection this guard protects: `PhaseProgress` is a
+  // vocabulary of its own, in the same class as the `BackendPingState` and
+  // `QueueLifecycle` discriminators `backend-ping-service.ts` and
+  // `feature-request.ts` are already listed above for, and no file in this module
+  // reads or writes a `WorkflowRunStatus`.
+  //
+  // Two of the four occurrences are unavoidable by construction rather than by
+  // preference: `phase-running-no-output` is a MEMBER NAME fixed by the feature's
+  // empty-kind vocabulary contract (V1), so the substring travels with the member
+  // wherever the member is declared or returned. Renaming the member to dodge a
+  // text scan would be the trade `src/runner/process-tree.ts` above is listed for
+  // refusing.
+  //
+  // Declares both the member and the `PhaseProgress` union.
+  'src/services/phase-log/types.ts',
+  // Compares `progress === 'running'` and returns the member.
+  'src/services/phase-log/verbose-diagnostics-detector.ts',
+  // Derives `PhaseProgress` from the snapshot's in-flight Task, so it is the one
+  // file here that WRITES a `running` value — of that union, never of the
+  // per-task status one, which it never sees.
+  'src/services/phase-log/phase-log-service.ts',
+  // Comment-only: one doc line naming the member a caller that omitted `progress`
+  // could no longer produce. Same case as `src/runner/claude-cli.ts` above.
+  'src/services/phase-log/phase-log-reader.ts',
+  //
+  // The webview half of the same adjudication, added when the vocabulary reached
+  // the surface (T045, T043). Both files are handed the classification and nothing
+  // else — neither reads a `WorkflowRunStatus`, and the host contract they import
+  // from is `src/services/phase-log/types.ts`, listed above.
+  //
+  // Selects the card with `banner.kind === 'phase-running-no-output'` and repeats
+  // the member in the testid and in the `data-empty-kind` key the member-to-card
+  // bijection is asserted through, so the substring arrives three times by
+  // construction. Its card title, "This Phase is running", is a sentence an
+  // operator reads — the same class as `webview-ui/src/lib/action-copy.ts` and
+  // `src/commands/reset.ts` above.
+  'webview-ui/src/components/PhaseLogFeed/PhaseLogEmptyStates.svelte',
+  // Feature 265 BUG-002 (FR-014) — checks `state.verboseDiagnosticsState?.kind === 'phase-running-no-output'`
+  // to reload the phase-log manifest when a new snapshot arrives for an in-flight phase that initially
+  // had zero iterations. Same `PhaseLogEmptyStateKind` member as `PhaseLogEmptyStates.svelte` above,
+  // never the pinned per-task `WorkflowRunStatus` projection.
+  'webview-ui/src/components/PhaseLogFeed/PhaseLogFeed.svelte',
   // Feature 065 — v6→v7 derivation table maps (inFlight, paused, pending)
   // tuples to a `queueLifecycle` value; `'running'` appears as a target.
   'src/state/queue-state-migrator.ts',
   // Feature 065 — host activation path reads `queueLifecycle` and re-arms.
   'src/state/workspace-state.ts',
   'src/state/workflow-run.ts',
+  // FR-R7-01 — single authoritative WorkflowRun status transition table keyed on all five
+  // `WorkflowRunStatus` values (including `'running'`); owns Run status transition legality
+  // beside `workflow-run.ts`, never the pinned per-task status projection.
+  'src/state/run-transition-decision.ts',
   'src/state/workflow-run-migrator.ts',
   // Feature 093 — the v10 → v11 run-record reshape. `RUN_STATUSES` enumerates
   // the `WorkflowRunStatus` union so `isWorkflowRun` can tell a persisted Run
@@ -104,49 +228,120 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   // `src/state/workflow-run-migrator.ts` above is here for; a migrator that
   // could not name the statuses could not recognise the shape it migrates.
   'src/state/run-state-migrator.ts',
+  // Comment-only, twice. The header quotes `run-state-migrator.ts`'s own
+  // rationale verbatim — "a queue stuck forever on work nothing is running" —
+  // because this module is that argument's mirror image and paraphrasing the
+  // sentence it answers would weaken it; and the `NonTerminalRunStatus` doc names
+  // THIS gate as the reason the status literals stay in `workflow-run.ts`. The
+  // module compares statuses only through `isTerminalRunStatus` and writes only
+  // `'canceled'`; it holds no `'running'` literal at all, which is the case the
+  // sixteen comment-only precedents above were added for.
+  'src/state/orphaned-run-reconciler.ts',
   'src/telemetry/platform/platform-ps.ts',
   'src/telemetry/platform/platform-windows.ts',
   'src/ui/sidebar/phase-projector.ts',
   'src/ui/sidebar/run-projector.ts',
-  'src/ui/sidebar/snapshot.ts',
+  // FR-R3-132 (T1502) — the status unions moved from `src/ui/sidebar/snapshot.ts`
+  // to `src/contracts/snapshot-projections.ts` so the webview could import them
+  // rather than restate them. The literals travelled with the declarations; the
+  // entry moved with them rather than being added beside a stale one.
+  'src/contracts/snapshot-projections.ts',
+  // FR-R3-132 (T1502) — the second and third waves: `QueueLifecycle`,
+  // `TelemetryStatus` and their neighbours moved here from seven host modules so
+  // the webview could import them rather than restate them. Their literals came
+  // with them.
+  'src/contracts/snapshot-vocabulary.ts',
   'src/ui/sidebar/projector-bookkeeping.ts',
   'src/ui/status-bar.ts',
-  'webview-ui/src/components/ControlPanel.svelte',
-  // Feature 065 — comment-only references to the `running` queue lifecycle
-  // describing the chooser dispatch rules. No pinned status literal.
-  'webview-ui/src/components/QueueInputForm.svelte',
-  'webview-ui/src/components/MonitorPill.svelte',
+  // Feature 285 (OD-2, FR-002) — the composer's boundary note, "running this queue may contact
+  // configured backend providers", quoted verbatim in docs/concepts/local-first-not-offline.md.
+  // Prose, not a status literal; it moved here with the note from the retired Queue input form.
+  'webview-ui/src/components/QueueTaskComposer.svelte',
   'webview-ui/src/components/StatusBar.svelte',
-  'webview-ui/src/components/StatusHeader.svelte',
-  // Feature 103 — one CSS selector, `.status-running .status-badge`, one of the
-  // six that colour a row's status badge from the `status-{row.status}` class
-  // the row already carries. Character-identical in kind to the
-  // `.status-running .dot` rules the three entries above are listed for, and
-  // reached for the same reason: FR-003 folds runs that are still going into
-  // history, so a history row now renders the live statuses as well as the
-  // terminal ones. No TypeScript in this file names the literal — the status
-  // reaches it as data, and the outcome filter that does name it lives in
-  // `webview-ui/src/lib/format.ts`, with the rest of the status vocabulary.
-  'webview-ui/src/components/HistoryRunRow.svelte',
   'webview-ui/src/lib/format.ts',
+  // History's run status chip: a `Record<WorkflowStatus, ...>` of each status's colour class and
+  // mark, so the union's live member is one of its keys. Status vocabulary of the same kind as
+  // `format.ts` above; it is a module of its own only so the sidebar's synchronous chunk, which
+  // carries `format.ts` and which SC-010 budgets, does not carry a chip only History draws.
+  'webview-ui/src/lib/run-status-chip.ts',
   // Feature 063 — UI copy strings ("currently running and will be
   // terminated.", "abort the running task") and template variable name
   // (`runningSuffix`). No pinned status discriminator literal.
   'webview-ui/src/lib/action-copy.ts',
-  'webview-ui/src/lib/snapshot-types.ts',
+  // FR-R7-05 — generated snapshot mirror & Draft 2020-12 schema carry the canonical lifecycle/ping `'running'` union members.
+  'webview-ui/src/lib/generated/snapshot-mirror.ts',
+  'src/contracts/generated/schemas/sidebar-ipc.schema.json',
   // Metrics wire entities own the in-flight `isRunning` projection field.
   'src/contracts/sidebar-ipc/metrics.ts',
   'webview-ui/src/components/MetricsDashboard/MetricsTaskTable.svelte',
   'webview-ui/src/components/settings/BackendHealthSection.svelte',
+  // FR-R3-144 (T038) — the per-backend section extracted out of the file above.
+  // Both read `BackendPingState.status === 'running'`, the probe's own
+  // discriminator: a Ping either is or is not in flight. That is not the pinned
+  // per-task status projection this guard protects, and the two files split the
+  // same one reading between them — the section renders the button's label, the
+  // parent decides whether a probe may start.
+  'webview-ui/src/components/settings/general/BackendSection.svelte',
   'src/metrics/metrics-service.ts',
   'src/services/workflow-run-factory.ts',
+  // FR-R4-F01 (spec 239, US2) — `resumeAdmissionPatch` writes a WORKFLOW RUN's status back to
+  // `running` when a resume is admitted. That write is the one `workflow-controller.ts` made
+  // inline (a listed file already) before it became a field update; it moved here so the
+  // controller stays under its line budget, beside the resume-pause logic it reads. It is the
+  // Run's own status vocabulary, written where a Run's state is written, not the pinned
+  // per-task projection this guard protects.
+  'src/controller/resume-pause-fields.ts',
+  // FR-R4-F01 (spec 239, US3, FR-013, contract D2) — the operator text for
+  // `queue-has-running-run` reads "This queue's Run is still running. Cancel the Run first, then
+  // delete the queue." That is a sentence an operator reads, fixed verbatim by the contract, and
+  // the same prose case as `webview-ui/src/lib/action-copy.ts` below. This module reads and
+  // writes no status field; the word is in a string the operator sees, never the pinned per-task
+  // status discriminator this guard protects.
+  'webview-ui/src/lib/queue-control-ipc.ts',
+  // FR-R4-F14 (spec 242, contract N3) — the operator text of the `phase_timeout` failure notice reads
+  // "if it keeps running out of time, check what it was waiting on before resuming." That is a sentence
+  // an operator reads, fixed verbatim by the contract, and the same prose case as
+  // `webview-ui/src/lib/queue-control-ipc.ts` above. This module reads and writes no status field; the
+  // word is in a string the operator sees, never the pinned per-task status discriminator this guard
+  // protects.
+  'src/services/failure-notice.ts',
   // Feature 092 — the webview's label map for `QueueLifecycle`, whose own
   // discriminator legitimately has a `running` member. That is the deliberately
   // narrow queue-lifecycle surface governed by
   // `queue-lifecycle-literal-allowlist.test.ts`, not the pinned per-task status
   // projection this guard protects; the two are distinct vocabularies and this
   // file touches only the former.
-  'webview-ui/src/lib/queue-lifecycle-label.ts'
+  'webview-ui/src/lib/queue-lifecycle-label.ts',
+  // FR-R5-F26 / FR-R5-F28 — `ControlProcessEvidenceState` (`'running' | ...`) and
+  // `AvailabilityCheckRecord.status` (`'running' | ...`) are control-ledger
+  // process/probe discriminators, in the same class as `BackendPingState.status`
+  // above, never the pinned per-task `WorkflowRunStatus` projection.
+  'src/contracts/control-ledger.ts',
+  'src/services/backend-availability-service.ts',
+  'src/services/workflow-execution/control-attempt-admission.ts',
+  'src/services/workflow-execution/control-ledger-store.ts',
+  // FR-R6-F04 — `SqliteRunStatus`, `SqliteStepStatus`, and `AttemptStatus` SQLite
+  // relational table CHECK constraints and `Admission` transaction unit defaults
+  // for `runs`, `step_executions`, and `attempts`, never the legacy per-task
+  // Memento projection discriminator.
+  'src/contracts/sqlite-store/schema-types.ts',
+  'src/services/sqlite-store/schema-bootstrap.ts',
+  'src/services/sqlite-store/transaction-units.ts',
+  'src/state/sqlite-operational-backing.ts',
+  // FR-R6-F11 — the historical report query's `RUN_OUTCOMES` and `ATTEMPT_STATUSES`
+  // filter vocabularies, which repeat the `runs` and `attempts` CHECK spellings of the
+  // FR-R6-F04 entries above so a report filter matches stored rows; never the
+  // legacy per-task Memento projection discriminator.
+  'src/contracts/reporting/report-query.ts',
+  // Spec 228 BUG-001 (FR-005a) — `BACKGROUND_TASK_HANDOFF_PREFIX` matches the external
+  // Antigravity harness tool-result sentence `"Tool is running as a background task with task id:"`
+  // verbatim; this module reads and writes no task/run status discriminator.
+  'src/runner/acp-open-work-tracker.ts'
+  // FR-R3-150 added `webview-ui/src/lib/queue-derived.ts` here for a comment
+  // quoting `queue-manager.ts`'s lifecycle ternary verbatim. The comment is
+  // gone (2026-09-04), so the entry excused nothing and
+  // `allowlist-entries-still-apply.test.ts` failed on it — a standing
+  // permission whose reason has expired is exactly what that gate reads for.
 ]);
 
 function filesWithRunningLiteral(): readonly string[] {

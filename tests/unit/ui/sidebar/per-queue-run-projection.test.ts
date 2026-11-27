@@ -13,6 +13,7 @@
 // hand-built projection object.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { unfencedCommit } from '../../../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -23,7 +24,7 @@ import { SanitizedLogger } from '../../../../src/lib/logger';
 import type { PhaseResult, WorkflowRun } from '../../../../src/state/workflow-run';
 import type { Phase } from '../../../../src/controller/phase';
 import type { FeatureRequest } from '../../../../src/queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
 import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';
 
@@ -149,7 +150,7 @@ async function seedRun(
       queueLifecycle: 'running'},
     queueId
   );
-  await store.setRun(queueId, run);
+  await store.setRun(queueId, run, unfencedCommit('test-fixture'));
 }
 
 function project(): StateProjector {

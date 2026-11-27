@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { diagnoseWait } from './wait-diagnosis';
 
 // BUG-002 / FR-031 contract test. Verifies that the Schegent extension
 // activates eagerly when VS Code loads a workspace that contains the
@@ -34,7 +35,7 @@ import * as vscode from 'vscode';
 //   `tests/__stubs__/vscode.ts` can return whatever a test wants it to, so an
 //   assertion against it would be an assertion about the stub. Only a real
 //   extension host can answer "did activation happen on its own", which is why
-//   `vitest.config.ts:28` excludes `*.host.test.ts` and why that exclusion is
+//   `./vitest.config.ts:40` excludes `*.host.test.ts` and why that exclusion is
 //   structural rather than a gap to close.
 //
 // The manifest assertion below is kept rather than deleted as now-redundant: in
@@ -44,6 +45,7 @@ import * as vscode from 'vscode';
 const EXTENSION_ID = 'schegent.schegent';
 const REQUIRED_ACTIVATION_EVENT = 'workspaceContains:.specify/';
 const ACTIVATION_BUDGET_MS = 5_000;
+const POLL_INTERVAL_MS = 100;
 
 export async function run(): Promise<void> {
   const ext = vscode.extensions.getExtension(EXTENSION_ID);
@@ -77,17 +79,24 @@ export async function run(): Promise<void> {
   // `ext.activate()` explicitly — the entire point is to verify that
   // activation happens on workspace load, not on explicit API access.
   const start = Date.now();
+  let rounds = 0;
   while (!ext.isActive && Date.now() - start < ACTIVATION_BUDGET_MS) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    rounds += 1;
+    // Real-host activation poll: VS Code fires workspaceContains:.specify/ out-of-band in the extension host.
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
   const elapsedMs = Date.now() - start;
-  assert.strictEqual(
-    ext.isActive,
-    true,
-    `extension did not activate within ${ACTIVATION_BUDGET_MS}ms despite workspaceContains:.specify/ trigger and the sidebar was never revealed (elapsed=${elapsedMs}ms)`
-  );
+  if (!ext.isActive) {
+    const diagnosis = diagnoseWait({ elapsedMs, rounds, floorMs: POLL_INTERVAL_MS });
+    assert.strictEqual(
+      ext.isActive,
+      true,
+      `extension did not activate within ${ACTIVATION_BUDGET_MS}ms despite workspaceContains:.specify/ ` +
+        `trigger and the sidebar was never revealed (elapsed=${elapsedMs}ms, rounds=${rounds}; ${diagnosis.text})`
+    );
+  }
   assert.ok(
     elapsedMs <= ACTIVATION_BUDGET_MS,
-    `extension activation took ${elapsedMs}ms, over budget ${ACTIVATION_BUDGET_MS}ms`
+    `extension activation took ${elapsedMs}ms across ${rounds} poll round(s), over budget ${ACTIVATION_BUDGET_MS}ms`
   );
 }

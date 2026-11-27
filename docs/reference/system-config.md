@@ -1,0 +1,221 @@
+# System configuration
+
+Schegent has no `.env`, `.env.example`, dotenv loader, Docker Compose environment block, or repository-local environment-file convention. Product configuration is contributed as VS Code settings under the `schegent.*` namespace; environment variables are used only at process boundaries and by build or test harnesses. Do not put secrets in a repository `.env` file. To forward a host credential such as `ANTHROPIC_API_KEY`, add its **name** to `schegent.cli.environmentAllowlist` or deliberately select the less-restrictive `inherit` mode in VS Code Settings.
+
+<!-- Source: package.json -->
+<!-- Source: .gitignore -->
+<!-- Source: src/config/settings-schema.ts -->
+
+## Backend process environment
+
+The default policy is `allowlist` with an empty operator list. It copies the bootstrap variables below when they exist in the VS Code extension host, copies every `LC_*` variable, then overlays Schegent-controlled variables. It does not synthesize missing bootstrap values.
+
+| Name | Type | Default | Purpose |
+|---|---|---|---|
+| `PATH` | string or absent | Extension-host value, if defined | POSIX executable lookup. |
+| `Path` | string or absent | Extension-host value, if defined | Case-preserving Windows executable lookup. |
+| `PATHEXT` | string or absent | Extension-host value, if defined | Windows executable suffix lookup. |
+| `HOME` | string or absent | Extension-host value, if defined | POSIX home and tool configuration discovery. |
+| `USERPROFILE` | string or absent | Extension-host value, if defined | Windows home discovery. |
+| `USER` | string or absent | Extension-host value, if defined | POSIX account identity (required by OS credential stores such as macOS login Keychain lookup). |
+| `LOGNAME` | string or absent | Extension-host value, if defined | POSIX login-name fallback for account identity. |
+| `USERNAME` | string or absent | Extension-host value, if defined | Windows account identity. |
+| `APPDATA` | string or absent | Extension-host value, if defined | Windows roaming application data discovery. |
+| `LOCALAPPDATA` | string or absent | Extension-host value, if defined | Windows local application data discovery. |
+| `TMPDIR` | string or absent | Extension-host value, if defined | POSIX temporary-file root. |
+| `TMP` | string or absent | Extension-host value, if defined | Temporary-file root, especially on Windows. |
+| `TEMP` | string or absent | Extension-host value, if defined | Temporary-file root, especially on Windows. |
+| `SHELL` | string or absent | Extension-host value, if defined | Host shell discovery by a backend or its children. Schegent itself still spawns with `shell: false`. |
+| `TERM` | string or absent | Extension-host value, if defined | Terminal capability discovery. |
+| `LANG` | string or absent | Extension-host value, if defined | Locale selection. |
+| `LC_ALL` | string or absent | Extension-host value, if defined | Locale override. |
+| `LC_*` | string or absent | Every matching extension-host value | All locale-category variables are copied dynamically, including names not known at build time. |
+| `SystemRoot` | string or absent | Extension-host value, if defined | Windows runtime discovery. |
+| `SYSTEMROOT` | string or absent | Extension-host value, if defined | Uppercase spelling of the Windows runtime root. |
+| `WINDIR` | string or absent | Extension-host value, if defined | Windows directory discovery. |
+| `COMSPEC` | string or absent | Extension-host value, if defined | Windows command interpreter discovery. |
+| Any name in `schegent.cli.environmentAllowlist` | string or absent | Extension-host value, if defined | Operator-approved forwarding. Names must match `^[A-Za-z_][A-Za-z0-9_]*$`; invalid and duplicate names are discarded. |
+
+<!-- Source: src/runner/spawn-env.ts -->
+<!-- Source: package.json -->
+
+The forwarding settings resolve to these effective policies (evaluated by `readProcessEnvironmentPolicy` in `src/activation/uncached-settings-accessors.ts` and `resolveProcessEnvironmentPolicy` in `src/contracts/process-environment-policy.ts`):
+
+| Setting state | Effective input environment |
+|---|---|
+| `schegent.cli.inheritEnvironment: false` (deprecated) or any defined non-boolean value (such as `"false"`, `1`, `null`, or `{}`) | `minimal` (fail-closed), regardless of `schegent.cli.environmentMode`; `schegent.cli.environmentAllowlist` is dropped. |
+| `schegent.cli.environmentMode: minimal` | Only Schegent-controlled overlays for backend runners, ACP transports, and probes. Isolated-lane verification checks (`src/services/execution-lanes/verification-runner.ts`) still retain the `REQUIRED_PROCESS_ENV_NAMES` bootstrap variables and `LC_*` so build tools resolve on `PATH`, while excluding non-allowlisted ambient secrets and dropping operator allowlist entries. |
+| `schegent.cli.environmentMode: allowlist` | Bootstrap variables (`REQUIRED_PROCESS_ENV_NAMES`, including `USER`, `LOGNAME`, and `USERNAME`), every `LC_*` variable, configured allowlist names, then Schegent-controlled overlays. This is the manifest default. |
+| `schegent.cli.environmentMode: inherit` | The entire extension-host environment, then Schegent-controlled overlays. Activation logs a warning because ambient secrets can be exposed. |
+| `schegent.cli.environmentMode`: absent, `null`, not a string, an unknown string, or a near miss such as `Inherit`, `INHERIT`, `inherits` or ` inherit` | Treated as `allowlist`, the same as the manifest default. Only the exact string `inherit` inherits. |
+
+<!-- executable-example: env-policy-precedence -->
+
+```
+| inheritEnvironment | environmentMode | environmentAllowlist | effectiveMode | inheritProcessEnv | forwardedAllowlist |
+|--------------------|-----------------|----------------------|---------------|-------------------|--------------------|
+| (unset)            | (unset)         | (unset)              | allowlist     | no                | (empty)            |
+| true               | allowlist       | HTTPS_PROXY          | allowlist     | no                | HTTPS_PROXY        |
+| true               | inherit         | HTTPS_PROXY          | inherit       | yes               | (omitted)          |
+| true               | minimal         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| false              | inherit         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| false              | allowlist       | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| "false"            | inherit         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| 1                  | inherit         | HTTPS_PROXY          | minimal       | no                | (omitted)          |
+| true               | Inherit         | HTTPS_PROXY          | allowlist     | no                | HTTPS_PROXY        |
+| true               | unexpected      | HTTPS_PROXY          | allowlist     | no                | HTTPS_PROXY        |
+```
+
+These rows are read by `tests/lint/documented-defaults-are-executable.test.ts` and fed through `readProcessEnvironmentPolicy` in `src/activation/uncached-settings-accessors.ts`.
+
+<!-- Source: src/activation/uncached-settings-accessors.ts -->
+<!-- Source: src/contracts/process-environment-policy.ts -->
+<!-- Source: src/runner/spawn-env.ts -->
+<!-- Source: src/services/execution-lanes/verification-runner.ts -->
+<!-- Source: src/activation/backend-wiring.ts -->
+<!-- Source: package.json -->
+
+### Schegent-controlled overlays
+
+| Name | Type | Default | Purpose |
+|---|---|---|---|
+| `SCHEGENT_PHASE` | string | Current Phase ID; `runner-probe` for capability probes | Identifies the Phase to the spawned backend. It overrides any ambient value. |
+| `SCHEGENT_ITERATION` | decimal integer string | Current iteration; `0` for capability probes | Identifies the current loop iteration. It overrides any ambient value. |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | integer string, `1`–`100`, or absent | Absent | Passed only to Claude when `schegent.claude.autoCompactPctOverride` is a valid integer. Internal session compaction forces `1`. Invalid, null, or out-of-range setting values leave the variable absent. |
+
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/controller/session-compactor.ts -->
+<!-- Source: src/activation/backend-wiring.ts -->
+<!-- Source: src/lib/auto-compact-override.ts -->
+
+`SCHEGENT_FEATURE_DIR` is a prompt marker, not an environment variable: `PromptBuilder` writes it into prompt text only when a feature directory exists.
+
+<!-- Source: src/runner/prompt-builder.ts -->
+
+## Build and test environment
+
+These variables are implementation controls, not extension-user configuration.
+
+| Name | Type | Default | Purpose |
+|---|---|---|---|
+| `NODE_ENV` | string or absent | Absent | Exact value `production` makes the host bundle minified and disables its source map. Exact value `test` skips the run-start backend availability probe. Repository scripts and workflows do not set `production`. |
+| `CI` | string or absent | Absent | Exact value `true` enables Playwright's CI reporter and `forbidOnly`; any other value is treated as local mode. |
+| `SCHEGENT_E2E_MODE` | `happy`, `loop-once`, `fatal`, or `rate-limit` | `happy` | Chooses deterministic behavior for the fake Claude E2E executable. |
+| `SCHEGENT_E2E_STATE_DIR` | filesystem path or absent | Absent | Writable counter directory for the stateful E2E modes. `loop-once`, `fatal`, and `rate-limit` require it. |
+| `SCHEGENT_INTEGRATION_FILTER` | string | Empty string | Runs only emitted `*.host.test.js` filenames containing the trimmed substring. A non-empty filter matching nothing is a failure. |
+| `SCHEGENT_INTEGRATION_RESULT_DIR` | filesystem path | No public default; launcher supplies a temporary directory | Private extension-host handshake directory. The host must write exactly one valid result file. |
+| `ELECTRON_RUN_AS_NODE` | string or absent | Removed by the integration launcher | The launcher deletes an ambient value before starting VS Code so Electron cannot be demoted to Node mode. |
+| `SCHEGENT_MATRIX_C` | string or absent | Absent/disabled | Exact value `1` opts into the nondeterministic, token-consuming real-Claude integration matrix. |
+| `SCHEGENT_MATRIX_C_CLI` | executable path | `claude` | Overrides the CLI executable used by the opt-in real-Claude matrix. |
+| `SCHEGENT_SUSTAINED_RECORD_COUNT` | decimal integer string | `4600` | Controls rows per stream in the sustained evidence test. Invalid values or values below `4600` become `4600`; values above `100000` are capped at `100000`. The full gate uses `20000`. |
+| `SCHEGENT_SOAK_REPORT` | filesystem path or absent | Absent | When set, writes the sustained evidence JSON report, creating parent directories. The full gate uses `tests/soak/.artifacts/sustained-evidence.json`. |
+| `TMPDIR` | filesystem path | `.tmp/vitest-<pid>` during Vitest | Redirects POSIX test scratch files into an isolated per-run root. |
+| `TMP` | filesystem path | `.tmp/vitest-<pid>` during Vitest | Redirects Windows-compatible test scratch files into the same isolated root. |
+| `TEMP` | filesystem path | `.tmp/vitest-<pid>` during Vitest | Redirects Windows-compatible test scratch files into the same isolated root. |
+| `GIT_CEILING_DIRECTORIES` | filesystem path | Absolute repository `.tmp` directory during Vitest | Stops scratch repositories from discovering the developer checkout while walking parent directories. |
+
+A run that is killed never reaches its teardown, so its `vitest-<pid>` root
+stays behind (FR-R3-181). Before it creates its own root, Vitest global setup
+sweeps `.tmp/` for those roots. It removes one only when its pid is provably
+gone, or is held by a process that started more than ten minutes after the root
+was last written; a root whose holder's start time cannot be read is kept, and
+the run's own root is never examined. Setup prints one line on every run, a
+clean `.tmp/` included:
+
+```text
+scratch sweep: found=<N> removed=<N> skipped=<N>
+```
+
+`found` counts every entry in `.tmp/`, run root or not, and `skipped` every
+entry the sweep left, so `found` is always `removed + skipped`. Only a root
+whose removal failed is also named on stderr; a root that is kept, and an
+entry that is not a run root, is counted and not named. Teardown removes the
+run's own root through the shared cleanup helper, and a removal that fails is
+reported on stderr, `scratch teardown: … left for the next run's sweep`, not
+swallowed.
+
+<!-- Source: esbuild.config.mjs -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: playwright.config.ts -->
+<!-- Source: tests/e2e/fixtures/fake-claude/index.js -->
+<!-- Source: tests/integration/index.ts -->
+<!-- Source: tests/integration/runTest.ts -->
+<!-- Source: tests/integration/vscode-test-executable.ts -->
+<!-- Source: tests/integration/matrix-c-real-cli.test.ts -->
+<!-- Source: tests/perf/sustained-evidence-path.test.ts -->
+<!-- Source: tests/global-temp-root.ts -->
+<!-- Source: ../release/actions-terminal-record.md -->
+
+The following names are unit-test canaries, not supported configuration. They default to absent: `SCHEGENT_ENV_ALLOWED_TEST` demonstrates an explicitly forwarded name; `SCHEGENT_ENV_BLOCKED_TEST` and `SCHEGENT_SECRET_TEST` demonstrate blocked ambient values; `LC_SCHEGENT_TEST` demonstrates dynamic locale forwarding.
+
+<!-- Source: tests/unit/runner/spawn-env.test.ts -->
+<!-- Source: tests/unit/runner/claude-cli.test.ts -->
+<!-- Source: tests/unit/runner/codex-cli.test.ts -->
+<!-- Source: tests/unit/services/run-driver-probe.test.ts -->
+
+## GitHub Actions job variables — retired 2026-08-26
+
+**None of these exist any more.** They were supplied by the release and security workflow shells,
+and all eight workflow files were deleted when Actions was retired by operator decision, for budget
+(`FR-R3-099`). `GITHUB_REF_TYPE`, `TAG_NAME`, `VSIX`, `GH_TOKEN`, `REPOSITORY`, `GITHUB_OUTPUT`,
+`RUNNER_TEMP` and `GITHUB_STEP_SUMMARY` are named here only so a reader who greps one of them
+learns it is gone rather than concluding it is live configuration this page forgot to describe.
+
+What each workflow was, and what its runs produced, is recorded in
+[the withdrawal record](../release/withdrawn-ci-controls.md) and
+[the terminal record](../release/actions-terminal-record.md). Nothing local replaces them: the
+release path is entirely local now, and [`RELEASE.md`](../../RELEASE.md) describes it.
+
+<!-- Source: ../release/withdrawn-ci-controls.md -->
+<!-- Source: ../release/actions-terminal-record.md -->
+
+## Core directory tree
+
+This tree shows authored source and the principal repository interfaces, not every generated dependency directory.
+
+```text
+repo/
+|-- .github/
+|   |-- ISSUE_TEMPLATE/
+|   `-- workflows/
+|-- .vscode/
+|-- assets/
+|-- docs/
+|   |-- how-to/
+|   |-- operations/
+|   |-- reference/
+|   `-- tutorials/
+|-- examples/
+|-- scripts/
+|-- src/
+|   |-- activation/ audit/ catalog/ commands/ config/
+|   |-- contracts/ controller/ headless/ host-services/ lib/
+|   |-- metrics/ monitor/ parser/ queue/ runner/ services/
+|   `-- state/ telemetry/ ui/ watchdog/
+|-- tests/
+|   |-- contract/ e2e/ evals/ integration/ lint/
+|   `-- parity/ perf/ unit/ visual/
+`-- webview-ui/
+    |-- src/
+    |   |-- components/
+    |   |-- dashboard/
+    |   `-- lib/
+    `-- tests/
+```
+
+<!-- Source: package.json -->
+<!-- Source: src -->
+<!-- Source: tests -->
+<!-- Source: webview-ui -->
+
+Local or generated directories have different ownership:
+
+- `.schegent/` is workspace-local Schegent state and evidence.
+- `.tmp/` is test scratch space.
+- `.vscode-test/` holds the downloaded integration-test VS Code runtime.
+- `coverage/`, `dist/`, and `out/` are generated outputs.
+- `node_modules/` and `webview-ui/node_modules/` are installed dependencies.
+
+<!-- Source: .gitignore -->
+<!-- Source: .vscodeignore -->
+<!-- Source: package.json -->

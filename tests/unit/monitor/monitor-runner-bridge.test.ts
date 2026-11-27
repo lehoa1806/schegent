@@ -30,7 +30,7 @@ describe('runner monitor sidecar hook', () => {
     const child = makeFakeChild(7777);
     const events: MonitorSidecarEvent[] = [];
     const spawnFn: SpawnFn = () => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn, (e) => events.push(e));
@@ -51,6 +51,7 @@ describe('runner monitor sidecar hook', () => {
         child.stderr.emit('data', 'err1\n');
         child.stdout.emit('data', 'b\n');
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
@@ -69,7 +70,7 @@ describe('runner monitor sidecar hook', () => {
     const child = makeFakeChild();
     const events: MonitorSidecarEvent[] = [];
     const spawnFn: SpawnFn = () => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new ClaudeCliRunner(spawnFn, (e) => events.push(e));
@@ -87,6 +88,7 @@ describe('runner monitor sidecar hook', () => {
       setImmediate(() => {
         child.stdout.emit('data', 'hi\n');
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
@@ -96,6 +98,7 @@ describe('runner monitor sidecar hook', () => {
       setImmediate(() => {
         child2.stdout.emit('data', 'hi\n');
         child2.emit('exit', 0, null);
+        child2.emit('close', 0, null);
       });
       return child2 as unknown as ChildProcess;
     };
@@ -119,6 +122,7 @@ describe('runner monitor sidecar hook', () => {
       setImmediate(() => {
         child.stdout.emit('data', 'hi\n');
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };

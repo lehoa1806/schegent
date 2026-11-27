@@ -32,7 +32,12 @@ import {
 } from '../services/process-yaml/export-service';
 import { preflightProcessDocument } from '../services/process-yaml/preflight-service';
 import type { ExchangeDeps } from '../services/process-yaml/service-ports';
-import type { ImportPlan, ImportPlanRow } from '../services/process-yaml/types';
+import {
+  PROCESS_YAML_RESOURCE_KINDS,
+  type ImportPlan,
+  type ImportPlanRow,
+  type ProcessYamlResourceKind
+} from '../services/process-yaml/types';
 import {
   checkDocumentBytes,
   checkExportSelection,
@@ -85,7 +90,8 @@ export type LayerSaveAck =
  * that never landed: the second pass runs only over what the first pass wrote.
  * What can still happen is the whole thing stopping partway, and that is reported
  * rather than repaired — FR-042c forbids a compensating delete, and FR-039a leaves
- * whatever landed as a Draft for the operator to publish or re-import over.
+ * whatever landed as a Draft for the operator to publish. A re-import skips a row
+ * that is already there, drafts included, so it writes only what is still missing.
  *
  * The Model Catalog keeps its own write because it never shares a document with
  * the other three (FR-015) and is still configuration-backed (099 FR-054).
@@ -114,20 +120,19 @@ export interface ImportProcessDocumentInput {
   readonly plan: ImportPlan;
 }
 
-export type ImportLayerKey = 'phases' | 'pipelines' | 'workflows' | 'models';
+export type ImportLayerKey = 'phases' | 'workflows' | 'models';
 
 /**
  * The layer keys in write order — the one place this module states the order.
  *
- * `'models'` has no ordering relationship with the other three: FR-015 rules
+ * `'models'` has no ordering relationship with the other two: FR-015 rules
  * out cross-catalog references, so a Model Catalog document never shares a
- * plan with Phase/Pipeline/Workflow rows (contract §1, research.md Decision
+ * plan with Phase/Workflow rows (contract §1, research.md Decision
  * 4). Its position here is therefore unconstrained; it is listed last only
  * because it was added last.
  */
 export const IMPORT_LAYER_ORDER: readonly ImportLayerKey[] = [
   'phases',
-  'pipelines',
   'workflows',
   'models'
 ];
@@ -143,6 +148,13 @@ export type ImportCommitOutcome = 'imported' | 'partial' | 'failed';
 export interface ImportProcessDocumentResult {
   readonly outcome: ImportCommitOutcome;
   readonly results: readonly ImportLayerResult[];
+  /**
+   * The kinds that had `import` rows and were handed to no write (feature 254, FR-041). Present only when
+   * there are some, and then the outcome is `failed`: a kind nothing wrote is a drop the commit must not
+   * report as success for the rest. Empty in every case the dispatch below covers; it is a guard for the
+   * kind someone adds to the plan and forgets to write (hard rule 63).
+   */
+  readonly undispatched?: readonly string[];
 }
 
 type ImportRowOf<K extends ImportPlanRow['resourceKind']> = Extract<
@@ -176,12 +188,47 @@ function modelsDeltaByBackend(
   return delta;
 }
 
+/**
+ * How each resource kind reaches the store (feature 254, FR-041, V2; research R24).
+ *
+ * Typed over the union, so a kind added to `ProcessYamlResourceKind` with no entry here fails `typecheck`,
+ * naming the key. The three catalog kinds go out together in one package publish; the Model Catalog is the
+ * one configuration-backed kind and has its own save. `tests/lint/process-yaml-coverage-seams.test.ts` holds
+ * that this map covers `PROCESS_YAML_RESOURCE_KINDS` and no more.
+ */
+export const DISPATCH_OF_KIND: {
+  readonly [K in ProcessYamlResourceKind]: 'package-layer' | 'model-settings';
+} = {
+  phase: 'package-layer',
+  workflow: 'package-layer',
+  modelCatalog: 'model-settings'
+};
+
+/**
+ * The kinds that have `import` rows in `plan` and are not in `dispatched`, known kinds first in list order.
+ *
+ * Takes the kinds PRESENT in the plan, not the known list, so a row of a kind the dispatch has never heard
+ * of is named too: that is the shape of the failure (a new kind reaches the plan and nothing writes it).
+ */
+export function undispatchedKinds(plan: ImportPlan, dispatched: ReadonlySet<string>): readonly string[] {
+  const present = new Set<string>();
+  for (const row of plan.rows) {
+    if (row.outcome === 'import') present.add(row.resourceKind);
+  }
+  const known: readonly string[] = PROCESS_YAML_RESOURCE_KINDS;
+  const missing = (kind: string): boolean => present.has(kind) && !dispatched.has(kind);
+  return [...known.filter(missing), ...[...present].filter((kind) => !known.includes(kind) && missing(kind))];
+}
+
 /** The layer key each catalog kind reports under. */
-const LAYER_KEY_OF: Readonly<Record<PackageLayer['kind'], ImportLayerKey>> = {
+const LAYER_KEY_OF: Readonly<Record<'phase' | 'workflow', ImportLayerKey>> = {
   phase: 'phases',
-  pipeline: 'pipelines',
   workflow: 'workflows'
 };
+
+function layerKeyOf(kind: PackageLayer['kind']): ImportLayerKey {
+  return kind === 'phase' ? LAYER_KEY_OF.phase : LAYER_KEY_OF.workflow;
+}
 
 /**
  * One package outcome, reported as the per-layer results this module has always
@@ -205,20 +252,20 @@ export function packageResults(
 ): readonly ImportLayerResult[] {
   if (outcome.outcome === 'published') {
     return layers.map((layer) => ({
-      key: LAYER_KEY_OF[layer.kind],
+      key: layerKeyOf(layer.kind),
       ack: { status: 'accepted' } as const
     }));
   }
   if (outcome.outcome === 'refused') {
     const { refusal } = outcome;
     return layers.map((layer) => ({
-      key: LAYER_KEY_OF[layer.kind],
+      key: layerKeyOf(layer.kind),
       ack: { status: 'rejected', reason: refusal.reason, result: refusal } as const
     }));
   }
   const live = new Set(outcome.published.map((published) => published.kind));
   return layers.map((layer) => ({
-    key: LAYER_KEY_OF[layer.kind],
+    key: layerKeyOf(layer.kind),
     ack: live.has(layer.kind)
       ? ({ status: 'accepted' } as const)
       : ({ status: 'rejected', reason: 'package-partial', result: outcome } as const)
@@ -228,12 +275,11 @@ export function packageResults(
 /**
  * The three outcomes, read off the acks that actually came back (FR-042a).
  *
- * `partial` exists because the writes are independently gated and an earlier one
- * can succeed while a later one is refused — two shapes as of feature 086, a
- * refused Pipeline write after a Phase write and a refused Workflow write after
- * both. Counting acks is total over either. It is reported rather than repaired:
- * FR-042c forbids a compensating delete, so the honest report is all this surface
- * owes its caller.
+ * `partial` exists because a package can stop partway: the layers that went live
+ * read as accepted and the rest, drafted only or never reached, as rejected
+ * (`packageResults`). Counting acks is total over every such split. It is
+ * reported rather than repaired: FR-042c forbids a compensating delete, so the
+ * honest report is all this surface owes its caller.
  *
  * An empty result list is `failed`, not `imported` — the commit sent nothing.
  */
@@ -247,25 +293,27 @@ export function importCommitOutcome(
 }
 
 /**
- * Apply a plan as ordered per-layer writes: Phases, then Pipelines, then
- * Workflows (FR-008, and the repository's standing package-write rule).
+ * Apply a plan as one package publication, Phases then Pipelines then Workflows,
+ * plus the Model Catalog write when the document is a Model Catalog (FR-008,
+ * FR-013, and the repository's standing package-write rule).
  *
- * The order is fixed by dependency and no write may precede the one it depends
- * on: a Pipeline's bindings are only satisfiable once its Phases are effective,
- * and a Workflow's nodes only resolve once its Pipelines are. Each write carries
- * its OWN expected revision — the one the PLAN was computed against, taken from
- * the plan and never read live, because a revision read at the moment of the
- * write leaves the staleness gate unable to fire (FR-040).
- * Each layer names its own target set through the ids it carries, so a document
- * supplying fewer layers writes fewer times and never merges two kinds into one
- * layer. The per-layer `import-package` mutation intent is gone with the intent
- * algebra (feature 100, FR-051): there is no whole-array diff left for a declared
- * intent to be reconciled against, and a layer's `kind` is what identifies it.
+ * The order is fixed by dependency and the host keeps it inside the operation: a
+ * Pipeline's bindings are only satisfiable once its Phases are effective, and a
+ * Workflow's nodes only resolve once its Pipelines are. Each layer carries its OWN
+ * expected revision — the one the PLAN was computed against, taken from the plan
+ * and never read live, because a revision read at the moment of the write leaves
+ * the staleness gate unable to fire (FR-040). Each layer names its own target set
+ * through the ids it carries, so a document supplying fewer layers sends fewer
+ * layers and never merges two kinds into one. The per-layer `import-package`
+ * mutation intent is gone with the intent algebra (feature 100, FR-051): there is
+ * no whole-array diff left for a declared intent to be reconciled against, and a
+ * layer's `kind` is what identifies it.
  *
- * Sequential and short-circuiting: a rejection stops the sequence, and stopping
- * is all it does. Whichever prefix landed stays written (FR-042c). Importing the
- * same document a second time is the recovery path, because the presence scan
- * turns the already-written rows into `skip` rows.
+ * A rejection stops the operation, and stopping is all it does. Whichever prefix
+ * landed stays written (FR-042c). Importing the same document a second time writes
+ * only what is still missing: the presence scan turns every row already there,
+ * drafts included, into `skip`, and a package publish publishes only what its own
+ * operation wrote (FR-039a), so a draft is published by the operator.
  */
 export async function importProcessDocument(
   deps: ImportWritePort,
@@ -273,19 +321,14 @@ export async function importProcessDocument(
 ): Promise<ImportProcessDocumentResult> {
   const { plan } = input;
   const phases = importRows(plan, 'phase');
-  const pipelines = importRows(plan, 'pipeline');
   const workflows = importRows(plan, 'workflow');
   const models = importRows(plan, 'modelCatalog');
-  const pipelineRevision = plan.computedAgainstPipelineRevision;
   const workflowRevision = plan.computedAgainstWorkflowRevision;
   const modelsRevision = plan.computedAgainstModelsRevision;
 
   // Half a package is the one outcome no requirement admits. A plan that carries
   // rows for a layer but no revision to gate that layer's write cannot be applied
   // at all, so nothing is sent — not the layers it happens to have a gate for.
-  if (pipelines.length > 0 && pipelineRevision === undefined) {
-    return { outcome: 'failed', results: [] };
-  }
   if (workflows.length > 0 && workflowRevision === undefined) {
     return { outcome: 'failed', results: [] };
   }
@@ -304,16 +347,6 @@ export async function importProcessDocument(
       })
     });
   }
-  if (pipelines.length > 0 && pipelineRevision !== undefined) {
-    layerRequest.push({
-      kind: 'pipeline',
-      expectedRevision: pipelineRevision,
-      definitions: pipelines.map(({ definition }) => {
-        const { pipelineId, phaseIds, ...declared } = definition;
-        return { id: pipelineId, body: { id: pipelineId, phases: [...phaseIds], ...declared } };
-      })
-    });
-  }
   if (workflows.length > 0 && workflowRevision !== undefined) {
     layerRequest.push({
       kind: 'workflow',
@@ -328,6 +361,9 @@ export async function importProcessDocument(
   }
 
   const results: ImportLayerResult[] = [];
+  // The kinds handed to a write, by whatever outcome. A rejected write is reported in `results`; what
+  // `undispatchedKinds` looks for is a kind with rows that no write was ever asked to take.
+  const dispatched = new Set<string>();
 
   // One call, not three. The layers still go out in dependency order, but the
   // order is now inside the operation rather than in this sequence — see
@@ -335,7 +371,9 @@ export async function importProcessDocument(
   // ones because a package addresses definitions by id: there is no whole-array
   // envelope left for an untouched row to fall out of.
   if (layerRequest.length > 0) {
-    results.push(...packageResults(layerRequest, await deps.publishPackage({ layers: layerRequest })));
+    const published = await deps.publishPackage({ layers: layerRequest });
+    for (const layer of layerRequest) dispatched.add(layer.kind);
+    results.push(...packageResults(layerRequest, published));
     if (results.some((result) => result.ack.status !== 'accepted')) {
       return { outcome: importCommitOutcome(results), results };
     }
@@ -352,8 +390,14 @@ export async function importProcessDocument(
       expectedRevision: modelsRevision,
       mutation: { kind: 'import-package' }
     });
+    dispatched.add('modelCatalog');
     results.push({ key: 'models', ack });
   }
+
+  // Feature 254 (FR-041, V2): a kind with rows that nothing wrote fails the import by name, rather than
+  // letting the commit report success for the kinds that were written.
+  const undispatched = undispatchedKinds(plan, dispatched);
+  if (undispatched.length > 0) return { outcome: 'failed', results, undispatched };
 
   return { outcome: importCommitOutcome(results), results };
 }

@@ -17,16 +17,20 @@
 // FR-053 requires: never a sibling queue's Run, and never a fabricated stand-in.
 
 import type { FeatureRequest } from '../../queue/feature-request';
-import type { WorkflowRun } from '../../state/workflow-run';
+import type { WatchdogState, WorkflowRun } from '../../state/workflow-run';
 import type { RunOutputRecord } from '../../contracts/run-results';
 // Feature 103 — by path, not through the contracts barrel; see the note on the
 // same import in `snapshot.ts`.
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import type { RunOriginRef } from '../../contracts/run-origin';
+import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
+import { sanitizeAndCap } from './queue-projector';
+import { projectCreditPolling } from './credit-polling-projection';
 import type {
   ActiveFeatureSummary,
   ActivePipelineSummary,
   DelayedRetryState,
+  EffectiveLimitsProjection,
   InFlightRunProjection,
   LiveActivity,
   PhaseTile,
@@ -96,6 +100,106 @@ export interface QueueRuntimeComposerContext {
    * Optional, and an absent one publishes no rows rather than a borrowed list.
    */
   readonly rowsOf?: (queueId: string) => readonly QueueItem[];
+  /**
+   * Feature 187 (FR-001) — this queue's outstanding failed start, already
+   * projected. Handed in projected rather than raw for the same reason `rowsOf`
+   * is: the sanitizer belongs to the composer that owns it, and this module has
+   * none. `projectStartFailure` below is what the caller applies.
+   *
+   * Optional, and an absent one publishes no report rather than a fabricated
+   * absence of one — the two read the same on the wire, but only one of them is
+   * a claim this module is entitled to make.
+   */
+  readonly startFailureOf?: (queueId: string) => QueueRuntime['startFailure'];
+  /**
+   * FR-R3-152 (T1632, FR-005) — this queue's own scheduled-start reading.
+   * Mirrors `lifecycleOf`'s shape and call pattern exactly: not optional,
+   * because every `QueueRuntime` must carry the field (unlike `rowsOf`/
+   * `startFailureOf`, there is no "registry not wired" case for a value that
+   * already lives on `QueueState` itself).
+   */
+  readonly scheduledStartOf: (queueId: string) => {
+    readonly at: QueueRuntime['scheduledStartAt'];
+    readonly source: QueueRuntime['scheduledStartSource'];
+  };
+  /**
+   * FR-R4-F02 (W6 G17) — the watchdog record's last poll outcome, which is window-wide: it says
+   * whether the most recent `/status` could be reached, for every Run polled with it. Optional;
+   * absent reads as no poll yet.
+   */
+  readonly lastCreditPollOutcome?: () => WatchdogState['lastPollOutcome'];
+  /** FR-R4-F02 (E3 G9) — the limits this Run runs under; absent publishes none (`null`). */
+  readonly effectiveLimitsOf?: ((run: WorkflowRun) => EffectiveLimitsProjection | null) | undefined;
+}
+
+/**
+ * FR-R3-152 (T1632, code review) — reads both scheduled-start fields off one
+ * already-fetched `QueueState`, for a `scheduledStartOf` implementation
+ * (`snapshot-composer.ts`) that would otherwise call `store.getQueue(queueId)`
+ * twice just to reach its two sibling fields.
+ */
+export function scheduledStartFromQueueState(source: {
+  readonly scheduledStartAt: QueueRuntime['scheduledStartAt'];
+  readonly scheduledStartSource: QueueRuntime['scheduledStartSource'];
+}): { readonly at: QueueRuntime['scheduledStartAt']; readonly source: QueueRuntime['scheduledStartSource'] } {
+  return { at: source.scheduledStartAt, source: source.scheduledStartSource };
+}
+
+/**
+ * Feature 187 (FR-002) — one queue's failed start, as the sidebar reads it.
+ *
+ * `undefined` (no registry wired) and `null` (a registry holding no report)
+ * project the same way, because the surface says the same thing about both:
+ * nothing to report. The distinction matters upstream, not here.
+ *
+ * `summary` goes through the same `sanitizeAndCap` as `pausedReason` and
+ * `lastErrorSummary`. This message is the one in the feature that comes straight
+ * off a driver's `Error`, so it is the likeliest to name a path on the
+ * operator's disk; there is exactly one function in the projection allowed to
+ * decide what error text reaches the wire, and this is not a second one.
+ *
+ * Feature 195 (T015, FR-007, FR-008, FR-024) — a `kind: 'halted'` report goes
+ * through the identical `sanitizeAndCap`, on `taskName` rather than `message`:
+ * the failed task's name is operator-authored content on the same terms as
+ * every other string this function already sanitizes.
+ *
+ * BUG-004 — `kind: 'stranded-run'` carries no operator-authored string at all:
+ * a run id and a phase id, both host-generated. It is projected here anyway,
+ * beside the other two, because this is the one function allowed to decide what
+ * of a report reaches the wire — a producer that shipped its own fields around
+ * this seam would be the second such decision, and the next one after it would
+ * carry a message.
+ */
+export function projectStartFailure(
+  raw: QueueStartFailure | null | undefined,
+  sanitize: (value: string) => string
+): QueueRuntime['startFailure'] {
+  if (raw === null || raw === undefined) return null;
+  if (raw.kind === 'halted') {
+    return Object.freeze({
+      kind: 'halted',
+      taskId: raw.taskId,
+      // FR-008 requires a name; falling back to the id (never sanitized away,
+      // since it never came from the operator) keeps that guarantee on the
+      // pathological path where sanitizing the description empties it.
+      taskName: sanitizeAndCap(raw.taskName, sanitize) ?? raw.taskId,
+      at: new Date(raw.at).toISOString()
+    });
+  }
+  if (raw.kind === 'stranded-run') {
+    return Object.freeze({
+      kind: 'stranded-run',
+      runId: raw.runId,
+      phase: raw.phase,
+      at: new Date(raw.at).toISOString()
+    });
+  }
+  return Object.freeze({
+    kind: 'admission',
+    admission: raw.admission,
+    at: new Date(raw.at).toISOString(),
+    summary: sanitizeAndCap(raw.message, sanitize)
+  });
 }
 
 /**
@@ -108,7 +212,16 @@ function emptyRuntime(
   summary: QueueSummary,
   lifecycle: QueueLifecycle,
   pendingCount: number,
-  tasks: readonly QueueItem[]
+  tasks: readonly QueueItem[],
+  // Feature 187 — a report survives here and nowhere else. Every other field on
+  // this shape is empty because the queue owns no Run; the failed start is the
+  // one fact about a queue that owns no Run *because* the start failed, so
+  // emptying it with the rest would erase exactly the case FR-001 is about.
+  startFailure: QueueRuntime['startFailure'],
+  // FR-R3-152 (T1632) — likewise survives an empty Run projection: a queue's
+  // scheduled start is a fact about the queue, not about a Run it may or may
+  // not own (an idle-pending queue owns none by construction).
+  scheduledStart: { readonly at: QueueRuntime['scheduledStartAt']; readonly source: QueueRuntime['scheduledStartSource'] }
 ): QueueRuntime {
   return Object.freeze({
     queueId: summary.id,
@@ -120,12 +233,19 @@ function emptyRuntime(
     phaseOverrides: Object.freeze([]) as QueueRuntime['phaseOverrides'],
     manualPause: null,
     phaseBreakpoints: Object.freeze([]) as QueueRuntime['phaseBreakpoints'],
+    startFailure,
     pendingCount,
-    tasks
+    tasks,
+    scheduledStartAt: scheduledStart.at,
+    scheduledStartSource: scheduledStart.source
   });
 }
 
-function projectInFlightRun(projection: QueueRunProjection): InFlightRunProjection {
+function projectInFlightRun(
+  projection: QueueRunProjection,
+  lastCreditPollOutcome: WatchdogState['lastPollOutcome'],
+  effectiveLimits: EffectiveLimitsProjection | null
+): InFlightRunProjection {
   return Object.freeze({
     runId: projection.run.id,
     status: projection.status,
@@ -144,7 +264,9 @@ function projectInFlightRun(projection: QueueRunProjection): InFlightRunProjecti
     ...(projection.catalogVersion !== undefined
       ? { catalogVersion: projection.catalogVersion }
       : {}),
-    ...(projection.origin !== undefined ? { origin: projection.origin } : {})
+    ...(projection.origin !== undefined ? { origin: projection.origin } : {}),
+    creditPolling: projectCreditPolling(projection.run, lastCreditPollOutcome),
+    effectiveLimits
   });
 }
 
@@ -180,15 +302,23 @@ export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly
       const pendingCount = requests.filter((request) => request.status === 'pending').length;
       const lifecycle = ctx.lifecycleOf(summary.id);
       const tasks = Object.freeze((ctx.rowsOf?.(summary.id) ?? []).slice());
+      const startFailure = ctx.startFailureOf?.(summary.id) ?? null;
+      const scheduledStart = ctx.scheduledStartOf(summary.id);
       const projection = ctx.runOf(summary.id);
-      if (projection === null) return emptyRuntime(summary, lifecycle, pendingCount, tasks);
+      if (projection === null) {
+        return emptyRuntime(summary, lifecycle, pendingCount, tasks, startFailure, scheduledStart);
+      }
       const run = projection.run;
       return Object.freeze({
         queueId: summary.id,
         name: summary.name,
         position: summary.position,
         lifecycle,
-        inFlightRun: projectInFlightRun(projection),
+        inFlightRun: projectInFlightRun(
+          projection,
+          ctx.lastCreditPollOutcome?.() ?? null,
+          ctx.effectiveLimitsOf?.(run) ?? null
+        ),
         phases: Object.freeze(projection.phases.map((phase) => Object.freeze(phase))),
         phaseOverrides: Object.freeze(
           (run.phaseOverrides ?? []).map((override) =>
@@ -197,6 +327,9 @@ export function composeQueueRuntimes(ctx: QueueRuntimeComposerContext): readonly
         ),
         manualPause: projectManualPause(run),
         phaseBreakpoints: projectBreakpoints(run),
+        startFailure,
+        scheduledStartAt: scheduledStart.at,
+        scheduledStartSource: scheduledStart.source,
         pendingCount,
         tasks
       });

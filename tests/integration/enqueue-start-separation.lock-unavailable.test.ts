@@ -98,7 +98,8 @@ async function makeFixture(): Promise<Fixture> {
     store,
     queue,
     executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   // Mutable cell so each test can flip the probe value at fire time.
@@ -133,6 +134,9 @@ async function makeFixture(): Promise<Fixture> {
   });
 
   const service = new GuardedRunService({
+    // FR-R3-136 (FR-008) — this suite exercises a trusted workspace; the
+    // untrusted rows live in the trust-specific describe block.
+    isWorkspaceTrusted: () => true,
     lock,
     queue,
     controller: controller as unknown as SchegentWorkflowController,

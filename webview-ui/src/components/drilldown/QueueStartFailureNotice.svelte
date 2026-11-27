@@ -1,0 +1,141 @@
+<script lang="ts">
+  // Feature 187 (T022, FR-001, FR-002) — the queue's last failed start, on the
+  // queue's own surface.
+  //
+  // Step 7 of the drain (`contracts/concurrent-drain-and-leases.md` §1) is the
+  // only step that can throw, and the only one with no guaranteed in-session
+  // re-ask: the other six refusals leave a Run in flight or a queue held, and
+  // something later ends or releases. A step-7 throw starts nothing, so nothing
+  // ends, and before this notice existed the whole event was one `logger.warn`
+  // in a channel the operator has no reason to be reading. The queue then looked
+  // exactly like a queue politely waiting its turn.
+  //
+  // Its own component rather than markup inside `QueueDetailTier.svelte` for the
+  // reason recorded in the plan (D-5): that file measured 463 of the flat
+  // 500-line `svelte-component-loc-budget` ceiling, which is the same forcing
+  // function that split `QueueIdlePendingPanel.svelte` out of it under feature
+  // 097 (T012a). The split is not a workaround for the budget — it is the budget
+  // working.
+  //
+  // Read-only by intent. There is no Retry button here, and that is a decision:
+  // the drain re-offers this queue on the next terminal Run's registry-wide
+  // sweep, on an operator start, and on activation, so a button would add a
+  // second way to ask for something that is already going to be asked. The
+  // notice says so in words instead (SC-002).
+
+  import { formatRelativeTime } from '../../lib/format';
+  import type { QueueRuntime } from '../../lib/snapshot-types';
+
+  interface Props {
+    /** The queue this report belongs to; scopes every test id below. */
+    queueId: string;
+    startFailure: QueueRuntime['startFailure'];
+    /** Injectable for tests only; production reads the wall clock. */
+    nowMs?: number;
+  }
+
+  const { queueId, startFailure, nowMs }: Props = $props();
+
+  // Operator words, not the host's method names. `admitResume` and `admitNew`
+  // name two different attempts an operator can tell apart — picking up a
+  // paused Run versus starting a queued one — and only one of them is theirs to
+  // have asked for. Printing the identifiers would answer that only for someone
+  // who has read the drain.
+  const attempt = $derived(
+    startFailure?.kind === 'admission' && startFailure.admission === 'admitResume'
+      ? 'Resuming this queue'
+      : 'Starting this queue'
+  );
+  const age = $derived(startFailure === null ? '' : formatRelativeTime(startFailure.at, nowMs));
+</script>
+
+<!-- Each report is drawn as the redesign's attention banner (`.attn` in `sg-core.css`): the
+     warning icon, what happened in bold with how long ago, then what happens next. -->
+{#if startFailure !== null && startFailure.kind === 'admission'}
+  <div class="attn" role="status" data-testid="queue-start-failure-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body">
+      <div class="headline">
+        <b>{attempt} failed.</b>
+        <span class="small muted" data-testid="queue-start-failure-age-{queueId}">{age}</span>
+      </div>
+      <span class="summary" data-testid="queue-start-failure-summary-{queueId}">
+        {#if startFailure.summary !== null}
+          {startFailure.summary}
+        {:else}
+          The error carried no message.
+        {/if}
+      </span>
+      <span class="small muted">Schegent will offer this queue again when a run ends.</span>
+    </div>
+  </div>
+{:else if startFailure !== null && startFailure.kind === 'halted'}
+  <!-- Feature 195 (T029, FR-007, FR-009) — the halt-on-failure report. Named
+       here, in the component that already owns "why this queue did not
+       start", rather than a second notice: the operator reads one place for
+       either reason a start did not happen. -->
+  <div class="attn" role="status" data-testid="queue-halted-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body">
+      <div class="headline">
+        <b>Halted.</b>
+        <span class="small muted" data-testid="queue-halted-age-{queueId}">{age}</span>
+      </div>
+      <span class="summary" data-testid="queue-halted-task-{queueId}">
+        Stopped because <strong>{startFailure.taskName}</strong> failed.
+      </span>
+      <!-- Feature 195 (T064, FR-025) — was "Retry or remove that task". FR-009
+           named two exits and was explicit that it is not a closed enumeration;
+           FR-025 adds the third, for the task whose work already happened outside
+           the tool. Prose only, no button: this component is read-only by intent
+           (see its header), and the control itself is on `QueueItemActions`,
+           which the queue header renders for this same row. -->
+      <span class="small muted">
+        Retry or remove that task to let this queue continue — or, if its work was
+        already completed elsewhere, mark it completed from the queue.
+      </span>
+    </div>
+  </div>
+{:else if startFailure !== null && startFailure.kind === 'stranded-run'}
+  <!-- BUG-004 — the run with no task row. Here rather than in a notice of its
+       own for the reason the halted branch above gives, and it is the case that
+       most needs saying: the other two describe an attempt that failed and will
+       be retried, this one describes a queue that will not try again. The note
+       names a reload because no control can reach the run — every cancel,
+       resume and retry resolves the task row first, and there is none. -->
+  <div class="attn" role="status" data-testid="queue-stranded-run-{queueId}">
+    <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+    <div class="body">
+      <div class="headline">
+        <b>Blocked.</b>
+        <span class="small muted" data-testid="queue-stranded-run-age-{queueId}">{age}</span>
+      </div>
+      <span class="summary" data-testid="queue-stranded-run-detail-{queueId}">
+        A run with no task is holding this queue, stopped in
+        <strong>{startFailure.phase}</strong>.
+      </span>
+      <span class="small muted">Reload the window to release it.</span>
+    </div>
+  </div>
+{/if}
+
+<style>
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-0-5);
+    min-width: 0;
+  }
+
+  .headline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--schegent-space-2);
+  }
+
+  .summary {
+    /* An unbroken driver message must not widen the panel past the sidebar. */
+    overflow-wrap: anywhere;
+  }
+</style>

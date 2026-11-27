@@ -4,10 +4,14 @@ import type { ResolvedPipelineCatalog } from '../../config/pipeline-catalog';
 import type { ResolvedPhaseCatalog } from '../../config/process-catalog';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import type { BackendMap } from '../../contracts/backend-descriptors';
 import type { EvidenceHealthSnapshot } from '../../services/evidence-health/evidence-health-monitor';
 import type { BackendPingState } from '../../services/backend-ping-service';
+import type { QueueStartFailure } from '../../services/queue-start-failure-registry';
 import type { Disposable, WorkspaceStateStore } from '../../state/workspace-state';
+import type { WorkflowRun } from '../../state/workflow-run';
+import type { EffectiveLimit, EffectiveLimitsProjection } from '../../contracts/snapshot-projections';
 import type { HistoryStore } from '../../state/history-store';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
@@ -17,11 +21,12 @@ import type { ConnectedRunProjection } from '../../contracts/sidebar-ipc';
 import type { RunOriginRef } from '../../contracts/run-origin';
 import type { WorkflowPipelineReference } from './commands/router-types';
 import type { BuilderLifecycleByKind } from './builder-lifecycle';
+import type { BackendQualificationSource } from './backend-qualification-projection';
 import { StateProjectorRuntime } from './state-projector-runtime';
 import type {
   AuditTailEntry,
   DebugLogEntry,
-  GeneralSettings,
+  GeneralSettingsProjection,
   SessionArtifactsProjection,
   
   WorkflowSnapshot
@@ -34,6 +39,21 @@ export interface ProjectorTimer {
   setTimeout: (fn: () => void, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
 }
+
+// FR-R3-128 (T1486) — `DEFAULT_MAX_WAIT_MS` moved to `state-projector-runtime.ts`.
+//
+// It was declared here and imported BY the runtime, while this module value-imports
+// `StateProjectorRuntime` — a two-module import cycle over one constant, which
+// `tests/lint/import-graph-acyclic.test.ts` reported on its first run. That gate did
+// not exist before this feature, and nothing else could see the cycle:
+// `dependency-direction.test.ts` only looks at leaf-to-acting edges and both files
+// are in `ui/`.
+//
+// Moved to the module that CONSUMES it as a default, which reverses the one edge and
+// leaves the type-only edge alone — type edges are erased and cannot cycle at
+// runtime. Re-exported below so the existing importers, including
+// `tests/unit/ui/sidebar/projection-starvation.test.ts`, are unchanged.
+export { DEFAULT_MAX_WAIT_MS } from './state-projector-runtime';
 
 export interface StateProjectorDeps {
   // Feature 093 (T025) — `getRunMap` replaces `getRun` in the projector's slice
@@ -50,6 +70,13 @@ export interface StateProjectorDeps {
   readonly sanitize?: (value: string | null | undefined) => string;
   readonly debounceMs?: number;
   readonly tickIntervalMs?: number;
+  /**
+   * FR-R3-106 (FR-069) — the max-wait deadline on the projection debounce.
+   *
+   * Injectable for tests only. The default is `DEFAULT_MAX_WAIT_MS`, declared beside it,
+   * and production does not pass this.
+   */
+  readonly maxWaitMs?: number;
   readonly timer?: ProjectorTimer;
   readonly now?: () => Date;
   readonly monotonicNow?: () => number;
@@ -62,13 +89,20 @@ export interface StateProjectorDeps {
   readonly getCatalog?: () => {
     phases: readonly PhaseDef[];
     pipelines: readonly PipelineDef[];
-    models: Record<BackendRunnerKind, readonly string[]>;
+    models: BackendMap<readonly string[]>;
   };
   readonly defaultRunnerKind?: BackendRunnerKind;
-  readonly getGeneralSettings?: () => GeneralSettings;
+  readonly getGeneralSettings?: () => GeneralSettingsProjection;
   readonly getSessionArtifacts?: () => SessionArtifactsProjection;
   readonly getEvidenceHealth?: () => EvidenceHealthSnapshot;
   readonly getPhaseCatalog?: () => ResolvedPhaseCatalog | undefined;
+  /**
+   * Feature 187 (FR-001) — this queue's outstanding failed start, or `null`.
+   * Asked per queue rather than handed a map because the answer is one small
+   * record and the registry is in memory; absent on a host with no drain wiring,
+   * which projects no report rather than a fabricated one.
+   */
+  readonly getQueueStartFailure?: (queueId: string) => QueueStartFailure | null;
   /** Feature 082 — resolved Pipeline catalog; throwing projects `state: 'error'`. */
   readonly getPipelineCatalog?: () => ResolvedPipelineCatalog | undefined;
   /**
@@ -115,10 +149,46 @@ export interface StateProjectorDeps {
    */
   readonly getRunOrigin?: (taskId: string) => RunOriginRef;
   readonly getConfirmationsEnabled?: () => boolean;
+  /** FR-R4-F02 (E3 G9) — the limits one Run runs under, from the inputs execution uses; absent publishes none. */
+  readonly getEffectiveLimits?: (run: WorkflowRun) => EffectiveLimitsProjection | null;
+  /**
+   * FR-R4-F07 (FR-022; contract D, D3) — the idle and wall-clock bounds a Run would be held to, with
+   * their layers, so the launch projection can state what each Phase would use. Absent publishes no
+   * run settings and the launcher says they are resolved when the Run starts.
+   */
+  readonly getLaunchLimits?: () => {
+    readonly idleTimeoutSeconds: EffectiveLimit<number>;
+    readonly maxDurationSeconds: EffectiveLimit<number>;
+  };
+  /**
+   * Feature 285 (FR-006a, D4) — the resolved default Workflow ID, `''` for none, read from the
+   * catalog session. Absent publishes no default.
+   */
+  readonly getDefaultWorkflowId?: () => string;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
-  readonly getAvailableModels?: () => Record<BackendRunnerKind, readonly string[]>;
+  readonly getWorkspaceModels?: () => BackendMap<readonly string[]>;
+  readonly getAvailableModels?: () => BackendMap<readonly string[]>;
   readonly getAvailableBackends?: () => readonly BackendRunnerKind[];
   readonly getBackendPingState?: () => BackendPingState;
+  /**
+   * FR-R3-144 (T021, D-4) — the RAW value of
+   * `schegent.backend.uncontainedBackends`, handed over unread.
+   *
+   * Raw and not a parsed list, because parsing it is `resolveUncontainedGrant`'s
+   * job and the posture projection calls that function directly. A port that
+   * returned an already-parsed list would put a second reader of this setting in
+   * the wiring, and the whole point of D-4 is that the projection and the refusal
+   * at spawn time are the same answer from the same function.
+   *
+   * Optional like every other port here; absent means the posture list is empty,
+   * which the surface renders as "not reported" rather than as "nothing granted".
+   */
+  readonly getUncontainedGrantSetting?: () => unknown;
+  /**
+   * FR-R6-F09 (FR-014) -- the spawn gate's observed identities and stored bindings,
+   * read on every compose. Absent, no posture row carries `qualification`.
+   */
+  readonly getBackendQualificationSource?: () => BackendQualificationSource | undefined;
 }
 
 export type ProjectorListener = (snapshot: WorkflowSnapshot) => void;

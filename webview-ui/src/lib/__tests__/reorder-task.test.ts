@@ -11,6 +11,7 @@
 //   - Concurrent calls never cross-resolve mismatched correlation ids.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { disposeIntentLedger } from '../intent-ledger';
 import {
   postReorderTask,
   postMoveItemUp,
@@ -30,8 +31,9 @@ const postedCommands: Array<{ type: string; payload: unknown; correlationId: str
 let nextCorrelationId = 0;
 
 vi.mock('../vscode-api', () => ({
-  postCommand: (type: string, payload: unknown) => {
-    const correlationId = `corr-${++nextCorrelationId}`;
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  postCommand: (type: string, payload: unknown, opts?: { correlationId?: string }) => {
+    const correlationId = opts?.correlationId ?? `corr-${++nextCorrelationId}`;
     postedCommands.push({ type, payload, correlationId });
     return { correlationId };
   }
@@ -57,6 +59,8 @@ function fireAck(id: string, status: 'accepted' | 'rejected', reason?: string): 
 }
 
 beforeEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   ackListeners.clear();
   pendingSet.clear();
   postedCommands.length = 0;
@@ -159,5 +163,31 @@ describe('Feature 030 (US2, T033) — reorder-task helper', () => {
       status: 'rejected',
       reason: 'invalid-position'
     });
+  });
+});
+
+// FR-R4-F05 (T17; contract I, I4 to I6) — the reorder helpers send through the intent ledger: a
+// retry of an unresolved reorder posts the same correlation id and payload, and the host's answer
+// reaches the retry, so the host moves the task once.
+describe('retry identity (T17)', () => {
+  it('posts the same correlation id and payload for a retry after a timeout, and answers it with the ACK', async () => {
+    const first = postReorderTask('task-7', 2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(first).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
+
+    const retry = postReorderTask('task-7', 2);
+
+    expect(postedCommands).toHaveLength(2);
+    expect(postedCommands[1]!.correlationId).toBe(postedCommands[0]!.correlationId);
+    expect(postedCommands[1]!.payload).toEqual(postedCommands[0]!.payload);
+    fireAck(postedCommands[0]!.correlationId, 'accepted');
+    await expect(retry).resolves.toEqual({ status: 'accepted' });
+  });
+
+  it('sends a different move under a new identity', () => {
+    void postReorderTask('task-7', 2);
+    void postReorderTask('task-7', 3);
+
+    expect(postedCommands[1]!.correlationId).not.toBe(postedCommands[0]!.correlationId);
   });
 });

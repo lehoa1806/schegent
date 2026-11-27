@@ -7,6 +7,7 @@
 //   Created / Modified strings  from `createdAt`/`updatedAt` — no comparison, no ordering
 //   the active-version cell     from `activeVersionId` presence — not which version is active
 //   which actions to offer      from `state`             — not whether one would succeed
+//   Restore on a history entry  from `state`, `versions` — never a guess at the draft's entry
 //
 // Formatting epoch milliseconds is not state computation: it is the display
 // concern the store deliberately refused, and no string this module produces is
@@ -26,11 +27,11 @@ import { formatAbsoluteTime } from '../../lib/format';
 export const EM_DASH = '—';
 
 /**
- * The four lifecycle actions (FR-016 – FR-019). `restore` is in the union but
- * never in a row's offer: it belongs to a version in the history panel, and the
- * row is not history.
+ * The three lifecycle actions offered inside the Summary / Inspector panel and
+ * version history (`publish`, `discard-draft`, `restore`). `Deactivate…` lives
+ * exclusively in the editor header `⋯` menu and list row `⋯` menus (Feature 326).
  */
-export type DefinitionRowAction = 'publish' | 'discard-draft' | 'deactivate' | 'restore';
+export type DefinitionRowAction = 'publish' | 'discard-draft' | 'restore';
 
 /**
  * Validity as the host projects it.
@@ -64,6 +65,21 @@ const STATE_BADGE_LABELS: Readonly<Record<DefinitionState, string>> = Object.fre
 });
 
 /**
+ * Each state's status colour, as the sg-core tone class its chip takes: a draft
+ * is work in progress, a published definition is done, and a published one with
+ * unpublished changes on top asks for attention.
+ *
+ * Shared, because two surfaces draw the state chip: every list row
+ * (`DefinitionLifecycleRow`) and the Workflow editor's head, which cannot mount
+ * the row component while the Library list beside it renders the same ids.
+ */
+export const STATE_TONE_CLASSES: Readonly<Record<DefinitionState, string>> = Object.freeze({
+  draft: 's-draft',
+  active: 's-ok',
+  'active-with-draft': 's-warn'
+});
+
+/**
  * The offer matrix from quickstart.md §3, as a table rather than a chain of
  * conditions: a table has one row per state, so a state added to the union
  * without an offer decided for it fails to type-check instead of falling
@@ -72,11 +88,10 @@ const STATE_BADGE_LABELS: Readonly<Record<DefinitionState, string>> = Object.fre
 const STATE_ACTIONS: Readonly<Record<DefinitionState, readonly DefinitionRowAction[]>> =
   Object.freeze({
     draft: Object.freeze<DefinitionRowAction[]>(['publish', 'discard-draft']),
-    active: Object.freeze<DefinitionRowAction[]>(['deactivate']),
+    active: Object.freeze<DefinitionRowAction[]>([]),
     'active-with-draft': Object.freeze<DefinitionRowAction[]>([
       'publish',
-      'discard-draft',
-      'deactivate'
+      'discard-draft'
     ])
   });
 
@@ -107,6 +122,37 @@ const MAX_EPOCH_MS = 8_640_000_000_000_000;
 export function formatDefinitionTimestamp(epochMs: number): string {
   if (!Number.isFinite(epochMs) || Math.abs(epochMs) > MAX_EPOCH_MS) return EM_DASH;
   return formatAbsoluteTime(new Date(epochMs).toISOString());
+}
+
+const RESTORE_ONLY: readonly DefinitionRowAction[] = Object.freeze<DefinitionRowAction[]>([
+  'restore'
+]);
+const NO_ACTIONS: readonly DefinitionRowAction[] = Object.freeze<DefinitionRowAction[]>([]);
+
+/**
+ * What one history entry offers: Restore this version (FR-019), except on an
+ * entry that has nothing to bring back.
+ *
+ * That entry is a Draft's only one. A Draft always holds a draft pointer, and
+ * the pointer always names a retained version, so with one retained the entry is
+ * the draft itself, and restoring it copies the draft onto itself. Every other
+ * entry offers Restore, a never-published one included: an earlier draft, or one
+ * a restore replaced, stays in history to be brought back (feature 100, FR-029b).
+ *
+ * Past that one case the surface cannot tell which entry the draft holds, and
+ * does not guess. The raw pointer is not projected, and the newest entry is not
+ * always the draft: deactivation aims the pointer at the version that was active
+ * without writing an entry (feature 100, FR-024a).
+ */
+export function historyEntryActions(
+  lifecycle: BuilderLifecycle,
+  versionId: string | undefined
+): readonly DefinitionRowAction[] {
+  if (!versionId) return NO_ACTIONS;
+  const { state, versions } = lifecycle;
+  const isTheDraft =
+    state === 'draft' && versions.length === 1 && versions[0].versionId === versionId;
+  return isTheDraft ? NO_ACTIONS : RESTORE_ONLY;
 }
 
 export function deriveDefinitionRowView(lifecycle: BuilderLifecycle): DefinitionRowView {

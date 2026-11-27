@@ -31,49 +31,78 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Launchable } from '../../../lib/snapshot-types';
+import { STATE_SNAPSHOT } from '../../../lib/messages';
+import { snapshotStore } from '../../../lib/snapshot-store.svelte';
+import type { BackendPosture, CapabilityNotice, Launchable } from '../../../lib/snapshot-types';
 import { ANALYSIS, RESEARCH, buildSnapshot, entries, projection } from './launch-fixture';
 
 const launchPipeline = vi.fn();
+const launchWorkflow = vi.fn();
 vi.mock('../../../lib/workflow-run-ipc', () => ({
   continueWorkflow: vi.fn(),
-  launchWorkflow: vi.fn()
+  launchWorkflow: (...args: readonly unknown[]) => launchWorkflow(...args)
 }));
 vi.mock('../../../lib/run-launcher-ipc', () => ({
   launchPipeline: (...args: readonly unknown[]) => launchPipeline(...args)
 }));
 
 // Late import so the surface binds to the stubs above.
-import RunsSurface from '../../RunsSurface.svelte';
+import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 
 afterEach(() => {
   cleanup();
   launchPipeline.mockReset();
+  launchWorkflow.mockReset();
 });
 
-async function selectPipeline() {
-  const view = render(RunsSurface, { snapshot: buildSnapshot() });
-  await fireEvent.click(view.getByTestId('launchable-select-pipeline-analysis-pipeline'));
+// Feature 285 (OD-2, FR-001): the composer lists Workflows only, so the panel's cases select a
+// Workflow that declares its inputs. A declared input carries `required` and `description` into
+// the projection the way a Pipeline port did, and the panel reads both without regard to kind.
+// The projection still offers the Pipeline `ANALYSIS`, which the composer must ignore.
+const DECLARED: Launchable = {
+  ...RESEARCH,
+  description: 'Reads a corpus and writes the findings up.',
+  inputs: [
+    {
+      portId: 'topic',
+      label: 'Topic',
+      type: 'text',
+      required: true,
+      description: 'What to look at.',
+      nodeId: 'node-a'
+    },
+    { portId: 'notes', label: 'Notes', type: 'text', nodeId: 'node-a' }
+  ]
+};
+
+async function selectDeclared(overrides: Parameters<typeof buildSnapshot>[0] = {}) {
+  const view = render(QueueTaskComposer, {
+    snapshot: buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(DECLARED)),
+      ...overrides
+    })
+  });
+  await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
   return view;
 }
 
 describe('the detail panel for a selected definition (FR-007)', () => {
   it('states the description, the input ports, and the active version', async () => {
-    const { getByTestId } = await selectPipeline();
+    const { getByTestId } = await selectDeclared();
     const detail = getByTestId('launchable-detail');
 
-    expect(getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
+    expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
     expect(getByTestId('launchable-detail-description').textContent).toContain(
       'Reads a corpus and writes the findings up.'
     );
-    expect(getByTestId('launchable-detail-version').textContent).toContain('v3');
+    expect(getByTestId('launchable-detail-version').textContent).toContain('v2');
     expect(getByTestId('launchable-detail-port-topic').textContent).toContain('Topic');
     expect(getByTestId('launchable-detail-port-notes').textContent).toContain('Notes');
     expect(detail.textContent).toContain('Reads a corpus');
   });
 
   it('marks the ports the definition declares required by a readable text marker (FR-009)', async () => {
-    const { getByTestId, queryByTestId } = await selectPipeline();
+    const { getByTestId, queryByTestId } = await selectDeclared();
 
     expect(getByTestId('launchable-detail-required-topic').textContent?.toLowerCase()).toContain(
       'required'
@@ -82,7 +111,7 @@ describe('the detail panel for a selected definition (FR-007)', () => {
   });
 
   it('offers no editable field of its own', async () => {
-    const { getByTestId } = await selectPipeline();
+    const { getByTestId } = await selectDeclared();
     const detail = getByTestId('launchable-detail');
 
     expect(detail.querySelectorAll('input, textarea, select')).toHaveLength(0);
@@ -94,15 +123,15 @@ describe('the detail panel for a selected definition (FR-007)', () => {
     // follow the projection, because the run will freeze what the projection now
     // offers and not what the panel happened to capture.
     const republished: Launchable = {
-      ...ANALYSIS,
+      ...DECLARED,
       activeVersionId: 'v4',
-      inputs: [{ portId: 'corpus', label: 'Corpus', type: 'text', required: true }]
+      inputs: [{ portId: 'corpus', label: 'Corpus', type: 'text', required: true, nodeId: 'node-a' }]
     };
-    const { getByTestId, queryByTestId, rerender } = await selectPipeline();
+    const { getByTestId, queryByTestId, rerender } = await selectDeclared();
     expect(getByTestId('launchable-detail-port-topic')).toBeTruthy();
 
     await rerender({
-      snapshot: buildSnapshot({ launchables: projection(entries(republished)) })
+      snapshot: buildSnapshot({ launchables: projection(entries(ANALYSIS), entries(republished)) })
     });
 
     expect(queryByTestId('launchable-detail-port-topic')).toBeNull();
@@ -114,7 +143,7 @@ describe('the detail panel for a selected definition (FR-007)', () => {
     // A Workflow's derived ports carry no requiredness (FR-009), and the panel
     // must not invent one: an unmarked port is "not declared required", which is
     // a different claim from "optional".
-    const { getByTestId, queryByTestId } = render(RunsSurface, { snapshot: buildSnapshot() });
+    const { getByTestId, queryByTestId } = render(QueueTaskComposer, { snapshot: buildSnapshot() });
     await fireEvent.click(getByTestId('launchable-select-workflow-analysis-pipeline'));
 
     expect(getByTestId('launchable-detail-name').textContent).toContain(RESEARCH.name);
@@ -125,48 +154,42 @@ describe('the detail panel for a selected definition (FR-007)', () => {
 });
 
 describe('a window that cannot start work (FR-015)', () => {
-  it('still lists and still selects, but withholds Trigger and says why', async () => {
+  it('still lists and still selects, but withholds the launch form and says why (AC-03)', async () => {
     // Read-only is not a reduced surface. An operator in a second window is
     // usually there to look something up, and hiding the lists would answer a
-    // question they did not ask. What they cannot do is start work — so the one
-    // control that starts work is withheld, and the reason is on screen next to
-    // it rather than left to be inferred from a control that does nothing.
-    const { getByTestId, queryByTestId } = render(RunsSurface, {
-      snapshot: buildSnapshot({ isPrimary: false })
-    });
+    // question they did not ask. What they cannot do is start work — so the
+    // launch form is withheld, and the reason is on screen inside the summary.
+    const { getByTestId, queryByTestId } = await selectDeclared({ isPrimary: false });
 
-    await fireEvent.click(getByTestId('launchable-select-pipeline-analysis-pipeline'));
-
-    expect(getByTestId('launchable-detail-name').textContent).toContain('Analysis Pipeline');
+    expect(getByTestId('launchable-detail-name').textContent).toContain('Research Workflow');
     expect(getByTestId('launchable-detail-port-topic')).toBeTruthy();
-    expect((getByTestId('launchable-detail-trigger') as HTMLButtonElement).disabled).toBe(true);
+    expect(queryByTestId('launchable-detail-trigger')).toBeNull();
     expect(getByTestId('launchable-detail-read-only').textContent).toContain('cannot start runs');
-
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
-    expect(queryByTestId('run-launcher')).toBeNull();
+    expect(queryByTestId('workflow-trigger')).toBeNull();
+    expect(launchWorkflow).not.toHaveBeenCalled();
     expect(launchPipeline).not.toHaveBeenCalled();
   });
 
   it('states nothing about the window when it can start work', async () => {
-    const { queryByTestId } = await selectPipeline();
+    const { queryByTestId } = await selectDeclared();
     expect(queryByTestId('launchable-detail-read-only')).toBeNull();
   });
 });
 
-describe('Trigger and Run are distinct controls (FR-008)', () => {
-  it('opens the form on Trigger without reaching the host', async () => {
-    const { getByTestId, queryByTestId } = await selectPipeline();
-    expect(queryByTestId('run-launcher')).toBeNull();
+describe('Selection and Run are distinct actions (FR-008, FR-R5-F36)', () => {
+  it('opens the compact summary and form on selection without reaching the host (AC-01, AC-05)', async () => {
+    const { getByTestId, queryByTestId } = await selectDeclared();
 
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
-
-    expect(getByTestId('run-launcher')).toBeTruthy();
-    expect(launchPipeline).not.toHaveBeenCalled();
+    expect(queryByTestId('launchable-detail-trigger')).toBeNull();
+    expect(getByTestId('workflow-trigger')).toBeTruthy();
+    const disclosure = getByTestId('launchable-detail-disclosure') as HTMLDetailsElement;
+    expect(disclosure.tagName).toBe('DETAILS');
+    expect(disclosure.open).toBe(false);
+    expect(launchWorkflow).not.toHaveBeenCalled();
   });
 
-  it('presents exactly the selected definition ports in the form, with the required one marked (FR-009)', async () => {
-    const { getByTestId, queryByTestId } = await selectPipeline();
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
+  it('presents the selected definition ports in the form, with the required one marked (FR-009)', async () => {
+    const { getByTestId, queryByTestId } = await selectDeclared();
 
     expect(getByTestId('run-input-topic')).toBeTruthy();
     expect(getByTestId('run-input-notes')).toBeTruthy();
@@ -178,13 +201,196 @@ describe('Trigger and Run are distinct controls (FR-008)', () => {
   });
 
   it('submits only on Run', async () => {
-    launchPipeline.mockResolvedValue({ outcome: 'enqueued', requestId: 'request-9' });
-    const { getByTestId } = await selectPipeline();
-    await fireEvent.click(getByTestId('launchable-detail-trigger'));
+    launchWorkflow.mockResolvedValue({
+      outcome: 'started',
+      connectedRunId: 'connected-run-9',
+      revision: 2,
+      queueItemId: 'queue-item-9'
+    });
+    const { getByTestId } = await selectDeclared();
+    expect(launchWorkflow).not.toHaveBeenCalled();
 
-    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await fireEvent.click(getByTestId('workflow-trigger-submit'));
 
-    expect(launchPipeline).toHaveBeenCalledTimes(1);
-    expect(launchPipeline.mock.calls[0][0]).toMatchObject({ pipelineId: 'analysis-pipeline' });
+    expect(launchWorkflow).toHaveBeenCalledTimes(1);
+    expect(launchWorkflow.mock.calls.at(0)?.at(0)).toMatchObject({
+      workflowId: 'analysis-pipeline',
+      startNodeId: 'node-a'
+    });
+    expect(launchPipeline).not.toHaveBeenCalled();
+  });
+});
+
+// FR-R4-F06 (FR-007; D4; tasks TA8) -- what the panel says about the authority a start will have.
+//
+// `LaunchAuthorityNotice` has its own suite, which feeds it props directly. What that suite cannot
+// show is that THIS panel mounts it and hands it the right three things: the host's postures from
+// the snapshot store, the backends of the entry that is SELECTED (not every backend the host knows),
+// and that entry's capability notices. Each case selects a definition and reads the notice off the
+// real panel. The store is the real one, so a case drives it the way the host does, with a snapshot
+// message, and puts it back afterwards because it is a module singleton.
+describe('what the panel says about the authority a start will have (FR-R4-F06 FR-007)', () => {
+  const CLAUDE_TEXT = 'Host text: Claude runs with your local user authority.';
+  const POSTURES: readonly BackendPosture[] = [
+    { kind: 'claude', containment: 'none', mechanism: 'none', grant: 'granted', notice: CLAUDE_TEXT },
+    {
+      kind: 'codex',
+      containment: 'os-enforced',
+      mechanism: 'codex-sandbox-workspace-write',
+      grant: 'not-required'
+    }
+  ];
+  const CAPABILITY_NOTICES: readonly CapabilityNotice[] = [
+    {
+      phaseName: 'implement',
+      backend: 'codex',
+      outcome: 'residual',
+      text: 'Host text: implement is bounded by tool access.'
+    }
+  ];
+
+  afterEach(() => {
+    snapshotStore.apply({ type: STATE_SNAPSHOT, payload: buildSnapshot() } as never);
+  });
+
+  /** Offers `entry` as the only Workflow, applies the host's postures, and selects it. */
+  async function selectOffered(entry: Launchable) {
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(entry)),
+      backendPostures: POSTURES
+    });
+    snapshotStore.apply({ type: STATE_SNAPSHOT, payload: snapshot } as never);
+    const view = render(QueueTaskComposer, { snapshot });
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+    return view;
+  }
+
+  it('shows the host notice for a definition that runs on a granted uncontained backend', async () => {
+    const { getByTestId } = await selectOffered({ ...RESEARCH, backends: ['claude'] });
+
+    expect(getByTestId('launch-authority-notice-text-claude').textContent).toBe(CLAUDE_TEXT);
+  });
+
+  it('puts the notice above the control that starts the work (AC-05)', async () => {
+    const { getByTestId } = await selectOffered({ ...RESEARCH, backends: ['claude'] });
+
+    const notice = getByTestId('launch-authority-notice');
+    const submit = getByTestId('workflow-trigger-submit');
+    expect(notice.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows nothing for a definition that runs only on a contained backend', async () => {
+    // The postures still carry Claude's notice. A panel that rendered every posture's notice, or read
+    // the window default in place of the entry's own backends, would show it here.
+    const { getByTestId, queryByTestId } = await selectOffered({ ...RESEARCH, backends: ['codex'] });
+
+    expect(getByTestId('workflow-trigger-submit')).toBeTruthy();
+    expect(queryByTestId('launch-authority-notice')).toBeNull();
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
+  });
+
+  it('shows the entry capability notices, even where no posture notice applies', async () => {
+    const { getByTestId, queryByTestId } = await selectOffered({
+      ...RESEARCH,
+      backends: ['codex'],
+      capabilityNotices: CAPABILITY_NOTICES
+    });
+
+    expect(getByTestId('launch-authority-capability-0').textContent).toBe(CAPABILITY_NOTICES.at(0)?.text);
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
+  });
+
+  it('shows declared output ports and resolved run settings on a composable Workflow (FR-R5-F06)', async () => {
+    const composableEntry: Launchable = {
+      ...RESEARCH,
+      inputs: [{ portId: 'topic', label: 'Topic', type: 'text', required: true }],
+      outputs: [{ portId: 'summary', label: 'Summary Report', type: 'markdown', required: true }],
+      runSettings: {
+        maxDurationSeconds: { value: 21_600, origin: 'workspace' },
+        phases: [
+          {
+            phaseName: 'Draft Phase',
+            backend: 'claude',
+            model: { kind: 'backend-default' },
+            effort: { kind: 'backend-default' },
+            idleTimeoutSeconds: { value: 120, origin: 'phase' }
+          }
+        ]
+      }
+    };
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(composableEntry))
+    });
+    const view = render(QueueTaskComposer, { snapshot });
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+
+    expect(view.getByTestId('launchable-detail-required-topic').textContent.toLowerCase()).toContain(
+      'required'
+    );
+    expect(view.getByTestId('launchable-detail-outputs')).toBeTruthy();
+    expect(view.getByTestId('launchable-detail-output-summary').textContent).toContain(
+      'Summary Report'
+    );
+    expect(view.getByTestId('launchable-detail-run-settings').textContent).toContain('Draft Phase');
+  });
+
+  it('lists a Phase once per occurrence when the Workflow reuses it (FR-R5-F06)', async () => {
+    // `collectWorkflowLeafPhases` adds one phase id per occurrence and does not deduplicate, so a
+    // Workflow that reuses a Phase (or calls one child Workflow twice) hands the panel the same
+    // `phaseName` more than once. Keying the rows by that name makes Svelte throw
+    // `each_key_duplicate`, which replaces the whole route.
+    const reusedPhase = {
+      phaseName: 'Verification check phase',
+      backend: 'claude',
+      model: { kind: 'backend-default' },
+      effort: { kind: 'backend-default' },
+      idleTimeoutSeconds: { value: 120, origin: 'phase' }
+    } as const;
+    const reusing: Launchable = {
+      ...RESEARCH,
+      // A Workflow with no declared outputs falls back to the derived ones, one per node, so a child
+      // Workflow called twice contributes the same `portId` under two `nodeId`s.
+      outputs: [
+        { portId: 'verdict', label: 'Verdict', type: 'markdown', nodeId: 'verify-first' },
+        { portId: 'verdict', label: 'Verdict', type: 'markdown', nodeId: 'verify-second' }
+      ],
+      runSettings: {
+        maxDurationSeconds: { value: 21_600, origin: 'workspace' },
+        phases: [reusedPhase, reusedPhase]
+      }
+    };
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(reusing))
+    });
+    const view = render(QueueTaskComposer, { snapshot });
+
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+
+    const settingRows = view.getByTestId('launchable-detail-run-settings').querySelectorAll('li');
+    expect(settingRows).toHaveLength(2);
+    const testIds = Array.from(settingRows, (row) => row.getAttribute('data-testid'));
+    expect(new Set(testIds).size).toBe(2);
+    expect(view.getByTestId('launchable-detail-outputs').querySelectorAll('li')).toHaveLength(2);
+  });
+
+  it('lists an input once per occurrence when the Workflow calls one child twice (FR-R5-F06)', async () => {
+    // A parent that calls one child Workflow twice projects that child's unbound input once per
+    // call, so the same `portId` arrives under two `nodeId`s. Keying the rows by `portId` makes
+    // Svelte throw `each_key_duplicate`, which replaces the whole route.
+    const calling: Launchable = {
+      ...RESEARCH,
+      inputs: [
+        { portId: 'topic', label: 'Topic', type: 'text', nodeId: 'review-first' },
+        { portId: 'topic', label: 'Topic', type: 'text', nodeId: 'review-second' }
+      ]
+    };
+    const snapshot = buildSnapshot({
+      launchables: projection(entries(ANALYSIS), entries(calling))
+    });
+    const view = render(QueueTaskComposer, { snapshot });
+
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+
+    expect(view.getAllByTestId('launchable-detail-port-topic')).toHaveLength(2);
   });
 });

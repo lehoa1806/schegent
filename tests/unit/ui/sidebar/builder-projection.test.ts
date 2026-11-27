@@ -129,10 +129,15 @@ const LIFECYCLE = buildBuilderLifecycleByKind(DEFINITIONS);
 // ---------------------------------------------------------------------------
 // Catalog fixtures: one source record per stored definition, per kind.
 //
-// A draft-only definition has no active body and therefore no resolved row of
-// its own (100 FR-021, `storedRows` skips it). The Builder still lists it — that
-// is US6 — but the row it lists is not produced here, so this table covers the
-// two states a resolver does emit and invariant 0 is asserted over those.
+// A draft-only definition has no active body and therefore no resolved row in
+// `records` (100 FR-021, `storedRows` skips it). It reaches the Builder through
+// `draftOnlyRecords`, which BUG-001 (101) added and which the projection appends to
+// `records` — covered end to end by `builder-lists-unpublished-drafts.test.ts`,
+// where the rows come out of a real snapshot rather than being hand-built.
+//
+// Left empty here on purpose: this table's subject is invariant 0 over the two
+// states a resolver emits into `records`, and a hand-written draft row would
+// assert the projection against a fixture rather than against the store.
 // ---------------------------------------------------------------------------
 
 const RESOLVED: readonly DefinitionSpec[] = [ACTIVE_ONLY, ACTIVE_WITH_DRAFT];
@@ -155,6 +160,7 @@ const phaseRecord = (spec: DefinitionSpec, index: number): PhaseSourceRecord => 
 
 const PHASE_CATALOG: ResolvedPhaseCatalog = {
   records: RESOLVED.map(phaseRecord),
+  draftOnlyRecords: [],
   effective: RESOLVED.map((spec) => phaseDefinition(spec.id)),
   effectivePhaseDefs: [],
   revision: 'rev-phase',
@@ -183,6 +189,7 @@ const pipelineRecord = (spec: DefinitionSpec, index: number): PipelineSourceReco
 
 const PIPELINE_CATALOG: ResolvedPipelineCatalog = {
   records: RESOLVED.map(pipelineRecord),
+  draftOnlyRecords: [],
   effective: RESOLVED.map((spec) => pipelineDefinition(spec.id)),
   effectivePipelineDefs: [],
   revision: 'rev-pipeline',
@@ -221,6 +228,7 @@ const workflowRecord = (spec: DefinitionSpec, index: number): WorkflowSourceReco
 
 const WORKFLOW_CATALOG = {
   records: RESOLVED.map(workflowRecord),
+  draftOnlyRecords: [],
   effective: RESOLVED.map((spec) => workflowDefinition(spec.id)),
   revision: 'rev-workflow',
   warnings: []

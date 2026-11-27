@@ -1,6 +1,37 @@
 import type { AuditEventType, CatalogLifecyclePayload } from '../contracts/audit-events';
+import { AuditPayloadValidationError } from './audit-payload-error';
+import {
+  ACP_RECORDABLE_PHASE_END_WARNINGS,
+  projectExecutableTargetAndPosture,
+  projectRecordableWarnings
+} from './audit-payload-acp-vocab';
+import { projectEvidenceExported } from './evidence-lifecycle-payload';
+import { projectAgentConfigAckPayload } from './agent-config-ack-payload';
+import { projectStoreBackupRestorePayload } from './store-backup-restore-payload';
+import {
+  projectScannerConsentChangedPayload,
+  projectTelemetryCredentialChangedPayload
+} from './operator-security-audit-payload';
 import { CATALOG_KINDS, type CatalogKind } from '../contracts/catalog-store';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../contracts/backend-kinds';
+import {
+  findBackendDescriptor,
+  type AuditPermissionMode
+} from '../contracts/backend-descriptors';
+import type { ContainmentPosture, ExecutableTargetId } from '../contracts/containment-qualification';
+
+export type { AuditPermissionMode };
+import { isCompletionProvenance } from '../contracts/completion-provenance';
+import { isFailureCause } from '../contracts/failure-cause';
+import { type CostBaselineMarker, costBaselineOf } from '../contracts/usage-accounting/cost-baseline';
+import {
+  CHAIN_VERIFIED_CONDITION,
+  CHECKPOINT_PRIOR_STATUSES,
+  CHECKPOINT_REANCHORED_CONDITION,
+  DAMAGE_DIGEST_ALG,
+  HISTORY_RESET_CONDITION,
+  INTEGRITY_CONDITION_VERSION
+} from '../contracts/audit-integrity-condition';
 
 export const AUDIT_PAYLOAD_MAX_BYTES = 32 * 1024;
 export const AUDIT_PAYLOAD_MAX_STRING_LENGTH = 640;
@@ -19,15 +50,47 @@ export const AUDIT_PAYLOAD_MAX_ARRAY_LENGTH = 100;
  */
 export const AUDIT_PAYLOAD_TRUNCATION_MARKER = '...';
 
-export type AuditPermissionMode =
-  | 'read-only'
-  | 'workspace-write'
-  | 'unrestricted';
+/**
+ * Feature 194 — the one code-resident, safe member of `payload.cause`'s
+ * two-member published vocabulary (`specs/010-pipeline-resilience/contracts/
+ * audit-events.md` §"phase-end — new payload.cause field"). The other member
+ * is CLI-derived fatal-signature text, deliberately excluded — see
+ * `projectPhaseEnd()` below. Exported so every consumer that needs to
+ * recognize "the safe cause value" (this file's own projection, and
+ * `src/services/audit-export/counts-only-export.ts`'s counts-only export) compares against the
+ * same literal instead of each re-typing it.
+ */
+export const CAP_EXHAUSTED_CAUSE = 'cap_exhausted';
+
+/**
+ * Feature 212 (FR-004) — the attempt was refused BEFORE any child process
+ * existed. Two refusals are in this class today, both deliberate and both raised
+ * from inside `PhaseRunner`'s try: `UncontainedBackendRefusedError`
+ * (`src/runner/backend-runner-factory.ts:142`) and `CapabilityNotEnforceableError`
+ * (`src/runner/claude-cli.ts:230`).
+ *
+ * Safe to project for the same reason `CAP_EXHAUSTED_CAUSE` is: a code-resident
+ * literal carrying no CLI- or model-derived content, matched by identity against
+ * this constant rather than passed through from `payload.cause`. Hard rule 23
+ * holds unchanged.
+ *
+ * ONE SPELLING. This same string is the `TerminationReason` member
+ * (`src/state/workflow-run.ts`), deliberately unlike the `cap_exhausted` /
+ * `cap-exhausted` split recorded in `projectPhaseEnd()`'s `terminationReason`
+ * note below (`:654-656`).
+ */
+export const PRE_SPAWN_REFUSAL_CAUSE = 'pre_spawn_refusal';
 
 export interface CliInvocationPayloadV3 {
   readonly runner: BackendRunnerKind;
-  readonly operation: 'phase' | 'session-compaction' | 'probe';
+  readonly operation: 'phase' | 'native-review' | 'session-compaction' | 'probe';
   readonly permissionMode: AuditPermissionMode;
+  /** FR-R8-02 (02-02): closed logical executable identity (e.g. `'codex-security'`), never a path. */
+  readonly executableTarget?: ExecutableTargetId;
+  /** FR-R8-02 (02-02): closed containment posture decided by spawn admission. */
+  readonly containmentPosture?: ContainmentPosture;
+  /** FR-R8-03 (03-02): optional phase-start attempt UUID correlating child identity/permission with phase-end. */
+  readonly attemptId?: string;
   readonly continued: boolean;
   readonly sessionReused: boolean;
   readonly modelId?: string;
@@ -35,19 +98,142 @@ export interface CliInvocationPayloadV3 {
   readonly diagnosticsEnabled: boolean;
 }
 
+/**
+ * Every value a producer can put on a `phase-end` record's `outcome`.
+ *
+ * THE PROJECTION RUNS ON THE WRITE PATH (`audit-log-writer.ts`), so a value missing from
+ * this set is not merely displayed wrongly — it never reaches the log. The set held five
+ * members while the producers emitted nine, and six of the nine were absent:
+ * `issues_remain`, `rate_limited`, `transient_error`, `skipped` and `paused-at-breakpoint`
+ * from `PhaseOutcome`, plus `deadline`, which `phase-runner.ts` writes directly on the
+ * deadline-exceeded arm. All six were rewritten to `malformed` before the line was
+ * serialized, permanently. In the workspace this was found in, 7 of 11 `phase-end` records
+ * read `malformed` — including a `speckit-implement` that finished 109 of 109 tasks with
+ * 398 unit tests passing and reported so in its own sidecar.
+ *
+ * Two members are unreachable from any producer and are kept anyway. `mapOutcome` never
+ * returns `'malformed'` — it is the resolution for a value from outside this set, and the
+ * meaning it carries on a historical record is "the projection did not recognize what was
+ * written". Nothing anywhere emits the hyphenated `'rate-limited'`. Dropping either would
+ * break a log written before this change, which the warn-and-preserve discipline forbids.
+ *
+ * ADDITIVE — `AUDIT_SCHEMA_VERSION` does NOT bump, following the 028 / 030 / 031 / 032
+ * precedent recorded at the top of `src/contracts/audit-events.ts` and cited for
+ * `verdictBasis` below. Widening a closed union's accepted set adds records a reader could
+ * not previously see; it invalidates none.
+ *
+ * Not imported from `PhaseOutcome`: the audit set is deliberately a superset (it carries
+ * `deadline` and the two legacy spellings, none of which are `PhaseOutcome` members), and
+ * deriving it would tie a durable on-disk vocabulary to a controller type that is free to
+ * change. The parity between them is asserted in `audit-payload-v3.test.ts` instead.
+ */
+export const PHASE_END_OUTCOMES = [
+  'clean',
+  'issues_remain',
+  'failed',
+  'rate_limited',
+  'timeout',
+  'transient_error',
+  'skipped',
+  'paused-at-breakpoint',
+  'incomplete_turn',
+  'deadline',
+  // Legacy, unreachable from any producer; see the docblock above.
+  'rate-limited',
+  'malformed'
+] as const;
+
+export type PhaseEndOutcome = (typeof PHASE_END_OUTCOMES)[number];
+
+const PHASE_END_OUTCOME_SET: ReadonlySet<string> = new Set(PHASE_END_OUTCOMES);
+
 export interface PhaseEndPayloadV3 {
-  readonly outcome: 'clean' | 'failed' | 'timeout' | 'rate-limited' | 'malformed';
+  readonly outcome: PhaseEndOutcome;
+  /**
+   * FR-R3-117 — WHICH BASIS judged this Phase: the process's exit status, or the
+   * model's own account of its work.
+   *
+   * Evidence could previously say a Phase advanced, but not on what authority. That
+   * mattered little while `exit-code` was opt-in and rare; it matters now that it is
+   * the default for any Phase whose claims are load-bearing, because the two are
+   * different strengths of statement and a reader auditing a Run cannot otherwise
+   * tell which one they have.
+   *
+   * ADDITIVE — `AUDIT_SCHEMA_VERSION` does NOT bump, following the 028 / 030 / 031 /
+   * 032 precedent recorded at the top of `src/contracts/audit-events.ts`. Absent on
+   * every record written before this feature, which is exactly what absence should
+   * mean: the basis was not recorded, rather than the basis was self-report.
+   */
+  readonly verdictBasis?: 'exit-code' | 'model-token';
   readonly exitCode: number | null;
   readonly terminationReason: string;
+  /**
+   * Feature 194 (FR-001 through FR-004) — `specs/010-pipeline-resilience/contracts/
+   * audit-events.md` §"phase-end — new payload.cause field". The published contract
+   * names a two-member vocabulary (a redacted fatal-signature string, or the literal
+   * `cap_exhausted`); only `cap_exhausted` is projected here. The fatal-signature
+   * member is CLI-derived text and is deliberately excluded from this payload for the
+   * same reason `RECORDABLE_PHASE_END_WARNINGS` excludes matched fatal signatures —
+   * see `projectPhaseEnd`. Absent means the consumer should read this as a generic
+   * phase failure. Distinct from `terminationReason`, which stays present on every
+   * record and is never widened by this field.
+   */
+  readonly cause?: typeof CAP_EXHAUSTED_CAUSE | typeof PRE_SPAWN_REFUSAL_CAUSE;
+  /**
+   * Feature 212 (FR-002) — the `phase-start` row's own `AuditEntry.id`, which is
+   * what pairs this terminal record with the attempt that opened it.
+   *
+   * No new identifier scheme: the writer already mints a `randomUUID()` per row
+   * (`src/audit/audit-log-writer.ts:317`) and `appendAudit` already returns it;
+   * before this feature the caller simply discarded it. `(runId, phase,
+   * iteration)` is NOT a substitute — the retained logs hold one such triple
+   * covering four distinct attempts — and neither is ordinal position, which
+   * mis-pairs precisely when a record is missing (FR-003).
+   *
+   * Absent on every row written before this feature.
+   */
+  readonly attemptId?: string;
+  /**
+   * Feature 212 (FR-005, FR-014) — whether the backend's end-of-invocation
+   * envelope was received. A SEPARATE FIELD, not a cause value: cause and
+   * envelope-presence are orthogonal, and "deadline with a result" must stay
+   * distinguishable from "deadline with none".
+   *
+   * Omitted rather than defaulted when unknown, following the `verdictBasis`
+   * rule below — defaulting would assert something nobody recorded.
+   */
+  readonly resultEnvelope?: 'received' | 'absent';
+  /**
+   * FR-R6-F06 (FR-006, research R3) — what the parser did with the session baseline when it
+   * read the cost in `metrics.totalCostUsd`. A closed three-member set, outside `metrics`
+   * because `metrics` holds numbers only. Omitted when absent or unrecognised, like
+   * `resultEnvelope`: a cost with no marker reads as unattributed.
+   */
+  readonly costBaseline?: CostBaselineMarker;
   readonly metrics: Readonly<Record<string, number>>;
-  readonly fileChangeCounts: Readonly<{
+  /**
+   * Feature 212 (FR-008, FR-009) — OPTIONAL as of this feature, and the three
+   * count fields below move as one group.
+   *
+   * They were built unconditionally from `countArray`, which yields `0` for an
+   * absent input, so "the phase demonstrably changed nothing" and "the audit
+   * block was never parsed" were recorded identically. Present means the block
+   * was parsed; absent means the counts are unknown.
+   *
+   * `omittedToolEvidenceCount` is in this group because it is FR-009's COMMAND
+   * count (`countArray(payload.commandsExecuted)`): a zero there reads as
+   * "demonstrably ran no commands", the same false statement the file counts
+   * make. `toolCategoryCounts` is deliberately NOT in it — `projectMetrics` of
+   * an absent value returns `{}`, an empty map rather than a counted zero.
+   */
+  readonly fileChangeCounts?: Readonly<{
     created: number;
     modified: number;
     deleted: number;
   }>;
   readonly toolCategoryCounts: Readonly<Record<string, number>>;
-  readonly omittedFileEvidenceCount: number;
-  readonly omittedToolEvidenceCount: number;
+  readonly omittedFileEvidenceCount?: number;
+  readonly omittedToolEvidenceCount?: number;
   /**
    * Diagnostic codes, drawn from `RECORDABLE_PHASE_END_WARNINGS`, that
    * explain the recorded `outcome`.
@@ -99,21 +285,61 @@ export interface MonitorInvocationSummaryPayloadV3 {
   readonly firstOutputAt: string | null;
   readonly lastOutputAt: string | null;
   readonly detectedIssues: ReadonlyArray<string>;
+  /** FR-R8-03 (03-02): optional phase-start attempt UUID for metadata-only correlation. */
+  readonly attemptId?: string;
+  /** FR-R8-03 (03-02): optional peak retained stream bytes observed for this invocation. */
+  readonly streamHighWaterBytes?: number;
+  /** FR-R8-03 (03-02): optional total raw stream bytes observed across stdout/stderr. */
+  readonly streamObservedBytes?: number;
+  /** Peak unconsumed/pending stream bytes observed under ACP backpressure. */
+  readonly streamPendingHighWaterBytes?: number;
+  /** FR-R8-03 (03-02): optional flag recording whether bounded stream retention truncated output. */
+  readonly streamTruncated?: boolean;
 }
 
 export interface MetricsViewOpenedPayloadV3 {
-  /** Ephemeral UI-session correlation identifier; never a backend conversation ID. */
-  readonly sessionId: string;
+  /**
+   * Ephemeral UI-session correlation identifier; never a backend conversation ID. Not named
+   * `sessionId`: since FR-R5-F14 the sanitizer redacts that key as a session cookie, and the
+   * writer refuses a payload its sanitizer changes as `secret-detected`.
+   */
+  readonly viewCorrelationId: string;
 }
 
-export class AuditPayloadValidationError extends Error {
-  constructor(public readonly reasonCode: string) {
-    super(`audit payload rejected: ${reasonCode}`);
-    this.name = 'AuditPayloadValidationError';
-  }
-}
+// FR-R4-F04 — the class lives in `audit-payload-error.ts` so a sibling projector can throw it without
+// importing this file; re-exported here, it is the same class and every existing import is unchanged.
+export { AuditPayloadValidationError };
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
+
+// The one key the audit pipeline cannot carry, dropped rather than rejected.
+//
+// `AuditLogWriter.append()` writes only when the sanitized and the projected
+// payloads stringify identically, and reports any difference as `secret-detected`
+// — the one signal on the evidence surface an operator must be able to trust.
+// `SanitizedLogger.sanitizeValue()` builds its result with `out[key] = cleaned` on
+// a `{}` literal, and for this name alone that invokes `Object.prototype`'s
+// inherited SETTER instead of defining a property, silently discarding a number.
+// So a projection that emits this key makes the two sides disagree on every such
+// payload, and turns an ordinary metric into a run-ending false secret alarm.
+//
+// DROPPED, not rejected, and the distinction is the whole point: throwing
+// `invalid-key` here would trade a false `secret-detected` for an equally fatal
+// `invalid-metric-key`, and the run dies either way. Dropping is the only
+// disposition under which the two sides agree and the append succeeds.
+//
+// Safe only because `RESERVED_METRIC_KEYS` drops the same name at the parser, so
+// it can never become a judged figure and no `stalled` count is ever computed
+// from a metric this projection omits. Removing either half reopens the defect —
+// removing this one revives the crash, removing that one lets `stalled` be
+// persisted beside a `metrics` object its own figure has vanished from.
+//
+// `__proto__` is the only name with this problem: every other inherited
+// `Object.prototype` member (`constructor`, `toString`, `valueOf`, …) is a data
+// property, so a plain assignment shadows it with an own property and both sides
+// already agree.
+const PROTOTYPE_SETTER_KEY = '__proto__';
+const CLI_VERSION_AUDIT_RE = /^\d{1,6}\.\d{1,6}(?:\.\d{1,6})?$/;
 const PATH_OR_ENDPOINT_RE = /(?:^~?[\\/]|^[A-Za-z]:[\\/]|[a-z][a-z0-9+.-]*:\/\/|[\\/](?:Users|home|var|tmp|private|workspace|workspaces)[\\/])/i;
 const OMITTED_KEYS = new Set([
   'args',
@@ -197,13 +423,22 @@ function projectValue(value: unknown, depth: number): unknown {
       .map((item) => projectValue(item, depth + 1));
   }
   if (value && typeof value === 'object') {
-    const projected: Record<string, unknown> = {};
+    // `Object.fromEntries`, not `projected[key] = …` on a `{}` literal. The plain
+    // assignment is not merely different for `__proto__`, it is different for any
+    // future inherited accessor, and `fromEntries` uses CreateDataProperty so the
+    // construction cannot be steered by the prototype chain at all. `KEY_RE` admits
+    // `__proto__` (it is `[A-Za-z_]` then word characters), so that one name is
+    // skipped explicitly below — see `PROTOTYPE_SETTER_KEY` for why carrying it
+    // would abort the run with a false `secret-detected`.
+    const entries: [string, unknown][] = [];
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       if (!KEY_RE.test(key)) throw new AuditPayloadValidationError('invalid-key');
-      if (OMITTED_KEYS.has(key) || child === undefined) continue;
-      projected[key] = projectValue(child, depth + 1);
+      if (OMITTED_KEYS.has(key) || key === PROTOTYPE_SETTER_KEY || child === undefined) continue;
+      // FR-R7-16 (16-15): admit `cliVersion`/`qualifiedCliVersion` only when strictly dotted-numeric.
+      if ((key === 'cliVersion' || key === 'qualifiedCliVersion') && (typeof child !== 'string' || !CLI_VERSION_AUDIT_RE.test(child))) continue;
+      entries.push([key, projectValue(child, depth + 1)]);
     }
-    return projected;
+    return Object.fromEntries(entries);
   }
   throw new AuditPayloadValidationError('unsupported-value');
 }
@@ -230,37 +465,49 @@ function countArray(value: unknown): number {
 
 function projectMetrics(value: unknown): Readonly<Record<string, number>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return Object.freeze({});
-  const metrics: Record<string, number> = {};
+  // Entries then `Object.fromEntries`, and the `PROTOTYPE_SETTER_KEY` skip, both for
+  // the reasons `projectValue()`'s object branch gives. The skip precedes the value
+  // check on purpose: a `__proto__` figure is dropped whatever its value, so a
+  // non-numeric one cannot reach `invalid-metric-value` and turn a key this pipeline
+  // refuses to carry into a second way to abort the run.
+  const entries: [string, number][] = [];
   for (const [key, metric] of Object.entries(value as Record<string, unknown>)) {
     if (!KEY_RE.test(key)) throw new AuditPayloadValidationError('invalid-metric-key');
+    if (key === PROTOTYPE_SETTER_KEY) continue;
     if (typeof metric !== 'number' || !Number.isFinite(metric)) {
       throw new AuditPayloadValidationError('invalid-metric-value');
     }
-    metrics[key] = metric;
+    entries.push([key, metric]);
   }
-  return Object.freeze(metrics);
+  return Object.freeze(Object.fromEntries(entries));
+}
+
+function projectAttemptId(value: unknown): string | undefined {
+  return typeof value === 'string' && ATTEMPT_ID_RE.test(value) ? value : undefined;
 }
 
 function projectCliInvocation(payload: Record<string, unknown>): CliInvocationPayloadV3 {
-  const runner = stringValue(payload.runner, 'claude');
-  if (!['claude', 'codex', 'agy'].includes(runner)) {
+  const runner = stringValue(payload.runner, DEFAULT_BACKEND);
+  const descriptor = findBackendDescriptor(runner);
+  if (descriptor === undefined) {
     throw new AuditPayloadValidationError('invalid-runner');
   }
   const operation = stringValue(payload.operation, 'phase');
-  if (!['phase', 'session-compaction', 'probe'].includes(operation)) {
+  if (!['phase', 'native-review', 'session-compaction', 'probe'].includes(operation)) {
     throw new AuditPayloadValidationError('invalid-operation');
   }
-  const permissionMode = stringValue(
-    payload.permissionMode,
-    runner === 'codex' ? 'workspace-write' : 'unrestricted'
-  );
+  const permissionMode = stringValue(payload.permissionMode, descriptor.defaultAuditPermissionMode);
   if (!['read-only', 'workspace-write', 'unrestricted'].includes(permissionMode)) {
     throw new AuditPayloadValidationError('invalid-permission-mode');
   }
+  const targetPosture = projectExecutableTargetAndPosture(payload, descriptor.kind, permissionMode);
+  const attemptId = projectAttemptId(payload.attemptId);
   return Object.freeze({
-    runner: runner as BackendRunnerKind,
+    runner: descriptor.kind,
     operation: operation as CliInvocationPayloadV3['operation'],
     permissionMode: permissionMode as AuditPermissionMode,
+    ...targetPosture,
+    ...(attemptId !== undefined ? { attemptId } : {}),
     continued: booleanValue(payload.continued ?? payload.isContinue),
     sessionReused: booleanValue(payload.sessionReused ?? payload.sessionReuse),
     ...(typeof (payload.modelId ?? payload.model) === 'string'
@@ -298,65 +545,205 @@ export const RECORDABLE_PHASE_END_WARNINGS: ReadonlySet<string> = new Set([
   '[constitution] unterminated audit log',
   // src/parser/stdout-parser.ts
   '[constitution] multiple contract blocks',
-  '[constitution] missing audit log on clean response'
+  '[constitution] missing audit log on clean response',
+  // FR-R3-086 follow-up (S12) — the same two absences at `best-effort` volume.
+  // Recordable for the same reason the two above are: a warning the payload
+  // cannot name degrades to `omittedWarningCount`, and an absence of evidence
+  // that is recorded as "something was warned about" is exactly the record this
+  // round keeps finding too weak to act on.
+  '[evidence] audit log absent, best-effort',
+  '[evidence] audit log absent on clean response, best-effort',
+  // src/controller/phase-runner.ts — FR-R3-047 (H-04). Without this code the
+  // record would say `outcome: 'failed'` / `terminationReason: 'error'` with no
+  // stated cause, which is the exact shape that made a real 2026-08-16 failure
+  // undiagnosable from the audit alone. The closed `TerminationReason` union
+  // lives in the audit contract and is persisted in run state, so the cause
+  // travels here rather than as a new union member.
+  'stdin-delivery-failed',
+  // src/controller/phase-runner.ts — FR-R3-058 (M-07). Reachable, unlike the
+  // FR-R3-050 marker that was deliberately NOT added here: the phase runner puts
+  // this code in the `warnings` array the phase-end projection reads, the same
+  // route `stdin-delivery-failed` takes. Without it the record would say
+  // `outcome: 'failed'` / `terminationReason: 'error'` with the cause dropped --
+  // the exact shape that made the 2026-08-16 failure undiagnosable.
+  'host-verification-failed',
+  // src/parser/stdout-parser.ts — FR-R3-198. Which fact made the turn unfinished,
+  // so an `outcome: 'incomplete_turn'` record names its cause. The parser splices
+  // in a member of the closed `IncompleteTurnCause`, never output text, and both
+  // codes are listed whole, not accepted by their prefix.
+  'incomplete-turn:background-work-open',
+  'incomplete-turn:no-contract-block',
+  // src/services/evidence-health/evidence-health-monitor.ts — FR-R3-080 (T1076).
+  // One code per evidence sink, enumerated rather than pattern-matched, because
+  // an allowlist that accepts a PREFIX accepts whatever a caller appends to it —
+  // and the thing a sink would most plausibly append is the path it refused.
+  //
+  // Enumerated as a set rather than added one at a time: SEC-06 and SEC-07 name
+  // three sinks between them, and the two that are not named can refuse for the
+  // same reason the moment they are migrated. Adding them when they refuse would
+  // mean discovering the gap from a silent decline, which is the failure this
+  // item exists to remove.
+  'evidence-path-refused:audit',
+  'evidence-path-refused:rawTranscript',
+  'evidence-path-refused:runtimeLog',
+  'evidence-path-refused:metricsRollup',
+  'evidence-path-refused:historyPointer',
+  'evidence-path-refused:auditCheckpoint',
+  'evidence-path-refused:transport',
+  'evidence-path-refused:verboseDiagnostics',
+  ...ACP_RECORDABLE_PHASE_END_WARNINGS
 ]);
 
-interface ProjectedWarnings {
-  readonly recorded: ReadonlyArray<string>;
-  readonly omitted: number;
-}
+const projectPhaseEndWarnings = (value: unknown) =>
+  projectRecordableWarnings(value, RECORDABLE_PHASE_END_WARNINGS);
 
-function projectPhaseEndWarnings(value: unknown): ProjectedWarnings {
-  if (!Array.isArray(value)) return { recorded: [], omitted: 0 };
-  const recorded: string[] = [];
-  let omitted = 0;
-  for (const entry of value) {
-    if (typeof entry === 'string' && RECORDABLE_PHASE_END_WARNINGS.has(entry)) {
-      if (!recorded.includes(entry)) recorded.push(entry);
-      continue;
-    }
-    omitted += 1;
-  }
-  return { recorded: Object.freeze(recorded), omitted };
-}
+/**
+ * The attempt identifier in the only shape anything mints one: the
+ * `randomUUID()` in src/audit/audit-log-writer.ts that stamps every
+ * `AuditEntry.id`.
+ *
+ * Admitted by shape rather than by type and length for the reason
+ * `CLOSED_CAUSE_TOKEN` exists in src/services/audit-export/counts-only-export.ts -- a path has a
+ * separator and a dot (AGENTS.md rule 22) -- and because `projectPhaseEnd` is a
+ * bespoke projector: it builds its result field by field and so never runs the
+ * `PATH_OR_ENDPOINT_RE` pass the generic projection applies to residual
+ * strings. A length bound alone would let any 64-character string through that
+ * gap and onto disk.
+ *
+ * Nothing can reach here with a non-UUID today: both producers pass the
+ * writer-minted `entry.id`, and `PhaseAttempt.close` sets the field AFTER
+ * spreading the caller's payload, so no caller can replace it. This keeps that
+ * true if a second producer ever appears.
+ */
+export const ATTEMPT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function projectPhaseEnd(payload: Record<string, unknown>): PhaseEndPayloadV3 {
   const rawOutcome = stringValue(payload.outcome, 'malformed');
-  const outcome = ['clean', 'failed', 'timeout', 'rate-limited', 'malformed'].includes(rawOutcome)
-    ? rawOutcome
-    : 'malformed';
-  const explicitMetrics = projectMetrics(payload.metrics);
-  const legacyMetrics: Record<string, number> = { ...explicitMetrics };
-  for (const key of [
-    'durationMs',
-    'cliDurationMs',
-    'numTurns',
-    'totalCostUsd',
-    'inputTokens',
-    'outputTokens',
-    'cacheCreationInputTokens',
-    'cacheReadInputTokens'
-  ]) {
+  // `malformed` is the resolution for a value from outside the vocabulary, not the default
+  // for most of it — see `PHASE_END_OUTCOMES`.
+  const outcome: PhaseEndOutcome = PHASE_END_OUTCOME_SET.has(rawOutcome) ? (rawOutcome as PhaseEndOutcome) : 'malformed';
+  const legacyMetrics: Record<string, number> = { ...projectMetrics(payload.metrics) };
+  for (const key of ['durationMs', 'cliDurationMs', 'numTurns', 'totalCostUsd', 'inputTokens', 'outputTokens', 'cacheCreationInputTokens', 'cacheReadInputTokens', 'streamHighWaterBytes', 'streamObservedBytes', 'streamPendingHighWaterBytes']) {
     const value = payload[key];
     if (typeof value === 'number' && Number.isFinite(value)) legacyMetrics[key] = value;
   }
-  const created = countArray(payload.filesCreated ?? payload.files_created);
-  const modified = countArray(payload.filesModified ?? payload.files_modified);
-  const deleted = countArray(payload.filesDeleted ?? payload.files_deleted);
-  const omittedTools = countArray(payload.commandsExecuted ?? payload.commands_executed);
+  const rawCreated = payload.filesCreated ?? payload.files_created;
+  const rawModified = payload.filesModified ?? payload.files_modified;
+  const rawDeleted = payload.filesDeleted ?? payload.files_deleted;
+  const rawCommands = payload.commandsExecuted ?? payload.commands_executed;
+  const [created, modified, deleted, omittedTools] = [rawCreated, rawModified, rawDeleted, rawCommands].map(countArray) as [number, number, number, number];
+  // Feature 212 (FR-008, FR-009) — WAS THE AUDIT BLOCK PARSED AT ALL?
+  //
+  // `countArray` yields 0 for an absent value, so the four counts below recorded
+  // "the phase demonstrably changed nothing" and "we never read the block" as the
+  // same `{0, 0, 0}` / `0`. A terminated phase that had in fact written files
+  // therefore reported that it had done nothing.
+  //
+  // The distinguishing fact is already in hand: a parsed block yields ARRAYS —
+  // empty ones when nothing happened — and an unparsed one yields nothing at all.
+  // So presence of any one array is the evidence, and the three derived counts are
+  // emitted or omitted together on it. Absent then means UNKNOWN (FR-014), which
+  // is the only honest reading of a block nobody read.
+  //
+  // ANY one, NOT all four, and the difference is not defensive slack. The
+  // argument used to be that no writer emitted four — `auditEvidenceFields()`
+  // forwarded three and never `files_deleted`, so `.every()` was unsatisfiable
+  // in production. FR-R3-171 closed that omission and the writer now emits all
+  // four, which removes the old argument without touching the conclusion.
+  //
+  // The real reason `.some()` is correct is that there is no middle state. A
+  // parsed block yields ARRAYS — empty ones when nothing happened — and an
+  // unparsed one yields NO ARRAYS AT ALL, never a partial set. So any one array
+  // is already conclusive evidence that the block was read, and demanding four
+  // buys nothing against the case this predicate exists to separate while
+  // costing the counts on every payload that carries a subset: an audit record
+  // written by an older build, a hand-constructed one, any future writer that
+  // forwards less than the full set. Each of those WAS read, and `.every()`
+  // would record it as unread.
+  //
+  // Pinned by `audit-payload-v3.test.ts` §"reads the shape the writer ACTUALLY
+  // emits", which asserts the writer's four-key shape AND a partial one — the
+  // partial case is what kills the `.every()` mutant now that the four-key
+  // shape no longer can.
+  const auditBlockParsed = [rawCreated, rawModified, rawDeleted, rawCommands].some(Array.isArray);
   const warnings = projectPhaseEndWarnings(payload.warnings);
+  // Feature 212 (FR-002) — the `phase-start` row's `AuditEntry.id`, shape-checked against `ATTEMPT_ID_RE`.
+  const attemptId = projectAttemptId(payload.attemptId);
+  const rawResultEnvelope = payload.resultEnvelope;
+  const resultEnvelope = rawResultEnvelope === 'received' || rawResultEnvelope === 'absent' ? rawResultEnvelope : undefined;
+  const costBaseline = costBaselineOf(payload.costBaseline);
+  const rawBasis = payload.verdictBasis;
+  const verdictBasis = rawBasis === 'exit-code' || rawBasis === 'model-token' ? rawBasis : undefined;
+  // Feature 194 (FR-001 through FR-004) — `specs/010-pipeline-resilience/contracts/
+  // audit-events.md` §"phase-end — new payload.cause field" has specified this field, and
+  // its two-member vocabulary (a redacted fatal-signature string, or the literal
+  // `cap_exhausted`), since feature 010. Neither member ever reached the projected record:
+  // the emitter wrote `cause` on the raw payload, but this function had no field for it, so
+  // it was silently dropped before the audit log was ever written.
+  //
+  // This closes the gap for `cap_exhausted` ONLY — a fixed, code-resident literal with no
+  // CLI- or model-derived content. It deliberately does NOT become a passthrough for
+  // whatever string the emitter puts in `payload.cause`: the fatal-signature member is
+  // matched text from CLI stderr (see `phase-runner.ts` fatal-signature classification),
+  // and this file's own `RECORDABLE_PHASE_END_WARNINGS` docblock records the reason that
+  // kind of content is deliberately excluded from `phase-end` — "the runner's warning list
+  // also carries matched fatal signatures and parser messages that interpolate model
+  // output, and `phase-end` deliberately records neither." Persisting the fatal-signature
+  // text here would be the same leak by a different field. FR-004 requires this feature not
+  // to widen the field's value set; scoping the fix to the one safe, closed-vocabulary
+  // member is how that holds for the fatal-signature member too, rather than merely by
+  // omission.
+  //
+  // Feature 212 (FR-004) adds a second member on exactly the same terms: matched by
+  // IDENTITY against an exported constant, never by passing `payload.cause` through.
+  // Widening the match to a passthrough would reopen the fatal-signature leak this
+  // paragraph exists to keep closed.
+  const cause =
+    payload.cause === CAP_EXHAUSTED_CAUSE
+      ? CAP_EXHAUSTED_CAUSE
+      : payload.cause === PRE_SPAWN_REFUSAL_CAUSE
+        ? PRE_SPAWN_REFUSAL_CAUSE
+        : undefined;
   return Object.freeze({
-    outcome: outcome as PhaseEndPayloadV3['outcome'],
+    outcome,
+    ...(verdictBasis !== undefined ? { verdictBasis } : {}),
+    ...(attemptId !== undefined ? { attemptId } : {}),
+    ...(resultEnvelope !== undefined ? { resultEnvelope } : {}),
     exitCode: payload.exitCode === null ? null : numberValue(payload.exitCode, 0),
+    // No `?? payload.cause` arm. It was there to reach a stated cause when
+    // `terminationReason` and `reason` were both absent, and it made this
+    // function's own redaction conditional on the caller: hand a payload with a
+    // fatal-signature `cause` and no `terminationReason`, and the text stripped
+    // one line above reappeared here under a different key. Reading the PROJECTED
+    // `cause` instead closed the leak and opened a smaller hole — the projected
+    // value is the underscore form `cap_exhausted`, while `terminationReason`'s
+    // vocabulary spells it `cap-exhausted`, so the arm could only ever write a
+    // second spelling of a classification consumers group on. Dropped outright:
+    // both live emitters write `terminationReason` unconditionally beside `cause`
+    // (`phase-runner.ts`'s ordinary path and its `appendCapExhaustedPhaseEnd()`),
+    // so no real record loses anything, and a hand-built payload carrying only
+    // a cause gets the outcome — what the field means when nothing stated one.
     terminationReason: boundedMetadataString(
-      payload.terminationReason ?? payload.reason ?? payload.cause,
+      payload.terminationReason ?? payload.reason,
       outcome
     ),
+    ...(cause !== undefined ? { cause } : {}),
+    ...(costBaseline !== null ? { costBaseline } : {}),
     metrics: Object.freeze(legacyMetrics),
-    fileChangeCounts: Object.freeze({ created, modified, deleted }),
+    ...(auditBlockParsed
+      ? { fileChangeCounts: Object.freeze({ created, modified, deleted }) }
+      : {}),
     toolCategoryCounts: projectMetrics(payload.toolCategoryCounts),
-    omittedFileEvidenceCount: created + modified + deleted,
-    omittedToolEvidenceCount: omittedTools,
+    // All three on one predicate — see `auditBlockParsed`. `omittedToolEvidenceCount`
+    // is FR-009's COMMAND count, and its zero makes the same false claim the file
+    // counts do. `toolCategoryCounts` above stays unconditional: an empty map already
+    // reads as "nothing recorded" rather than as a counted zero.
+    ...(auditBlockParsed
+      ? {
+        omittedFileEvidenceCount: created + modified + deleted,
+        omittedToolEvidenceCount: omittedTools
+      }
+      : {}),
     ...(warnings.recorded.length > 0 ? { warnings: warnings.recorded } : {}),
     ...(warnings.omitted > 0 ? { omittedWarningCount: warnings.omitted } : {})
   });
@@ -383,32 +770,35 @@ function projectActivityStamp(value: unknown): string | null {
   return typeof value === 'string' && ISO_INSTANT_RE.test(value) ? value : null;
 }
 
-function projectMonitorInvocationSummary(
-  payload: Record<string, unknown>
-): MonitorInvocationSummaryPayloadV3 {
+function nonNegativeIntOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function projectMonitorInvocationSummary(payload: Record<string, unknown>): MonitorInvocationSummaryPayloadV3 {
   const issues = Array.isArray(payload.detectedIssues) ? payload.detectedIssues : [];
-  if (issues.length > AUDIT_PAYLOAD_MAX_ARRAY_LENGTH) {
-    throw new AuditPayloadValidationError('array-too-long');
-  }
+  if (issues.length > AUDIT_PAYLOAD_MAX_ARRAY_LENGTH) throw new AuditPayloadValidationError('array-too-long');
+  const attemptId = projectAttemptId(payload.attemptId);
+  const streamHighWaterBytes = nonNegativeIntOrUndefined(payload.streamHighWaterBytes);
+  const streamObservedBytes = nonNegativeIntOrUndefined(payload.streamObservedBytes);
+  const streamPendingHighWaterBytes = nonNegativeIntOrUndefined(payload.streamPendingHighWaterBytes);
+  const streamTruncated = typeof payload.streamTruncated === 'boolean' ? payload.streamTruncated : undefined;
   return Object.freeze({
     status: boundedMetadataString(payload.status, 'unknown'),
     durationMs: numberValue(payload.durationMs),
-    exitCode:
-      payload.exitCode === null || payload.exitCode === undefined
-        ? null
-        : numberValue(payload.exitCode, 0),
-    signal: typeof payload.signal === 'string'
-      ? boundedMetadataString(payload.signal, 'unknown')
-      : null,
+    exitCode: payload.exitCode === null || payload.exitCode === undefined ? null : numberValue(payload.exitCode, 0),
+    signal: typeof payload.signal === 'string' ? boundedMetadataString(payload.signal, 'unknown') : null,
     stdoutLines: numberValue(payload.stdoutLines),
     stderrLines: numberValue(payload.stderrLines),
     firstOutputAt: projectActivityStamp(payload.firstOutputAt),
     lastOutputAt: projectActivityStamp(payload.lastOutputAt),
     detectedIssues: Object.freeze(
-      issues
-        .filter((issue): issue is string => typeof issue === 'string')
-        .map((issue) => boundedMetadataString(issue, 'unknown'))
-    )
+      issues.filter((issue): issue is string => typeof issue === 'string').map((issue) => boundedMetadataString(issue, 'unknown'))
+    ),
+    ...(attemptId !== undefined ? { attemptId } : {}),
+    ...(streamHighWaterBytes !== undefined ? { streamHighWaterBytes } : {}),
+    ...(streamObservedBytes !== undefined ? { streamObservedBytes } : {}),
+    ...(streamPendingHighWaterBytes !== undefined ? { streamPendingHighWaterBytes } : {}),
+    ...(streamTruncated !== undefined ? { streamTruncated } : {})
   });
 }
 
@@ -444,7 +834,10 @@ const CATALOG_VERSION_ID_RE = /^v[1-9][0-9]*$/;
  */
 function projectCatalogLifecycle(payload: Record<string, unknown>): CatalogLifecyclePayload {
   const resourceKind = payload.resourceKind;
-  if (typeof resourceKind !== 'string' || !CATALOG_KINDS.includes(resourceKind as CatalogKind)) {
+  if (
+    typeof resourceKind !== 'string' ||
+    (!(CATALOG_KINDS as readonly string[]).includes(resourceKind) && resourceKind !== 'pipeline')
+  ) {
     throw new AuditPayloadValidationError('invalid-catalog-kind');
   }
   const resourceId = payload.resourceId;
@@ -468,10 +861,142 @@ function projectCatalogLifecycle(payload: Record<string, unknown>): CatalogLifec
 function projectMetricsViewOpened(
   payload: Record<string, unknown>
 ): MetricsViewOpenedPayloadV3 {
-  if (typeof payload.sessionId !== 'string' || payload.sessionId.length === 0) {
+  const id = payload.viewCorrelationId;
+  if (typeof id !== 'string' || id.length === 0) {
     throw new AuditPayloadValidationError('invalid-metrics-session-id');
   }
-  return Object.freeze({ sessionId: projectValue(payload.sessionId, 0) as string });
+  return Object.freeze({ viewCorrelationId: projectValue(id, 0) as string });
+}
+
+/**
+ * FR-R4-F14 (feature 242, contract E3, FR-023) — `task-execution-ended`: every key is projected as the
+ * generic arm projects it, and `failureCause` is admitted by IDENTITY against the closed vocabulary.
+ *
+ * The key is taken out BEFORE the generic projection and put back only when `isFailureCause` accepts
+ * it. Projecting it first would let a hostile value do harm even though it is dropped afterwards: a
+ * fatal-signature text that looks like a path would make `projectValue` refuse the whole entry, and
+ * one that survived would be written as a string. A value that is not a member is dropped as a
+ * FIELD, never rewritten, so no text a signature or an agent produced can reach disk through it.
+ * The other keys come out exactly as before, and `lastErrorSummary` is still dropped by
+ * `OMITTED_KEYS`. `phase-end` is not touched (clarification Q1): it keeps its own two causes.
+ */
+function projectTaskExecutionEnded(payload: Record<string, unknown>): Record<string, unknown> {
+  const { failureCause, ...rest } = payload;
+  const projected = projectValue(rest, 0) as Record<string, unknown>;
+  return isFailureCause(failureCause) ? { ...projected, failureCause } : projected;
+}
+
+/** A value the admission test below accepts: `null` for "not attested", or a vocabulary member. */
+function isAdmittedProvenance(value: unknown): boolean {
+  return value === null || isCompletionProvenance(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * FR-R4-F16 (feature 244, contract P3, FR-003) — `task-removed`: every key is projected as the generic
+ * arm projects it, and `completionProvenance` is admitted by IDENTITY, in BOTH places the handler
+ * writes it: the payload's own key and `stateTransition.newState`, which copies the payload.
+ *
+ * Each copy is taken out BEFORE the generic projection and put back only when it is `null` or a
+ * vocabulary member, judged on its own value. For the same reason as `projectTaskExecutionEnded`: a
+ * stored value that looks like a path would otherwise make `projectValue` refuse the whole entry, and
+ * the removal's audit line would be lost instead of the field. A refused value is absent as a key,
+ * never rewritten to `null` or to anything else, and never costs the entry. The caller's objects are
+ * never mutated: the key is removed from copies.
+ */
+function projectTaskRemoved(payload: Record<string, unknown>): Record<string, unknown> {
+  const { completionProvenance, ...withoutTop } = payload;
+  const transition = withoutTop.stateTransition;
+  const newState = isPlainRecord(transition) ? transition.newState : undefined;
+  const nestedPresent = isPlainRecord(newState);
+  const { completionProvenance: nestedProvenance, ...newStateWithout } = nestedPresent
+    ? newState
+    : ({} as Record<string, unknown>);
+  const input =
+    nestedPresent && isPlainRecord(transition)
+      ? { ...withoutTop, stateTransition: { ...transition, newState: newStateWithout } }
+      : withoutTop;
+
+  const projected = projectValue(input, 0) as Record<string, unknown>;
+  const withTop = isAdmittedProvenance(completionProvenance)
+    ? { ...projected, completionProvenance }
+    : projected;
+  const projectedTransition = withTop.stateTransition;
+  if (!nestedPresent || !isAdmittedProvenance(nestedProvenance) || !isPlainRecord(projectedTransition)) {
+    return withTop;
+  }
+  const projectedNewState = projectedTransition.newState;
+  if (!isPlainRecord(projectedNewState)) return withTop;
+  return {
+    ...withTop,
+    stateTransition: {
+      ...projectedTransition,
+      newState: { ...projectedNewState, completionProvenance: nestedProvenance }
+    }
+  };
+}
+
+const DAMAGE_DIGEST_RE = /^[0-9a-f]{64}$/;
+
+function integrityCount(value: unknown, minimum: number): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= minimum) return value;
+  throw new AuditPayloadValidationError('invalid-integrity-condition-field');
+}
+
+/**
+ * FR-R4-F03 (data-model §2) — `audit-integrity-condition`: a known condition is built field by
+ * field, so `file` (a key the generic arm drops) survives and every other key is dropped. A `file`
+ * that is a path, or a field of the wrong type, refuses the entry. An unknown condition or version
+ * goes through the generic arm: preserved (hard rule 5), never read as a diagnosis.
+ */
+function projectIntegrityCondition(payload: Record<string, unknown>): Record<string, unknown> {
+  const { condition, conditionVersion, file, digest, digestAlg } = payload;
+  const known = conditionVersion === INTEGRITY_CONDITION_VERSION;
+  if (known && condition === HISTORY_RESET_CONDITION) {
+    const retired = [integrityCount(payload.retiredPosition, 0), integrityCount(payload.retiredAtMs, 0)];
+    return { condition, conditionVersion, retiredPosition: retired[0], retiredAtMs: retired[1] };
+  }
+  if (known && condition === CHAIN_VERIFIED_CONDITION) {
+    const entries = integrityCount(payload.entries, 0);
+    const cuts = integrityCount(payload.cuts, 0);
+    return { condition, conditionVersion, entries, cuts };
+  }
+  if (known && condition === CHECKPOINT_REANCHORED_CONDITION) {
+    const priorStatus = payload.priorStatus;
+    if (
+      typeof priorStatus !== 'string' ||
+      !(CHECKPOINT_PRIOR_STATUSES as readonly string[]).includes(priorStatus)
+    ) {
+      throw new AuditPayloadValidationError('invalid-integrity-condition-field');
+    }
+    const priorPosition =
+      payload.priorPosition === undefined ? undefined : integrityCount(payload.priorPosition, 0);
+    const newPosition = integrityCount(payload.newPosition, 1);
+    const reanchoredAtMs = integrityCount(payload.reanchoredAtMs, 0);
+    return {
+      condition,
+      conditionVersion,
+      priorStatus,
+      ...(priorPosition !== undefined ? { priorPosition } : {}),
+      newPosition,
+      reanchoredAtMs
+    };
+  }
+  if (!known || condition !== 'damaged-tail') return projectValue(payload, 0) as Record<string, unknown>;
+  if (typeof file !== 'string' || file.length === 0 || /[\\/]/.test(file)
+    || file.length > AUDIT_PAYLOAD_MAX_STRING_LENGTH || digestAlg !== DAMAGE_DIGEST_ALG
+    || typeof digest !== 'string' || !DAMAGE_DIGEST_RE.test(digest)) {
+    throw new AuditPayloadValidationError('invalid-integrity-condition-field');
+  }
+  const [line, byteOffset, byteLength] = [
+    integrityCount(payload.line, 1),
+    integrityCount(payload.byteOffset, 0),
+    integrityCount(payload.byteLength, 0)
+  ];
+  return { condition, conditionVersion, file, line, byteOffset, byteLength, digestAlg, digest };
 }
 
 /**
@@ -492,12 +1017,29 @@ export function projectAuditPayload(
     projected = projectMonitorInvocationSummary(payload) as unknown as Record<string, unknown>;
   } else if (eventType === 'metrics-view-opened') {
     projected = projectMetricsViewOpened(payload) as unknown as Record<string, unknown>;
+  } else if (eventType === 'task-execution-ended') {
+    projected = projectTaskExecutionEnded(payload);
+  } else if (eventType === 'task-removed') {
+    projected = projectTaskRemoved(payload);
+  } else if (eventType === 'audit-integrity-condition') {
+    projected = projectIntegrityCondition(payload);
   } else if (
     eventType === 'definition-published' ||
     eventType === 'definition-deactivated' ||
     eventType === 'definition-restored'
   ) {
     projected = projectCatalogLifecycle(payload) as unknown as Record<string, unknown>;
+  } else if (eventType === 'evidence-exported') {
+    // FR-R4-F04 (E2) — closed: no key a caller adds can reach the log, and no path can be represented.
+    projected = { ...projectEvidenceExported(payload) };
+  } else if (eventType === 'agent-config-acknowledged') {
+    projected = { ...projectAgentConfigAckPayload(payload) };
+  } else if (eventType === 'store-backup' || eventType === 'store-restore') {
+    projected = { ...projectStoreBackupRestorePayload(payload, eventType) };
+  } else if (eventType === 'scanner-consent-changed') {
+    projected = { ...projectScannerConsentChangedPayload(payload) };
+  } else if (eventType === 'telemetry-credential-changed') {
+    projected = { ...projectTelemetryCredentialChangedPayload(payload) };
   } else {
     projected = projectValue(payload, 0) as Record<string, unknown>;
   }

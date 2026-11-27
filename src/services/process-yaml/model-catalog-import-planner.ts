@@ -14,10 +14,14 @@
 // `modelsConfigFromGroups` (`../config/model-catalog.ts`) already drop empty
 // ids the same way, so this is the established convention, not a new one.
 
-import { isBackendRunnerKind, type BackendRunnerKind } from '../../runner/backend-runner-factory';
+import { isBackendRunnerKind } from '../../contracts/backend-kinds';
+import {
+  mapBackends,
+  type BackendMap
+} from '../../contracts/backend-descriptors';
 import type { ImportPlanRow, ModelCatalogYamlDocument } from './types';
 
-type ModelsConfig = Record<BackendRunnerKind, readonly string[]>;
+type ModelsConfig = BackendMap<readonly string[]>;
 
 /**
  * `currentModelsConfig` is the catalog the plan is computed against — the
@@ -29,11 +33,7 @@ export function planModelCatalogImport(
   document: ModelCatalogYamlDocument,
   currentModelsConfig: ModelsConfig
 ): ImportPlanRow[] {
-  const seenByBackend: Record<BackendRunnerKind, Set<string>> = {
-    claude: new Set(currentModelsConfig.claude),
-    codex: new Set(currentModelsConfig.codex),
-    agy: new Set(currentModelsConfig.agy)
-  };
+  const seenByBackend = mapBackends((descriptor) => new Set(currentModelsConfig[descriptor.kind]));
 
   const rows: ImportPlanRow[] = [];
   for (const group of document.groups) {

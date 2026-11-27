@@ -27,10 +27,12 @@
 // `RunDriver` would spawn a CLI to answer a question the gate already settled.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { WorkspaceStateStore, KEYS, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
-import { findQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { findQueue } from '../../../src/queue/queue-registry';
 import type { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import type { FeatureRequest } from '../../../src/queue/feature-request';
 
@@ -77,7 +79,9 @@ async function makeHarness(memento: FakeMemento = new FakeMemento()): Promise<Ha
     admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
     get liveRunCount(): number {
       return liveRuns;
-    }
+    },
+    // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session; a double holds none.
+    holdsSession: () => false
   };
 
   const autoDrain = new AutoDrainCoordinator({
@@ -88,9 +92,14 @@ async function makeHarness(memento: FakeMemento = new FakeMemento()): Promise<Ha
     // only gate this file is entitled to attribute a refusal to is step 2.
     executionLease: {
       tryAcquire: async () => ({ acquired: true, ownerId: 'this-window' }),
-      release: () => {}
+      release: () => {},
+      // FR-R3-077 — no lease record behind this double, so no claim to give. The
+      // store's commit points record that as `lease-not-held` rather than
+      // pretending to a fence this double never had.
+      claimFor: () => null
     },
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {
@@ -155,7 +164,7 @@ describe('FR-R3-011 — cascade versus operator precedence on the single value',
     await h.queue.cascadedResume(DEFAULT_QUEUE_ID);
 
     expect(h.pauseOf().lifecycle).not.toBe('operator-paused');
-    expect(h.pauseOf().source).toBeNull();
+    expect(h.pauseOf().source).toBeNull(); // 2026-09-06 coincidental: the queue's pause state, not a queue-paused event payload
     expect(h.projectedPauseOf()).toEqual({ state: 'active', source: null });
   });
 
@@ -285,7 +294,8 @@ describe('FR-R3-011 — one write, so there is nothing left to reconcile', () =>
         },
         result: undefined
       }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
 
     const reopened = await makeHarness(h.memento);

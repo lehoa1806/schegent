@@ -62,14 +62,13 @@ const CAPS = {
 const CORRELATION = 'package-hygiene-1';
 
 function packageDocument(body: readonly string[]): string {
-  return ['apiVersion: schegent/v1', 'kind: Pipeline', ...body, ''].join('\n');
+  return ['apiVersion: schegent/v1', 'kind: Workflow', ...body, ''].join('\n');
 }
 
 /**
  * One package that reaches four of the five row shapes at once: the root
- * imports, one included Phase imports, one is already held so it skips, and one
- * is invalid. `blocked` needs a root whose reference resolves nowhere, so it has
- * its own document below.
+ * is blocked, one included Phase imports, one is already held so it skips, and one
+ * is invalid.
  */
 const MIXED_PACKAGE = packageDocument([
   'metadata:',
@@ -77,10 +76,18 @@ const MIXED_PACKAGE = packageDocument([
   '  name: Ship It',
   '  version: 3',
   'spec:',
-  '  phaseIds:',
-  '    - specify',
-  '    - held',
-  '    - broken',
+  '  nodes:',
+  '    - nodeId: n1',
+  '      kind: phase',
+  '      phaseId: specify',
+  '    - nodeId: n2',
+  '      kind: phase',
+  '      phaseId: held',
+  '    - nodeId: n3',
+  '      kind: phase',
+  '      phaseId: broken',
+  '  startNodeIds:',
+  '    - n1',
   'included:',
   '  phases:',
   '    - metadata:',
@@ -113,9 +120,15 @@ const BLOCKED_PACKAGE = packageDocument([
   '  name: Ship It',
   '  version: 3',
   'spec:',
-  '  phaseIds:',
-  '    - specify',
-  '    - absent-phase',
+  '  nodes:',
+  '    - nodeId: n1',
+  '      kind: phase',
+  '      phaseId: specify',
+  '    - nodeId: n2',
+  '      kind: phase',
+  '      phaseId: absent-phase',
+  '  startNodeIds:',
+  '    - n1',
   'included:',
   '  phases:',
   '    - metadata:',
@@ -175,7 +188,7 @@ async function preflight(opts: PreflightOptions): Promise<PreflightRun> {
       // id still produces a `skip` row below. Only the number of lists it scans
       // collapsed.
       readPhaseConfig: () => ({ rows: opts.phases ?? [], revision: STORE_REVISION }),
-      readPipelineConfig: () => ({ rows: [], revision: STORE_REVISION }),
+      readWorkflowConfig: () => ({ rows: [], revision: STORE_REVISION }),
       openProcessYamlDocument: async () => ({
         outcome: 'read' as const,
         bytes: new Uint8Array(Buffer.from(opts.text, 'utf8'))
@@ -524,8 +537,12 @@ describe('Feature 086 T051 — a capability-gated field is gated on presence, ne
     '  name: Retryer',
     '  version: 1',
     'spec:',
-    '  phaseIds:',
-    '    - flaky',
+    '  nodes:',
+    '    - nodeId: n1',
+    '      kind: phase',
+    '      phaseId: flaky',
+    '  startNodeIds:',
+    '    - n1',
     'included:',
     '  phases:',
     '    - metadata:',
@@ -545,7 +562,6 @@ describe('Feature 086 T051 — a capability-gated field is gated on presence, ne
     'src/services/process-yaml/scalar-style.ts',
     'src/services/process-yaml/phase-yaml-validator.ts',
     'src/services/process-yaml/phase-yaml-mapper.ts',
-    'src/services/process-yaml/pipeline-document.ts',
     'src/services/process-yaml/workflow-document.ts',
     'src/services/process-yaml/package-reader.ts',
     'src/services/process-yaml/package-resolver.ts',
@@ -580,8 +596,12 @@ describe('Feature 086 T051 — a capability-gated field is gated on presence, ne
           '  name: Retryer',
           '  version: 1',
           'spec:',
-          '  phaseIds:',
-          '    - flaky',
+          '  nodes:',
+          '    - nodeId: n1',
+          '      kind: phase',
+          '      phaseId: flaky',
+          '  startNodeIds:',
+          '    - n1',
           'included:',
           '  phases:',
           '    - metadata:',
@@ -594,8 +614,8 @@ describe('Feature 086 T051 — a capability-gated field is gated on presence, ne
         ])
       });
       const row = rowFor(plan, 'flaky');
-      // The flag is a Phase-row field and only a Phase-row field — a Pipeline or
-      // Workflow row has no `retryCondition` to gate — so the narrowing is on
+      // The flag is a Phase-row field and only a Phase-row field — a Workflow
+      // row has no `retryCondition` to gate — so the narrowing is on
       // the kind as well as the outcome, not a cast past it.
       if (row.outcome !== 'import' || row.resourceKind !== 'phase') {
         throw new Error('unreachable');
@@ -624,8 +644,12 @@ describe('Feature 086 T051 — a capability-gated field is gated on presence, ne
         '  name: Retryer',
         '  version: 1',
         'spec:',
-        '  phaseIds:',
-        '    - flaky',
+        '  nodes:',
+        '    - nodeId: n1',
+        '      kind: phase',
+        '      phaseId: flaky',
+        '  startNodeIds:',
+        '    - n1',
         'included:',
         '  phases:',
         '    - metadata:',
@@ -691,18 +715,23 @@ describe('Feature 086 T051 — importing infers no execution behavior (FR-053)',
     'spec:',
     '  nodes:',
     '    - nodeId: draft',
-    '      pipelineId: spec-authoring',
+    '      kind: workflow',
+    '      workflowId: spec-authoring',
     '  startNodeIds:',
     '    - draft',
     'included:',
-    '  pipelines:',
+    '  workflows:',
     '    - metadata:',
     '        id: spec-authoring',
     '        name: Spec Authoring',
     '        version: 1',
     '      spec:',
-    '        phaseIds:',
-    '          - specify',
+    '        nodes:',
+    '          - nodeId: specify-node',
+    '            kind: phase',
+    '            phaseId: specify',
+    '        startNodeIds:',
+    '          - specify-node',
     '  phases:',
     '    - metadata:',
     '        phaseId: specify',
@@ -713,7 +742,15 @@ describe('Feature 086 T051 — importing infers no execution behavior (FR-053)',
     ''
   ].join('\n');
 
-  /** Fields and calls that would mean a run had been inferred. */
+  /**
+   * Fields and calls that would mean a run had been inferred.
+   *
+   * FR-R3-161 (T047) — `queueRemover` names a router capability the product no
+   * longer has. It stays: this is a forbidden-token list scanned over the plan,
+   * so an entry that cannot match costs nothing and dropping one would leave the
+   * gate strictly weaker than it is today. It now reads as a guard against the
+   * key being reintroduced into a plan rather than as a reference to live code.
+   */
   const EXECUTION = [
     'WorkflowRun',
     'enqueue',
@@ -786,29 +823,63 @@ describe('Feature 086 T051 — importing infers no execution behavior (FR-053)',
 // opinion over the VALUES, where a whitelist has nothing to say.
 describe('Feature 086 T070 — a Workflow document carries the definition and nothing else', () => {
   const HYGIENE_PHASES = Object.freeze([
-    { phaseId: 'draft', name: 'Draft', version: 1, instruction: 'Run Draft.' },
-    { phaseId: 'review', name: 'Review', version: 1, instruction: 'Run Review.' }
+    {
+      phaseId: 'draft',
+      name: 'Draft',
+      version: 1,
+      instruction: 'Run Draft.'
+    },
+    {
+      phaseId: 'review',
+      name: 'Review',
+      version: 1,
+      instruction: 'Run Review.'
+    }
   ]);
 
-  const HYGIENE_PIPELINES = Object.freeze([
+  const HYGIENE_CHILD_WORKFLOWS = Object.freeze([
     {
-      pipelineId: 'spec-authoring',
+      workflowId: 'spec-authoring',
       name: 'Spec Authoring',
       version: 1,
-      phaseIds: Object.freeze(['draft']),
-      inputs: Object.freeze([{ portId: 'brief', label: 'Brief', type: 'text' }]),
+      inputs: Object.freeze([{ portId: 'brief', label: 'Brief', type: 'text', required: false }]),
       outputs: Object.freeze([{ portId: 'spec-document', label: 'Spec', type: 'markdown' }]),
-      bindings: Object.freeze([]),
+      nodes: Object.freeze([{ nodeId: 'draft-node', kind: 'phase', phaseId: 'draft' }]),
+      connections: Object.freeze([]),
+      bindings: Object.freeze([
+        {
+          kind: 'output',
+          nodeId: 'draft-node',
+          portId: 'spec-document',
+          outputKey: 'spec-document'
+        }
+      ]),
+      startNodeIds: Object.freeze(['draft-node']),
       recommendedNext: Object.freeze([])
     },
     {
-      pipelineId: 'spec-review',
+      workflowId: 'spec-review',
       name: 'Spec Review',
       version: 1,
-      phaseIds: Object.freeze(['review']),
       inputs: Object.freeze([{ portId: 'spec', label: 'Spec', type: 'text' }]),
       outputs: Object.freeze([{ portId: 'verdict', label: 'Verdict', type: 'markdown' }]),
-      bindings: Object.freeze([]),
+      nodes: Object.freeze([{ nodeId: 'review-node', kind: 'phase', phaseId: 'review' }]),
+      connections: Object.freeze([]),
+      bindings: Object.freeze([
+        {
+          kind: 'input',
+          nodeId: 'review-node',
+          inputKey: 'spec',
+          source: { from: 'workflow-input', portId: 'spec' }
+        },
+        {
+          kind: 'output',
+          nodeId: 'review-node',
+          portId: 'verdict',
+          outputKey: 'verdict'
+        }
+      ]),
+      startNodeIds: Object.freeze(['review-node']),
       recommendedNext: Object.freeze([])
     }
   ]);
@@ -820,13 +891,13 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
     description: 'Draft, then review.',
     version: 4,
     nodes: Object.freeze([
-      { nodeId: 'draft', pipelineId: 'spec-authoring', label: 'Draft the spec' },
-      { nodeId: 'review', pipelineId: 'spec-review' }
+      { nodeId: 'draft', kind: 'workflow', workflowId: 'spec-authoring', label: 'Draft the spec' },
+      { nodeId: 'review', kind: 'workflow', workflowId: 'spec-review' }
     ]),
     connections: Object.freeze([
       {
         from: { nodeId: 'draft', portId: 'spec-document' },
-        to: { nodeId: 'review', portId: 'spec' },
+        to: { kind: 'node', nodeId: 'review', portId: 'spec' },
         condition: {
           left: { source: 'node-status', nodeId: 'draft' },
           operator: 'in',
@@ -834,6 +905,14 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
         },
         priority: 10,
         isDefault: false
+      }
+    ]),
+    bindings: Object.freeze([
+      {
+        kind: 'input',
+        nodeId: 'review',
+        inputKey: 'spec',
+        source: { from: 'node-output', nodeId: 'draft', portId: 'spec-document' }
       }
     ]),
     startNodeIds: Object.freeze(['draft'])
@@ -931,8 +1010,10 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
 
     const ctx = {
       deps: {
-        readWorkflowConfig: () => ({ rows: [HYGIENE_WORKFLOW], revision: STORE_REVISION }),
-        readPipelineConfig: () => ({ rows: HYGIENE_PIPELINES, revision: STORE_REVISION }),
+        readWorkflowConfig: () => ({
+          rows: [HYGIENE_WORKFLOW, ...HYGIENE_CHILD_WORKFLOWS],
+          revision: STORE_REVISION
+        }),
         readPhaseConfig: () => ({ rows: HYGIENE_PHASES, revision: STORE_REVISION }),
         saveProcessYamlDocument: async (request: { readonly text: string }) => {
           saved.push(request.text);
@@ -982,7 +1063,7 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
     // and the derived vocabulary must have found the serializer's orders. Either
     // one empty would satisfy the subset check trivially.
     expect(keys).toContain('nodes');
-    expect(keys).toContain('pipelines');
+    expect(keys).toContain('workflows');
     expect(keys).toContain('instruction');
     expect(keys.length).toBeGreaterThan(15);
     expect(SCHEMA_KEYS.size).toBeGreaterThan(keys.length);
@@ -1000,19 +1081,63 @@ describe('Feature 086 T070 — a Workflow document carries the definition and no
     expect(documentKeys(planted).filter((key) => !SCHEMA_KEYS.has(key))).toEqual(['sessionId']);
   });
 
+  /**
+   * Schema keys whose leak-word match is a known false positive, each with its reason.
+   *
+   * A DECLARATION, not a hole. `LEAK_WORDS` matches substrings, which is what gives it reach over
+   * names nobody predicted — and the cost is that an ordinary word inside a legitimate field name
+   * matches too. An entry here is a claim about one key, asserted below to actually be in the
+   * schema, so it cannot be used to pre-authorise a key that does not exist yet.
+   */
+  const LEAK_WORD_EXEMPT_KEYS: Readonly<Record<string, string>> = {
+    spendboundtokens:
+      'FR-R3-112 — the per-phase spend bound denominated in MODEL USAGE tokens, which is the ' +
+      'unit `codex` and `agy` report. The leak word `token` guards against credential tokens; ' +
+      'this is a number of tokens consumed, and the field carries a bound an operator authored',
+    session:
+      'FR-R6-F15 — authored Workflow connection `contextPolicy.session` policy enum (`fresh` or ' +
+      '`reuse-if-compatible`), declaring whether a downstream node requires a fresh ACP session; ' +
+      'never a runtime or provider session identifier',
+    sourcenodepath:
+      'FR-R6-F15 — authored Workflow connection `contextPolicy` graph node selector naming an ' +
+      'upstream node path within the Workflow definition graph, never a host or workspace ' +
+      'filesystem path'
+  };
+
   it('declares no leak-shaped key in the schema itself (FR-060, SC-019)', () => {
     // The whitelist above widens with the serializer, so the denylist runs over the
     // serializer's names as well. Widening the schema is then not a way to make a
     // session id or a path legal — it fails here instead.
     const offenders = [...SCHEMA_KEYS]
       .map((key) => key.toLowerCase())
-      .filter((key) => LEAK_WORDS.some((word) => key.includes(word)));
+      .filter((key) => LEAK_WORDS.some((word) => key.includes(word)))
+      .filter((key) => !(key in LEAK_WORD_EXEMPT_KEYS));
     expect(offenders).toEqual([]);
+  });
+
+  it('exempts no key that is not in the schema, and gives each a reason', () => {
+    // The other direction, so an exemption cannot outlive the key it excuses or stand in for a
+    // key that was never declared.
+    const schemaKeys = new Set([...SCHEMA_KEYS].map((key) => key.toLowerCase()));
+    for (const [key, reason] of Object.entries(LEAK_WORD_EXEMPT_KEYS)) {
+      expect(schemaKeys.has(key), `${key} is exempted but is not a schema key`).toBe(true);
+      expect(
+        LEAK_WORDS.some((word) => key.includes(word)),
+        `${key} is exempted from a match it does not have`
+      ).toBe(true);
+      expect(reason.length, `${key} needs a real reason`).toBeGreaterThan(60);
+    }
   });
 
   it('leaks nothing through a value either (FR-024, FR-060)', async () => {
     const { text } = await exportClosure();
-    const haystack = text.toLowerCase();
+    // KEY NAMES ARE STRIPPED before the scan, because this case is about VALUES. A document that
+    // legitimately declares `spendBoundTokens:` would otherwise fail a scan for the word `token`
+    // on the strength of its own schema — measuring the schema rather than the data, which the
+    // case above already does properly and with a reasoned exemption list.
+    const haystack = text
+      .replace(/^ *(?:- )?[A-Za-z][\w-]*:/gm, '')
+      .toLowerCase();
     expect(LEAK_WORDS.filter((word) => haystack.includes(word))).toEqual([]);
     // And the one installation-state value this path is handed by name. The list
     // above is a denylist of words someone thought of; the store revision is a

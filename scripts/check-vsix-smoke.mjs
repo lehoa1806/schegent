@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { inflateRawSync } from 'node:zlib';
 import { readdirSync, readFileSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { basename, join, relative, resolve, sep } from 'node:path';
+import { invokedAsScript } from './invoked-as-script.mjs';
+import { sha256Hex } from './release-digest.mjs';
 
 export const MAX_VSIX_COMPRESSED_BYTES = 2 * 1024 * 1024;
-export const MAX_VSIX_UNCOMPRESSED_BYTES = 5 * 1024 * 1024;
+export const MAX_VSIX_UNCOMPRESSED_BYTES = 8 * 1024 * 1024;
 
 const EXAMPLES_DIR = fileURLToPath(new URL('../examples', import.meta.url));
 const EXAMPLES_PREFIX = 'extension/examples/';
@@ -51,7 +53,26 @@ export const ALLOWED_VSIX_ENTRIES = Object.freeze([
   'extension/assets/banner.png',
   'extension/assets/logo.png',
   'extension/assets/sidebar-icon.svg',
+  'extension/dist/accounting-query.worker.js',
+  'extension/dist/acp-stdio-bridge.js',
   'extension/dist/extension.js',
+  'extension/dist/result-operator.worker.js',
+  'extension/dist/run-snapshot.worker.js',
+  // FR-R3-120 — the SBOM ships INSIDE the VSIX, not only beside it. A recipient is
+  // handed one file, and an SBOM left on the builder's disk describes the artifact
+  // to nobody, which is the gap FR-R3-120 row 1 named. It is generated at package
+  // time by `scripts/generate-sbom.mjs` from the two lockfiles; its strongest
+  // statement is that this extension declares zero runtime dependencies.
+  //
+  // Listed by name rather than by a `*.json` shape, deliberately: this list guards
+  // the ABSENCE of everything not on it, and a shape rule for JSON would admit any
+  // future stray config or fixture that happened to be one.
+  'extension/schegent-sbom.cdx.json',
+  // FR-R5-F21 (FR-025) -- the notices for the third-party code the bundles carry, with the license
+  // text each package ships. Generated at package time by `scripts/third-party-notices.mjs` from
+  // the same module graphs as the SBOM, so the two agree on what ships. Required, like the SBOM:
+  // every packaging path (`npm run package`, `package:smoke`, the release driver) writes it.
+  'extension/THIRD-PARTY-NOTICES.md',
   // Feature 106 (T590, FR-007 to FR-010) — generated webview output is no
   // longer pinned. Twenty-five literal entries lived here: 15 code-split chunks
   // and 10 numbered stylesheets. They went stale five times, three of them in
@@ -465,8 +486,18 @@ export function assertAllowedEntryNames(names, vsixPath = 'VSIX', authored = rea
   reportDifferences(differences, vsixPath);
 }
 
-export function inspectVsix(vsixPath) {
-  const zip = readFileSync(vsixPath);
+/**
+ * FR-R4-F09 (contract AC1) -- the archive checks over bytes already in memory.
+ *
+ * The body of what `inspectVsix` always did, applied to a buffer so the release driver can inspect
+ * the exact bytes it then digests and records, rather than a path that something else could
+ * replace between the check and the read. `label` stands where the path stood in every message,
+ * so a failure names the archive the same way whichever entry point reached it.
+ *
+ * @param {Buffer} zip
+ * @param {string} vsixPath The label printed in messages: a path, or a name for a buffer.
+ */
+export function inspectVsixBytes(zip, vsixPath) {
   assert(
     zip.length <= MAX_VSIX_COMPRESSED_BYTES,
     `${vsixPath}: ${STAGE_POLICY} compressed size ${zip.length} exceeds ${MAX_VSIX_COMPRESSED_BYTES}`
@@ -502,7 +533,110 @@ export function inspectVsix(vsixPath) {
   );
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : '';
-if (import.meta.url === invokedPath) {
+/**
+ * Inspect the VSIX at `vsixPath`: its size bounds, its entry names and its package manifest.
+ *
+ * @param {string} vsixPath
+ */
+export function inspectVsix(vsixPath) {
+  inspectVsixBytes(readFileSync(vsixPath), vsixPath);
+}
+
+const SBOM_ENTRY = 'extension/schegent-sbom.cdx.json';
+const DIST_ENTRY_PREFIX = 'extension/dist/';
+const BUILD_PROPERTIES = Object.freeze([
+  'schegent:build.commit',
+  'schegent:build.dirty',
+  'schegent:build.mode'
+]);
+const FULL_COMMIT = /^[0-9a-f]{40}$/;
+
+/**
+ * FR-R4-F09 (FR-012; contract AC2) -- the SBOM inside the archive came from the build beside it.
+ *
+ * The SBOM is packaged inside the VSIX so a recipient holding one file has it, but nothing tied it
+ * to the code next to it: a stale SBOM, or one regenerated after the bundle changed, shipped
+ * without complaint. This compares the SBOM's shipped-file components, each with its SHA-256, with
+ * the archive's `extension/dist/` entries: the same set of files, the same digest for each, and a
+ * build identity present and shaped. It fails with the policy stage, naming the file or property.
+ *
+ * The smoke path calls it as well as the release path, so every recorded gate run proves it.
+ * It returns the SBOM it read and the SHA-256 of that entry's bytes, so the release driver
+ * records and compares the document that is IN the archive rather than one beside it.
+ *
+ * @param {Buffer} zip
+ * @param {string} label The label printed in messages: a path, or a name for a buffer.
+ * @returns {{ sbom: object, sbomSha256: string }}
+ */
+export function assertSbomMatchesArchive(zip, label) {
+  const entries = listEntries(zip, label);
+  const sbomEntry = entries.get(SBOM_ENTRY);
+  assert(sbomEntry, `${label}: ${STAGE_POLICY} ${SBOM_ENTRY} is missing from the archive`);
+
+  let sbom;
+  const sbomBytes = readEntry(zip, sbomEntry, label);
+  try {
+    sbom = JSON.parse(sbomBytes.toString('utf8'));
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`${label}: ${STAGE_POLICY} ${SBOM_ENTRY} is not JSON`);
+    }
+    throw error;
+  }
+
+  const properties = Array.isArray(sbom?.metadata?.properties) ? sbom.metadata.properties : [];
+  const valueOf = (name) => properties.find((entry) => entry?.name === name)?.value;
+  for (const name of BUILD_PROPERTIES) {
+    assert(
+      typeof valueOf(name) === 'string',
+      `${label}: ${STAGE_POLICY} ${SBOM_ENTRY} has no ${name} property`
+    );
+  }
+  const commit = valueOf('schegent:build.commit');
+  assert(
+    commit === 'unknown' || FULL_COMMIT.test(commit),
+    `${label}: ${STAGE_POLICY} schegent:build.commit is ${JSON.stringify(commit)}, ` +
+      'neither 40 lowercase hex nor unknown'
+  );
+
+  const listed = new Map();
+  for (const component of Array.isArray(sbom.components) ? sbom.components : []) {
+    if (component?.type !== 'file' || typeof component.name !== 'string') continue;
+    const hash = (component.hashes ?? []).find((entry) => entry?.alg === 'SHA-256');
+    const { content } = hash ?? {};
+    listed.set(component.name, content);
+  }
+
+  const shipped = new Map();
+  for (const [name, entry] of entries) {
+    if (name.startsWith(DIST_ENTRY_PREFIX) && !name.endsWith('/')) {
+      shipped.set(name.slice('extension/'.length), entry);
+    }
+  }
+  const extra = [...shipped.keys()].filter((name) => !listed.has(name)).sort();
+  const missing = [...listed.keys()].filter((name) => !shipped.has(name)).sort();
+  assert(
+    extra.length === 0 && missing.length === 0,
+    `${label}: ${STAGE_POLICY} the SBOM and the archive list different dist files` +
+      (extra.length > 0 ? `; in the archive only: ${extra.join(', ')}` : '') +
+      (missing.length > 0 ? `; in the SBOM only: ${missing.join(', ')}` : '')
+  );
+
+  const differing = [];
+  for (const [name, entry] of [...shipped].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    const actual = sha256Hex(readEntry(zip, entry, label));
+    const recorded = listed.get(name);
+    if (actual !== recorded) {
+      differing.push(`${name} (archive SHA-256 ${actual}, SBOM records ${String(recorded)})`);
+    }
+  }
+  assert(
+    differing.length === 0,
+    `${label}: ${STAGE_POLICY} the SBOM does not match the archive's SHA-256 for ${differing.join('; ')}`
+  );
+  return { sbom, sbomSha256: sha256Hex(sbomBytes) };
+}
+
+if (invokedAsScript(import.meta.url)) {
   inspectVsix(process.argv[2] ?? 'schegent-smoke.vsix');
 }

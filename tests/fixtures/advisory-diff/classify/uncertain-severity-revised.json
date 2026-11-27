@@ -1,0 +1,80 @@
+{
+  "declares": {
+    "description": "US3-3: equal pairs and a revised severity is uncertain, severity-revised (row 3): a database revision, not the candidate",
+    "groups": [
+      {
+        "package": "lib-a",
+        "class": "uncertain",
+        "reasons": [
+          "severity-revised"
+        ],
+        "severity": {
+          "base": "moderate",
+          "candidate": "high"
+        }
+      }
+    ]
+  },
+  "base": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "moderate",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "candidate": {
+    "findings": [
+      {
+        "package": "lib-a",
+        "ids": {
+          "canonical": "GHSA-ab12-cd34-ef56",
+          "aliases": []
+        },
+        "severity": "high",
+        "range": "<9.0.0",
+        "title": "Fixture classification advisory",
+        "url": "https://github.com/advisories/GHSA-ab12-cd34-ef56",
+        "locations": [
+          {
+            "location": "node_modules/lib-a",
+            "version": "1.0.0",
+            "direct": true,
+            "production": true
+          }
+        ],
+        "direct": true,
+        "production": true,
+        "dependents": [],
+        "notes": []
+      }
+    ]
+  },
+  "lockfiles": {
+    "base": {
+      "node_modules/lib-a": "1.0.0"
+    },
+    "candidate": {
+      "node_modules/lib-a": "1.0.0"
+    }
+  }
+}

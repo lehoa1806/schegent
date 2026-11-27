@@ -15,6 +15,7 @@
 // because a write that touched nothing at all would also pass the negative.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkflowLifecycleAuditor } from '../../../src/controller/workflow-lifecycle-auditor';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
@@ -30,7 +31,7 @@ import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow
 // header for why the ids are the real Spec Kit ones.
 import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 import type { Memento } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -96,7 +97,7 @@ beforeEach(async () => {
   queue = new QueueManager(store);
   auditWriter = { append: vi.fn(async () => {}) };
   controller = new SchegentWorkflowController(
-    { run: vi.fn() } as unknown as PhaseRunner,
+    { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner,
     store,
     queue,
     makeStatusBar(),
@@ -137,7 +138,7 @@ async function seedRun(
     resumeTargetPhaseId: null,
     ...overrides
   };
-  await store.setRun(queueId, run);
+  await store.setRun(queueId, run, unfencedCommit('test-fixture'));
   return run;
 }
 

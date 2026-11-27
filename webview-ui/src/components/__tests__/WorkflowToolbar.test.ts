@@ -1,20 +1,11 @@
-// Feature 086 T023 (FR-013, SC-002) — the export inclusion choice, one level up.
-//
-// The Pipeline equivalent is a checkbox, because a Pipeline has one level of
-// dependency and so exactly two depths. A Workflow has two levels, so the choice
-// is a select over an enumerated set rather than a boolean: "carry the Pipelines"
-// and "carry the Pipelines and their Phases" are different answers, and neither
-// is the negation of the other.
-//
-// Mounted directly rather than through `WorkflowCatalogEditor`, as
-// `WorkflowGraphEditor.test.ts` does: the export rule lives in this component
-// (T017 put it here deliberately, since its inputs are the selection itself), so
-// this is the surface that owns the behaviour being asserted.
+// Feature 086 T023 (FR-013, SC-002) & Feature 326 — WorkflowToolbar overflow
+// menu and shared WorkflowExportDialog inclusion choice.
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MutableWorkflow } from '../PipelineBuilderEditors/types';
 import WorkflowToolbar from '../PipelineBuilderEditors/WorkflowToolbar.svelte';
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
 const exportSpy = vi.fn(() => ({ status: 'accepted' as const }));
 
@@ -31,7 +22,7 @@ function row(overrides: Partial<MutableWorkflow> = {}): MutableWorkflow {
     workflowId: 'design-then-build',
     name: 'Design then Build',
     version: 1,
-    nodes: [{ nodeId: 'design', pipelineId: 'design-review' }],
+    nodes: [{ nodeId: 'design', kind: 'phase', phaseId: 'design-review' }],
     connections: [],
     startNodeIds: ['design'],
     sourceKey: 'design-then-build::0',
@@ -53,23 +44,31 @@ const mount = (selected: MutableWorkflow | null) =>
     removeDisabled: false,
     saveDisabled: false,
     selected,
-    onadd: () => {},
     onduplicate: () => {},
     onremove: () => {},
     onsave: () => {}
   });
 
-describe('WorkflowToolbar export inclusion (T023, FR-013)', () => {
-  it('defaults to the smallest document (FR-013)', () => {
-    const { getByTestId } = mount(row());
-    const select = getByTestId('workflows-export-inclusion') as HTMLSelectElement;
+async function openExportModal(getByTestId: (id: string) => HTMLElement): Promise<void> {
+  await fireEvent.click(getByTestId('workflows-export-open'));
+}
 
+describe('WorkflowToolbar export inclusion (T023, FR-013 / Feature 326)', () => {
+  it('defaults to the smallest document (FR-013) inside the modal dialog', async () => {
+    const { getByTestId } = mount(row());
+    await openExportModal(getByTestId);
+    const dialog = getByTestId('workflows-export-panel');
+    expect(dialog.getAttribute('role')).toBe('dialog');
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+
+    const select = getByTestId('workflows-export-inclusion') as HTMLSelectElement;
     expect(select.value).toBe('references-only');
     expect(select.disabled).toBe(false);
   });
 
   it('sends the reference package by default, carrying no dependency payload', async () => {
     const { getByTestId } = mount(row());
+    await openExportModal(getByTestId);
     await fireEvent.click(getByTestId('workflows-export'));
 
     expect(exportSpy).toHaveBeenCalledTimes(1);
@@ -78,90 +77,253 @@ describe('WorkflowToolbar export inclusion (T023, FR-013)', () => {
 
   it('sends the operator-chosen depth and nothing else about the request changes', async () => {
     const { getByTestId } = mount(row());
+    await openExportModal(getByTestId);
     const select = getByTestId('workflows-export-inclusion') as HTMLSelectElement;
 
-    await fireEvent.change(select, { target: { value: 'include-pipelines' } });
+    await fireEvent.change(select, { target: { value: 'include-closure' } });
     await fireEvent.click(getByTestId('workflows-export'));
 
     expect(exportSpy).toHaveBeenCalledTimes(1);
-    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-pipelines');
+    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-closure');
   });
 
   it('returns to the reference package when the choice is taken back', async () => {
     const { getByTestId } = mount(row());
+    await openExportModal(getByTestId);
     const select = getByTestId('workflows-export-inclusion') as HTMLSelectElement;
 
-    await fireEvent.change(select, { target: { value: 'include-pipelines' } });
+    await fireEvent.change(select, { target: { value: 'include-closure' } });
     await fireEvent.change(select, { target: { value: 'references-only' } });
     await fireEvent.click(getByTestId('workflows-export'));
 
     expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'references-only');
   });
 
-  it('offers only the depths the host can actually produce', () => {
-    // A control listing a mode the exporter ignores would hand back a document
-    // missing the payload it named, with no error to say so. Options grow with
-    // the host, never ahead of it: this list was two entries until T028 gave
-    // `include-closure` an arm that emits `included.phases`, and it is asserted
-    // exhaustively so a fourth arm cannot appear in the contract without a
-    // deliberate decision here.
-    //
-    // Shallowest first, so the default is also the first option and the order
-    // reads as increasing disclosure.
+  it('offers only the depths the host can actually produce', async () => {
     const { getByTestId } = mount(row());
+    await openExportModal(getByTestId);
     const values = Array.from(
       (getByTestId('workflows-export-inclusion') as HTMLSelectElement).options
     ).map((option) => option.value);
 
-    expect(values).toEqual(['references-only', 'include-pipelines', 'include-closure']);
+    expect(values).toEqual(['references-only', 'include-closure']);
   });
 
-  it('stays available for a Workflow whose Pipelines do not resolve (FR-016, FR-018)', async () => {
-    // Whether the references resolve is the host's call — it reads the effective
-    // catalog and this surface does not. Pre-checking here would refuse the
-    // export before the host could name which Pipeline was missing.
+  it('stays available for a Workflow whose dependencies do not resolve (FR-016, FR-018)', async () => {
     const unresolved = row({
       sourceStatus: 'invalid',
       sourceErrors: [
-        { field: 'nodes', code: 'unknown-pipeline', message: 'design-review is not defined.' }
+        { field: 'nodes', code: 'unknown-phase', message: 'design-review is not defined.' }
       ] as MutableWorkflow['sourceErrors']
     });
     const { getByTestId } = mount(unresolved);
+    await openExportModal(getByTestId);
 
     expect((getByTestId('workflows-export-inclusion') as HTMLSelectElement).disabled).toBe(false);
     await fireEvent.change(getByTestId('workflows-export-inclusion'), {
-      target: { value: 'include-pipelines' }
+      target: { value: 'include-closure' }
     });
     await fireEvent.click(getByTestId('workflows-export'));
 
-    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-pipelines');
+    expect(exportSpy).toHaveBeenCalledWith('design-then-build', 'include-closure');
   });
 
-  it('offers no choice on an unsaved draft, because there is nothing to export', () => {
-    const { getByTestId } = mount(row({ persisted: false }));
+  it('disables Export YAML… with an accessible reason on an unsaved draft and never opens the modal', async () => {
+    const { getByTestId, queryByTestId } = mount(row({ persisted: false }));
+    const item = getByTestId('workflows-export-open');
+    expect(isMenuItemOff(item)).toBe(true);
+    expect(getByTestId('workflows-export-disabled-reason').textContent).toMatch(/Save this Workflow first/i);
 
-    expect((getByTestId('workflows-export-inclusion') as HTMLSelectElement).disabled).toBe(true);
-    expect((getByTestId('workflows-export') as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.click(item);
+    expect(queryByTestId('workflows-export-panel')).toBeNull();
+    expect(exportSpy).not.toHaveBeenCalled();
   });
 
-  it('offers no choice when nothing is selected', () => {
-    const { getByTestId } = mount(null);
-
-    expect((getByTestId('workflows-export-inclusion') as HTMLSelectElement).disabled).toBe(true);
+  it('disables Export YAML… when nothing is selected', async () => {
+    const { getByTestId, queryByTestId } = mount(null);
+    const item = getByTestId('workflows-export-open');
+    expect(isMenuItemOff(item)).toBe(true);
+    await fireEvent.click(item);
+    expect(queryByTestId('workflows-export-panel')).toBeNull();
   });
 
   it('keeps the choice across a change of selection, because it describes the handover', async () => {
-    // A property of how this operator is handing the definition over, not of the
-    // Workflow, so it survives re-selection instead of resetting under someone
-    // exporting several rows in a row. Nothing is persisted.
     const { getByTestId, rerender } = mount(row());
+    await openExportModal(getByTestId);
     await fireEvent.change(getByTestId('workflows-export-inclusion'), {
-      target: { value: 'include-pipelines' }
+      target: { value: 'include-closure' }
     });
+    await fireEvent.click(getByTestId('workflows-export-cancel'));
 
     await rerender({ selected: row({ workflowId: 'other-flow', sourceKey: 'workspace::other::1' }) });
+    await openExportModal(getByTestId);
     await fireEvent.click(getByTestId('workflows-export'));
 
-    expect(exportSpy).toHaveBeenCalledWith('other-flow', 'include-pipelines');
+    expect(exportSpy).toHaveBeenCalledWith('other-flow', 'include-closure');
+  });
+
+  it('dismisses the export modal on Escape and Cancel without dispatching export', async () => {
+    const { getByTestId, queryByTestId } = mount(row());
+    await openExportModal(getByTestId);
+    expect(queryByTestId('workflows-export-panel')).not.toBeNull();
+
+    await fireEvent.keyDown(getByTestId('workflows-export-inclusion'), { key: 'Escape' });
+    expect(queryByTestId('workflows-export-panel')).toBeNull();
+    expect(exportSpy).not.toHaveBeenCalled();
+
+    await openExportModal(getByTestId);
+    await fireEvent.click(getByTestId('workflows-export-cancel'));
+    expect(queryByTestId('workflows-export-panel')).toBeNull();
+    expect(exportSpy).not.toHaveBeenCalled();
+  });
+
+  it('orders Duplicate, Export YAML…, Revert unsaved changes, <hr />, Deactivate… (without New workflow)', () => {
+    const { container } = render(WorkflowToolbar, {
+      savePending: false,
+      mutatingDisabled: false,
+      noPipelines: false,
+      duplicateDisabled: false,
+      removeDisabled: false,
+      saveDisabled: false,
+      canReset: true,
+      selected: row(),
+      onduplicate: () => {},
+      onremove: () => {},
+      onsave: () => {},
+      onreset: () => {}
+    });
+    const menu = container.querySelector('[role="menu"]') as HTMLElement | null;
+    expect(menu).not.toBeNull();
+    const entries = [...menu!.children].map((el) =>
+      el.tagName === 'HR' ? 'hr' : el.getAttribute('data-testid')
+    );
+    expect(entries).toEqual([
+      'workflows-duplicate',
+      'workflows-export-open',
+      'workflows-discard',
+      'hr',
+      'workflows-remove'
+    ]);
+    const exportItem = menu!.querySelector('[data-testid="workflows-export-open"]');
+    expect(exportItem?.querySelector('use')?.getAttribute('href')).toBe('#i-export');
+    expect(exportItem?.textContent.trim()).toBe('Export YAML…');
+    const deactivate = menu!.querySelector('[data-testid="workflows-remove"]');
+    expect(deactivate?.classList.contains('danger')).toBe(true);
+    expect(deactivate?.querySelector('use')?.getAttribute('href')).toBe('#i-trash');
+    expect(deactivate?.textContent.trim()).toBe('Deactivate…');
+  });
+
+  it('closes WorkflowExportDialog on Escape even from document.body without leaking to document listeners, and wraps Tab', async () => {
+    const parentEscape = vi.fn();
+    const onDocKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented) parentEscape();
+    };
+    document.addEventListener('keydown', onDocKeydown);
+    try {
+      const { getByTestId, queryByTestId } = render(WorkflowToolbar, {
+        savePending: false,
+        mutatingDisabled: false,
+        noPipelines: false,
+        duplicateDisabled: false,
+        removeDisabled: false,
+        saveDisabled: false,
+        selected: row(),
+        onduplicate: () => {},
+        onremove: () => {},
+        onsave: () => {}
+      });
+
+      await fireEvent.click(getByTestId('workflows-export-open'));
+      expect(getByTestId('workflows-export-panel')).not.toBeNull();
+
+      // Tab wraps from Export button back to select
+      const confirmBtn = getByTestId('workflows-export') as HTMLButtonElement;
+      const selectEl = getByTestId('workflows-export-inclusion') as HTMLSelectElement;
+      confirmBtn.focus();
+      await fireEvent.keyDown(confirmBtn, { key: 'Tab' });
+      expect(document.activeElement).toBe(selectEl);
+
+      // Escape from document.body closes dialog and stops propagation before document listener
+      document.body.focus();
+      await fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(queryByTestId('workflows-export-panel')).toBeNull();
+      expect(parentEscape).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener('keydown', onDocKeydown);
+    }
+  });
+});
+
+describe('WorkflowToolbar Save focus preservation (W02, FR-002)', () => {
+  const renderSave = (
+    overrides: Partial<{ saveDisabled: boolean; savePending: boolean; onsave: () => void }> = {}
+  ) =>
+    render(WorkflowToolbar, {
+      savePending: false,
+      mutatingDisabled: false,
+      noPipelines: false,
+      duplicateDisabled: false,
+      removeDisabled: false,
+      saveDisabled: true,
+      selected: row(),
+      onduplicate: () => {},
+      onremove: () => {},
+      onsave: () => {},
+      ...overrides
+    });
+
+  it('uses aria-disabled instead of native disabled on workflows-save-all across state transitions', async () => {
+    const { getByTestId, rerender } = renderSave({ saveDisabled: true, savePending: false });
+    const saveBtn = getByTestId('workflows-save-all') as HTMLButtonElement;
+
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Save');
+
+    await rerender({ saveDisabled: false, savePending: false });
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+
+    await rerender({ saveDisabled: true, savePending: true });
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+    expect(saveBtn.textContent.trim()).toBe('Saving…');
+  });
+
+  it('keeps keyboard focus on Save when saveDisabled flips true and ignores activations while off', async () => {
+    const onsave = vi.fn();
+    const { getByTestId, rerender } = renderSave({
+      saveDisabled: false,
+      savePending: false,
+      onsave
+    });
+    const saveBtn = getByTestId('workflows-save-all') as HTMLButtonElement;
+
+    saveBtn.focus();
+    expect(document.activeElement).toBe(saveBtn);
+
+    await fireEvent.keyDown(saveBtn, { key: 'Enter' });
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(1);
+
+    await rerender({ saveDisabled: true, savePending: true });
+    expect(document.activeElement).toBe(saveBtn);
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+
+    await fireEvent.keyDown(saveBtn, { key: ' ' });
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(saveBtn);
+
+    await rerender({ saveDisabled: true, savePending: false });
+    expect(document.activeElement).toBe(saveBtn);
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(1);
+
+    await rerender({ saveDisabled: false, savePending: false });
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+    await fireEvent.click(saveBtn);
+    expect(onsave).toHaveBeenCalledTimes(2);
   });
 });

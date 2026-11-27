@@ -35,47 +35,15 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { PROVES_NON_EMPTY, isScanningGate } from './gate-integrity/vacuity-detector';
 
 const LINT_DIR = resolve(__dirname);
 const read = (file: string): string => readFileSync(resolve(LINT_DIR, file), 'utf8');
 
-/** Walks a tree, or resolves a file set from one. */
-const SCANS = /filesMatching|filesUnder|linesMatching|readdirSync|collect\w*Files|walk\(/;
-
-/** Asserts that a collected set of offenders is empty. */
-const ASSERTS_EMPTY = /\.toEqual\(\s*\[\s*\]\s*\)/;
-
-/**
- * Shapes a vacuity control takes here. Deliberately broad — the question is
- * whether the author thought about it, not whether they picked a house form.
- */
-const PROVES_NON_EMPTY =
-  new RegExp(
-    [
-      'toBeGreaterThan',
-      'toBeGreaterThanOrEqual',
-      // `toContain(HELPER)` and `toContain('webview-ui/src/lib/reorder-task.ts')`
-      // are the same control spelled two ways. An earlier version of this
-      // detector recognised only the first and reported four gates as
-      // uncontrolled that were not — a detector with a false negative is the
-      // same defect it exists to find, one level up.
-      // An ALL_CAPS module constant passed to toContain is this suite's idiom for
-      // "the scan must find this anchor": HELPER, ANCHOR, DISPATCH_MODULE. The
-      // detector has now missed this spelling twice — first the path literal,
-      // then the named constant — which is worth stating plainly: each miss
-      // reported a controlled gate as uncontrolled, and each was caught by the
-      // staleness check below rather than by reading the files.
-      'toContain\\(\\s*[A-Z][A-Z0-9_]{2,}',
-      "toContain\\(\\s*['\"`][\\w./-]+\\.(ts|svelte|md|json)",
-      'ANCHORS',
-      'MIN_SITES',
-      'MIN_\\w+',
-      'vacuous',
-      'toHaveLength\\(\\s*[1-9]',
-      'expect\\.fail'
-    ].join('|')
-  );
-
+// FR-R3-088 — the three patterns below used to be declared here. They now live
+// in `gate-integrity/vacuity-detector.ts` because the false-negative census has
+// to measure THIS detector, and a census re-declaring the patterns would be
+// measuring a copy of it. One definition, two consumers.
 /**
  * Scanning gates that assert emptiness and prove nothing about their own scan.
  *
@@ -117,8 +85,7 @@ function scanningGates(): string[] {
   return readdirSync(LINT_DIR)
     .filter((file) => file.endsWith('.test.ts') && file !== SELF)
     .filter((file) => {
-      const source = read(file);
-      return SCANS.test(source) && ASSERTS_EMPTY.test(source);
+      return isScanningGate(read(file));
     })
     .sort();
 }

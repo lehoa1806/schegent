@@ -14,8 +14,12 @@
 // persisted, never written to a `WorkflowRun`, never audited (C10).
 
 import type { PipelineDefinition } from '../../contracts/pipeline-definitions';
-import type { WorkflowCatalogResolution } from '../../contracts/workflow-definitions';
+import type {
+  WorkflowCatalogResolution,
+  WorkflowSourceRecord
+} from '../../contracts/workflow-definitions';
 import { deriveWorkflowPorts } from '../../config/workflow-derived-ports';
+import { DISPLAY_TEXT_MAX, projectAuthoredDisplay } from './display-projection';
 import {
   NO_BUILDER_LIFECYCLE,
   type BuilderLifecycleByKind,
@@ -49,22 +53,16 @@ const PORTS_PER_RECORD_MAX = 100;
 const KEY_MAX = 160;
 
 /**
- * Only recognized authored scalars reach the webview. An invalid row has no
- * `definition`, so `display` is the operator's only view of what they typed.
+ * An invalid row has no `definition`, so `display` is the operator's only view of
+ * what they typed — including its authored lists, such as `startNodeIds`.
  */
 function projectDisplay(
   display: Readonly<Record<string, unknown>>,
   sanitize: Sanitize
 ): Readonly<Record<string, unknown>> {
-  const projected: Record<string, unknown> = {};
-  for (const [field, value] of Object.entries(display)) {
-    if (typeof value === 'string') {
-      projected[field] = text(value, sanitize, field === 'description' ? DESCRIPTION_MAX : 512);
-    } else if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
-      projected[field] = value;
-    }
-  }
-  return Object.freeze(projected);
+  return projectAuthoredDisplay(display, sanitize, (field) =>
+    field === 'description' ? DESCRIPTION_MAX : DISPLAY_TEXT_MAX
+  );
 }
 
 // Feature 099 (T489a, FR-043) — `projectionKey` stood here, composing
@@ -96,9 +94,9 @@ export function projectWorkflowCatalog(
 ): WorkflowCatalogProjection {
   const { sanitize } = options;
   const lifecycleOf = options.lifecycle ?? NO_BUILDER_LIFECYCLE;
-  const records: WorkflowCatalogSourceProjection[] = catalog.records.map((record) => {
+  const projectRecord = (record: WorkflowSourceRecord): WorkflowCatalogSourceProjection => {
     const derived = record.definition
-      ? deriveWorkflowPorts(record.definition, options.effectivePipelines)
+      ? deriveWorkflowPorts(record.definition, options.effectivePipelines, catalog.effective)
       : { inputs: [], outputs: [] };
     const workflowId = text(record.workflowId, sanitize, ID_MAX);
     // The record's own id, before sanitizing and capping — the manifest holds
@@ -133,8 +131,17 @@ export function projectWorkflowCatalog(
       ),
       ...(lifecycle !== undefined ? { lifecycle } : {})
     });
-  });
+  };
+  // BUG-001 (101) — the resolved rows, then the saved-but-unpublished ones, through the
+  // one projector. See `phase-catalog-projection.ts` for why they are appended and
+  // why `effective` stays as it was.
+  const records: WorkflowCatalogSourceProjection[] = [
+    ...catalog.records.map(projectRecord),
+    ...catalog.draftOnlyRecords.map(projectRecord)
+  ];
 
+  // Counted over the resolved rows only. The truncation advisory is a statement
+  // about the stored catalog, and a draft's defects belong to its author.
   const truncated = catalog.records.filter(
     (record) => record.errors.length > ERRORS_PER_RECORD_MAX
   ).length;

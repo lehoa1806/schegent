@@ -28,7 +28,7 @@ import {
 } from '../../src/config/pipeline-config';
 import type { PhaseDefinition } from '../../src/contracts/process-definitions';
 import type { PipelineDefinition } from '../../src/contracts/pipeline-definitions';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../src/contracts/backend-kinds';
 
 /**
  * Ids the fixture claims. Chosen to collide with nothing in the product or in

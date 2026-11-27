@@ -1,13 +1,17 @@
 import type { CommandAckMessage, HostMessage } from './messages';
 import { CMD_ACK, STATE_SNAPSHOT } from './messages';
-import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS } from './snapshot-types';
-import { defaultQueueRuntime, findQueueRuntime } from './queue-runtime-view';
+import type { SnapshotSyncMeta } from '../../../src/contracts/snapshot-bounds.js';
+import { getHostTransport } from './host-transport';
+import { reconcileSnapshotMessage } from './snapshot-merge';
+import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS, IDLE_QUEUE_SETTINGS } from './snapshot-types';
+import { defaultQueueRuntime, findQueueRuntime, isWorkingARun } from './queue-runtime-view';
 import type {
   AuditTailEntry,
   CliMonitorState,
   DebugLogEntry,
   DelayedRetryState,
   GeneralSettings,
+  QueueSettingsProjection,
   HistoryEntry,
   LiveActivity,
   PhaseName,
@@ -23,6 +27,13 @@ import type {
 export interface AckResult {
   readonly status: 'accepted' | 'rejected';
   readonly reason?: string;
+  // FR-R3-154 (T1646) — which of the host's four words this ACK carries, when
+  // the answering command has one. Optional on the wire and optional here: the
+  // five lifecycle commands populate it, every other command leaves it absent,
+  // and `status` stays the field every existing consumer reads. A listener that
+  // wants the distinction between "refused" and "already in that state" reads
+  // this; one that only needs pass/fail ignores it and is unaffected.
+  readonly outcome?: CommandAckMessage['outcome'];
   // Feature 020 — optional typed payload from the read-only phase-log
   // IPC surface (see webview-ui/src/lib/phase-log-ipc.ts for the
   // canonical caller). Helpers that don't need it can ignore it.
@@ -39,14 +50,62 @@ export interface AckResult {
 
 export type AckListener = (ack: AckResult) => void;
 
+/**
+ * Review gap GC-16 — a snapshot the view could not read. The view keeps its last readable state
+ * (or "Connecting"), and a surface shows this so the operator knows that state is stale.
+ */
+export interface IncompatibleSnapshot {
+  readonly reason: 'unknown-schema' | 'malformed-queues';
+  /** The version the host sent, as bounded text; `null` when the version was not the problem. */
+  readonly schemaVersion: string | null;
+}
+
+/** Long enough for any real version, short enough that a hostile value cannot fill the notice. */
+const SCHEMA_VERSION_DISPLAY_MAX = 32;
+
+function displayVersion(value: unknown): string {
+  return String(value).slice(0, SCHEMA_VERSION_DISPLAY_MAX);
+}
+
 class SnapshotStore {
-  private _snapshot = $state<WorkflowSnapshot | null>(null);
+  // Review gap GC-16 — raw, not deep: a snapshot is replaced whole and never mutated, so a deep
+  // proxy only added a wrapper to every nested read of a large object on each 1 Hz tick.
+  private _snapshot = $state.raw<WorkflowSnapshot | null>(null);
+  private _incompatible = $state.raw<IncompatibleSnapshot | null>(null);
   private _lastSchemaWarning = false;
+  private _lastRevision: number | null = null;
+  private _resyncCount = 0;
+  private _droppedStaleCount = 0;
   private _pending = $state<Set<string>>(new Set());
   private _ackListeners = new Map<string, AckListener>();
 
   get snapshot(): WorkflowSnapshot | null {
     return this._snapshot;
+  }
+
+  get incompatibleSnapshot(): IncompatibleSnapshot | null {
+    return this._incompatible;
+  }
+
+  get lastRevision(): number | null {
+    return this._lastRevision;
+  }
+
+  get resyncCount(): number {
+    return this._resyncCount;
+  }
+
+  get droppedStaleCount(): number {
+    return this._droppedStaleCount;
+  }
+
+  resetSyncState(): void {
+    this._snapshot = null;
+    this._lastRevision = null;
+    this._resyncCount = 0;
+    this._droppedStaleCount = 0;
+    this._lastSchemaWarning = false;
+    this._incompatible = null;
   }
 
   get isReady(): boolean {
@@ -77,6 +136,23 @@ class SnapshotStore {
    */
   get defaultRuntime(): QueueRuntime | null {
     return defaultQueueRuntime(this._snapshot);
+  }
+
+  get defaultQueueName(): string {
+    return this.defaultRuntime?.name.trim() || 'Default';
+  }
+
+  get activeQueueRuntimes(): readonly QueueRuntime[] {
+    return this.queueRuntimes.filter(isWorkingARun);
+  }
+
+  get activeRunCount(): number {
+    return this.activeQueueRuntimes.length;
+  }
+
+  get otherActiveRunCount(): number {
+    const defaultQueueId = this.defaultRuntime?.queueId ?? null;
+    return this.activeQueueRuntimes.filter((runtime) => runtime.queueId !== defaultQueueId).length;
   }
 
   get status(): WorkflowStatus {
@@ -168,14 +244,35 @@ class SnapshotStore {
   }
 
   /**
+   * FR-R3-145 (T1572) — the queue settings, from the workspace memento.
+   *
+   * A sibling of `generalSettings` and not a field on it, because the two come
+   * from different stores. The queue modal used to prefill from
+   * `generalSettings.queueGlobalConcurrencyCap` — the *configuration* — and save
+   * through `CMD_SAVE_QUEUE_SETTINGS`, which writes the *memento*. The value came
+   * back unchanged and the operator's save read as lost. Same legacy-tolerance as
+   * its neighbour: the IDLE constant when an older host omits the projection.
+   */
+  get queueSettings(): QueueSettingsProjection {
+    return this._snapshot?.queueSettings ?? IDLE_QUEUE_SETTINGS;
+  }
+
+  /**
    * Feature 011 — register a one-shot listener for the ack of a
    * specific correlationId. The listener is invoked exactly once and
    * then removed.
+   *
+   * FR-R4-F05 (I3) — the returned unsubscribe removes only THIS listener. The map holds one
+   * listener per id, so an unsubscribe called after the id was registered again (a retry that
+   * reuses its identity) used to delete the newer listener and leave the retry's outcome
+   * with nobody to tell.
    */
   onceAck(correlationId: string, listener: AckListener): () => void {
     this._ackListeners.set(correlationId, listener);
     return () => {
-      this._ackListeners.delete(correlationId);
+      if (this._ackListeners.get(correlationId) === listener) {
+        this._ackListeners.delete(correlationId);
+      }
     };
   }
 
@@ -185,7 +282,7 @@ class SnapshotStore {
 
   apply(message: HostMessage<WorkflowSnapshot>): void {
     if (message.type === STATE_SNAPSHOT) {
-      this.applySnapshot(message.payload);
+      this.applySnapshot(message.payload, message.sync);
       return;
     }
     if (message.type === CMD_ACK) {
@@ -211,29 +308,59 @@ class SnapshotStore {
     this._pending = next;
   }
 
-  private applySnapshot(snap: WorkflowSnapshot): void {
-    if (!snap || typeof snap !== 'object') return;
-    if (snap.schemaVersion !== 4) {
+  private applySnapshot(snap: WorkflowSnapshot, sync?: SnapshotSyncMeta): void {
+    const reconciled = reconcileSnapshotMessage(
+      this._snapshot,
+      this._lastRevision,
+      snap,
+      sync
+    );
+    if (reconciled.outcome === 'ignore-malformed') return;
+    if (reconciled.outcome === 'unknown-schema') {
+      this._incompatible = { reason: 'unknown-schema', schemaVersion: displayVersion(reconciled.schemaVersion) };
       if (!this._lastSchemaWarning) {
-        console.warn('[schegent] dropping snapshot with unknown schemaVersion', snap.schemaVersion);
+        console.warn('[schegent] dropping snapshot with unknown schemaVersion', reconciled.schemaVersion);
         this._lastSchemaWarning = true;
       }
       return;
     }
-    // Feature 092 — `queues` replaces the root `phases` array as the structural
-    // field worth sanity-checking: a malformed one would leave every run-scoped
-    // read with no place to resolve against.
-    if (!Array.isArray(snap.queues)) {
+    if (reconciled.outcome === 'malformed-queues') {
+      this._incompatible = { reason: 'malformed-queues', schemaVersion: null };
       if (!this._lastSchemaWarning) {
         console.warn('[schegent] dropping snapshot with malformed queues');
         this._lastSchemaWarning = true;
       }
       return;
     }
-    this._snapshot = snap;
-    if (this._pending.size > 0) {
-      this._pending = new Set();
+    if (reconciled.outcome === 'ignore-stale') {
+      this._droppedStaleCount += 1;
+      return;
     }
+    if (reconciled.outcome === 'resync-needed') {
+      this._resyncCount += 1;
+      getHostTransport().postMessage(reconciled.request);
+      return;
+    }
+    this._snapshot = reconciled.snapshot;
+    this._lastRevision = reconciled.revision;
+    this._incompatible = null;
+    // FR-R3-106 (FR-071) — a snapshot clears NOTHING by itself.
+    //
+    // THE DEFECT. This used to be `if (this._pending.size > 0) this._pending = new Set();`
+    // — any accepted snapshot wiped the ENTIRE pending set, with no correlation filtering.
+    // Snapshots arrive on a 1 Hz tick as well as on real state changes, so a tick unrelated
+    // to any in-flight command re-enabled its button before the mutation landed. The
+    // operator sees a control go live again and reasonably clicks it twice.
+    //
+    // The targeted clear already existed, eight lines above, and this path did not use it.
+    //
+    // WHY NOTHING IS CLEARED HERE AT ALL. A pending command is resolved by its
+    // ACKNOWLEDGEMENT (`applyAck`), which carries the correlation id that identifies it. A
+    // snapshot carries no correlation id, so it cannot say which command it resolves — and
+    // guessing from "the state now looks like the mutation happened" is exactly the
+    // inference that made an unrelated tick clear a live command. If a mutation lands and
+    // its ack is lost, the pending entry is cleared by the ack timeout, not by a snapshot
+    // that happens to arrive afterwards.
   }
 
   private applyAck(msg: CommandAckMessage): void {
@@ -242,7 +369,15 @@ class SnapshotStore {
     if (listener) {
       this._ackListeners.delete(msg.correlationId);
       try {
-        listener({ status: msg.status, reason: msg.reason, result: msg.result });
+        listener({
+          status: msg.status,
+          reason: msg.reason,
+          result: msg.result,
+          // FR-R3-154 (T1646) — forwarded rather than dropped. This call used
+          // to name three of the four fields the message carries, so the
+          // `outcome` the host had just started sending stopped here.
+          outcome: msg.outcome
+        });
       } catch {
         // listener errors must not propagate into the host-message bus
       }

@@ -107,3 +107,91 @@ export class InvocationFailedError extends SchegentError {
     this.exitCode = exitCode;
   }
 }
+
+/**
+ * FR-R3-110 (FR-107) — the message of anything that was thrown.
+ *
+ * WHAT IT REPLACES. `(err as Error).message` appears at 151 sites in `src/`. The cast is a lie
+ * the compiler is told to accept: `catch` binds `unknown`, and JavaScript permits throwing
+ * anything. `throw 'boom'` — which a dependency, a JSON parse of a rejected value, or a
+ * `Promise.reject('reason')` can all produce — makes that expression evaluate to `undefined`,
+ * and the log line becomes `phase failed: undefined`. The compiler cannot flag it, because the
+ * cast is precisely an instruction not to check.
+ *
+ * That failure mode is not hypothetical for this product: every one of those 151 sites is on an
+ * error path, which is where diagnostics matter most and where they are least exercised.
+ *
+ * WHAT IT DOES. Returns a non-empty string for every input. An `Error` gives its message; a
+ * string gives itself; anything else is described rather than interpolated, because
+ * `String({})` is `[object Object]` and tells a reader nothing. An empty message is reported as
+ * the error's constructor name, since `Error` with no message is a real and unhelpful case.
+ *
+ * WHAT IT IS NOT. Not a sanitizer. Callers that write to an operator-visible sink still pass the
+ * result through `logger.sanitize()`; `SECRET_PATTERNS` remains the single authority on
+ * redaction and this function does not fork it.
+ */
+export function errorMessage(thrown: unknown): string {
+  if (thrown instanceof Error) {
+    const message = thrown.message.trim();
+    return message.length > 0 ? message : `${thrown.name || 'Error'} (no message)`;
+  }
+  if (typeof thrown === 'string') {
+    const trimmed = thrown.trim();
+    return trimmed.length > 0 ? trimmed : 'empty string thrown';
+  }
+  if (thrown === null) return 'null thrown';
+  if (thrown === undefined) return 'undefined thrown';
+  if (typeof thrown === 'object') {
+    // A plain object's `message`, if it has a usable one — a rejected value from a library that
+    // does not use `Error` is the common shape here. Otherwise DESCRIBE it: `String({})` is
+    // `[object Object]`, which is worse than saying nothing because it looks like content.
+    const candidate = (thrown as { message?: unknown }).message;
+    if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate.trim();
+    // The constructor is read through `unknown` rather than optional-chained: TypeScript types
+    // `constructor` as always present, so `?.` reads as dead code to the linter — but an object
+    // created with `Object.create(null)` genuinely has none, and this branch exists for values a
+    // library threw.
+    const ctor: unknown = (thrown as { constructor?: unknown }).constructor;
+    const ctorName = typeof ctor === 'function' ? ctor.name : undefined;
+    return `non-Error object thrown (${ctorName ?? 'unknown type'})`;
+  }
+  // number, boolean, bigint, symbol, function — all safely stringifiable and all worth naming.
+  return `${typeof thrown} thrown: ${String(thrown)}`;
+}
+
+/** FR-R4-F05 (FR-012) — the most characters one failure's detail may take in a log context. */
+export const FAILURE_DETAIL_MAX_CHARS = 512;
+
+const UNREADABLE_FAILURE = 'unreadable thrown value';
+const TRUNCATION_MARKER = '… [truncated]';
+
+/**
+ * FR-R4-F05 (FR-011, FR-012; contract F, F2, F5) — one bounded, sanitized line describing
+ * anything that was thrown, for a log context field and nowhere else.
+ *
+ * WHY IT EXISTS. A catch block that reports a failure to the operator must not put the
+ * exception in the report: a message can carry a path, a credential the redaction
+ * patterns do not know, or a megabyte of text. Those blocks send a fixed code to the
+ * webview and keep the detail for the log, and this is how the detail is made safe to
+ * keep: `errorMessage` reads it (inside the `try`, because a message getter can throw),
+ * the caller's `sanitize` redacts it, and only then is it bounded, so a secret that
+ * straddles the bound is redacted whole and never cut into a prefix the patterns miss.
+ *
+ * It runs inside `catch` blocks, so it cannot throw, and it never returns an empty
+ * string or a stack. `sanitize` is the caller's `logger.sanitize`; this function does
+ * not fork `SECRET_PATTERNS`.
+ */
+export function describeFailure(thrown: unknown, sanitize: (value: string) => string): string {
+  try {
+    const sanitized = sanitize(errorMessage(thrown));
+    if (sanitized.length === 0) return UNREADABLE_FAILURE;
+    if (sanitized.length <= FAILURE_DETAIL_MAX_CHARS) return sanitized;
+    let end = FAILURE_DETAIL_MAX_CHARS - TRUNCATION_MARKER.length;
+    // Never end on the first half of a surrogate pair.
+    const last = sanitized.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+    return sanitized.slice(0, end) + TRUNCATION_MARKER;
+  } catch {
+    return UNREADABLE_FAILURE;
+  }
+}

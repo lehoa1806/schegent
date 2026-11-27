@@ -12,6 +12,7 @@
 // description in the workspace — invisible at one entry, quadratic at fifty.
 // ---------------------------------------------------------------------------
 
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   HISTORY_CAP_PER_QUEUE,
@@ -23,7 +24,6 @@ import {
 import { HistoryStore } from '../../../src/state/history-store';
 import {
   DESCRIPTION_PREVIEW_MAX,
-  HISTORY_UNATTRIBUTED_QUEUE_ID,
   type HistoryEntry
 } from '../../../src/state/history-entry';
 import { migrateV11ToV12 } from '../../../src/state/history-state-migrator';

@@ -12,17 +12,61 @@
 
 import { readPhaseLog } from './phase-log-reader';
 import type { ReadPhaseLogRequest, ReadPhaseLogResponse } from '../../contracts/sidebar-ipc';
+import { PHASE_LOG_MAX_ENTRIES } from '../../contracts/phase-log-bounds';
+import type { PhaseProgress } from './types';
+// Feature 203 (D7, F13, F22) — an ERASED type import, so no value crosses the
+// service → ui direction and `dependency-direction.test.ts`, which governs value
+// imports, is unaffected. Precedent: `continuation-service.ts` imports
+// `ChildRunStateReader` from `../../ui/sidebar/connected-run-projector` the same
+// way. `Pick` rather than the whole interface: the service reads five fields and
+// the type should say so.
+import type { QueueItem } from '../../ui/sidebar/snapshot';
 
 export interface PhaseLogSnapshotView {
-  readonly queue: {
-    readonly inFlight: { readonly id: string } | null;
-    readonly pending: readonly { readonly id: string }[];
-    readonly recent: readonly { readonly id: string }[];
-    readonly queues: readonly { readonly id: string }[];
-  };
-  readonly history: readonly { readonly runId: string }[];
+  /**
+   * BUG-002 (FR-008) — each queue's own rows, active and historical
+   * (`QueueRuntime.tasks`), so a selection resolves on the queue it names. The
+   * view used to read `snapshot.queue`, which projects the default queue only,
+   * and so refused every Task on any other queue as `unknown-tuple`.
+   */
+  readonly queues: readonly {
+    readonly queueId: string;
+    // Feature 265 BUG-001 (FR-012) — `currentPipelineId` is optional here so a stand-in view
+    // may omit it; the projected snapshot always carries it.
+    readonly tasks: readonly (Pick<QueueItem, 'id' | 'status' | 'currentPhase' | 'paused'> &
+      Partial<Pick<QueueItem, 'currentPipelineId'>>)[];
+  }[];
+  /** BUG-002 (FR-008) — with its partition, so an entry answers under its own queue only. */
+  readonly history: readonly { readonly runId: string; readonly queueId: string }[];
   readonly availablePipelines: readonly { readonly id: string }[];
   readonly availablePhases: readonly { readonly id: string }[];
+}
+
+/**
+ * BUG-002 (FR-008, FR-022) — the Task a queue has in flight, found among that
+ * queue's own rows, or `null` when it has none.
+ *
+ * The snapshot does not publish a queue's `inFlightId`, so this restates the
+ * rule `queue-projector.ts` routes rows by: an `in-flight` row, or a `paused`
+ * one whose in-flight binding the system rate-limit pause kept (BUG-006,
+ * FR-026), which the row's `paused.pauseSource` names `system-paused`. An
+ * operator pause clears the binding, so an operator-paused row is not in
+ * flight. One case reads differently from the binding: a row paused with the
+ * binding kept but no rate-limit schedule (between the two writes of the
+ * restore path, or after the operator cancels the schedule) is not in flight
+ * here. The webview's copy, in `webview-ui/src/lib/queue-runtime-view.ts`, must
+ * agree with this one, or the pane asks for a tail the host refuses.
+ */
+export function findQueueInFlightRow<T extends Pick<QueueItem, 'status' | 'paused'>>(
+  tasks: readonly T[]
+): T | null {
+  return (
+    tasks.find(
+      (task) =>
+        task.status === 'in-flight' ||
+        (task.status === 'paused' && task.paused?.pauseSource === 'system-paused')
+    ) ?? null
+  );
 }
 
 export interface PhaseLogServiceDeps {
@@ -45,7 +89,8 @@ export interface PhaseLogServiceDeps {
 }
 
 const DEFAULT_PER_FIELD_BYTES = 65536;
-const DEFAULT_MAX_ENTRIES = 500;
+// FR-R4-F08 (L1) — the one row cap, shared with the webview's live tail window.
+const DEFAULT_MAX_ENTRIES = PHASE_LOG_MAX_ENTRIES;
 
 export interface PhaseLogService {
   read(req: ReadPhaseLogRequest): Promise<ReadPhaseLogResponse>;
@@ -60,6 +105,10 @@ export function createPhaseLogService(deps: PhaseLogServiceDeps): PhaseLogServic
         return validation;
       }
       const isInFlight = validation.isInFlight;
+      // Feature 203 (D7, FR-016) — task-level and phase-level are different
+      // questions and now have different answers. `isInFlight` below is
+      // unchanged (X4); `progress` is the one a card may quote.
+      const progress = validation.progress;
       // The webview passes FeatureRequest.id as `taskId`, but the
       // session directory on disk is named after the WorkflowRun.id
       // (stored as FeatureRequest.runId). Resolve the actual runId
@@ -72,6 +121,7 @@ export function createPhaseLogService(deps: PhaseLogServiceDeps): PhaseLogServic
         workspaceRoot: deps.workspaceRoot,
         selection: resolvedSelection,
         isInFlight,
+        progress,
         caps: {
           perFieldBytes: deps.caps?.perFieldBytes ?? DEFAULT_PER_FIELD_BYTES,
           maxEntries: deps.caps?.maxEntries ?? DEFAULT_MAX_ENTRIES
@@ -85,11 +135,34 @@ export function createPhaseLogService(deps: PhaseLogServiceDeps): PhaseLogServic
 }
 
 type SelectionValidation =
-  | { readonly outcome: 'success'; readonly isInFlight: boolean }
+  | {
+      readonly outcome: 'success';
+      readonly isInFlight: boolean;
+      readonly progress: PhaseProgress;
+    }
   | {
       readonly outcome: 'failure';
       readonly reason: 'unknown-tuple';
     };
+
+/**
+ * Feature 203 (D7, FR-016, FR-017) — the four cases, stated once.
+ *
+ * `unknown` is reserved for the one situation where the answer is genuinely not
+ * available: the task is running and the snapshot has not named a phase. It is
+ * NOT the same as `not-running`, and the classifier must not render it as a
+ * progress claim — a card saying "output is still coming" is a promise this
+ * reader would be in no position to make.
+ */
+function derivePhaseProgress(
+  inFlight: Pick<QueueItem, 'currentPhase'> | null,
+  inFlightMatch: boolean,
+  phaseId: string
+): PhaseProgress {
+  if (!inFlightMatch || inFlight === null) return 'not-running';
+  if (inFlight.currentPhase === null) return 'unknown';
+  return inFlight.currentPhase === phaseId ? 'running' : 'not-running';
+}
 
 function validateSelection(
   selection: ReadPhaseLogRequest['selection'],
@@ -103,14 +176,19 @@ function validateSelection(
   ) {
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
-  const queueKnown = snapshot.queue.queues.some((q) => q.id === selection.queueId);
-  if (!queueKnown) return { outcome: 'failure', reason: 'unknown-tuple' };
+  // BUG-002 (FR-008) — the queue the selection names, by the lookup
+  // `findQueueRuntime` (`ui/sidebar/snapshot.ts`) performs. Restated, not
+  // imported: the D7 note above keeps the service → ui direction type-only.
+  const runtime = snapshot.queues.find((q) => q.queueId === selection.queueId);
+  if (runtime === undefined) return { outcome: 'failure', reason: 'unknown-tuple' };
 
-  const inFlightMatch = snapshot.queue.inFlight?.id === selection.taskId;
-  const pendingMatch = snapshot.queue.pending.some((t) => t.id === selection.taskId);
-  const recentMatch = snapshot.queue.recent.some((t) => t.id === selection.taskId);
-  const historyMatch = snapshot.history.some((h) => h.runId === selection.taskId);
-  if (!inFlightMatch && !pendingMatch && !recentMatch && !historyMatch) {
+  const inFlight = findQueueInFlightRow(runtime.tasks);
+  const inFlightMatch = inFlight?.id === selection.taskId;
+  const taskMatch = runtime.tasks.some((t) => t.id === selection.taskId);
+  const historyMatch = snapshot.history.some(
+    (h) => h.runId === selection.taskId && h.queueId === selection.queueId
+  );
+  if (!taskMatch && !historyMatch) {
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
 
@@ -122,11 +200,23 @@ function validateSelection(
   // tuple resolves to an empty manifest, not a hard failure.
   const pipelineKnown = snapshot.availablePipelines.some((p) => p.id === selection.pipelineId);
   const phaseKnown = snapshot.availablePhases.some((p) => p.id === selection.phaseId);
-  if (!inFlightMatch && (!pipelineKnown || !phaseKnown)) {
+  // Feature 265 BUG-001 (FR-012) & Feature 020 BUG-004 (FR-008) — a Workflow leaf Task or a
+  // standalone catalog Phase runs one Phase under its own id (`pipelineId === phaseId`), and the
+  // catalog lists that id as a Phase rather than a Pipeline. Accept it when the Task's own queue
+  // row vouches for it OR when the Run sits in `snapshot.history` and `phaseKnown` holds.
+  const ownLeafTuple =
+    selection.phaseId === selection.pipelineId &&
+    (runtime.tasks.some((t) => t.id === selection.taskId && t.currentPipelineId === selection.pipelineId) ||
+      (historyMatch && phaseKnown));
+  if (!inFlightMatch && !ownLeafTuple && (!pipelineKnown || !phaseKnown)) {
     return { outcome: 'failure', reason: 'unknown-tuple' };
   }
 
-  return { outcome: 'success', isInFlight: inFlightMatch };
+  return {
+    outcome: 'success',
+    isInFlight: inFlightMatch,
+    progress: derivePhaseProgress(inFlight, inFlightMatch, selection.phaseId)
+  };
 }
 
 function nonEmpty(value: unknown): value is string {

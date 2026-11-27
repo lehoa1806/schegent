@@ -29,6 +29,36 @@
 // multi-paragraph prompts, and no test here asserts on prompt text, so copying
 // eight kilobytes of instruction to keep them byte-identical would buy nothing
 // and rot immediately.
+//
+// It differs from them in five ways. Two are in what it declares:
+//
+//   - The Phase list. `SPECKIT_PHASE_IDS` holds nine Phases with one
+//     `speckit-review`, where the new-feature example holds ten, with
+//     `speckit-code-review` and `speckit-security-review`. `LOOP_PHASES`, above,
+//     names `speckit-review`.
+//   - The models. Every Spec Kit Phase here gets `EXAMPLE_MODEL`, which the
+//     new-feature example declares on seven of its ten; see its doc below.
+//
+// And three fields the examples declare are left out, so each resolves to its
+// default here:
+//
+//   - `sideEffects`. The examples declare `git` on `speckit-specify` and
+//     `finalize`; here every Phase resolves to `'workspace'`. So a Run built
+//     from this file asks for no Git approval (`workflow-run-factory.ts`), and
+//     `run-driver.ts` neither checks a mutation plan nor takes a checkpoint
+//     before a Phase. The tests of that gate declare their own `git` Phases.
+//   - `effort`. The new-feature example sets one on each of its ten Phases, and
+//     the bugfix example sets none. Here the CLI gets no `--effort`, and
+//     `standard-pipeline.test.ts` asserts that no phase-start payload carries
+//     one.
+//   - `hostVerification`. The examples declare `exit-code` on twelve Phases:
+//     seven of the new-feature example's ten and all five of the bugfix
+//     example's. Omitted, it resolves to `exit-code` anyway, because
+//     `'workspace'` is load-bearing (`claimIsLoadBearing` in
+//     `phase-runner-policy.ts`). Every Phase is judged on its exit code in both.
+//     Those twelve are eleven here, the one `speckit-review` standing for the
+//     two reviews, and for those eleven only `hostVerificationDeclaredAt`
+//     differs: `'default'` here, `'phase-definition'` there.
 
 import {
   buildCatalog,
@@ -36,12 +66,17 @@ import {
   type PipelineCatalog,
   type PipelineDef
 } from '../../src/config/pipeline-config';
-import type { BackendRunnerKind } from '../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../src/contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../../src/state/workflow-run';
 import { emptyModels } from './process-catalog-fixture';
 
-/** The model `repo/examples/` declares on every Phase in both documents. */
-export const EXAMPLE_MODEL = 'claude-sonnet-5';
+/**
+ * The model `repo/examples/speckit-new-feature.pipeline.yaml` declares on seven
+ * of its ten Phases; `speckit-checklist`, `speckit-implement` and `finalize`
+ * declare `claude-sonnet-5-5`. This file gives it to every Spec Kit Phase. The
+ * bugfix document declares none, and neither do the bugfix Phases below.
+ */
+export const EXAMPLE_MODEL = 'claude-opus-5-5';
 
 export const SPECKIT_PIPELINE_ID = 'speckit-new-feature';
 export const SPECKIT_BUGFIX_PIPELINE_ID = 'speckit-bugfix';
@@ -139,8 +174,7 @@ function bugfixPhase(id: string): PhaseDef {
     id,
     name: BUGFIX_NAMES[id]!,
     version: 1,
-    instruction: BUGFIX_INSTRUCTIONS[id]!,
-    model: EXAMPLE_MODEL
+    instruction: BUGFIX_INSTRUCTIONS[id]!
   });
 }
 

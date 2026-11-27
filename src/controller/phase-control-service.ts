@@ -1,12 +1,56 @@
 import { getOperatorActor } from '../lib/operator-attribution';
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
-import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { PhaseOverride, WorkflowRun } from '../state/workflow-run';
+import {
+  QueueMutationRejected,
+  allowedSameStatusFor,
+  type RunUpdateLabel,
+  type WorkspaceStateStore
+} from '../state/workspace-state';
+import {
+  LIVE_RUN_STATUSES as LIVE,
+  type PhaseOverride,
+  type RunPatch,
+  type WorkflowRun,
+  type WorkflowRunStatus
+} from '../state/workflow-run';
+
+// FR-R7-01 — derived from `RUN_STATUS_TRANSITIONS` (`['running', 'paused', 'failed']`).
+const OPERABLE = allowedSameStatusFor('operator');
 import type { RetryCoordinator } from '../services/retry-coordinator';
 import { plannedTotalPatch } from '../services/run-planned-total';
+import {
+  decidePhaseControl,
+  isRunInRetryCountdown,
+  phaseExists,
+  type PhaseControlOperation
+} from './phase-control-decision';
 
 export type MutationResult = { ok: true } | { ok: false; reason: string };
+
+
+/**
+ * FR-R4-F01 — thrown from inside a patch when the Run as it is NOW no longer admits
+ * the operation, so the refusal carries the same closed reason the classifier gives
+ * and nothing is written. The classification the caller made on its own earlier
+ * read is not what is enforced; this one, taken inside the chain, is.
+ */
+class PatchRefused extends Error {
+  constructor(public readonly reason: string) {
+    super(reason);
+    this.name = 'PatchRefused';
+  }
+}
+
+/** Re-decide `operation` on the current Run, with the one classifier every control uses. */
+function admit(operation: PhaseControlOperation, current: WorkflowRun, targetPhaseId: string): void {
+  const decision = decidePhaseControl({ operation, run: current, targetPhaseId });
+  if (!decision.eligible) throw new PatchRefused(decision.reason);
+}
+
+type PatchOutcome =
+  | { readonly ok: true; readonly run: WorkflowRun }
+  | { readonly ok: false; readonly reason: string };
 
 export type PhaseControlAuditEvent =
   | 'phase-pause-requested'
@@ -41,7 +85,7 @@ export interface PhaseControlAuditor {
 interface PhaseControlServiceDeps {
   readonly store: Pick<
     WorkspaceStateStore,
-    'getRun' | 'setRun' | 'getQueue' | 'setWatchdog'
+    'getRun' | 'updateRun' | 'getQueue' | 'setWatchdog' | 'runCommitClaim'
   >;
   // Feature 093 (T035) — the Pick shrank rather than grew. Phase B added
   // `queueIdForTask` here so each write could name its queue by re-deriving it
@@ -73,6 +117,7 @@ interface PhaseControlServiceDeps {
   readonly armIsContinue: (queueId: string) => void;
   readonly cancelActive: (queueId: string) => void;
   readonly resumeExisting: (queueId: string, customPrompt?: string) => Promise<boolean>;
+  readonly onRunResumed?: (runId: string) => void;
   readonly auditor: PhaseControlAuditor;
 }
 
@@ -92,21 +137,36 @@ export class PhaseControlService {
   public async pauseActivePhase(queueId: string): Promise<MutationResult> {
     this.deps.logger.info('Workflow operation triggered: pauseActivePhase');
     const run = this.deps.store.getRun(queueId);
-    const isInRetryCountdown = run?.status === 'paused' && run.pendingRetryAt !== null;
-    if (!run || (run.status !== 'running' && !isInRetryCountdown)) {
-      return { ok: false, reason: 'no-run-in-flight' };
-    }
-    if (run.manualPauseAt !== null) return { ok: false, reason: 'run-already-paused' };
+    if (!run) return { ok: false, reason: 'no-run-in-flight' };
+    // FR-R3-151 — the shared classifier replicates the running/retry-countdown
+    // and already-paused checks that used to be inline here, so Pause is
+    // enforced by the same rule set as every other Phase-control operation.
+    const decision = decidePhaseControl({ operation: 'pause', run, targetPhaseId: run.currentPhase });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
+    // Same predicate `decidePhaseControl`'s 'pause' branch just decided
+    // eligibility with (phase-control-decision.ts) — shared, not re-derived,
+    // so this can't silently disagree with the eligibility check above it.
+    const isInRetryCountdown = isRunInRetryCountdown(run);
     // Feature 093 (T045) — address the cancel at this queue. Unaddressed, pausing
     // one Run mid-countdown discarded every sibling's armed retry too (FR-024).
     if (isInRetryCountdown) this.deps.retryCoordinator.cancelPendingTimer(queueId);
 
-    const updated: WorkflowRun = {
-      ...run,
-      manualPauseAt: Date.now(),
-      manualPauseCause: 'operator-paused'
-    };
-    await this.deps.store.setRun(queueId, updated);
+    // FR-R4-F01 (FR-008) — the pause is a PATCH of the Run as it is inside the
+    // chain, not a whole record built from the read above: a liveness write that
+    // landed in between keeps its liveness, and this pause keeps its pause.
+    const outcome = await this.patchRun(
+      queueId,
+      run.id,
+      'pause',
+      LIVE,
+      (current) => {
+        admit('pause', current, current.currentPhase);
+        return { manualPauseAt: Date.now(), manualPauseCause: 'operator-paused' };
+      },
+      { status: 'no-run-in-flight' }
+    );
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
     try {
       this.deps.cancelActive(queueId);
     } catch (err) {
@@ -143,24 +203,32 @@ export class PhaseControlService {
     this.deps.logger.info('Workflow operation triggered: resumeActivePhase');
     const run = this.deps.store.getRun(queueId);
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
-    if (run.manualPauseAt === null && run.pendingRetryAt === null) {
-      return { ok: false, reason: 'run-not-paused' };
-    }
+    const decision = decidePhaseControl({ operation: 'resume', run, targetPhaseId: run.currentPhase });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
 
     this.deps.armIsContinue(queueId);
     this.deps.retryCoordinator.cancelPendingTimer(queueId);
-    const updated: WorkflowRun = {
-      ...run,
-      status: 'running',
-      manualPauseAt: null,
-      manualPauseCause: null,
-      resumeTargetPhaseId: null,
-      pendingRetryAt: null,
-      pendingRetryCause: null,
-      delayedRetryCount: run.pendingRetryAt !== null ? 0 : run.delayedRetryCount,
-      ...(customPrompt ? { resumePrompt: customPrompt } : {})
-    };
-    await this.deps.store.setRun(queueId, updated);
+    const outcome = await this.patchRun(queueId, run.id, 'resume', OPERABLE, (current) => {
+      admit('resume', current, current.currentPhase);
+      return {
+        status: 'running',
+        manualPauseAt: null,
+        manualPauseCause: null,
+        resumeTargetPhaseId: null,
+        pendingRetryAt: null,
+        pendingRetryCause: null,
+        // FR-R4-F02 (contract W6 G19) — Resume leaves `paused`, and a Run whose credit polling
+        // stopped is resumed by exactly this patch: no status check, no new window.
+        creditPause: null,
+        // FR-R4-F14 (contract W4) — a failed Run resumed here leaves `failed`, and its cause goes.
+        failureCause: undefined,
+        delayedRetryCount: current.pendingRetryAt !== null ? 0 : current.delayedRetryCount,
+        ...(customPrompt ? { resumePrompt: customPrompt } : {})
+      };
+    });
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
+    this.deps.onRunResumed?.(updated.id);
     await this.deps.auditor.appendPhaseControl('phase-resumed', updated, {
       runId: updated.id,
       phaseId: updated.currentPhase,
@@ -176,30 +244,44 @@ export class PhaseControlService {
     this.deps.logger.info('Workflow operation triggered: restartActivePhase');
     const run = this.deps.store.getRun(queueId);
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
+    // FR-R3-151 (FR-002) — a terminal Run (completed/canceled) must refuse
+    // Restart even though a Run record exists; this used to be the only
+    // check here, which is the confirmed defect this classifier call closes.
+    const decision = decidePhaseControl({ operation: 'restart', run, targetPhaseId: run.currentPhase });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
     this.deps.retryCoordinator.cancelPendingTimer(queueId);
     const hadPendingRetry = run.pendingRetryAt !== null;
-    const nextOverrides = run.phaseOverrides.filter(
-      (override) => override.phaseId !== run.currentPhase
-    );
-    const updated: WorkflowRun = {
-      ...run,
-      status: 'running',
-      currentIteration: 1,
-      manualPauseAt: null,
-      manualPauseCause: null,
-      resumeTargetPhaseId: null,
-      pendingRetryAt: null,
-      pendingRetryCause: null,
-      delayedRetryCount: 0,
-      phaseOverrides: nextOverrides,
-      // FR-R3-008 (T378) — restarting the active phase clears its override, so
-      // the phase is back in the plan and the recorded denominator has to say so
-      // in this write. Deriving it later from `phaseOverrides` would be a second
-      // rule for the same number.
-      ...plannedTotalPatch(run, nextOverrides),
-      lastTransitionAt: Date.now()
-    };
-    await this.deps.store.setRun(queueId, updated);
+    const outcome = await this.patchRun(queueId, run.id, 'restart', OPERABLE, (current) => {
+      // The Phase the operator asked to restart is the one that was current when
+      // they asked; a Run that has moved on since is refused, not restarted elsewhere.
+      admit('restart', current, run.currentPhase);
+      const nextOverrides = current.phaseOverrides.filter(
+        (override) => override.phaseId !== current.currentPhase
+      );
+      return {
+        status: 'running',
+        currentIteration: 1,
+        manualPauseAt: null,
+        manualPauseCause: null,
+        resumeTargetPhaseId: null,
+        pendingRetryAt: null,
+        pendingRetryCause: null,
+        creditPause: null,
+        // FR-R4-F14 (contract W4) — restarting a failed Run leaves `failed`, and its cause goes.
+        failureCause: undefined,
+        delayedRetryCount: 0,
+        phaseOverrides: nextOverrides,
+        // FR-R3-008 (T378) — restarting the active phase clears its override, so
+        // the phase is back in the plan and the recorded denominator has to say so
+        // in this write. Deriving it later from `phaseOverrides` would be a second
+        // rule for the same number.
+        ...plannedTotalPatch(current, nextOverrides),
+        lastTransitionAt: Date.now()
+      };
+    });
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
+    this.deps.onRunResumed?.(updated.id);
     if (hadPendingRetry || run.delayedRetryCount > 0) {
       // Feature 093 (T035) — the retry-cap pause is recorded on the queue that
       // exhausted it, so the read is queue-addressed for the same reason the
@@ -224,79 +306,85 @@ export class PhaseControlService {
     return { ok: true };
   }
 
-  public async skipPhase(queueId: string, phaseId: string): Promise<MutationResult> {
-    this.deps.logger.info('Workflow operation triggered: skipPhase', { phaseId });
-    const result = await this.setPhaseOverride(queueId, phaseId, 'skipped', 'phase-skipped');
+  public async skipPhase(queueId: string, runId: string, phaseId: string): Promise<MutationResult> {
+    this.deps.logger.info('Workflow operation triggered: skipPhase', { runId, phaseId });
+    const run = this.deps.store.getRun(queueId);
+    // FR-R4-F20 (D5) — `runId` is the Run the operator confirmed, as `setPhaseBreakpoint`'s is.
+    // A queue that now holds another Run collapses to `null`, so the classifier answers
+    // `no-run-in-flight` and the successor is never skipped on the strength of a stale confirm.
+    const matchedRun = run && run.id === runId ? run : null;
+    // FR-R3-151 (FR-004) — the confirmed defect was accepting a phaseId that
+    // is not the current Phase at all. Deliberately no run.status==='running'
+    // gate here: a 'paused' Run is a legitimate Skip starting point.
+    //
+    // FR-R4-F20 (2026-10-29): Skip no longer acts on a failed Run. The
+    // classifier refuses it `run-failed`, and this method asks it twice: here,
+    // before anything is written, and again inside the update chain
+    // (`setPhaseOverride`'s `admit`), on the Run as it is at write time.
+    // `failed` stays operable for Restart, Resume and Retry.
+    const decision = decidePhaseControl({ operation: 'skip', run: matchedRun, targetPhaseId: phaseId });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
+    // Unreachable at runtime — the classifier's 'skip' branch already
+    // rejects a null `matchedRun` above; kept as the type guard the write below
+    // needs, and so `matchedRun` can be threaded into `setPhaseOverride` instead of
+    // re-fetched there.
+    if (!matchedRun) return { ok: false, reason: 'no-run-in-flight' };
+
+    const result = await this.setPhaseOverride(queueId, matchedRun, phaseId, 'skipped', 'phase-skipped');
     if (!result.ok) return result;
 
-    const run = this.deps.store.getRun(queueId);
-    if (run?.currentPhase !== phaseId) return result;
-    if (run.status === 'running') {
-      this.deps.noteActivePhaseOverrideAbort(queueId, run.id, phaseId);
-      await this.deps.auditor.emitPhaseJumped(run, phaseId);
+    // The re-read names the Run too: one that replaced the confirmed Run in the gap is neither
+    // aborted nor resumed on this Skip's account (FR-R4-F20, D5).
+    const runAfterOverride = this.deps.store.getRun(queueId);
+    if (runAfterOverride?.id !== runId || runAfterOverride.currentPhase !== phaseId) return result;
+    if (runAfterOverride.status === 'running') {
+      this.deps.noteActivePhaseOverrideAbort(queueId, runAfterOverride.id, phaseId);
+      await this.deps.auditor.emitPhaseJumped(runAfterOverride, phaseId);
       this.deps.cancelActive(queueId);
-    } else if (run.status === 'paused') {
+    } else if (runAfterOverride.status === 'paused') {
       await this.resumeActivePhase(queueId);
-    } else if (run.status === 'failed' && run.pendingRetryAt !== null) {
-      await this.deps.store.setRun(queueId, {
-        ...run,
-        pendingRetryAt: null,
-        pendingRetryCause: null
-      });
-      await this.deps.store.setWatchdog({
-        paused: false,
-        pausedSince: null,
-        nextPollAt: null,
-        pollIntervalMs: 0,
-        cause: null,
-        lastStatusOk: null
-      });
-      this.deps.retryCoordinator.cancelPendingTimer(queueId);
-      this.scheduleResume(queueId, 'skipPhase resume failed');
-    } else if (run.status === 'failed') {
-      await this.deps.store.setRun(queueId, {
-        ...run,
-        status: 'running',
-        lastError: null,
-        delayedRetryCount: 0,
-        pendingRetryAt: null,
-        pendingRetryCause: null,
-        manualPauseAt: null,
-        manualPauseCause: null,
-        resumeTargetPhaseId: null,
-        lastTransitionAt: Date.now()
-      });
-      this.scheduleResume(queueId, 'skipPhase resume (terminal) failed');
     }
+    // FR-R4-F20 (D4): a Run re-read as failed failed after its override was written. The override and
+    // its `phase-skipped` row stand; nothing is revived, resumed, scheduled or cancelled.
     return result;
   }
 
   public async disablePhase(queueId: string, phaseId: string): Promise<MutationResult> {
     this.deps.logger.info('Workflow operation triggered: disablePhase', { phaseId });
-    return this.setPhaseOverride(queueId, phaseId, 'disabled', 'phase-disabled');
+    const run = this.deps.store.getRun(queueId);
+    // FR-R3-151 (FR-005) — the confirmed defect was accepting a phaseId that
+    // had already started (active or completed); Disable now refuses unless
+    // the target is still future.
+    const decision = decidePhaseControl({ operation: 'disable', run, targetPhaseId: phaseId });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
+    // Unreachable at runtime — same reasoning as `skipPhase` above.
+    if (!run) return { ok: false, reason: 'no-run-in-flight' };
+    return this.setPhaseOverride(queueId, run, phaseId, 'disabled', 'phase-disabled');
   }
 
   public async enablePhase(queueId: string, phaseId: string): Promise<MutationResult> {
     this.deps.logger.info('Workflow operation triggered: enablePhase', { phaseId });
     const run = this.deps.store.getRun(queueId);
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
-    if (!this.phaseExists(run, phaseId)) {
-      return { ok: false, reason: 'phase-id-not-in-pipeline-snapshot' };
-    }
-    if (!run.phaseOverrides.some((override) => override.phaseId === phaseId)) {
-      return { ok: false, reason: 'no-override-to-clear' };
-    }
-    const nextOverrides = run.phaseOverrides.filter((override) => override.phaseId !== phaseId);
-    const updated: WorkflowRun = {
-      ...run,
-      phaseOverrides: nextOverrides,
-      // FR-R3-008 (T378) — re-enabling a phase puts work back into the plan, so
-      // the total grows in the same write and reported progress falls. That is
-      // honest: there is more left to do than there was a moment ago.
-      ...plannedTotalPatch(run, nextOverrides),
-      lastTransitionAt: Date.now()
-    };
-    await this.deps.store.setRun(queueId, updated);
+    // FR-R3-151 (FR-006) — the confirmed defect was accepting Enable whenever
+    // *any* override existed for the phase, regardless of its action or
+    // whether the phase was still future. The classifier requires both.
+    const decision = decidePhaseControl({ operation: 'enable', run, targetPhaseId: phaseId });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
+    const outcome = await this.patchRun(queueId, run.id, 'enable', OPERABLE, (current) => {
+      admit('enable', current, phaseId);
+      const nextOverrides = current.phaseOverrides.filter((override) => override.phaseId !== phaseId);
+      return {
+        phaseOverrides: nextOverrides,
+        // FR-R3-008 (T378) — re-enabling a phase puts work back into the plan, so
+        // the total grows in the same write and reported progress falls. That is
+        // honest: there is more left to do than there was a moment ago.
+        ...plannedTotalPatch(current, nextOverrides),
+        lastTransitionAt: Date.now()
+      };
+    });
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
     await this.deps.auditor.appendPhaseControl('phase-enabled', updated, {
       runId: updated.id,
       phaseId
@@ -324,25 +412,38 @@ export class PhaseControlService {
     // one Run and `runId` confirms it is that Run, so a breakpoint can no longer
     // land on a successor that took the queue between render and click.
     const run = this.deps.store.getRun(queueId);
-    if (!run || run.id !== runId) return { ok: false, reason: 'run-not-in-flight' };
-    if (!this.phaseExists(run, phaseId)) return { ok: false, reason: 'phase-unknown' };
-    if (run.currentPhase === phaseId) return { ok: false, reason: 'phase-in-flight' };
-    if (run.phasesCompleted.some((entry) => entry.phase === phaseId)) {
-      return { ok: false, reason: 'phase-completed' };
-    }
-    if (run.phaseOverrides.some((override) => override.phaseId === phaseId)) {
-      return { ok: false, reason: 'phase-overridden' };
-    }
-    if (run.phaseBreakpoints.some((entry) => entry.phaseId === phaseId)) {
-      return { ok: false, reason: 'breakpoint-already-set' };
-    }
+    const matchedRun = run && run.id === runId ? run : null;
+    // FR-R3-151 (FR-001) — set-breakpoint routes through the same shared
+    // classifier as every other Phase-control operation; its refusal reasons
+    // are unchanged from before this feature (phase-unknown/phase-in-flight/
+    // phase-completed/phase-overridden/breakpoint-already-set).
+    const decision = decidePhaseControl({ operation: 'set-breakpoint', run: matchedRun, targetPhaseId: phaseId });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
+    // Unreachable at runtime — the classifier's 'set-breakpoint' branch
+    // already rejects a null `run` with this exact reason
+    // (phase-control-decision.ts), so `decision.eligible` above is always
+    // `false` when `matchedRun` is `null`. TypeScript cannot see through
+    // that opaque call to narrow `matchedRun` itself, so this stays as the
+    // type guard the write below needs; the string literal is provably
+    // never independently reached, not a second copy that could drift.
+    if (!matchedRun) return { ok: false, reason: 'run-not-in-flight' };
     const entry = { phaseId, setAt: Date.now(), actor: 'operator' as const };
-    const updated: WorkflowRun = {
-      ...run,
-      phaseBreakpoints: [...run.phaseBreakpoints, entry],
-      lastTransitionAt: Date.now()
-    };
-    await this.deps.store.setRun(queueId, updated);
+    const outcome = await this.patchRun(
+      queueId,
+      matchedRun.id,
+      'set-breakpoint',
+      OPERABLE,
+      (current) => {
+        admit('set-breakpoint', current, phaseId);
+        return {
+          phaseBreakpoints: [...current.phaseBreakpoints, entry],
+          lastTransitionAt: Date.now()
+        };
+      },
+      { gone: 'run-not-in-flight' }
+    );
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
     await this.deps.auditor.appendBreakpoint('phase-breakpoint-set', updated, {
       runId: updated.id,
       phaseId,
@@ -364,16 +465,30 @@ export class PhaseControlService {
     // `setPhaseBreakpoint` above: `runId` is the operator's named target, so the
     // comparison validates their selection rather than reconciling a slot.
     const run = this.deps.store.getRun(queueId);
-    if (!run || run.id !== runId) return { ok: false, reason: 'run-not-in-flight' };
-    if (!run.phaseBreakpoints.some((entry) => entry.phaseId === phaseId)) {
-      return { ok: false, reason: 'breakpoint-not-set' };
-    }
-    const updated: WorkflowRun = {
-      ...run,
-      phaseBreakpoints: run.phaseBreakpoints.filter((entry) => entry.phaseId !== phaseId),
-      lastTransitionAt: Date.now()
-    };
-    await this.deps.store.setRun(queueId, updated);
+    const matchedRun = run && run.id === runId ? run : null;
+    const decision = decidePhaseControl({ operation: 'clear-breakpoint', run: matchedRun, targetPhaseId: phaseId });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
+    // Unreachable at runtime — same reasoning as `setPhaseBreakpoint` above:
+    // the classifier's 'clear-breakpoint' branch already rejects a null
+    // `run` with this exact reason, kept only as the type guard TypeScript
+    // needs since it cannot narrow `matchedRun` through that opaque call.
+    if (!matchedRun) return { ok: false, reason: 'run-not-in-flight' };
+    const outcome = await this.patchRun(
+      queueId,
+      matchedRun.id,
+      'clear-breakpoint',
+      OPERABLE,
+      (current) => {
+        admit('clear-breakpoint', current, phaseId);
+        return {
+          phaseBreakpoints: current.phaseBreakpoints.filter((entry) => entry.phaseId !== phaseId),
+          lastTransitionAt: Date.now()
+        };
+      },
+      { gone: 'run-not-in-flight' }
+    );
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
     await this.deps.auditor.appendBreakpoint('phase-breakpoint-cleared', updated, {
       runId: updated.id,
       phaseId,
@@ -392,9 +507,29 @@ export class PhaseControlService {
       phaseId
     });
     const run = this.deps.store.getRun(queueId);
+    // FR-R3-151 (FR-007; Feature 022 FR-008–FR-013) — routed through the
+    // shared classifier for census coverage, but Delete's own eligibility
+    // (any visible Phase state) is deliberately unchanged: the classifier's
+    // 'delete' branch is permissive by design and the task-id/phase-id/
+    // already-removed checks below remain this method's own.
+    const decision = decidePhaseControl({ operation: 'delete', run, targetPhaseId: phaseId });
+    if (!decision.eligible) return { ok: false, reason: decision.reason };
     if (!run) return { ok: false, reason: 'no-run-in-flight' };
-    if (run.featureId !== taskId) return { ok: false, reason: 'unknown-task-id' };
-    if (!this.phaseExists(run, phaseId)) return { ok: false, reason: 'unknown-phase-id' };
+    // Feature 201 (FR-018, FR-022) — the reason names what this guard actually
+    // observed. It fires when the addressed queue holds a Run and that Run is
+    // not this Task's, which is not the same fact as "no such Task": whether
+    // the id is known is decided by the request rows, which this service does
+    // not hold, and is checked at the controller before the call reaches here.
+    // The old `unknown-task-id` told an operator with a real, queued, waiting
+    // Task that their Task did not exist.
+    //
+    // No enumeration gains a member for this: `MutationResult.reason` is a
+    // plain `string`, and the operator-facing tables (`LIFECYCLE_REFUSAL_TEXT`,
+    // `REFUSAL_TEXT`, `ILLEGAL_STATE_MESSAGES`) derive over methods that do not
+    // include `removeTaskPhase`, so adding a key there would be dead prose
+    // their own gates reject.
+    if (run.featureId !== taskId) return { ok: false, reason: 'no-active-run-for-task' };
+    if (!phaseExists(run, phaseId)) return { ok: false, reason: 'unknown-phase-id' };
     if (
       run.phaseOverrides.some(
         (override) => override.phaseId === phaseId && override.action === 'removed'
@@ -402,30 +537,40 @@ export class PhaseControlService {
     ) {
       return { ok: false, reason: 'phase-already-removed' };
     }
-    const priorPhaseState = this.describePhaseState(run, phaseId);
-    const nextOverrides: PhaseOverride[] = [
-      ...run.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
-      {
-        phaseId,
-        action: 'removed',
-        setAt: Date.now(),
-        actor: getOperatorActor(),
-        priorPhaseState
+    let priorPhaseState = this.describePhaseState(run, phaseId);
+    const outcome = await this.patchRun(queueId, run.id, 'remove-phase', OPERABLE, (current) => {
+      // The checks above ran on the earlier read; these are the same checks on the
+      // Run as it is inside the chain, and the prior state recorded is that Run's.
+      if (current.featureId !== taskId) throw new PatchRefused('no-active-run-for-task');
+      if (!phaseExists(current, phaseId)) throw new PatchRefused('unknown-phase-id');
+      if (current.phaseOverrides.some((o) => o.phaseId === phaseId && o.action === 'removed')) {
+        throw new PatchRefused('phase-already-removed');
       }
-    ];
-    const updated: WorkflowRun = {
-      ...run,
-      phaseOverrides: nextOverrides,
-      // FR-R3-008 (T378) — a removed phase leaves the plan, so it leaves the
-      // denominator in the same write. Both sides of the progress fraction
-      // exclude the same override set, which is what keeps the driver's later
-      // `result: 'skipped'` record from pushing progress past 100%.
-      ...plannedTotalPatch(run, nextOverrides),
-      lastTransitionAt: Date.now()
-    };
-    await this.deps.store.setRun(queueId, updated);
-    if (run.currentPhase === phaseId && run.status === 'running') {
-      this.deps.noteActivePhaseOverrideAbort(queueId, run.id, phaseId);
+      priorPhaseState = this.describePhaseState(current, phaseId);
+      const nextOverrides: PhaseOverride[] = [
+        ...current.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
+        {
+          phaseId,
+          action: 'removed',
+          setAt: Date.now(),
+          actor: getOperatorActor(),
+          priorPhaseState
+        }
+      ];
+      return {
+        phaseOverrides: nextOverrides,
+        // FR-R3-008 (T378) — a removed phase leaves the plan, so it leaves the
+        // denominator in the same write. Both sides of the progress fraction
+        // exclude the same override set, which is what keeps the driver's later
+        // `result: 'skipped'` record from pushing progress past 100%.
+        ...plannedTotalPatch(current, nextOverrides),
+        lastTransitionAt: Date.now()
+      };
+    });
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
+    if (updated.currentPhase === phaseId && updated.status === 'running') {
+      this.deps.noteActivePhaseOverrideAbort(queueId, updated.id, phaseId);
       this.deps.cancelActive(queueId);
     }
     return { ok: true, priorPhaseState, runId: updated.id };
@@ -433,15 +578,16 @@ export class PhaseControlService {
 
   private async setPhaseOverride(
     queueId: string,
+    run: WorkflowRun,
     phaseId: string,
     action: 'skipped' | 'disabled',
     eventType: 'phase-skipped' | 'phase-disabled'
   ): Promise<MutationResult> {
-    const run = this.deps.store.getRun(queueId);
-    if (!run) return { ok: false, reason: 'no-run-in-flight' };
-    if (!this.phaseExists(run, phaseId)) {
-      return { ok: false, reason: 'phase-id-not-in-pipeline-snapshot' };
-    }
+    // FR-R3-151 — eligibility is decided by the caller (skipPhase/
+    // disablePhase) via decidePhaseControl before this writer runs; `run` is
+    // the same Run that call already validated, threaded in rather than
+    // re-fetched, so there is one read of the store per mutation instead of
+    // two and no second `!run` narrowing check to keep in sync with it.
     const override = {
       phaseId,
       action,
@@ -449,22 +595,31 @@ export class PhaseControlService {
       actor: getOperatorActor()
     };
     const hadBreakpoint = run.phaseBreakpoints.some((entry) => entry.phaseId === phaseId);
-    const nextOverrides: PhaseOverride[] = [
-      ...run.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
-      override
-    ];
-    const updated: WorkflowRun = {
-      ...run,
-      phaseOverrides: nextOverrides,
-      // FR-R3-008 (T378) — skip and disable both narrow the plan, so both narrow
-      // the recorded total here. This is the write the acceptance criterion names:
-      // overriding a phase that has not run yet raises reported progress, because
-      // the numerator is unchanged and there is less left to do.
-      ...plannedTotalPatch(run, nextOverrides),
-      phaseBreakpoints: run.phaseBreakpoints.filter((entry) => entry.phaseId !== phaseId),
-      lastTransitionAt: Date.now()
-    };
-    await this.deps.store.setRun(queueId, updated);
+    const outcome = await this.patchRun(
+      queueId,
+      run.id,
+      action === 'skipped' ? 'skip' : 'disable',
+      OPERABLE,
+      (current) => {
+        admit(action === 'skipped' ? 'skip' : 'disable', current, phaseId);
+        const nextOverrides: PhaseOverride[] = [
+          ...current.phaseOverrides.filter((existing) => existing.phaseId !== phaseId),
+          override
+        ];
+        return {
+          phaseOverrides: nextOverrides,
+          // FR-R3-008 (T378) — skip and disable both narrow the plan, so both narrow
+          // the recorded total here. This is the write the acceptance criterion names:
+          // overriding a phase that has not run yet raises reported progress, because
+          // the numerator is unchanged and there is less left to do.
+          ...plannedTotalPatch(current, nextOverrides),
+          phaseBreakpoints: current.phaseBreakpoints.filter((entry) => entry.phaseId !== phaseId),
+          lastTransitionAt: Date.now()
+        };
+      }
+    );
+    if (!outcome.ok) return outcome;
+    const updated = outcome.run;
     await this.deps.auditor.appendPhaseControl(eventType, updated, {
       runId: updated.id,
       phaseId,
@@ -481,18 +636,42 @@ export class PhaseControlService {
   }
 
   /**
-   * Feature 098 (T029, US3, FR-028) — a Run's phases are the ones in its own
-   * snapshot, and a Run without one has none.
+   * FR-R4-F01 (FR-007, FR-008) — apply `patch` to the Run as it is inside the
+   * `KEYS.run` chain. Every control in this service writes through here.
    *
-   * The fallback read `BUILT_IN_PHASES`, so a snapshot-less Run had every
-   * membership question answered by the seventeen ids the built-in layer claimed:
-   * a breakpoint could be set on, or a removal accepted for, a Phase that Run was
-   * never going to execute. Answering `false` is not merely the same answer an
-   * empty built-in layer would now give — it is the answer that stays correct if a
-   * catalog is ever non-empty again.
+   * The two refusals that are only a race with another writer (the Run was
+   * replaced or removed, or is no longer in a status this control can act on) come
+   * back as the closed reason the control would have given on its own read, so the
+   * caller's `MutationResult` is unchanged in kind. A lost claim, a fence refusal
+   * or a broken invariant still throws, as `setRun` did.
    */
-  private phaseExists(run: WorkflowRun, phaseId: string): boolean {
-    return (run.pipeline?.phases ?? []).some((phase) => phase.id === phaseId);
+  private async patchRun(
+    queueId: string,
+    runId: string,
+    label: RunUpdateLabel,
+    allowedStatuses: readonly WorkflowRunStatus[],
+    patch: (current: WorkflowRun) => RunPatch,
+    refusals: { readonly status?: string; readonly gone?: string } = {}
+  ): Promise<PatchOutcome> {
+    try {
+      const run = await this.deps.store.updateRun(
+        queueId,
+        { runId, allowedStatuses, patch, label },
+        this.deps.store.runCommitClaim(queueId)
+      );
+      return { ok: true, run };
+    } catch (error) {
+      if (error instanceof PatchRefused) return { ok: false, reason: error.reason };
+      if (error instanceof QueueMutationRejected) {
+        if (error.reason === 'stale-run-id') {
+          return { ok: false, reason: refusals.gone ?? 'no-run-in-flight' };
+        }
+        if (error.reason === 'run-status-precondition') {
+          return { ok: false, reason: refusals.status ?? 'run-terminal' };
+        }
+      }
+      throw error;
+    }
   }
 
   private describePhaseState(run: WorkflowRun, phaseId: string): string {

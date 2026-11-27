@@ -1,22 +1,17 @@
 <script lang="ts">
-  // Feature 020 T039 + T053 — top-level Activity Feed wrapper. Composes
-  // the selectors, iteration stepper, empty-state cards, and reading
-  // pane, and wires them to the per-instance phase-log store.
-  //
-  // Tail lifecycle (T053): when the user's selection resolves to
-  //   (a) iteration === the latest known iteration for the tuple, AND
-  //   (b) the selected task is the snapshot's in-flight task, AND
-  //   (c) the selected phase matches the in-flight task's
-  //       `currentPhase`,
-  // the container auto-attaches a tail by calling `store.startTail`.
-  // The `$effect` watches the derived `tailTarget`; on cleanup (target
-  // change to null, selection re-cascade, or component unmount) it
-  // calls `store.stopTail()`. Push messages are routed through the
-  // store's `handlePush` internals — this component is intentionally
-  // unaware of the wire format beyond the start/stop calls.
+  // Feature 020 T039 + T053 + FR-R5-F18 — top-level Activity Feed wrapper.
+  // Composes selectors, iteration stepper, empty-state cards, and reading pane,
+  // and auto-attaches a live tail when the selection resolves to the newest
+  // iteration (`iterations[0]`) of the selected queue's in-flight task/phase.
 
-  import type { WorkflowSnapshot } from '../../lib/snapshot-types';
-  import { createPhaseLogStore, type PhaseLogStore } from '../../lib/phase-log-store.svelte';
+  import type { QueueItem, WorkflowSnapshot } from '../../lib/snapshot-types';
+  import { DEFAULT_BACKEND } from '../../lib/generated/backend-kinds';
+  import {
+    createPhaseLogStore,
+    isTransientTailFailure,
+    type PhaseLogStore
+  } from '../../lib/phase-log-store.svelte';
+  import { createEmptyIterationReprobeGate } from '../../lib/phase-log-empty-reprobe';
   import PhaseLogSelectors from './PhaseLogSelectors.svelte';
   import PhaseLogIterationStepper from './PhaseLogIterationStepper.svelte';
   import PhaseLogReadingPane from './PhaseLogReadingPane.svelte';
@@ -24,8 +19,11 @@
   import { phaseLogEntriesToText } from '../../lib/activity-feed/phase-log-text-export';
   import {
     resolveLiveSelection,
+    currentInFlightRow,
+    queueInFlightRow,
     getPhaseOptions,
-    queueIdForItem
+    queueIdForItem,
+    TERMINAL_PHASE_SENTINEL
   } from '../../lib/activity-feed-selection.svelte';
   import { readPhaseLog } from '../../lib/phase-log-ipc';
 
@@ -46,6 +44,28 @@
      * store's own cascade instead of a workspace-wide read.
      */
     readonly autoFollow?: boolean;
+    /**
+     * The in-flight reading this instance treats as "currently executing":
+     * what the Live button jumps to, whether it renders enabled, whether a
+     * live tail attaches, and which task the breadcrumb resolves a label
+     * against. Omitted (BUG-002), Live and the breadcrumb read the in-flight
+     * Run that started last across every queue (FR-021), and a tail reads
+     * the in-flight row of the queue the selection names (FR-022).
+     *
+     * `RunDetailTier` passes its own Run. Its embed is pinned to one Run on
+     * one queue, and the workspace singular is whatever the *default* queue
+     * happens to be executing, so reading it there had both halves wrong at
+     * once: Live cascaded the pinned store onto another queue's task (the
+     * cross-queue bleed FR-051/FR-052 forbid, reached through the manual
+     * button rather than the auto-follow `autoFollow={false}` already
+     * closed), and `tailFingerprint` could never match, so a Run on any
+     * queue but `default` never attached a tail and its log never streamed.
+     *
+     * A wrapper object, not a bare `QueueItem | null`: `undefined` has to
+     * stay distinguishable from an explicit `null`, which is a caller saying
+     * "nothing is executing on my subject" rather than "use the default".
+     */
+    readonly liveTarget?: { readonly inFlight: QueueItem | null };
     readonly onSelectQueue?: (queueId: string | null) => void;
     readonly onSelectTask?: (taskId: string | null, pipelineId: string | null) => void;
     readonly onSelectPhase?: (phaseId: string | null) => void;
@@ -56,6 +76,7 @@
     snapshot,
     store = createPhaseLogStore(),
     autoFollow = true,
+    liveTarget,
     onSelectQueue,
     onSelectTask,
     onSelectPhase,
@@ -64,18 +85,36 @@
 
   const state = $derived(store.state);
 
+  // The in-flight readings, split by BUG-002. Live, the cascade and the selectors
+  // read the cross-queue chooser's Run (FR-021), so the button's enabled state
+  // cannot disagree with what it does; a tail reads the selected queue's own
+  // row (FR-022). A `liveTarget` pins both to its Run — see its note above.
+  const liveInFlight = $derived(
+    liveTarget !== undefined ? liveTarget.inFlight : currentInFlightRow(snapshot)
+  );
+  const tailInFlight = $derived(
+    liveTarget !== undefined
+      ? liveTarget.inFlight
+      : queueInFlightRow(snapshot, state.selection.queueId)
+  );
+  const selectorsQueue = $derived({ ...snapshot.queue, inFlight: liveInFlight });
+
   const availablePhases = $derived(snapshot.availablePhases ?? []);
   const hasNoEntries = $derived(
     !state.loading && state.entries.length === 0
   );
-  // When the host returns a banner (`enabled-no-sessions-for-tuple` or
-  // `disabled-no-sessions`) AND the reading pane has no rows, show the
-  // empty-state card in place of the reading pane. The "enabled with
-  // sessions" banner is informational only — the pane renders normally.
+  // Feature 203 (T041, T042, D8, FR-014, SC-004) — the card choice is the
+  // host's classification and nothing else: `entries-present` renders the
+  // reading pane, every other member renders its card. `hasNoEntries` survives
+  // only below, because a selection naming a task but no phase never completes
+  // a tuple, so no classification ever arrives for it (FR-019, X6).
+  const noPhaseSelected = $derived(
+    hasNoEntries && state.selection.taskId !== null && state.selection.phaseId === null
+  );
   const showEmptyCard = $derived(
-    hasNoEntries &&
-      state.verboseDiagnosticsState !== null &&
-      state.verboseDiagnosticsState.kind !== 'enabled-with-sessions'
+    noPhaseSelected ||
+      (state.verboseDiagnosticsState !== null &&
+        state.verboseDiagnosticsState.kind !== 'entries-present')
   );
 
   const selectedRunner = $derived.by(() => {
@@ -109,7 +148,7 @@
         e.category === 'phase-transition' &&
         e.summary.startsWith('phase-start')
       ) {
-        if (e.runner && e.runner !== (snapshot.defaultRunnerKind ?? 'claude')) {
+        if (e.runner && e.runner !== (snapshot.defaultRunnerKind ?? DEFAULT_BACKEND)) {
           return e.runner;
         }
       }
@@ -117,15 +156,8 @@
     return null;
   });
 
-  // T053 — derived tail fingerprint. Encodes the (queueId, taskId,
-  // pipelineId, phaseId, iterationN) tuple as a single string when
-  // the selection resolves to (a) iteration === latest known iteration
-  // AND (b) selected task is the in-flight task AND (c) selected phase
-  // === in-flight task's currentPhase. Returns the empty string when
-  // any condition fails. A string fingerprint (rather than a fresh
-  // object literal) gives the downstream `$effect` a stable identity
-  // so unrelated state changes (e.g., tailSessionId, new entries) do
-  // NOT trip the effect's cleanup and inadvertently call `stopTail`.
+  // T053 + FR-R5-F18 (T18.1) — derived tail fingerprint for the newest
+  // iteration (`iters[0]` in descending manifest order) of the in-flight phase.
   const tailFingerprint = $derived.by(() => {
     const sel = state.selection;
     if (
@@ -137,69 +169,75 @@
     ) {
       return '';
     }
-    const inFlight = snapshot.queue.inFlight;
+    const inFlight = tailInFlight;
     if (inFlight === null) return '';
     if (inFlight.id !== sel.taskId) return '';
     if (inFlight.currentPhase !== sel.phaseId) return '';
     const iters = state.iterations;
     if (iters.length === 0) return '';
-    const latest = iters[iters.length - 1];
+    const latest = iters[0];
     if (latest !== sel.iterationN) return '';
-    return `${sel.queueId}${sel.taskId}${sel.pipelineId}${sel.phaseId}${sel.iterationN}`;
+    return `${sel.queueId}\u0001${sel.taskId}\u0001${sel.pipelineId}\u0001${sel.phaseId}\u0001${sel.iterationN}`;
   });
 
-  // Feature 067 — snapshot observer effect. The store de-duplicates
-  // identity-stable snapshots, so this call is safe on every
-  // re-render. When Live Mode is ON AND the in-flight identity tuple
-  // has changed, the store internally cascades through
-  // `jumpToCurrent({ setLiveModeOn: false, origin: 'cascade' })`. When
-  // Live Mode is OFF or the tuple is stable, the call is a no-op.
+  // Feature 067 — snapshot observer effect.
   $effect(() => {
     if (!autoFollow) return;
-    store.applyInFlightIdentityChange(snapshot);
+    store.applyInFlightIdentityChange({ queue: { inFlight: liveInFlight } });
   });
 
-  // Manually-tracked tail lifecycle. The $effect body re-runs on
-  // any reactive read inside `tailFingerprint`, but most of those
-  // re-runs see no actual change to the tuple — we compare against
-  // `activeTailFingerprint` (kept in untracked module-local state
-  // via the closure on a regular `let`) and only act on a true
-  // transition. The $effect cleanup is reserved for component
-  // unmount, where it always tears down any active tail.
-  let activeTailFingerprint = '';
+  // Feature 265 BUG-002 (FR-014) & Feature 020 BUG-004 (FR-029a) — bounded empty-iteration re-probe.
+  const emptyReprobeGate = createEmptyIterationReprobeGate();
+  $effect(() => {
+    const isEmptyAwaitingOutput =
+      state.iterations.length === 0 && state.verboseDiagnosticsState?.kind === 'phase-running-no-output';
+    if (emptyReprobeGate.shouldReload({ snapshot, loading: state.loading, isEmptyAwaitingOutput, selection: state.selection, tailInFlight })) {
+      void store.reload();
+    }
+  });
+
+  // FR-R5-F18 (T18.2) — separate active, pending, and refused tail states with
+  // bounded transient retry (max 2 attempts per load cycle).
+  let activeTailFp = '', pendingTailFp = '', refusedTailFp = '', transientAttempts = 0;
   $effect(() => {
     const fp = tailFingerprint;
-    if (fp === activeTailFingerprint) return;
-    if (activeTailFingerprint !== '') {
+    void snapshot;
+    if (state.loading) { refusedTailFp = ''; transientAttempts = 0; }
+    if ((activeTailFp !== '' && fp !== activeTailFp) || (pendingTailFp !== '' && fp !== pendingTailFp)) {
       void store.stopTail();
+      activeTailFp = pendingTailFp = refusedTailFp = '';
+      transientAttempts = 0;
     }
-    activeTailFingerprint = fp;
-    if (fp === '') return;
-    const parts = fp.split('');
+    if (fp === '' || state.loading || fp === activeTailFp || fp === pendingTailFp || fp === refusedTailFp) return;
+    pendingTailFp = fp;
+    const [queueId, taskId, pipelineId, phaseId, iterStr] = fp.split('\u0001');
     void store.startTail({
-      selection: {
-        queueId: parts[0],
-        taskId: parts[1],
-        pipelineId: parts[2],
-        phaseId: parts[3],
-        iterationN: Number(parts[4])
+      selection: { queueId, taskId, pipelineId, phaseId, iterationN: Number(iterStr) }
+    }).then((res) => {
+      if (pendingTailFp !== fp) return;
+      pendingTailFp = '';
+      if (res.outcome === 'success') {
+        activeTailFp = fp;
+        refusedTailFp = '';
+        transientAttempts = 0;
+      } else {
+        activeTailFp = '';
+        if (!isTransientTailFailure(res) || ++transientAttempts >= 2) refusedTailFp = fp;
       }
     });
   });
 
-  $effect(() => {
-    return () => {
-      if (activeTailFingerprint !== '') {
-        void store.stopTail();
-        activeTailFingerprint = '';
-      }
-    };
+  $effect(() => () => {
+    if (activeTailFp !== '' || pendingTailFp !== '') {
+      void store.stopTail();
+      activeTailFp = pendingTailFp = '';
+    }
   });
 
   // Feature 021 T044 (BUG-001 Defect A) — cold-start fallback wiring.
   //
   // After VSCode restart, the Activity Feed selection store is empty
-  // and `snapshot.queue.inFlight === null`, so `resolveLiveSelection`
+  // and no queue has a Run in flight, so `resolveLiveSelection`
   // returns null and the operator sees "No selection" even when recent
   // tasks have on-disk phase logs. This effect runs at most once per
   // mount: when the first snapshot arrives, if the live selection is
@@ -292,7 +330,22 @@
   }
 
   function pickCandidatePhase(item: WorkflowSnapshot['queue']['recent'][number]): string | null {
-    if (item.currentPhase !== null) return item.currentPhase;
+    // Bug "the phase log that asked for a phase named done" (2026-09-02) —
+    // `'done'` is a terminal state of the phase state machine, not a Phase
+    // definition, so no log was ever written under that name and the host
+    // refuses the tuple with `unknown-tuple`. A completed Run is the ONLY
+    // interesting case for this fallback, and it is precisely the one that
+    // carries the sentinel: without this guard the first line returned it, the
+    // probe below failed, the loop `continue`d past every candidate, and the
+    // feed never left its empty state. The branch that follows — the newest
+    // completed phase — is what this function was always meant to reach here.
+    //
+    // Guarded at this call site as well as at the composer that now filters the
+    // sentinel out of the projection, because this function reads a field whose
+    // type still admits it and a refusal here is silent.
+    if (item.currentPhase !== null && item.currentPhase !== TERMINAL_PHASE_SENTINEL) {
+      return item.currentPhase;
+    }
     const phases = getPhaseOptions(snapshot, {
       id: item.id,
       label: item.label,
@@ -360,7 +413,10 @@
       onJumpToCurrent();
       return;
     }
-    void store.jumpToCurrent(snapshot, { setLiveModeOn: true });
+    void store.jumpToCurrent(
+      { queue: { inFlight: liveInFlight } },
+      { setLiveModeOn: true }
+    );
   }
   async function handleCopyAll(): Promise<void> {
     const entries = state.entries;
@@ -379,8 +435,14 @@
   data-testid="phase-log-feed"
   aria-label="Activity Feed"
 >
+  <PhaseLogIterationStepper
+    iterations={state.iterations}
+    currentN={state.selection.iterationN}
+    onChange={handleSelectIteration}
+  />
+
   <PhaseLogSelectors
-    snapshot={{ queue: snapshot.queue, history: snapshot.history }}
+    snapshot={{ queue: selectorsQueue, history: snapshot.history }}
     selection={state.selection}
     iterations={state.iterations}
     {availablePhases}
@@ -393,14 +455,12 @@
     onCopyAll={handleCopyAll}
   />
 
-  <PhaseLogIterationStepper
-    iterations={state.iterations}
-    currentN={state.selection.iterationN}
-    onChange={handleSelectIteration}
-  />
-
   {#if showEmptyCard}
-    <PhaseLogEmptyStates banner={state.verboseDiagnosticsState} />
+    <PhaseLogEmptyStates
+      banner={state.verboseDiagnosticsState}
+      {noPhaseSelected}
+      skippedLines={state.skippedLines}
+    />
   {:else}
     <PhaseLogReadingPane
       entries={state.entries}
@@ -419,14 +479,18 @@
 </section>
 
 <style>
+  /* A wrapping row, so the stepper and the trail share the redesign's one toolbar line; the
+     pane, the empty states and the error each take a whole row. */
   .phase-log-feed {
     display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--schegent-space-2);
   }
   .error {
+    flex-basis: 100%;
     margin: 0;
     color: var(--schegent-error-text);
-    font-size: 0.85rem;
+    font-size: var(--schegent-text-secondary);
   }
 </style>

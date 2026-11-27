@@ -1,9 +1,13 @@
 // Feature 084 T022/T023, feature 085 T021, feature 086 T015 — export one Phase,
 // one Pipeline, or one Workflow as a portable document.
 //
-// Read-only: it writes a file the operator named in the host's own dialog and
-// changes no extension state, so it is deliberately NOT a member of
-// `MUTATING_COMMANDS` (research R2). This directory imports no `vscode`; the
+// Gated, not serialized (FR-R4-F05, FR-003): it writes a file the operator named
+// in the host's own dialog and appends an export audit row for every outcome, so
+// the router's workspace-trust and primary-host gates run before this handler.
+// Feature 084 (research R2) kept it out of `MUTATING_COMMANDS` because it changes
+// no extension state; FR-003 reaches a file write and an audit row. It does not
+// join the executor's chain: it waits on the operator's dialog, and an open
+// dialog must not hold every queue mutation. This directory imports no `vscode`; the
 // dialog and the write are an injected dependency (`saveProcessYamlDocument`)
 // wired in `src/extension.ts`, so no location crosses this boundary in either
 // direction (FR-019, FR-020a, research R3).

@@ -23,11 +23,13 @@
 // worked.
 
 import { describe, expect, it, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { ACTIVITY_COALESCE_INTERVAL_MS } from '../../../src/monitor/activity-coalescer';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { QueueManager } from '../../../src/queue/queue-manager';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { createQueue } from '../../../src/queue/queue-registry';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import type { PhaseRunner } from '../../../src/controller/phase-runner';
 import type { Notifier } from '../../../src/ui/notifications';
@@ -87,7 +89,7 @@ let monitor: ClaudeCliMonitor;
 
 function makeController(target: WorkspaceStateStore, q: QueueManager): SchegentWorkflowController {
   return new SchegentWorkflowController(
-    { run: async () => undefined } as unknown as PhaseRunner,
+    { run: async () => undefined, evictStagnationTracker: () => undefined } as unknown as PhaseRunner,
     target,
     q,
     { update: () => {}, dispose: () => {} } as unknown as SchegentStatusBar,
@@ -152,7 +154,9 @@ async function seedRun(
     phaseBreakpoints: [],
     resumeTargetPhaseId: null,
     ...overrides
-  });
+  },
+    unfencedCommit('test-fixture')
+  );
 }
 
 /** `recordRunActivity` is fire-and-forget; let its `setRun` land. */

@@ -16,15 +16,21 @@
   //     dismisses the affordance.
   //
   // Truncation banner: when the host capped the iteration's entries
-  // (entries.length === MAX_ENTRIES === 500) the head was dropped; the
+  // (a read of `PHASE_LOG_MAX_ENTRIES` rows, 500) the head was dropped; the
   // synthetic `truncated-head` entry already carries the dropped
   // count, so this component does NOT render a secondary banner.
+  //
+  // FR-R4-F08 (L6) — the live tail is windowed to the same 500 rows, so once it
+  // is full `entries.length` stops moving while entries keep arriving. The
+  // "new entries" count is therefore taken over what was RECEIVED: the marker's
+  // dropped count plus the real entries.
 
   import type { PhaseLogDisplayEntry } from '../../../../src/services/phase-log/types';
   import PhaseLogEntry from './PhaseLogEntry.svelte';
   import MetadataStrip from './parts/MetadataStrip.svelte';
   import { detectMetadataLinesFromSummary } from '../../lib/activity-feed/detect-metadata-line';
   import type { MetadataLine } from '../../lib/activity-feed/types';
+  import { hiddenEntryCount } from '../../lib/phase-log-window';
 
   interface Props {
     readonly entries: readonly PhaseLogDisplayEntry[];
@@ -78,6 +84,12 @@
   // via the affordance click).
   let newEntryCount = $state(0);
 
+  /** Entries received so far: those hidden behind the marker plus those in the list. */
+  function receivedCount(list: readonly PhaseLogDisplayEntry[]): number {
+    const marker = list.at(0)?.kind === 'truncated-head' ? 1 : 0;
+    return hiddenEntryCount(list) + list.length - marker;
+  }
+
   function isSticky(el: HTMLElement): boolean {
     return el.scrollTop + el.clientHeight >= el.scrollHeight - STICKY_THRESHOLD_PX;
   }
@@ -92,7 +104,7 @@
     if (!next && stickyAtBottom) {
       // User just scrolled up off the bottom — snapshot the current
       // entry count so subsequent rerenders compute a stable delta.
-      baselineCount = entries.length;
+      baselineCount = receivedCount(entries);
     }
     stickyAtBottom = next;
   }
@@ -116,7 +128,7 @@
   // re-runs whenever the list grows. When NOT sticky, recompute the
   // "↓ N new entries" delta from the captured baseline.
   $effect(() => {
-    const len = entries.length;
+    const len = receivedCount(entries);
     const el = listEl;
     if (el === null) return;
     if (stickyAtBottom) {
@@ -140,12 +152,12 @@
   });
 </script>
 
+<!-- Drawn as the redesign's log (`.log` on its run page): a framed monospace list, one entry a
+     line. While the log tails, a status chip says so above it, worded as the redesign's chips. -->
 <section class="pane" data-testid="phase-log-reading-pane">
   <header class="pane-header">
     {#if isLive}
-      <span class="live-indicator" data-testid="phase-log-live-indicator" aria-live="polite">
-        ● LIVE
-      </span>
+      <span class="chip s-run live-indicator" data-testid="phase-log-live-indicator" aria-live="polite"><span class="dot" aria-hidden="true"></span>Live</span>
     {/if}
     {#if skippedLines > 0}
       <span class="warning" data-testid="phase-log-skipped">
@@ -179,7 +191,7 @@
       data-testid="phase-log-entry-list"
       onscroll={handleScroll}
     >
-      {#each entries as e (e.seq)}
+      {#each entries as e (e.kind === 'truncated-head' ? 'truncated-head' : e)}
         <PhaseLogEntry entry={e} />
       {/each}
     </ol>
@@ -187,11 +199,12 @@
   {#if newEntryCount > 0 && !stickyAtBottom}
     <button
       type="button"
-      class="new-entries"
+      class="btn btn-primary btn-sm new-entries"
       data-testid="phase-log-new-entries"
       onclick={scrollToBottom}
     >
-      ↓ {newEntryCount} new entr{newEntryCount === 1 ? 'y' : 'ies'}
+      <svg class="i" aria-hidden="true"><use href="#i-chev"></use></svg>
+      {newEntryCount} new entr{newEntryCount === 1 ? 'y' : 'ies'}
     </button>
   {/if}
 </section>
@@ -199,67 +212,60 @@
 <style>
   .pane {
     display: flex;
+    flex-basis: 100%;
+    min-width: 0;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: var(--schegent-space-1-5);
     position: relative;
   }
   .pane-header {
     display: flex;
-    gap: 0.5rem;
+    flex-wrap: wrap;
+    gap: var(--schegent-space-2);
     align-items: center;
     font-size: var(--schegent-text-caption);
-    min-height: 1rem;
+  }
+  /* Nothing to say: no row. */
+  .pane-header:not(:has(*)) {
+    display: none;
   }
   .live-indicator {
-    color: var(--vscode-charts-red);
-    font-weight: 600;
-    animation: pulse 1.6s ease-in-out infinite;
+    align-self: center;
   }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.45; }
+  .warning,
+  .loading {
+    color: var(--schegent-muted-fg);
   }
-  .warning {
-    opacity: 0.7;
-    font-style: italic;
+  .loading {
+    margin: 0;
+    font-size: var(--schegent-text-secondary);
   }
   .entries {
     list-style: none;
     margin: 0;
     padding: 0;
     overflow-y: auto;
-    /* `RunDetailTier` scrolls as a normal, content-sized page (like the tiers
-       above it), not a viewport-bound flex column, so this list cannot rely on
-       flex-grow to inherit a height from an ancestor. It sizes to its own
-       content up to this cap and scrolls internally beyond it — the bound the
-       sticky-at-bottom auto-scroll heuristic above needs to have any effect. */
+    /* The run page's tab panel scrolls, and this list caps its own height inside it and scrolls
+       beyond that, so the sticky-at-bottom auto-scroll above has a scroller of its own to hold at
+       the newest entry. */
     max-height: min(60vh, 480px);
-    border: 1px solid var(--schegent-border, transparent);
-    border-radius: var(--schegent-radius-sm);
-    background: var(--schegent-surface-sunken);
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    background: var(--schegent-shell-bg);
+    font-family: var(--schegent-mono-font);
+    font-size: var(--schegent-text-secondary);
   }
-  .loading {
-    opacity: 0.7;
-    font-style: italic;
+  /* The empty list stays bound for the scroll logic but draws no frame; the feed's empty-state
+     card stands in its place. */
+  div.entries:empty {
+    display: none;
   }
+  /* Centred over the list's foot without a transform, so the shared press offset still applies. */
   .new-entries {
     position: absolute;
-    bottom: 0.5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 0.25rem 0.75rem;
-    font-size: 0.75rem;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: 1px solid var(--vscode-button-border, transparent);
-    border-radius: var(--schegent-radius-sm);
-    cursor: pointer;
-    transition: transform 0.1s ease;
-  }
-  .new-entries:hover {
-    background: var(--vscode-button-hoverBackground);
-  }
-  .new-entries:active {
-    transform: translateX(-50%) scale(0.93);
+    bottom: var(--schegent-space-2);
+    inset-inline: 0;
+    width: fit-content;
+    margin-inline: auto;
   }
 </style>

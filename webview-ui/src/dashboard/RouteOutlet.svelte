@@ -16,6 +16,7 @@
   // `QueueDetailTier.svelte`'s own header — so this route no longer touches
   // `Dashboard` at any depth.
   import OperationsSurface from '../components/OperationsSurface.svelte';
+  import type { SettingsSectionId } from '../components/settings/settings-page.svelte';
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
 
   import {
@@ -30,11 +31,14 @@
   const {
     route,
     snapshot,
-    loader
+    loader,
+    settingsSection = 'backends'
   }: {
     route: DashboardRoute;
     snapshot: WorkflowSnapshot;
     loader: RouteLoader;
+    /** The section the Settings route opens on, read once when that route mounts. */
+    settingsSection?: SettingsSectionId;
   } = $props();
 
   /**
@@ -72,6 +76,10 @@
   // The two outcomes evict for different reasons and only one of them means the
   // chunk is bad, so conflating them would lose that.
   const ROUTE_LOAD_EXPIRED = Symbol('route-load-expired');
+  // FR-R8-04 (`04-06`) — resolved synchronously during `$effect` teardown so
+  // `Promise.race` settles immediately instead of leaving an orphaned timer or
+  // late post-unmount microtask hanging across test/view cleanup.
+  const ROUTE_LOAD_CANCELLED = Symbol('route-load-cancelled');
 
   // Feature 105 (T583b, FR-004b) — Retry after a *load* rejection has to ask
   // again, and `route` is already the route being retried, so an assignment to it
@@ -111,14 +119,20 @@
     // happens in a microtask where it is untracked; a flag says what it means.
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let settleExpiry:
+      | ((value: typeof ROUTE_LOAD_EXPIRED | typeof ROUTE_LOAD_CANCELLED) => void)
+      | undefined;
 
-    const expiry = new Promise<typeof ROUTE_LOAD_EXPIRED>((resolve) => {
-      timer = setTimeout(() => resolve(ROUTE_LOAD_EXPIRED), ROUTE_LOAD_TIMEOUT_MS);
-    });
+    const expiry = new Promise<typeof ROUTE_LOAD_EXPIRED | typeof ROUTE_LOAD_CANCELLED>(
+      (resolve) => {
+        settleExpiry = resolve;
+        timer = setTimeout(() => resolve(ROUTE_LOAD_EXPIRED), ROUTE_LOAD_TIMEOUT_MS);
+      }
+    );
 
     void Promise.race([loader.load(active), expiry])
       .then((outcome) => {
-        if (cancelled) return;
+        if (cancelled || outcome === ROUTE_LOAD_CANCELLED) return;
         if (outcome === ROUTE_LOAD_EXPIRED) {
           loader.evict(active);
           routeLoadError = routeErrorMessage(active);
@@ -137,6 +151,7 @@
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      settleExpiry?.(ROUTE_LOAD_CANCELLED);
     };
   });
 
@@ -169,7 +184,7 @@
 {#snippet routeError(message: string, recover: () => void)}
   <main class="route-status" data-testid="dashboard-route-error" role="alert">
     <strong>{message}</strong>
-    <button type="button" onclick={recover}>Retry</button>
+    <button type="button" class="btn btn-secondary" onclick={recover}>Retry</button>
   </main>
 {/snippet}
 
@@ -191,7 +206,9 @@
     {@const RouteComponent = mounted.component}
     {#if mounted.route === 'metrics'}
       <RouteComponent active={true} />
-    {:else if mounted.route === 'builder' || mounted.route === 'settings' || mounted.route === 'runs' || mounted.route === 'history'}
+    {:else if mounted.route === 'settings'}
+      <RouteComponent {snapshot} section={settingsSection} />
+    {:else if mounted.route === 'builder' || mounted.route === 'history'}
       <!-- Feature 103 (T017) — History moved from `history` + `isPrimary`
            to the whole snapshot. It composes its list from `history` and
            `queues` together, and a route that hand-picks fields has to be
@@ -229,14 +246,5 @@
     padding: 24px;
     color: var(--schegent-muted-fg);
     text-align: center;
-  }
-  .route-status button {
-    min-height: 32px;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    padding: 0 12px;
-    cursor: pointer;
   }
 </style>

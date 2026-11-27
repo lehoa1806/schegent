@@ -64,9 +64,11 @@
   data-testid="launch-section-{kind}"
   aria-labelledby="launch-section-heading-{kind}"
 >
-  <h3 class="section-heading" id="launch-section-heading-{kind}">{name}</h3>
+  <!-- Drawn as a step heading of the add-task drawer; the redesign numbers its steps, but this
+       section's name is also its region's accessible name, so it stays the bare name. -->
+  <h3 id="launch-section-heading-{kind}">{name}</h3>
   {#if section === undefined}
-    <p class="section-note" data-testid="launch-section-loading-{kind}">Loading…</p>
+    <p class="hint" data-testid="launch-section-loading-{kind}">Loading…</p>
   {:else if section.state === 'entries'}
     <ul class="section-list" data-testid="launch-section-list-{kind}">
       {#each section.entries as entry (entry.kind + entry.id)}
@@ -80,12 +82,12 @@
   {:else if section.state === 'no-definitions'}
     <div class="section-guidance" data-testid="launch-section-no-definitions-{kind}">
       <p class="guidance-headline">{EMPTY_CATALOG_GUIDANCE.headline}</p>
-      <p class="section-note">{EMPTY_CATALOG_GUIDANCE.body}</p>
+      <p class="hint">{EMPTY_CATALOG_GUIDANCE.body}</p>
     </div>
   {:else}
     <div class="section-guidance" data-testid="launch-section-none-active-{kind}">
       <p class="guidance-headline">{NONE_ACTIVE_GUIDANCE.headline}</p>
-      <p class="section-note">{NONE_ACTIVE_GUIDANCE.body}</p>
+      <p class="hint">{NONE_ACTIVE_GUIDANCE.body}</p>
     </div>
   {/if}
 </section>
@@ -94,19 +96,10 @@
   .launch-section {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-  }
-
-  .section-heading {
-    font-size: 0.9em;
-    margin: 0;
-    text-transform: uppercase;
+    min-width: 0;
   }
 
   .section-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
     list-style: none;
     margin: 0;
     padding: 0;
@@ -115,20 +108,16 @@
   .section-guidance {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--schegent-space-0-5);
   }
 
   .guidance-headline {
-    font-size: 0.85em;
+    font-size: var(--schegent-text-secondary);
     font-weight: 600;
     margin: 0;
-    padding: 0 8px;
   }
 
-  .section-note {
-    color: var(--vscode-descriptionForeground);
-    font-size: 0.85em;
+  .hint {
     margin: 0;
-    padding: 0 8px;
   }
 </style>

@@ -1,0 +1,310 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: example-candidate-block-recovery
+  name: Four-Candidate Backend Recovery Block
+  description: Demonstrates a 4-candidate fallback block across Claude Code, Codex, Agy, and a second Codex instruction contract with first-ready policy and strict USD budget.
+  version: 1
+spec:
+  inputs:
+    - portId: review-prompt
+      label: Review Prompt
+      type: text
+      required: true
+  outputs:
+    - portId: review-json
+      label: Review JSON
+      type: structured-data
+      required: true
+  nodes:
+    - nodeId: cand-primary-claude
+      kind: phase
+      phaseId: phase-review-claude
+      label: Primary Claude Review
+    - nodeId: cand-second-codex
+      kind: phase
+      phaseId: phase-review-codex-fast
+      label: Second Codex Review
+    - nodeId: cand-third-agy
+      kind: phase
+      phaseId: phase-review-agy
+      label: Third Agy Review
+    - nodeId: cand-fourth-codex-deep
+      kind: phase
+      phaseId: phase-review-codex-deep
+      label: Fourth Codex Deep Review
+  bindings:
+    - kind: input
+      nodeId: cand-primary-claude
+      inputKey: prompt
+      type: text
+      required: true
+      source:
+        from: workflow-input
+        portId: review-prompt
+    - kind: input
+      nodeId: cand-second-codex
+      inputKey: prompt
+      type: text
+      required: true
+      source:
+        from: workflow-input
+        portId: review-prompt
+    - kind: input
+      nodeId: cand-third-agy
+      inputKey: prompt
+      type: text
+      required: true
+      source:
+        from: workflow-input
+        portId: review-prompt
+    - kind: input
+      nodeId: cand-fourth-codex-deep
+      inputKey: prompt
+      type: text
+      required: true
+      source:
+        from: workflow-input
+        portId: review-prompt
+    - kind: output
+      nodeId: cand-primary-claude
+      portId: review-json
+      outputKey: review-json
+      type: structured-data
+    - kind: output
+      nodeId: cand-second-codex
+      portId: review-json
+      outputKey: review-json
+      type: structured-data
+    - kind: output
+      nodeId: cand-third-agy
+      portId: review-json
+      outputKey: review-json
+      type: structured-data
+    - kind: output
+      nodeId: cand-fourth-codex-deep
+      portId: review-json
+      outputKey: review-json
+      type: structured-data
+  startNodeIds:
+    - cand-primary-claude
+    - cand-second-codex
+    - cand-third-agy
+    - cand-fourth-codex-deep
+  control:
+    version: 1
+    kind: candidate-block
+    candidates:
+      - candidateId: review-primary
+        nodeId: cand-primary-claude
+        priority: 1
+        maxAttempts: 5
+        retry:
+          initialDelayMs: 2000
+          multiplier: 2
+          maxDelayMs: 30000
+        allowUnverifiedTrial: false
+      - candidateId: review-second
+        nodeId: cand-second-codex
+        priority: 2
+        maxAttempts: 3
+        allowUnverifiedTrial: false
+      - candidateId: review-third
+        nodeId: cand-third-agy
+        priority: 3
+        maxAttempts: 3
+        allowUnverifiedTrial: true
+      - candidateId: review-fourth
+        nodeId: cand-fourth-codex-deep
+        priority: 4
+        maxAttempts: 2
+        allowUnverifiedTrial: false
+    availabilityPolicy: first-ready
+    maxDispatches: 13
+    monitoringWindowMs: 86400000
+    budget:
+      mode: strict-usd
+      limitMicrousd: 5000000
+  decisionResults:
+    version: 1
+    fields:
+      - fieldId: done
+        type: boolean
+        required: true
+      - fieldId: approved
+        type: boolean
+        required: true
+      - fieldId: nextFeedback
+        type: string
+        required: false
+    bindings:
+      - fieldId: done
+        source:
+          kind: selected-candidate
+          fieldId: done
+      - fieldId: approved
+        source:
+          kind: selected-candidate
+          fieldId: approved
+      - fieldId: nextFeedback
+        source:
+          kind: selected-candidate
+          fieldId: nextFeedback
+included:
+  phases:
+    - metadata:
+        phaseId: phase-review-claude
+        name: Primary Claude Review
+        version: 1
+      spec:
+        runner: claude
+        instruction: Run /review skill and emit structured review JSON.
+        resultContract:
+          version: 1
+          operator: structured-result
+          operatorVersion: 1
+          source:
+            kind: declared-output
+            outputKey: review-json
+          fields:
+            - fieldId: done
+              type: boolean
+              required: true
+              selector:
+                - done
+            - fieldId: approved
+              type: boolean
+              required: true
+              selector:
+                - approved
+            - fieldId: nextFeedback
+              type: string
+              required: false
+              selector:
+                - nextFeedback
+          completion:
+            version: 1
+            kind: typed
+            test:
+              left:
+                source: result-field
+                fieldId: done
+              operator: equals
+              right: true
+    - metadata:
+        phaseId: phase-review-codex-fast
+        name: Second Codex Review
+        version: 1
+      spec:
+        runner: codex
+        instruction: Execute codex-compatible structured review pass.
+        resultContract:
+          version: 1
+          operator: structured-result
+          operatorVersion: 1
+          source:
+            kind: declared-output
+            outputKey: review-json
+          fields:
+            - fieldId: done
+              type: boolean
+              required: true
+              selector:
+                - done
+            - fieldId: approved
+              type: boolean
+              required: true
+              selector:
+                - approved
+            - fieldId: nextFeedback
+              type: string
+              required: false
+              selector:
+                - nextFeedback
+          completion:
+            version: 1
+            kind: typed
+            test:
+              left:
+                source: result-field
+                fieldId: done
+              operator: equals
+              right: true
+    - metadata:
+        phaseId: phase-review-agy
+        name: Third Agy Review
+        version: 1
+      spec:
+        runner: agy
+        instruction: Execute agy-compatible structured review pass.
+        resultContract:
+          version: 1
+          operator: structured-result
+          operatorVersion: 1
+          source:
+            kind: declared-output
+            outputKey: review-json
+          fields:
+            - fieldId: done
+              type: boolean
+              required: true
+              selector:
+                - done
+            - fieldId: approved
+              type: boolean
+              required: true
+              selector:
+                - approved
+            - fieldId: nextFeedback
+              type: string
+              required: false
+              selector:
+                - nextFeedback
+          completion:
+            version: 1
+            kind: typed
+            test:
+              left:
+                source: result-field
+                fieldId: done
+              operator: equals
+              right: true
+    - metadata:
+        phaseId: phase-review-codex-deep
+        name: Fourth Codex Deep Review
+        version: 1
+      spec:
+        runner: codex
+        instruction: Execute independent deep architectural Codex review contract.
+        resultContract:
+          version: 1
+          operator: structured-result
+          operatorVersion: 1
+          source:
+            kind: declared-output
+            outputKey: review-json
+          fields:
+            - fieldId: done
+              type: boolean
+              required: true
+              selector:
+                - done
+            - fieldId: approved
+              type: boolean
+              required: true
+              selector:
+                - approved
+            - fieldId: nextFeedback
+              type: string
+              required: false
+              selector:
+                - nextFeedback
+          completion:
+            version: 1
+            kind: typed
+            test:
+              left:
+                source: result-field
+                fieldId: done
+              operator: equals
+              right: true

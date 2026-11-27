@@ -1,0 +1,216 @@
+// Feature 187 (T021, FR-001, FR-002, SC-001, SC-002) — the notice that turns a
+// step-7 admission throw from a log line into something on screen.
+//
+// The two assertions that carry the feature are the wording ones. An operator
+// looking at a stalled queue is asking two questions the sidebar could not
+// answer before: *did something fail*, and *was it my resume or a fresh start*.
+// `admitNew` and `admitResume` are host method names, so a notice that printed
+// them verbatim would answer the second question only for someone who has read
+// the drain. The cases below pin operator words instead.
+
+import { cleanup, render } from '@testing-library/svelte';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import QueueStartFailureNotice from '../QueueStartFailureNotice.svelte';
+import type { QueueRuntime } from '../../../lib/snapshot-types';
+
+/** Fixed so the relative age is an assertion and not a race against the clock. */
+const NOW = Date.parse('2026-09-02T10:35:00.000Z');
+
+type AdmissionFailure = Extract<NonNullable<QueueRuntime['startFailure']>, { kind: 'admission' }>;
+type HaltedFailure = Extract<NonNullable<QueueRuntime['startFailure']>, { kind: 'halted' }>;
+type StrandedFailure = Extract<
+  NonNullable<QueueRuntime['startFailure']>,
+  { kind: 'stranded-run' }
+>;
+
+function failure(overrides: Partial<AdmissionFailure> = {}): AdmissionFailure {
+  return {
+    kind: 'admission',
+    admission: 'admitNew',
+    at: '2026-09-02T10:30:00.000Z',
+    summary: 'the backend refused the run',
+    ...overrides
+  };
+}
+
+function haltedFailure(overrides: Partial<HaltedFailure> = {}): HaltedFailure {
+  return {
+    kind: 'halted',
+    taskId: 't-1',
+    taskName: 'ingest data',
+    at: '2026-09-02T10:30:00.000Z',
+    ...overrides
+  };
+}
+
+function strandedFailure(overrides: Partial<StrandedFailure> = {}): StrandedFailure {
+  return {
+    kind: 'stranded-run',
+    runId: 'run-17',
+    phase: 'speckit-analyze',
+    at: '2026-09-02T10:30:00.000Z',
+    ...overrides
+  };
+}
+
+afterEach(() => cleanup());
+
+describe('QueueStartFailureNotice', () => {
+  it('renders nothing at all when the queue has no failed start', () => {
+    const { container } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: null, nowMs: NOW }
+    });
+    expect(container.querySelector('[data-testid="queue-start-failure-q-1"]')).toBeNull();
+    expect(container.textContent.trim()).toBe('');
+  });
+
+  it('names a fresh start in operator words, not the host method name', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: failure({ admission: 'admitNew' }), nowMs: NOW }
+    });
+    const text = getByTestId('queue-start-failure-q-1').textContent;
+    expect(text).toContain('Starting this queue failed');
+    expect(text).not.toContain('admitNew');
+  });
+
+  it('names a resume attempt, so the operator knows which attempt failed', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: failure({ admission: 'admitResume' }), nowMs: NOW }
+    });
+    const text = getByTestId('queue-start-failure-q-1').textContent;
+    expect(text).toContain('Resuming this queue failed');
+    expect(text).not.toContain('admitResume');
+  });
+
+  it('shows how long ago the attempt failed', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: failure(), nowMs: NOW }
+    });
+    expect(getByTestId('queue-start-failure-age-q-1').textContent).toContain('5m ago');
+  });
+
+  it('shows the sanitized summary the host projected', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: failure({ summary: 'ENOENT: <path>' }), nowMs: NOW }
+    });
+    expect(getByTestId('queue-start-failure-summary-q-1').textContent).toContain('ENOENT: <path>');
+  });
+
+  it('states the absence of a summary rather than rendering an empty element', () => {
+    // A blank line under a failure heading reads as a rendering bug. The report
+    // exists either way — the start did fail — so the surface says what it has.
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: failure({ summary: null }), nowMs: NOW }
+    });
+    const summary = getByTestId('queue-start-failure-summary-q-1').textContent;
+    expect(summary.trim().length).toBeGreaterThan(0);
+  });
+
+  it('says the queue will be offered again, which is what the drain actually does', () => {
+    // SC-002: the report is not a dead end. The next terminal Run's sweep, an
+    // operator start, or the next activation re-offers this queue, so the notice
+    // must not read as "this queue is stuck until you do something".
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: failure(), nowMs: NOW }
+    });
+    const text = getByTestId('queue-start-failure-q-1').textContent;
+    expect(text.toLowerCase()).toContain('again');
+  });
+
+  it('is announced, so an operator not watching the panel still hears it', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: failure(), nowMs: NOW }
+    });
+    expect(getByTestId('queue-start-failure-q-1').getAttribute('role')).toBe('status');
+  });
+
+  it('scopes its test ids to the queue, so two queues cannot be confused', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-other', startFailure: failure(), nowMs: NOW }
+    });
+    expect(getByTestId('queue-start-failure-q-other')).toBeTruthy();
+  });
+});
+
+describe('QueueStartFailureNotice — the halted kind (feature 195, T029)', () => {
+  it('names the failed task rather than an admission attempt', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure({ taskName: 'ingest data' }), nowMs: NOW }
+    });
+    const text = getByTestId('queue-halted-q-1').textContent;
+    expect(text).toContain('ingest data');
+    expect(text.toLowerCase()).toContain('halted');
+  });
+
+  it('renders no admission-shaped notice for a halted report', () => {
+    const { queryByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure(), nowMs: NOW }
+    });
+    expect(queryByTestId('queue-start-failure-q-1')).toBeNull();
+  });
+
+  // Feature 195 (T064, FR-025) — was "states the two ways out". FR-009 named
+  // two and FR-025 adds a third, so a notice that reports the halt and names
+  // two of the three exits sends the operator of an already-committed task
+  // looking for a control that is right there. Still no acknowledgement step
+  // and still no button on this component: it is read-only by intent (see its
+  // header), so the third exit is stated in the same prose as the other two
+  // and the affordance itself lives on `QueueItemActions`.
+  it('states the three ways out, not an acknowledgement step', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure(), nowMs: NOW }
+    });
+    const text = getByTestId('queue-halted-q-1').textContent.toLowerCase();
+    expect(text).toContain('retry');
+    expect(text).toContain('remove');
+    expect(text).toContain('completed');
+  });
+
+  it('renders no control of its own for any of the three exits', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: haltedFailure(), nowMs: NOW }
+    });
+    expect(getByTestId('queue-halted-q-1').querySelectorAll('button').length).toBe(0);
+  });
+});
+
+describe('QueueStartFailureNotice — the stranded-run kind (BUG-004)', () => {
+  it('says a run with no task is holding the queue, and where it stopped', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure(), nowMs: NOW }
+    });
+    const text = getByTestId('queue-stranded-run-q-1').textContent;
+    expect(text.toLowerCase()).toContain('no task');
+    expect(text).toContain('speckit-analyze');
+  });
+
+  it('names the recovery, because no control on this surface performs it', () => {
+    // The distinction from the other two kinds. Both of those describe an
+    // attempt that will be re-offered; this one describes a queue that will not
+    // try again on its own, so the notice has to say what the operator must do.
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure(), nowMs: NOW }
+    });
+    const text = getByTestId('queue-stranded-run-q-1').textContent.toLowerCase();
+    expect(text).toContain('reload');
+    expect(text).not.toContain('again');
+  });
+
+  it('does not print the run id, which names nothing the operator can address', () => {
+    const { getByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure({ runId: 'run-17' }), nowMs: NOW }
+    });
+    expect(getByTestId('queue-stranded-run-q-1').textContent).not.toContain('run-17');
+  });
+
+  it('renders neither of the other two notices, and is announced like them', () => {
+    const { getByTestId, queryByTestId } = render(QueueStartFailureNotice, {
+      props: { queueId: 'q-1', startFailure: strandedFailure(), nowMs: NOW }
+    });
+    expect(queryByTestId('queue-start-failure-q-1')).toBeNull();
+    expect(queryByTestId('queue-halted-q-1')).toBeNull();
+    expect(getByTestId('queue-stranded-run-q-1').getAttribute('role')).toBe('status');
+    expect(getByTestId('queue-stranded-run-age-q-1').textContent).toContain('5m ago');
+  });
+});

@@ -18,7 +18,7 @@
 
 import { findQueueRuntime, type WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
 import type { InFlightRunProjection, QueueRuntime, WorkflowStatus } from '../../../../src/ui/sidebar/snapshot';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 
 export function runtimeOf(
   snapshot: Pick<WorkflowSnapshot, 'queues'>,

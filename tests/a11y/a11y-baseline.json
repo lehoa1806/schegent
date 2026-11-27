@@ -1,0 +1,16 @@
+{
+  "about": [
+    "FR-R3-091 \u2014 accepted WCAG 2.1 AA findings, as a COUNT AND A LIST.",
+    "A count alone can say something got worse; only a list can say WHICH finding is new.",
+    "That is the defect D5 found in the duplicate-authority gate and the one the webview lint",
+    "baseline still had. Ratchets in BOTH directions: above is a regression, below is a stale",
+    "record that must be rewritten in the same change.",
+    "FR-R3-131 \u2014 the thirty color-contrast entries are GONE, fixed at the token level, not",
+    "re-accepted. This list is now SHRINK-ONLY: tests/lint/a11y-baseline-shrinks.test.ts fails",
+    "any change that adds an entry. An accepted finding needs a new dated exception, not a line",
+    "appended here. Removing an entry, with the fix in the same change, is the only edit allowed.",
+    "Regenerate with: npm run a11y -- --update-baseline (see tests/a11y/README.md)."
+  ],
+  "target": "WCAG 2.1 Level AA",
+  "accepted": []
+}

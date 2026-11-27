@@ -40,8 +40,8 @@ beforeEach(async () => {
   h = await makeHarness();
 });
 
-afterEach(() => {
-  h.cleanup();
+afterEach(async () => {
+  await h.cleanup();
 });
 
 describe('Feature 065 (T052) — chooser-no-stack regression (Edge Cases L120 + L123)', () => {

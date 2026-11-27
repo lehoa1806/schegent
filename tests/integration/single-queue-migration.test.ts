@@ -18,6 +18,7 @@
 // `auditWriter.append`. This isolates US1 behavior from the larger
 // activation graph.
 
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -29,7 +30,6 @@ import {
   type Memento
 } from '../../src/state/workspace-state';
 import {
-  DEFAULT_QUEUE_ID,
   type QueueRegistry,
   type QueueRegistryEntry
 } from '../../src/queue/queue-registry';

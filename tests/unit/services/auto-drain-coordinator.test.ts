@@ -16,8 +16,19 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { AutoDrainCoordinator } from '../../../src/services/auto-drain-coordinator';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueLifecycle } from '../../../src/queue/feature-request';
+import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
+import type { PhaseRunner } from '../../../src/controller/phase-runner';
+import { buildCatalog } from '../../../src/config/pipeline-config';
+import { SanitizedLogger } from '../../../src/lib/logger';
+import { QueueManager } from '../../../src/queue/queue-manager';
+import type { WorkspaceLockManager } from '../../../src/state/lock';
+import { createSwitchableOperationalMemento } from '../../../src/state/sqlite-operational-backing';
+import type { SqliteConnectionPort } from '../../../src/state/sqlite-operational-port';
+import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import type { Notifier } from '../../../src/ui/notifications';
+import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 
 // FR-R3-011 — `paused` is gone from this fixture, not merely unset. It was the
 // retired `QueueState.paused` mirror, and step 2 used to read it; a fixture that
@@ -32,6 +43,9 @@ function makeStore(queueState: {
     getQueue: vi.fn(() => ({
       queueLifecycle: queueState.queueLifecycle ?? 'active-empty',
       pauseSource: null,
+      // Feature 195 (T012) — no scenario in this file carries a failed row;
+      // `...queueState` still lets a call site override it explicitly.
+      requests: [],
       ...queueState
     })),
     // BUG-003 — step 3's second reading. `null` is "this queue holds no Run",
@@ -76,7 +90,9 @@ function makeController() {
     admitNew: vi.fn(async () => ({ completed: Promise.resolve() })),
     admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
     // A double holds no sessions, so it drives no Runs (T072).
-    liveRunCount: 0
+    liveRunCount: 0,
+    // FR-R4-F02 (TA4) — nor does any queue hold one.
+    holdsSession: () => false
   };
 }
 
@@ -90,7 +106,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalledWith({ id: 'q-2', description: 'next item' }, null);
@@ -105,7 +122,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
@@ -121,7 +139,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
@@ -137,7 +156,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.hasWorkspaceCapacity).not.toHaveBeenCalled();
@@ -160,7 +180,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
         store: store as never,
         queue: queue as never,
         executionLease: lease as never,
-        controller: controller as never
+        controller: controller as never,
+        failurePolicyDefault: { resolve: () => 'halt-on-failure' }
       });
       await coord.drainIfIdle(DEFAULT_QUEUE_ID);
       expect(controller.admitNew).not.toHaveBeenCalled();
@@ -187,7 +208,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
         store: store as never,
         queue: queue as never,
         executionLease: lease as never,
-        controller: controller as never
+        controller: controller as never,
+        failurePolicyDefault: { resolve: () => 'halt-on-failure' }
       });
       await coord.drainIfIdle(DEFAULT_QUEUE_ID);
       expect(controller.admitNew).toHaveBeenCalled();
@@ -203,7 +225,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(lease.tryAcquire).not.toHaveBeenCalled();
@@ -219,7 +242,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).not.toHaveBeenCalled();
@@ -252,7 +276,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalledTimes(1);
@@ -273,7 +298,8 @@ describe('AutoDrainCoordinator (T099 / T102)', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.hasExecutionCapacity).toHaveBeenCalledWith(0);
@@ -301,7 +327,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(queue.peekNextPending).not.toHaveBeenCalled();
@@ -322,7 +349,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalled();
@@ -339,7 +367,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).toHaveBeenCalled();
@@ -362,7 +391,8 @@ describe('AutoDrainCoordinator — Feature 065 idle-pending gate', () => {
       store: store as never,
       queue: queue as never,
       executionLease: lease as never,
-      controller: controller as never
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
     });
     await coord.drainIfIdle(DEFAULT_QUEUE_ID);
     expect(controller.admitNew).not.toHaveBeenCalled();
@@ -394,7 +424,8 @@ function roundRobinHarness(options: { capacity: number }) {
       getQueue: vi.fn(() => ({
         queueLifecycle: 'active-empty' as QueueLifecycle,
         pauseSource: null,
-        inFlightId: null
+        inFlightId: null,
+        requests: []
       })),
       getRun: vi.fn(() => null),
       getQueueRegistry: () => ({
@@ -439,8 +470,10 @@ function roundRobinHarness(options: { capacity: number }) {
       admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
       get liveRunCount() {
         return inFlight;
-      }
-    } as never
+      },
+      holdsSession: () => false
+    } as never,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {
@@ -566,7 +599,8 @@ function interleavingHarness(
       getQueue: (_queueId: string) => ({
         queueLifecycle: 'active-empty' as QueueLifecycle,
         pauseSource: null,
-        inFlightId: null
+        inFlightId: null,
+        requests: []
       }),
       getRun: (_queueId: string) => null,
       getQueueRegistry: () => ({
@@ -605,7 +639,8 @@ function interleavingHarness(
       admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
       get liveRunCount() {
         return inFlight.size;
-      }
+      },
+      holdsSession: () => false
     } as never,
     auditWriter: options.audit
       ? {
@@ -614,7 +649,8 @@ function interleavingHarness(
             return undefined;
           }
         }
-      : null
+      : null,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   } as never);
 
   return {
@@ -669,6 +705,34 @@ describe('AutoDrainCoordinator sweep guard (Feature 093 T049)', () => {
     const second = h.coord.drainAll();
     h.addPending('q-b');
     h.openAllAdmissions();
+    await Promise.all([first, second]);
+
+    expect(h.offered).toEqual(['q-a', 'q-b']);
+  });
+
+  it('a request arriving while a sweep-end listener runs is coalesced, not dropped (FR-R4-F02)', async () => {
+    // The listener is the unattended admission's retry of capacity-refused wakeups: it awaits
+    // store and lease work, so a terminating Run's trigger can arrive while it is suspended. That
+    // trigger must still buy a further sweep, because the slot it freed is the one a pending head
+    // is waiting for.
+    const h = interleavingHarness({ pendingFor: ['q-a'] });
+    h.openAllAdmissions();
+    const listenerGate = deferred();
+    let listenerRuns = 0;
+    h.coord.onSweepEnd(async () => {
+      listenerRuns += 1;
+      if (listenerRuns === 1) await listenerGate.promise;
+    });
+
+    const first = h.coord.drainAll();
+    await settle();
+    // The sweep has walked every queue and is suspended inside its end listener.
+    expect(h.offered).toEqual(['q-a']);
+    expect(listenerRuns).toBe(1);
+
+    const second = h.coord.drainAll();
+    h.addPending('q-b');
+    listenerGate.resolve();
     await Promise.all([first, second]);
 
     expect(h.offered).toEqual(['q-a', 'q-b']);
@@ -808,5 +872,1057 @@ describe('AutoDrainCoordinator admission seam (Feature 093 T049a)', () => {
     // The second sweep saw the counts the first sweep's admissions produced,
     // which is the whole reason the seam is `markInFlight` and not the spawn.
     expect(h.offered).toEqual(['q-a', 'q-b', 'q-c', 'q-d']);
+  });
+});
+
+describe('AutoDrainCoordinator — the diagnostic a failed start leaves behind', () => {
+  // Nothing re-asks within the session after step 7 throws, so this warning is
+  // the whole record of why a queue stopped. These pin what it has to say.
+  function failingSetup(next: { id: string; description: string; runId?: string }) {
+    const store = makeStore({ inFlightId: null });
+    const queue = makeQueue(next);
+    const lease = makeLease(true);
+    const controller = makeController();
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      executionLease: lease as never,
+      controller: controller as never,
+      logger: logger as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
+    });
+    return { coord, lease, controller, logger };
+  }
+
+  it('names the admission it actually called, not one the port forbids it', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    const message = String(s.logger.warn.mock.calls[0]?.[0]);
+    expect(message).toContain('admitNew');
+    expect(message).not.toContain('startNew');
+    expect(message).toContain('spawn refused');
+  });
+
+  it('names the queue, because a sweep visits several', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(String(s.logger.warn.mock.calls[0]?.[0])).toContain('q-7');
+  });
+
+  it('names admitResume when the resume path is the one that threw', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitResume = vi.fn(async () => {
+      throw new Error('journal unreadable');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    const message = String(s.logger.warn.mock.calls[0]?.[0]);
+    expect(message).toContain('admitResume');
+    expect(message).not.toContain('admitNew');
+  });
+
+  it('does not put the Task description in the log', async () => {
+    // Operator-authored content, on the same terms as FR-038a keeps a queue name
+    // out of the audit log.
+    const s = failingSetup({ id: 'q-7', description: 'migrate acme-corp billing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(String(s.logger.warn.mock.calls[0]?.[0])).not.toContain('acme-corp');
+  });
+
+  it('gives the execution lease back so the queue is not claimed for 15s', async () => {
+    const s = failingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.lease.release).toHaveBeenCalledWith('q-7');
+  });
+});
+
+// Feature 187 (T005-T007, US1/US2) — FR-001..FR-006.
+//
+// The log line the block above pins is a record for whoever opens a log. This
+// block pins the record for whoever does not: one report per queue, cleared by a
+// success, replaced by a later failure, and written at step 7 only.
+describe('AutoDrainCoordinator — the report a failed start leaves on its queue', () => {
+  function reportingSetup(
+    next: { id: string; description: string; runId?: string } | null,
+    queueState: { inFlightId: string | null; queueLifecycle?: QueueLifecycle } = {
+      inFlightId: null
+    },
+    capacity: { workspace?: boolean; queue?: boolean; execution?: boolean } = {}
+  ) {
+    const store = makeStore(queueState);
+    const queue = makeQueue(
+      next,
+      capacity.workspace ?? true,
+      capacity.queue ?? true,
+      capacity.execution ?? true
+    );
+    const lease = makeLease(true);
+    const controller = makeController();
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      executionLease: lease as never,
+      controller: controller as never,
+      startFailures,
+      logger: logger as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
+    });
+    return { coord, controller, startFailures, logger, lease };
+  }
+
+  it('records the fresh-start admission that threw, against the queue that attempted it', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith('q-7', {
+      kind: 'admission',
+      admission: 'admitNew',
+      message: 'spawn refused'
+    });
+  });
+
+  it('records admitResume when the resume path is the one that threw', async () => {
+    // Not interchangeable with the case above: a resume failure and a spawn
+    // failure send an operator to different places (US2).
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitResume = vi.fn(async () => {
+      throw new Error('journal unreadable');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith('q-7', {
+      kind: 'admission',
+      admission: 'admitResume',
+      message: 'journal unreadable'
+    });
+  });
+
+  it('names the fresh start when a declining resume falls through to one that throws', async () => {
+    // `admitResume` returning `resumed: false` is the documented fall-through,
+    // not a failure. The attempt that failed is the fresh start, and that is what
+    // the report has to say (spec.md Edge Cases).
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith(
+      'q-7',
+      expect.objectContaining({ admission: 'admitNew' })
+    );
+  });
+
+  // FR-R4-F06 (TA3; T56; contract P, P7) -- the drain's resume branch used to fall through to
+  // `admitNew` on ANY `resumed: false`, and `admitNew` writes a new Run over the queue's Run. So a
+  // liveness refusal that came back as the plain `NOT_RESUMED` would spawn a second backend beside
+  // the survivor the guard had just refused to resume beside (FR-016). The two new refusals carry
+  // their own values, and the drain must not start anything on either. The control is M17.
+  describe('FR-R4-F06 — a refused resume never falls through to a fresh start (TA3)', () => {
+    /** The value the controller's admission seam returns for a refusal. */
+    const refused = (refusal?: string) => ({
+      resumed: false as const,
+      completed: Promise.resolve(),
+      ...(refusal === undefined ? {} : { refusal })
+    });
+
+    it.each(['previous-tree-live', 'shutdown-begun'])(
+      'starts nothing on the %s refusal, and gives the lease back',
+      async (refusal) => {
+        const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+        s.controller.admitResume = vi.fn(async () => refused(refusal));
+
+        await s.coord.drainIfIdle('q-7');
+
+        expect(s.controller.admitResume).toHaveBeenCalledTimes(1);
+        expect(s.controller.admitNew, 'a fresh Run beside a live tree is what FR-016 forbids').not.toHaveBeenCalled();
+        // A refusal is a wait, not a failure: nothing is reported and nothing is cleared.
+        expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+        expect(s.startFailures.clear).not.toHaveBeenCalled();
+        // The drain claimed the queue's lease at step 6 and started nothing, so it hands it back.
+        expect(s.lease.release).toHaveBeenCalledWith('q-7');
+      }
+    );
+
+    it('still falls through to admitNew on the plain refusal (pins)', async () => {
+      const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+      s.controller.admitResume = vi.fn(async () => refused());
+
+      await s.coord.drainIfIdle('q-7');
+
+      expect(s.controller.admitNew).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('clears the report when a fresh start succeeds', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.clear).toHaveBeenCalledWith('q-7');
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('clears the report when a resume succeeds', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing', runId: 'run-3' });
+    s.controller.admitResume = vi.fn(async () => ({
+      resumed: true,
+      completed: Promise.resolve()
+    }));
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.clear).toHaveBeenCalledWith('q-7');
+    expect(s.controller.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('does not record and does not clear when step 1 refuses an idle-pending queue', async () => {
+    // The gate-order property, and the reason `startFailures` is optional: the
+    // report is written inside step 7's own try/catch, so a queue refused before
+    // step 7 is neither reported on nor cleared. This one passes on the pre-change
+    // tree; it is here to fail if a later edit hoists either call into
+    // `drainQueue`, where it would run for all seven refusals.
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' }, {
+      inFlightId: null,
+      queueLifecycle: 'idle-pending'
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+    expect(s.startFailures.clear).not.toHaveBeenCalled();
+  });
+
+  it('does not record and does not clear when step 4 refuses at the workspace ceiling', async () => {
+    const s = reportingSetup(
+      { id: 'q-7', description: 'ship the thing' },
+      { inFlightId: null },
+      { workspace: false }
+    );
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+    expect(s.startFailures.clear).not.toHaveBeenCalled();
+  });
+
+  it('still logs the failure — the report supplements the line, it does not replace it', async () => {
+    const s = reportingSetup({ id: 'q-7', description: 'ship the thing' });
+    s.controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+
+    await s.coord.drainIfIdle('q-7');
+
+    expect(String(s.logger.warn.mock.calls[0]?.[0])).toContain('admitNew');
+  });
+
+  it('reports nothing at all when no port is wired', async () => {
+    // Absent, a failed start behaves exactly as it did before this feature: it
+    // logs and returns false. Every existing coordinator double relies on this.
+    const store = makeStore({ inFlightId: null });
+    const queue = makeQueue({ id: 'q-7', description: 'ship the thing' });
+    const lease = makeLease(true);
+    const controller = makeController();
+    controller.admitNew = vi.fn(async () => {
+      throw new Error('spawn refused');
+    });
+    const coord = new AutoDrainCoordinator({
+      store: store as never,
+      queue: queue as never,
+      executionLease: lease as never,
+      controller: controller as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
+    });
+
+    await expect(coord.drainIfIdle('q-7')).resolves.toBeUndefined();
+    expect(controller.admitNew).toHaveBeenCalled();
+    expect(lease.release).toHaveBeenCalledWith('q-7');
+  });
+
+  it('reports one queue and still offers the rest of the sweep', async () => {
+    // Feature 187 (T009, US3 scenario 3) — a failure is one queue's, and a sweep
+    // visits every queue in the registry. The report must not be the reason the
+    // queues after it never get asked.
+    const ids = ['q-a', 'q-b'];
+    const offered: string[] = [];
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const coord = new AutoDrainCoordinator({
+      store: {
+        getQueue: vi.fn(() => ({
+          queueLifecycle: 'active-empty' as QueueLifecycle,
+          pauseSource: null,
+          inFlightId: null,
+          requests: []
+        })),
+        getRun: vi.fn(() => null),
+        getQueueRegistry: () => ({
+          entries: ids.map((id, position) => ({
+            id,
+            name: id,
+            position,
+            state: 'active' as const,
+            pauseSource: null,
+            schedule: null,
+            createdAt: 0,
+            updatedAt: 0
+          })),
+          updatedAt: 0
+        })
+      } as never,
+      queue: {
+        peekNextPending: vi.fn((queueId: string) => ({
+          id: `task-${queueId}`,
+          description: 'next',
+          queueId
+        })),
+        hasQueueCapacity: vi.fn(() => true),
+        hasExecutionCapacity: vi.fn(() => true),
+        hasWorkspaceCapacity: vi.fn(() => true)
+      } as never,
+      executionLease: {
+        tryAcquire: vi.fn(async () => ({ acquired: true, ownerId: 'w-1' })),
+        release: vi.fn(async () => undefined)
+      } as never,
+      controller: {
+        admitNew: vi.fn(async (task: { queueId: string }) => {
+          offered.push(task.queueId);
+          if (task.queueId === 'q-a') throw new Error('spawn refused');
+          return { completed: Promise.resolve() };
+        }),
+        admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
+        liveRunCount: 0,
+        holdsSession: () => false
+      } as never,
+      startFailures,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
+    });
+
+    await coord.drainAll();
+
+    expect(offered).toEqual(['q-a', 'q-b']);
+    expect(startFailures.recordFailure).toHaveBeenCalledTimes(1);
+    expect(startFailures.recordFailure).toHaveBeenCalledWith('q-a', {
+      kind: 'admission',
+      admission: 'admitNew',
+      message: 'spawn refused'
+    });
+    expect(startFailures.clear).toHaveBeenCalledTimes(1);
+    expect(startFailures.clear).toHaveBeenCalledWith('q-b');
+  });
+});
+
+// BUG-004 — step 3's occupant refusal, and the one shape of it that never
+// re-asks itself.
+//
+// A queue held by a live Run is the ordinary case: that Run reaches a terminal
+// status, its termination sweeps the whole registry, and this refusal is asked
+// again. A queue held by a Run whose Task row was deleted is not — every route
+// that could end that Run (cancel by id, the palette's sole-run cancel, resume,
+// retry) resolves the row first and refuses when there is none, so nothing ends
+// it and nothing re-asks. Before this block, both read identically from outside:
+// `drainQueue` returned `false` and said nothing.
+//
+// What these pin is the separation. Reporting every non-terminal occupant would
+// put a failure notice on every busy queue, which is how a surface stops being
+// read.
+describe('AutoDrainCoordinator — the Run that holds a queue and cannot be reached', () => {
+  const HELD = 'q-held';
+  const OTHER = 'q-other';
+
+  interface Occupant {
+    readonly id: string;
+    readonly featureId: string;
+    readonly status: string;
+    readonly currentPhase: string;
+  }
+
+  function strandedSetup(options: {
+    /** Read fresh on every drain, so a test can free the queue between two. */
+    readonly occupant: () => Occupant | null;
+    /** Task rows per queue id. A queue absent from the map holds none. */
+    readonly rows?: ReadonlyMap<string, readonly { readonly id: string }[]>;
+    /** Whether a pending head exists — `false` stops the drain at step 5, before
+     *  step 7's own `clear`, so a `clear` assertion can only be step 3's. */
+    readonly pending?: boolean;
+    readonly withPort?: boolean;
+  }) {
+    const rows = options.rows ?? new Map<string, readonly { readonly id: string }[]>();
+    const ids = rows.size > 0 ? [...rows.keys()] : [HELD];
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const getQueueRegistry = vi.fn(() => ({
+      entries: ids.map((id, position) => ({ id, position })),
+      updatedAt: 0
+    }));
+    const admitNew = vi.fn(async () => ({ completed: Promise.resolve() }));
+    const coord = new AutoDrainCoordinator({
+      store: {
+        getQueue: vi.fn((queueId: string) => ({
+          queueLifecycle: 'active-empty' as QueueLifecycle,
+          pauseSource: null,
+          inFlightId: null,
+          requests: rows.get(queueId) ?? []
+        })),
+        getRun: vi.fn(() => options.occupant()),
+        getQueueRegistry
+      } as never,
+      queue: {
+        peekNextPending: vi.fn(() =>
+          options.pending === false ? null : { id: 'task-next', description: 'next' }
+        ),
+        hasQueueCapacity: vi.fn(() => true),
+        hasExecutionCapacity: vi.fn(() => true),
+        hasWorkspaceCapacity: vi.fn(() => true)
+      } as never,
+      executionLease: {
+        tryAcquire: vi.fn(async () => ({ acquired: true, ownerId: 'w-1' })),
+        release: vi.fn(async () => undefined)
+      } as never,
+      controller: {
+        admitNew,
+        admitResume: vi.fn(async () => ({ resumed: false, completed: Promise.resolve() })),
+        liveRunCount: 0,
+        holdsSession: () => false
+      } as never,
+      startFailures: options.withPort === false ? null : startFailures,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' as const }
+    });
+    return { coord, startFailures, getQueueRegistry, admitNew };
+  }
+
+  const stranded: Occupant = {
+    id: 'run-stranded',
+    featureId: 'task-deleted',
+    status: 'paused',
+    currentPhase: 'implement'
+  };
+
+  it('records the Run holding the queue when no Task row anywhere addresses it', async () => {
+    const s = strandedSetup({ occupant: () => stranded });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.recordFailure).toHaveBeenCalledWith(HELD, {
+      kind: 'stranded-run',
+      runId: 'run-stranded',
+      phase: 'implement'
+    });
+  });
+
+  it('reports nothing for the ordinary held queue — its Task row is right there', async () => {
+    // The distinction the whole block exists for. This Run is reachable: the
+    // operator can cancel or resume it, and when it ends its own sweep re-asks.
+    const s = strandedSetup({
+      occupant: () => stranded,
+      rows: new Map([[HELD, [{ id: 'task-deleted' }]]])
+    });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing when the Task row moved to another queue', async () => {
+    // The row is not on the Run's own queue, and the Run is still addressable —
+    // the same reason `reconcileOrphanedRuns` asks across every queue rather
+    // than the one the Run is parked on.
+    const s = strandedSetup({
+      occupant: () => stranded,
+      rows: new Map([
+        [HELD, []],
+        [OTHER, [{ id: 'task-deleted' }]]
+      ])
+    });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('refuses the queue either way — the report is not a second gate', async () => {
+    const reported = strandedSetup({ occupant: () => stranded });
+    const ordinary = strandedSetup({
+      occupant: () => stranded,
+      rows: new Map([[HELD, [{ id: 'task-deleted' }]]])
+    });
+
+    await reported.coord.drainIfIdle(HELD);
+    await ordinary.coord.drainIfIdle(HELD);
+
+    expect(reported.admitNew).not.toHaveBeenCalled();
+    expect(ordinary.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('clears the report once the queue is no longer held', async () => {
+    let occupant: Occupant | null = stranded;
+    const s = strandedSetup({ occupant: () => occupant, pending: false });
+
+    await s.coord.drainIfIdle(HELD);
+    expect(s.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+
+    occupant = null;
+    await s.coord.drainIfIdle(HELD);
+
+    // `pending: false` stops this drain at step 5, so step 7's own `clear`
+    // cannot be what answered here.
+    expect(s.startFailures.clear).toHaveBeenCalledWith(HELD);
+  });
+
+  it('clears the report once the Run becomes addressable again', async () => {
+    // Still held, but by a Run the operator can now reach. A report left
+    // standing here would tell them to reload a window for a Run they can
+    // simply cancel.
+    const rows = new Map<string, readonly { readonly id: string }[]>([[HELD, []]]);
+    const s = strandedSetup({ occupant: () => stranded, rows, pending: false });
+
+    await s.coord.drainIfIdle(HELD);
+    expect(s.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+
+    rows.set(HELD, [{ id: 'task-deleted' }]);
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.clear).toHaveBeenCalledWith(HELD);
+  });
+
+  it('does not clear a report it did not write', async () => {
+    // `clear` on this path drops exactly what step 3 recorded. An admission
+    // report from a previous attempt belongs to step 7 and is not step 3's to
+    // erase — the queue below was never reported as held.
+    const s = strandedSetup({ occupant: () => null, pending: false });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.startFailures.clear).not.toHaveBeenCalled();
+  });
+
+  it('does not even look for the Task row when no port is wired', async () => {
+    // The reason `startFailures` is optional, restated for this step: the
+    // gate-order tests assert which collaborators a refusal consulted, and a
+    // registry scan that ran without a reader would change that answer for a
+    // reason unrelated to the gate under test.
+    const s = strandedSetup({ occupant: () => stranded, withPort: false });
+
+    await s.coord.drainIfIdle(HELD);
+
+    expect(s.getQueueRegistry).not.toHaveBeenCalled();
+    expect(s.admitNew).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-R3-205 — a closed drain starts nothing, so teardown leaves a pending task
+// pending.
+//
+// Stage 2's teardown stops the in-flight Run, and that Run's terminal funnel
+// schedules a drain. `close()` is what makes that drain a wait. Every
+// "admits nothing" case below runs the same fixture open first, in the same
+// `it`, and shows it admitting: a fixture that could never admit would pass
+// the closed half for no reason of its own.
+// ---------------------------------------------------------------------------
+
+describe('AutoDrainCoordinator — FR-R3-205: a closed drain starts nothing', () => {
+  const QUEUE = DEFAULT_QUEUE_ID;
+  const OWNER = { acquired: true, ownerId: 'w-1' };
+
+  function openLease() {
+    return {
+      tryAcquire: vi.fn(async () => OWNER),
+      release: vi.fn(async () => undefined)
+    };
+  }
+
+  /** `tryAcquire` stays pending until the gate opens; the re-check then answers true. */
+  function claimGatedLease(gate: Deferred) {
+    return {
+      tryAcquire: vi.fn(async () => {
+        await gate.promise;
+        return OWNER;
+      }),
+      release: vi.fn(async () => undefined),
+      hasLease: vi.fn(async () => true)
+    };
+  }
+
+  /** The same claim, on a lease port that offers no re-check at all. */
+  function claimGatedLeaseWithoutRecheck(gate: Deferred) {
+    return {
+      tryAcquire: vi.fn(async () => {
+        await gate.promise;
+        return OWNER;
+      }),
+      release: vi.fn(async () => undefined)
+    };
+  }
+
+  /** The claim resolves at once; the FR-R3-003 re-check stays pending until the gate opens. */
+  function recheckGatedLease(gate: Deferred) {
+    return {
+      tryAcquire: vi.fn(async () => OWNER),
+      release: vi.fn(async () => undefined),
+      hasLease: vi.fn(async () => {
+        await gate.promise;
+        return true;
+      })
+    };
+  }
+
+  function build<L extends object = ReturnType<typeof openLease>>(
+    options: {
+      readonly queueIds?: readonly string[];
+      readonly requests?: readonly unknown[];
+      readonly policy?: 'halt-on-failure' | 'continue';
+      readonly peek?: (queueId: string) => { id: string; description: string } | null;
+      readonly lease?: L;
+      readonly admitNew?: () => Promise<{ completed: Promise<void> }>;
+    } = {}
+  ) {
+    const queueIds = options.queueIds ?? [QUEUE];
+    const lease = (options.lease ?? openLease()) as L;
+    const startFailures = { recordFailure: vi.fn(), clear: vi.fn() };
+    const auditWriter = { append: vi.fn(async () => undefined) };
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const admitNew = vi.fn(options.admitNew ?? (async () => ({ completed: Promise.resolve() })));
+    const admitResume = vi.fn(async () => ({ resumed: false, completed: Promise.resolve() }));
+    const deps = {
+      store: {
+        getQueue: vi.fn(() => ({
+          queueLifecycle: 'active-empty' as QueueLifecycle,
+          pauseSource: null,
+          inFlightId: null,
+          requests: options.requests ?? []
+        })),
+        getRun: vi.fn(() => null),
+        getQueueRegistry: () => ({
+          entries: queueIds.map((id, position) => ({ id, position })),
+          updatedAt: 0
+        })
+      } as never,
+      queue: {
+        peekNextPending: vi.fn(
+          options.peek ?? ((queueId: string) => ({ id: `task-${queueId}`, description: 'next' }))
+        ),
+        hasQueueCapacity: vi.fn(() => true),
+        hasExecutionCapacity: vi.fn(() => true),
+        hasWorkspaceCapacity: vi.fn(() => true),
+        inFlightCount: vi.fn(() => 0)
+      } as never,
+      executionLease: lease as never,
+      controller: { admitNew, admitResume, liveRunCount: 0, holdsSession: () => false } as never,
+      startFailures,
+      auditWriter,
+      logger: logger as never,
+      failurePolicyDefault: { resolve: () => options.policy ?? ('halt-on-failure' as const) }
+    };
+    return {
+      coord: new AutoDrainCoordinator(deps),
+      deps,
+      lease,
+      admitNew,
+      admitResume,
+      startFailures,
+      auditWriter,
+      logger
+    };
+  }
+
+  type Built = ReturnType<typeof build>;
+
+  function expectNothingWritten(f: Built) {
+    expect(f.admitNew).not.toHaveBeenCalled();
+    expect(f.admitResume).not.toHaveBeenCalled();
+    expect(f.startFailures.recordFailure).not.toHaveBeenCalled();
+    expect(f.startFailures.clear).not.toHaveBeenCalled();
+    expect(f.auditWriter.append).not.toHaveBeenCalled();
+    expect(f.logger.warn).not.toHaveBeenCalled();
+    expect(f.logger.error).not.toHaveBeenCalled();
+  }
+
+  /** Start a drain, let it reach the await the case is about, optionally close, then release it. */
+  async function drainClosingWhileWaiting<L extends object>(
+    makeLease: (gate: Deferred) => L,
+    waitingOn: (lease: L) => unknown,
+    closeWhileWaiting: boolean
+  ) {
+    const gate = deferred();
+    const f = build({ lease: makeLease(gate) });
+    const drain = f.coord.drainIfIdle(QUEUE);
+    await settle();
+    expect(waitingOn(f.lease)).toHaveBeenCalledTimes(1);
+    if (closeWhileWaiting) f.coord.close();
+    gate.resolve();
+    await drain;
+    return f;
+  }
+
+  it('US1.1 — a closed drainIfIdle claims no lease and admits nothing', async () => {
+    const open = build();
+    await open.coord.drainIfIdle(QUEUE);
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+
+    const closed = build();
+    closed.coord.close();
+    await closed.coord.drainIfIdle(QUEUE);
+    expect(closed.lease.tryAcquire).not.toHaveBeenCalled();
+    expect(closed.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('US1.2 — a closed drainAll over three queues claims no lease and admits none', async () => {
+    const queueIds = ['q-1', 'q-2', 'q-3'];
+    const open = build({ queueIds });
+    await open.coord.drainAll();
+    expect(open.admitNew).toHaveBeenCalledTimes(3);
+
+    const closed = build({ queueIds });
+    closed.coord.close();
+    await closed.coord.drainAll();
+    expect(closed.lease.tryAcquire).not.toHaveBeenCalled();
+    expect(closed.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('US1.3 — under `continue`, a closed drainAll admits neither pending task behind a failed row', async () => {
+    const firstPending = { id: 't-1', description: 'first pending' };
+    const requests = [
+      { id: 't-0', description: 'failed', status: 'failed', position: 0 },
+      { ...firstPending, status: 'pending', position: 1 },
+      { id: 't-2', description: 'second pending', status: 'pending', position: 2 }
+    ];
+    const options = { requests, policy: 'continue' as const, peek: () => firstPending };
+
+    const open = build(options);
+    await open.coord.drainAll();
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.admitNew).toHaveBeenCalledWith(firstPending, null);
+
+    const closed = build(options);
+    closed.coord.close();
+    await closed.coord.drainAll();
+    expect(closed.lease.tryAcquire).not.toHaveBeenCalled();
+    expect(closed.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('US1.4 — close() is idempotent, on a coordinator that never drained and on one that did', async () => {
+    const fresh = build();
+    expect(() => fresh.coord.close()).not.toThrow();
+    expect(() => fresh.coord.close()).not.toThrow();
+
+    const used = build();
+    await used.coord.drainIfIdle(QUEUE);
+    expect(used.admitNew).toHaveBeenCalledTimes(1);
+    expect(() => used.coord.close()).not.toThrow();
+    expect(() => used.coord.close()).not.toThrow();
+  });
+
+  it('US1.5 — a closed refusal records no failure, writes no audit event and logs nothing', async () => {
+    // The open half makes the spies live: a start that throws reaches all of them.
+    const open = build({
+      admitNew: async () => {
+        throw new Error('refused');
+      }
+    });
+    await open.coord.drainIfIdle(QUEUE);
+    expect(open.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+    expect(open.logger.warn).toHaveBeenCalledTimes(1);
+
+    const closed = build({
+      admitNew: async () => {
+        throw new Error('refused');
+      }
+    });
+    closed.coord.close();
+    await closed.coord.drainIfIdle(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  it('US2.1 — a close while the claim is pending releases the lease once and admits nothing', async () => {
+    const open = await drainClosingWhileWaiting(claimGatedLease, (l) => l.tryAcquire, false);
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.lease.release).not.toHaveBeenCalled();
+
+    const closed = await drainClosingWhileWaiting(claimGatedLease, (l) => l.tryAcquire, true);
+    expect(closed.lease.release).toHaveBeenCalledTimes(1);
+    expect(closed.lease.release).toHaveBeenCalledWith(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  it('US2.1b — a close while the FR-R3-003 re-check is pending releases the lease once and admits nothing', async () => {
+    const open = await drainClosingWhileWaiting(recheckGatedLease, (l) => l.hasLease, false);
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.lease.release).not.toHaveBeenCalled();
+
+    const closed = await drainClosingWhileWaiting(recheckGatedLease, (l) => l.hasLease, true);
+    expect(closed.lease.release).toHaveBeenCalledTimes(1);
+    expect(closed.lease.release).toHaveBeenCalledWith(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  it('US2.2 — with no re-check on the lease port, a close during the claim still releases once and admits nothing', async () => {
+    const open = await drainClosingWhileWaiting(
+      claimGatedLeaseWithoutRecheck,
+      (l) => l.tryAcquire,
+      false
+    );
+    expect(open.admitNew).toHaveBeenCalledTimes(1);
+    expect(open.lease.release).not.toHaveBeenCalled();
+
+    const closed = await drainClosingWhileWaiting(
+      claimGatedLeaseWithoutRecheck,
+      (l) => l.tryAcquire,
+      true
+    );
+    expect(closed.lease.release).toHaveBeenCalledTimes(1);
+    expect(closed.lease.release).toHaveBeenCalledWith(QUEUE);
+    expectNothingWritten(closed);
+  });
+
+  // FR-R4-F06 (FR-022; T24; contract S, S4; research R31) -- an unattended admission refuses once
+  // shutdown has begun. Only the drain checked the closed flag; the sweep-end listener, the
+  // delayed retry and the credit-watchdog restore all reach `admitUnattended`, and each could
+  // resume a Run in the interval between `close()` and the runners being torn down. They share
+  // this one method, so one gate covers all three. The control is M14.
+  describe('an unattended admission after close (T24)', () => {
+    const WAKEUPS = [
+      ['the sweep-end listener (credits restored)', { cause: 'credits-restored', queueId: QUEUE, evidenceAt: 1 }],
+      ['the delayed retry (backoff elapsed)', { cause: 'backoff-elapsed', queueId: QUEUE, deadline: 1 }],
+      ['the credit-watchdog restore', { cause: 'credits-restored', queueId: QUEUE, evidenceAt: 2 }]
+    ] as const;
+
+    it.each(WAKEUPS)('admits nothing for %s, and calls no controller method', async (_caller, wakeup) => {
+      const f = build();
+      const holdsSession = vi.fn(() => false);
+      const admitResume = vi.fn(async () => ({ resumed: true, completed: Promise.resolve() }));
+      Object.assign(f.deps.controller as object, { holdsSession, admitResume });
+      f.coord.close();
+
+      const outcome = await f.coord.admitUnattended(QUEUE, wakeup);
+
+      expect(outcome).not.toBe('admitted');
+      expect(outcome).toBe('ineligible');
+      expect(admitResume).not.toHaveBeenCalled();
+      expect(holdsSession).not.toHaveBeenCalled();
+      expectNothingWritten(f);
+    });
+
+    it('still admits before close, so the refusal is the close and not the fixture', async () => {
+      const f = build();
+      const admitResume = vi.fn(async () => ({ resumed: true, completed: Promise.resolve() }));
+      Object.assign(f.deps.controller as object, { admitResume });
+
+      const outcome = await f.coord.admitUnattended(QUEUE, WAKEUPS[0][1]);
+
+      expect(outcome).toBe('admitted');
+      expect(admitResume).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports the coordinator closed, for the resume guard to read', () => {
+      const f = build();
+      expect(f.coord.isClosed()).toBe(false);
+      f.coord.close();
+      expect(f.coord.isClosed()).toBe(true);
+    });
+  });
+
+  it('US4.1 — a coordinator built after another is closed admits as before', async () => {
+    const first = build();
+    first.coord.close();
+    await first.coord.drainIfIdle(QUEUE);
+    expect(first.admitNew).not.toHaveBeenCalled();
+
+    const second = new AutoDrainCoordinator(first.deps);
+    await second.drainIfIdle(QUEUE);
+    expect(first.admitNew).toHaveBeenCalledTimes(1);
+  });
+
+  it('FR-R7-11 — releases the execution lease immediately, records start failure, and logs warning when admitNew returns durable-store-unavailable refusal', async () => {
+    const f = build({
+      admitNew: async () => ({
+        completed: Promise.resolve(),
+        refusal: 'durable-store-unavailable' as const,
+        refusalMessage: 'Refused atomic operational batch write: durable SQLite store is unavailable.'
+      })
+    });
+
+    await f.coord.drainIfIdle(QUEUE);
+
+    expect(f.admitNew).toHaveBeenCalledTimes(1);
+    expect(f.lease.tryAcquire).toHaveBeenCalledWith(QUEUE);
+    expect(f.lease.release).toHaveBeenCalledTimes(1);
+    expect(f.lease.release).toHaveBeenCalledWith(QUEUE);
+    expect(f.startFailures.clear).not.toHaveBeenCalled();
+    expect(f.startFailures.recordFailure).toHaveBeenCalledTimes(1);
+    expect(f.startFailures.recordFailure).toHaveBeenCalledWith(QUEUE, {
+      kind: 'admission',
+      admission: 'admitNew',
+      message: 'Refused atomic operational batch write: durable SQLite store is unavailable.'
+    });
+    expect(f.logger.warn).toHaveBeenCalledTimes(1);
+    expect(f.logger.warn.mock.calls[0]?.[0]).toContain('durable-store-unavailable');
+    expect(f.auditWriter.append).not.toHaveBeenCalled();
+  });
+
+  it('FR-R7-11 — maps post-cutover PostCutoverMementoWriteForbiddenError to durable-store-unavailable, releases lease immediately, records start failure, and leaves queue intact', async () => {
+    const seedData = new Map<string, unknown>();
+    const seedMemento: Memento = {
+      get<T>(key: string): T | undefined {
+        return seedData.has(key) ? (seedData.get(key) as T) : undefined;
+      },
+      update(key: string, value: unknown): Promise<void> {
+        if (value === undefined) seedData.delete(key);
+        else seedData.set(key, value);
+        return Promise.resolve();
+      }
+    };
+    const seedStore = new WorkspaceStateStore(seedMemento);
+    await seedStore.initialize();
+    const seedQueue = new QueueManager(seedStore);
+    const task = await seedQueue.enqueue('Post-cutover pending task');
+
+    let legacyWrites = 0;
+    const legacyData = new Map<string, unknown>();
+    const legacyMemento: Memento = {
+      get<T>(key: string): T | undefined {
+        return legacyData.has(key) ? (legacyData.get(key) as T) : undefined;
+      },
+      update(key: string, value: unknown): Promise<void> {
+        legacyWrites += 1;
+        if (value === undefined) legacyData.delete(key);
+        else legacyData.set(key, value);
+        return Promise.resolve();
+      }
+    };
+    const scopeId = 'scope-post-cutover-unavailable';
+    const snapshotRows = Array.from(seedData.entries()).map(([docKey, value]) => ({
+      doc_key: docKey,
+      payload_json: JSON.stringify(value)
+    }));
+    const fakeReadOnlyConn: SqliteConnectionPort = {
+      exec: () => undefined,
+      run: () => ({ changes: 0, lastInsertRowid: 0 }),
+      get<T extends Record<string, unknown>>(sql: string): T | undefined {
+        if (sql.includes('FROM cutover_sentinel')) {
+          return { authority: 'sqlite' } as unknown as T;
+        }
+        return undefined;
+      },
+      all<T extends Record<string, unknown>>(sql: string): T[] {
+        if (sql.includes('FROM operational_kv_documents')) {
+          return snapshotRows as unknown as T[];
+        }
+        return [];
+      },
+      close: () => undefined
+    };
+
+    const operationalMemento = createSwitchableOperationalMemento(legacyMemento, undefined, {
+      requireDurableBatch: true
+    });
+    const attached = operationalMemento.attachReadOnlySnapshotIfPresent(
+      '/virtual/post-cutover-state.db',
+      scopeId,
+      () => fakeReadOnlyConn
+    );
+    expect(attached).toBe(true);
+    expect(operationalMemento.isSqliteAttached()).toBe(false);
+    expect(operationalMemento.isPostCutoverAuthorityActive()).toBe(true);
+
+    const store = new WorkspaceStateStore(operationalMemento);
+    await store.initialize();
+    const queue = new QueueManager(store);
+
+    const tryAcquireSpy = vi.fn().mockResolvedValue({ acquired: true, ownerId: 'win-post-cutover' });
+    const releaseSpy = vi.fn().mockResolvedValue(undefined);
+    const recordFailureSpy = vi.fn();
+    const clearFailureSpy = vi.fn();
+    const auditAppendSpy = vi.fn().mockResolvedValue(undefined);
+    const catalog = buildCatalog(
+      [{ id: 'speckit-specify', name: 'Specify', instruction: 'Specify', runner: 'claude' }],
+      [{ id: 'p1', name: 'P1', phases: ['speckit-specify'] }],
+      { claude: [], codex: [], agy: [] },
+      'p1'
+    );
+    const controller = new SchegentWorkflowController(
+      { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner,
+      store,
+      queue,
+      { update: vi.fn(), show: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar,
+      { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier,
+      new SanitizedLogger(),
+      {
+        id: 'win-post-cutover',
+        tryAcquire: vi.fn().mockResolvedValue({ acquired: true }),
+        release: vi.fn().mockResolvedValue(undefined),
+        isHeldByCurrentWindow: vi.fn().mockReturnValue(true)
+      } as unknown as WorkspaceLockManager,
+      { cliPath: 'claude', cwd: process.cwd(), iterationCap: 3, timeoutMs: 5_000 },
+      {
+        catalog,
+        auditWriter: { append: auditAppendSpy },
+        startFailures: { recordFailure: recordFailureSpy, clear: clearFailureSpy },
+        executionLease: {
+          tryAcquire: tryAcquireSpy,
+          release: releaseSpy,
+          claimFor: () => null
+        }
+      }
+    );
+
+    const admission = await controller.admitNew(task, null);
+    await admission.completed;
+    expect(admission.refusal).toBe('durable-store-unavailable');
+    expect(admission.refusalMessage).toContain('post-cutover-memento-write-forbidden');
+    expect(legacyWrites).toBe(0);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === task.id)?.status).toBe('pending');
+    expect(store.getTerminalTransitionIntents()).toEqual({});
+    expect(auditAppendSpy).not.toHaveBeenCalled();
+
+    await controller.drainQueuedWork(DEFAULT_QUEUE_ID);
+    expect(tryAcquireSpy).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    expect(releaseSpy).toHaveBeenCalledWith(DEFAULT_QUEUE_ID);
+    expect(recordFailureSpy).toHaveBeenCalledTimes(1);
+    expect(recordFailureSpy).toHaveBeenCalledWith(
+      DEFAULT_QUEUE_ID,
+      expect.objectContaining({
+        kind: 'admission',
+        admission: 'admitNew',
+        message: expect.stringContaining('post-cutover-memento-write-forbidden')
+      })
+    );
+    expect(clearFailureSpy).not.toHaveBeenCalled();
+    expect(legacyWrites).toBe(0);
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).inFlightId).toBeNull();
+    expect(store.getQueue(DEFAULT_QUEUE_ID).requests.find((r) => r.id === task.id)?.status).toBe('pending');
   });
 });

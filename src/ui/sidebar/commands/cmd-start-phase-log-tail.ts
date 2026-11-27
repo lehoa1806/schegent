@@ -1,9 +1,11 @@
 import type { StartPhaseLogTailCommand, StartPhaseLogTailResponse } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
+import { logPhaseLogTailFailure } from './phase-log-tail-error';
 
-// Feature 020 T048 — start a phase-log tail session. Read-only by
-// construction (MUST NOT be in MUTATING_COMMANDS). The adapter validates the
+// Feature 020 T048 — start a phase-log tail session. Gated, not serialized
+// (FR-R4-F05, FR-003): the registry appends a `phase-log-tail-started` audit row,
+// so the router's trust and primary-host gates run first. The adapter validates the
 // snapshot (task in-flight + active phase) and delegates to the registry,
 // which owns cap-1, mechanism probe, and audit emission.
 export const handler: CommandHandler<StartPhaseLogTailCommand> = async (ctx, command) => {
@@ -20,11 +22,7 @@ export const handler: CommandHandler<StartPhaseLogTailCommand> = async (ctx, com
   try {
     startResp = await ctx.deps.phaseLogTailService.start(startReq);
   } catch (err) {
-    ctx.deps.logger.warn(
-      `sidebar router: phase-log tail start failed: ${ctx.deps.logger.sanitize(
-        (err as Error).message ?? 'unknown error'
-      )}`
-    );
+    logPhaseLogTailFailure(ctx.deps.logger, 'start', err);
     startResp = { outcome: 'failure', reason: 'internal-error' };
   }
   await ack(

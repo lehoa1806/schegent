@@ -19,7 +19,8 @@
 
 import { CATALOG_KINDS } from '../catalog-store';
 import type { CatalogKind, CatalogVersionId } from '../catalog-store';
-import type { CMD_READ_DEFINITION_VERSION, CommandBase } from '../sidebar-ipc';
+import type { CMD_READ_DEFINITION_VERSION } from '../sidebar-ipc';
+import type { ReadDefinitionVersionCommand } from '../generated/sidebar-ipc-types';
 
 /**
  * Which version to read.
@@ -32,10 +33,7 @@ export interface ReadDefinitionVersionRequest {
   readonly versionId: CatalogVersionId;
 }
 
-export interface ReadDefinitionVersionCommand
-  extends CommandBase<typeof CMD_READ_DEFINITION_VERSION> {
-  readonly payload: ReadDefinitionVersionRequest;
-}
+export type { ReadDefinitionVersionCommand };
 
 /**
  * The version's body, verbatim, and nothing else.

@@ -459,3 +459,63 @@ function resolveTerm(
   missingKeys.add(term.name);
   return 0;
 }
+
+// ============================================================
+// Judged-figure set (feature 194 — FR-007, FR-008)
+// ============================================================
+
+/**
+ * The deduplicated identifier names a parsed `Expression` references.
+ *
+ * Walks the AST — never the source text — so the result cannot drift from
+ * what `evaluate()` actually tested (FR-008). This is the judged-figure set:
+ * feature 194's stagnation comparison is restricted to exactly these names,
+ * so a metric the phase reports but the condition does not reference has no
+ * effect on the comparison in either direction (FR-007).
+ *
+ * Kept beside the evaluator, in this sandboxed DSL module, rather than in the
+ * controller that consumes it (AGENTS.md rule 15 — `retryCondition` reasoning
+ * stays inside `lib/retry-condition`).
+ */
+export function referencedIdentifiers(expression: Expression): readonly string[] {
+  const names = new Set<string>();
+  collectIdentifiers(expression, names);
+  return Object.freeze([...names]);
+}
+
+function collectIdentifiers(expr: Expression, names: Set<string>): void {
+  switch (expr.kind) {
+    case 'compare':
+      collectTermIdentifier(expr.left, names);
+      collectTermIdentifier(expr.right, names);
+      return;
+    case 'logical':
+      collectIdentifiers(expr.left, names);
+      collectIdentifiers(expr.right, names);
+      return;
+    case 'not':
+      collectIdentifiers(expr.expr, names);
+      return;
+  }
+  // Every arm above returns, so `expr` is `never` here and this assignment
+  // compiles only while the switch covers the whole `Expression` union.
+  // `evalExpr()` gets that guarantee for free from `noImplicitReturns` because
+  // it returns `boolean`; this walker returns `void`, so a fourth variant would
+  // fall past the switch, contribute no identifiers, and SHRINK the judged set —
+  // a stagnation snapshot over fewer figures than the condition actually tested,
+  // which overstates the count in the direction FR-009 forbids. No test could
+  // catch it, because the variant that breaks it does not exist yet.
+  //
+  // Returned rather than thrown, unlike `evalExpr()`'s unreachable-operator
+  // arm. `never` is assignable to `void`, so this consumes the binding without
+  // changing behaviour at runtime: an object that is not an `Expression` at all
+  // still contributes no identifiers instead of throwing out of `maybeEmit()`
+  // in the middle of the run loop. The guard is the assignment, and it is a
+  // compile-time one.
+  const unhandled: never = expr;
+  return unhandled;
+}
+
+function collectTermIdentifier(term: CompareTerm, names: Set<string>): void {
+  if (term.kind === 'identifier') names.add(term.name);
+}

@@ -6,15 +6,76 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SanitizedLogger } from '../../../../src/lib/logger';
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
+import type { PhaseProgress } from '../../../../src/services/phase-log/types';
+import {
+  FINGERPRINT_WINDOW_BYTES,
+  fingerprintOf,
+  generationOf,
+  issueCursor,
+  parseCursor,
+  streamDigest
+} from '../../../../src/services/phase-log/live-log-cursor';
+
+// Feature 203 (T038) — the ONLY seam in this file, and it exists for the race
+// windows. The reader's other empty return sites are reachable by building the
+// situation on disk, and are built that way below. A race is not: discovery
+// listed `iter-N` because its stream was there, and the stream then went away.
+//
+// Feature 020 BUG-002 (T085, FR-026a) — an `iter-N` with no stream is no longer
+// a recorded iteration, so it cannot stand in for a stream that vanished, and
+// `record-vanished` is reached only by a race (203's FR-037, SC-018). The seam
+// has two modes, one per branch that answers with that member:
+// - `removeThenOpen` removes the listed stream, then calls the REAL open, so the
+//   walk refuses with a real ENOENT. Nothing here is thrown by the test.
+// - `armed` throws ENOENT from the open itself, for the catch after it. Once
+//   the descriptor is open no filesystem state can produce an ENOENT through it,
+//   so on a POSIX filesystem that branch is unreachable from the public API.
+// The first proves the member on a real removal, which is why mocking the
+// second weakens nothing: what it checks is that the second code path answers
+// with the same member, per D2.
+const race = vi.hoisted(() => ({
+  armed: false,
+  removeThenOpen: false,
+  removedPath: null as string | null
+}));
+vi.mock('../../../../src/lib/safe-open', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../src/lib/safe-open')>();
+  return {
+    ...actual,
+    openWithinRootByPath: async (
+      ...args: Parameters<typeof actual.openWithinRootByPath>
+    ): ReturnType<typeof actual.openWithinRootByPath> => {
+      if (race.removeThenOpen) {
+        race.removeThenOpen = false;
+        const [, requestedPath] = args;
+        const { rm } = await import('node:fs/promises');
+        await rm(requestedPath);
+        race.removedPath = requestedPath;
+        return actual.openWithinRootByPath(...args);
+      }
+      if (!race.armed) return actual.openWithinRootByPath(...args);
+      race.armed = false;
+      const vanished: NodeJS.ErrnoException = new Error('stream removed after listing');
+      vanished.code = 'ENOENT';
+      throw vanished;
+    }
+  };
+});
 
 let tmpDir: string;
 const logger = new SanitizedLogger();
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'phase-log-reader-'));
+  // The seam disarms itself when it fires, so this matters only when the test
+  // that armed it failed before reaching the read. Without it that failure
+  // would travel into the next test as a second, unexplained one.
+  race.armed = false;
+  race.removeThenOpen = false;
+  race.removedPath = null;
 });
 
 afterEach(async () => {
@@ -51,12 +112,29 @@ async function writeStream(iteration: number, lines: string[]): Promise<void> {
 
 const sanitize = (s: string): string => logger.sanitize(s);
 
+/** The phase directory itself — the one the single observation lists (D3). */
+function phaseDirPath(): string {
+  return path.join(tmpDir, '.schegent', 'sessions', 'run-1', 'diagnostics', 'pipe-1', 'phase-1');
+}
+
+/**
+ * An `iter-N` directory with no stream inside it. Since BUG-002 (T085, FR-026a)
+ * that is not a recorded iteration; an entry named `stream.jsonl`, of any type,
+ * placed in it later makes it one.
+ */
+async function makeIterationDir(iteration: number): Promise<string> {
+  const dir = path.join(phaseDirPath(), `iter-${iteration}`);
+  await fs.mkdir(dir, { recursive: true });
+  return dir;
+}
+
 describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
   it('returns an empty manifest when the phase dir does not exist', async () => {
     const manifest = await readIterationManifest({
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -76,6 +154,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -91,6 +170,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
       workspaceRoot: tmpDir,
       selection: { ...BASE_SELECTION, iterationN: 1 },
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -107,6 +187,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -128,6 +209,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -148,6 +230,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -171,6 +254,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 10 },
       sanitize
     });
@@ -189,6 +273,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 1 },
       sanitize
     });
@@ -208,6 +293,7 @@ describe('Feature 020 T018 — readIterationManifest end-to-end', () => {
         // @ts-expect-error — testing invariant
         selection: { ...BASE_SELECTION, taskId: null },
         isInFlight: false,
+        progress: 'not-running',
         caps: { perFieldBytes: 4096, maxEntries: 500 },
         sanitize
       })
@@ -235,6 +321,7 @@ describe('Feature 029 — sanitizeToolArguments recursive string-leaf redaction'
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -272,6 +359,7 @@ describe('Feature 029 — sanitizeToolArguments recursive string-leaf redaction'
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -306,6 +394,7 @@ describe('Feature 029 — sanitizeToolArguments recursive string-leaf redaction'
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -344,6 +433,7 @@ describe('Feature 029 — sanitizeToolArguments recursive string-leaf redaction'
       workspaceRoot: tmpDir,
       selection: BASE_SELECTION,
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
@@ -356,5 +446,333 @@ describe('Feature 029 — sanitizeToolArguments recursive string-leaf redaction'
       disabled: false,
       empty: null
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 203 — the reader says WHICH kind of nothing it found.
+//
+// Before this feature the four return sites below produced a byte-identical
+// manifest for four different situations, and a separate classifier re-`stat`ed
+// the phase directory afterwards to guess a label from directory existence
+// alone. The cases here pin one member per site, so a site that quietly starts
+// answering with a neighbour's member fails on the member's NAME rather than on
+// a count that two disagreeing lists can both satisfy.
+// ---------------------------------------------------------------------------
+
+interface ReadOptions {
+  readonly progress?: PhaseProgress;
+  readonly settingOn?: boolean;
+  readonly iterationN?: number | null;
+  /** Task-level and independent of `progress` (X4); defaults to matching it. */
+  readonly isInFlight?: boolean;
+}
+
+async function read(options: ReadOptions = {}) {
+  const progress = options.progress ?? 'not-running';
+  return readIterationManifest({
+    workspaceRoot: tmpDir,
+    selection: { ...BASE_SELECTION, iterationN: options.iterationN ?? null },
+    isInFlight: options.isInFlight ?? progress === 'running',
+    progress,
+    caps: { perFieldBytes: 4096, maxEntries: 500 },
+    sanitize,
+    readSetting: () => options.settingOn ?? false
+  });
+}
+
+describe('Feature 203 T038 — every reader return site labels its own situation', () => {
+  it('site A: a phase never reached is phase-not-recorded', async () => {
+    const manifest = await read({ settingOn: true });
+    expect(manifest.iterations).toEqual([]);
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'phase-not-recorded' });
+  });
+
+  it('site A: a phase reached that recorded no iteration is no-iteration-recorded', async () => {
+    await fs.mkdir(phaseDirPath(), { recursive: true });
+    const manifest = await read({ settingOn: true });
+    expect(manifest.iterations).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'no-iteration-recorded' });
+  });
+
+  it('site A: those two situations are distinguishable, which is the whole of D3', async () => {
+    // The single observation now reports WHICH emptiness it found. Asserted by
+    // NAME and in one run over the same tree, transitioned between reads: two
+    // members that merely differ in count would satisfy an equality of counts.
+    const absent = await read({ settingOn: true });
+    await fs.mkdir(phaseDirPath(), { recursive: true });
+    const empty = await read({ settingOn: true });
+    expect(absent.verboseDiagnosticsState.kind).toBe('phase-not-recorded');
+    expect(empty.verboseDiagnosticsState.kind).toBe('no-iteration-recorded');
+    expect(absent.verboseDiagnosticsState.kind).not.toBe(empty.verboseDiagnosticsState.kind);
+    // Both still return the same empty manifest, which is why the label had to
+    // carry the distinction rather than the shape.
+    expect(absent.entries).toEqual(empty.entries);
+    expect(absent.iterations).toEqual(empty.iterations);
+  });
+
+  // Feature 020 BUG-002 (T085, FR-026a) — this case was site B and expected
+  // record-vanished. An iteration whose stream never arrived is not a recorded
+  // iteration, so the phase reads as one that recorded none, under 203's
+  // existing members and precedence.
+  it('site A: an iteration whose stream never arrived is no-iteration-recorded', async () => {
+    await makeIterationDir(1);
+    const manifest = await read({ settingOn: true });
+    expect(manifest.iterations).toEqual([]);
+    expect(manifest.selectedIteration).toBeNull();
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'no-iteration-recorded' });
+  });
+
+  it('site A: the same iteration while its phase is in progress is phase-running-no-output', async () => {
+    await makeIterationDir(1);
+    const manifest = await read({ settingOn: true, progress: 'running' });
+    expect(manifest.iterations).toEqual([]);
+    expect(manifest.selectedIteration).toBeNull();
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+
+  it('site B: a listed stream removed before the open is record-vanished', async () => {
+    await writeStream(1, ['{"type":"system","subtype":"init"}']);
+    race.removeThenOpen = true;
+    const manifest = await read({ settingOn: true });
+    // Control for the seam, as in site C below: an unfired seam would leave the
+    // stream in place and this case asserting an ordinary read.
+    expect(race.removeThenOpen, 'the removal seam did not fire; the branch below was not reached').toBe(false);
+    expect(race.removedPath).toBe(streamPath(1));
+    // Unlike site A, this manifest KEEPS the discovered iterations: the record
+    // was listed, and the operator can select another one.
+    expect(manifest.iterations).toEqual([1]);
+    expect(manifest.selectedIteration).toBe(1);
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'record-vanished' });
+  });
+
+  it('site B: a stream path that is not a readable regular file is record-path-refused', async () => {
+    const dir = await makeIterationDir(1);
+    const behindTheLink = path.join(dir, 'stream.jsonl.real');
+    await fs.writeFile(behindTheLink, '{"type":"system","subtype":"init"}\n');
+    try {
+      await fs.symlink(behindTheLink, path.join(dir, 'stream.jsonl'));
+    } catch (err) {
+      // A stated skip, keyed on the CAPABILITY rather than on a platform name:
+      // a filesystem that will not create the link cannot build this situation.
+      // The production branch keys on "errno is not ENOENT" and names neither a
+      // code nor a platform; this is the fixture, not the branch.
+      console.info(
+        `[phase-log-reader] symlink unavailable (${(err as NodeJS.ErrnoException).code}) — ` +
+          'record-path-refused was not constructed in this run'
+      );
+      return;
+    }
+    const manifest = await read({ settingOn: true });
+    expect(manifest.iterations).toEqual([1]);
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'record-path-refused' });
+    // The bytes ARE reachable through the link. The refusal is about the path,
+    // and the member says so rather than reporting an empty log.
+    expect(await fs.readFile(path.join(dir, 'stream.jsonl'), 'utf8')).toContain('init');
+  });
+
+  it('site C: a stream that went away between listing and open is record-vanished', async () => {
+    await writeStream(1, ['{"type":"system","subtype":"init"}']);
+    race.armed = true;
+    const manifest = await read({ settingOn: true });
+    // Control for the seam. If the arrangement silently stopped applying, the
+    // flag would still be armed and this case would be asserting the ordinary
+    // read's member instead of the race branch's.
+    expect(race.armed, 'the race seam did not fire; the branch below was not reached').toBe(false);
+    expect(manifest.iterations).toEqual([1]);
+    expect(manifest.entries).toEqual([]);
+    // Deliberately the SAME member as the removal case above: two code
+    // paths, one operator situation (D2, FR-003).
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'record-vanished' });
+  });
+
+  it('site D: a record that produced displayable entries is entries-present', async () => {
+    await writeStream(1, ['{"type":"system","subtype":"init"}']);
+    const manifest = await read({ settingOn: true });
+    expect(manifest.entries.length).toBe(1);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+  });
+
+  it('site D: a record whose every line was unreadable is nothing-displayable', async () => {
+    await writeStream(1, ['this is not json']);
+    const manifest = await read({ settingOn: true });
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.skippedLines).toBe(1);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'nothing-displayable' });
+  });
+
+  it('carries the task-level flag through untouched, and never classifies from it', async () => {
+    await writeStream(1, ['this is not json']);
+    // A Task in flight whose PHASE is not the running one. Classifying from the
+    // task-level flag would promise output that is not coming.
+    const manifest = await read({ settingOn: true, isInFlight: true, progress: 'not-running' });
+    expect(manifest.isInFlight).toBe(true);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'nothing-displayable' });
+  });
+});
+
+describe('Feature 203 T039 — where several statements are true at once, the order is asserted', () => {
+  it('the setting being off outranks the phase running', async () => {
+    // Both true: nothing is recorded because the setting is off, AND the phase
+    // is running. Advice to wait is the one wrong answer a wait cannot repair.
+    const manifest = await read({ settingOn: false, progress: 'running' });
+    expect(manifest.verboseDiagnosticsState).toEqual({
+      kind: 'diagnostics-disabled',
+      settingKey: 'schegent.logging.verbose'
+    });
+  });
+
+  it('the phase running outranks nothing having been recorded', async () => {
+    const manifest = await read({ settingOn: true, progress: 'running' });
+    expect(manifest.iterations).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+
+  it('one entry already read outranks the phase still running', async () => {
+    await writeStream(1, ['{"type":"system","subtype":"init"}']);
+    const manifest = await read({ settingOn: true, progress: 'running' });
+    expect(manifest.entries.length).toBe(1);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+  });
+
+  it('a record that has produced nothing YET is running, not nothing-displayable', async () => {
+    await writeStream(1, ['this is not json']);
+    const manifest = await read({ settingOn: true, progress: 'running' });
+    expect(manifest.entries).toEqual([]);
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+
+  it('an unmeasurable progress makes no claim, and never promises output', async () => {
+    // `unknown` is not "not running" and is not "running" (D7, FR-016). It
+    // degrades to what the tree can be shown to say, never to a promise.
+    await fs.mkdir(phaseDirPath(), { recursive: true });
+    const manifest = await read({ settingOn: true, progress: 'unknown' });
+    expect(manifest.verboseDiagnosticsState).toEqual({ kind: 'no-iteration-recorded' });
+  });
+});
+
+describe('Feature 203 T040 — entries-present is exactly the non-empty case', () => {
+  it('labels entries-present when and only when the manifest carries entries', async () => {
+    // Asserted by construction over the situations that reach BOTH sites able to
+    // return this member, not inferred from a failure nobody observed (SC-007).
+    const observed: { situation: string; kind: string; entryCount: number }[] = [];
+    const record = async (situation: string, options: ReadOptions): Promise<void> => {
+      const manifest = await read(options);
+      observed.push({
+        situation,
+        kind: manifest.verboseDiagnosticsState.kind,
+        entryCount: manifest.entries.length
+      });
+    };
+
+    await record('no phase directory at all', { settingOn: true });
+    await fs.mkdir(phaseDirPath(), { recursive: true });
+    await record('a phase directory holding no iteration', { settingOn: true });
+    await makeIterationDir(1);
+    await record('an iteration holding no stream', { settingOn: true });
+    await writeStream(2, ['this is not json']);
+    await record('an iteration whose every line was unreadable', { settingOn: true });
+    await writeStream(3, ['{"type":"system","subtype":"init"}']);
+    await record('an iteration with one displayable entry', { settingOn: true });
+
+    for (const row of observed) {
+      expect(
+        row.kind === 'entries-present',
+        `${row.situation}: labelled ${row.kind} while carrying ${row.entryCount} entries`
+      ).toBe(row.entryCount > 0);
+    }
+
+    // Non-vacuity, in both directions. A sweep whose rows all sat on one side of
+    // the biconditional would satisfy the loop above without testing it.
+    expect(observed.filter((row) => row.entryCount > 0)).toHaveLength(1);
+    expect(observed.filter((row) => row.entryCount === 0)).toHaveLength(4);
+  });
+});
+
+// FR-R6-F07 (FR-001, FR-002) — the read issues the cursor the tail starts from.
+describe('FR-R6-F07 — the read returns a cursor at its last projector-idle boundary', () => {
+  const SELECTION_1 = { ...BASE_SELECTION, iterationN: 1 };
+  const INIT = '{"type":"system","subtype":"init"}';
+  const RESULT = '{"type":"result","duration_ms":1}';
+  const OPEN_STEP = JSON.stringify({
+    event: 'step_update',
+    step_type: 'agent_response',
+    state: 'ACTIVE',
+    step_index: 0,
+    text_delta: 'thinking'
+  });
+
+  async function read(isInFlight: boolean) {
+    return readIterationManifest({
+      workspaceRoot: tmpDir,
+      selection: SELECTION_1,
+      isInFlight,
+      progress: isInFlight ? 'running' : 'not-running',
+      caps: { perFieldBytes: 4096, maxEntries: 500 },
+      sanitize
+    });
+  }
+
+  async function expectedCursorAt(offset: number): Promise<string> {
+    const file = await fs.readFile(streamPath(1));
+    const stat = await fs.stat(streamPath(1));
+    const window = file.subarray(Math.max(0, offset - FINGERPRINT_WINDOW_BYTES), offset);
+    return issueCursor({
+      digest: streamDigest(tmpDir, SELECTION_1),
+      generation: generationOf(stat, process.platform),
+      offset,
+      fingerprint: fingerprintOf(window)
+    });
+  }
+
+  it('issues a cursor at the end of a complete, idle stream', async () => {
+    await writeStream(1, [INIT, RESULT]);
+    const { size } = await fs.stat(streamPath(1));
+    const manifest = await read(true);
+    expect(manifest.cursor).toBe(await expectedCursorAt(size));
+    expect(manifest.entries).toHaveLength(2);
+  });
+
+  it('stops an in-flight read at the last idle boundary and leaves later entries to the tail', async () => {
+    await writeStream(1, [INIT, OPEN_STEP, RESULT]);
+    const boundary = Buffer.byteLength(`${INIT}\n`);
+    const manifest = await read(true);
+    expect(manifest.cursor).toBe(await expectedCursorAt(boundary));
+    expect(manifest.entries.map((entry) => entry.kind)).toEqual(['system']);
+  });
+
+  it('keeps every entry of a finished read while the cursor stays at the idle boundary', async () => {
+    await writeStream(1, [INIT, OPEN_STEP, RESULT]);
+    const boundary = Buffer.byteLength(`${INIT}\n`);
+    const manifest = await read(false);
+    expect(manifest.cursor).toBe(await expectedCursorAt(boundary));
+    expect(manifest.entries.map((entry) => entry.kind)).toEqual(['system', 'result']);
+  });
+
+  it('never places the cursor inside a partial trailing record', async () => {
+    await writeStream(1, [INIT]);
+    await fs.appendFile(streamPath(1), '{"type":"result","dur');
+    const boundary = Buffer.byteLength(`${INIT}\n`);
+    const manifest = await read(true);
+    expect(manifest.cursor).toBe(await expectedCursorAt(boundary));
+  });
+
+  it('has a null cursor when there is no file', async () => {
+    expect((await read(true)).cursor).toBeNull();
+    await makeIterationDir(1);
+    expect((await read(true)).cursor).toBeNull();
+  });
+
+  it('issues a parseable cursor of at most 160 characters', async () => {
+    await writeStream(1, [INIT]);
+    const { cursor } = await read(true);
+    expect(typeof cursor).toBe('string');
+    expect(parseCursor(cursor ?? '').outcome).toBe('parsed');
+    expect((cursor ?? '').length).toBeLessThanOrEqual(160);
   });
 });

@@ -51,4 +51,33 @@ export class IsContinueGate {
     this.armed = false;
     return was;
   }
+
+  /**
+   * Whether a drive still owes this gate a `consume()`.
+   *
+   * Code-review finding — read by `RunSessionRegistry.disposeIfEnded`, which
+   * otherwise cannot tell a session that is finished from one holding an
+   * un-consumed continuation. A predicate rather than exposing the field
+   * because the arm-once/consume-once semantics are the point of this class:
+   * callers may ask, and must still go through `consume()` or `disarm()` to
+   * change the bit.
+   */
+  isArmed(): boolean {
+    return this.armed;
+  }
+
+  /**
+   * Drop an armed continuation that no drive will consume.
+   *
+   * Code-review finding — the resume entry points arm BEFORE the admission
+   * checks that can still refuse (missing pipeline snapshot, declined consent).
+   * A refused resume used to leave the bit set, so the queue's NEXT drive —
+   * possibly a brand-new Task from `admitNew` — consumed a `true` armed for a
+   * conversation it has nothing to do with, appending `-c` where the hard rule
+   * forbids it. Distinct from `consume()` so the log of intent stays honest:
+   * nothing continued here, the hint was abandoned.
+   */
+  disarm(): void {
+    this.armed = false;
+  }
 }

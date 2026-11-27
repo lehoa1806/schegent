@@ -8,11 +8,13 @@
   // happens once, at a seam that is obvious, instead of under budget pressure
   // three stories later.
   //
-  // The row owns its own grid. Svelte scopes CSS per component, so a layout
-  // declared in the parent would not reach these elements without `:global` —
-  // and a `:global` grid keyed on `.entry` is exactly the kind of rule that
-  // leaks into the next list someone writes.
+  // Drawn as a row of the redesign's run table: the run's name with what it
+  // froze under it, then its queue, its status as a chip, its duration, when it
+  // last changed, and its actions in an overflow menu. The cells sit under the
+  // section's own column headers, so the two cannot drift apart the way two
+  // copies of one grid template could.
 
+  import SgMenu from './sg/SgMenu.svelte';
   import {
     NO_CATALOG_NAMES,
     provenanceLabels,
@@ -22,9 +24,14 @@
   } from '../lib/history-rows';
   import { formatDuration } from '../lib/format-duration';
   import { formatRelativeTime } from '../lib/format';
+  import { runStatusChip } from '../lib/run-status-chip';
 
   interface Props {
     row: HistoryRow;
+    /**
+     * Which list the row is drawn in. Both draw the same table row since the redesign; a
+     * ledger row carries the `ledger` class, so the two can still be told apart.
+     */
     variant: 'compact' | 'ledger';
     /** FR-021 — id-to-name for the definition and Workflow; ids stand in when absent. */
     catalogNames?: CatalogNames;
@@ -56,8 +63,8 @@
   const readOnlyAria = 'false' as const;
 
   // A run still going cannot be re-run: there is no recorded plan to repeat,
-  // and the one it is executing is the same one. The button stays present so
-  // the column does not reflow row to row, and says why it is off.
+  // and the one it is executing is the same one. The item stays in the menu so
+  // the menu has the same shape on every row, and says why it is off.
   const isLive = $derived(row.source === 'in-flight');
   const rerunOff = $derived(rerunDisabled || isLive);
   const ariaRerun = $derived<'true' | 'false'>(rerunOff ? 'true' : 'false');
@@ -75,283 +82,203 @@
   const timeText = $derived(timestamp === null ? '—' : formatRelativeTime(timestamp));
   const timeTitle = $derived(row.completedAt !== null ? 'Completed' : 'Started');
 
+  // FR-003 — a run still going must be distinguishable from one that finished,
+  // and the live statuses from each other: the chip says each in words, with a
+  // mark of its own, so none of them rests on colour alone.
+  const chip = $derived(runStatusChip(row.status));
+
   // FR-011, FR-012, FR-014 — what this run froze, and how it was started. Three
-  // cells rather than one composite string: the R2 case puts 'pipeline' in the
+  // parts rather than one composite string: the R2 case puts 'pipeline' in the
   // version's kind and 'workflow-member' in the origin on the same row, and a
   // reader has to be able to see both without one being read as the other.
   const provenance = $derived(provenanceLabels(row, catalogNames));
 </script>
 
-<li
-  class="entry status-{row.status}"
+<tr
   class:ledger={variant === 'ledger'}
-  class:selected
+  class:sel={selected}
   class:live={isLive}
   data-testid="history-entry-{row.runId}"
   data-history-row={row.runId}
   data-history-source={row.source}
   data-history-queue={row.queueId}
 >
-  {#if onSelect}
-    <button
-      type="button"
-      class="label entry-select"
-      aria-label={`Select run '${label}'`}
-      aria-pressed={selected}
-      data-testid="history-item-select-{row.runId}"
-      title={label}
-      onclick={() => onSelect(row.runId)}
-    >{label}</button>
-  {:else}
-    <span class="label" title={label}>{label}</span>
-  {/if}
-  <span class="meta">
-    <span class="provenance">
+  <td class="run">
+    {#if onSelect}
+      <button
+        type="button"
+        class="rowname"
+        aria-label={`Select run '${label}'`}
+        aria-pressed={selected}
+        data-testid="history-item-select-{row.runId}"
+        title={label}
+        onclick={() => onSelect(row.runId)}
+      >{label}</button>
+    {:else}
+      <!-- The run's name opens its detail, as a name does in every other table
+           of the redesign. `aria-current` marks the run whose detail is open. -->
+      <button
+        type="button"
+        class="rowname"
+        aria-label={`Open details for '${label}'`}
+        aria-disabled={readOnlyAria}
+        aria-current={selected ? 'true' : undefined}
+        data-testid="history-item-open-details-{row.runId}"
+        title={label}
+        onclick={() => onOpenDetails(row.runId)}
+      >{label}</button>
+    {/if}
+    <!-- FR-011 — the definition reads first; the version and the kind qualify
+         it. All three are always present, so the line has one shape whether or
+         not a run recorded any of them. -->
+    <div class="sub">
       <span
-        class="definition"
         data-testid="history-item-{row.runId}-definition"
         aria-label={`Definition: ${provenance.definition}`}
         title="Definition"
       >{provenance.definition}</span>
+      <span aria-hidden="true">·</span>
       <span
-        class="badge version-badge"
         class:not-recorded={row.catalogVersion === null}
         data-testid="history-item-{row.runId}-version"
         aria-label={`Version: ${provenance.version}`}
         title="Published version this run froze"
       >{provenance.version}</span>
+      <span aria-hidden="true">·</span>
       <span
-        class="badge origin-badge"
         data-testid="history-item-{row.runId}-origin"
         aria-label={`Started as: ${provenance.origin}`}
         title="How this run was started"
       >{provenance.origin}</span>
-    </span>
+    </div>
+    {#if evidence}
+      {#if evidence.tone === 'error'}
+        <div
+          class="evidence tone-error"
+          data-testid="history-item-evidence-{row.runId}"
+          data-evidence-tone="error"
+          role="alert"
+        >{evidence.message}</div>
+      {:else}
+        <div
+          class="evidence tone-info"
+          data-testid="history-item-evidence-{row.runId}"
+          data-evidence-tone="info"
+          role="status"
+        >{evidence.message}</div>
+      {/if}
+    {/if}
+  </td>
+  <td>
     <span
-      class="badge queue-badge"
+      class="queue"
       data-testid="history-item-{row.runId}-queue"
       aria-label={`Queue: ${row.queueName}`}
       title="Queue"
     >{row.queueName}</span>
+  </td>
+  <td>
     <span
-      class="badge status-badge"
+      class="chip {chip.tone}"
       data-testid="history-item-{row.runId}-status"
-      aria-label={`Status: ${row.status}`}
-    >{row.status}</span>
-    <span
-      class="time duration"
-      data-testid="history-item-{row.runId}-duration"
-      title="Duration"
-    >{duration}</span>
-    <span
-      class="time completed-at"
-      data-testid="history-item-{row.runId}-completed-at"
-      title={timeTitle}
-    >{timeText}</span>
-  </span>
-  <span class="actions">
-    <button
-      type="button"
-      class="action"
-      data-testid="history-item-rerun-{row.runId}"
-      aria-label={isLive ? `Cannot rerun '${label}' — it has not finished` : `Rerun '${label}'`}
-      aria-disabled={ariaRerun}
-      onclick={(event) => (rerunOff ? undefined : onRerun(event, row))}
-    >Rerun</button>
-    <button
-      type="button"
-      class="action"
-      data-testid="history-item-open-audit-{row.runId}"
-      aria-label="Open audit log"
-      aria-disabled={auditPending ? 'true' : readOnlyAria}
-      onclick={() => onOpenAudit(row.runId)}
-    >Audit</button>
-    <button
-      type="button"
-      class="action"
-      data-testid="history-item-open-details-{row.runId}"
-      aria-label={`Open details for '${label}'`}
-      aria-disabled={readOnlyAria}
-      onclick={() => onOpenDetails(row.runId)}
-    >Details</button>
-  </span>
-  {#if evidence}
-    {#if evidence.tone === 'error'}
-      <span
-        class="evidence tone-error"
-        data-testid="history-item-evidence-{row.runId}"
-        data-evidence-tone="error"
-        role="alert"
-      >{evidence.message}</span>
-    {:else}
-      <span
-        class="evidence tone-info"
-        data-testid="history-item-evidence-{row.runId}"
-        data-evidence-tone="info"
-        role="status"
-      >{evidence.message}</span>
-    {/if}
-  {/if}
-</li>
+      aria-label={`Status: ${chip.label}`}
+    >{#if chip.icon}<svg class="i" aria-hidden="true"><use href={chip.icon}></use></svg>{:else}<span
+          class="dot"
+          aria-hidden="true"
+        ></span>{/if}{chip.label}</span>
+  </td>
+  <td class="num nowrap" data-testid="history-item-{row.runId}-duration" title="Duration">{duration}</td>
+  <td class="nowrap" data-testid="history-item-{row.runId}-completed-at" title={timeTitle}>{timeText}</td>
+  <td class="acts">
+    <SgMenu label={`Actions for '${label}'`} testid="history-item-actions-{row.runId}">
+      {#if onSelect}
+        <!-- The name selects here, so the detail needs a way in of its own. -->
+        <button
+          type="button"
+          role="menuitem"
+          data-testid="history-item-open-details-{row.runId}"
+          aria-disabled={readOnlyAria}
+          onclick={() => onOpenDetails(row.runId)}
+        >
+          <svg class="i" aria-hidden="true"><use href="#i-open"></use></svg>
+          Open details
+        </button>
+      {/if}
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="history-item-open-audit-{row.runId}"
+        aria-disabled={auditPending ? 'true' : readOnlyAria}
+        onclick={() => onOpenAudit(row.runId)}
+      >
+        <svg class="i" aria-hidden="true"><use href="#i-pulse"></use></svg>
+        Open audit log
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="history-item-rerun-{row.runId}"
+        aria-disabled={ariaRerun}
+        onclick={(event) => (rerunOff ? undefined : onRerun(event, row))}
+      >
+        <svg class="i" aria-hidden="true"><use href="#i-refresh"></use></svg>
+        Run again…
+        {#if isLive}<span class="hint">Not finished</span>{/if}
+      </button>
+    </SgMenu>
+  </td>
+</tr>
 
 <style>
-  .entry {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto;
-    column-gap: var(--schegent-gap);
-    align-items: center;
-    padding: 4px var(--schegent-pad);
-    border-radius: var(--schegent-radius);
-  }
-  .entry:hover {
-    background: var(--schegent-list-hover);
-  }
-  .entry.selected {
-    background: var(--vscode-list-activeSelectionBackground);
-    color: var(--vscode-list-activeSelectionForeground);
-  }
-  .entry.selected .label {
-    color: inherit;
-  }
-  .entry.selected .meta {
-    color: inherit;
-    opacity: 0.8;
-  }
-  .entry.selected .action {
-    color: inherit;
-    border-color: currentColor;
-    opacity: 0.8;
-  }
-  .entry.selected .action:hover:not([aria-disabled='true']) {
-    opacity: 1;
-  }
-  .label {
-    grid-column: 1;
-    grid-row: 1;
-    overflow: hidden;
+  /* A long description stops at two lines; the whole of it is in the title. */
+  .rowname {
     display: -webkit-box;
+    max-width: 52ch;
+    overflow: hidden;
     line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
-    line-height: 1.35;
     word-break: break-word;
   }
-  .entry-select {
-    width: 100%;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    padding: 0;
-    text-align: left;
-    cursor: pointer;
-  }
-  .entry-select:hover {
+  .rowname:hover {
     text-decoration: underline;
   }
-  .entry-select:focus-visible {
-    border-radius: var(--schegent-radius-sm);
-    outline: 1px solid var(--schegent-focus-border);
-    outline-offset: 2px;
-  }
-  .meta {
-    grid-column: 1;
-    grid-row: 2;
+  .sub {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--schegent-gap);
-    align-items: center;
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
+    gap: 0 var(--schegent-space-1);
+    margin-top: var(--schegent-space-0-5);
   }
-  .badge {
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius-sm);
-    padding: 0 6px;
+  /* FR-012 — a stated absence is not a value. It is said in full, and set in
+     italic so it does not read as one of the versions beside it. FR-R3-131
+     (T1498) keeps it at the theme's muted foreground rather than dimmed further,
+     which took it below AA. */
+  .not-recorded {
+    font-style: italic;
   }
-  .queue-badge {
+  .queue {
+    display: inline-block;
     max-width: 18ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    vertical-align: top;
   }
-  /* FR-011 — the definition reads as the primary of the three; the version and
-     the kind qualify it. All three are always present, so the group has a fixed
-     shape whether or not a run recorded any of them. */
-  .provenance {
-    display: inline-flex;
-    min-width: 0;
-    gap: 5px;
-    align-items: center;
-  }
-  .definition {
-    max-width: 20ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--schegent-fg);
-  }
-  .version-badge,
-  .origin-badge {
-    max-width: 16ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .nowrap {
     white-space: nowrap;
   }
-  /* FR-012 — a stated absence is not a value. It is said in full, and it is
-     dimmed so it does not read as one of the versions beside it. */
-  .version-badge.not-recorded {
-    max-width: none;
-    border-style: dashed;
-    opacity: 0.75;
-    font-style: italic;
-  }
-  .status-completed .status-badge {
-    color: var(--schegent-color-completed);
-    border-color: currentColor;
-  }
-  .status-failed .status-badge {
-    color: var(--schegent-error-text);
-    border-color: currentColor;
-  }
-  .status-canceled .status-badge {
-    color: var(--schegent-muted-fg);
-    border-color: currentColor;
-  }
-  /* FR-003 — a run still going must be distinguishable from one that finished,
-     and the three live statuses are distinguishable from each other. */
-  .status-running .status-badge {
-    /* `--schegent-color-active` is the in-flight colour the rest of the surface
-       already uses for this state; `StatusBar.svelte` paints its live dot with
-       the same token. */
-    color: var(--schegent-color-active);
-    border-color: currentColor;
-  }
-  .status-paused .status-badge {
-    color: var(--schegent-warning-text);
-    border-color: currentColor;
-  }
-  .status-idle .status-badge {
-    color: var(--schegent-muted-fg);
-    border-color: currentColor;
-  }
-  .actions {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    display: inline-flex;
-    gap: 4px;
-    align-items: center;
+  /* As narrow as its one button, at the row's far edge. */
+  .acts {
+    width: 1%;
+    text-align: right;
   }
   /* FR-R3-010 (T411) — the two tones are visually distinct on purpose. An
      expired pointer is an ordinary fact about retention, so it reads muted;
      only a failure borrows the error colour. */
   .evidence {
-    grid-column: 1 / -1;
-    grid-row: 3;
-    padding-top: 3px;
-    font-size: 0.82em;
-    line-height: 1.4;
+    max-width: 60ch;
+    margin-top: var(--schegent-space-1);
+    font-size: var(--schegent-text-secondary);
   }
   .evidence.tone-info {
     color: var(--schegent-muted-fg);
@@ -359,114 +286,9 @@
   .evidence.tone-error {
     color: var(--schegent-error-text);
   }
-  .action {
-    background: transparent;
-    color: var(--schegent-muted-fg);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius-sm);
-    padding: 0 6px;
-    font: inherit;
-    cursor: pointer;
-  }
-  .action[aria-disabled='true'] {
-    opacity: 0.55;
-    cursor: not-allowed;
-  }
-  .action:hover:not([aria-disabled='true']) {
-    color: var(--schegent-fg);
-  }
-
-  .entry.ledger {
-    /* Seven columns since T033: provenance sits between the run and its queue,
-       because "what ran" belongs next to "which run" and before the bookkeeping.
-       The minimums total 966px, which is what moved the collapse breakpoint
-       below from 900px to 1000px. */
-    grid-template-columns:
-      minmax(200px, 1fr) minmax(150px, 1.2fr) 120px 104px 96px 116px 180px;
-    grid-template-rows: auto;
-    gap: 12px;
-    min-height: 54px;
-    padding: 9px 14px;
-    border-bottom: 1px solid var(--schegent-divider);
-    border-radius: 0;
-  }
-  .entry.ledger:last-child {
-    border-bottom: 0;
-  }
-  .entry.ledger .label {
-    grid-column: 1;
-    grid-row: 1;
-    line-clamp: 1;
-    -webkit-line-clamp: 1;
-  }
-  .entry.ledger .meta {
-    display: contents;
-  }
-  .entry.ledger .provenance {
-    grid-column: 2;
-    align-self: center;
-    justify-self: start;
-  }
-  .entry.ledger .queue-badge {
-    grid-column: 3;
-    align-self: center;
-    justify-self: start;
-  }
-  .entry.ledger .status-badge {
-    grid-column: 4;
-    align-self: center;
-    justify-self: start;
-  }
-  .entry.ledger .time {
-    align-self: center;
-    font-variant-numeric: tabular-nums;
-  }
-  .entry.ledger .duration {
-    grid-column: 5;
-  }
-  .entry.ledger .completed-at {
-    grid-column: 6;
-  }
-  .entry.ledger .actions {
-    grid-column: 7;
-    grid-row: 1;
-    justify-self: end;
-  }
-  .entry.ledger .action {
-    min-height: 28px;
-    padding: 0 8px;
-  }
-
-  @media (max-width: 1000px) {
-    .entry.ledger {
-      grid-template-columns: minmax(0, 1fr) auto;
-      grid-template-rows: auto auto;
-    }
-    .entry.ledger .label {
-      grid-column: 1;
-      grid-row: 1;
-      line-clamp: 2;
-      -webkit-line-clamp: 2;
-    }
-    .entry.ledger .meta {
-      grid-column: 1;
-      grid-row: 2;
-      display: flex;
-    }
-    .entry.ledger .actions {
-      grid-column: 2;
-      grid-row: 1 / span 2;
-    }
-  }
-
-  @media (max-width: 620px) {
-    .entry.ledger {
-      grid-template-columns: 1fr;
-    }
-    .entry.ledger .actions {
-      grid-column: 1;
-      grid-row: 3;
-      justify-self: start;
-    }
+  /* On the selection colour, every line of the row reads in the row's own
+     foreground; the words already say which is which. */
+  .sel .evidence.evidence {
+    color: inherit;
   }
 </style>

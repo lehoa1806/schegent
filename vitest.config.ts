@@ -42,6 +42,19 @@ export default defineConfig({
       'tests/integration/index.ts'
     ],
     environment: 'node',
+    // FR-R3-137 (T1531b) — the descriptor-leak detector.
+    //
+    // Registers one `process.on('warning')` listener per worker and exposes an
+    // OPT-IN `expectNoDescriptorWarnings()` a file calls in its own `afterAll`.
+    // Opt-in rather than global on purpose: a listener that failed the run on any
+    // descriptor warning would fail on a leak an unrelated suite has been
+    // emitting all along, which is a different item's defect arriving as this
+    // one's red tree. The module's header carries the rest.
+    //
+    // Not added to `vitest.perf.config.ts`: that config is FR-R3-042's, and the
+    // perf suite asserts `openDescriptorCount` returning to baseline, which is a
+    // stronger claim than the absence of a GC warning.
+    setupFiles: ['./tests/setup/descriptor-warnings.ts'],
     // Vitest's default is 5s for both, and 5s was never a number anyone chose
     // for this suite — it is what you get by not setting it.
     //
@@ -68,6 +81,26 @@ export default defineConfig({
     // to paper over a hang: a genuine deadlock still fails, 25s later. The
     // wall-clock cost of the raise is zero on a green run, because a passing
     // test never reaches its timeout.
+    //
+    // Re-measured 2026-11-24 (`FR-R7-18` / `N06`, darwin/arm64, 16-core Apple
+    // M4 Max, Node v24.22.2) after splitting multi-invariant quota/candidate/
+    // availability mega-tests (26 -> 56 cases, 213 -> 261 assertions), removing
+    // avoidable fixed sleeps across unit/integration/visual/webview suites, and
+    // expanding `tests/lint/waits-are-bounded-by-time.test.ts` to cover sleep
+    // wrappers, step-sum deadline loops, and `tests/integration/`:
+    //   - 3 isolated runs of the 19-file async/contention suite (147 tests):
+    //     6.51s, 6.53s, 6.55s; 147/147 passed, 0 timeouts (slowest single test
+    //     3.14s in `shutdown-teardown-order.test.ts` real SIGTERM->SIGKILL ladder).
+    //   - 1 loaded run under 16 saturated CPU workers (1m load avg 5.37 -> 12.95):
+    //     16.87s (2.58x isolated wall time); 147/147 passed, 0 timeouts
+    //     (`concurrent-run-execution.test.ts` stretched 2.74x from 4.79s to 13.14s;
+    //     `concurrency-cap.test.ts` stretched 2.12x from 1.55s to 3.29s; slowest
+    //     single test 2.91s).
+    // Keeping `testTimeout: 30_000` and `hookTimeout: 30_000` preserves ~9.6x
+    // headroom over the slowest real-process test under single-host contention
+    // (and accommodates full `test:coverage` V8 + disk overhead) without masking
+    // genuine hangs or costing green runs any wall time. Full record:
+    // `docs/operations/async-test-flakiness-measurement.md`.
     testTimeout: 30_000,
     hookTimeout: 30_000,
     // Gives the run its own temp root rather than the shared system one, so a
@@ -91,7 +124,7 @@ export default defineConfig({
       // tests, not unit tests" — and measurement showed that premise named
       // the wrong suite: the file is 74.64% statement-covered by the suite
       // that runs on every `npm run test`, while the `*.host.test.ts` files
-      // the comment referred to are excluded at line 28 below and are
+      // the comment referred to are excluded at line 40 above and are
       // reached in CI only after the visual-regression step. Including it
       // costs 0.30 points of line coverage. `src/**/*.d.ts` was deleted
       // because it matched zero files under `src/`; an exclusion that
@@ -116,15 +149,36 @@ export default defineConfig({
       // and the full run is recorded in
       // docs/development/coverage-measurements.md.
       //
-      // The 80% line matches the service-level target in CLAUDE.md. CI
-      // fails on regression.
+      // The 80% line matches the service-level target in CLAUDE.md.
+      //
+      // FR-R3-100 (FR-016) — this comment used to end "CI fails on regression",
+      // which was false in two directions at once: `ci` ran `test:host` (`vitest
+      // run`, no coverage), so these thresholds were applied by nothing, and after
+      // FR-R3-099 there is no CI to fail. Both halves are now true instead: `ci`
+      // runs `test:coverage`, so the attested chain -- and therefore every release
+      // -- is refused when any floor below regresses. A declared threshold no
+      // command enforces is this round's signature defect; it was here.
+      //
+      // Review gap GC-17 (2026-11-12) — the floors had drifted 9 to 13 points below
+      // measured coverage, so a regression of that size passed. Measured that day on
+      // darwin, branch review-gap-closure: 89.07% statements / 86.28% branches /
+      // 93.73% functions / 89.07% lines. Each floor now sits about five points below
+      // its figure, still clear of the run-to-run noise above, and
+      // `npm run coverage:headroom` (scripts/check-coverage-headroom.mjs) refuses a
+      // floor that drifts more than five points under the measured value again.
+
       thresholds: {
-        statements: 80,
-        branches: 75,
-        functions: 80,
-        lines: 80
+        statements: 84,
+        branches: 81,
+        functions: 88,
+        lines: 84
       }
     },
-    pool: 'threads'
+    pool: 'threads',
+    // Cap concurrent worker threads at half the host's logical CPUs so V8
+    // `--coverage` runs across 1,500+ test files (including child-process crash
+    // and git-lane suites) do not saturate the single main thread and starve
+    // Vitest's `onTaskUpdate` worker RPC past Birpc's 60 s timeout.
+    maxWorkers: '50%'
   }
 });

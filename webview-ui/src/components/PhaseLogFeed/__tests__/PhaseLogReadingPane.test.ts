@@ -20,7 +20,12 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import PhaseLogReadingPane from '../PhaseLogReadingPane.svelte';
+import {
+  PHASE_LOG_WINDOW_MAX_ENTRIES,
+  appendToWindow
+} from '../../../lib/phase-log-window';
 import type { PhaseLogDisplayEntry } from '../../../../../src/services/phase-log/types';
 
 afterEach(() => cleanup());
@@ -251,5 +256,206 @@ describe('Feature 020 T043 — auto-scroll suppression (T052 contract)', () => {
     });
 
     expect(queryByTestId('phase-log-new-entries')).toBeNull();
+  });
+});
+
+// FR-R4-F08 (L-T3; FR-009, US2 AS3) — the pane at the live-tail cap.
+//
+// At the cap the host's window holds a `truncated-head` marker and 499 entries, and
+// every push trims one entry while raising the marker's `droppedEntryCount` by one,
+// so `entries.length` stops moving at 500. The "↓ N new entries" count therefore has
+// to be taken over what was RECEIVED (the marker's count plus the real entries), or it
+// sticks at 0 exactly when a paused reader most needs it. The cases are added to the
+// existing file; none of the existing expectations changes.
+describe('FR-R4-F08 L-T3 — the pane at the live-tail cap', () => {
+  const REAL_ENTRIES_AT_CAP = 499;
+
+  function windowAtCap(firstSeq: number, dropped: number): readonly PhaseLogDisplayEntry[] {
+    const marker: PhaseLogDisplayEntry = Object.freeze({
+      seq: -1,
+      kind: 'truncated-head',
+      ts: null,
+      body: { droppedEntryCount: dropped },
+      bodyTruncated: null
+    });
+    const real = Array.from({ length: REAL_ENTRIES_AT_CAP }, (_, index) =>
+      makeEntry(firstSeq + index, `entry-${firstSeq + index}`)
+    );
+    return Object.freeze([marker, ...real]);
+  }
+
+  const paneProps = (entries: readonly PhaseLogDisplayEntry[]) => ({
+    entries,
+    loading: false,
+    skippedLines: 0,
+    truncatedCount: 0,
+    isLive: true
+  });
+
+  /**
+   * Writable geometry, so the pane's assignments to `scrollTop` can be observed.
+   *
+   * The pane defers one scroll-to-bottom to a microtask when it mounts sticky. That
+   * assignment belongs to the mount, not to a push, so it is let through first and the
+   * geometry is arranged after it.
+   */
+  async function giveGeometry(list: HTMLElement, scrollTop: number): Promise<void> {
+    await tick();
+    await Promise.resolve();
+    Object.defineProperty(list, 'scrollTop', { value: scrollTop, configurable: true, writable: true });
+    Object.defineProperty(list, 'clientHeight', { value: 200, configurable: true });
+    Object.defineProperty(list, 'scrollHeight', { value: 1000, configurable: true });
+  }
+
+  it('sticky mode still scrolls to the newest entry after a push that trims', async () => {
+    const { getByTestId, rerender } = render(PhaseLogReadingPane, {
+      props: paneProps(windowAtCap(1, 10))
+    });
+    const list = getByTestId('phase-log-entry-list') as HTMLElement;
+    await giveGeometry(list, 800);
+    await fireEvent.scroll(list);
+    (list as unknown as { scrollTop: number }).scrollTop = 0;
+
+    await rerender(paneProps(windowAtCap(2, 11)));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((list as unknown as { scrollTop: number }).scrollTop).toBe(1000);
+  });
+
+  it('paused mode sets no scrollTop to the bottom when a push trims', async () => {
+    const { getByTestId, rerender } = render(PhaseLogReadingPane, {
+      props: paneProps(windowAtCap(1, 10))
+    });
+    const list = getByTestId('phase-log-entry-list') as HTMLElement;
+    await giveGeometry(list, 0);
+    await fireEvent.scroll(list);
+
+    await rerender(paneProps(windowAtCap(2, 11)));
+    await rerender(paneProps(windowAtCap(3, 12)));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((list as unknown as { scrollTop: number }).scrollTop).toBe(0);
+  });
+
+  it('paused mode counts every push since the baseline, including pushes that trimmed', async () => {
+    const { getByTestId, queryByTestId, rerender } = render(PhaseLogReadingPane, {
+      props: paneProps(windowAtCap(1, 10))
+    });
+    const list = getByTestId('phase-log-entry-list') as HTMLElement;
+    await giveGeometry(list, 0);
+    await fireEvent.scroll(list);
+    expect(queryByTestId('phase-log-new-entries'), 'the control: nothing is new yet').toBeNull();
+
+    await rerender(paneProps(windowAtCap(2, 11)));
+    await rerender(paneProps(windowAtCap(3, 12)));
+    await rerender(paneProps(windowAtCap(4, 13)));
+
+    const affordance = queryByTestId('phase-log-new-entries');
+    expect(affordance, 'three trimmed pushes are three new entries').not.toBeNull();
+    expect(affordance?.textContent ?? '').toMatch(/\b3\b/);
+  });
+});
+
+// Feature 020 BUG-005 (T095, FR-015, SC-013) — `readIterationManifest` numbers
+// initial entries `seq: 0..N-1`, whereas a cursor-resumed `PhaseLogTailSession`
+// starts its per-session counter at `seq: 1..M`. Appending live tail entries
+// onto an initial read of `N >= 2` entries (or across a second resumed tail
+// session) produces overlapping `seq` numbers on distinct frozen entry objects
+// and must never throw `each_key_duplicate`.
+describe('Feature 020 BUG-005 — collision-free keying across read and resumed tail seq spaces', () => {
+  it('renders an initial read (seq 0..6) followed by cursor-resumed tail batches (seq 1..3) and a second resumed tail session (seq 1..2) without duplicate-key errors', async () => {
+    let entries: readonly PhaseLogDisplayEntry[] = Object.freeze(
+      Array.from({ length: 7 }, (_, idx) => makeEntry(idx, `read-${idx}`))
+    );
+
+    const { container, rerender } = render(PhaseLogReadingPane, {
+      props: {
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      }
+    });
+    expect(container.querySelectorAll('[data-testid="phase-log-entry"]')).toHaveLength(7);
+
+    // Tail session 1 resumes at cursor and stamps seq 1, 2, 3 (overlapping read seq 1, 2, 3).
+    for (let s = 1; s <= 3; s += 1) {
+      entries = appendToWindow(entries, makeEntry(s, `tail1-${s}`), PHASE_LOG_WINDOW_MAX_ENTRIES);
+      await rerender({
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      });
+    }
+    expect(container.querySelectorAll('[data-testid="phase-log-entry"]')).toHaveLength(10);
+
+    // Tail session 2 resumes at the new cursor and restarts its per-session seq at 1, 2.
+    for (let s = 1; s <= 2; s += 1) {
+      entries = appendToWindow(entries, makeEntry(s, `tail2-${s}`), PHASE_LOG_WINDOW_MAX_ENTRIES);
+      await rerender({
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      });
+    }
+
+    const renderedTexts = Array.from(
+      container.querySelectorAll('[data-testid="phase-log-entry"] .text')
+    ).map((el) => el.textContent);
+    expect(renderedTexts).toEqual([
+      'read-0',
+      'read-1',
+      'read-2',
+      'read-3',
+      'read-4',
+      'read-5',
+      'read-6',
+      'tail1-1',
+      'tail1-2',
+      'tail1-3',
+      'tail2-1',
+      'tail2-2'
+    ]);
+  });
+
+  it('updates the single truncated-head marker in place while trimming over the 500-row cap with overlapping seq values', async () => {
+    let entries: readonly PhaseLogDisplayEntry[] = Object.freeze(
+      Array.from({ length: PHASE_LOG_WINDOW_MAX_ENTRIES }, (_, idx) => makeEntry(idx, `init-${idx}`))
+    );
+
+    const { container, rerender } = render(PhaseLogReadingPane, {
+      props: {
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      }
+    });
+
+    // Push 3 live entries with seq 1, 2, 3 — each trims the head and increments the marker.
+    for (let s = 1; s <= 3; s += 1) {
+      entries = appendToWindow(entries, makeEntry(s, `live-trim-${s}`), PHASE_LOG_WINDOW_MAX_ENTRIES);
+      await rerender({
+        entries,
+        loading: false,
+        skippedLines: 0,
+        truncatedCount: 0,
+        isLive: true
+      });
+    }
+
+    const rows = container.querySelectorAll('[data-testid="phase-log-entry"]');
+    expect(rows).toHaveLength(PHASE_LOG_WINDOW_MAX_ENTRIES + 1);
+    expect(rows[0].getAttribute('data-kind')).toBe('truncated-head');
+    expect(rows[0].textContent).toContain('3 earlier entries hidden');
+    expect(rows[rows.length - 1].textContent).toContain('live-trim-3');
   });
 });

@@ -1,17 +1,20 @@
+import { modelsLayerRevision } from '../../config/model-catalog';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
-import type { SanitizedLogger } from '../../lib/logger';
+import { DEFAULT_BACKEND, type BackendRunnerKind } from '../../contracts/backend-kinds';
+import { emptyBackendModels, type BackendMap } from '../../contracts/backend-descriptors';
+import type { ProjectionLogger } from './projection-failure-episodes';
 import type { WorkspaceStateStore } from '../../state/workspace-state';
 import type { WorkflowRun } from '../../state/workflow-run';
 import type { RunStateMap } from '../../state/run-state-migrator';
 import type { FeatureRequest, QueueState } from '../../queue/feature-request';
-import { DEFAULT_QUEUE_ID } from '../../queue/queue-registry';
+import { DEFAULT_GLOBAL_CONCURRENCY_CAP } from '../../contracts/queue-bounds';
+import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
 import type { ClaudeCliMonitor } from '../../monitor/claude-cli-monitor';
 import type { HistoryStore } from '../../state/history-store';
 import { projectHistory } from './history-projector';
 import { projectMonitor } from './monitor-projector';
-import { buildPhasesFromRun } from './phase-projector';
-import { sanitizeAndCap, projectQueue, projectQueueRows } from './queue-projector';
+import { buildPhasesFromRun, currentPhaseOrNull } from './phase-projector';
+import { sanitizeAndCap, projectQueue, projectQueueRows, rowRunContext } from './queue-projector';
 import {
   buildActiveFeature,
   computeIsPrimary,
@@ -26,9 +29,14 @@ import { NO_BUILDER_LIFECYCLE_BY_KIND } from './builder-lifecycle';
 import { composePhaseCatalogProjection } from './phase-catalog-projection';
 import { composePipelineCatalogProjection } from './pipeline-catalog-projection';
 import { composeWorkflowCatalogProjection } from './workflow-catalog-projector';
+import { sanitizeConnectedRun } from './connected-run-text';
 import { buildLaunchProjection } from './launch-projection';
 import { composeTrustProjection } from './trust-projection';
+import { composeBackendPostures } from './backend-posture-projection';
 import type { StateProjectorDeps } from './state-projector';
+import { totalmem } from 'node:os';
+
+import { readStreamPressure } from '../../runner/zipped-stream-buffer';
 import {
   IDLE_EVIDENCE_HEALTH,
   IDLE_GENERAL_SETTINGS,
@@ -41,7 +49,8 @@ import {
   type WorkflowStatus
 } from './snapshot';
 import {
-  composeQueueRuntimes,
+  composeQueueRuntimes, projectStartFailure,
+  scheduledStartFromQueueState,
   type QueueRunProjection
 } from './queue-runtime-composer';
 
@@ -50,18 +59,15 @@ import {
  * Empty means "nothing known", which every consumer already handles; an
  * invented entry would be indistinguishable from a real one downstream.
  */
-const EMPTY_MODELS_BY_BACKEND: Record<BackendRunnerKind, readonly string[]> = Object.freeze({
-  claude: Object.freeze([]),
-  codex: Object.freeze([]),
-  agy: Object.freeze([])
-});
+const EMPTY_MODELS_BY_BACKEND: BackendMap<readonly string[]> = emptyBackendModels();
 
 type ProjectorStore = Pick<
   WorkspaceStateStore,
   'getRunMap' | 'getQueue' | 'getLock' | 'subscribe'
 > & Partial<Pick<
   WorkspaceStateStore,
-  'getProjectedQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
+  | 'getProjectedQueueRegistry' | 'getConfirmSuppression' | 'getRequestsForQueue'
+  | 'getGlobalConcurrencyCap' | 'getDefaultQueueId' | 'getWatchdog'
 >>;
 
 export interface SnapshotComposerContext {
@@ -77,7 +83,7 @@ export interface SnapshotComposerContext {
   readonly ownerId: string;
   readonly forcedIsPrimary: boolean | null;
   readonly now: () => Date;
-  readonly logger: Pick<SanitizedLogger, 'warn' | 'debug' | 'sanitize'> | null;
+  readonly logger: ProjectionLogger | null;
   readonly externalSanitize: ((value: string | null | undefined) => string) | null;
   readonly monitor: Pick<ClaudeCliMonitor, 'getCurrentState'> | null;
   readonly history: Pick<HistoryStore, 'list'> | null;
@@ -95,12 +101,12 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // pause state and `migrationNotice` the sidebar renders), so pinning the
   // read states what the composer already meant rather than changing it.
   const queue = store.getQueue(DEFAULT_QUEUE_ID);
-  // FR-R3-011 — the projected registry. Pause state is no longer persisted on
-  // a registry entry; `getProjectedQueueRegistry()` fills it in from each
-  // queue's `QueueState`, which is the same value the drain gate reads. The
-  // composer takes the projection rather than re-deriving one so there is one
-  // derivation site, not a second copy of the rule in the UI layer.
-  const registry = store.getProjectedQueueRegistry?.();
+  // Feature 195 (T039) — read once, reused for the registry projection below.
+  const generalSettings = deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS;
+  // FR-R3-011 — the projected registry, one derivation site rather than a
+  // second copy of the pause rule in the UI layer. Feature 195 (T039) adds
+  // the workspace default a queue's effective failure policy falls back to.
+  const registry = store.getProjectedQueueRegistry?.(generalSettings.queueHaltOnTaskFailure);
   const lock = store.getLock();
   const confirmSuppression = store.getConfirmSuppression?.();
   const confirmationsEnabled = deps.getConfirmationsEnabled?.();
@@ -131,7 +137,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       activePipeline: run.pipeline
         ? Object.freeze({ id: run.pipeline.id, name: run.pipeline.name })
         : null,
-      liveActivity: bookkeeping.liveActivity(status),
+      liveActivity: bookkeeping.liveActivity(status, ctx.monitor?.getCurrentState(run.id)?.held === true),
       // FR-R3-008 (T379) — the reload-durable half of the same question
       // `liveActivity` answers from memory, plus progress against the total the
       // Run froze. Both are `null` when the record predates the feature.
@@ -168,18 +174,21 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // and scheduled-start into one shared context, so every queue's in-flight row
   // inherited the window Run's phase and pause cause. With one Run per queue
   // that is a visible cross-queue leak, not a harmless shared default.
+  const catalog =
+    deps.getCatalog?.() ?? { phases: [], pipelines: [], models: EMPTY_MODELS_BY_BACKEND };
   const rowContextFor = (queueId: string, state: QueueState) => {
     const run = runOf(queueId)?.run ?? null;
     return {
       sanitize,
       registry,
-      inFlightPhase: run && run.currentPhase !== 'done' ? run.currentPhase : null,
+      ...rowRunContext(run, catalog.pipelines), // FR-R3-158 + FR-R3-157 — see there.
+      inFlightPhase: currentPhaseOrNull(run),
       inFlightId: state.inFlightId,
       inFlightManualPauseCause: run?.manualPauseCause ?? null,
       scheduledStartSource: state.scheduledStartSource ?? null,
       scheduledStartAt: state.scheduledStartAt ?? null,
       activeRunTaskId: run?.featureId ?? null,
-      activeRunPhase: run?.currentPhase ?? null
+      activeRunPhase: currentPhaseOrNull(run)
     };
   };
   const requestsOf = (queueId: string): readonly FeatureRequest[] =>
@@ -191,11 +200,6 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
       ? { requestsOf: (queueId: string) => store.getRequestsForQueue!(queueId) }
       : {})
   });
-  const catalog = deps.getCatalog?.() ?? {
-    phases: [],
-    pipelines: [],
-    models: EMPTY_MODELS_BY_BACKEND
-  };
   const phaseCatalog = deps.getPhaseCatalog?.();
   // Absent means "availability is unknown", which every consumer already reads
   // as "warn about nothing" — so the fallback is empty rather than a guess.
@@ -208,6 +212,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // reads, and it refreshes on the `schegent.models` reload already wired in
   // `extension.ts`.
   const configuredModels = catalog.models;
+  const workspaceModels = deps.getWorkspaceModels?.();
   const lifecycle = deps.getBuilderLifecycle?.() ?? NO_BUILDER_LIFECYCLE_BY_KIND;
   const phaseCatalogProjection = composePhaseCatalogProjection(phaseCatalog, {
     sanitize,
@@ -223,16 +228,15 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     ...(deps.getWorkflowPipelineRefs !== undefined
       ? { workflowRefs: deps.getWorkflowPipelineRefs() }
       : {}),
-    onError: (message) => ctx.logger?.warn(message)
+    onError: (message) => ctx.logger?.projectionFailed('pipeline-catalog', message)
   });
-  const workflowCatalog = composeWorkflowCatalogProjection(deps, sanitize, (m) => ctx.logger?.warn(m));
+  const workflowCatalog = composeWorkflowCatalogProjection(deps, sanitize, (m) => ctx.logger?.projectionFailed('workflow-catalog', m));
   // Feature 092 (T092, T093, T095, FR-048/FR-051/FR-053) — one runtime per
   // registry entry, composed from projections that already exist rather than
   // rebuilt: `queueProjection.queues` is the registry read, and
   // `getRequestsForQueue` the per-queue rows. The run-scoped readings attach to
   // the one queue that owns the Run and to no other, so an idle queue publishes
   // an empty runtime instead of borrowing its neighbour's.
-  //
   // Feature 093 (T051, FR-030) — that attribution is now a keyed lookup per
   // queue rather than one Run offered to every queue in turn, which is what
   // makes each queue's Run separately visible. Reading the whole record to
@@ -242,17 +246,19 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     summaries: queueProjection.queues,
     runOf,
     lifecycleOf: (queueId) => store.getQueue(queueId).queueLifecycle,
+    scheduledStartOf: (id) => scheduledStartFromQueueState(store.getQueue(id)),
     requestsOf,
-    rowsOf: (queueId) => projectQueueRows(
-      requestsOf(queueId),
-      rowContextFor(queueId, store.getQueue(queueId))
-    )
+    rowsOf: (queueId) =>
+      projectQueueRows(requestsOf(queueId), rowContextFor(queueId, store.getQueue(queueId))),
+    startFailureOf: (queueId) => projectStartFailure(deps.getQueueStartFailure?.(queueId), sanitize),
+    lastCreditPollOutcome: () => store.getWatchdog?.().lastPollOutcome ?? null,
+    effectiveLimitsOf: deps.getEffectiveLimits
   });
 
-  const trust = composeTrustProjection((message) => ctx.logger?.warn(message));
+  const trust = composeTrustProjection((message) => ctx.logger?.projectionFailed('trust-capabilities', message));
   // Feature 102 (FR-R3-018) — read off the two catalog projections above, never
   // re-resolved from the store; absent while either is still unresolved.
-  const launchables = buildLaunchProjection(pipelineCatalogProjection, workflowCatalog);
+  const launchables = buildLaunchProjection(pipelineCatalogProjection, workflowCatalog, phaseCatalogProjection, ctx.defaultRunnerKind, deps.getLaunchLimits?.());
 
   return Object.freeze({
     schemaVersion: SCHEMA_VERSION,
@@ -283,23 +289,34 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     availablePipelines: Object.freeze([...catalog.pipelines]),
     availableModels: Object.freeze(availableModels),
     configuredModels: Object.freeze(configuredModels),
+    ...(workspaceModels === undefined ? {} : {
+      workspaceModelCatalog: { models: workspaceModels, revision: modelsLayerRevision(workspaceModels) }
+    }),
     availableBackends: Object.freeze(
-      deps.getAvailableBackends?.() ?? (['claude'] as readonly BackendRunnerKind[])
+      deps.getAvailableBackends?.() ?? ([DEFAULT_BACKEND] as readonly BackendRunnerKind[])
     ),
+    ...composeBackendPostures(deps.getUncontainedGrantSetting?.(), deps.getBackendQualificationSource?.()),
     backendPingState: deps.getBackendPingState?.() ?? Object.freeze({ status: 'idle' as const }),
-    generalSettings: deps.getGeneralSettings?.() ?? IDLE_GENERAL_SETTINGS,
+    generalSettings,
+    // FR-R3-145 (T1572) — `store`, not `deps`: the cap is enforced against the
+    // memento, not configuration. See `QueueSettingsProjection`.
+    queueSettings: {
+      globalConcurrencyCap: store.getGlobalConcurrencyCap?.() ?? DEFAULT_GLOBAL_CONCURRENCY_CAP,
+      defaultQueueId: store.getDefaultQueueId?.() ?? DEFAULT_QUEUE_ID
+    },
     sessionArtifacts: deps.getSessionArtifacts?.() ?? IDLE_SESSION_ARTIFACTS,
+    // FR-R3-130 — read per composition, never cached; `totalmem()` rides with it.
+    streamPressure: { ...readStreamPressure(), machineMemoryBytes: totalmem() },
     evidenceHealth: deps.getEvidenceHealth?.() ?? IDLE_EVIDENCE_HEALTH,
     telemetry: ctx.telemetry,
-    workspaceTrust: trust.workspaceTrust,
-    resolvedTrust: trust.resolvedTrust,
+    // Spread: `TrustProjection`'s members ARE the snapshot's trust members.
+    ...trust,
     ...(launchables !== undefined ? { launchables } : {}),
+    ...(workflowCatalog !== undefined && deps.getDefaultWorkflowId ? { defaultWorkflowId: deps.getDefaultWorkflowId() } : {}), // Feature 285 (FR-006a, D4)
     ...(phaseCatalogProjection !== undefined ? { phaseCatalog: phaseCatalogProjection } : {}),
-    ...(pipelineCatalogProjection !== undefined
-      ? { pipelineCatalog: pipelineCatalogProjection }
-      : {}),
+    ...(pipelineCatalogProjection !== undefined ? { pipelineCatalog: pipelineCatalogProjection } : {}),
     ...(workflowCatalog !== undefined ? { workflowCatalog } : {}),
-    ...(deps.getConnectedRuns ? { connectedRuns: deps.getConnectedRuns() } : {}),
+    ...(deps.getConnectedRuns ? { connectedRuns: deps.getConnectedRuns().map((run) => sanitizeConnectedRun(run, sanitize)) } : {}),
     ...(confirmSuppression !== undefined ? { confirmSuppression } : {}),
     ...(confirmationsEnabled !== undefined ? { confirmationsEnabled } : {})
   });

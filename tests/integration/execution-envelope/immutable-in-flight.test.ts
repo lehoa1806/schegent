@@ -25,7 +25,7 @@ import type { PhaseDef, PipelineDef } from '../../../src/config/pipeline-config'
 import type { ExecutionEnvelope } from '../../../src/contracts/run-request';
 import type { InvocationRequest } from '../../../src/runner/invocation-result';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import {
   BRIEF,
   ENVELOPE_FLOW,

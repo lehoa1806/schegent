@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "backend": "claude",
+  "taskId": "structured-token",
+  "transport": "acp-stdio-bridge",
+  "exitCode": 0,
+  "stderr": "",
+  "acpFrames": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocolVersion": 1,
+        "agentCapabilities": {
+          "loadSession": true,
+          "promptCapabilities": {
+            "embeddedContext": true
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "sessionId": "claude-structured-token-session-1"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "claude-structured-token-session-1",
+        "update": {
+          "sessionUpdate": "agent_message_chunk",
+          "content": {
+            "type": "text",
+            "text": "Claude readiness confirmed with zero workspace mutations.\n\n=== SCHEGENT AUDIT LOG ===\nphase: eval-structured-token\nfiles_created: []\nfiles_modified: []\nfiles_deleted: []\ncommands_executed: []\nnetwork_calls: []\nruleset_switches: []\nnotes: claude structured-token conformance verified without edits\n=== END AUDIT LOG ===\n[SCHEGENT_STATUS: CLEAR]\n"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "usage": {
+    "denomination": "usd",
+    "value": 0.0124,
+    "totalCostUsd": 0.0124,
+    "inputTokens": 420,
+    "outputTokens": 118
+  },
+  "sideEffects": {
+    "filesRead": [],
+    "filesCreated": [],
+    "filesModified": [],
+    "filesDeleted": [],
+    "commandsExecuted": [],
+    "networkCalls": []
+  }
+}

@@ -1,6 +1,13 @@
 <script lang="ts">
-  import { snapshotStore } from '../lib/snapshot-store.svelte';
+  import { setContext, tick } from 'svelte';
 
+  import IncompatibleSnapshotNotice from '../components/IncompatibleSnapshotNotice.svelte';
+  import SgSprite from '../components/sg/SgSprite.svelte';
+  import { snapshotStore } from '../lib/snapshot-store.svelte';
+  import { statusLine } from '../lib/status-line.svelte';
+
+  import type { SettingsSectionId } from '../components/settings/settings-page.svelte';
+  import { DASHBOARD_NAVIGATION, type DashboardNavigation } from './navigation-context';
   import { createRouteLoader } from './route-loader';
   import RouteOutlet from './RouteOutlet.svelte';
   import {
@@ -28,65 +35,229 @@
     loader.preload(next);
   }
 
+  // The section the Settings route opens on. The Settings page mounts afresh each time its route
+  // is opened and reads this once, at mount: the top navigation opens it on Backends, the Queues
+  // list's "Queue defaults" on Queues. Which section is shown after that is the page's own state.
+  // `showRoute` below sets it before `navigate`, which stays the one assignment Feature 105 holds
+  // it to (`App.route-loading.test.ts`).
+  const OPENING_SETTINGS_SECTION: SettingsSectionId = 'backends';
+  let settingsSection = $state<SettingsSectionId>(OPENING_SETTINGS_SECTION);
+
   function navigate(next: DashboardRoute): void {
     route = next;
   }
+
+  // FR-R4-F06 (FR-008; D5) -- "Review in Settings" from a launch surface. Webview-local: it
+  // posts no command, names no setting key and persists nothing. The Settings route mounts
+  // fresh on its Backends section, which holds the "Installed backends" heading
+  // (`SettingsSurface.test.ts` holds the heading to it), and its surface loads lazily, so the
+  // heading may not exist after one tick; the scroll waits for it for a bounded number of frames
+  // and then gives up quietly rather than throwing.
+  const BACKEND_HEALTH_HEADING_ID = 'backend-health-heading';
+  const SCROLL_WAIT_FRAMES = 120;
+  let scrollRequest = 0;
+  let pendingScrollRaf: number | null = null;
+  let resolvePendingScroll: (() => void) | null = null;
+
+  function cancelPendingScrollRaf(): void {
+    if (pendingScrollRaf !== null) {
+      cancelAnimationFrame(pendingScrollRaf);
+      pendingScrollRaf = null;
+    }
+    if (resolvePendingScroll !== null) {
+      const done = resolvePendingScroll;
+      resolvePendingScroll = null;
+      done();
+    }
+  }
+
+  async function scrollToBackendHealth(): Promise<void> {
+    scrollRequest += 1;
+    cancelPendingScrollRaf();
+    const request = scrollRequest;
+    await tick();
+    for (let frame = 0; frame < SCROLL_WAIT_FRAMES; frame += 1) {
+      if (request !== scrollRequest) return;
+      const heading = document.getElementById(BACKEND_HEALTH_HEADING_ID);
+      if (heading !== null) {
+        heading.scrollIntoView({ block: 'start' });
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        resolvePendingScroll = resolve;
+        pendingScrollRaf = requestAnimationFrame(() => {
+          pendingScrollRaf = null;
+          resolvePendingScroll = null;
+          resolve();
+        });
+      });
+    }
+  }
+
+  // Each page's icon in the sprite. A reference is written whole, never assembled, so a search
+  // for it finds every use (`SgSprite.test.ts` holds the sprite to that).
+  const ROUTE_ICONS: Record<DashboardRoute, string> = {
+    operations: '#i-queue',
+    history: '#i-history',
+    metrics: '#i-chart',
+    system: '#i-pulse',
+    builder: '#i-build',
+    settings: '#i-gear'
+  };
+
+  /** Says in the status line which page is showing. */
+  function announceRoute(next: DashboardRoute): void {
+    statusLine.announce(`Showing ${DASHBOARD_ROUTE_LABELS[next]}.`);
+  }
+
+  // Opening a page from the navigation also moves focus to the page's heading, so a keyboard or
+  // screen-reader user lands on the page they asked for. The page may load lazily, so the heading
+  // is waited for the way the scroll above waits: a bounded number of frames, then a quiet end.
+  const PAGE_HEADING_SELECTOR = '#dashboard-content h1';
+  const HEADING_WAIT_FRAMES = 120;
+  let headingRequest = 0;
+  let pendingHeadingRaf: number | null = null;
+  let resolvePendingHeading: (() => void) | null = null;
+
+  function cancelPendingHeadingRaf(): void {
+    if (pendingHeadingRaf !== null) {
+      cancelAnimationFrame(pendingHeadingRaf);
+      pendingHeadingRaf = null;
+    }
+    if (resolvePendingHeading !== null) {
+      const done = resolvePendingHeading;
+      resolvePendingHeading = null;
+      done();
+    }
+  }
+
+  async function focusPageHeading(fromPointer = false): Promise<void> {
+    headingRequest += 1;
+    cancelPendingHeadingRaf();
+    const request = headingRequest;
+    const origin = document.activeElement;
+    // After this tick the page being left is gone, so its heading cannot be taken for the new one.
+    await tick();
+    for (let frame = 0; frame < HEADING_WAIT_FRAMES; frame += 1) {
+      if (request !== headingRequest) return;
+      const heading = document.querySelector<HTMLElement>(PAGE_HEADING_SELECTOR);
+      if (heading !== null) {
+        // Someone who has moved on in the meantime is not pulled back.
+        const focused = document.activeElement;
+        const focusMoved = focused !== origin && focused !== document.body;
+        if (focusMoved) return;
+        heading.tabIndex = -1;
+        if (fromPointer) {
+          heading.dataset.focusSource = 'pointer';
+          heading.addEventListener('blur', () => { delete heading.dataset.focusSource; }, { once: true });
+        } else {
+          delete heading.dataset.focusSource;
+        }
+        heading.focus();
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        resolvePendingHeading = resolve;
+        pendingHeadingRaf = requestAnimationFrame(() => {
+          pendingHeadingRaf = null;
+          resolvePendingHeading = null;
+          resolve();
+        });
+      });
+    }
+  }
+
+  /**
+   * Shows a page and names it in the status line. Every opener goes through here and must say
+   * which section the Settings page opens on, so none inherits the section the last one asked for.
+   */
+  function showRoute(next: DashboardRoute, section: SettingsSectionId): void {
+    settingsSection = section;
+    navigate(next);
+    announceRoute(next);
+  }
+
+  function openRoute(
+    next: DashboardRoute,
+    section: SettingsSectionId = OPENING_SETTINGS_SECTION,
+    fromPointer = false
+  ): void {
+    showRoute(next, section);
+    void focusPageHeading(fromPointer);
+  }
+
+  const navigation: DashboardNavigation = {
+    openBackendSettings: () => {
+      showRoute('settings', OPENING_SETTINGS_SECTION);
+      void scrollToBackendHealth();
+    },
+    // The Queues list's "Queue defaults": the page opens on Queues and lands focus on its heading,
+    // as a page opened from the top navigation does. Webview-local, like the link above.
+    openQueueSettings: (fromPointer = false) => {
+      openRoute('settings', 'queues', fromPointer);
+    }
+  };
+  setContext(DASHBOARD_NAVIGATION, navigation);
+
+  // FR-R8-04 (`04-06`) — cancel pending focus/scroll animation loops and mark
+  // the route loader disposed on shell unmount so no late post-teardown work
+  // survives component cleanup.
+  $effect(() => () => {
+    headingRequest += 1;
+    scrollRequest += 1;
+    cancelPendingHeadingRaf();
+    cancelPendingScrollRaf();
+    loader.dispose();
+  });
 </script>
 
-<div class="dashboard-root" data-testid="dashboard-app-root">
+<div class="sg dash" data-testid="dashboard-app-root">
+  <SgSprite />
+  <IncompatibleSnapshotNotice />
   {#if ready && snapshot}
     <a class="skip-link" href="#dashboard-content">Skip to dashboard content</a>
-    <header class="dashboard-topbar">
-      <div class="brand-lockup" aria-label="Schegent dashboard">
-        <span class="brand-mark" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
-            <path d="m12 3 8 4-8 4-8-4 8-4Z"></path>
-            <path d="m4 11 8 4 8-4"></path>
-            <path d="m4 15 8 4 8-4"></path>
-          </svg>
-        </span>
+    <header class="topbar">
+      <span class="brand">
+        <svg class="i" aria-hidden="true"><use href="#i-logo"></use></svg>
         <span class="brand-name">Schegent</span>
-      </div>
-      <nav class="dashboard-nav" aria-label="Primary">
+      </span>
+      <nav class="nav" aria-label="Primary">
         {#each DASHBOARD_ROUTES as r (r)}
           <button
             type="button"
-            class="nav-btn {route === r ? 'active' : ''}"
+            class:active={route === r}
             aria-current={route === r ? 'page' : undefined}
             data-testid="dashboard-route-{r}"
             title={DASHBOARD_ROUTE_LABELS[r]}
             onpointerenter={() => preloadRoute(r)}
             onfocus={() => preloadRoute(r)}
-            onclick={() => navigate(r)}
+            onclick={(event) => openRoute(r, OPENING_SETTINGS_SECTION, event.detail > 0)}
           >
-            <svg class="nav-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              {#if r === 'operations'}
-                <path d="m12 3 8 4-8 4-8-4 8-4Z"></path><path d="m4 11 8 4 8-4"></path><path d="m4 15 8 4 8-4"></path>
-              {:else if r === 'runs'}
-                <path d="M5 3v18"></path><path d="M19 3v18"></path><path d="M5 8h14"></path><path d="M5 16h14"></path>
-              {:else if r === 'history'}
-                <path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path><path d="M12 7v5l3 2"></path>
-              {:else if r === 'metrics'}
-                <path d="M4 19V9"></path><path d="M10 19V5"></path><path d="M16 19v-7"></path><path d="M22 19V3"></path>
-              {:else if r === 'system'}
-                <path d="m4 6 5 5-5 5"></path><path d="M11 18h9"></path>
-              {:else if r === 'builder'}
-                <circle cx="5" cy="6" r="2"></circle><circle cx="19" cy="6" r="2"></circle><circle cx="12" cy="18" r="2"></circle><path d="M7 6h10"></path><path d="m6.5 8 4.5 8"></path><path d="m17.5 8-4.5 8"></path>
-              {:else}
-                <circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"></path>
-              {/if}
-            </svg>
+            <svg class="i" aria-hidden="true"><use href={ROUTE_ICONS[r]}></use></svg>
             <span class="nav-label">{DASHBOARD_ROUTE_LABELS[r]}</span>
           </button>
         {/each}
       </nav>
-      <div class:read-only={!snapshot.isPrimary} class="workspace-state" aria-live="polite">
-        <span class="workspace-dot" aria-hidden="true"></span>
-        <span>{snapshot.isPrimary ? 'Workspace Connected' : 'Read-only Window'}</span>
-      </div>
+      <!-- A second window differs by its icon as well as its colour: below the narrowest
+           breakpoint the text is hidden and the mark is all that shows. -->
+      <span
+        class="push chip {snapshot.isPrimary ? 's-ok' : 's-warn'}"
+        data-testid="dashboard-workspace-state"
+        aria-live="polite"
+      >
+        {#if snapshot.isPrimary}
+          <span class="dot" aria-hidden="true"></span>
+        {:else}
+          <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>
+        {/if}
+        <span class="state-text">{snapshot.isPrimary ? 'Workspace Connected' : 'Read-only Window'}</span>
+      </span>
     </header>
-    <div id="dashboard-content" class="dashboard-route" data-testid="dashboard-route">
-      <RouteOutlet {route} {snapshot} {loader} />
+    <div id="dashboard-content" class="content" data-testid="dashboard-route">
+      <RouteOutlet {route} {snapshot} {loader} {settingsSection} />
+    </div>
+    <div class="statusline" role="status" aria-live="polite" data-testid="dashboard-status-line">
+      {statusLine.message}
     </div>
   {:else}
     <main class="dashboard-loading" data-testid="dashboard-empty-state" role="status">
@@ -102,13 +273,13 @@
 </div>
 
 <style>
-  .dashboard-root {
-    display: flex;
-    flex-direction: column;
+  /* The shell's look is the shared sheet's (`lib/sg/sg-pages.css`, under "Shell"). What is here is
+     what the sheet leaves to the product: the frame it sits in, the skip link, the first-snapshot
+     wait, and how the top bar gives way when the window is narrow or the pointer is coarse. Rules
+     that adjust a sheet class name the root too, so they win whatever order the two load in. */
+  .dash {
     height: 100%;
     overflow: hidden;
-    color: var(--schegent-fg);
-    background: var(--schegent-bg);
   }
   .skip-link {
     position: fixed;
@@ -126,115 +297,22 @@
   .skip-link:focus {
     transform: translateY(0);
   }
-  .dashboard-topbar {
-    position: relative;
-    z-index: var(--schegent-z-sticky);
-    display: flex;
-    min-height: 52px;
-    align-items: stretch;
-    gap: 0;
-    padding: 0 16px 0 0;
-    border-bottom: 1px solid var(--schegent-border);
-    background: var(--schegent-shell-bg);
-  }
-  .brand-lockup {
-    display: flex;
-    align-items: center;
-    width: 190px;
-    gap: 9px;
-    flex: 0 0 190px;
-    padding: 0 16px;
-    border-right: 1px solid var(--schegent-divider);
-  }
-  .brand-mark {
-    display: inline-flex;
-    width: 22px;
-    height: 22px;
-    align-items: center;
-    justify-content: center;
-    color: var(--schegent-color-active);
-  }
-  .brand-name {
-    color: var(--schegent-fg);
-    font-size: 0.82rem;
-    font-weight: 700;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-  }
-  .dashboard-nav {
-    display: flex;
+  /* The navigation is the part of the bar that gives way: it shrinks and scrolls sideways. */
+  .dash .nav {
     min-width: 0;
-    flex: 1 1 auto;
-    align-items: stretch;
-    gap: 2px;
-    padding-left: 6px;
     overflow-x: auto;
     scrollbar-width: none;
   }
-  .dashboard-nav::-webkit-scrollbar {
+  .dash .nav::-webkit-scrollbar {
     display: none;
   }
-  .nav-btn {
+  .dash .nav button {
     position: relative;
-    min-height: 51px;
     flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    background: transparent;
-    border: none;
-    color: var(--schegent-muted-fg);
-    padding: 0 12px;
-    cursor: pointer;
-    font-weight: 500;
-    font-size: var(--schegent-text-secondary);
-  }
-  .nav-btn::after {
-    position: absolute;
-    right: 12px;
-    bottom: -1px;
-    left: 12px;
-    height: 2px;
-    background: transparent;
-    content: '';
-  }
-  .nav-btn:hover {
-    color: var(--schegent-fg);
-    background: var(--schegent-surface-hover);
-  }
-  .nav-btn.active {
-    color: var(--schegent-color-active);
-    background: var(--schegent-surface-active);
-  }
-  .nav-btn.active::after {
-    background: var(--schegent-color-active);
-  }
-  .nav-icon {
-    flex: 0 0 auto;
-  }
-  .workspace-state {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    flex: 0 0 auto;
-    color: var(--schegent-color-completed);
-    font-size: var(--schegent-text-caption);
     white-space: nowrap;
   }
-  .workspace-state.read-only {
-    color: var(--schegent-color-warning);
-  }
-  .workspace-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-  }
-  .dashboard-route {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
+  /* A page keeps to its own area and scrolls inside it, so it never covers the status line. */
+  .dash .content {
     overflow: hidden;
   }
   .dashboard-loading {
@@ -242,7 +320,6 @@
     width: min(720px, calc(100% - 48px));
     margin: auto;
     gap: 24px;
-    color: var(--schegent-fg);
   }
   .loading-copy {
     display: flex;
@@ -272,37 +349,38 @@
     width: 64%;
   }
 
-  @media (max-width: 860px) {
-    .dashboard-topbar {
-      padding-right: 10px;
-    }
-    .brand-lockup {
-      width: auto;
-      flex-basis: auto;
-      padding: 0 12px;
-    }
-    .nav-btn {
-      padding: 0 10px;
-    }
+  /* Text that no longer fits is hidden from sight only: it still names its control.
+     The bar with its labels measured 847px wide at a 13px editor font and 883px at 14px, a
+     read-only window's chip being about 14px narrower, and each font pixel adds about 36px: 960
+     keeps every label whole up to a 16px font. Past that the navigation scrolls sideways. */
+  @media (max-width: 960px) {
     .nav-label {
-      display: none;
-    }
-    .nav-btn::after {
-      right: 8px;
-      left: 8px;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
   }
 
   @media (max-width: 560px) {
     .brand-name,
-    .workspace-state span:last-child {
-      display: none;
+    .state-text {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
     }
-    .dashboard-topbar {
-      padding-right: 8px;
-    }
-    .brand-lockup {
-      gap: 0;
+  }
+
+  /* A coarse pointer makes every button at least 44px tall, one more than the bar's inner height. */
+  @media (pointer: coarse) {
+    .dash .topbar,
+    .dash .nav {
+      height: auto;
     }
   }
 </style>

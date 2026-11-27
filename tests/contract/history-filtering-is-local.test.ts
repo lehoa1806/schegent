@@ -19,7 +19,10 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
 import { MUTATING_COMMANDS } from '../../src/ui/sidebar/message-router';
-import { MUTATING_COMMAND_TYPES } from '../../src/contracts/sidebar-command-metadata';
+import {
+  COMMAND_AUTHORITY,
+  MUTATING_COMMAND_TYPES
+} from '../../src/contracts/sidebar-command-metadata';
 import { CMD_RERUN_FROM_HISTORY } from '../../src/contracts/sidebar-ipc';
 
 const WEBVIEW_SRC = path.join(__dirname, '../../webview-ui/src');
@@ -83,7 +86,38 @@ describe('the command registry is unchanged by this feature (T040, FR-023)', () 
   it('registers no new mutating command', () => {
     // Pinned by count as well as by name. A new entry added for a "just one
     // read" command would pass a name-shaped assertion and fail this one.
-    expect(MUTATING_COMMAND_TYPES).toHaveLength(46);
+    //
+    // 46 -> 42 on 2026-08-30: the lifecycle round-check (finding D) deleted four
+    // gated commands the webview could no longer send. A count that only ever
+    // rises would have made that deletion look like a failure of this feature,
+    // which is why the number moves with a reason rather than being loosened to
+    // an inequality.
+    //
+    // 42 -> 43 on 2026-08-30: FR-R3-144 added CMD_SET_UNCONTAINED_BACKEND_GRANT,
+    // the Settings control for the uncontained-backend list. It writes an
+    // application-scoped security setting, so it is gated for a stronger reason
+    // than the rest of the table — see the pinned-list fixture, which names it.
+    //
+    // 43 -> 44 on 2026-09-04: feature 195 (FR-R3-156) added
+    // CMD_SET_QUEUE_FAILURE_POLICY, the per-queue halt-on-failure override.
+    // `null` removes the stored override rather than writing a concrete value.
+    //
+    // 44 -> 45 on 2026-09-08: feature 195 (T064, BUG-001, FR-025) added
+    // CMD_ATTEST_TASK_COMPLETED, the third exit from a halted queue. Mutating
+    // for the strongest reason in the table: it writes `completed`, which
+    // 192's invariant 4 admits no return from, so the write spends the
+    // operator's remaining retry as well as changing the status.
+    //
+    // FR-R4-F05 (L5): the number is no longer written here. It moved with every
+    // reclassification (45 -> 46 when Ping was gated, -> 53 with the seven other
+    // reads), and the count pin is `mutating-commands-pinned-list.test.ts`'s,
+    // where a hand-written list catches a demotion. What this feature owes is the
+    // name-shaped checks below, which hold whatever the count is. So the count is
+    // read from the declaration's own entries.
+    const gatedEntries = Object.values(COMMAND_AUTHORITY).filter(
+      (entry) => entry.authority === 'gated'
+    ).length;
+    expect(MUTATING_COMMAND_TYPES).toHaveLength(gatedEntries);
     expect(MUTATING_COMMANDS.size).toBe(MUTATING_COMMAND_TYPES.length);
   });
 

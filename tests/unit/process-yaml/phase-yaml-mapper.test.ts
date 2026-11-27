@@ -25,11 +25,18 @@ import {
   documentFromPhaseDefinition,
   phaseDefinitionFromDocument
 } from '../../../src/services/process-yaml/phase-yaml-mapper';
-import { serializePhaseDocument } from '../../../src/services/process-yaml/yaml-serializer';
+import {
+  CAPABILITY_SEPARATOR,
+  serializePhaseDocument
+} from '../../../src/services/process-yaml/yaml-serializer';
+import { ALL_PHASE_CAPABILITIES } from '../../../src/contracts/phase-capabilities';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
 import { validatePhaseDocument } from '../../../src/services/process-yaml/phase-yaml-validator';
 
-const { validateSpy } = vi.hoisted(() => ({ validateSpy: vi.fn() }));
+const { validateSpy, capabilitySpy } = vi.hoisted(() => ({
+  validateSpy: vi.fn(),
+  capabilitySpy: vi.fn()
+}));
 
 vi.mock('../../../src/lib/retry-condition', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/lib/retry-condition')>();
@@ -38,6 +45,19 @@ vi.mock('../../../src/lib/retry-condition', async (importOriginal) => {
     validate: (expression: string) => {
       validateSpy(expression);
       return actual.validate(expression);
+    }
+  };
+});
+
+// Feature 254 (S-T5, FR-005) — counts the per-member lookups the capability bound must avoid. It
+// delegates, so every other test in this file sees the real predicate.
+vi.mock('../../../src/contracts/phase-capabilities', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/contracts/phase-capabilities')>();
+  return {
+    ...actual,
+    isPhaseCapability: (value: unknown) => {
+      capabilitySpy(value);
+      return actual.isPhaseCapability(value);
     }
   };
 });
@@ -51,9 +71,23 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   model: 'opus',
   effort: 'high',
   timeoutSeconds: 120,
+  // FR-R3-112 — distinctive, non-default values for the same reason the two below carry them: a
+  // field dropped anywhere on the path shows up as a changed value rather than a coincidentally
+  // correct one. Both denominations, because carrying only one would let the other be silently
+  // cleared by a round trip.
+  spendBoundUsd: 12.5,
+  spendBoundTokens: 250_000,
   loopable: true,
   retryCondition: 'attempts < 3',
   forceContinueOnRetryCap: true,
+  // FR-R3-157 — BOTH cap forms, and deliberately disagreeing: the boolean says
+  // continue, the outcome says fail. A round trip that dropped either one would
+  // still produce a phase that decides something at the cap, so a fixture
+  // carrying only one form could not tell a carried field from a defaulted one.
+  // Disagreement makes the drop visible as a changed decision. Precedence is not
+  // this file's business — the mapper carries, it does not resolve (FR-007).
+  onRetryCap: 'fail',
+  nativeReview: 'code',
   isRequired: false,
   runner: 'claude',
   // Feature 098 T012/T014 — both values are deliberately NOT the FR-005 defaults
@@ -61,7 +95,33 @@ const FULL_INSTRUCTION: PhaseDefinition = {
   // as a changed value rather than as a coincidentally-correct one. `git` pairs
   // legally with the `claude` runner above.
   sideEffects: 'git',
-  evidencePolicy: 'none'
+  evidencePolicy: 'none',
+  // FR-R3-058 — and not the default (`model-token`), for the same reason as the
+  // two above: a field dropped anywhere on the path must show up as a changed
+  // value, not as a coincidentally-correct one.
+  hostVerification: 'exit-code',
+  // FR-R3-086 — a PROPER SUBSET, and not in the canonical order, so that a path
+  // which widens the set, narrows it, or silently canonicalizes it all show up
+  // as a changed value here.
+  capabilities: ['network', 'workspace-write'],
+  resultContract: {
+    version: 1,
+    operator: 'structured-result',
+    operatorVersion: 1,
+    fields: [
+      { fieldId: 'ready', type: 'boolean', required: true, selector: ['ready'] }
+    ],
+    source: { kind: 'backend-result' },
+    completion: {
+      version: 1,
+      kind: 'typed',
+      test: {
+        left: { source: 'result-field', fieldId: 'ready' },
+        operator: 'equals',
+        right: true
+      }
+    }
+  }
 };
 
 const FULL_SKILL: PhaseDefinition = {
@@ -126,6 +186,42 @@ describe('phase-yaml-mapper — bijection over the portable field set', () => {
     expect(roundTrip(definition)).toEqual(definition);
   });
 
+  // FR-R3-117 — omission and explicit 'model-token' were INTERCHANGEABLE before
+  // this feature: omission meant model-token, so collapsing one into the other was
+  // lossless and nothing here could have caught it. They are now different
+  // instructions -- omission means "resolve the default", explicit 'model-token'
+  // means "opt out of it" -- and on a load-bearing Phase they produce opposite
+  // verdicts. The mapper already emits the key only when the DEFINITION carries
+  // it, which is the correct behaviour; these assertions exist because an untested
+  // invariant is one refactor from being untrue, and this is the refactor that
+  // made it matter.
+  it('FR-R3-117 — an authored model-token opt-out survives the round trip', () => {
+    const definition: PhaseDefinition = {
+      ...MINIMAL,
+      sideEffects: 'workspace',
+      hostVerification: 'model-token'
+    };
+    const document = documentFromPhaseDefinition(definition);
+    expect(document.spec.hostVerification).toBe('model-token');
+    expect(roundTrip(definition).hostVerification).toBe('model-token');
+  });
+
+  it('FR-R3-117 — a Phase that declared nothing still declares nothing afterwards', () => {
+    // The direction that would silently convert a resolved default into an
+    // author's opt-out. If export emitted the resolved value, re-importing would
+    // pin every Phase to whatever the rule said on the day it was exported.
+    const definition: PhaseDefinition = { ...MINIMAL, sideEffects: 'workspace' };
+    const document = documentFromPhaseDefinition(definition);
+    expect(document.spec.hostVerification).toBeUndefined();
+    expect(roundTrip(definition).hostVerification).toBeUndefined();
+  });
+
+  it('FR-R3-117 — omission and explicit model-token do not collapse into each other', () => {
+    const omitted: PhaseDefinition = { ...MINIMAL, sideEffects: 'workspace' };
+    const optedOut: PhaseDefinition = { ...omitted, hostVerification: 'model-token' };
+    expect(roundTrip(omitted)).not.toEqual(roundTrip(optedOut));
+  });
+
   it('is a fixpoint on the document side as well', () => {
     const once = documentFromPhaseDefinition(FULL_INSTRUCTION);
     expect(documentFromPhaseDefinition(phaseDefinitionFromDocument(once))).toEqual(once);
@@ -162,6 +258,73 @@ describe('phase-yaml-mapper — the format stays closed (T020, SC-008)', () => {
     expect([...emitted].sort()).toEqual([...PORTABLE_PHASE_FIELDS].sort());
   });
 
+  // FR-R3-086 — the three readings, and the one that matters is the middle one.
+  //
+  // This is the whole reason `capabilities` is a scalar in this format. An
+  // ABSENT key is the unbounded default; the EMPTY set is nothing granted. If
+  // the format could not tell them apart, exporting the most restrictive phase
+  // and importing it back would produce the least restrictive one -- a silent
+  // widening of a bound an operator approved, through a path that reports
+  // success. So the assertion is not that each survives, but that no two of them
+  // collapse into each other.
+  it.each([
+    ['absent — the unbounded default', undefined],
+    ['the empty set — nothing granted', [] as const],
+    ['a proper subset', ['outside-workspace-write', 'process-spawn'] as const]
+  ])('keeps %s distinct across a full text round trip', (_label, capabilities) => {
+    const definition: PhaseDefinition = {
+      ...MINIMAL,
+      ...(capabilities === undefined ? {} : { capabilities: [...capabilities] })
+    };
+    const returned = roundTrip(definition);
+    expect(returned).toEqual(definition);
+    expect(returned.capabilities).toEqual(capabilities === undefined ? undefined : [...capabilities]);
+  });
+
+  it('writes the empty set as a key that is present and empty', () => {
+    const text = serializePhaseDocument(
+      documentFromPhaseDefinition({ ...MINIMAL, capabilities: [] })
+    );
+    // Present, so the reader can tell it from the default; empty, so it grants
+    // nothing. Both halves are the point, which is why the byte form is pinned.
+    expect(text).toContain('capabilities: ""');
+    expect(serializePhaseDocument(documentFromPhaseDefinition(MINIMAL))).not.toContain(
+      'capabilities'
+    );
+  });
+
+  it.each([
+    ['an unknown member', 'workspace-write,teleport'],
+    ['a repeated member', 'network,network'],
+    ['a member with surrounding space', 'network, process-spawn']
+  ])('refuses %s rather than dropping it', (_label, encoded) => {
+    // Dropping would yield a NARROWER set than the author wrote, and the phase
+    // would then be refused at run time for a reason invisible in the document.
+    const text = serializePhaseDocument(
+      documentFromPhaseDefinition({ ...MINIMAL, capabilities: [] })
+    ).replace('capabilities: ""', `capabilities: "${encoded}"`);
+    const parsed = parseDocumentText(text);
+    if (!parsed.ok) throw new Error('fixture did not parse');
+    const validated = validatePhaseDocument(parsed.node);
+    expect(validated.ok).toBe(false);
+    // Named, not merely refused: a refusal for some unrelated reason would pass
+    // an `ok === false` assertion while leaving this field unguarded.
+    if (validated.ok || validated.kind === 'document') throw new Error('expected field defects');
+    expect(validated.defects.map((d) => d.field)).toContain('capabilities');
+  });
+
+  it('has a separator that appears in no capability member', () => {
+    // The joined-scalar encoding has one precondition and this is it. A member
+    // containing the separator would split into fragments on read: the export
+    // would refuse to import, and the format would be broken by a change made
+    // three modules away with nothing here to notice. Fails closed rather than
+    // wide, which is why it is a gate and not a defect — but an UNSTATED
+    // precondition is the shape this round exists to refuse, so it is stated.
+    for (const capability of ALL_PHASE_CAPABILITIES) {
+      expect(capability).not.toContain(CAPABILITY_SEPARATOR);
+    }
+  });
+
   it('is the catalog authored set minus the storage key', () => {
     const authored = new Set(AUTHORED_PHASE_FIELDS);
     // `id` is the legacy storage key, not a portable one; every other authored
@@ -184,5 +347,89 @@ describe('phase-yaml-mapper — the format stays closed (T020, SC-008)', () => {
     for (const field of ['sideEffects', 'evidencePolicy']) {
       expect(PORTABLE_PHASE_FIELDS.has(field)).toBe(true);
     }
+  });
+});
+
+// Feature 254 (S-T5, contract S7, data-model §3; FR-005, SC-002) — the capability list is bounded
+// before any per-member work.
+//
+// The vocabulary has four members, so a list of more than four always holds an unknown member or a
+// repeat. Both checks were quadratic in the list (`filter` with `indexOf`), and the list is operator
+// input. The YAML reader now counts members first and refuses a list over the vocabulary as
+// `too-many-members`, without looking up a single member. The definition-side validator applies the
+// same rule (tests/unit/config/process-definition-validator.test.ts), and tests/parity/
+// phase-yaml-definition-parity.test.ts holds the two to the same code.
+describe('Phase capabilities are bounded before per-member work (S-T5, FR-005)', () => {
+  const TOO_MANY_MESSAGE = 'Phase capabilities list at most 4 members';
+
+  /** Validate a document whose `capabilities` scalar is exactly `encoded`. */
+  function capabilityDefects(encoded: string) {
+    const text = serializePhaseDocument(
+      documentFromPhaseDefinition({ ...MINIMAL, capabilities: [] })
+    ).replace('capabilities: ""', `capabilities: "${encoded}"`);
+    const parsed = parseDocumentText(text);
+    if (!parsed.ok) throw new Error('fixture did not parse');
+    const validated = validatePhaseDocument(parsed.node);
+    if (validated.ok) return [];
+    if (validated.kind === 'document') throw new Error('expected field defects');
+    return validated.defects.filter((d) => d.field === 'capabilities');
+  }
+
+  it('accepts the empty set with no capability defect', () => {
+    expect(capabilityDefects('')).toEqual([]);
+  });
+
+  it('accepts the four distinct known members', () => {
+    expect(capabilityDefects(ALL_PHASE_CAPABILITIES.join(','))).toEqual([]);
+  });
+
+  it('refuses five members with one repeat as too-many-members, with the stated message', () => {
+    const encoded = [...ALL_PHASE_CAPABILITIES, ALL_PHASE_CAPABILITIES[0]].join(',');
+    const defects = capabilityDefects(encoded);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({
+      field: 'capabilities',
+      code: 'too-many-members',
+      message: TOO_MANY_MESSAGE
+    });
+  });
+
+  const tenThousand = Array.from({ length: 10_000 }, () => ALL_PHASE_CAPABILITIES[0]).join(',');
+
+  it('refuses 10,000 members as too-many-members', () => {
+    const defects = capabilityDefects(tenThousand);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({ field: 'capabilities', code: 'too-many-members' });
+  });
+
+  it('refuses 10,000 members without looking up a single member', () => {
+    capabilitySpy.mockClear();
+    capabilityDefects(tenThousand);
+    expect(capabilitySpy).toHaveBeenCalledTimes(0);
+  });
+
+  it('still looks members up within the bound (control: the spy sees a four-member list)', () => {
+    capabilitySpy.mockClear();
+    capabilityDefects(ALL_PHASE_CAPABILITIES.join(','));
+    expect(capabilitySpy.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('keeps invalid-enum for four members with one unknown', () => {
+    const encoded = [...ALL_PHASE_CAPABILITIES.slice(0, 3), 'teleport'].join(',');
+    const defects = capabilityDefects(encoded);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({ code: 'invalid-enum' });
+  });
+
+  it('keeps duplicate-member for four known members with one repeated', () => {
+    const encoded = [
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[1],
+      ALL_PHASE_CAPABILITIES[2]
+    ].join(',');
+    const defects = capabilityDefects(encoded);
+    expect(defects).toHaveLength(1);
+    expect(defects[0]).toMatchObject({ code: 'duplicate-member' });
   });
 });

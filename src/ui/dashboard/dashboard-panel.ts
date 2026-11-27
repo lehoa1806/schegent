@@ -4,17 +4,22 @@ import type { SanitizedLogger } from '../../lib/logger';
 import type { ProjectorHandle } from '../sidebar/projector-handle';
 import type { InboundDispatch } from '../sidebar/sidebar-view-provider';
 import type { WorkflowSnapshot } from '../sidebar/snapshot';
-import { STATE_SNAPSHOT } from '../sidebar/messages';
-import type { PhaseLogEntryPushMessage } from '../../contracts/sidebar-ipc';
+import type { PhaseLogBatchPushMessage } from '../../contracts/sidebar-ipc';
+import { isSnapshotResyncRequest } from '../../contracts/snapshot-bounds';
+import { SnapshotTransport } from '../sidebar/snapshot-transport';
 import { validateInboundMessage } from '../sidebar/ipc-validator';
 import { generateNonce } from '../sidebar/csp';
 import { renderDashboardHtml } from './dashboard-html';
+import { errorMessage } from '../../lib/errors';
 
 export interface DashboardOpenOptions {
   readonly extensionRoot: string;
   readonly projector: ProjectorHandle;
   readonly dispatch: InboundDispatch;
   readonly logger: SanitizedLogger;
+  readonly onDispose?: () => void;
+  /** FR-R6-F07 — told the panel's visibility on open and on every view-state change. */
+  readonly onVisibilityChange?: (visible: boolean) => void;
 }
 
 export class DashboardPanel {
@@ -25,12 +30,21 @@ export class DashboardPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly logger: SanitizedLogger;
   private readonly dispatch: InboundDispatch;
+  private onDispose: (() => void) | undefined;
+  private onVisibilityChange: ((visible: boolean) => void) | undefined;
   private projectorSub: Disposable | null = null;
   private latestSnapshot: WorkflowSnapshot | null = null;
+  private readonly transport = new SnapshotTransport();
   private disposed = false;
 
   public static open(opts: DashboardOpenOptions): DashboardPanel {
     if (DashboardPanel.currentPanel && !DashboardPanel.currentPanel.disposed) {
+      if (opts.onDispose) {
+        DashboardPanel.currentPanel.onDispose = opts.onDispose;
+      }
+      if (opts.onVisibilityChange) {
+        DashboardPanel.currentPanel.onVisibilityChange = opts.onVisibilityChange;
+      }
       DashboardPanel.currentPanel.panel.reveal();
       return DashboardPanel.currentPanel;
     }
@@ -71,6 +85,8 @@ export class DashboardPanel {
     this.panel = panel;
     this.logger = opts.logger;
     this.dispatch = opts.dispatch;
+    this.onDispose = opts.onDispose;
+    this.onVisibilityChange = opts.onVisibilityChange;
 
     panel.webview.html = renderDashboardHtml({
       webview: panel.webview,
@@ -91,6 +107,10 @@ export class DashboardPanel {
     });
 
     panel.onDidChangeViewState(() => {
+      if (this.panel.visible) {
+        this.transport.forceFullResync();
+      }
+      this.reportVisibility();
       void this.postIfVisible();
     });
 
@@ -100,25 +120,39 @@ export class DashboardPanel {
       this.dispose({ skipPanelDispose: true });
     });
 
+    this.reportVisibility();
     void this.postIfVisible();
+  }
+
+  private reportVisibility(): void {
+    try {
+      this.onVisibilityChange?.(this.panel.visible);
+    } catch (err) {
+      this.logger.debug(`dashboard: visibility listener threw: ${errorMessage(err)}`);
+    }
   }
 
   private async postIfVisible(): Promise<void> {
     if (this.disposed) return;
     if (!this.panel.visible) return;
     if (!this.latestSnapshot) return;
+    const prepared = this.transport.preparePost(this.latestSnapshot);
     try {
-      await this.panel.webview.postMessage({
-        type: STATE_SNAPSHOT,
-        payload: this.latestSnapshot
-      });
+      const delivered = await this.panel.webview.postMessage(prepared.message);
+      if (delivered === false) prepared.markFailed();
     } catch (err) {
+      prepared.markFailed();
       this.logger.debug(`dashboard: postMessage failed: ${(err as Error).message}`);
     }
   }
 
   private handleInbound(raw: unknown): void {
     if (this.disposed) return;
+    if (isSnapshotResyncRequest(raw)) {
+      this.transport.forceFullResync();
+      void this.postIfVisible();
+      return;
+    }
     const result = validateInboundMessage(raw);
     if (!result.ok) {
       // Feature 020 BUG-001 T071: surface type + correlationId so a
@@ -126,8 +160,14 @@ export class DashboardPanel {
       // without source-level inspection. Both fields pass through
       // `SanitizedLogger` unchanged (command names and UUID
       // correlation ids are not secret).
-      this.logger.debug(
-        `dashboard: dropping invalid message (reason=${result.reason} type=${result.type ?? 'unknown'} correlationId=${result.correlationId ?? 'unknown'})`
+      //
+      // FR-R3-102 (FR-037) — raised from `debug` to `warn`, for the reason stated at
+      // the sibling site in `sidebar-view-provider.ts`: the default runtime log level
+      // is INFO, so a trust-boundary rejection at `debug` was invisible to an
+      // operator at default settings. The fields this comment already argued for were
+      // being assembled and then filtered out.
+      this.logger.warn(
+        `dashboard: rejected invalid message (reason=${result.reason} type=${result.type ?? 'unknown'} correlationId=${result.correlationId ?? 'unknown'})`
       );
       return;
     }
@@ -135,29 +175,42 @@ export class DashboardPanel {
   }
 
   /**
-   * Feature 020 — push a phase-log tail entry to the dashboard webview.
-   * The registry owns sanitization + truncation; the panel only relays.
-   * No-op when the panel is disposed (the tail registry tears down on
-   * webview-dispose so this is a safety net for late posts).
+   * FR-R6-F07 (FR-004, FR-005) — post one phase-log batch to the dashboard webview.
+   * Returns `false`, posting nothing, while the panel is hidden or disposed; the tail
+   * session then suspends and replays from its last acknowledged position on reveal.
+   * A post that fails after it was handed over is only logged: that batch is never
+   * acknowledged (a documented limit). Closing the panel triggers `onDispose`, which releases any
+   * dashboard-owned tail session with `webview-dispose`.
    */
-  public postPhaseLogEntry(envelope: PhaseLogEntryPushMessage): void {
-    if (this.disposed) return;
-    void this.panel.webview.postMessage(envelope).then(
+  public postPhaseLogBatch(message: PhaseLogBatchPushMessage): boolean {
+    if (this.disposed) return false;
+    if (!this.panel.visible) return false;
+    void this.panel.webview.postMessage(message).then(
       undefined,
       (err: Error) =>
         this.logger.debug(
           `dashboard: phase-log postMessage failed: ${err.message}`
         )
     );
+    return true;
   }
 
   public dispose(opts: { skipPanelDispose?: boolean } = {}): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.transport.reset();
     this.projectorSub?.dispose();
     this.projectorSub = null;
     if (DashboardPanel.currentPanel === this) {
       DashboardPanel.currentPanel = null;
+    }
+    const onDispose = this.onDispose;
+    this.onDispose = undefined;
+    this.onVisibilityChange = undefined;
+    try {
+      onDispose?.();
+    } catch {
+      /* disposal callbacks must not block panel teardown */
     }
     if (!opts.skipPanelDispose) {
       try {

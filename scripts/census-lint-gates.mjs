@@ -1,0 +1,206 @@
+#!/usr/bin/env node
+// FR-R3-121 (FR-020) — the lint-gate census generator.
+//
+// GENERATED, NEVER TYPED, for the reason `eslint-baseline.test.ts` already records
+// about its own derived record: a hand-maintained per-file list "would be wrong
+// within a day, and then the message it exists to produce would name the wrong
+// ones — which is worse than" not having it. 150 rows would be wrong faster.
+//
+// WHAT IS GENERATED: the row set, and each gate's invariant line, taken from its
+// top `describe` title — which is what the author already wrote to describe the
+// rule.
+//
+// WHAT IS NOT: the `Also held by`, `Verdict` and `Evidence` columns. Whether an
+// invariant is independently held is a judgement about the whole tree, and no
+// script can make it. `--check` therefore never rewrites those columns; it only
+// reports rows and files that do not correspond.
+//
+// RECURSIVE, deliberately. `tests/lint/` holds 145 gates at the top level and five
+// more under `gate-integrity/`. A flat glob misses those five and yields a census
+// that looks complete and is not — which is the failure mode this whole item is
+// about.
+
+import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { invokedAsScript } from './invoked-as-script.mjs';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const LINT_ROOT = resolve(REPO_ROOT, 'tests', 'lint');
+const CENSUS_PATH = resolve(REPO_ROOT, 'docs', 'development', 'lint-gate-census.md');
+/** Everything between these two markers is hand-written and is carried through. */
+const PROSE_START = '<!-- census:prose -->';
+const TABLE_HEADING = '## The census';
+
+export function gateFiles(root = LINT_ROOT) {
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (entry.name.endsWith('.test.ts')) out.push(full);
+    }
+  };
+  walk(root);
+  return out
+    .map((abs) => relative(LINT_ROOT, abs).split(/[/\\]/).join('/'))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+/** The gate's own words for what it refuses. */
+export function invariantOf(relPath, root = LINT_ROOT) {
+  const body = readFileSync(resolve(root, relPath), 'utf8');
+  const match = /^\s*describe\(\s*(['"`])([\s\S]*?)\1/m.exec(body);
+  if (match === null) return '(no describe title)';
+  return match[2].replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Hand-written prose between the generated header and the table.
+ *
+ * BUG FOUND BY USING IT (2026-08-27): the first version preserved the per-row
+ * hand columns and nothing else, so regenerating the census silently deleted the
+ * Method and Retirements sections — the entire analysis the census exists to
+ * carry. It rewrote 151 rows faithfully and threw away the only part a human
+ * wrote. Preserving rows but not reasoning is the worse half to keep.
+ */
+/**
+ * The hand-written prose in an already-rendered census, as `render` would take it
+ * back.
+ *
+ * SECOND BUG FOUND BY USING IT (2026-08-30, lifecycle round-check T1616): this
+ * read was not the inverse of the write. `render` emits
+ * `<!-- census:prose -->\n${prose}`, and this captured the slice *including* that
+ * newline — so re-rendering wrote it twice and every regeneration added one blank
+ * line. Two regenerations in one sitting is what exposed it; a single one looks
+ * like an ordinary diff. Exactly one leading newline is stripped, not
+ * `trimStart()`, because a prose block legitimately opens with a blank line and
+ * trimming would make the read lossy in the other direction.
+ */
+export function censusProseOf(body) {
+  const start = body.indexOf(PROSE_START);
+  const end = body.indexOf(TABLE_HEADING);
+  if (start === -1 || end === -1 || end < start) return '';
+  return body.slice(start + PROSE_START.length, end).replace(/^\n/, '');
+}
+
+export function readCensusProse(path = CENSUS_PATH) {
+  if (!existsSync(path)) return '';
+  return censusProseOf(readFileSync(path, 'utf8'));
+}
+
+/** Rows already written, keyed by gate path, so hand-written columns survive. */
+export function readCensusRows(path = CENSUS_PATH) {
+  if (!existsSync(path)) return new Map();
+  const rows = new Map();
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const m = /^\|\s*`([^`]+)`\s*\|(.*)\|\s*$/.exec(line);
+    if (m === null) continue;
+    const cells = m[2].split('|').map((c) => c.trim());
+    rows.set(m[1], {
+      invariant: cells[0] ?? '',
+      alsoHeldBy: cells[1] ?? '—',
+      verdict: cells[2] ?? 'unique',
+      evidence: cells[3] ?? ''
+    });
+  }
+  return rows;
+}
+
+export function reconcile({ files, rows }) {
+  const fileSet = new Set(files);
+  const rowSet = new Set(rows.keys());
+  return {
+    missingRows: files.filter((f) => !rowSet.has(f)),
+    orphanRows: [...rowSet].filter((r) => !fileSet.has(r))
+  };
+}
+
+export function render(files, rows, prose) {
+  const verdictCount = (v) =>
+    files.filter((f) => (rows.get(f)?.verdict ?? 'unique') === v).length;
+
+  // FR-R3-136 — the date was the literal '2026-08-27' in all four figure rows,
+  // beside four values this function recomputes on every run. Adding one gate on
+  // 2026-08-28 therefore published a fresh count under a stale date: the number
+  // was derived, the date beside it was stated, and the two disagreed. All four
+  // figures are counts over the row set at generation time, so all four carry the
+  // generation date. The ASSIGNMENT date of the hand verdicts is a different fact
+  // and is recorded where it belongs, in the Method section's own dateline.
+  const today = new Date().toISOString().slice(0, 10);
+
+  const head = `# Lint gate census
+
+**Generated by \`scripts/census-lint-gates.mjs\`. Do not hand-edit the first two columns.**
+The **Also held by**, **Verdict** and **Evidence** columns are written by hand and are
+preserved across regeneration — whether an invariant is independently held is a
+judgement about the whole tree, and no script can make it.
+
+**Method** (FR-R3-121 / FR-025): every \`*.test.ts\` under \`repo/tests/lint/\`,
+**recursively**, one row each. The invariant line is the gate's own top-level
+\`describe\` title, which is what its author already wrote to describe the rule. A flat
+glob would miss \`gate-integrity/\` and produce a census that looks complete and is not.
+
+**Retirement rule** (FR-021): a gate may be retired only when **Also held by** names a
+specific control — a type that makes the violation unrepresentable, a generated contract
+that would fail to regenerate, a compiler flag under the strictness ratchet, or a named
+sibling gate refusing the same shape. *Seems covered*, *unlikely now* and *the code
+moved* are not successors. **Zero retirements is a valid outcome**, and \`FR-R3-121\` §5
+predicted it: its author sampled the set and found every gate well motivated.
+
+| Figure | Value | Date | Method |
+|---|---|---|---|
+| Gate files | **${files.length}** | ${today} | \`*.test.ts\` under \`tests/lint/\` recursively |
+| Marked \`unique\` | ${verdictCount('unique')} | ${today} | hand verdict |
+| Marked \`partially redundant\` | ${verdictCount('partially redundant')} | ${today} | hand verdict |
+| Marked \`redundant\` | ${verdictCount('redundant')} | ${today} | hand verdict |
+
+<!-- census:prose -->
+${prose}## The census
+
+| Gate | Invariant | Also held by | Verdict | Evidence |
+|---|---|---|---|---|
+`;
+  const body = files
+    .map((f) => {
+      const row = rows.get(f);
+      const invariant = (row?.invariant && row.invariant !== '' ? row.invariant : invariantOf(f))
+        .replace(/\|/g, '\\|');
+      return `| \`${f}\` | ${invariant} | ${row?.alsoHeldBy ?? '—'} | ${row?.verdict ?? 'unique'} | ${row?.evidence ?? '—'} |`;
+    })
+    .join('\n');
+  return `${head}${body}\n`;
+}
+
+function main() {
+  const check = process.argv.includes('--check');
+  const files = gateFiles();
+  const rows = readCensusRows();
+  const { missingRows, orphanRows } = reconcile({ files, rows });
+
+  if (check) {
+    if (missingRows.length === 0 && orphanRows.length === 0) {
+      console.log(`lint-gate census: ${files.length} gate(s), ${rows.size} row(s), in agreement.`);
+      return;
+    }
+    console.error('lint-gate census: OUT OF DATE.');
+    for (const f of missingRows) console.error(`  gate with no census row: ${f}`);
+    for (const r of orphanRows) console.error(`  census row with no gate:  ${r}`);
+    console.error('\n  Run `node scripts/census-lint-gates.mjs` and write the verdict columns.');
+    process.exitCode = 1;
+    return;
+  }
+
+  writeFileSync(CENSUS_PATH, render(files, rows, readCensusProse()), 'utf8');
+  console.log(
+    `lint-gate census: wrote ${files.length} row(s) to ${relative(REPO_ROOT, CENSUS_PATH)}` +
+      `${missingRows.length > 0 ? ` — ${missingRows.length} new row(s) need verdicts` : ''}.`
+  );
+}
+
+if (invokedAsScript(import.meta.url)) {
+  main();
+}

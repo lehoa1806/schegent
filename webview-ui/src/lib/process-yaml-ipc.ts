@@ -9,12 +9,13 @@
 import { CMD_EXPORT_PROCESS_YAML, CMD_PREFLIGHT_PROCESS_YAML } from './messages';
 import type {
   ExportProcessYamlRequest,
-  PipelineExportInclusion,
   PreflightProcessYamlResult,
   WorkflowExportInclusion
 } from './messages';
+import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from './boundary-refusal-text';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
 import { postCommand, type PostCommandResult } from './vscode-api';
-import { snapshotStore } from './snapshot-store.svelte';
+import type { AckResult } from './snapshot-store.svelte';
 
 /**
  * A liveness backstop, not a latency budget — which is why it is minutes where
@@ -49,32 +50,12 @@ export function exportPhaseYaml(resourceId: string): PostCommandResult {
 }
 
 /**
- * Ask the host to export one Pipeline as a portable package document.
- *
- * `inclusion` is the operator's choice and travels with the request rather than
- * being inferred host-side: the same Pipeline is legitimately exported both ways
- * (FR-012), and only the operator knows which the recipient needs.
- */
-export function exportPipelineYaml(
-  resourceId: string,
-  inclusion: PipelineExportInclusion
-): PostCommandResult {
-  const request: ExportProcessYamlRequest = {
-    resourceKind: 'pipeline',
-    resourceId,
-    inclusion
-  };
-  return postCommand(CMD_EXPORT_PROCESS_YAML, request);
-}
-
-/**
  * Ask the host to export one Workflow as a portable package document.
  *
- * `inclusion` travels with the request for the same reason it does for a Pipeline:
- * the same Workflow is legitimately exported at more than one depth, and only the
- * operator knows how much the recipient already has. Its union is the Workflow's
- * own — three depths rather than two — because a Workflow has two layers of
- * dependency below it, not one.
+ * `inclusion` is the operator's choice and travels with the request rather than
+ * being inferred host-side: the same Workflow is legitimately exported as
+ * references-only or with its full transitive closure of child Workflows and
+ * Phases, and only the operator knows how much the recipient already has.
  */
 export function exportWorkflowYaml(
   resourceId: string,
@@ -144,42 +125,37 @@ function asPreflightResult(value: unknown): PreflightProcessYamlResult | null {
  * envelope through `setHostTransport`, which is the transport-level injection
  * point built for exactly this, and `postCommand` stays the only poster.
  */
-export function preflightProcessYaml(): Promise<PreflightProcessYamlResult> {
-  return new Promise<PreflightProcessYamlResult>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: PreflightProcessYamlResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // unsubscribe errors must not leak; the listener is one-shot.
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const { correlationId } = postCommand(CMD_PREFLIGHT_PROCESS_YAML, {});
-
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      const result = asPreflightResult(ack.result);
-      finalise(
-        result ?? { outcome: 'failed', message: 'The host did not report a usable result.' }
-      );
-    });
-
-    timer = setTimeout(() => {
-      finalise({ outcome: 'failed', message: 'The host did not respond.' });
-    }, ACK_TIMEOUT_MS);
-  });
+export function preflightProcessYaml(
+  options: IntentWaitOptions<PreflightProcessYamlResult> = {}
+): Promise<PreflightProcessYamlResult> {
+  // FR-R4-F05 (I4, I7) — through the intent ledger, with the five-minute wait kept: the host
+  // opens its own dialog, and a second preflight while the first is unresolved is the same
+  // intent, so the host runs one dialog. A router refusal carries a `reason` and no `result`.
+  const toResult = (ack: AckResult): PreflightProcessYamlResult => {
+    const result = asPreflightResult(ack.result);
+    if (result === null && ack.status === 'rejected' && ack.reason !== undefined) {
+      // FR-R4-F05 (O1, O7) — the router's gate refuses a preflight with a `reason` and no
+      // `result`, which used to read as "did not report a usable result". A refusal is said as
+      // the shared boundary text.
+      return { outcome: 'failed', message: boundaryRefusalText(ack.reason) };
+    }
+    return result ?? { outcome: 'failed', message: 'The host did not report a usable result.' };
+  };
+  const { onLateOutcome } = options;
+  return sendIntent({
+    type: CMD_PREFLIGHT_PROCESS_YAML,
+    payload: {},
+    post: (correlationId, payload) => {
+      postCommand(CMD_PREFLIGHT_PROCESS_YAML, payload, { correlationId });
+    },
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => onLateOutcome(toResult(ack)) })
+  }).then((result): PreflightProcessYamlResult =>
+    result.kind === 'ack'
+      ? toResult(result.ack)
+      : { outcome: 'failed', message: OUTCOME_NOT_YET_KNOWN_TEXT }
+  );
 }

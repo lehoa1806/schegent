@@ -90,14 +90,18 @@ export type ControlTarget =
  *
  * It is deliberately **not** `!isTerminalRunStatus`, which was the first repair
  * and was wrong. That oracle counts `failed`, and three suites said so
- * immediately: `skipPhase` on a failed phase wakes the pipeline, and
- * `retryPhaseNow` reports `not-pending-retry` rather than `no-active-run`. Both
- * controls exist largely for failed Runs, so excluding them refused the very
- * operations the operator reaches for after a failure. `workflow-run.ts` now
- * carries both predicates side by side with the distinction spelled out:
- * terminality is about releasing the lease and the session, operability is about
- * what the operator can still reach. A **paused** Run is neither finished nor
- * uncontrollable and stays resolvable, which is what resume depends on.
+ * immediately: `skipPhase` on a failed phase woke the pipeline, and
+ * `retryPhaseNow` reports `not-pending-retry` rather than `no-active-run`. (The
+ * first is history, kept as it was: three suites said so at the time. FR-R4-F20,
+ * 2026-10-29, later retired that half, and Skip of a failed Run is now refused
+ * `run-failed`.) The operability argument stands for the controls that remain:
+ * Retry, Restart and Resume exist largely for failed Runs, so excluding them
+ * refused the very operations the operator reaches for after a failure.
+ * `workflow-run.ts` now carries both predicates side by side with the
+ * distinction spelled out: terminality is about releasing the lease and the
+ * session, operability is about what the operator can still reach. A **paused**
+ * Run is neither finished nor uncontrollable and stays resolvable, which is what
+ * resume depends on.
  */
 export function resolveControlTarget(
   explicit: string | undefined,

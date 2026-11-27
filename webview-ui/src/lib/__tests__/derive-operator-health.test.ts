@@ -16,7 +16,8 @@ function item(overrides: Partial<QueueItem>): QueueItem {
     lastErrorSummary: null,
     pausedReason: null,
     currentPhase: null,
-    position: 0
+    position: 0,
+    phaseProgress: null
   };
 }
 
@@ -85,6 +86,28 @@ describe('deriveOperatorHealth', () => {
         }
       }))
     ).toMatchObject({ level: 'blocked', label: 'activity stalled' });
+  });
+
+  // FR-R3-208 (T1894): a holding Run is not a stalled one, so it does not block the health.
+  it('does not read holding activity as blocked or stalled (OH1)', () => {
+    const health = deriveOperatorHealth(snapshot({
+      liveActivity: {
+        summary: 'old',
+        category: 'warning',
+        lastEventAt: '2026-05-10T00:00:00.000Z',
+        freshness: 'holding',
+        staleSeconds: 120
+      },
+      queue: {
+        orderedItems: [],
+        inFlight: null,
+        pending: [],
+        recent: [],
+        paused: false
+      }
+    }));
+    expect(health.level).not.toBe('blocked');
+    expect(health.label).not.toBe('activity stalled');
   });
 
   it('surfaces scheduled delayed retries', () => {
@@ -188,7 +211,7 @@ describe('deriveOperatorHealth', () => {
     }));
     expect(health).toMatchObject({ level: 'attention', label: 'evidence degraded' });
     expect(health.title).toBe(
-      'raw transcript, runtime log and metrics rollup evidence is incomplete; workflow execution remains available'
+      'raw transcript, runtime log and metrics rollup evidence is incomplete; Workflow execution remains available'
     );
   });
 });

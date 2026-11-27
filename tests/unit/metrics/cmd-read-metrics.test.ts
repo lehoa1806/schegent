@@ -5,7 +5,7 @@
 // workspaceFolders[0] read from this file. The handler performs no
 // mutation of workflow/task/queue state — it only reads and acks.
 // metrics-view-opened must be appended at most once per session, with a
-// payload containing only `sessionId` (never a workspace path).
+// payload containing only `viewCorrelationId` (never a workspace path).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -146,6 +146,11 @@ describe('cmd-read-metrics handler (Feature 073, T003)', () => {
 
   it('performs no mutation of workflow/task/queue state — only reads and acks', async () => {
     const { ctx } = buildCtx();
+    // FR-R3-161 (T047) — `queueRemover` names a router capability the product no
+    // longer has. It stays: the assertion is that the key is ABSENT from the
+    // metrics handler's deps, so a key that can no longer exist still satisfies
+    // it, and dropping the entry would leave one fewer capability asserted
+    // absent. It now guards reintroduction rather than naming live code.
     const mutatingKeys = ['executeCommand', 'queueRemover', 'phaseLogService'];
     for (const key of mutatingKeys) {
       expect((ctx.deps as unknown as Record<string, unknown>)[key]).toBeUndefined();
@@ -153,7 +158,7 @@ describe('cmd-read-metrics handler (Feature 073, T003)', () => {
     await readMetricsHandler(ctx, makeCmd());
   });
 
-  it('appends metrics-view-opened exactly once per session, with a payload containing only sessionId', async () => {
+  it('appends metrics-view-opened exactly once per session, with a payload containing only viewCorrelationId', async () => {
     const state = { emitted: false };
     const { ctx, auditAppendSpy } = buildCtx({ metricsViewOpenedState: state });
     await readMetricsHandler(ctx, makeCmd());
@@ -162,7 +167,7 @@ describe('cmd-read-metrics handler (Feature 073, T003)', () => {
     expect(auditAppendSpy).toHaveBeenCalledTimes(1);
     const entry = auditAppendSpy.mock.calls[0][0];
     expect(entry.eventType).toBe('metrics-view-opened');
-    expect(entry.payload).toEqual({ sessionId: 'test-session-id' });
+    expect(entry.payload).toEqual({ viewCorrelationId: 'test-session-id' });
   });
 
   it('does not append metrics-view-opened again for a tracker that already recorded emission', async () => {

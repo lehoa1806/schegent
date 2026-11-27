@@ -21,7 +21,9 @@
 // once (FR-013) where a boolean predicate can only say no.
 
 import { PIPELINE_INPUT_PORT_TYPES } from '../pipeline-definitions';
+import type { RunRequest } from '../run-request';
 import { hasUnexpectedKeys } from './shared';
+import { runRequestBudgetViolations } from './run-request-budgets';
 
 const PORT_ID_MAX = 64;
 const PIPELINE_ID_MAX = 64;
@@ -109,22 +111,41 @@ function validOutput(value: unknown): boolean {
  * the wire is refused wherever it appears rather than quietly stripped at the
  * one depth someone remembered to check.
  */
-export function validRunRequest(value: unknown): boolean {
+function validTargetDefinitionIds(request: Record<string, unknown>): boolean {
+  const hasPipelineId = request.pipelineId !== undefined;
+  const hasWorkflowId = request.workflowId !== undefined;
+  if (!hasPipelineId && !hasWorkflowId) return false;
+  if (hasPipelineId && !boundedId(request.pipelineId, PIPELINE_ID_MAX)) return false;
+  if (hasWorkflowId && !boundedId(request.workflowId, PIPELINE_ID_MAX)) return false;
+  if (request.entryNodeId !== undefined && !boundedId(request.entryNodeId, PIPELINE_ID_MAX)) {
+    return false;
+  }
+  return true;
+}
+
+export function validRunRequest(value: unknown): value is RunRequest {
   const request = record(value);
   return request !== null
     && !hasUnexpectedKeys(request, [
       'pipelineId',
+      'workflowId',
+      'entryNodeId',
       'inputs',
       'supplemental',
       'outputs',
       'instructions'
     ])
-    && boundedId(request.pipelineId, PIPELINE_ID_MAX)
+    && validTargetDefinitionIds(request)
     && Array.isArray(request.inputs)
     && request.inputs.every(validInput)
     && Array.isArray(request.supplemental)
     && request.supplemental.every(validSupplemental)
     && Array.isArray(request.outputs)
     && request.outputs.every(validOutput)
-    && (request.instructions === undefined || typeof request.instructions === 'string');
+    && (request.instructions === undefined || typeof request.instructions === 'string')
+    // FR-R3-057 — the same budgets, at the wire. The field validator reports
+    // them as typed errors for the webview; this refuses them outright, because
+    // a payload this large should not reach the code that reports on it. One
+    // rule, two consumers -- the principle this file's own header states.
+    && runRequestBudgetViolations(request as { readonly inputs?: readonly unknown[] }).length === 0;
 }

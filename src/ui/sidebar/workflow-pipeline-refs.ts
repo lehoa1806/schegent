@@ -22,10 +22,18 @@
 //     removing the catalog source can no longer reach it;
 //   * it reached a terminal status — it will never resolve the Pipeline again.
 //
-// The two are not the same test. `QueueManager.cancel()` acts only on a
-// *pending* request and leaves `runId` null, so a canceled Workflow passes the
-// started check; counting it would block a removal nothing is waiting on. A
-// request that pins no `pipelineId` is never a consumer either.
+// The two are not the same test. A request cancelled before it started keeps a
+// null `runId`, so it passes the started check; counting it would block a
+// removal nothing is waiting on. A request that pins no `pipelineId` is never a
+// consumer either.
+//
+// FR-R3-161 (T032a) — 2026-09-04. That sentence used to name the queue
+// manager's own `cancel()` as the reason the `runId` is null. That routine is
+// gone; the reason is not. `finish(id, 'canceled')` from `pending` leaves the
+// `runId` exactly as it found it, and a pending row has none, so the case this
+// paragraph exists for is unchanged. Restated against the surviving route
+// rather than deleted, because the argument is what a reader needs and nothing
+// here would have failed if it had simply gone stale.
 
 import type { FeatureRequest, FeatureRequestStatus } from '../../queue/feature-request';
 import type { WorkflowRunRequestPipelineReference } from './commands/router-types';

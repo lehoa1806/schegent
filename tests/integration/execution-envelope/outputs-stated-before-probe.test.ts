@@ -20,7 +20,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import {
   REPORT_TARGET,
   SUMMARY_TARGET,

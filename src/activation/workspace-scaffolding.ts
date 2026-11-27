@@ -1,3 +1,8 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// A `statSync`, a log line and a notification. It reports that `.specify/` is
+// absent and deliberately does not create it — the header below says why the
+// warning cannot refuse anything either.
+
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 

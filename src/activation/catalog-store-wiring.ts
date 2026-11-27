@@ -1,3 +1,12 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT, AND ALREADY GATED
+// BY AN OLDER CONTROL.
+// The store's writes are methods the save router calls, and every `CMD_SAVE_*` /
+// `CMD_PUBLISH_*` id it serves is in `MUTATING_COMMAND_TYPES`. Feature 099 got
+// there first from the other direction: `isCatalogActivationTrusted()` below
+// returns `vscode.workspace.isTrusted` and `createHostCatalogStore` returns
+// `null` while untrusted, so an untrusted window has no store to write with. That
+// is the one place this feature found a trust gate it did not have to add.
+
 // Feature 099 (FR-R3-015) T493 — the store's four ports, built once for the host.
 //
 // This is the only module that pairs the store with VS Code. It holds the
@@ -21,7 +30,12 @@ import {
   type RunVersionCarrier
 } from '../catalog';
 import { createDefinitionSemantics } from '../config/definition-semantics';
-import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../lib/catalog-fs-adapter';
+import { CATALOG_DIRECTORY_SEGMENTS, createCatalogFsAdapter } from '../host-services/catalog-fs-adapter';
+import type { SanitizedLogger } from '../lib/logger';
+import {
+  createSwitchableCatalogFsAdapter,
+  type SwitchableCatalogFsAdapter
+} from '../services/sqlite-store';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
 
 /** Epoch milliseconds, the store's one time representation (FR-021a). */
@@ -77,14 +91,40 @@ export function isCatalogActivationTrusted(): boolean {
  *                       passes `retainedHistoryPlans(historyStore.list())`, and
  *                       the `list()` belongs inside the thunk — hoisting it out
  *                       is the smallest cache there is, and FR-042 forbids it.
+ * @param logger Feature 217 (FR-003) — where the store's filesystem says, once
+ *                       and path-free, what narrowing its directories and files
+ *                       found. Activation passes its logger; a caller that omits
+ *                       it is told nothing.
+ * @param disposables Feature 254 (FR-038, TA7) — where the claim on the store root
+ *                       is released. The store root is claimed for this host while
+ *                       the store lives: a second call for the same root returns
+ *                       `null` with one path-free warning, because two stores on one
+ *                       directory are not ordered by anything (the manifest is
+ *                       last-writer-wins across them). Activation passes the
+ *                       session's `disposables`, which `closeStage2Resources`
+ *                       disposes, so a re-activated Stage 2 claims again. A caller
+ *                       that omits it holds the claim for the life of the host, which
+ *                       is why every caller that builds more than one store for a
+ *                       root passes it. No claim is made in an untrusted workspace or
+ *                       with no folder open: there is no directory to claim.
  */
 export function createHostCatalogStore(
   enumeratePlans: () => Iterable<RunVersionCarrier> = () => [],
-  enumerateRetained: () => Iterable<RunVersionCarrier> = () => []
+  enumerateRetained: () => Iterable<RunVersionCarrier> = () => [],
+  logger?: Pick<SanitizedLogger, 'warn'>,
+  disposables?: vscode.Disposable[],
+  onSwitchableFs?: (fs: SwitchableCatalogFsAdapter) => void
 ): CatalogStore | null {
   if (!isCatalogActivationTrusted()) return null;
+  const anchor = catalogStoreAnchor();
+  if (anchor !== null && !claimStoreRoot(anchor.storeRoot, logger, disposables)) return null;
+  const switchableFs = createSwitchableCatalogFsAdapter(
+    createCatalogFsAdapter(anchor, logger),
+    () => anchor !== null
+  );
+  onSwitchableFs?.(switchableFs);
   return createCatalogStore({
-    fs: createCatalogFsAdapter(catalogStoreRoot()),
+    fs: switchableFs,
     clock: systemClock,
     digest: nodeDigest,
     provenance: createQueueRunProvenance(enumeratePlans, enumerateRetained)
@@ -92,16 +132,56 @@ export function createHostCatalogStore(
 }
 
 /**
- * The store root as an absolute path, or `null` with no workspace folder open.
+ * The store roots a live host store holds, for this host (feature 254, FR-038).
+ *
+ * In memory, and nothing else: no lock file and no lock directory (FR-038). It orders the stores THIS host
+ * builds; it cannot order another process, which is why the single-writer precondition is also written in
+ * `docs/architecture/durability-decision.md`. `createCatalogStore` itself is not claimed: the test
+ * fixtures build it directly to model two windows.
+ */
+const claimedStoreRoots = new Set<string>();
+
+/** Claim `storeRoot`, or say once, without a path, that it is held. Returns whether the claim was made. */
+function claimStoreRoot(
+  storeRoot: string,
+  logger: Pick<SanitizedLogger, 'warn'> | undefined,
+  disposables: vscode.Disposable[] | undefined
+): boolean {
+  if (claimedStoreRoots.has(storeRoot)) {
+    logger?.warn('catalog store: a store is already open on this catalog directory, so this one was not created');
+    return false;
+  }
+  claimedStoreRoots.add(storeRoot);
+  // Released once: a second dispose of an old claim's Disposable must not free a claim made after it.
+  let held = true;
+  disposables?.push({
+    dispose: () => {
+      if (!held) return;
+      held = false;
+      claimedStoreRoots.delete(storeRoot);
+    }
+  });
+  return true;
+}
+
+/**
+ * The workspace root and the store root beneath it, or `null` with no
+ * workspace folder open.
  *
  * The one place in the feature where a workspace root and the store's segments
  * meet, and it hands the result straight to the fs adapter — which is the one
- * place that keeps it (FR-061).
+ * place that keeps it (FR-061). FR-R3-069 — both roles travel separately: the
+ * workspace root is the trusted anchor judgments resolve against, the store
+ * root only composes paths, so a symlinked `.schegent`/`catalog` in a cloned
+ * checkout refuses instead of becoming its own containment boundary.
  */
-function catalogStoreRoot(): string | null {
+function catalogStoreAnchor(): { workspaceRoot: string; storeRoot: string } | null {
   const folder = getCanonicalWorkspaceRoot();
   if (folder === undefined) return null;
-  return vscode.Uri.joinPath(folder.uri, ...CATALOG_DIRECTORY_SEGMENTS).fsPath;
+  return {
+    workspaceRoot: folder.uri.fsPath,
+    storeRoot: vscode.Uri.joinPath(folder.uri, ...CATALOG_DIRECTORY_SEGMENTS).fsPath
+  };
 }
 
 /**
@@ -124,16 +204,16 @@ function catalogStoreRoot(): string | null {
  * wired together and never apart.
  *
  * @param store             The host store, or `null` in an untrusted workspace.
- * @param defaultPipelineId Reads `schegent.defaultPipelineId` fresh per call, so
+ * @param defaultWorkflowId Reads the resolved default Workflow ID fresh per call, so
  *                          the FR-059 advisory cannot go stale (see
- *                          `DefinitionSemanticsOptions`).
+ *                          `DefinitionSemanticsOptions`, Feature 285).
  */
 export function createHostCatalogLifecycle(
   store: CatalogStore | null,
-  defaultPipelineId: () => string
+  defaultWorkflowId: () => string
 ): CatalogLifecycleOps | null {
   if (store === null) return null;
-  const semantics = createDefinitionSemantics({ defaultPipelineId });
+  const semantics = createDefinitionSemantics({ defaultWorkflowId });
   const service = createLifecycleService({ store, semantics });
   return {
     ...service,

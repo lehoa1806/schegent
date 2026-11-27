@@ -1,6 +1,9 @@
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
-import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { PhaseCapability } from '../contracts/phase-capabilities';
+import type { ResultContract } from '../contracts/decision-results';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { emptyBackendModels, mapBackends, type BackendMap } from '../contracts/backend-descriptors';
 // One declaration serves the authored contract and the runtime shape. These were
 // duplicated string unions here; a Phase now declares its own containment class,
 // so a second copy would let the document field and the runtime field drift with
@@ -9,18 +12,32 @@ import { SUPPORTED_BACKENDS, isBackendRunnerKind, type BackendRunnerKind } from 
 export {
   PHASE_SIDE_EFFECTS,
   PHASE_EVIDENCE_POLICIES,
+  EVIDENCE_POLICY_ORIGINS,
+  RETRY_CAP_OUTCOMES,
   type PhaseSideEffects,
-  type PhaseEvidencePolicy
+  type PhaseEvidencePolicy,
+  type EvidencePolicyOrigin,
+  type RetryCapOutcome
 } from '../contracts/process-definitions';
-import type { PhaseSideEffects, PhaseEvidencePolicy } from '../contracts/process-definitions';
-import type {
-  PhaseBinding,
-  PipelineExecutionDefaults,
-  PipelineInputPort,
-  PipelineOutputPort
-} from '../contracts/pipeline-definitions';
+import {
+  RETRY_CAP_OUTCOMES,
+  type PhaseSideEffects,
+  type PhaseEvidencePolicy,
+  type EvidencePolicyOrigin,
+  type PhaseHostVerification,
+  type NativeReviewKind,
+  type RetryCapOutcome
+} from '../contracts/process-definitions';
 import { AUTHORED_PHASE_FIELDS, validatePhaseDefinition } from './process-definition-validator';
-import { validatePipelineDefinition } from './pipeline-definition-validator';
+import { AUTHORED_PIPELINE_FIELDS, validatePipelineDefinition } from './pipeline-definition-validator';
+
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports it instead of restating it. Re-exported unchanged.
+import type { PipelineDef } from '../contracts/snapshot-vocabulary';
+import type { WorkflowDefinition } from '../contracts/workflow-definitions';
+
+export type { PipelineDef };
+
 export interface PhaseDef {
   readonly id: string;
   readonly name: string;
@@ -31,43 +48,73 @@ export interface PhaseDef {
   readonly model?: string;
   readonly effort?: Effort;
   readonly timeoutSeconds?: number;
+  /** FR-R3-112 — per-phase spend bound in USD; see `PhaseDefinitionBase`. */
+  readonly spendBoundUsd?: number;
+  /** FR-R3-112 — per-phase spend bound in tokens, for backends reporting no cost. */
+  readonly spendBoundTokens?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
   /**
    * Advance instead of failing when `retryCondition` is still truthy at the
-   * iteration cap. Overrides `schegent.retry.forceContinueOnCap`; see
-   * `PhaseDefLike.forceContinueOnRetryCap` in controller/phase.ts.
+   * iteration cap. Overrides `schegent.retry.forceContinueOnCap`.
+   *
+   * **Deprecated by FR-R3-157 in favour of `onRetryCap`, and still loaded** — a
+   * pipeline file carrying it keeps working unchanged, forever.
+   * `contracts/retry-cap-outcome.ts` is the only reader that decides from it.
    */
   readonly forceContinueOnRetryCap?: boolean;
+  /**
+   * FR-R3-157 — the three-valued outcome at the iteration cap, superseding the
+   * boolean above. Absent means the workspace default; absent everywhere means
+   * `'fail'`. See `RETRY_CAP_OUTCOMES` in `contracts/process-definitions.ts`.
+   */
+  readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: BackendRunnerKind;
   readonly sideEffects?: PhaseSideEffects; // Omission => `workspace` at the freeze.
   readonly evidencePolicy?: PhaseEvidencePolicy;
+  /**
+   * FR-R3-096 — where `evidencePolicy` came from. Written by the freeze, never
+   * authored: an operator document that set it would be forging its own consent.
+   * Absent means `'default'`, which is every snapshot taken before this field.
+   */
+  readonly evidencePolicyDeclaredAt?: EvidencePolicyOrigin;
+  /**
+   * FR-R3-117 — omission means the RESOLVED default (`exit-code` for a Phase whose
+   * resolved `sideEffects` is other than `'none'`, or which produces an output),
+   * not `model-token`. Explicit `'model-token'` is the opt-out.
+   */
+  readonly hostVerification?: PhaseHostVerification;
+  /**
+   * FR-R3-117 — where `hostVerification` came from. Written by the freeze, never
+   * authored, exactly as `evidencePolicyDeclaredAt` above. Absent means
+   * `'default'`, which is every snapshot taken before this field.
+   */
+  readonly hostVerificationDeclaredAt?: EvidencePolicyOrigin;
   readonly promptVersion?: string;
+  /**
+   * FR-R3-086 — what this phase's agent may do.
+   *
+   * **Omission means every capability**, which is the historical behaviour and
+   * the common case: the phase spawns with today's argv, byte for byte.
+   * Narrowing is opt-in, per phase, and is frozen into the Run's pipeline
+   * snapshot with the rest of the plan.
+   */
+  readonly capabilities?: readonly PhaseCapability[];
+  /** FR-R5-F24 (D2) — bounded typed result contract for this phase. */
+  readonly resultContract?: ResultContract;
+  readonly nativeReview?: NativeReviewKind;
 }
-// Feature 082 — the runtime Pipeline shape. `id`, `name`, and `phases` are the
-// legacy required trio; every contract field added by the Pipeline Builder is
-// optional and normalizes on parse so a row authored before those fields existed
-// keeps resolving without a rewrite (research R2).
-export interface PipelineDef {
-  readonly id: string;
-  readonly name: string;
-  readonly phases: readonly string[];
-  readonly description?: string;
-  readonly version?: number;
-  readonly inputs?: readonly PipelineInputPort[];
-  readonly outputs?: readonly PipelineOutputPort[];
-  readonly bindings?: readonly PhaseBinding[];
-  readonly executionDefaults?: PipelineExecutionDefaults;
-  readonly recommendedNext?: readonly string[];
-}
+
 export interface PipelineCatalog {
   readonly phases: readonly PhaseDef[];
   readonly pipelines: readonly PipelineDef[];
-  readonly models: Record<BackendRunnerKind, readonly string[]>;
+  readonly models: BackendMap<readonly string[]>;
   readonly defaultPipelineId: string;
   readonly phasesById: ReadonlyMap<string, PhaseDef>;
   readonly pipelinesById: ReadonlyMap<string, PipelineDef>;
+  readonly workflows?: readonly WorkflowDefinition[];
+  readonly workflowsById?: ReadonlyMap<string, WorkflowDefinition>;
 }
 export interface ValidationError {
   readonly source: 'phase' | 'pipeline' | 'defaultPipelineId';
@@ -130,18 +177,33 @@ export const ALLOWED_PHASE_FIELDS: ReadonlySet<string> = new Set(
   Array.from(AUTHORED_PHASE_FIELDS).filter((field) => field !== 'phaseId')
 );
 
-const ALLOWED_PIPELINE_FIELDS: ReadonlySet<string> = new Set([
-  'id',
-  'name',
-  'phases',
-  'description',
-  'version',
-  'inputs',
-  'outputs',
-  'bindings',
-  'executionDefaults',
-  'recommendedNext'
+/**
+ * The portable spellings of `id` and `phases`. A stored Pipeline row never carries
+ * either: `pipelineDefinitionToPipelineDef` normalizes both to the resolved names
+ * before `validateCatalog` sees the row.
+ */
+export const PORTABLE_ONLY_PIPELINE_FIELDS: ReadonlySet<string> = new Set([
+  'pipelineId',
+  'phaseIds'
 ]);
+
+/**
+ * The Pipeline counterpart of `ALLOWED_PHASE_FIELDS`, derived for the same reason.
+ *
+ * This was the hand-written literal the Phase set used to be, and it was correct
+ * only by coincidence of what had been authored so far — the two names it omitted
+ * happened to be exactly the portable spellings. The thirteenth authored Pipeline
+ * field would have been discarded here before `validatePipelineRaw` could check it,
+ * silently, which is precisely how the Phase filter lost `sideEffects` and
+ * `evidencePolicy`. Gated by `tests/unit/config/pipeline-field-parity.test.ts`.
+ */
+const ALLOWED_PIPELINE_FIELDS: ReadonlySet<string> = new Set(
+  Array.from(AUTHORED_PIPELINE_FIELDS).filter(
+    (field) => !PORTABLE_ONLY_PIPELINE_FIELDS.has(field)
+  )
+);
+
+export { ALLOWED_PIPELINE_FIELDS };
 
 export function isPhaseDef(value: unknown): value is PhaseDef {
   if (!value || typeof value !== 'object') return false;
@@ -164,6 +226,9 @@ export function isPhaseDef(value: unknown): value is PhaseDef {
     (v.isRequired === undefined || typeof v.isRequired === 'boolean') &&
     (v.forceContinueOnRetryCap === undefined ||
       typeof v.forceContinueOnRetryCap === 'boolean') &&
+    (v.onRetryCap === undefined ||
+      (typeof v.onRetryCap === 'string' &&
+        (RETRY_CAP_OUTCOMES as readonly string[]).includes(v.onRetryCap))) &&
     (v.runner === undefined || isBackendRunnerKind(v.runner))
   );
   return structurallyValid;
@@ -197,7 +262,7 @@ export function isPipelineDef(value: unknown): value is PipelineDef {
 }
 
 export interface RuntimePolicyInput {
-  readonly models?: Record<BackendRunnerKind, readonly string[]> | readonly string[]; // support migration from array
+  readonly models?: BackendMap<readonly string[]> | readonly string[]; // support migration from array
   readonly defaultPipelineId?: string;
 }
 
@@ -222,7 +287,7 @@ export function mergeRuntimePolicy(
   user: RuntimePolicyInput,
   workspace: RuntimePolicyInput
 ): {
-  models: Record<BackendRunnerKind, readonly string[]>;
+  models: BackendMap<readonly string[]>;
   defaultPipelineId: string;
 } {
   const modelsMap = new Map<BackendRunnerKind, Set<string>>();
@@ -231,16 +296,16 @@ export function mergeRuntimePolicy(
   for (const input of [workspace, user]) {
     if (!input.models) continue;
     if (Array.isArray(input.models)) {
-      let set = modelsMap.get('claude');
+      let set = modelsMap.get(DEFAULT_BACKEND);
       if (!set) {
         set = new Set<string>();
-        modelsMap.set('claude', set);
+        modelsMap.set(DEFAULT_BACKEND, set);
       }
       for (const m of input.models) set.add(m);
       continue;
     }
     for (const kind of SUPPORTED_BACKENDS) {
-      const arr = (input.models as Record<BackendRunnerKind, readonly string[]>)[kind];
+      const arr = (input.models as BackendMap<readonly string[]>)[kind];
       if (!arr) continue;
       let set = modelsMap.get(kind);
       if (!set) {
@@ -252,11 +317,7 @@ export function mergeRuntimePolicy(
   }
 
   return {
-    models: {
-      claude: Object.freeze(Array.from(modelsMap.get('claude') ?? [])),
-      codex: Object.freeze(Array.from(modelsMap.get('codex') ?? [])),
-      agy: Object.freeze(Array.from(modelsMap.get('agy') ?? []))
-    },
+    models: mapBackends((descriptor) => Object.freeze(Array.from(modelsMap.get(descriptor.kind) ?? []))),
     // Feature 098 (T081, FR-033) — no layer supplies a built-in default, so an
     // unconfigured host has none, and the empty string is how that is spelled.
     defaultPipelineId: workspace.defaultPipelineId ?? user.defaultPipelineId ?? ''
@@ -266,8 +327,9 @@ export function mergeRuntimePolicy(
 export function buildCatalog(
   phases: readonly PhaseDef[],
   pipelines: readonly PipelineDef[],
-  models: Record<BackendRunnerKind, readonly string[]>,
-  defaultPipelineId: string
+  models: BackendMap<readonly string[]>,
+  defaultPipelineId: string,
+  workflows: readonly WorkflowDefinition[] = []
 ): PipelineCatalog {
   const phasesById = new Map<string, PhaseDef>();
   const normalizedPhases = phases.map((phase) =>
@@ -280,13 +342,19 @@ export function buildCatalog(
   for (const pl of pipelines) {
     pipelinesById.set(pl.id, pl);
   }
+  const workflowsById = new Map<string, WorkflowDefinition>();
+  for (const wf of workflows) {
+    workflowsById.set(wf.workflowId, wf);
+  }
   return Object.freeze({
     phases: Object.freeze(normalizedPhases),
     pipelines: Object.freeze([...pipelines]),
     models: Object.freeze(models),
     defaultPipelineId,
     phasesById,
-    pipelinesById
+    pipelinesById,
+    workflows: Object.freeze([...workflows]),
+    workflowsById
   });
 }
 
@@ -306,7 +374,7 @@ export function buildCatalog(
 export const EMPTY_CATALOG: PipelineCatalog = buildCatalog(
   [],
   [],
-  { claude: [], codex: [], agy: [] },
+  emptyBackendModels(),
   ''
 );
 

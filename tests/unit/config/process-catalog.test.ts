@@ -195,7 +195,8 @@ describe('a workspace with no operator-authored settings has four empty catalogs
   // snapshot plus the two surviving settings keys answering `undefined`.
   const NO_SETTINGS: CatalogConfigReader = {
     getModels: () => undefined,
-    getDefaultPipelineId: () => undefined
+    getDefaultWorkflowId: () => undefined,
+    getDeprecatedDefaultPipelineId: () => undefined
   };
 
   it('resolves zero Phases and zero Pipelines, and names no default', () => {

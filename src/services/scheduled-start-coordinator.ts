@@ -133,6 +133,15 @@ export interface ScheduledStartCoordinatorDeps {
   // are retained so `QueueScheduleWatchdog` can retry the promotion once this
   // window is primary. The operator is NOT asked to reschedule.
   readonly isForeignLockHeld?: () => boolean;
+  /**
+   * FR-R3-070 (feature 152) — the authoritative fire-time predicate. The probe
+   * above answers "does someone ELSE hold the mirror?", which is false both for
+   * a primary window and for one whose fence lapsed after election; this one
+   * verifies the fenced record. Consulted at the point of promotion, in
+   * addition to the probe, exactly as the credit-watchdog sweep re-checks
+   * `hasPrimacy()` at fire time.
+   */
+  readonly hasPrimacy?: () => Promise<boolean>;
   // Feature 098 (T058, FR-031a) — the empty-catalog gate. A schedule that comes
   // due with nothing imported must reach the refusal a manual launch reaches,
   // rather than promoting the queue and failing somewhere inside the drain.
@@ -156,6 +165,7 @@ export class ScheduledStartCoordinator {
   private readonly onFire: ScheduledStartCoordinatorDeps['onFire'];
   private readonly onFiredObserver: ScheduledStartCoordinatorDeps['onFiredObserver'];
   private readonly isForeignLockHeldFn: (() => boolean) | undefined;
+  private readonly hasPrimacyFn: (() => Promise<boolean>) | undefined;
   private readonly emptyCatalogGate: EmptyCatalogGate | undefined;
   private readonly nowFn: () => number;
   private readonly setTimerFn: (fn: () => void, ms: number) => NodeJS.Timeout;
@@ -174,6 +184,7 @@ export class ScheduledStartCoordinator {
     this.onFire = deps.onFire;
     this.onFiredObserver = deps.onFiredObserver;
     this.isForeignLockHeldFn = deps.isForeignLockHeld;
+    this.hasPrimacyFn = deps.hasPrimacy;
     this.emptyCatalogGate = deps.emptyCatalogGate;
     this.nowFn = deps.now ?? (() => Date.now());
     this.setTimerFn = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
@@ -270,7 +281,14 @@ export class ScheduledStartCoordinator {
     // also holds the pairing invariant — a persisted `scheduledStartAt` and
     // `queueLifecycle === 'idle-pending'` on the same entry — which clearing
     // one half quietly broke in the other direction.
-    if (this.isForeignLockHeldFn?.() === true) {
+    // FR-R3-070 (feature 152) — the probe first (cheap, catches a live rival),
+    // then the authoritative predicate when one is wired: a window whose fence
+    // lapsed after election reads the probe as false and must still not
+    // promote. Same decline, same audit, same retention either way.
+    if (
+      this.isForeignLockHeldFn?.() === true ||
+      (this.hasPrimacyFn !== undefined && !(await this.hasPrimacyFn()))
+    ) {
       this.timers.delete(queueId);
       await this.appendAudit('scheduled-start-superseded', {
         queueId,
@@ -328,6 +346,25 @@ export class ScheduledStartCoordinator {
       const source = queueState.scheduledStartSource ?? 'migration-default';
       if (queueState.scheduledStartAt > this.nowFn()) {
         await this.arm(queueId, queueState.scheduledStartAt, source);
+        continue;
+      }
+      // FR-R3-070 (feature 152) — the same reasoning as the catalog gate below,
+      // one hazard earlier: this branch promotes without a timer ever firing,
+      // so the foreign-lock probe placed only in `fire()` would leave the
+      // restart path promoting under a competing window. Same decline, same
+      // audit, same retention as fire()'s lock-unavailable arm; ordered before
+      // the catalog gate so a blocked schedule never reports the wrong cause.
+      if (
+        this.isForeignLockHeldFn?.() === true ||
+        (this.hasPrimacyFn !== undefined && !(await this.hasPrimacyFn()))
+      ) {
+        await this.appendAudit('scheduled-start-superseded', {
+          queueId,
+          scheduledStartAt: queueState.scheduledStartAt,
+          scheduledStartSource: source,
+          superseder: 'lock-unavailable' as SchedulerSuperseder,
+          transitionReason: 'superseded'
+        });
         continue;
       }
       // Feature 098 (T058, FR-031a) — the same gate. This branch promotes

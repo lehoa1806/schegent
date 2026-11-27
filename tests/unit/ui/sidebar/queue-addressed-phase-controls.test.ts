@@ -51,14 +51,14 @@ interface CapturedAck {
 
 /** Records the queue each PhaseOps entry point was handed, or `undefined`. */
 class RecordingPhaseOps {
-  skipCalls: Array<{ phaseId: string; queueId?: string }> = [];
-  disableCalls: Array<{ phaseId: string; queueId?: string }> = [];
-  enableCalls: Array<{ phaseId: string; queueId?: string }> = [];
-  setBreakpointCalls: Array<{ runId: string; phaseId: string; queueId?: string }> = [];
-  clearBreakpointCalls: Array<{ runId: string; phaseId: string; queueId?: string }> = [];
+  skipCalls: Array<{ runId: string; phaseId: string; queueId: string | undefined }> = [];
+  disableCalls: Array<{ phaseId: string; queueId: string | undefined }> = [];
+  enableCalls: Array<{ phaseId: string; queueId: string | undefined }> = [];
+  setBreakpointCalls: Array<{ runId: string; phaseId: string; queueId: string | undefined }> = [];
+  clearBreakpointCalls: Array<{ runId: string; phaseId: string; queueId: string | undefined }> = [];
 
-  async skipPhase(phaseId: string, queueId?: string): Promise<{ ok: boolean }> {
-    this.skipCalls.push({ phaseId, queueId });
+  async skipPhase(runId: string, phaseId: string, queueId?: string): Promise<{ ok: boolean }> {
+    this.skipCalls.push({ runId, phaseId, queueId });
     return { ok: true };
   }
   async disablePhase(phaseId: string, queueId?: string): Promise<{ ok: boolean }> {
@@ -94,12 +94,17 @@ function makeRouter(): {
   acks: CapturedAck[];
 } {
   const executeCommand = vi.fn();
-  executeCommand.mockResolvedValue(undefined);
+  // FR-R3-154 (T1645/T1646) — the palette-routed controls now return a
+  // `CommandOutcome` and the routes ACK it. `undefined` from this fake would
+  // model the Workspace Trust gate refusing, not a control that ran; the ACK
+  // assertions below are about addressing, so the fake says the control was
+  // accepted. `tests/unit/ui/sidebar/mutation-ack-truth.test.ts` owns the
+  // refusal and failure readings.
+  executeCommand.mockResolvedValue({ outcome: 'accepted' });
   const phaseOps = new RecordingPhaseOps();
   const acks: CapturedAck[] = [];
   const deps: RouterDeps = {
     executeCommand: executeCommand as unknown as RouterDeps['executeCommand'],
-    queueRemover: { remove: async () => true },
     phaseOps,
     isPrimary: () => true,
     isTrusted: () => true,
@@ -133,7 +138,7 @@ describe('T080 — lifecycle controls are queue-addressed end to end', () => {
       { type: CMD_RESUME_PHASE },
       { type: CMD_RETRY_PHASE_NOW },
       { type: CMD_RESTART_PHASE, payload: { phaseId: PHASE } },
-      { type: CMD_SKIP_PHASE, payload: { phaseId: PHASE } },
+      { type: CMD_SKIP_PHASE, payload: { runId: RUN, phaseId: PHASE } },
       { type: CMD_DISABLE_PHASE, payload: { phaseId: PHASE } },
       { type: CMD_ENABLE_PHASE, payload: { phaseId: PHASE } },
       { type: CMD_SET_PHASE_BREAKPOINT, payload: { runId: RUN, phaseId: PHASE } },
@@ -250,7 +255,7 @@ describe('T080 — lifecycle controls are queue-addressed end to end', () => {
         {
           type: CMD_SKIP_PHASE,
           correlationId: 'o1',
-          payload: { queueId: QUEUE, phaseId: PHASE }
+          payload: { queueId: QUEUE, runId: RUN, phaseId: PHASE }
         },
         built.acks
       );
@@ -291,7 +296,7 @@ describe('T080 — lifecycle controls are queue-addressed end to end', () => {
         built.acks
       );
 
-      expect(built.phaseOps.skipCalls).toEqual([{ phaseId: PHASE, queueId: QUEUE }]);
+      expect(built.phaseOps.skipCalls).toEqual([{ runId: RUN, phaseId: PHASE, queueId: QUEUE }]);
       expect(built.phaseOps.disableCalls).toEqual([{ phaseId: PHASE, queueId: QUEUE }]);
       expect(built.phaseOps.enableCalls).toEqual([{ phaseId: PHASE, queueId: QUEUE }]);
       expect(built.phaseOps.setBreakpointCalls).toEqual([
@@ -301,6 +306,35 @@ describe('T080 — lifecycle controls are queue-addressed end to end', () => {
         { runId: RUN, phaseId: PHASE, queueId: QUEUE }
       ]);
       expect(built.acks.every((a) => a.msg.status === 'accepted')).toBe(true);
+    });
+
+    // FR-R4-F20 (T6.4, contract C4) — the webview reads Skip's answer now, so a throw must reach it as
+    // a code. The router's own catch answers with the sanitized message as the reason; the five
+    // palette-routed lifecycle routes answer with `command-dispatch-failed`, and Skip's route does too.
+    // The message carries a path on purpose: it is what a real filesystem error looks like.
+    it('ACKs a Skip whose host call throws as command-dispatch-failed, never as the thrown message', async () => {
+      const THROWN = 'ENOENT: no such file /Users/operator/secret-workspace/state.json';
+      built.phaseOps.skipPhase = async () => {
+        throw new Error(THROWN);
+      };
+
+      await dispatch(
+        built.router,
+        {
+          type: CMD_SKIP_PHASE,
+          correlationId: 'o6',
+          payload: { queueId: QUEUE, runId: RUN, phaseId: PHASE }
+        },
+        built.acks
+      );
+
+      expect(built.acks).toHaveLength(1);
+      expect(built.acks[0]!.msg).toMatchObject({
+        status: 'rejected',
+        outcome: 'failed',
+        reason: 'command-dispatch-failed'
+      });
+      expect(JSON.stringify(built.acks[0]!.msg)).not.toContain('secret-workspace');
     });
   });
 });

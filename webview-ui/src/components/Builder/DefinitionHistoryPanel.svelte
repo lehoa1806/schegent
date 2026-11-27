@@ -17,20 +17,20 @@
   //
   // Text interpolation only, never Svelte's raw-HTML directive (FR-038): version
   // notes and definition bodies are operator-authored documents.
-  import type { CatalogKind } from '../../../../src/contracts/catalog-store';
-  import type { BuilderLifecycle } from '../../lib/snapshot-types';
-  import { readDefinitionVersion } from '../../lib/catalog-history-ipc';
-  import DefinitionActions from './DefinitionActions.svelte';
-  import { EM_DASH, formatDefinitionTimestamp } from './definition-row-state';
+  import type { CatalogKind } from "../../../../src/contracts/catalog-store";
+  import type { BuilderLifecycle } from "../../lib/snapshot-types";
+  import { readDefinitionVersion } from "../../lib/catalog-history-ipc";
+  import DefinitionActions from "./DefinitionActions.svelte";
+  import { EM_DASH, formatDefinitionTimestamp } from "./definition-row-state";
   import {
     describeReason,
     formatVersionBody,
     viewOfReadResult,
-    type VersionBodyView
-  } from './version-body-view';
+    type VersionBodyView,
+  } from "./version-body-view";
 
   interface Props {
-    kind: CatalogKind;
+    kind: CatalogKind | "pipeline";
     /** The definition whose history this is — the wire target and the test handle. */
     definitionId: string;
     /** What Restore's confirmations name. The id alone is not what the operator recognises. */
@@ -48,7 +48,7 @@
     definitionName,
     lifecycle,
     opener = null,
-    onclose
+    onclose,
   }: Props = $props();
 
   let selected = $state<string | null>(null);
@@ -67,8 +67,12 @@
   async function show(versionId: string): Promise<void> {
     const token = (issued += 1);
     selected = versionId;
-    view = { status: 'pending' };
-    const result = await readDefinitionVersion({ kind, id: definitionId, versionId });
+    view = { status: "pending" };
+    const result = await readDefinitionVersion({
+      kind: kind as CatalogKind,
+      id: definitionId,
+      versionId,
+    });
     // Superseded while in flight. Discarded, not merged — see above.
     if (token !== issued) return;
     view = viewOfReadResult(result);
@@ -86,7 +90,9 @@
     onclose();
   }
 
-  const bodyText = $derived(view?.status === 'ready' ? formatVersionBody(view.body) : null);
+  const bodyText = $derived(
+    view?.status === "ready" ? formatVersionBody(view.body) : null,
+  );
 </script>
 
 <!-- The id is the row's `aria-controls` target, so the toggle and the region it
@@ -100,14 +106,17 @@
     <h4 class="history-title">Version history</h4>
     <button
       type="button"
-      class="history-close"
+      class="btn btn-ghost btn-sm"
       data-testid="definition-history-close-{definitionId}"
       onclick={close}>Close</button
     >
   </header>
 
   {#if lifecycle.versions.length === 0}
-    <p class="history-empty" data-testid="definition-history-empty-{definitionId}">
+    <p
+      class="history-empty"
+      data-testid="definition-history-empty-{definitionId}"
+    >
       No versions yet.
     </p>
   {:else}
@@ -123,15 +132,17 @@
           <div class="entry-line">
             <span class="entry-version">{entry.versionId}</span>
             {#if entry.isActive}
+              <!-- The state chip the Phases list draws for an active definition. -->
               <span
-                class="entry-active"
+                class="chip s-ok"
                 data-testid="definition-history-active-{definitionId}-{entry.versionId}"
-                >Active</span
+                ><span class="dot" aria-hidden="true"></span>Active</span
               >
             {/if}
             <span class="entry-field">
               <span class="entry-label">Created</span>
-              <span data-testid="definition-history-created-{definitionId}-{entry.versionId}"
+              <span
+                data-testid="definition-history-created-{definitionId}-{entry.versionId}"
                 >{formatDefinitionTimestamp(entry.createdAt)}</span
               >
             </span>
@@ -139,7 +150,8 @@
               <span class="entry-label">Published</span>
               <!-- Never published is an absence, and absences read as the dash
                    the rest of the surface uses (FR-028, FR-014). -->
-              <span data-testid="definition-history-published-{definitionId}-{entry.versionId}"
+              <span
+                data-testid="definition-history-published-{definitionId}-{entry.versionId}"
                 >{entry.publishedAt === null
                   ? EM_DASH
                   : formatDefinitionTimestamp(entry.publishedAt)}</span
@@ -147,14 +159,17 @@
             </span>
             <button
               type="button"
-              class="entry-view"
+              class="btn btn-secondary btn-sm"
               data-testid="definition-history-open-{definitionId}-{entry.versionId}"
               onclick={() => void show(entry.versionId)}>View</button
             >
           </div>
           <!-- No note is an empty cell. `{null}` would interpolate the word. -->
-          <p class="entry-note" data-testid="definition-history-note-{definitionId}-{entry.versionId}">
-            {entry.note ?? ''}
+          <p
+            class="entry-note"
+            data-testid="definition-history-note-{definitionId}-{entry.versionId}"
+          >
+            {entry.note ?? ""}
           </p>
           <DefinitionActions
             {kind}
@@ -170,9 +185,12 @@
   {/if}
 
   {#if view !== null && selected !== null}
-    <div class="history-body" data-testid="definition-history-body-{definitionId}">
+    <div
+      class="history-body"
+      data-testid="definition-history-body-{definitionId}"
+    >
       <h5 class="body-title">{selected}</h5>
-      {#if view.status === 'pending'}
+      {#if view.status === "pending"}
         <p
           class="body-pending"
           role="status"
@@ -180,7 +198,7 @@
         >
           Reading this version...
         </p>
-      {:else if view.status === 'ready' && bodyText !== null}
+      {:else if view.status === "ready" && bodyText !== null}
         <!-- Read-only by construction: a `pre` holding interpolated text. No
              input, no textarea, no contenteditable, anywhere in here (FR-030). -->
         <pre
@@ -195,7 +213,9 @@
           role="status"
           data-testid="definition-history-body-error-{definitionId}"
         >
-          {describeReason(view.status === 'error' ? view.reason : 'read-failed')}
+          {describeReason(
+            view.status === "error" ? view.reason : "read-failed",
+          )}
         </p>
       {/if}
     </div>
@@ -203,123 +223,117 @@
 </section>
 
 <style>
+  /* sg-core's `.btn` draws Close, View and the restore action, and its `.chip`
+     the Active mark. The rule on the left ties the list to the toggle that
+     opened it. */
   .definition-history {
-    border-left: 2px solid var(--vscode-panel-border);
+    border-left: 2px solid var(--schegent-border);
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    font-size: 0.85em;
-    margin: 2px 0 4px 8px;
-    padding-left: 8px;
+    gap: var(--schegent-space-1);
+    font-size: var(--schegent-text-secondary);
+    margin: 0 0 0 var(--schegent-space-2);
+    padding-left: var(--schegent-space-2);
   }
 
   .history-header {
-    align-items: baseline;
+    align-items: center;
     display: flex;
-    gap: 8px;
+    gap: var(--schegent-space-2);
     justify-content: space-between;
   }
 
-  .history-title {
+  /* Two classes, so the panel's size beats sg-core's caption-sized `h4`. */
+  .definition-history .history-title {
     font-size: 1em;
     font-weight: 600;
-    margin: 0;
-  }
-
-  .history-close,
-  .entry-view {
-    background: transparent;
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 2px;
-    color: var(--vscode-foreground);
-    cursor: pointer;
-    font-size: 1em;
-    padding: 1px 6px;
-  }
-
-  .history-close:hover,
-  .entry-view:hover {
-    background: var(--vscode-toolbar-hoverBackground);
   }
 
   .history-empty {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
     margin: 0;
   }
 
   .history-entries {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--schegent-space-1);
     list-style: none;
     margin: 0;
     padding: 0;
   }
 
   .history-entry {
-    border-top: 1px solid var(--vscode-panel-border);
-    padding-top: 4px;
+    border-top: 1px solid var(--schegent-border);
+    display: flex;
+    flex-direction: column;
+    gap: var(--schegent-space-1);
+    padding-top: var(--schegent-space-1);
   }
 
   .history-entry.is-selected {
-    background: var(--vscode-list-inactiveSelectionBackground);
+    background: var(--schegent-selection-bg);
+    color: var(--schegent-selection-fg);
+    box-shadow: inset 0 0 0 1px var(--schegent-selection-outline);
   }
 
   .entry-line {
-    align-items: baseline;
+    align-items: center;
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 10px;
+    gap: var(--schegent-space-1) 10px;
   }
 
   .entry-version {
     font-weight: 600;
   }
 
-  .entry-active {
-    border: 1px solid var(--vscode-panel-border);
-    border-radius: 2px;
-    padding: 0 4px;
-  }
-
   .entry-field {
     display: flex;
-    gap: 4px;
+    gap: var(--schegent-space-1);
   }
 
   .entry-label {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
   }
 
   .entry-note {
-    margin: 2px 0;
+    margin: 0;
+  }
+
+  .entry-note:empty {
+    display: none;
   }
 
   .history-body {
-    border-top: 1px solid var(--vscode-panel-border);
-    padding-top: 4px;
+    border-top: 1px solid var(--schegent-border);
+    padding-top: var(--schegent-space-1);
   }
 
   .body-title {
     font-size: 1em;
     font-weight: 600;
-    margin: 0 0 2px;
+    margin: 0 0 var(--schegent-space-0-5);
   }
 
   .body-pending {
-    color: var(--vscode-descriptionForeground);
+    color: var(--schegent-muted-fg);
     margin: 0;
   }
 
   .body-error {
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-error-text);
     margin: 0;
   }
 
+  /* Feature 186 (US3, T024, FR-004, D-4) — no `max-height`/`overflow` here.
+     Every host that mounts this panel already supplies one scroll region of
+     its own (the Builder's `.page` on a Phase's page, the inspector's
+     `.ins-body` on Workflows, both already `overflow-y: auto`), so this flows
+     inside whichever single ancestor scroll region already exists rather than
+     nesting a second one inside it. */
   .body-content {
     margin: 0;
-    max-height: 320px;
-    overflow: auto;
     white-space: pre-wrap;
     word-break: break-word;
   }

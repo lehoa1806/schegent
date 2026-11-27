@@ -30,6 +30,13 @@ export const BUILD_HALVES = Object.freeze([
   Object.freeze({
     half: 'host',
     output: 'dist/extension.js',
+    outputs: Object.freeze([
+      'dist/extension.js',
+      'dist/acp-stdio-bridge.js',
+      'dist/run-snapshot.worker.js',
+      'dist/accounting-query.worker.js',
+      'dist/result-operator.worker.js'
+    ]),
     sources: Object.freeze(['src']),
     rebuild: 'npm run build:host'
   }),
@@ -100,9 +107,22 @@ function newestSource(root, sources) {
  */
 export function buildFreshness(root = REPO_ROOT) {
   return BUILD_HALVES.map((half) => {
-    const newestOutput = newestFile(join(root, half.output), { skipTests: false });
+    const outputTargets = half.outputs ?? [half.output];
+    let oldestOutput = null;
+    let missingOutput = null;
+    for (const rel of outputTargets) {
+      const foundOut = newestFile(join(root, rel), { skipTests: false });
+      if (foundOut === null) {
+        missingOutput = rel;
+        break;
+      }
+      if (oldestOutput === null || foundOut.mtimeMs < oldestOutput.mtimeMs) {
+        oldestOutput = foundOut;
+      }
+    }
+    const newestOutput = missingOutput !== null ? null : oldestOutput;
     const newestSource_ = newestSource(root, half.sources);
-    const found = { newestOutput, newestSource: newestSource_ };
+    const found = { newestOutput, newestSource: newestSource_, ...(missingOutput !== null ? { missingOutput } : {}) };
     if (newestOutput === null) return { ...half, state: 'absent', ...found };
     if (newestSource_ === null) return { ...half, state: 'unscannable', ...found };
     if (newestOutput.mtimeMs < newestSource_.mtimeMs) return { ...half, state: 'stale', ...found };
@@ -135,7 +155,8 @@ function shownOutput(root, half) {
 
 function refusalLine(root, half) {
   if (half.state === 'absent') {
-    return `${half.half} build output is absent (${half.output}) — run ${half.rebuild}`;
+    const missing = half.missingOutput ?? half.output;
+    return `${half.half} build output is absent (${missing}) — run ${half.rebuild}`;
   }
   if (half.state === 'unscannable') {
     return (

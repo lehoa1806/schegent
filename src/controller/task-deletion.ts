@@ -1,9 +1,19 @@
+import type { AuditLogWriter } from '../audit/audit-log-writer';
+import { createStateTransitionAuditEnvelope } from '../lib/audit-event-envelope';
+import { errorMessage } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
 import type { ContainmentRefusal } from '../lib/path-containment';
+import type { CompletionProvenance } from '../queue/feature-request';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SessionCleanupOutcome } from '../services/session-cleanup/session-cleanup-service';
-import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { WorkflowRun } from '../state/workflow-run';
+import { failedPhaseQueueItemIds, type ConnectedWorkflowRun } from '../state/connected-workflow-run';
+import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import {
+  canceledRunPatch,
+  isTerminalRunStatus,
+  LIVE_RUN_STATUSES,
+  type WorkflowRun
+} from '../state/workflow-run';
 
 /**
  * Pluggable cleanup seam invoked after task deletion resolves a run ID.
@@ -23,6 +33,8 @@ export interface TaskDeletionOutcome {
   taskId?: string;
   priorStatus?: string;
   runId?: string | null;
+  /** FR-R4-F16 (contract P2.2) — carried from `removeTask` by the spread below; the type only. */
+  completionProvenance?: CompletionProvenance | null;
   /**
    * Feature 034 — additive field. Always populated on `ok: true`
    * (`true` iff the cleanup succeeded for both targets; `false` when
@@ -41,7 +53,7 @@ export interface TaskDeletionOutcome {
 export interface TaskDeletionDeps {
   readonly logger: SanitizedLogger;
   readonly queue: Pick<QueueManager, 'findById' | 'queueIdForTask' | 'removeTask'>;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'setRun'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'updateRun' | 'runCommitClaim'>;
   readonly cancelActive: (queueId: string) => void;
   readonly releaseExecutionLeaseForRun: (run: WorkflowRun) => Promise<void>;
   readonly sessionCleanup: SessionCleanupRunner;
@@ -65,24 +77,100 @@ export async function deleteTaskWithSessionCleanup(
   const { logger, queue, store } = deps;
   logger.info(`Workflow operation triggered: deleteTask`, { taskId });
   const feature = queue.findById(taskId);
-  if (feature?.status === 'in-flight') {
+  // The guard read `feature?.status === 'in-flight'` and was the whole of the
+  // deleted-paused-task defect (docs/features/bugs/DONE_a-deleted-paused-task-
+  // strands-its-run-and-deadlocks-its-queue.md). A phase-paused Task's ROW
+  // reads `paused` — `QueueManager.pause` moves it out of `in-flight` — while
+  // its Run stays non-terminal and keeps the queue's Run slot, its session and
+  // its execution lease. The whole block below was skipped for that
+  // combination, and `removeTask` then deleted the only row that could address
+  // the Run it left behind: drain step 3 refuses to start anything else on the
+  // queue, and every cancel, resume and retry route resolves by row identity,
+  // so all of them refuse it at once.
+  //
+  // FR-R3-153 widened the *inner* check for exactly this class of bug and left
+  // this one narrow, so control never reached the fix. Reading the row's status
+  // here is not merely too narrow, it is the wrong question: what decides
+  // whether the cancel sequence must run is whether a non-terminal Run is
+  // pointing at this Task, and the two checks below already answer that
+  // completely. `run.featureId === feature.id` establishes ownership — it is
+  // load-bearing now rather than redundant, and the T040 note that proposed
+  // retiring it is retracted below.
+  if (feature) {
     // Feature 093 (T023) — pattern B. Reading ambiently asked whether the one
     // workspace Run happened to be this Task's; in a window running several it
     // would have cancelled a bystander's Run whenever it was not. The queue
-    // answers *which* Run, and the `featureId` comparison below is left for
-    // T040 to retire, so this phase changes addressing and nothing else.
+    // answers *which* Run.
     const queueId = queue.queueIdForTask(taskId);
     const run = store.getRun(queueId);
-    if (run?.featureId === feature.id && run.status === 'running') {
+    // FR-R3-153 (T1640, research.md R6) — widened from `run.status ===
+    // 'running'`. A delayed-retry countdown (`RetryHandler#handleDelayedRetry`,
+    // e.g. after a rate limit) sets the Run's own status to `paused` (with
+    // `pendingRetryAt` armed) without ever calling `QueueManager.pause` on
+    // the task row — the row stays `in-flight` the whole time the Run waits
+    // to auto-resume. The narrower check skipped cancelActive/lease release
+    // for exactly that combination, silently falling through to
+    // `removeTask`'s own weaker fallback cancellation (now removed — see
+    // queue-manager.ts). Any non-terminal Run status must go through this
+    // same cancel/release sequence before the row is removed (spec FR-013,
+    // FR-018).
+    // The ownership half of the pair. It is what makes the widened guard above
+    // safe: a `pending` row on a queue whose Run belongs to a sibling reaches
+    // here and stops, because the Run it found is not this Task's.
+    if (run?.featureId === feature.id && !isTerminalRunStatus(run.status)) {
       // Feature 093 (T042) — addressed. Cancelling ambiently here would have
       // aborted every Run in the window because one Task was deleted.
       deps.cancelActive(queueId);
-      const canceled: WorkflowRun = {
-        ...run,
-        status: 'canceled',
-        lastTransitionAt: Date.now()
-      };
-      await store.setRun(queueId, canceled);
+      // FR-R3-077 made this commit point fenced, so it can refuse when this
+      // window's lease has moved on or the ownership record cannot be read.
+      //
+      // This used to warn and carry on to `removeTask`, on the reasoning that a
+      // refused deletion strands the row with nothing left running to repair
+      // it. That produced the same orphan the row-status guard above produced —
+      // driver cancelled, Run still non-terminal in the store, row gone — on a
+      // path no widening of that guard reaches, so it is reversed here rather
+      // than left as the surviving half of the defect.
+      //
+      // The reason is stronger than the smaller of two costs. A refusal at a
+      // fenced commit means this window's execution lease has moved on: another
+      // window owns the queue and is answering for its Run. A window with no
+      // standing to write the Run has no standing to delete the row that
+      // addresses it either. Both halves survive, both stay addressable by id,
+      // and the operator can retry — which is not true of an orphaned Run.
+      //
+      // The lease is deliberately not released on the way out. The Run the
+      // store still holds is non-terminal, and releasing on its behalf would
+      // hand the queue away while it still owns it (hard rule 4).
+      //
+      // FR-R4-F01 (FR-008) — the cancel is a PATCH of the Run as it is inside the
+      // chain, the same one the cancel command writes: the driver cancelled just
+      // above is already winding down and writing its own transitions, and a whole
+      // Run built from the read at the top of this block could carry a stale status
+      // back over one of them.
+      let canceled: WorkflowRun | null;
+      try {
+        canceled = await store.updateRun(
+          queueId,
+          {
+            runId: run.id,
+            allowedStatuses: LIVE_RUN_STATUSES,
+            label: 'cancel',
+            patch: () => canceledRunPatch(Date.now())
+          },
+          store.runCommitClaim(queueId)
+        );
+      } catch (error) {
+        // The driver cancelled just above reached the chain first and ended the Run
+        // itself, or the Run was replaced: either way it is no longer this Task's live
+        // Run, which is all the deletion needed. Its own terminal funnel answers for
+        // the lease, so nothing is released here on its behalf.
+        if (isRunRaceRefusal(error)) {
+          canceled = null;
+        } else {
+          logger.warn(`task-deletion: canceled run not persisted: ${(error as Error).message}`);
+          return { ok: false, reason: 'run-cancel-not-committed' };
+        }
+      }
       // Feature 093 (T068b, FR-028) — no window-primacy release here either.
       // Deleting one Task cancelled one queue's Run; primacy is the window's
       // and its siblings are still executing under it.
@@ -93,7 +181,7 @@ export async function deleteTaskWithSessionCleanup(
       // here. MUST precede `removeTask` below — once the row is gone the
       // queue is no longer resolvable, and the helper correctly declines to
       // guess.
-      await deps.releaseExecutionLeaseForRun(canceled);
+      if (canceled !== null) await deps.releaseExecutionLeaseForRun(canceled);
     }
   }
   const removed = await queue.removeTask(taskId);
@@ -121,4 +209,70 @@ export async function deleteTaskWithSessionCleanup(
   return sessionCleanupRefusal
     ? { ...removed, sessionCleaned, sessionCleanupRefusal }
     : { ...removed, sessionCleaned };
+}
+
+export interface WorkflowFailureRetirementDeps {
+  readonly queue: Pick<QueueManager, 'findById' | 'removeTask'>;
+  readonly audit: Pick<AuditLogWriter, 'append'>;
+  readonly logger: Pick<SanitizedLogger, 'warn'>;
+}
+
+/**
+ * Take the failed rows of a Workflow's Phase attempts off the queue, once its Retry has committed.
+ *
+ * Under `halt-on-failure` a `failed` row refuses every later start on its queue until the operator
+ * deals with it, and pressing the Workflow's Retry is the operator dealing with it. Removal is one of
+ * feature 195's own exits, so the gate keeps its contract. The failure itself stays on the attempt
+ * and in history, and `task-removed` is what the failed-row census reads for this exit. That reader
+ * takes a missing `completionProvenance` to mean "not recorded", so this writer carries the field,
+ * which is why it lives in this module (feature 244, contract L3).
+ *
+ * A row the operator attested reads `completed`, and stays. The session artifacts stay too, as they
+ * do for a leaf a Workflow control ended. Never throws: the command has already committed.
+ */
+export function createWorkflowFailureRetirement(
+  deps: WorkflowFailureRetirementDeps
+): (run: ConnectedWorkflowRun) => Promise<void> {
+  const { queue, audit, logger } = deps;
+  const retireRow = async (taskId: string): Promise<void> => {
+    if (queue.findById(taskId)?.status !== 'failed') return;
+    const removed = await queue.removeTask(taskId);
+    if (!removed.ok) {
+      logger.warn(`workflow-leaf-retirement: failed row not retired: ${removed.reason ?? 'unknown'}`);
+      return;
+    }
+    const payload = {
+      taskId,
+      queueId: removed.queueId,
+      priorStatus: removed.priorStatus,
+      completionProvenance: removed.completionProvenance ?? null,
+      runId: removed.runId,
+      cause: 'workflow-retry',
+      sessionCleaned: false,
+      sessionCleanupRefusal: null
+    };
+    await audit.append({
+      runId: `queue:${String(removed.queueId)}`,
+      phase: 'queue',
+      iteration: 0,
+      eventType: 'task-removed',
+      payload: {
+        ...payload,
+        stateTransition: createStateTransitionAuditEnvelope({
+          reasonCode: 'task-removed',
+          newState: payload
+        })
+      },
+      outcome: 'info'
+    });
+  };
+  return async (run) => {
+    for (const taskId of failedPhaseQueueItemIds(run)) {
+      try {
+        await retireRow(taskId);
+      } catch (error) {
+        logger.warn(`workflow-leaf-retirement: failed row not retired: ${errorMessage(error)}`);
+      }
+    }
+  };
 }

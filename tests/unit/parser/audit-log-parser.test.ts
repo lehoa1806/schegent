@@ -170,6 +170,30 @@ describe('parseAuditLogBlock — metrics extraction (010, T021, US2)', () => {
     );
   });
 
+  // Subset (c) of RESERVED_METRIC_KEYS: dropped because the audit pipeline cannot
+  // carry the name, not because it collides with a field.
+  //
+  // `METRIC_IDENT_RE` admits `__proto__`, so before this the name was a legal
+  // metric that an agent could emit with no operator involvement — and it reached
+  // `AuditLogWriter.append()`, where the projection carried it and the sanitizer
+  // dropped it, failing the equality check and aborting the run with a false
+  // `secret-detected`. The drop happens here so the figure can never be a judged
+  // one, which is what makes the projection's matching drop safe.
+  //
+  // Asserted with `hasOwnProperty` rather than `toEqual`: `toEqual` compares
+  // `__proto__` as the prototype link, not as an own property, so it passes on a
+  // map that carries the key and proves nothing.
+  it('drops a `__proto__` metric with the reserved-key warning', () => {
+    const stdout = blockWith(['__proto__: 3', 'failing_tests: 1']);
+    const result = parseAuditLogBlock(stdout);
+    const metrics = result.entry?.metrics ?? {};
+    expect(Object.prototype.hasOwnProperty.call(metrics, '__proto__')).toBe(false);
+    expect(metrics.failing_tests).toBe(1);
+    expect(result.entry?.warnings ?? []).toContain(
+      '[constitution] dropped reserved metric key(s): __proto__'
+    );
+  });
+
   it('drops non-finite values (NaN, Infinity, -Infinity) with a warning', () => {
     const stdout = blockWith(['nan_metric: NaN', 'inf_metric: Infinity', 'real: 4']);
     const result = parseAuditLogBlock(stdout);

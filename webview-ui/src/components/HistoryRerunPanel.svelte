@@ -27,7 +27,9 @@
   // Operator-authored strings — the description, Pipeline and queue names — are
   // interpolated with `{}`, which escapes. Nothing here uses `{@html}`.
 
+  import { untrack } from 'svelte';
   import RunLauncher from './RunLauncher/RunLauncher.svelte';
+  import { resolveHistoryDescription } from '../lib/history-description-ipc';
   import { rerunUnavailableMessage, type RerunTarget } from '../lib/history-rerun';
   import type { HistoryRow } from '../lib/history-rows';
   import type { PipelineDefinition } from '../lib/snapshot-types';
@@ -45,11 +47,17 @@
      */
     readonly pipeline: PipelineDefinition | undefined;
     readonly onClose: () => void;
+    /**
+     * The id the heading carries, so the drawer around the panel can take its
+     * name from it (`aria-labelledby`) and move focus to it when it opens.
+     * Optional: a mount with no drawer around it has nothing to label.
+     */
+    readonly headingId?: string;
   }
 
-  const { row, target, pipeline, onClose }: Props = $props();
+  const { row, target, pipeline, onClose, headingId }: Props = $props();
 
-  const state = $derived(
+  const panelState = $derived(
     target.state === 'unavailable'
       ? 'unavailable'
       : pipeline === undefined
@@ -59,17 +67,100 @@
 
   /**
    * FR-033 — pre-filled from the historical run's inputs, which is the whole of
-   * what history retains: the description, and only as far as the stored
-   * preview goes. Input port values are not recorded (see `HistoryEntry`), so
-   * there is nothing else to seed and the note below says so rather than
-   * leaving an empty contract section to imply the Pipeline asks for nothing.
+   * what history retains: the description, and — since FR-R3-071 — the FULL
+   * stored one rather than its preview, resolved from the host per open. Input
+   * port values are not recorded (see `HistoryEntry`), so there is nothing else
+   * to seed and the note below says so rather than leaving an empty contract
+   * section to imply the Pipeline asks for nothing. The preview remains the
+   * fallback when the sidecar cannot be read, and the extent note appears only
+   * then.
    *
    * Seeded into `instruction` because that is the control whose value the
    * composer routes to `RunRequest.instructions` — the field the host bounds
    * and the one a free-form description belongs in.
    */
+  /**
+   * FR-R3-071 (feature 152) — the resolved description, or `null` until the
+   * host answers (and permanently when it cannot).
+   *
+   * The projection carries only the preview, deliberately, so the full text is
+   * asked for per open rather than kept in every snapshot. `$state` rather than
+   * a derived: it is an answer that arrives, not a function of the row.
+   */
+  let descriptionAnswer = $state<{ readonly text: string | null } | null>(null);
+
+  /**
+   * Keyed on the run id string, not on the `row` object — the same guard
+   * `HistoryRunDetail` and `HistoryEvidencePanel` each carry, and the one place
+   * it was never applied.
+   *
+   * A prop is a getter back into the parent's expression, so reading
+   * `row.runId` straight inside the effect subscribes it to `rerunRow`, which
+   * `HistoryDashboard` rebuilds from a fresh `allRows` on every host push. The
+   * effect then re-ran per push and re-asked for a description that cannot
+   * change — this helper's own docstring says "the host answers once, on the
+   * ack. A completed Run's description does not change, so there is nothing to
+   * stream." A derived over a primitive stops there: same string, no notify.
+   *
+   * Measured, on 2026-08-31: one open plus ten identical pushes cost eleven
+   * requests before this line and one after, with the already-keyed sibling read
+   * holding at one throughout — which is what proves the key is the remedy and
+   * the surface is not simply remounting. See
+   * `__tests__/history-description-ipc-storm.test.ts`, and finding 2 of the
+   * 2026-08-30 host-log triage, where a workspace with exactly one history entry
+   * issued 2,002 of these in a single second.
+   *
+   * A repeat was not merely wasteful. Each re-run put `descriptionAnswer` back
+   * to `null`, and `resolvingDescription` unmounts the form on exactly that —
+   * so an operator mid-composition had the form torn down and rebuilt once per
+   * host push — and while a workspace has work in flight, that is the 1 Hz
+   * liveness tick. (The word for that workspace state is spelled out nowhere in
+   * this file on purpose: a lint gate reserves it for the status-vocabulary
+   * modules, and it is a blunt substring scan by design.)
+   */
+  const wantedRunId = $derived(row.runId);
+
+  $effect(() => {
+    // Re-asked per row, and the answer is discarded when the row changes — a
+    // late reply must never seed the launcher for a run the operator is no
+    // longer looking at.
+    const runId = wantedRunId;
+    descriptionAnswer = null;
+    let current = true;
+    // Asked untracked. The helper marks the request pending in the snapshot
+    // store, which reads the store's pending set and replaces it; read tracked,
+    // that set makes this effect depend on its own write, and it asks again
+    // until Svelte stops it with `effect_update_depth_exceeded`.
+    void untrack(() => resolveHistoryDescription(runId)).then((result) => {
+      if (!current) return;
+      descriptionAnswer =
+        result.outcome === 'resolved' || result.outcome === 'legacy'
+          ? { text: result.description }
+          : // `missing` / `unreadable` / `failure`: fall back to the preview and
+            // its extent note. That path is already honest and says what it is.
+            { text: null };
+    });
+    return () => {
+      current = false;
+    };
+  });
+
+  /**
+   * The form is not mounted until the answer settles, and that is the point
+   * rather than a loading nicety. `RunLauncher` snapshots `initialSupplemental`
+   * with `untrack` — deliberately, so a later prop change cannot clobber what
+   * the operator has typed — so a form mounted on the preview would keep the
+   * truncation even after the full text arrived. Waiting means the form is
+   * seeded once, correctly, and never mutates under the cursor.
+   */
+  const resolvingDescription = $derived(descriptionAnswer === null);
+
   const prefill = $derived<Record<string, string>>(
-    row.descriptionPreview.length > 0 ? { instruction: row.descriptionPreview } : {}
+    descriptionAnswer?.text != null
+      ? { instruction: descriptionAnswer.text }
+      : row.descriptionPreview.length > 0
+        ? { instruction: row.descriptionPreview }
+        : {}
   );
 
   // The same extent statement the detail makes (FR-053). A truncation that does
@@ -77,7 +168,8 @@
   // would be worse than on the detail, because the operator is about to submit
   // it as the instruction for a new run.
   const showsExtent = $derived(
-    row.descriptionPreview.length > 0 &&
+    descriptionAnswer?.text == null &&
+      row.descriptionPreview.length > 0 &&
       row.descriptionLength !== null &&
       row.descriptionLength > row.descriptionPreview.length
   );
@@ -90,115 +182,137 @@
 <section
   class="rerun-panel"
   data-testid="history-rerun-panel"
-  data-state={state}
+  data-state={panelState}
   aria-label="Repeat this run"
 >
-  <header class="rerun-header">
-    <h3>Repeat this run</h3>
-    <button type="button" class="close" data-testid="history-rerun-close" onclick={onClose}>
-      Close
-    </button>
-  </header>
-
-  {#if target.state === 'unavailable'}
-    <!-- FR-037 — unavailable, with the reason said out loud. Not a hidden
-         control and not a form that fails on submit: both leave the operator
-         guessing at something the surface already knows. -->
-    <p class="note refusal" data-testid="history-rerun-unavailable" role="status">
-      {rerunUnavailableMessage(target.reason)}
-    </p>
-  {:else if pipeline === undefined}
-    <p class="note refusal" data-testid="history-rerun-definition-unloaded" role="status">
-      This Pipeline is published, but its definition has not loaded yet. Try again in a moment.
-    </p>
-  {:else}
-    {#if target.supersededVersionId !== null}
-      <!-- FR-035 — stated before anything is submitted, and naming both
-           versions: "a newer version exists" does not tell an operator whether
-           the change is the one they are trying to test. -->
-      <p class="note" data-testid="history-rerun-version-notice" role="status">
-        This will run the Active version, {target.launchable.activeVersionId}. The run you are
-        repeating froze {target.supersededVersionId}, which is no longer Active.
-      </p>
-    {/if}
-
-    {#if target.workflowMemberOf !== null}
-      <!-- FR-055 — the row names one run, not a start node. -->
-      <p class="note" data-testid="history-rerun-workflow-notice" role="status">
-        This run was one Pipeline inside the Workflow {target.workflowMemberOf}. Repeating it runs
-        that Pipeline alone; the Workflow is not restarted. Start the Workflow from Runs instead.
-      </p>
-    {/if}
-
-    <!-- FR-059 — which queue, in either case. Substituting one silently is the
-         same class of unstated substitution as a silent version swap, so
-         there is no arm here that says nothing. -->
-    <p
-      class="note"
-      data-testid="history-rerun-queue-notice"
-      data-substituted={target.queue.substituted ? 'true' : 'false'}
-      role="status"
+  <!-- The drawer's head: what this is, and which run it repeats, named as the
+       list names it. The close keeps its accessible name; only its face became
+       the drawer's icon. -->
+  <div class="dh">
+    <div class="heading">
+      <h2 id={headingId} tabindex="-1">Repeat this run</h2>
+      <div class="small muted run-name">{row.descriptionPreview || row.runId}</div>
+    </div>
+    <button
+      type="button"
+      class="icon-btn"
+      aria-label="Close"
+      data-testid="history-rerun-close"
+      onclick={onClose}
     >
-      {#if target.queue.substituted}
-        The queue this run used no longer exists, so this will go to the default queue
-        ({target.queue.name}).
-      {:else}
-        This will go to the same queue the run used: {target.queue.name}.
+      <svg class="i" aria-hidden="true"><use href="#i-x"></use></svg>
+    </button>
+  </div>
+
+  <div class="db rerun-body">
+    {#if target.state === 'unavailable'}
+      <!-- FR-037 — unavailable, with the reason said out loud. Not a hidden
+           control and not a form that fails on submit: both leave the operator
+           guessing at something the surface already knows. -->
+      <p class="note refusal" data-testid="history-rerun-unavailable" role="status">
+        {rerunUnavailableMessage(target.reason)}
+      </p>
+    {:else if pipeline === undefined}
+      <p class="note refusal" data-testid="history-rerun-definition-unloaded" role="status">
+        This Workflow is published, but its definition has not loaded yet. Try again in a moment.
+      </p>
+    {:else}
+      {#if target.supersededVersionId !== null}
+        <!-- FR-035 — stated before anything is submitted, and naming both
+             versions: "a newer version exists" does not tell an operator whether
+             the change is the one they are trying to test. -->
+        <p class="note" data-testid="history-rerun-version-notice" role="status">
+          This will run the Active version, {target.launchable.activeVersionId}. The run you are
+          repeating froze {target.supersededVersionId}, which is no longer Active.
+        </p>
       {/if}
-    </p>
 
-    <p class="note" data-testid="history-rerun-prefill-note">
-      The description below is carried over from the run. Its input values were not recorded, so
-      nothing else is pre-filled — supply them as you would for any other run.
-    </p>
-    {#if showsExtent}
-      <p class="note" data-testid="history-rerun-prefill-extent">{extentText}</p>
+      {#if target.workflowMemberOf !== null}
+        <!-- FR-055 — the row names one run, not a start node. -->
+        <p class="note" data-testid="history-rerun-workflow-notice" role="status">
+          This run was one step inside the Workflow {target.workflowMemberOf}. Repeating it runs
+          that step alone; the Workflow is not restarted. Add the Workflow as new work from its Queue instead.
+        </p>
+      {/if}
+
+      <!-- FR-059 — which queue, in either case. Substituting one silently is the
+           same class of unstated substitution as a silent version swap, so
+           there is no arm here that says nothing. -->
+      <p
+        class="note"
+        data-testid="history-rerun-queue-notice"
+        data-substituted={target.queue.substituted ? 'true' : 'false'}
+        role="status"
+      >
+        {#if target.queue.substituted}
+          The queue this run used no longer exists, so this will go to the default queue
+          ({target.queue.name}).
+        {:else}
+          This will go to the same queue the run used: {target.queue.name}.
+        {/if}
+      </p>
+
+      <p class="note" data-testid="history-rerun-prefill-note">
+        The description below is carried over from the run. Its input values were not recorded, so
+        nothing else is pre-filled — supply them as you would for any other run.
+      </p>
+      {#if showsExtent}
+        <p class="note" data-testid="history-rerun-prefill-extent">{extentText}</p>
+      {/if}
+
+      <!-- The launch surface's own composer, mounted as it stands (FR-038). It
+           submits through `launchPipeline`, which reaches the same four gates in
+           the same order; `validateRunRequest()` resolves `catalogVersion` at the
+           freeze site, and nothing here sends one. -->
+      <!-- No `onClose`: the panel's own header owns closing, and a second Close
+           inside the form would be two controls for one action. -->
+      <!-- FR-R3-071 — mounted only once the recorded description has settled, so
+           the composer is seeded with the full text rather than a preview it
+           would then keep (it snapshots its initial values on purpose). -->
+      {#if resolvingDescription}
+        <p class="note" data-testid="history-rerun-description-loading">
+          Reading the recorded description…
+        </p>
+      {:else}
+        <RunLauncher {pipeline} initialSupplemental={prefill} queueId={target.queue.queueId} />
+      {/if}
     {/if}
-
-    <!-- The launch surface's own composer, mounted as it stands (FR-038). It
-         submits through `launchPipeline`, which reaches the same four gates in
-         the same order; `validateRunRequest()` resolves `catalogVersion` at the
-         freeze site, and nothing here sends one. -->
-    <!-- No `onClose`: the panel's own header owns closing, and a second Close
-         inside the form would be two controls for one action. -->
-    <RunLauncher {pipeline} initialSupplemental={prefill} queueId={target.queue.queueId} />
-  {/if}
+  </div>
 </section>
 
 <style>
+  /* The drawer's bands (`.dh`, `.db`) come from the dashboard sheet. The panel
+     is the drawer's whole height, and its body scrolls under a fixed head. */
   .rerun-panel {
     display: flex;
     flex-direction: column;
-    gap: var(--schegent-gap);
-    padding: var(--schegent-space-3);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-surface);
+    flex: 1;
+    min-height: 0;
   }
-  .rerun-header {
+  .heading {
+    flex: 1;
+    min-width: 0;
+  }
+  /* Two lines name the run, as in the list; the form below carries all of it. */
+  .run-name {
+    display: -webkit-box;
+    margin-top: var(--schegent-space-1);
+    overflow: hidden;
+    line-clamp: 2;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow-wrap: anywhere;
+  }
+  .rerun-body {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
     gap: var(--schegent-gap);
-    align-items: center;
-    justify-content: space-between;
   }
-  .rerun-header h3 {
-    margin: 0;
-    font-size: var(--schegent-text-secondary);
-    font-weight: 600;
-  }
-  .close {
-    min-height: var(--schegent-control-height);
-    padding: 4px 10px;
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius-sm);
-    background: transparent;
-    color: var(--schegent-fg);
-    font: inherit;
-    cursor: pointer;
-  }
-  .close:hover {
-    background: var(--schegent-list-hover);
+  /* The drawer body is the gutter for the form, as for the notes above it, so the
+     launcher's own inset goes. The launcher itself is left as it is (FR-038). Two
+     classes lead so the rule outranks the launcher's own, whatever order the two load in. */
+  .rerun-panel .rerun-body :global(.run-launcher) {
+    padding: 0;
   }
   .note {
     margin: 0;

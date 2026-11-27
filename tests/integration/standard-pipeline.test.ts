@@ -19,7 +19,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -33,9 +33,12 @@ class FakeMemento implements Memento {
   }
 }
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -47,7 +50,8 @@ const cleanStdout = (phase: string): string =>
     'open_questions: 0',
     'critical_issues: 0',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 const issuesStdout = (phase: string): string =>
@@ -116,7 +120,7 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
     const { runner } = makeCliRunner();
-    const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);
@@ -160,15 +164,15 @@ describe('Spec-kit New Feature Pipeline end-to-end (T026, US1)', () => {
       // Phase's declared model, so it reads the value off the same fixture the
       // catalog was built from rather than repeating a literal. The literal was
       // `claude-opus-5`, which is what the deleted built-ins declared;
-      // `repo/examples/` declares `claude-sonnet-5`, and the examples are now
-      // where the process content lives.
+      // `repo/examples/` declares `claude-opus-5-5` on seven of the new-feature
+      // example's ten Phases, and the fixture gives it to every Spec Kit Phase.
       expect(entry.payload).toHaveProperty('model', EXAMPLE_MODEL);
       expect(entry.payload).not.toHaveProperty('effort');
       expect(entry.payload).not.toHaveProperty('timeoutMs');
     }
     for (const entry of ends) {
-      expect(entry.payload).not.toHaveProperty('pipelineId');
-      expect(entry.payload).not.toHaveProperty('phaseId');
+      expect(entry.payload).not.toHaveProperty('pipelineId'); // 2026-09-06 coincidental: a phase-end payload, not phase.retry_evaluated
+      expect(entry.payload).not.toHaveProperty('phaseId'); // 2026-09-06 coincidental: a phase-end payload; the phase is on the envelope
       expect(entry.payload).toHaveProperty('fileChangeCounts');
       expect(entry.payload).toHaveProperty('toolCategoryCounts');
     }

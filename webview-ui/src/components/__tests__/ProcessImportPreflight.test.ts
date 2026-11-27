@@ -26,7 +26,6 @@ import type {
 } from '../../../../src/contracts/catalog-lifecycle';
 import type {
   SavePhaseRow,
-  SavePipelineRow,
   SaveWorkflowRow
 } from '../../lib/definition-rows';
 import { refusalHeadline } from '../ProcessImport/process-import-state';
@@ -40,18 +39,18 @@ vi.mock('../../lib/process-yaml-ipc', () => ({
   preflightProcessYaml: () => preflightSpy()
 }));
 
-// The commit goes through the shared package publish — import adds no mutating
-// IPC command of its own (research R2) — so stubbing that sender is stubbing the
-// whole write path, and the layers it is handed are the assertable artifact.
-//
-// Feature 101 (T029) — one spy where there were three. The three per-kind `save*`
-// shims each translated into exactly this call before dispatching; with them gone
-// the kind travels in the layer, so `layersSent` is how a test names which write
-// it is looking at. Acks are queued in send order and default to accepted.
 const publishSpy = vi.fn<(request: PackagePublishRequest) => Promise<LifecycleResult>>();
+let lastWait: { readonly onLateOutcome?: (late: LifecycleResult) => void } | undefined;
 vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/catalog-lifecycle')>()),
-  publishDefinitionPackage: (request: PackagePublishRequest) => publishSpy(request)
+  publishDefinitionPackage: (
+    request: PackagePublishRequest,
+    _unused?: unknown,
+    wait?: { readonly onLateOutcome?: (late: LifecycleResult) => void }
+  ) => {
+    lastWait = wait;
+    return publishSpy(request);
+  }
 }));
 
 /** Every layer the commit sent, flattened in send order. */
@@ -70,9 +69,6 @@ function ackWith(...acks: readonly LifecycleResult[]): void {
   publishSpy.mockImplementation(async () => acks[call++] ?? { status: 'accepted' });
 }
 
-// Feature 096 T024 — Model Catalog commits through its own single-write helper,
-// never through `runImportCommit`/the package publish (Implementation Notes
-// point 1), so it gets its own mock rather than reusing `publishSpy`.
 const saveModelsImportSpy = vi.fn<
   (request: SaveModelsImportRequest) => Promise<SaveModelsImportResult>
 >();
@@ -83,11 +79,8 @@ vi.mock('../../lib/save-models', () => ({
 // Late import so the component binds to the mocked call sites above.
 import ProcessImportPreflight from '../ProcessImport/ProcessImportPreflight.svelte';
 
-// Feature 099 (T496f, FR-042, FR-044) — a map of layer to revision stood here for
-// each kind, and a write picked its gate out of one of them by the scope the
-// operator had chosen. One catalog per kind leaves one revision per kind.
 const REVISION = 'phase-rev-1';
-const PIPELINE_REVISION = 'pipeline-rev-1';
+const WORKFLOW_REVISION = 'workflow-rev-1';
 
 function plan(rows: readonly ImportPlanRow[]): ImportPlan {
   return {
@@ -102,18 +95,13 @@ function plan(rows: readonly ImportPlanRow[]): ImportPlan {
   };
 }
 
-/** A plan whose Pipeline half can be written: it carries the Pipeline revision. */
+/** A plan whose Workflow half can be written: it carries the Workflow revision. */
 function packagePlan(rows: readonly ImportPlanRow[]): ImportPlan {
-  return { ...plan(rows), computedAgainstPipelineRevision: PIPELINE_REVISION };
+  return { ...plan(rows), computedAgainstWorkflowRevision: WORKFLOW_REVISION };
 }
 
 const MODELS_REVISION = 'models-rev-1';
 
-/**
- * A Model Catalog plan — what preflight produces for a document that declares
- * ONLY a ModelCatalog (FR-015 homogeneity). `computedAgainstModelsRevision` is
- * the one signal `isModelCatalogPlan` reads to choose the Model Catalog branch.
- */
 function modelCatalogPlan(rows: readonly ImportPlanRow[]): ImportPlan {
   return { ...plan(rows), computedAgainstModelsRevision: MODELS_REVISION };
 }
@@ -126,11 +114,6 @@ const MODEL_IMPORT_ROW: ImportPlanRow = {
   modelId: 'custom-model-a'
 };
 
-/**
- * An `import` row carries the definition the commit writes, exactly as the
- * document declared it (FR-046a). `resourceId` and `name` are the bounded copies
- * the row renders, so they are derived from it rather than passed separately.
- */
 function importRow(
   definition: ImportedPhaseDefinition,
   requiresRetryConditionCapability = false
@@ -192,13 +175,10 @@ describe('Feature 084 T036 — import preflight states', () => {
 
     const progress = getByTestId('process-import-validating');
     expect(progress.textContent).toContain('Reading and validating');
-    // FR-055: no plan, no counts, and no outcome word while it is in flight.
     expect(container.querySelector('[data-testid="process-import-plan"]')).toBeNull();
     expect(container.querySelector('[data-testid="process-import-counts"]')).toBeNull();
     expect(progress.textContent).not.toContain('Import');
     expect(progress.textContent).not.toContain('Skip');
-    // The control is disabled while in flight, so a second ack cannot race the
-    // first onto the same surface.
     expect((getByTestId('process-import-inspect') as HTMLButtonElement).disabled).toBe(true);
 
     settle({ outcome: 'planned', plan: plan([]) });
@@ -213,10 +193,6 @@ describe('Feature 084 T036 — import preflight states', () => {
     const { getByTestId } = render(ProcessImportPreflight);
     await inspect(getByTestId);
     expect(preflightSpy).toHaveBeenCalledTimes(1);
-    // Feature 085 research R8 — the document declares its own `kind` and
-    // preflight dispatches on that (FR-055a). A kind on the request would be a
-    // second, unauthoritative claim about what the file is, and the only thing
-    // it could do is disagree with the file.
     expect(preflightSpy).toHaveBeenCalledWith();
   });
 
@@ -231,13 +207,10 @@ describe('Feature 084 T036 — import preflight states', () => {
 
     expect(getByTestId('process-import-refusal-code').textContent).toBe('too-large');
     expect(getByTestId('process-import-refusal-message').textContent).toContain('larger than 1 MiB');
-    // FR-027: a refusal produces no plan at all — not an empty one.
     expect(container.querySelector('[data-testid="process-import-plan"]')).toBeNull();
     expect(container.querySelector('[data-testid="process-import-empty-plan"]')).toBeNull();
   });
 
-  // T051/FR-057 — a code is not a stated reason. Every class an operator can hit
-  // says, in prose, what was wrong and that nothing was imported.
   const REFUSAL_CODES: readonly DocumentRefusalCode[] = [
     'unreadable',
     'too-large',
@@ -263,11 +236,9 @@ describe('Feature 084 T036 — import preflight states', () => {
       expect(getByTestId('process-import-refusal-title').textContent).toContain(
         'nothing was imported'
       );
-      // Prose, and specific to the class rather than a shared placeholder.
       const headline = getByTestId('process-import-refusal-headline').textContent ?? '';
       expect(headline).toBe(refusalHeadline(code));
       expect(headline.length).toBeGreaterThan('This document was not accepted.'.length - 1);
-      // The host's own detail and the code both survive alongside it.
       expect(getByTestId('process-import-refusal-message').textContent).toContain(
         'what specifically was wrong'
       );
@@ -281,9 +252,6 @@ describe('Feature 084 T036 — import preflight states', () => {
   });
 
   it('distinguishes a refused document from a canceled dialog (T051)', async () => {
-    // The pair an operator must never confuse: a refusal is this build declining
-    // a document it was given, a cancellation is the operator declining to give
-    // one. They must not share a surface, a tone, or a reason.
     preflightSpy.mockResolvedValue({
       outcome: 'refused',
       refusal: { code: 'disallowed-syntax', message: 'An anchor is not accepted.' }
@@ -302,8 +270,6 @@ describe('Feature 084 T036 — import preflight states', () => {
     await inspect(canceled.getByTestId);
 
     const note = canceled.getByTestId('process-import-canceled');
-    // A cancellation is not an alert, carries no refusal reason, and renders no
-    // refusal element at all.
     expect(note.getAttribute('role')).toBeNull();
     expect(canceled.container.querySelector('[data-testid="process-import-refused"]')).toBeNull();
     expect(canceled.container.querySelector('[data-testid="process-import-refusal-code"]')).toBeNull();
@@ -362,20 +328,13 @@ describe('Feature 084 T036 — import preflight states', () => {
     const text = rows.map((row) => row.textContent ?? '');
     expect(text[0]).toContain('ship-it');
     expect(text[0]).toContain('Import');
-    // Advisory only: the capability gate is re-checked at commit (FR-012a), so
-    // the row must not read as already granted.
     expect(text[0]).toContain('checks separately');
 
     expect(text[1]).toContain('specify');
     expect(text[1]).toContain('Skip');
-    // FR-030: the reason names the row state, so an id being repaired is visibly
-    // the thing that blocked the import. Feature 099 (T496f, FR-042) — it named
-    // the layer too, and the layer is deleted; asserted by absence here, because
-    // a sentence still naming one would be naming a tier that no longer exists.
     expect(text[1]).toContain('invalid');
     expect(text[1]).not.toContain('user');
 
-    // An id-less resource still gets a row and states its defect (FR-025).
     expect(text[2]).toContain('no id declared');
     expect(text[2]).toContain('version: Saw "soon".');
   });
@@ -405,10 +364,6 @@ describe('Feature 084 T036 — import preflight states', () => {
   });
 
   it('renders document-derived text as inert content it does not interpret (FR-050)', async () => {
-    // The host sanitized and bounded these strings; the component's remaining
-    // job is to not interpret them. Markup, a quote that would break out of an
-    // attribute, and a brace sequence a template language might expand are all
-    // rendered literally.
     const hostile = '<img src=x onerror="alert(1)"><script>alert(2)</script>{{7*7}}';
     preflightSpy.mockResolvedValue({
       outcome: 'planned',
@@ -428,14 +383,11 @@ describe('Feature 084 T036 — import preflight states', () => {
 
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('script')).toBeNull();
-    // The characters survive as text, escaped — the check that matters is that
-    // none of them became markup, so no element carries an event handler.
     expect(container.innerHTML).toContain('&lt;img');
     const handlers = Array.from(container.querySelectorAll('*')).filter((element) =>
       element.getAttributeNames().some((name) => name.startsWith('on'))
     );
     expect(handlers).toEqual([]);
-    // Rendered as the literal characters the document carried, unexpanded.
     expect(getByTestId('process-import-row-id').textContent).toBe(hostile);
     expect(getByTestId('process-import-row-reason').textContent).toContain('{{7*7}}');
   });
@@ -465,9 +417,6 @@ describe('Feature 084 T036 — import preflight states', () => {
   });
 });
 
-// The decisions themselves are pinned in process-import-state.test.ts. What is
-// asserted here is that the component is wired to them: the gate on the control,
-// the request the confirm sends, and the result it renders.
 describe('Feature 084 T037–T040 — confirming the import', () => {
   const DEFINITION: ImportedPhaseDefinition = {
     phaseId: 'brought-in',
@@ -478,7 +427,6 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
   const HELD: SavePhaseRow = { id: 'held', name: 'Held', version: 4, instruction: 'Hold.' };
   const LAYERS: ImportTargetLayers = Object.freeze({
     phases: [HELD],
-    pipelines: [] as readonly SavePipelineRow[],
     workflows: [] as readonly SaveWorkflowRow[]
   });
 
@@ -487,12 +435,6 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
   }
 
   it('offers no target picker at all (T496f, FR-035, FR-056)', async () => {
-    // Feature 099 (T496f, FR-042, FR-043) — this enumerated the offered scopes
-    // and pinned that none was preselected, because a write had somewhere else it
-    // could have gone and choosing wrongly was silent. One catalog leaves nothing
-    // to enumerate, so the claim is the control's absence: reduced to a
-    // single-option select it would still ask the operator a question with one
-    // answer, which is the shape FR-043 deletes rather than simplifies.
     preflightSpy.mockResolvedValue(importable());
     const { container, getByTestId } = render(ProcessImportPreflight, {
       props: { layers: LAYERS }
@@ -503,10 +445,6 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
   });
 
   it('opens confirmation the moment the plan has something to import (FR-056, FR-057)', async () => {
-    // The inversion of the case above it: Confirm was held closed until a scope
-    // was picked, and the surface said so. With nothing left to pick there is no
-    // reason to state, so the reason element is absent rather than empty — an
-    // empty live region announces nothing and reads as a missing explanation.
     preflightSpy.mockResolvedValue(importable());
     const { container, getByTestId } = render(ProcessImportPreflight, {
       props: { layers: LAYERS }
@@ -546,8 +484,6 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
 
-    // A refusal produces no plan, so there is nothing to confirm — the control is
-    // absent rather than present-and-dead.
     expect(container.querySelector('[data-testid="process-import-confirm"]')).toBeNull();
     expect(container.querySelector('[data-testid="process-import-scope"]')).toBeNull();
   });
@@ -563,22 +499,7 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
       layers: [
         {
           kind: 'phase',
-          // FR-038 — the revision the PLAN was computed against, so a catalog
-          // written since the preflight refuses as stale. Feature 099 (T496f,
-          // FR-042) — the request named a destination beside it; `toEqual` is
-          // exact, so its absence is pinned by this assertion and not a second one.
-          //
-          // Feature 101 (T029) — a `mutation` naming the `import` intent stood
-          // here too. It has reached no host since feature 100 routed this write
-          // through the package publish, which carries ids and no intent.
           expectedRevision: REVISION,
-          // Feature 100 (T509b, FR-039a) — the write carries the document's own
-          // row and nothing else. It used to carry `HELD` in front of it, because
-          // a save replaced the whole layer and omitting a stored row deleted it;
-          // a publication names definitions, and one it does not name it leaves
-          // exactly as it was (FR-039b). Carrying `HELD` now would publish a new
-          // version of a definition this document never mentioned. The declared
-          // version is still sent as authored (FR-046a).
           definitions: [
             {
               id: 'brought-in',
@@ -593,20 +514,11 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
         }
       ]
     });
-    // `HELD` is not merely absent from the array — it has no route into the write
-    // at all, so a reintroduced merge fails here rather than in one fixture.
     expect(JSON.stringify(publishSpy.mock.calls[0][0])).not.toContain(HELD.id);
-    // No Pipeline row in the plan, so no Pipeline write — a layer nobody asked to
-    // change must not be rewritten on its way past.
-    expect(layerFor('pipeline')).toBeUndefined();
+    expect(layerFor('workflow')).toBeUndefined();
   });
 
   it('gates on the revision the plan carries, not on one read at confirm time', async () => {
-    // Feature 099 (T496f, FR-042, FR-044) — this picked the OTHER scope and
-    // pinned that the gate followed the choice rather than the listing. There is
-    // no other scope; what the case was really defending is that the gate is a
-    // property of the plan, so it is asked here of a plan carrying a revision no
-    // fixture default would produce.
     preflightSpy.mockResolvedValue({
       outcome: 'planned',
       plan: { ...plan([importRow(DEFINITION)]), computedAgainstRevision: 'moved-rev' }
@@ -643,9 +555,7 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.dataset['outcome'])).toEqual(['imported', 'skipped']);
     expect(rows[0].textContent).toContain('brought-in');
-    // FR-046 — the destination named is the one catalog the write went to.
     expect(rows[0].textContent).toContain('catalog');
-    // The skipped row keeps the reason preflight gave it.
     expect(rows[1].textContent).toContain('Already present');
   });
 
@@ -677,7 +587,6 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
 
     expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(true);
     expect(getByTestId('process-import-confirm-blocked').textContent).toContain('in progress');
-    // A second activation cannot double-write.
     await fireEvent.click(getByTestId('process-import-confirm'));
     await tick();
     expect(publishSpy).toHaveBeenCalledTimes(1);
@@ -689,6 +598,35 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
     expect(getByTestId('process-import-results')).not.toBeNull();
   });
 
+  it('reports a thrown publish as a failed commit rather than latching', async () => {
+    preflightSpy.mockResolvedValue(importable());
+    publishSpy.mockRejectedValue(new Error('could not be cloned'));
+
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+    expect(getByTestId('process-import-result-detail').textContent).toContain('dispatch-failed');
+    expect(getByTestId('process-import-result-detail').textContent).not.toContain('cloned');
+    expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')).toBeNull();
+  });
+
+  it('lets the operator retry after a thrown publish', async () => {
+    preflightSpy.mockResolvedValue(importable());
+    publishSpy.mockRejectedValueOnce(new Error('could not be cloned'));
+
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+    expect(publishSpy).toHaveBeenCalledTimes(2);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('imported');
+  });
+
   it('drops the previous result when a new document is inspected', async () => {
     preflightSpy.mockResolvedValue(importable());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
@@ -698,16 +636,10 @@ describe('Feature 084 T037–T040 — confirming the import', () => {
 
     await inspect(getByTestId);
     expect(container.querySelector('[data-testid="process-import-results"]')).toBeNull();
-    // Feature 099 (T496f, FR-056) — the target picked for one document not being
-    // carried onto the next was half of this case, and there is no target to
-    // carry. The other half survives whole: the surface is back to describing a
-    // write that has not happened yet, rather than a finished one.
     expect(getByTestId('process-import-commit-statement')).not.toBeNull();
   });
 });
 
-// The entry point the Phase manager renders, and what the operator can reach
-// from a keyboard once it is open.
 describe('Feature 084 T066/T067 — the entry point and its accessibility', () => {
   const DEFINITION: ImportedPhaseDefinition = {
     phaseId: 'brought-in',
@@ -715,7 +647,7 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
     version: 7,
     instruction: 'Do the thing.'
   };
-  const LAYERS: ImportTargetLayers = Object.freeze({ phases: [], pipelines: [], workflows: [] });
+  const LAYERS: ImportTargetLayers = Object.freeze({ phases: [], workflows: [] });
 
   function importable(): PreflightProcessYamlResult {
     return { outcome: 'planned', plan: plan([importRow(DEFINITION)]) };
@@ -728,8 +660,6 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
 
     expect((getByTestId('process-import-inspect') as HTMLButtonElement).disabled).toBe(true);
     expect(getByTestId('process-import-unavailable').textContent).toContain('not trusted');
-    // The reason is text, not only a title: a title is unavailable to anyone who
-    // is not hovering.
     expect(getByTestId('process-import-inspect').getAttribute('aria-describedby')).toBe(
       'process-import-unavailable'
     );
@@ -741,8 +671,6 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
       props: { disabledReason: 'A Phase save is still in progress.' }
     });
 
-    // Activation is refused by the handler, not merely by the attribute, because
-    // the parent's conditions can change after the control was rendered.
     await inspect(getByTestId);
     expect(preflightSpy).not.toHaveBeenCalled();
   });
@@ -767,12 +695,9 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
     await inspect(getByTestId);
 
     const planTable = getByTestId('process-import-plan');
-    // Two tables with the same-shaped columns; without names an operator reading
-    // the second cannot tell it is the result and not the plan again.
     expect(planTable.getAttribute('aria-label')).toBe('Import plan');
     expect(planTable.getAttribute('aria-describedby')).toBe('process-import-counts');
     expect(getByTestId('process-import-counts').id).toBe('process-import-counts');
-    // The subject of the row, so "import" is announced against a Phase.
     const planId = getByTestId('process-import-row-id');
     expect(planId.tagName).toBe('TH');
     expect(planId.getAttribute('scope')).toBe('row');
@@ -785,31 +710,21 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
   });
 
   it('announces why confirmation is withheld, the live region carrying it alone (T067)', async () => {
-    // Feature 099 (T496f, FR-043) — the withholding this used to provoke was "no
-    // scope chosen", and the reason was ALSO the description of the scope select,
-    // which took focus and could carry it. That control is gone, so the live
-    // region is the whole announcement — which makes it more load-bearing than
-    // before, not less, and worth provoking with a refusal that still exists.
     preflightSpy.mockResolvedValue({
       outcome: 'planned',
-      // A Pipeline row on a plan carrying no Pipeline revision: eligible, so the
-      // surface renders its controls, and held closed, so there is a reason to
-      // announce. An empty plan would not do — it renders no Confirm at all.
       plan: plan([
         {
           outcome: 'import',
-          resourceKind: 'pipeline',
+          resourceKind: 'workflow',
           resourceId: 'ship-it',
           name: 'Ship It',
           definition: {
-            pipelineId: 'ship-it',
+            workflowId: 'ship-it',
             name: 'Ship It',
             version: 1,
-            phaseIds: ['specify'],
-            inputs: [],
-            outputs: [],
-            bindings: [],
-            recommendedNext: []
+            nodes: [{ nodeId: 'specify', kind: 'phase', phaseId: 'specify' }],
+            connections: [],
+            startNodeIds: ['specify']
           }
         }
       ])
@@ -818,9 +733,6 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
     await inspect(getByTestId);
 
     const reason = getByTestId('process-import-confirm-blocked');
-    // Confirm is genuinely `disabled` — a commit in flight must not be
-    // re-activatable — so it takes no focus and its description would never be
-    // read on the way past. The live region is what carries the reason.
     expect(reason.getAttribute('role')).toBe('status');
     expect(reason.getAttribute('aria-live')).toBe('polite');
     expect(reason.id).toBe('process-import-confirm-reason');
@@ -834,22 +746,11 @@ describe('Feature 084 T066/T067 — the entry point and its accessibility', () =
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
 
-    // A description pointing at an element that no longer exists is worse than
-    // none: it reads as an empty explanation.
     expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')).toBeNull();
     expect(getByTestId('process-import-confirm').getAttribute('aria-describedby')).toBeNull();
   });
 });
 
-// Feature 085 T034 — the same surface, handed a document it did not ask to
-// classify (FR-055a). What changes here is what it must SAY: a kind per row
-// (FR-056), counts that add up now that `blocked` is reachable (FR-028), what
-// confirming writes and where (FR-058), and an honest closed state when the plan
-// needs a write this commit does not yet perform (FR-057).
-//
-// The wording itself is pinned in process-import-state.test.ts. These assert the
-// component is wired to it — that the kind shown is the ROW's and not the
-// document's, and that the commit statement is complete before the click.
 describe('Feature 085 T034 — a package in the plan', () => {
   const DEFINITION: ImportedPhaseDefinition = {
     phaseId: 'specify',
@@ -858,33 +759,32 @@ describe('Feature 085 T034 — a package in the plan', () => {
     instruction: 'Write the spec.'
   };
 
-  const PIPELINE_ROW: ImportPlanRow = {
+  const WORKFLOW_ROW: ImportPlanRow = {
     outcome: 'import',
-    resourceKind: 'pipeline',
+    resourceKind: 'workflow',
     resourceId: 'ship-it',
     name: 'Ship It',
     definition: {
-      pipelineId: 'ship-it',
+      workflowId: 'ship-it',
       name: 'Ship It',
       version: 1,
-      phaseIds: ['specify'],
-      inputs: [],
-      outputs: [],
-      bindings: [],
-      recommendedNext: []
+      nodes: [{ nodeId: 'specify', kind: 'phase', phaseId: 'specify' }],
+      connections: [],
+      startNodeIds: ['specify']
     }
   };
 
-  const HELD_PIPELINE: SavePipelineRow = {
-    id: 'held-pipeline',
-    name: 'Held Pipeline',
+  const HELD_WORKFLOW: SaveWorkflowRow = {
+    workflowId: 'held-workflow',
+    name: 'Held Workflow',
     version: 2,
-    phases: ['specify']
+    nodes: [{ nodeId: 'specify', kind: 'phase', phaseId: 'specify' }],
+    connections: [],
+    startNodeIds: ['specify']
   };
   const LAYERS: ImportTargetLayers = Object.freeze({
     phases: [],
-    pipelines: [HELD_PIPELINE],
-    workflows: []
+    workflows: [HELD_WORKFLOW]
   });
 
   it('labels each row with the kind that row declares, not the document (FR-056)', async () => {
@@ -892,10 +792,10 @@ describe('Feature 085 T034 — a package in the plan', () => {
       outcome: 'planned',
       plan: plan([
         importRow(DEFINITION),
-        PIPELINE_ROW,
+        WORKFLOW_ROW,
         {
           outcome: 'blocked',
-          resourceKind: 'pipeline',
+          resourceKind: 'workflow',
           resourceId: 'deploy-it',
           name: 'Deploy It',
           reason: { code: 'dependency-absent', dependency: { kind: 'phase', resourceId: 'finalize' } }
@@ -909,33 +809,23 @@ describe('Feature 085 T034 — a package in the plan', () => {
     const kinds = Array.from(
       container.querySelectorAll('[data-testid="process-import-row-kind"]')
     ).map((cell) => cell.textContent?.trim());
-    expect(kinds).toEqual(['Phase', 'Pipeline', 'Pipeline']);
+    expect(kinds).toEqual(['Phase', 'Workflow', 'Workflow']);
 
-    // The machine-readable form travels with it, so a stylesheet or a later
-    // assertion never has to re-derive the kind from the label.
     const rows = Array.from(
       container.querySelectorAll('[data-testid="process-import-plan-row"]')
     ) as HTMLElement[];
-    expect(rows.map((row) => row.dataset['kind'])).toEqual(['phase', 'pipeline', 'pipeline']);
+    expect(rows.map((row) => row.dataset['kind'])).toEqual(['phase', 'workflow', 'workflow']);
 
-    // FR-033's distinction survives the trip: the blocked Pipeline names the
-    // Phase it needs, which is the thing importing something else would fix.
     expect(rows[2]?.textContent).toContain('Blocked');
     expect(rows[2]?.textContent).toContain('finalize');
   });
 
-  // Feature 086 T038 — the third kind on the same table. Asserted through the
-  // rendered plan rather than through `resourceKindLabel` alone, because the two
-  // halves of the row can disagree: the label is a function of the kind and the
-  // `data-kind` attribute is the raw discriminator, and a Workflow row that
-  // renders "Phase" beside `data-kind="workflow"` is a surface that contradicts
-  // itself about which catalog the operator is about to change.
-  it('labels a Workflow row and states its blocked reason (FR-056, FR-040)', async () => {
+  it('labels a composable Workflow row and states its blocked reason (FR-056, FR-040)', async () => {
     preflightSpy.mockResolvedValue({
       outcome: 'planned',
       plan: plan([
         importRow(DEFINITION),
-        PIPELINE_ROW,
+        WORKFLOW_ROW,
         {
           outcome: 'blocked',
           resourceKind: 'workflow',
@@ -943,7 +833,7 @@ describe('Feature 085 T034 — a package in the plan', () => {
           name: 'Ship It Flow',
           reason: {
             code: 'dependency-blocked',
-            dependency: { kind: 'pipeline', resourceId: 'deploy-it' },
+            dependency: { kind: 'workflow', resourceId: 'deploy-it' },
             via: { kind: 'phase', resourceId: 'finalize' }
           }
         }
@@ -956,19 +846,16 @@ describe('Feature 085 T034 — a package in the plan', () => {
     const kinds = Array.from(
       container.querySelectorAll('[data-testid="process-import-row-kind"]')
     ).map((cell) => cell.textContent?.trim());
-    expect(kinds).toEqual(['Phase', 'Pipeline', 'Workflow']);
+    expect(kinds).toEqual(['Phase', 'Workflow', 'Workflow']);
 
     const rows = Array.from(
       container.querySelectorAll('[data-testid="process-import-plan-row"]')
     ) as HTMLElement[];
-    expect(rows.map((row) => row.dataset['kind'])).toEqual(['phase', 'pipeline', 'workflow']);
+    expect(rows.map((row) => row.dataset['kind'])).toEqual(['phase', 'workflow', 'workflow']);
 
-    // The reason names the Pipeline, because that is the dependency direction a
-    // Workflow has. Naming the Phase here would be the shipped 085 wording
-    // surviving a kind it was never written for.
     const reason = rows[2]?.querySelector('[data-testid="process-import-row-reason"]');
     expect(rows[2]?.textContent).toContain('Blocked');
-    expect(reason?.textContent).toContain('Pipeline deploy-it');
+    expect(reason?.textContent).toContain('Workflow deploy-it');
   });
 
   it('states every count, so the four add up to the rows shown (FR-028)', async () => {
@@ -978,23 +865,23 @@ describe('Feature 085 T034 — a package in the plan', () => {
         importRow(DEFINITION),
         {
           outcome: 'skip',
-          resourceKind: 'pipeline',
+          resourceKind: 'workflow',
           resourceId: 'ship-it',
           name: 'Ship It',
           presentRowStatus: 'effective'
         },
         {
           outcome: 'blocked',
-          resourceKind: 'pipeline',
+          resourceKind: 'workflow',
           resourceId: 'deploy-it',
           name: 'Deploy It',
           reason: { code: 'dependency-unresolvable', dependency: { kind: 'phase', resourceId: 'finalize' } }
         },
         {
           outcome: 'invalid',
-          resourceKind: 'pipeline',
+          resourceKind: 'workflow',
           resourceId: 'broken',
-          defects: [{ field: 'phases', code: 'non-empty-list-required', message: 'Saw none.' }],
+          defects: [{ field: 'nodes', code: 'non-empty-list-required', message: 'Saw none.' }],
           totalDefects: 1
         }
       ])
@@ -1003,9 +890,6 @@ describe('Feature 085 T034 — a package in the plan', () => {
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
 
-    // `blocked` was unreachable before the package resolver, so omitting it used
-    // to be invisible. On this plan a missing count shows totals that do not sum
-    // to the four rows on screen.
     const counts = getByTestId('process-import-counts').textContent ?? '';
     expect(counts).toContain('1 to import');
     expect(counts).toContain('1 skipped');
@@ -1032,11 +916,6 @@ describe('Feature 085 T034 — a package in the plan', () => {
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
 
-    // Feature 099 (T496f, FR-043) — the statement was read twice, before and
-    // after a scope was chosen, because its destination clause changed. It has
-    // one destination now and states it immediately, so what is asserted is that
-    // the sentence is complete on first read: the count, the destination, and
-    // what is left out, with no deferred half.
     const statement = getByTestId('process-import-commit-statement').textContent ?? '';
     expect(statement).toContain('1 resource');
     expect(statement).toContain('the catalog');
@@ -1053,23 +932,16 @@ describe('Feature 085 T034 — a package in the plan', () => {
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    // A sentence in the future tense left standing next to the results reads as
-    // a second, pending write.
     expect(getByTestId('process-import-results')).not.toBeNull();
     expect(
       container.querySelector('[data-testid="process-import-commit-statement"]')
     ).toBeNull();
   });
 
-  it('holds confirmation closed when the plan carries no Pipeline revision to gate on (FR-057)', async () => {
-    // `plan()` — not `packagePlan()`: a Pipeline row with no
-    // `computedAgainstPipelineRevision` has nothing for its write to check
-    // against. Both rows are eligible, so this is NOT "nothing to import"; the
-    // surface must say what is actually missing rather than letting Confirm write
-    // the Phase and drop the Pipeline silently.
+  it('holds confirmation closed when the plan carries no Workflow revision to gate on (FR-057)', async () => {
     preflightSpy.mockResolvedValue({
       outcome: 'planned',
-      plan: plan([importRow(DEFINITION), PIPELINE_ROW])
+      plan: plan([importRow(DEFINITION), WORKFLOW_ROW])
     });
 
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
@@ -1077,7 +949,7 @@ describe('Feature 085 T034 — a package in the plan', () => {
 
     expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(true);
     const reason = getByTestId('process-import-confirm-blocked').textContent ?? '';
-    expect(reason).toContain('Pipeline catalog revision');
+    expect(reason).toContain('Workflow catalog revision');
     expect(reason).not.toContain('nothing to import');
 
     await confirm(getByTestId);
@@ -1085,10 +957,6 @@ describe('Feature 085 T034 — a package in the plan', () => {
   });
 });
 
-// Feature 085 T048/T049 — what a confirmed PACKAGE does: two ordered writes, each
-// gated on its own catalog's revision and carrying exactly one intent
-// (FR-036, FR-038, FR-043), and a three-valued outcome reported with
-// no compensating action (FR-042a, FR-042c).
 describe('Feature 085 T048/T049 — the confirmed package write', () => {
   const PHASE: ImportedPhaseDefinition = {
     phaseId: 'specify',
@@ -1102,54 +970,70 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     version: 1,
     instruction: 'Plan the work.'
   };
-  const PIPELINE_ROW: ImportPlanRow = {
+  const WORKFLOW_ROW: ImportPlanRow = {
     outcome: 'import',
-    resourceKind: 'pipeline',
+    resourceKind: 'workflow',
     resourceId: 'ship-it',
     name: 'Ship It',
     definition: {
-      pipelineId: 'ship-it',
+      workflowId: 'ship-it',
       name: 'Ship It',
       version: 1,
-      phaseIds: ['specify'],
-      inputs: [],
-      outputs: [],
-      bindings: [],
-      recommendedNext: []
+      nodes: [{ nodeId: 'specify', kind: 'phase', phaseId: 'specify' }],
+      connections: [],
+      startNodeIds: ['specify']
     }
   };
   const HELD_PHASE: SavePhaseRow = { id: 'held', name: 'Held', version: 4, instruction: 'Hold.' };
-  const HELD_PIPELINE: SavePipelineRow = {
-    id: 'held-pipeline',
-    name: 'Held Pipeline',
+  const HELD_WORKFLOW: SaveWorkflowRow = {
+    workflowId: 'held-workflow',
+    name: 'Held Workflow',
     version: 2,
-    phases: ['specify']
+    nodes: [{ nodeId: 'specify', kind: 'phase', phaseId: 'specify' }],
+    connections: [],
+    startNodeIds: ['specify']
   };
   const LAYERS: ImportTargetLayers = Object.freeze({
     phases: [HELD_PHASE],
-    pipelines: [HELD_PIPELINE],
-    workflows: []
+    workflows: [HELD_WORKFLOW]
   });
 
   function packageResult(): PreflightProcessYamlResult {
     return {
       outcome: 'planned',
-      plan: packagePlan([importRow(PHASE), importRow(SECOND_PHASE), PIPELINE_ROW])
+      plan: packagePlan([importRow(PHASE), importRow(SECOND_PHASE), WORKFLOW_ROW])
     };
   }
 
-  it('writes the Phase layer before the Pipeline layer (FR-038)', async () => {
+  it('sends a payload the host transport can actually clone', async () => {
+    preflightSpy.mockResolvedValue(packageResult());
+    const cloneFailures: string[] = [];
+    publishSpy.mockImplementation(async (request) => {
+      try {
+        structuredClone(request);
+      } catch (err) {
+        cloneFailures.push((err as Error).message);
+      }
+      return { status: 'accepted' };
+    });
+
+    const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    expect(cloneFailures).toEqual([]);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('imported');
+  });
+
+  it('sends the Phase layer and the Workflow layer in one request, Phase first (FR-013, FR-038)', async () => {
     preflightSpy.mockResolvedValue(packageResult());
 
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    // A Pipeline written first would reference Phases the catalog does not hold.
-    // Two publishes, not one carrying both layers: the second is conditional on
-    // the first, and one package would send them together.
-    expect(publishSpy).toHaveBeenCalledTimes(2);
-    expect(layersSent().map((layer) => layer.kind)).toEqual(['phase', 'pipeline']);
+    expect(publishSpy).toHaveBeenCalledTimes(1);
+    expect(layersSent().map((layer) => layer.kind)).toEqual(['phase', 'workflow']);
   });
 
   it('gates each layer on its OWN revision, naming only the ids it writes (FR-043)', async () => {
@@ -1158,21 +1042,12 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
     await inspect(getByTestId);
     await confirm(getByTestId);
 
+    expect(publishSpy).toHaveBeenCalledTimes(1);
     expect(publishSpy.mock.calls[0][0]).toEqual({
       layers: [
         {
           kind: 'phase',
-          // Two Phases in one layer — a package is not N separate saves, because
-          // both are gated on the same revision, and the first accepted save
-          // moves the revision the second would have gated on.
-          //
-          // Feature 101 (T029) — the `import-package` intent that said so
-          // explicitly is gone with the whole-array request; the shared gate is
-          // what carries the claim now.
           expectedRevision: REVISION,
-          // Feature 100 (T509b, FR-039a) — the document's two Phases, and only
-          // those. `HELD_PHASE` used to lead this array; see the standalone case
-          // above for why it no longer travels.
           definitions: [
             {
               id: 'specify',
@@ -1183,21 +1058,21 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
               body: { id: 'plan', name: 'Plan', version: 1, instruction: 'Plan the work.' }
             }
           ]
-        }
-      ]
-    });
-
-    expect(publishSpy.mock.calls[1][0]).toEqual({
-      layers: [
+        },
         {
-          kind: 'pipeline',
-          // The Pipeline catalog's revision, not the Phase catalog's — they move
-          // independently, and cross-wiring them would gate on the wrong write.
-          expectedRevision: PIPELINE_REVISION,
+          kind: 'workflow',
+          expectedRevision: WORKFLOW_REVISION,
           definitions: [
             {
               id: 'ship-it',
-              body: { id: 'ship-it', name: 'Ship It', version: 1, phases: ['specify'], inputs: [], outputs: [], bindings: [], recommendedNext: [] }
+              body: {
+                workflowId: 'ship-it',
+                name: 'Ship It',
+                version: 1,
+                nodes: [{ nodeId: 'specify', kind: 'phase', phaseId: 'specify' }],
+                connections: [],
+                startNodeIds: ['specify']
+              }
             }
           ]
         }
@@ -1206,25 +1081,17 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
   });
 
   it('writes both kinds naming only what the document declared (FR-036, FR-039a)', async () => {
-    // Feature 099 (T496f, FR-042, FR-043) — this chose the workspace and pinned
-    // that BOTH writes followed the one choice, the failure guarded against being
-    // a package split across two layers. Feature 100 (T509b) — neither write can
-    // name a layer OR a stored row now, and this is where that holds across two
-    // kinds at once: a merge reintroduced in one kind's row builder would leave
-    // the other correct, so both are asserted here in one case.
     preflightSpy.mockResolvedValue(packageResult());
     const { getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
     expect(layerFor('phase')).not.toHaveProperty('scope');
-    expect(layerFor('pipeline')).not.toHaveProperty('scope');
+    expect(layerFor('workflow')).not.toHaveProperty('scope');
     expect(layerFor('phase')?.definitions.map((row) => row.id)).toEqual(['specify', 'plan']);
-    expect(layerFor('pipeline')?.definitions.map((row) => row.id)).toEqual(['ship-it']);
-    // The rows the catalog already holds were handed to the component and reached
-    // neither write — the property, rather than these two orderings of it.
+    expect(layerFor('workflow')?.definitions.map((row) => row.id)).toEqual(['ship-it']);
     expect(JSON.stringify(layersSent())).not.toContain(HELD_PHASE.id);
-    expect(JSON.stringify(layersSent())).not.toContain(HELD_PIPELINE.id);
+    expect(JSON.stringify(layersSent())).not.toContain(HELD_WORKFLOW.workflowId);
   });
 
   it('reports every row imported when both layers are accepted', async () => {
@@ -1243,52 +1110,151 @@ describe('Feature 085 T048/T049 — the confirmed package write', () => {
   });
 
   it('reports the partial outcome exactly, and offers no undo (FR-042a, FR-042c)', async () => {
-    ackWith({ status: 'accepted' }, { status: 'rejected', reason: 'stale-catalog' });
+    ackWith({
+      status: 'rejected',
+      reason: 'package-partial',
+      result: {
+        published: [{ kind: 'phase', total: 2 }],
+        draftedOnly: ['workflow'],
+        failedKind: 'workflow',
+        cause: 'stale'
+      }
+    });
     preflightSpy.mockResolvedValue(packageResult());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    // The Phase write landed and the Pipeline write did not. Each row reports its
-    // OWN layer's fate — collapsing them to one verdict would either claim an
-    // unwritten Pipeline or disown two written Phases.
     const rows = Array.from(
       container.querySelectorAll('[data-testid="process-import-result-row"]')
     ) as HTMLElement[];
     expect(rows.map((row) => row.dataset['outcome'])).toEqual(['imported', 'imported', 'failed']);
-    expect(rows[2].textContent).toContain('stale-catalog');
+    expect(rows[2].textContent).toMatch(/changed since you started editing|stale-catalog/);
 
     const outcome = getByTestId('process-import-outcome');
     expect(outcome.dataset['outcome']).toBe('partial');
-    // FR-042c — nothing is rolled back, and no control is offered that would.
     expect(container.querySelector('[data-testid="process-import-undo"]')).toBeNull();
-    // FR-042b — the recovery named is re-running the same document, which skips
-    // what is already there.
     expect(outcome.textContent).toContain('again');
+    expect(outcome.textContent).toContain('Builder');
   });
 
-  it('does not send the Pipeline write when the Phase write is rejected', async () => {
+  it('rejects every layer when the one request is refused, naming the reason on each row', async () => {
     ackWith({ status: 'rejected', reason: 'stale-catalog' });
     preflightSpy.mockResolvedValue(packageResult());
     const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
     await inspect(getByTestId);
     await confirm(getByTestId);
 
-    // A Pipeline whose Phases were never written would reference absent rows.
-    expect(layerFor('pipeline')).toBeUndefined();
+    expect(publishSpy).toHaveBeenCalledTimes(1);
+    expect(layersSent().map((layer) => layer.kind)).toEqual(['phase', 'workflow']);
     const rows = Array.from(
       container.querySelectorAll('[data-testid="process-import-result-row"]')
     ) as HTMLElement[];
     expect(rows.map((row) => row.dataset['outcome'])).toEqual(['failed', 'failed', 'failed']);
-    // The Pipeline row was never attempted, so it must not borrow the Phase
-    // layer's reason and send the operator to fix the wrong thing.
-    expect(rows[2].textContent).toContain('stopped before this layer');
+    for (const row of rows) expect(row.textContent).toMatch(/changed since you started editing|stale-catalog/);
     expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
+  });
+
+  it('shows each validation defect on the row it belongs to (FR-014)', async () => {
+    ackWith({
+      status: 'rejected',
+      reason: 'validation-failed',
+      result: {
+        defects: [
+          {
+            kind: 'workflow',
+            id: 'ship-it',
+            field: 'nodes[0].phaseId',
+            code: 'unknown-phase',
+            message: 'no such Phase'
+          }
+        ],
+        total: 1
+      }
+    });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    const rows = Array.from(
+      container.querySelectorAll('[data-testid="process-import-result-row"]')
+    ) as HTMLElement[];
+    expect(rows.map((row) => row.dataset['outcome'])).toEqual(['failed', 'failed', 'failed']);
+    expect(rows[2].textContent).toContain('nodes[0].phaseId');
+    expect(rows[2].textContent).toContain('no such Phase');
+    expect(rows[0].textContent).toContain('Not written: the package was refused');
+    expect(rows[1].textContent).toContain('Not written: the package was refused');
+    expect(rows[0].textContent).not.toContain('nodes[0].phaseId');
+  });
+
+  it('marks every row unknown on a timeout, and a late accepted outcome then updates every row', async () => {
+    ackWith({ status: 'rejected', reason: 'timeout' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    const rowOutcomes = () =>
+      (
+        Array.from(
+          container.querySelectorAll('[data-testid="process-import-result-row"]')
+        ) as HTMLElement[]
+      ).map((row) => row.dataset['outcome']);
+    expect(rowOutcomes()).toEqual(['unknown', 'unknown', 'unknown']);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('unknown');
+
+    expect(lastWait?.onLateOutcome).toBeTypeOf('function');
+    lastWait?.onLateOutcome?.({ status: 'accepted' });
+    await tick();
+
+    expect(rowOutcomes()).toEqual(['imported', 'imported', 'imported']);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('imported');
+  });
+
+  it('updates every row from a late partial outcome, not only the last layer', async () => {
+    ackWith({ status: 'rejected', reason: 'timeout' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    lastWait?.onLateOutcome?.({
+      status: 'rejected',
+      reason: 'package-partial',
+      result: {
+        published: [{ kind: 'phase', total: 2 }],
+        draftedOnly: ['workflow'],
+        failedKind: 'workflow',
+        cause: 'stale'
+      }
+    });
+    await tick();
+
+    const outcomes = (
+      Array.from(container.querySelectorAll('[data-testid="process-import-result-row"]')) as HTMLElement[]
+    ).map((row) => row.dataset['outcome']);
+    expect(outcomes).toEqual(['imported', 'imported', 'failed']);
+    expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('partial');
+  });
+
+  it('ignores a late outcome once the report is no longer the unknown one', async () => {
+    ackWith({ status: 'accepted' });
+    preflightSpy.mockResolvedValue(packageResult());
+    const { container, getByTestId } = render(ProcessImportPreflight, { props: { layers: LAYERS } });
+    await inspect(getByTestId);
+    await confirm(getByTestId);
+
+    lastWait?.onLateOutcome?.({ status: 'rejected', reason: 'stale-catalog' });
+    await tick();
+
+    const outcomes = (
+      Array.from(container.querySelectorAll('[data-testid="process-import-result-row"]')) as HTMLElement[]
+    ).map((row) => row.dataset['outcome']);
+    expect(outcomes).toEqual(['imported', 'imported', 'imported']);
   });
 });
 
-// Feature 096 T024 — wiring the modelCatalog branch: confirm dispatches through
-// `saveModelsImport`, never the catalog lifecycle.
 describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () => {
   it('names Model Catalog among the accepted document kinds', () => {
     render(ProcessImportPreflight);
@@ -1301,7 +1267,6 @@ describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () =>
     await inspect(getByTestId);
 
     expect(container.querySelector('[data-testid="process-import-scope"]')).toBeNull();
-    // Nothing left to choose, so nothing blocks confirmation.
     expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(false);
     expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')).toBeNull();
   });
@@ -1337,7 +1302,6 @@ describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () =>
       expectedRevision: MODELS_REVISION,
       mutation: { kind: 'import-package' }
     });
-    // Model Catalog's single write must not fall through to the catalog path.
     expect(publishSpy).not.toHaveBeenCalled();
   });
 
@@ -1365,5 +1329,76 @@ describe('Feature 096 T024 — the Model Catalog branch (FR-015, FR-056)', () =>
     expect(getByTestId('process-import-outcome').dataset['outcome']).toBe('failed');
     expect(getByTestId('process-import-result-outcome').textContent).toBe('failed');
     expect(getByTestId('process-import-result-detail').textContent).toContain('inspect it again');
+  });
+});
+
+describe('Feature 326 — modal mode, .sg .btn adoption, targetGate, and cancel preservation', () => {
+  it('retires .preflight-button in favor of .sg .btn classes', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { container, getByTestId } = render(ProcessImportPreflight, {
+      props: { modalMode: true }
+    });
+    expect(container.querySelector('.preflight-button')).toBeNull();
+    const inspectBtn = getByTestId('process-import-inspect');
+    expect(inspectBtn.classList.contains('btn')).toBe(true);
+
+    await inspect(getByTestId);
+    expect(container.querySelector('.preflight-button')).toBeNull();
+    const confirmBtn = getByTestId('process-import-confirm');
+    expect(confirmBtn.classList.contains('btn')).toBe(true);
+    expect(confirmBtn.classList.contains('btn-primary')).toBe(true);
+  });
+
+  it('calls oncancelwithoutplan when OS picker cancels with no prior plan', async () => {
+    preflightSpy.mockResolvedValueOnce({ outcome: 'canceled' });
+    const oncancelwithoutplan = vi.fn();
+    render(ProcessImportPreflight, {
+      props: { modalMode: true, autoInspect: true, oncancelwithoutplan }
+    });
+    await tick();
+    await tick();
+    expect(oncancelwithoutplan).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an existing plan and shows a quiet canceled notice when Choose another file… cancels', async () => {
+    preflightSpy
+      .mockResolvedValueOnce({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) })
+      .mockResolvedValueOnce({ outcome: 'canceled' });
+    const oncancelwithoutplan = vi.fn();
+    const { getByTestId, queryByTestId } = render(ProcessImportPreflight, {
+      props: { modalMode: true, autoInspect: true, oncancelwithoutplan }
+    });
+    await tick();
+    await tick();
+    expect(queryByTestId('process-import-plan')).not.toBeNull();
+
+    // Choose another file… and cancel the OS file picker
+    await inspect(getByTestId);
+    expect(oncancelwithoutplan).not.toHaveBeenCalled();
+    expect(queryByTestId('process-import-plan')).not.toBeNull();
+    expect(getByTestId('process-import-canceled').textContent).toContain('unchanged');
+  });
+
+  it('blocks Confirm via targetGate when the inspected kind has pending edits', async () => {
+    preflightSpy.mockResolvedValue({ outcome: 'planned', plan: modelCatalogPlan([MODEL_IMPORT_ROW]) });
+    const { getByTestId } = render(ProcessImportPreflight, {
+      props: {
+        modalMode: true,
+        targetGate: {
+          isPrimary: true,
+          workspaceTrust: true,
+          trustPhases: true,
+          phaseSavePending: false,
+          phaseMutationActive: false,
+          workflowSavePending: false,
+          workflowMutationActive: false,
+          modelsSavePending: false,
+          modelsDirty: true
+        }
+      }
+    });
+    await inspect(getByTestId);
+    expect((getByTestId('process-import-confirm') as HTMLButtonElement).disabled).toBe(true);
+    expect(getByTestId('process-import-confirm-blocked').textContent).toContain('Model Catalog');
   });
 });

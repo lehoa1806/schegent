@@ -33,25 +33,110 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'out', 'coverage', '.vscode-t
 const PARSED = new Set(['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs', '.svelte']);
 
 /**
- * The census this gate was written against, measured 2026-08-22: 455 catch clauses
- * across the three trees, of which 82 are statement-free and all 82 now carry a
- * comment. Only the 82 are this gate's business; the other 373 handle their error.
+ * Refreshed census, measured 2026-11-27 (principal-review-2026-11-27-r2 §3.3):
+ * 1,464 catch clauses across `src`, `tests`, and `webview-ui/src`, of which 251
+ * are statement-free and carry an intent comment (originally measured 2026-08-22
+ * at 455 total / 82 statement-free).
  *
  * The floor below is a tripwire for a gate that has stopped looking — a moved
  * directory, a broken walk, a parser that no longer understands the syntax — not a
- * ratchet on how many catches the repository may have. It is deliberately far under
- * the measured total so that ordinary churn never trips it, and the assertions that
- * actually pin coverage are the per-tree ones: a walk that silently stops reaching
- * `webview-ui/src`, or an extractor that stops finding component script blocks, is
- * still 448 clauses away from any total-count floor.
+ * ratchet on how many catches the repository may have. It stays well below the
+ * total clause count (1,464) so ordinary churn never trips it, while the per-tree
+ * checks pin coverage of `src`, `tests`, and `webview-ui/src` separately.
  */
-const KNOWN_STATEMENT_FREE = 82;
+const KNOWN_STATEMENT_FREE = 251;
+
+/**
+ * principal-review-2026-11-27-r2 §3.3 — Shrink-only ratchet for promise
+ * `.catch(() => undefined | null | {} | void 0)` handlers in `src/` (including
+ * empty-block `.catch(() => {})` and single-return silent handlers).
+ *
+ * Measured 2026-11-27 after fixing silent compensating-rollback and wakeup
+ * catches in `workflow-launcher.ts` (2) and `control-wakeup-planner.ts` (1):
+ * 171 sites across `src/` (157 `() => undefined`, 9 `() => null`, 5 empty-block
+ * `() => { ... }`, 0 `() => ({})` / `() => void 0`). This ceiling may only shrink.
+ */
+const MAX_SILENT_PROMISE_CATCHES_IN_SRC = 171;
 
 interface Clause {
   readonly file: string;
   readonly line: number;
   readonly statementFree: boolean;
   readonly inner: string;
+}
+
+interface SilentPromiseCatch {
+  readonly file: string;
+  readonly line: number;
+  readonly text: string;
+}
+
+function isSilentReturnExpression(expr: ts.Expression): boolean {
+  let current = expr;
+  while (ts.isParenthesizedExpression(current)) {
+    current = current.expression;
+  }
+  if (ts.isIdentifier(current) && current.text === 'undefined') return true;
+  if (current.kind === ts.SyntaxKind.NullKeyword) return true;
+  if (ts.isObjectLiteralExpression(current) && current.properties.length === 0) return true;
+  if (
+    ts.isVoidExpression(current) &&
+    ts.isNumericLiteral(current.expression) &&
+    current.expression.text === '0'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isSilentPromiseCatchHandler(node: ts.Expression): boolean {
+  if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
+  if (ts.isBlock(node.body)) {
+    if (node.body.statements.length === 0) return true;
+    if (node.body.statements.length === 1) {
+      const only = node.body.statements[0];
+      if (ts.isReturnStatement(only)) {
+        return only.expression === undefined || isSilentReturnExpression(only.expression);
+      }
+    }
+    return false;
+  }
+  return isSilentReturnExpression(node.body);
+}
+
+export function collectSilentPromiseCatchesInSource(
+  source: string,
+  file: string
+): SilentPromiseCatch[] {
+  const found: SilentPromiseCatch[] = [];
+  const parsed = ts.createSourceFile(
+    `${file}.ts`,
+    source,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TS
+  );
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'catch' &&
+      node.arguments.length >= 1
+    ) {
+      const handler = node.arguments[0];
+      if (isSilentPromiseCatchHandler(handler)) {
+        const start = node.getStart(parsed);
+        found.push({
+          file,
+          line: source.slice(0, start).split('\n').length,
+          text: source.slice(handler.getStart(parsed), handler.end).replace(/\s+/g, ' ')
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(parsed, visit);
+  return found;
 }
 
 function walk(dir: string, onFile: (absolute: string) => void): void {
@@ -128,8 +213,19 @@ function collect(): Clause[] {
   return clauses;
 }
 
+function collectSilentPromiseCatchesInSrc(): SilentPromiseCatch[] {
+  const found: SilentPromiseCatch[] = [];
+  walk(resolve(REPO_ROOT, 'src'), absolute => {
+    const file = relative(REPO_ROOT, absolute).replace(/\\/g, '/');
+    const source = readFileSync(absolute, 'utf8');
+    found.push(...collectSilentPromiseCatchesInSource(source, file));
+  });
+  return found;
+}
+
 const CLAUSES = collect();
 const STATEMENT_FREE = CLAUSES.filter(clause => clause.statementFree);
+const SILENT_PROMISE_CATCHES_IN_SRC = collectSilentPromiseCatchesInSrc();
 
 describe('Feature 112 empty catches declare intent', () => {
   it(`finds at least the ${KNOWN_STATEMENT_FREE} catch clauses this gate was written against`, () => {
@@ -174,5 +270,48 @@ describe('Feature 112 empty catches declare intent', () => {
         `cannot tell a decision from an oversight. Say what is being swallowed and why ` +
         `— one line is enough:\n  ${silent.join('\n  ')}`
     ).toEqual([]);
+  });
+
+  it(`ratchets silent promise .catch(() => undefined|null|{}|void 0) handlers in src/ at ≤ ${MAX_SILENT_PROMISE_CATCHES_IN_SRC}`, () => {
+    expect(
+      SILENT_PROMISE_CATCHES_IN_SRC.length,
+      'anti-vacuity: expected live silent promise .catch handlers in src/ to be observed'
+    ).toBeGreaterThan(50);
+
+    const overLimitMessage =
+      `Found ${SILENT_PROMISE_CATCHES_IN_SRC.length} silent promise .catch handlers in src/ ` +
+      `(ratchet ceiling ${MAX_SILENT_PROMISE_CATCHES_IN_SRC}). Log a sanitized warning or handle ` +
+      `the rejection explicitly instead of adding a new silent .catch(() => undefined|null|{}|void 0):\n  ` +
+      SILENT_PROMISE_CATCHES_IN_SRC.map(hit => `${hit.file}:${hit.line} (${hit.text})`).join('\n  ');
+
+    expect(SILENT_PROMISE_CATCHES_IN_SRC.length, overLimitMessage).toBeLessThanOrEqual(
+      MAX_SILENT_PROMISE_CATCHES_IN_SRC
+    );
+
+    const inWakeupPlanner = SILENT_PROMISE_CATCHES_IN_SRC.filter(
+      hit => hit.file === 'src/services/workflow-execution/control-wakeup-planner.ts'
+    );
+    expect(
+      inWakeupPlanner,
+      'control-wakeup-planner.ts must not reintroduce silent promise .catch handlers'
+    ).toEqual([]);
+  });
+
+  it('NON-VACUITY: detects every silent promise .catch shape and ignores logging handlers', () => {
+    const synthetic = [
+      'async function sample(p: Promise<void>, log: { warn(m: string): void }) {',
+      '  await p.catch(() => undefined);',
+      '  await p.catch(() => null);',
+      '  await p.catch(() => ({}));',
+      '  await p.catch(() => void 0);',
+      '  await p.catch(() => {});',
+      '  await p.catch((_err) => { return undefined; });',
+      '  await p.catch(function () { return null; });',
+      '  await p.catch((err) => { log.warn(String(err)); });',
+      '}'
+    ].join('\n');
+
+    const hits = collectSilentPromiseCatchesInSource(synthetic, 'fixture/sample.ts');
+    expect(hits.map(h => h.line)).toEqual([2, 3, 4, 5, 6, 7, 8]);
   });
 });

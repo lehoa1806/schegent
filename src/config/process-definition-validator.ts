@@ -1,16 +1,30 @@
 import {
+  AUTHORED_PHASE_FIELDS,
   PHASE_EFFORT_LEVELS,
   PHASE_EVIDENCE_POLICIES,
+  PHASE_HOST_VERIFICATIONS,
   PHASE_ID_MAX_LEN,
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
+  RETRY_CAP_OUTCOMES,
+  isNativeReviewKind,
   type PhaseDefinition,
   type PhaseEvidencePolicy,
+  type PhaseHostVerification,
   type PhaseFieldError,
   type PhaseSideEffects
 } from '../contracts/process-definitions';
 import { validate as validateRetryCondition } from '../lib/retry-condition';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
+import { isUnsupportedEffortForBackend } from '../contracts/backend-descriptors';
+import {
+  ALL_PHASE_CAPABILITIES,
+  isPhaseCapability,
+  type PhaseCapability
+} from '../contracts/phase-capabilities';
+import { ARGV_VALUE_MAX_LEN, ARGV_VALUE_PATTERN } from '../contracts/argv-value';
+import { validateResultContract, type ResultContract } from '../contracts/decision-results';
+import { recognizedAuthoredDisplay } from './authored-display';
 
 export const PHASE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 export { PHASE_ID_MAX_LEN };
@@ -21,28 +35,66 @@ export const PHASE_SKILL_MAX_LEN = 256;
 export const PHASE_TIMEOUT_MIN = 1;
 export const PHASE_TIMEOUT_MAX = 3600;
 
-export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
-  'id',
-  'phaseId',
-  'name',
-  'description',
-  'version',
-  'instruction',
-  'skill',
-  'model',
-  'effort',
-  'timeoutSeconds',
-  'loopable',
-  'retryCondition',
-  'isRequired',
-  'forceContinueOnRetryCap',
-  'runner',
-  // Feature 098 T015 — authored, not host-resolved. The save path and the import
-  // path must hold a definition to the same closed set, or a Phase would be
-  // accepted by one route and refused by the other on the same field.
-  'sideEffects',
-  'evidencePolicy'
-]);
+/**
+ * FR-R3-112 — bounds on the authored per-phase spend override.
+ *
+ * A ceiling as well as a floor, for the same reason every other authored bound has
+ * one: an operator-imported document controls this value, and a bound of
+ * `Number.MAX_VALUE` is a bound that never fires while reading as governance. The
+ * ceilings are deliberately generous — they refuse absurdity, not ambition.
+ */
+export const PHASE_SPEND_USD_MIN = 0.01;
+export const PHASE_SPEND_USD_MAX = 10_000;
+export const PHASE_SPEND_TOKENS_MIN = 1;
+export const PHASE_SPEND_TOKENS_MAX = 1_000_000_000;
+
+/**
+ * FR-R3-105 — the argv boundary. Every authored field falls in exactly one of three
+ * classes, and `tests/lint/argv-field-partition.test.ts` asserts the three cover
+ * `AUTHORED_PHASE_FIELDS` exactly.
+ *
+ * WHY A PARTITION RATHER THAN A BOUND ON TWO NAMED FIELDS. A pipeline document is
+ * operator-imported, **untrusted** content. `model` was validated as a non-empty string
+ * and pushed as its own argv token at all three backends, so a document supplying
+ * `model: "--dangerously-skip-permissions"` put that literal flag into the child's argv.
+ * Spawns are `shell: false` throughout, so this is not shell injection — it is **flag
+ * injection**, and the authority it grants is exactly the authority the capability plan
+ * exists to narrow, through a field the narrowing never sees.
+ *
+ * Naming `model` and `effort` and stopping would leave the same hole open for the next
+ * argv-reaching field someone authors. The partition makes that impossible to add
+ * silently: a new authored field must be classified or the gate fails.
+ *
+ * The three classes, and why `effort` is in the second rather than the first: the source
+ * item states that `effort` "has the same shape" as `model`. Its *emission* does, but its
+ * *validation* does not — it is already closed to `PHASE_EFFORT_LEVELS`, a five-value
+ * enum, so a leading dash cannot survive validation. Adding a charset bound to it would
+ * be a redundant second check on a field that is already closed, and recording it as
+ * enum-covered is more honest than pretending it was fixed here.
+ */
+export const ARGV_FREE_FORM_FIELDS: ReadonlySet<string> = new Set(['model']);
+
+/** Reaches argv, but already closed to an enum, so no charset bound is owed. */
+export const ARGV_ENUM_CLOSED_FIELDS: ReadonlySet<string> = new Set(['effort']);
+
+/**
+ * The charset bound is NOT declared here. `src/contracts/argv-value.ts` owns it, and both
+ * this freeze-site check and the dispatch-time defensive check read that one authority —
+ * two copies of "what does a safe argv value look like" is how a validator and a
+ * dispatcher come to disagree, and the disagreement would present as a run that executed
+ * rather than a refusal.
+ */
+export { ARGV_VALUE_PATTERN, ARGV_VALUE_MAX_LEN } from '../contracts/argv-value';
+
+/**
+ * The closed set of authored Phase fields, re-exported.
+ *
+ * `src/contracts/process-definitions.ts` owns it, on the same reasoning as
+ * `PHASE_ID_MAX_LEN` and `ARGV_VALUE_PATTERN` above: the Builder is bundled into
+ * the webview and cannot import this module, and a set it cannot read is a set it
+ * forks. Re-exported here so every existing caller keeps naming one bound.
+ */
+export { AUTHORED_PHASE_FIELDS };
 
 const ERROR_MESSAGE_MAX = 512;
 const ERROR_FIELD_MAX = 32;
@@ -79,20 +131,86 @@ function fieldError(
   });
 }
 
-function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
-  const display: Record<string, unknown> = {};
-  for (const field of AUTHORED_PHASE_FIELDS) {
-    const value = raw[field];
-    if (
-      typeof value === 'string' ||
-      typeof value === 'number' ||
-      typeof value === 'boolean' ||
-      value === null
-    ) {
-      display[field] = value;
-    }
+/**
+ * FR-R3-112 — one bound check for both spend fields.
+ *
+ * Written once rather than twice because the only difference between them is
+ * whether the figure is a whole number: dollars are not, tokens are. Two copies of
+ * the same range check is how the USD field and the token field come to disagree
+ * about what "out of range" means, and the refusal must name the field either way.
+ */
+function boundedSpend(
+  value: unknown,
+  field: 'spendBoundUsd' | 'spendBoundTokens',
+  min: number,
+  max: number,
+  integral: boolean,
+  phaseId: string,
+  errors: PhaseFieldError[]
+): number | undefined {
+  if (value === undefined) return undefined;
+  const valid =
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    (!integral || Number.isInteger(value)) &&
+    value >= min &&
+    value <= max;
+  if (!valid) {
+    errors.push(
+      fieldError(
+        phaseId,
+        field,
+        'invalid-range',
+        `Phase ${field} must be ${integral ? 'an integer' : 'a number'} from ${min} to ${max}`
+      )
+    );
+    return undefined;
   }
-  return Object.freeze(display);
+  return value;
+}
+
+/** Why a trimmed, non-empty `model` may not become an argv token (FR-R3-105). */
+export interface ModelValueDefect {
+  readonly code: 'invalid-length' | 'invalid-charset';
+  readonly message: string;
+}
+
+/**
+ * The one argv check on an authored `model`, shared by this validator and the exchange reader.
+ *
+ * FR-R3-105 — REFUSED, never rewritten. A leading `-` is not stripped and an out-of-charset value is
+ * not sanitised: the `catalogVersion` rule's reasoning applies, because laundering an untrusted value
+ * into a legitimate-looking one is worse than declining it. The refusal names the field so the operator
+ * knows which row of their document to fix.
+ *
+ * Feature 254 (FR-R4-F07, FR-034; H5) extracted this from the body below. The exchange reader
+ * (`phase-yaml-validator.ts`) checked only that a `model` was not blank, so a document naming
+ * `--dangerously-skip-permissions` previewed clean and was refused at the commit; the differential in
+ * `tests/parity/phase-yaml-definition-parity.test.ts` found the divergence, and the leaf now lives
+ * with the validator that owns it so the two cannot say different things.
+ *
+ * Takes the TRIMMED value and returns `null` when it is acceptable.
+ */
+export function modelValueDefect(candidate: string): ModelValueDefect | null {
+  if (candidate.length > ARGV_VALUE_MAX_LEN) {
+    return {
+      code: 'invalid-length',
+      message: `Phase model must be at most ${ARGV_VALUE_MAX_LEN} characters`
+    };
+  }
+  if (!ARGV_VALUE_PATTERN.test(candidate)) {
+    return {
+      code: 'invalid-charset',
+      message:
+        'Phase model reaches the backend command line, so it must start with a letter ' +
+        'or digit and use only letters, digits and . _ : / -'
+    };
+  }
+  return null;
+}
+
+function recognizedDisplay(raw: Record<string, unknown>): Readonly<Record<string, unknown>> {
+  return recognizedAuthoredDisplay(raw, AUTHORED_PHASE_FIELDS);
 }
 
 export function validatePhaseDefinition(
@@ -221,7 +339,13 @@ export function validatePhaseDefinition(
     if (typeof value.model !== 'string' || value.model.trim().length === 0) {
       errors.push(fieldError(phaseId, 'model', 'non-empty-required', 'Phase model must be non-empty'));
     } else {
-      model = value.model.trim();
+      const candidate = value.model.trim();
+      const refusal = modelValueDefect(candidate);
+      if (refusal !== null) {
+        errors.push(fieldError(phaseId, 'model', refusal.code, refusal.message));
+      } else {
+        model = candidate;
+      }
     }
   }
 
@@ -303,7 +427,88 @@ export function validatePhaseDefinition(
     }
   }
 
-  if (runner === 'agy' && (effort === 'xhigh' || effort === 'max')) {
+  // FR-R3-058 — same shape as `evidencePolicy` above, deliberately: a second
+  // validation idiom for a second enum on the same object is how one of them
+  // ends up looser than the other.
+  let hostVerification: PhaseHostVerification | undefined;
+  if (value.hostVerification !== undefined) {
+    if (
+      typeof value.hostVerification !== 'string' ||
+      !(PHASE_HOST_VERIFICATIONS as readonly string[]).includes(value.hostVerification)
+    ) {
+      errors.push(
+        fieldError(
+          phaseId,
+          'hostVerification',
+          'invalid-enum',
+          `Phase hostVerification must be one of ${PHASE_HOST_VERIFICATIONS.join(', ')}`
+        )
+      );
+    } else {
+      hostVerification = value.hostVerification as PhaseHostVerification;
+    }
+  }
+
+  // FR-R3-086 — the declared capability set.
+  //
+  // REJECTED, not silently dropped, when a member is unknown. `declaredCapabilitySet`
+  // filters to known members, so a typo would otherwise yield an EMPTY set — every
+  // capability withheld — and the phase would be refused at run time for a reason
+  // no one could see from the definition. Fail-closed is the right direction and a
+  // silent one is still the wrong report.
+  let capabilities: PhaseCapability[] | undefined;
+  if (value.capabilities !== undefined) {
+    if (!Array.isArray(value.capabilities)) {
+      errors.push(
+        fieldError(phaseId, 'capabilities', 'array-required', 'Phase capabilities must be an array')
+      );
+    } else if (value.capabilities.length > ALL_PHASE_CAPABILITIES.length) {
+      // Feature 254 (FR-R4-F07, FR-005) — more members than the vocabulary holds always means an
+      // unknown member or a repeat, so the list is refused on its length, before any member is
+      // looked up. The `filter` and `indexOf` this replaces were quadratic in the list, and the
+      // list is operator input. The YAML reader applies the same bound with the same code and
+      // message; tests/parity/phase-yaml-definition-parity.test.ts holds the two together.
+      errors.push(
+        fieldError(
+          phaseId,
+          'capabilities',
+          'too-many-members',
+          `Phase capabilities list at most ${ALL_PHASE_CAPABILITIES.length} members`
+        )
+      );
+    } else {
+      const members = value.capabilities as unknown[];
+      const unknown = members.filter((entry) => !isPhaseCapability(entry));
+      const repeated = new Set(members).size < members.length;
+      if (unknown.length > 0) {
+        errors.push(
+          fieldError(
+            phaseId,
+            'capabilities',
+            'invalid-enum',
+            `Phase capabilities must each be one of ${ALL_PHASE_CAPABILITIES.join(', ')}`
+          )
+        );
+      } else if (repeated) {
+        // Refused HERE as well as in the exchange format's reader, and the two
+        // must agree: a definition this validator accepts but the reader refuses
+        // is one that cannot survive its own export. The set is what carries
+        // meaning, so a repeat carries none and is an authoring error.
+        errors.push(
+          fieldError(
+            phaseId,
+            'capabilities',
+            'duplicate-member',
+            'Phase capabilities must not repeat a member'
+          )
+        );
+      } else {
+        capabilities = value.capabilities as PhaseCapability[];
+      }
+    }
+  }
+
+  if (effort !== undefined && isUnsupportedEffortForBackend(runner, effort)) {
     errors.push(
       fieldError(
         phaseId,
@@ -335,6 +540,25 @@ export function validatePhaseDefinition(
     }
   }
 
+  const spendBoundUsd = boundedSpend(
+    value.spendBoundUsd,
+    'spendBoundUsd',
+    PHASE_SPEND_USD_MIN,
+    PHASE_SPEND_USD_MAX,
+    false,
+    phaseId,
+    errors
+  );
+  const spendBoundTokens = boundedSpend(
+    value.spendBoundTokens,
+    'spendBoundTokens',
+    PHASE_SPEND_TOKENS_MIN,
+    PHASE_SPEND_TOKENS_MAX,
+    true,
+    phaseId,
+    errors
+  );
+
   const loopable = value.loopable;
   if (loopable !== undefined && typeof loopable !== 'boolean') {
     errors.push(fieldError(phaseId, 'loopable', 'boolean-required', 'Phase loopable must be boolean'));
@@ -355,6 +579,32 @@ export function validatePhaseDefinition(
         'Phase forceContinueOnRetryCap must be boolean'
       )
     );
+  }
+  // FR-R3-157 (contract V1) — the three-valued successor to the boolean above,
+  // checked beside it because they are the same authored decision in two forms.
+  //
+  // A phase carrying BOTH is valid (V2), including with contradictory values:
+  // `onRetryCap` supersedes rather than conflicts, `resolveRetryCapOutcome` gives
+  // it precedence, and refusing the pair would mean an author could not add the
+  // new field without removing the old one in the same edit — which is the one
+  // thing this feature promises never to require.
+  let onRetryCap: PhaseDefinition['onRetryCap'];
+  if (value.onRetryCap !== undefined) {
+    if (
+      typeof value.onRetryCap !== 'string' ||
+      !(RETRY_CAP_OUTCOMES as readonly string[]).includes(value.onRetryCap)
+    ) {
+      errors.push(
+        fieldError(
+          phaseId,
+          'onRetryCap',
+          'invalid-enum',
+          `Phase onRetryCap must be one of ${RETRY_CAP_OUTCOMES.join(', ')}`
+        )
+      );
+    } else {
+      onRetryCap = value.onRetryCap as PhaseDefinition['onRetryCap'];
+    }
   }
 
   let retryCondition: string | undefined;
@@ -408,6 +658,23 @@ export function validatePhaseDefinition(
     }
   }
 
+  const nativeReview = value.nativeReview;
+  if (nativeReview !== undefined && !isNativeReviewKind(nativeReview)) {
+    errors.push(fieldError(phaseId, 'nativeReview', 'invalid-enum', 'Phase nativeReview must be code or security'));
+  }
+
+  let resultContract: ResultContract | undefined;
+  if (value.resultContract !== undefined) {
+    const validatedContract = validateResultContract(value.resultContract, 'resultContract');
+    if (!validatedContract.ok) {
+      for (const defect of validatedContract.defects) {
+        errors.push(fieldError(phaseId, defect.field, defect.code, defect.message));
+      }
+    } else {
+      resultContract = validatedContract.contract;
+    }
+  }
+
   if (errors.length > 0) {
     return {
       ok: false,
@@ -426,13 +693,20 @@ export function validatePhaseDefinition(
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+    ...(spendBoundUsd !== undefined ? { spendBoundUsd } : {}),
+    ...(spendBoundTokens !== undefined ? { spendBoundTokens } : {}),
     ...(typeof loopable === 'boolean' ? { loopable } : {}),
     ...(retryCondition !== undefined ? { retryCondition } : {}),
     ...(typeof isRequired === 'boolean' ? { isRequired } : {}),
     ...(typeof forceContinueOnRetryCap === 'boolean' ? { forceContinueOnRetryCap } : {}),
+    ...(onRetryCap !== undefined ? { onRetryCap } : {}),
     ...(runner !== undefined ? { runner } : {}),
     ...(sideEffects !== undefined ? { sideEffects } : {}),
-    ...(evidencePolicy !== undefined ? { evidencePolicy } : {})
+    ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
+    ...(hostVerification !== undefined ? { hostVerification } : {}),
+    ...(capabilities !== undefined ? { capabilities } : {}),
+    ...(isNativeReviewKind(nativeReview) ? { nativeReview } : {}),
+    ...(resultContract !== undefined ? { resultContract } : {})
   };
   const definition: PhaseDefinition = hasInstruction
     ? { ...common, instruction: instruction as string }

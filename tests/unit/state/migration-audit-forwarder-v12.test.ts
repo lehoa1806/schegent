@@ -18,8 +18,8 @@ import {
 import { STATE_SCHEMA_VERSION_V11 } from '../../../src/contracts/state-schema';
 import { forwardMigrationAuditEvents } from '../../../src/state/migration-audit-forwarder';
 import { isKnownAuditEventType } from '../../../src/contracts/audit-events';
-import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../../../src/state/history-entry';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { QueueState } from '../../../src/queue/feature-request';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import { buildQueueRegistry, buildV9QueueState, fixtureQueueId } from '../../fixtures/state/queue-fixtures';

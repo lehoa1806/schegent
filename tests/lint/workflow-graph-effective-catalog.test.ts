@@ -56,7 +56,7 @@ const ACCEPTED_ARGUMENT = /^(?:[A-Za-z0-9_$.]*\.effective|effectivePipelines|eff
  * tests/unit/process-yaml/package-resolver.test.ts.
  */
 const AUGMENTED_SITE = 'src/services/process-yaml/package-resolver.ts';
-const ACCEPTED_AUGMENTATION = /^prospectivePipelineCatalog\([A-Za-z0-9_$.]*\)$/;
+const ACCEPTED_AUGMENTATION = /^(?:prospectivePipelineCatalog\([A-Za-z0-9_$.]*\)|\[\])$/;
 
 function argumentIsAccepted(site: CallSite): boolean {
   if (ACCEPTED_ARGUMENT.test(site.secondArgument)) return true;

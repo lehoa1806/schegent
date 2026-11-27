@@ -1,3 +1,18 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT, WITH ONE NAMED
+// EXCEPTION THAT PHASE D CLOSES.
+// Composes the capability service, the operator Ping and the Stage-1 log sinks;
+// every probe those services can perform is called from somewhere else, and the
+// wiring-time one is deferred (see `stage2-producers.ts`).
+//
+// The exception is `createRuntimeEvidenceWiring`, which adds a sink that appends
+// to `schegent.logging.runtimeLogFilePath` — `scope: resource`, so a workspace
+// can name it, which is the criterion's first clause. It is NOT gated here and
+// must not be: the runtime log is the one surface that explains why everything
+// else in an untrusted window was refused, and a sink that goes quiet takes the
+// explanation with it. The closure is Phase D's `restrictedConfigurations`
+// (T1526a) plus the containment `FR-R3-005` already applies at the syscall — a
+// setting the folder cannot set is a path the folder cannot name.
+
 import * as os from 'node:os';
 import * as vscode from 'vscode';
 
@@ -9,14 +24,24 @@ import {
   createRuntimeLogAccessor
 } from '../lib/runtime-log';
 import { WebviewLogSink } from '../lib/webview-log-sink';
-import { buildSpawnEnv, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import { buildSpawnEnv, policyRequestFields, type ProcessEnvironmentPolicy } from '../runner/spawn-env';
 import {
   BackendCapabilityService,
   normalizeBackendProbeTimeoutSeconds
 } from '../services/backend-capability-service';
+import {
+  BackendAvailabilityService,
+  type AvailabilityClockPort
+} from '../services/backend-availability-service';
 import { BackendPingService } from '../services/backend-ping-service';
 import { EvidenceHealthMonitor } from '../services/evidence-health/evidence-health-monitor';
+import { ControlLedgerStore } from '../services/workflow-execution/control-ledger-store';
+import {
+  ControlWakeupPlanner,
+  type ControlWakeupEvent
+} from '../services/workflow-execution/control-wakeup-planner';
 import { getCanonicalWorkspaceRoot } from '../state/workspace-folder-picker';
+import type { WorkspaceStateStore } from '../state/workspace-state';
 
 const unrestrictedEnvironmentWarnedWorkspaces = new Set<string>();
 
@@ -33,6 +58,65 @@ export interface BackendDiagnosticsWiring {
   dispose(): void;
 }
 
+export interface BackendAvailabilityWiring {
+  readonly availabilityService: BackendAvailabilityService;
+  readonly wakeupPlanner: ControlWakeupPlanner;
+  dispose(): void;
+}
+
+/**
+ * FR-R5-F28 (SPEC-06, D7) — Compose the backend availability service and durable
+ * control wakeup planner over the workspace's `ControlLedgerStore`.
+ */
+export function createBackendAvailabilityWiring(input: {
+  readonly store: WorkspaceStateStore;
+  readonly capabilities: BackendCapabilityService;
+  readonly hostEpoch: string;
+  readonly clock?: AvailabilityClockPort;
+  readonly onWakeupDue?: (event: ControlWakeupEvent) => void | Promise<void>;
+  readonly logger?: Pick<SanitizedLogger, 'warn' | 'sanitize'>;
+}): BackendAvailabilityWiring {
+  const ledgerStore = new ControlLedgerStore(input.store);
+  const clock: AvailabilityClockPort = input.clock ?? {
+    hostEpoch: input.hostEpoch,
+    nowWallMs: () => Date.now(),
+    nowMonotonicMs: () => Math.trunc(performance.now())
+  };
+  const availabilityService = new BackendAvailabilityService({
+    ledgerStore,
+    clock,
+    getAdapter: (kind) => {
+      const registered = input.capabilities.getAvailabilityAdapter(kind);
+      return {
+        adapterId: registered?.adapterId ?? `${kind}-cli`,
+        adapterVersion: registered?.adapterVersion ?? 1,
+        backend: kind,
+        statusCheck: input.capabilities.getStatusCheckSupport(kind),
+        resolveQuotaContext: (frozenPhase) =>
+          input.capabilities.resolveQuotaContext(frozenPhase),
+        ...(registered?.checkAvailability !== undefined
+          ? {
+              checkAvailability: (ctx, signal) =>
+                registered.checkAvailability!(ctx, signal)
+            }
+          : {})
+      };
+    }
+  });
+  const wakeupPlanner = new ControlWakeupPlanner({
+    ledgerStore,
+    availabilityService,
+    clock,
+    ...(input.onWakeupDue !== undefined ? { onWakeupDue: input.onWakeupDue } : {}),
+    ...(input.logger !== undefined ? { logger: input.logger } : {})
+  });
+  return {
+    availabilityService,
+    wakeupPlanner,
+    dispose: () => wakeupPlanner.dispose()
+  };
+}
+
 /** Workspace-scoped backend discovery and operator Ping composition. */
 export function createBackendDiagnosticsWiring(input: {
   readonly workspaceRoot: string;
@@ -41,6 +125,8 @@ export function createBackendDiagnosticsWiring(input: {
   readonly audit: AuditLogWriter;
   readonly logger: SanitizedLogger;
   readonly onDidChange: () => void;
+  /** FR-R7-16 (16-14): live workspace trust gate preventing untrusted `--help` / model probes. */
+  readonly isTrusted?: () => boolean;
 }): BackendDiagnosticsWiring {
   const readTimeout = (): unknown => vscode.workspace
     .getConfiguration('schegent', vscode.Uri.file(input.workspaceRoot))
@@ -51,11 +137,17 @@ export function createBackendDiagnosticsWiring(input: {
       kind, input.workspaceRoot, input.claudePath
     ),
     readTimeoutSeconds: readTimeout,
+    // FR-R3-049 — through the shared helper like every other policy consumer.
+    // This site mapped the two fields by hand, which meant the helper was not
+    // actually "the one place" the policy reaches a request; and because this is
+    // a probe rather than an `.invoke` call, the lint gate could not see it
+    // either. Passing `inheritProcessEnv` unconditionally also differed subtly
+    // from the helper, which omits it unless it is `false`.
     buildEnv: () => buildSpawnEnv({
       env: { SCHEGENT_PHASE: 'runner-probe', SCHEGENT_ITERATION: '0' },
-      inheritProcessEnv: input.environmentPolicy.inheritProcessEnv,
-      processEnvAllowlist: input.environmentPolicy.processEnvAllowlist
+      ...policyRequestFields(input.environmentPolicy)
     }),
+    isTrusted: input.isTrusted ?? (() => vscode.workspace.isTrusted === true),
     logger: input.logger,
     onDidChange: input.onDidChange
   });
@@ -121,7 +213,22 @@ export function createRuntimeEvidenceWiring(
   return { runtimeLogAccessor, runtimeLogSink, evidenceHealth, webviewLogSink };
 }
 
-/** Warn once per workspace without ever logging environment values. */
+/**
+ * Warn once per workspace without ever logging environment values.
+ *
+ * FR-R3-125 (FR-007) — this stays exactly as it is, and the reason is worth
+ * stating so it is not "consolidated" with the newer one. This warning is about
+ * the environment policy ON ITS OWN: `inherit` widens the ambient credential
+ * surface for every spawn, contained or not, and that is true and worth saying
+ * once per workspace at activation. It cannot say more, because at activation
+ * nothing knows which backend will spawn.
+ *
+ * `createBackendRunner` carries a SECOND warning about the CONJUNCTION — no
+ * OS-enforced bound *and* the full ambient environment — which is a different
+ * fact, fires on one of four combinations, and is only knowable where the backend
+ * kind and the policy meet. Two warnings, two facts. Merging them would either
+ * lose the general one or make the compound one fire when it does not apply.
+ */
 export function warnIfEnvironmentIsUnrestricted(
   policy: ProcessEnvironmentPolicy,
   workspaceRoot: string,

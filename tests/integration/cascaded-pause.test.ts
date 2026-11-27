@@ -26,7 +26,9 @@ import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
 import type { ExecutionLeasePort } from '../../src/services/auto-drain-coordinator';
-import { findQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { findQueue } from '../../src/queue/queue-registry';
+import { waitForCondition } from '../wait-for-condition';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -40,9 +42,12 @@ class FakeMemento implements Memento {
   }
 }
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -52,7 +57,8 @@ const cleanStdout = (phase: string): string =>
     'network_calls: ["none"]',
     'ruleset_switches: ["none"]',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 function makeLock(): WorkspaceLockManager {
@@ -80,9 +86,31 @@ function makeLock(): WorkspaceLockManager {
  * it now has. Left on the lock, this test would assert the cascade while the
  * drain was in fact free to dispatch, which is the opposite of what it checks.
  */
-function makeRefusingLease(): ExecutionLeasePort {
+/**
+ * FR-R3-070 (feature 152) — the same reasoning one gate later. The resume seam
+ * now claims the execution lease too (`resumeExistingOnQueue` mirrors the
+ * drain's step 6), so a lease that refuses EVERYTHING no longer models this
+ * walkthrough: its premise is that the window that owns the paused Run may
+ * resume it, while the drain stays refused. `grantNext()` opens exactly one
+ * claim — the operator's resume — and every other claim (including the
+ * post-terminal drain sweep that would otherwise dispatch task B) still
+ * refuses, which is what keeps "B stays pending" meaning "the cascade held".
+ */
+function makeRefusingLease(): ExecutionLeasePort & { grantNext: () => void } {
+  let grants = 0;
   return {
-    tryAcquire: vi.fn(async () => ({ acquired: false, ownerId: 'other-window' })),
+    grantNext: () => {
+      grants += 1;
+    },
+    // FR-R3-077 — a refusing-lease double holds nothing, so it claims nothing.
+    claimFor: () => null,
+    tryAcquire: vi.fn(async () => {
+      if (grants > 0) {
+        grants -= 1;
+        return { acquired: true, ownerId: 'this-window' };
+      }
+      return { acquired: false, ownerId: 'other-window' };
+    }),
     release: vi.fn(async () => {})
   };
 }
@@ -102,6 +130,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
 
+    const lease = makeRefusingLease();
     // We control when pause is triggered by injecting it from the CLI mock
     // mid-phase: during the FIRST `speckit-clarify` invocation, the runner
     // returns clean stdout BUT calls `controller.pauseActivePhase()` first,
@@ -128,7 +157,12 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
       cancelActive: vi.fn(() => false),
       hasActiveProcess: false
     } as unknown as ClaudeCliRunner;
-    const phaseRunner = new PhaseRunner(cliRunner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: audit,
+      logger
+    });
 
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);
@@ -147,7 +181,7 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
       logger,
       makeLock(),
       { cliPath: 'noop', cwd: tmpRoot, iterationCap: 5, timeoutMs: 1000 },
-      { catalog: buildSpeckitCatalog(), executionLease: makeRefusingLease() }
+      { catalog: buildSpeckitCatalog(), executionLease: lease }
     );
 
     // Enqueue two tasks: A (will run) and B (must stay pending).
@@ -180,21 +214,17 @@ describe('Feature 028 — Walkthrough 1 (cascaded active-phase pause)', () => {
     // setImmediate. Wait for that microtask to drain and the resumed run
     // to complete naturally (it will drive clarify → plan → tasks →
     // analyze → implement → finalize → done).
+    // FR-R3-070 — the resume seam claims the lease; open exactly one grant
+    // for it (see makeRefusingLease). Everything else keeps refusing.
+    lease.grantNext();
     await controller.resumeActivePhase();
-    // Bounded by elapsed time rather than by a round count. Each round
-    // sleeps 10ms, so the old cap was ~2000ms of sleep plus however long the
-    // scheduler took to come back — which under load is the larger term.
-    // On exhaustion this used to `break` and fall through to an assertion
-    // that reported the wrong thing: the run's status, rather than the fact
-    // that nobody had waited long enough to see it.
-    const settleBy = Date.now() + 25_000;
-    while (Date.now() < settleBy) {
-      const r = store.getRun(DEFAULT_QUEUE_ID);
-      if (r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled')) {
-        break;
-      }
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    }
+    await waitForCondition(
+      () => {
+        const r = store.getRun(DEFAULT_QUEUE_ID);
+        return Boolean(r && (r.status === 'completed' || r.status === 'failed' || r.status === 'canceled'));
+      },
+      { timeoutMs: 25_000, label: 'resumed cascaded-pause run to reach terminal status' }
+    );
 
     // The host queue's cascade-pause is cleared as part of resumeActivePhase
     // (before resumeExisting fires), so the registry state flips back to

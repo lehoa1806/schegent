@@ -2,46 +2,46 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "description": "Performance budgets enforced by perf and integration smoke tests. The inline assertion in each test is the source of truth; this file is the human-readable index. Update both together when a budget changes.",
   "feature": "049-perf-budgets",
-  "updated": "2026-08-01",
+  "updated": "2026-11-23",
   "budgets": [
     {
       "test": "tests/perf/rate-limit-extractor.test.ts",
-      "name": "extractResetTimestamp — 1MB adversarial buffer",
+      "name": "extractResetTimestamp \u2014 1MB adversarial buffer",
       "budgetMs": 100,
       "constant": "ONE_MB_BUDGET_MS",
-      "rationale": "Feature 027 SC-007 — guards against catastrophic regex backtracking"
+      "rationale": "Feature 027 SC-007 \u2014 guards against catastrophic regex backtracking"
     },
     {
       "test": "tests/perf/rate-limit-extractor.test.ts",
-      "name": "extractResetTimestamp — 10MB adversarial buffer",
+      "name": "extractResetTimestamp \u2014 10MB adversarial buffer",
       "budgetMs": 100,
       "constant": "TEN_MB_BUDGET_MS",
-      "rationale": "Feature 027 SC-007 — same guard at 10x the input size"
+      "rationale": "Feature 027 SC-007 \u2014 same guard at 10x the input size"
     },
     {
       "test": "tests/perf/activity-feed-render.test.ts",
-      "name": "activity-feed render — 100KB manifest",
+      "name": "activity-feed render \u2014 100KB manifest",
       "budgetMs": 150,
       "constant": "BUDGET_MS",
-      "rationale": "Feature 029 — keeps the manifest -> rendered activity feed pipeline interactive"
+      "rationale": "Feature 029 \u2014 keeps the manifest -> rendered activity feed pipeline interactive"
     },
     {
       "test": "tests/perf/load-catalog.test.ts",
-      "name": "loadCatalog — p95 with many phases/pipelines",
+      "name": "loadCatalog \u2014 p95 with many phases/pipelines",
       "budgetMs": 50,
       "constant": "P95_BUDGET_MS",
-      "rationale": "Feature 026 — catalog load must stay fast even with the operator-extended catalog"
+      "rationale": "Feature 026 \u2014 catalog load must stay fast even with the operator-extended catalog"
     },
     {
       "test": "tests/perf/render-budget.test.ts",
-      "name": "StateProjector — 100 v2 project() passes total",
+      "name": "StateProjector \u2014 100 v2 project() passes total",
       "budgetMs": 1600,
       "constant": "TOTAL_BUDGET_MS",
       "rationale": "Snapshot render hot-path total budget over 100 simulated push cycles"
     },
     {
       "test": "tests/perf/render-budget.test.ts",
-      "name": "StateProjector — single project() median",
+      "name": "StateProjector \u2014 single project() median",
       "budgetMs": 5,
       "constant": "MEDIAN_BUDGET_MS",
       "rationale": "Snapshot render hot-path per-frame budget (60 fps target)"
@@ -66,6 +66,154 @@
       "budgetEntries": 200,
       "constant": "MAX_PHASE_LOG_ENTRIES",
       "rationale": "Bounds projected phase-log state while retaining the newest ordered entries"
+    },
+    {
+      "test": "tests/perf/render-budget.test.ts",
+      "name": "project() at the PERMITTED queue scale \u2014 20 queues x 100 pending = 2,000 items",
+      "budgetMs": 2000,
+      "constant": "PERMITTED_SCALE_TOTAL_BUDGET_MS",
+      "rationale": "FR-R3-114 row 1 \u2014 every other render case measured 25 items while the product permits 2,000 (MAX_QUEUES x 100). Measured 2026-08-27 on darwin/arm64: 649.8 ms total for 100 passes, median 6.39 ms. Budget is ~3x the measurement: headroom for a loaded machine, tight enough to catch an order-of-magnitude regression. Companion median budget PERMITTED_SCALE_MEDIAN_BUDGET_MS = 20 ms."
+    },
+    {
+      "test": "tests/perf/advisory-compare-bounded-work.test.ts",
+      "name": "compareTrees groups 15,000 unrelated findings of one package",
+      "budgetMs": 1000,
+      "constant": "GROUPING_BUDGET_MS",
+      "rationale": "FR-R4-F21 (feature 249): a capture is an unsigned file, so its finding count is untrusted and bounded only by the 16 MiB capture size. Measured 2026-10-30 on darwin/arm64 (macOS 27.0.1, Node 24.19.0) under a load average of 54: the linear grouping took 56 to 167 ms over 7 samples, median 105 ms; the quadratic grouping it replaced took 7.1 s. The budget is at least 5x the slowest linear sample and at most a seventh of the quadratic time."
+    },
+    {
+      "test": "tests/perf/advisory-compare-bounded-work.test.ts",
+      "name": "compareTrees classifies a base finding with 15,000 locations and versions",
+      "budgetMs": 1000,
+      "constant": "LOCATIONS_BUDGET_MS",
+      "rationale": "FR-R4-F21 (feature 249): the location count of one finding is untrusted and bounded only by the 16 MiB capture size. Measured 2026-10-30 on darwin/arm64 (macOS 27.0.1, Node 24.19.0) under a load average of 54: the linear classification took 17 to 54 ms over 7 samples, median 25 ms; the quadratic one it replaced took 25.5 s. The budget is at least 18x the slowest linear sample and at most a twenty-fifth of the quadratic time."
+    },
+    {
+      "test": "tests/perf/process-yaml-scanner-linear.test.ts",
+      "name": "process-YAML scanner: cost of each doubling of a hostile run of spaces (5k, 10k, 20k), six shapes",
+      "budgetRatio": 3.0,
+      "constant": "MAX_DOUBLING_RATIO",
+      "rationale": "FR-R4-F07 (feature 254) S-T1, SC-001: the gated value is a ratio, not a time. Linear work doubles per doubling and quadratic work quadruples, so 3.0 separates them on any machine. Measured 2026-10-31 on darwin/arm64 (Node 24.19.0), load average about 3: before the trims were linearized the ratios were 3.97 to 4.01 on shapes 1, 4 and 6 (561.96 ms, 1,123.84 ms and 562.26 ms per scan at 20k spaces); after, every ratio was 1.36 to 1.99. The 20k medians are recorded and not asserted: 0.41 ms (shape 1), 0.04 ms (shape 4), against SC-001's target of under 50 ms. The same harness over the old regexes (kept in the test as an oracle) must show a ratio above 3.0 at 2.5k, 5k and 10k spaces, which proves the gate can see quadratic growth."
+    },
+    {
+      "test": "tests/perf/secretlint-rule-linear.test.ts",
+      "name": "findLocalSecrets \u2014 1 MiB near-match run per family",
+      "budgetMs": 250,
+      "constant": "RULE_CEILING_MS",
+      "rationale": "FR-R4-F10 SC2: the scanner's local rule stays linear. One 1,048,576-unit run of near-matches per family, from fixed seeds, is read in under 250 ms (the median of 7, with one retake)."
+    },
+    {
+      "test": "tests/perf/sanitize-bounded-work.test.ts",
+      "name": "SanitizedLogger.sanitize \u2014 one call at the 1,048,576-unit line bound, per hostile generator",
+      "budgetMs": 250,
+      "constant": "lineCeilingMs",
+      "rationale": "FR-R4-F10 SC-005: the line sinks admit a line of DEFAULT_MAX_LINE_UNITS (1,048,576), and one sanitize() call over it must stay under 250 ms (median of 7, one retake), with a full-over-half ratio of at most 3.0. Measured at plan on darwin/arm64 (Node 24.19.0): the worst linear generator took 8.7 ms at 1 MiB; the JWT expression took 10.8 s at 128 Ki and the GCP envelope 1.85 s at 1 MiB. The pre-change JWT expression is kept in the test as an oracle that must show a ratio above 3.0."
+    },
+    {
+      "test": "tests/perf/sanitize-bounded-work.test.ts",
+      "name": "SanitizedLogger.sanitize \u2014 one call at the 16 MiB artifact bound, for G1 eyJ, G2 and G8",
+      "budgetMs": 4000,
+      "constant": "artifactCeilingMs",
+      "rationale": "FR-R4-F10 SC-005: evidence export and the diagnostics bundle sanitize a whole artifact of up to MAX_ARTIFACT_BYTES (16 MiB) in one call (research R14). One sample per generator, which keeps the tier's added time under a minute."
+    },
+    {
+      "test": "tests/perf/completion-detection-bounded-work.test.ts",
+      "name": "parseAuditLogBlock + parseInvocation \u2014 completion detection at 16 MiB, five hostile shapes, two policies",
+      "budgetMs": 1500,
+      "constant": "MAX_MS_AT_16_MIB",
+      "rationale": "FR-R4-F12 FR-023: completion detection stays linear at 16 MiB. The median of 3 runs over each seeded shape is at most 1,500 ms at 16 MiB with a 16/8 MiB ratio of at most 3.0 (MAX_DOUBLING_RATIO). At plan the worst shape took 295.7 ms with a ratio of 2.4 (research R0). A deliberately quadratic reference scan must show a ratio above 3.0 on the same run shape, so the check can fail."
+    },
+    {
+      "test": "tests/perf/artifact-lifecycle-inventory.test.ts",
+      "name": "ArtifactLifecycleService.listInventory \u2014 warm page read at 10,000 artifacts, plus one 10,000-entry declared-root scan",
+      "budgetMs": 500,
+      "constant": "WARM_P95_BUDGET_MS",
+      "rationale": "FR-R6-F05 NFR-003 / SC-004 (AC-04): warm p95 of 200 measured page reads (20 warm-up, the F03 floor) at the 200-entry page bound is at most 500 ms, and the scan heap delta is at most 32 MiB (SCAN_HEAP_BUDGET_BYTES). One scan pass stops at SCAN_MAX_ENTRIES_PER_PASS (2,000) of the 10,000 entries and is asserted partial (NFR-001). At implement: p95 4.1 ms, scan heap delta 2.4 MiB (darwin-arm64, Node 24.19.0)."
+    },
+    {
+      "test": "tests/perf/usage-accounting-query.test.ts",
+      "name": "UsageAccountingService.query \u2014 warm filtered 200-row page read at 100,000 attempts with 4 measures each",
+      "budgetMs": 500,
+      "constant": "WARM_P95_BUDGET_MS",
+      "rationale": "FR-R6-F06 NFR-003 / SC-006: warm p95 of 200 measured filtered page reads (20 warm-up, the F03 floor, above the task's 5/50) grouped by phase at the 200-row page bound is at most 500 ms, and every response is at most 1 MiB. At implement: p95 399.3 ms, p99 428.4 ms, cold 387.7 ms, largest response 125,035 bytes (darwin-arm64, Node 24.19.0). Before idx_accounting_contributions_attempt the read was quadratic in store size and did not finish."
+    },
+    {
+      "test": "tests/perf/containment-admission-latency.test.ts",
+      "name": "SpawnGate.admit \u2014 cached-identity admission through the wired gate",
+      "budgetMs": 10,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F09 NFR-001 / F09-AC-06: p95 of 200 measured admissions (20 warm-up, the F03 floor) from a cached version, with executable resolution, record and binding judgement and the per-Run check, is at most 10 ms. At implement: p95 0.235 ms (darwin-arm64, Node 24.19.0)."
+    },
+    {
+      "test": "tests/perf/historical-report-query.test.ts",
+      "name": "Historical report first-page open at 25,000 roots and 100,000 attempts",
+      "budgetMs": 1000,
+      "firstPageP95BudgetMs": 1000,
+      "specTargets": {
+        "firstPageShouldP95Ms": 500,
+        "slicedGapShouldP95Ms": 10,
+        "cancelAckMustMs": 1000,
+        "queryDeadlineMs": 5000
+      },
+      "constant": "FIRST_PAGE_P95_BUDGET_MS",
+      "metadata": {
+        "hardware": "darwin-arm64 (Apple M4 Max, 16 cores, 64 GiB RAM, Node v24.22.2)",
+        "warmupIterations": 3,
+        "measuredIterations": 20,
+        "runCount": 25000,
+        "attemptCount": 100000,
+        "pageRows": 200,
+        "measurementDoc": "docs/operations/historical-reporting-measurement.md"
+      },
+      "rationale": "FR-R7-17 (R7-17-02) / FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / NFR-004 / NFR-005: preserves the 500 ms first-page SHOULD (NFR-002) and 10 ms sliced-gap SHOULD (NFR-005) targets alongside explicit met/missed verdicts, isolates warm-measured capture latency (20 measured samples only), excludes only the single capture-spanning event-loop gap (never masking additional stalls), and enforces firstPageP95BudgetMs = 1,000 ms as the CI regression ceiling. Execution-summary over 25,000 runs and 100,000 attempts (200-row pages, 22,120,000 bytes working data) on darwin-arm64 (Apple M4 Max, Node v24.22.2, 2026-11-23): firstPage p50 497.01 ms, p95 522.09 ms, max 526.28 ms (firstPageShouldMet: false); isolated warm capture (20 samples) p50 294.29 ms, p95 312.26 ms, max 314.23 ms, probedCaptureMs 290.14 ms; sliced event-loop gap slicedP95Ms 16.22 ms (slicedGapShouldMet: false; overall p95 18.33 ms, max 298.42 ms across 22 gaps); cancel ack 8.29 ms (cancelAckMustMet: true); 1 ms deadline limited/deadline-exceeded; full-range attempt-detail limited/working-data."
+    },
+    {
+      "test": "tests/perf/historical-report-query.test.ts",
+      "name": "Historical report later-page cursor read at 25,000 roots and 100,000 attempts",
+      "budgetMs": 50,
+      "laterPageP95BudgetMs": 50,
+      "specTargets": {
+        "laterPageShouldP95Ms": 500
+      },
+      "constant": "LATER_PAGE_P95_BUDGET_MS",
+      "metadata": {
+        "hardware": "darwin-arm64 (Apple M4 Max, 16 cores, 64 GiB RAM, Node v24.22.2)",
+        "warmupIterations": 20,
+        "measuredIterations": 200,
+        "runCount": 25000,
+        "attemptCount": 100000,
+        "pageRows": 200,
+        "measurementDoc": "docs/operations/historical-reporting-measurement.md"
+      },
+      "rationale": "FR-R7-17 (R7-17-02) / FR-R7-14 (14-19) / FR-R6-F11 NFR-002 / F11-AC-08: cursor-based later-page read over 25,000 aggregated rows (200-row pages, 20 warm-up and 200 measured reads, maxBytes 36,544 B). Measured on darwin-arm64 (Apple M4 Max, Node v24.22.2, 2026-11-23): p50 0.1152 ms, p95 0.1299 ms, p99 0.1468 ms, max 0.9295 ms (laterPageShouldMet: true against preserved 500 ms NFR-002 SHOULD target). Enforced laterPageP95BudgetMs = 50 ms keeps generous headroom over sub-millisecond cursor reads while tightly separating cursor pagination from first-page opening cost."
+    },
+    {
+      "test": "tests/perf/change-review-first-page.test.ts",
+      "name": "ChangeReviewService.openReview — first page of a 1,050-file change set through real Git",
+      "budgetMs": 500,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F12 NFR-002 / SC-004 / F12-AC-04: p95 of 20 measured openReview takes (3 warm-up) on a generated candidate adding 1,050 files: commit and ancestry checks, the bounded inventory read and parse, the tip read, classification and the first 200-entry page. Also asserts total 1,050, loaded 1,000, truncated and five 200-entry pages. At implement, darwin-arm64, Node 24.19.0, load about 3: p50 109.63 ms, p95 122.24 ms."
+    },
+    {
+      "test": "tests/perf/acp-normalization.test.ts",
+      "name": "ACP adapter normalization of one bounded session/update message",
+      "budgetMs": 5,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F13 NFR-003 / SC-005 / F13-AC-05: p95 of 200 measured samples (20 warm-up, the F03 floor), one framed session/update line per sample through frame decoding, JSON-RPC classification, the session-update mapper, the F07 event and the F02 envelope; the reference set is one update of each kind the synthetic agent streams plus one 64 KiB message chunk. At implement, darwin-arm64, Node 24.19.0, load about 4.3, two takes: p50 0.0029 and 0.0030 ms, p95 0.0579 and 0.0598 ms."
+    },
+    {
+      "test": "tests/perf/telemetry-export-mapping.test.ts",
+      "name": "Telemetry export intake of one bounded batch of 256 source records",
+      "budgetMs": 5,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F14 NFR-003 / F14-AC-05: p95 of 200 measured samples (20 warm-up, the F03 floor); one sample is one offer of the reference batch of 256 source records (192 usage records of five measures, 48 operation records, 16 corrections, over 8 model pairs and 2 backends) through validation, the copy check against a ledger already holding 16,384 identities from the 65th batch on, mapping, the attribute-set limit, the size pre-check, the batch and the seal with its encoding. Also asserts every record accepted, 220 acknowledged batches, no drop, expiry, duplicate, invalid record or overflow, and 220 transport requests. At implement, darwin-arm64, Node 24.19.0, load 6.8 and 5.4 with another project's tests active, two takes: p50 1.69 and 1.70 ms, p95 2.54 and 2.43 ms. Before the shared attribute lists, the ledger ring and the kept coverage growth the same test measured p95 13.56 ms."
+    },
+    {
+      "test": "tests/perf/phase-context-preparation.test.ts",
+      "name": "Phase-context preparation of one handoff with a maximum manifest",
+      "budgetMs": 250,
+      "constant": "P95_BUDGET_MS",
+      "rationale": "FR-R6-F15 NFR-005 / F15-AC-10: p95 of 200 measured samples (20 warm-up, the F03 floor); one sample is one prepareHandoff call over the largest handoff the limits admit: 256 candidates (the candidate limit) validated, 32 sources selected at one cutoff through 32 selectors (one required), four entries of 200 bytes per source so each collection holds its 32 entries, the manifest built, serialized and digested and the context rendered within 2 KiB of the 32 KiB bound. In memory only: no store, disk or network is inside the sample, which is the part of NFR-005 that F15-A delivers. Also asserts 32 selected sources and 224 omissions per sample and the manifest within 64 KiB. At implement, darwin-arm64, Node 24.19.0, load 7.7 and 23.6 with another project's tests active, two takes: p50 2.21 and 3.08 ms, p95 2.70 and 8.17 ms (rendered 31,097 bytes, manifest 42,604 bytes). The budget is the requirement's bound, not the measurement."
     }
   ],
   "notes": [

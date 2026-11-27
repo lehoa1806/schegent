@@ -12,7 +12,10 @@
 // - successful enqueue → enqueued exactly once
 
 import { describe, expect, it, vi } from 'vitest';
-import { GuardedRunService } from '../../../src/services/guarded-run-service';
+import {
+  GuardedRunService,
+  type GuardedScheduleRequest
+} from '../../../src/services/guarded-run-service';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import {
   WorkspaceLockManager,
@@ -20,7 +23,12 @@ import {
   type Clock,
   type Scheduler
 } from '../../../src/state/lock';
-import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import {
+  QueueMutationRejected,
+  WorkspaceStateStore,
+  type Memento
+} from '../../../src/state/workspace-state';
+import type { QueueLifecycle } from '../../../src/contracts/snapshot-vocabulary';
 import type {
   PipelineCatalog,
   PipelineDef
@@ -114,6 +122,8 @@ function makeController(
 }
 
 interface Harness {
+  /** The store's backing memento, so a test can make a write fail. */
+  memento: FakeMemento;
   store: WorkspaceStateStore;
   queue: QueueManager;
   lock: WorkspaceLockManager;
@@ -123,12 +133,20 @@ interface Harness {
   service: GuardedRunService;
   clock: MutableClock;
   ownerId: string;
+  /**
+   * FR-R3-136 (FR-008) — a mutable box rather than the boolean the service was
+   * built with, so a test can flip trust *after* construction. That is the case
+   * that distinguishes a re-read from a captured value, and it is the only way
+   * the requirement can be asserted at all.
+   */
+  trust: { value: boolean };
 }
 
 async function makeHarness(opts?: {
   ownerId?: string;
   controllerRunning?: boolean;
   catalog?: PipelineCatalog;
+  trusted?: boolean;
 }): Promise<Harness> {
   const ownerId = opts?.ownerId ?? 'self-window';
   const controller = makeController(opts?.controllerRunning ?? false, opts?.catalog);
@@ -142,7 +160,13 @@ async function makeHarness(opts?: {
   const logger = makeLogger();
   const audit = makeAudit();
 
+  // FR-R3-136 (FR-008) — trusted unless a test says otherwise, which keeps
+  // every pre-existing row in this file exercising the behaviour it was written
+  // for. The untrusted rows live in the trust-specific describe block.
+  const trust = { value: opts?.trusted ?? true };
+
   const service = new GuardedRunService({
+    isWorkspaceTrusted: () => trust.value,
     lock,
     queue,
     controller: controller as unknown as import('../../../src/controller/workflow-controller').SchegentWorkflowController,
@@ -154,6 +178,7 @@ async function makeHarness(opts?: {
   });
 
   return {
+    memento,
     store,
     queue,
     lock,
@@ -162,7 +187,8 @@ async function makeHarness(opts?: {
     audit,
     service,
     clock,
-    ownerId
+    ownerId,
+    trust
   };
 }
 
@@ -433,5 +459,332 @@ describe('GuardedRunService — sanitization', () => {
     expect(result.outcome).toBe('rejected-foreign-lock');
     expect(result.reason).toContain('[REDACTED]');
     expect(result.reason).not.toContain('sk-secret');
+  });
+});
+
+// FR-R3-136 (FR-008) — admission refuses on its own account.
+//
+// The point of these rows is that there is no command wrapper anywhere in them.
+// `registerGuardedCommand` covers the palette and `message-router` covers the
+// sidebar, but the drain and the scheduled-start timers call this service
+// directly, so a trust check that lived only in the wrappers would leave the
+// timer path — the recovery path, the one that fires without an operator present
+// — admitting runs in an untrusted workspace.
+describe('GuardedRunService — workspace trust (FR-R3-136)', () => {
+  it('refuses a well-formed enqueue while untrusted, with a named reason', async () => {
+    const h = await makeHarness({ trusted: false });
+    const result = await h.service.scheduleOrEnqueue({
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'command-palette',
+      pipelineId: 'speckit-default'
+    });
+    // Not `rejected-validation`: the request was fine.
+    expect(result.outcome).toBe('rejected-untrusted');
+    expect(result.reason).toBe('workspace-untrusted');
+  });
+
+  it('persists nothing when it refuses', async () => {
+    // The assertion that makes the refusal worth having. An outcome string with
+    // a queued row behind it would be a refusal in name only.
+    const h = await makeHarness({ trusted: false });
+    const before = h.store.getQueue('default');
+    await h.service.scheduleOrEnqueue({
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'auto-drain'
+    });
+    const after = h.store.getQueue('default');
+    expect(after.requests.length).toBe(before.requests.length);
+    expect(after.queueLifecycle).toBe(before.queueLifecycle);
+    expect(after.scheduledStartAt).toBe(before.scheduledStartAt);
+  });
+
+  it('refuses before validation, so a bad request still reports the trust reason', async () => {
+    // Ordering, asserted. If the description validator ran first, an untrusted
+    // window would be told its description was empty — sending the operator to
+    // fix the wrong thing, and reporting an outcome the well-formed request
+    // would not have produced.
+    const h = await makeHarness({ trusted: false });
+    const result = await h.service.scheduleOrEnqueue({
+      description: '   ',
+      scheduledAt: h.clock.now(),
+      via: 'webview'
+    });
+    expect(result.outcome).toBe('rejected-untrusted');
+  });
+
+  it('refuses every applyStartQueueIntent mode while untrusted', async () => {
+    const h = await makeHarness({ trusted: false });
+    for (const startMode of ['now', 'scheduled', 'cancel-schedule'] as const) {
+      const result = await h.service.applyStartQueueIntent({
+        startMode,
+        scheduledStartAt: h.clock.now() + 60_000,
+        source: 'operator-restart'
+      });
+      expect(result.outcome, `startMode=${startMode}`).toBe('rejected-untrusted');
+    }
+    // `cancel-schedule` would have returned `noop` on an unscheduled queue even
+    // without a guard, so the persisted state is checked too rather than trusting
+    // three outcome strings.
+    expect(h.store.getQueue('default').queueLifecycle).toBe('active-empty');
+  });
+
+  it('re-reads trust on every admission, in both directions', async () => {
+    // The same property `registerGuardedCommand` carries, asserted at the
+    // service. A boolean captured in the constructor passes the first row and
+    // fails the second.
+    const h = await makeHarness({ trusted: false });
+    const req = {
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'command-palette' as const,
+      pipelineId: 'speckit-default'
+    };
+    expect((await h.service.scheduleOrEnqueue(req)).outcome).toBe('rejected-untrusted');
+
+    h.trust.value = true;
+    expect((await h.service.scheduleOrEnqueue(req)).outcome).toBe('enqueued');
+
+    h.trust.value = false;
+    expect((await h.service.scheduleOrEnqueue(req)).outcome).toBe('rejected-untrusted');
+  });
+
+  it('admits a trusted enqueue — the control for every row above', async () => {
+    // Without this, every assertion above is satisfied by a service that
+    // refuses unconditionally.
+    const h = await makeHarness();
+    const result = await h.service.scheduleOrEnqueue({
+      description: 'a perfectly valid feature request',
+      scheduledAt: h.clock.now(),
+      via: 'command-palette',
+      pipelineId: 'speckit-default'
+    });
+    expect(result.outcome).toBe('enqueued');
+  });
+
+  it('logs the refusal once and audits it, with no description in either', async () => {
+    const h = await makeHarness({ trusted: false });
+    await h.service.scheduleOrEnqueue({
+      description: 'a-description-that-must-not-be-logged',
+      scheduledAt: h.clock.now(),
+      via: 'webview'
+    });
+    expect(h.logger.warn).toHaveBeenCalledTimes(1);
+    expect(h.audit.append).toHaveBeenCalledTimes(1);
+    // CLAUDE.md: never log request payloads. The description is operator text.
+    const written = JSON.stringify([
+      h.logger.warn.mock.calls,
+      h.audit.append.mock.calls
+    ]);
+    expect(written).not.toContain('a-description-that-must-not-be-logged');
+    expect(written).toContain('workspace-untrusted');
+  });
+});
+
+// FR-R4-F05 (T13; contract F, F7, F9; FR-016, FR-017; SC-005) — a validation refusal and a
+// storage fault are different outcomes, and neither carries the exception.
+//
+// The enqueue `try` used to cover `queue.enqueue` AND the start-intent step after it,
+// and its catch reported anything as `rejected-validation` with the exception's message
+// as the reason. A memento write that failed therefore told the operator their request
+// was invalid, put a path into an audit row, and a failure in the start-intent step
+// AFTER the commit reported a rejection for a task that was in the queue.
+describe('GuardedRunService — enqueue failures (FR-R4-F05)', () => {
+  const PATH = '/synthetic/home/user-252/secret.txt';
+
+  const request = (h: Harness) => ({
+    description: 'a perfectly valid feature request',
+    scheduledAt: h.clock.now(),
+    via: 'webview' as const,
+    pipelineId: 'speckit-default'
+  });
+
+  function auditRows(h: Harness): Array<{
+    eventType: string;
+    outcome: string;
+    payload: Record<string, unknown>;
+  }> {
+    return (
+      h.audit.append.mock.calls as unknown as Array<
+        Array<{ eventType: string; outcome: string; payload: Record<string, unknown> }>
+      >
+    ).map((call) => call[0]);
+  }
+
+  it('reports a queue rule refusal as rejected-validation with its code', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.queue, 'enqueue').mockRejectedValueOnce(
+      new QueueMutationRejected('task-cap-reached', `cap reached at ${PATH}`)
+    );
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result).toEqual({ outcome: 'rejected-validation', reason: 'task-cap-reached' });
+    expect(JSON.stringify([result, auditRows(h)])).not.toContain('user-252');
+  });
+
+  it('reports a failed memento write as failed-storage with the fixed code, and no marker', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.memento, 'update').mockRejectedValue(new Error(`EACCES: cannot write ${PATH}`));
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result).toEqual({ outcome: 'failed-storage', reason: 'queue-state-unavailable' });
+    expect(JSON.stringify(result)).not.toContain('user-252');
+    // The detail is not lost: it goes to the log, through describeFailure.
+    expect(JSON.stringify(h.logger.warn.mock.calls)).toContain('user-252');
+  });
+
+  it('keeps the rejection row to its event type, outcome and five payload fields', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.memento, 'update').mockRejectedValue(new Error(`EACCES: cannot write ${PATH}`));
+
+    await h.service.scheduleOrEnqueue(request(h));
+
+    const rows = auditRows(h);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ eventType: 'warning', outcome: 'failure' });
+    expect(Object.keys(rows[0]?.payload ?? {}).sort()).toEqual([
+      'operation',
+      'outcome',
+      'reason',
+      'source',
+      'via'
+    ]);
+    expect(rows[0]?.payload).toMatchObject({
+      source: 'guarded-run-service',
+      operation: 'schedule',
+      outcome: 'failed-storage',
+      via: 'webview',
+      reason: 'queue-state-unavailable'
+    });
+    expect(JSON.stringify(rows)).not.toContain('user-252');
+  });
+
+  it('reports a fence it could not verify as failed-storage', async () => {
+    const h = await makeHarness();
+    vi.spyOn(h.queue, 'enqueue').mockRejectedValueOnce(
+      new QueueMutationRejected('fence-unverifiable', `could not read ${PATH}`)
+    );
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result).toEqual({ outcome: 'failed-storage', reason: 'queue-state-unavailable' });
+  });
+
+  it('reports enqueued, with the item id, when the start-intent step fails after the commit', async () => {
+    const h = await makeHarness();
+    // A private seam, forced to fail: nothing a request can set makes the real
+    // step throw on demand, and the claim is about what happens AFTER the commit.
+    vi.spyOn(
+      h.service as unknown as { applyStartIntentPolicy: () => Promise<unknown> },
+      'applyStartIntentPolicy'
+    ).mockRejectedValueOnce(new Error(`start intent failed at ${PATH}`));
+
+    const result = await h.service.scheduleOrEnqueue(request(h));
+
+    expect(result.outcome).toBe('enqueued');
+    expect(result.queueItemId).toBeDefined();
+    expect(result.lifecycleAfter).toBeUndefined();
+    expect(h.store.getQueue('default').requests).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain('user-252');
+    expect(auditRows(h)).toHaveLength(0);
+    expect(JSON.stringify(h.logger.warn.mock.calls)).toContain('user-252');
+  });
+});
+
+describe("GuardedRunService — a Workflow's next node (spec 261 FR-007, rules 32 and 33)", () => {
+  const nextNode = (h: Harness): GuardedScheduleRequest => ({
+    description: 'next node',
+    scheduledAt: h.clock.now(),
+    via: 'webview',
+    continuesWorkflow: true
+  });
+
+  const firstAdmission = (h: Harness): GuardedScheduleRequest => ({
+    description: 'first admission',
+    scheduledAt: h.clock.now(),
+    via: 'webview'
+  });
+
+  async function setLifecycle(h: Harness, queueLifecycle: QueueLifecycle): Promise<void> {
+    await h.store.setQueue({
+      ...h.store.getQueue('default'),
+      queueLifecycle,
+      pauseSource: null,
+      scheduledStartAt: null,
+      scheduledStartSource: null,
+      updatedAt: h.clock.now()
+    });
+  }
+
+  it('leaves a queue the last leaf ran dry unheld, so the funnel can start the node', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'active-empty');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'active-empty' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('active-empty');
+    expect(h.store.getQueue('default').requests).toHaveLength(1);
+    expect(h.audit.append).not.toHaveBeenCalled();
+  });
+
+  it('reports the lifecycle it found on a queue already working, and changes nothing', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'running');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'running' });
+    expect(h.audit.append).not.toHaveBeenCalled();
+  });
+
+  it('never moves a queue held for its Start: the node waits with everything else', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'idle-pending');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'idle-pending' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
+    expect(h.audit.append).not.toHaveBeenCalled();
+  });
+
+  it('waits behind a queue pause, where new work is refused and the pause stays', async () => {
+    const h = await makeHarness();
+    await h.queue.setQueuePausedState(true, undefined, 'operator-paused', 'operator');
+
+    await expect(h.service.scheduleOrEnqueue(firstAdmission(h))).resolves.toMatchObject({
+      outcome: 'rejected-paused'
+    });
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'operator-paused' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('operator-paused');
+    expect(h.store.getQueue('default').requests).toHaveLength(1);
+  });
+
+  it('leaves a first admission on an empty queue behind the Start hold (feature 065)', async () => {
+    const h = await makeHarness();
+    await setLifecycle(h, 'active-empty');
+
+    const result = await h.service.scheduleOrEnqueue(firstAdmission(h));
+
+    expect(result).toMatchObject({ outcome: 'enqueued', lifecycleAfter: 'idle-pending' });
+    expect(h.store.getQueue('default').queueLifecycle).toBe('idle-pending');
+  });
+
+  it('still answers to every other gate: an untrusted workspace refuses it', async () => {
+    const h = await makeHarness({ trusted: false });
+    await setLifecycle(h, 'active-empty');
+
+    const result = await h.service.scheduleOrEnqueue(nextNode(h));
+
+    expect(result.outcome).toBe('rejected-untrusted');
+    expect(h.store.getQueue('default').requests).toHaveLength(0);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { matchingRelativePaths } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -13,9 +13,13 @@ const PHASE_CONTROL_CONSTANTS = [
   // it is a destructive command, and `destructive-actions.lint.test.ts` requires
   // its dispatch to share a scope with the `useConfirm` that gates it. Routing
   // it through the shared helper would put the two in different modules and
-  // defeat that gate, which is the stronger of the two invariants. Its queue
-  // cannot go missing regardless — `PhaseTracker.svelte` takes it as a required
-  // prop and the payload type demands it.
+  // defeat that gate, which is the stronger of the two invariants. That reason
+  // is unchanged; the example given for it is gone. `PhaseTracker.svelte` was
+  // named here as the dispatcher that takes the queue as a required prop, and
+  // FR-R3-140 deleted it as unreachable from either bundle entry point. The
+  // webview dispatches this command from nowhere now, so the constant's absence
+  // from the list above is currently moot — it earns its place back the moment
+  // a reachable component sends it.
 ] as const;
 
 /**
@@ -28,29 +32,28 @@ const HELPER_MODULE = 'webview-ui/src/lib/phase-control.ts';
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/messages.ts',
   'webview-ui/src/lib/phase-control.ts',
-  'webview-ui/src/components/__tests__/PhaseControlMenu.test.ts'
+  'webview-ui/src/components/__tests__/PhaseControlMenu.test.ts',
+  // FR-R3-154 (T1646) — the shared helper's own unit test. It names all three
+  // constants to assert which command each dispatcher posts and which ACK each
+  // one reads back, which is the invariant this gate protects rather than a
+  // breach of it: before this file existed the helper returned `void`, so a
+  // test could pin the command name and nothing else.
+  'webview-ui/src/lib/__tests__/phase-control.test.ts',
+  // FR-R3-154 (T1646) — the correlation scaffolding's unit test. It references
+  // CMD_PAUSE_PHASE only as a sample command to drive `correlatedLifecycle`
+  // through one post/ACK round trip; it dispatches nothing of its own, and the
+  // helper above remains the only non-test module that names these constants.
+  'webview-ui/src/lib/__tests__/lifecycle-control-ipc.test.ts'
 ]);
 
-function listMatchingFiles(pattern: string): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, pattern, { fixed: true }).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) return [];
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) => (abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs));
-}
+
+const matchRel = (pattern: string): readonly string[] =>
+  matchingRelativePaths(REPO_ROOT, SCAN_ROOT, pattern, { fixed: true });
 
 describe('Feature 017 — no inline phase-control command dispatch', () => {
   for (const constant of PHASE_CONTROL_CONSTANTS) {
     it(`${constant} is referenced only by the shared helper and tests`, () => {
-      const matched = listMatchingFiles(constant);
+      const matched = matchRel(constant);
       // Vacuity control, asserted BEFORE the offender filter. A renamed or
       // deleted constant matches nothing, therefore offends nothing, and the
       // assertion below passes while proving the opposite of what it claims.

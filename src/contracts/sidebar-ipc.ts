@@ -1,24 +1,34 @@
 // Authoritative sidebar IPC contract; host and webview shims re-export it.
-export const SCHEMA_VERSION = 3 as const;
+/**
+ * FR-R3-110 (FR-103) — renamed from `SCHEMA_VERSION`; clarified by FR-R7-18 (`N07`).
+ *
+ * `SIDEBAR_IPC_SCHEMA_VERSION` (`3`) is the IPC contract schema version emitted into the
+ * generated sidebar IPC schema artifacts (`src/contracts/generated/schemas/sidebar-ipc.schema.json`).
+ * Inbound webview → host wire messages may omit `schemaVersion` for backwards compatibility; when
+ * an inbound message explicitly supplies `schemaVersion`, `validateInboundMessage` enforces
+ * `schemaVersion === SIDEBAR_IPC_SCHEMA_VERSION` and refuses any mismatch with
+ * `{ ok: false, code: 'unsupported-ipc-schema-version', reason: 'unsupported-ipc-schema-version' }`.
+ *
+ * Distinct from the two other constants that previously shared the bare name `SCHEMA_VERSION`:
+ * `src/ui/sidebar/snapshot.ts` (`SCHEMA_VERSION = 4`, the `WorkflowSnapshot` body version) and
+ * `src/state/workspace-state.ts` (`SCHEMA_VERSION = '1.0.0'`, the legacy string workspace state
+ * version). Keeping this constant explicitly named prevents cross-layer import collisions.
+ */
+export { GENERATED_SIDEBAR_IPC_SCHEMA_VERSION as SIDEBAR_IPC_SCHEMA_VERSION } from './generated/sidebar-ipc-types';
 // -- Command literals (webview → host) ---------------------------------------
 
 export const CMD_START = 'CMD_START' as const;
 export const CMD_CANCEL = 'CMD_CANCEL' as const;
-export const CMD_RESUME = 'CMD_RESUME' as const;
-export const CMD_RESET = 'CMD_RESET' as const;
 export const CMD_REMOVE_QUEUE_ITEM = 'CMD_REMOVE_QUEUE_ITEM' as const;
 export const CMD_OPEN_AUDIT_LOG = 'CMD_OPEN_AUDIT_LOG' as const;
 export const CMD_RETRY_QUEUE_ITEM = 'CMD_RETRY_QUEUE_ITEM' as const;
 export const CMD_MOVE_QUEUE_ITEM_UP = 'CMD_MOVE_QUEUE_ITEM_UP' as const;
 export const CMD_MOVE_QUEUE_ITEM_DOWN = 'CMD_MOVE_QUEUE_ITEM_DOWN' as const;
 export const CMD_CLEAR_COMPLETED = 'CMD_CLEAR_COMPLETED' as const;
-export const CMD_CLEAR_FAILED = 'CMD_CLEAR_FAILED' as const;
 export const CMD_PAUSE_QUEUE = 'CMD_PAUSE_QUEUE' as const;
 export const CMD_RESUME_QUEUE = 'CMD_RESUME_QUEUE' as const;
 export const CMD_OPEN_DASHBOARD = 'CMD_OPEN_DASHBOARD' as const;
-export const CMD_RETRY_ACTIVE_RUN = 'CMD_RETRY_ACTIVE_RUN' as const;
 export const CMD_RERUN_FROM_HISTORY = 'CMD_RERUN_FROM_HISTORY' as const;
-export const CMD_OPEN_QUEUE_ITEM_DETAILS = 'CMD_OPEN_QUEUE_ITEM_DETAILS' as const;
 export const CMD_OPEN_HISTORY_ITEM_DETAILS = 'CMD_OPEN_HISTORY_ITEM_DETAILS' as const;
 // Feature 011 — the Model Catalog save, the last catalog written through
 // configuration. Feature 100 (T509) retired its three siblings — `SAVE_PIPELINES`,
@@ -27,7 +37,7 @@ export const CMD_OPEN_HISTORY_ITEM_DETAILS = 'CMD_OPEN_HISTORY_ITEM_DETAILS' as 
 export const CMD_SAVE_MODELS = 'CMD_SAVE_MODELS' as const;
 // Feature 100 (FR-R3-016) — the per-definition lifecycle. These are what the
 // three layer saves above become: one definition, one declared operation. All
-// six are mutating and all six are registered in `MUTATING_COMMAND_REASONS`.
+// six are mutating and all six are declared `gated` in `COMMAND_AUTHORITY`.
 // Only the first name carries a verb the naming-convention lint recognises, so
 // the other five entries there are deliberate rather than incidental.
 export const CMD_SAVE_DEFINITION_DRAFT = 'CMD_SAVE_DEFINITION_DRAFT' as const;
@@ -63,27 +73,65 @@ export const CMD_MOVE_TASK = 'CMD_MOVE_TASK' as const;
 export const CMD_MODIFY_TASK = 'CMD_MODIFY_TASK' as const;
 export const CMD_REORDER_TASK = 'CMD_REORDER_TASK' as const;
 // Feature 017 — BUG-001. Transition a `canceled` `FeatureRequest` back
-// to `pending` by id so the queue dequeue pump picks it up again on the
-// next tick. Distinct from `CMD_RETRY_QUEUE_ITEM` (which already
-// generalizes to `canceled` via FR-034) so the dashboard "Restart"
-// affordance for canceled rows has a single, taxonomy-correct command.
+// to `pending` by id; the host command behind it then asks the queue to
+// drain, which is what starts the Task. (This used to say "so the queue
+// dequeue pump picks it up again on the next tick". There is no dequeue
+// pump — `AutoDrainCoordinator` is edge-triggered — and this was the
+// third and last site repeating that claim.) Distinct from
+// `CMD_RETRY_QUEUE_ITEM` (which already generalizes to `canceled` via
+// FR-034) so the dashboard "Restart" affordance for canceled rows has a
+// single, taxonomy-correct command.
 export const CMD_RESTART_CANCELED_TASK = 'CMD_RESTART_CANCELED_TASK' as const;
 
-// Feature 020 — phase log read + tail commands. All READ-ONLY; they
-// MUST stay out of `MUTATING_COMMANDS` so a secondary VS Code host can
-// still read phase logs in a multi-window session. See
+// Feature 020 — phase log read + tail commands. Feature 020 kept them out of the
+// mutating set; FR-R4-F05 (FR-003) gates them, because each appends an audit
+// row (see `COMMAND_AUTHORITY`). See
 // specs/020-phase-level-logs/contracts/phase-log-ipc.md.
 export const CMD_READ_PHASE_LOG = 'CMD_READ_PHASE_LOG' as const;
 export const CMD_START_PHASE_LOG_TAIL = 'CMD_START_PHASE_LOG_TAIL' as const;
 export const CMD_STOP_PHASE_LOG_TAIL = 'CMD_STOP_PHASE_LOG_TAIL' as const;
+// FR-R6-F07 (FR-009) — batch credit, gap requests and duplicate reports.
+export const CMD_ACK_PHASE_LOG_TAIL = 'CMD_ACK_PHASE_LOG_TAIL' as const;
 // Feature 020 — small helper command that opens the VS Code Settings
 // editor scoped to `schegent.logging.verbose`. Powers the empty-state
 // "Open Settings" CTA when verbose diagnostics is disabled. Read-only
 // (the operator still has to flip the toggle by hand).
 export const CMD_OPEN_VERBOSE_SETTING = 'CMD_OPEN_VERBOSE_SETTING' as const;
+// FR-R3-143 (T039) — the same helper for the two read-only `schegent.trust.*`
+// keys; `cmd-open-trust-settings.ts` records why they have no control. No
+// payload on purpose: a `key` parameter would be a webview-supplied string
+// reaching `executeCommand`, and the handler holds the query literal instead.
+export const CMD_OPEN_TRUST_SETTINGS = 'CMD_OPEN_TRUST_SETTINGS' as const;
 // FR-R3-010 — resolve a completed Run's `auditLogPointer` to its audit records.
 // READ-ONLY, so out of `MUTATING_COMMANDS`; `cmd-resolve-audit-pointer.ts` says why.
 export const CMD_RESOLVE_AUDIT_POINTER = 'CMD_RESOLVE_AUDIT_POINTER' as const;
+// FR-R3-071 — resolve a completed Run's stored description for replay.
+// READ-ONLY, so out of `MUTATING_COMMANDS`; `cmd-resolve-history-description.ts` says why.
+export const CMD_RESOLVE_HISTORY_DESCRIPTION = 'CMD_RESOLVE_HISTORY_DESCRIPTION' as const;
+// FR-R4-F15 — read a row's newest failure record.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-failure-record.ts says why.
+export const CMD_READ_FAILURE_RECORD = 'CMD_READ_FAILURE_RECORD' as const;
+// FR-R5-F19 — open the decision record (`decisions.md`) of the feature a blocked row's Run works on.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-open-decision-record.ts says why.
+export const CMD_OPEN_DECISION_RECORD = 'CMD_OPEN_DECISION_RECORD' as const;
+// FR-R6-F05 — read storage pressure and one inventory page.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-storage-details.ts says why.
+export const CMD_READ_STORAGE_DETAILS = 'CMD_READ_STORAGE_DETAILS' as const;
+// FR-R6-F06 — read one usage accounting page.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-usage-accounting.ts says why.
+export const CMD_READ_USAGE_ACCOUNTING = 'CMD_READ_USAGE_ACCOUNTING' as const;
+// FR-R6-F11 — read historical reports, pages, drill-down and saved report records.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-report.ts says why.
+export const CMD_READ_REPORT = 'CMD_READ_REPORT' as const;
+// FR-R6-F11 — host-dialog export or saved-report mutation in SQLite. Gated concurrent.
+export const CMD_MUTATE_REPORT = 'CMD_MUTATE_REPORT' as const;
+// FR-R6-F12, F10, F13, F14, F15 — read attempt visibility, lane posture and telemetry preview.
+// READ-ONLY, so out of MUTATING_COMMANDS; cmd-read-execution-visibility.ts says why.
+export const CMD_READ_EXECUTION_VISIBILITY = 'CMD_READ_EXECUTION_VISIBILITY' as const;
+// FR-R6-F12 — open, refresh, classify, page or close an immutable candidate change review.
+export const CMD_OPEN_CHANGE_REVIEW = 'CMD_OPEN_CHANGE_REVIEW' as const;
+// FR-R6-F15 — approve or edit a manual phase-to-phase context handoff revision.
+export const CMD_DECIDE_PHASE_HANDOFF = 'CMD_DECIDE_PHASE_HANDOFF' as const;
 // Feature 028 — future-phase breakpoints. Operator marks a pending phase
 // as a "pause when reached" point. The pipeline runs preceding phases
 // then halts before invoking the marked phase. Both are mutating —
@@ -95,76 +143,93 @@ export const CMD_CLEAR_PHASE_BREAKPOINT = 'CMD_CLEAR_PHASE_BREAKPOINT' as const;
 // pending task to in-flight via `controller.drainQueuedWork()`. Member of
 // `MUTATING_COMMANDS` and gated by the primary-host check.
 export const CMD_START_QUEUE = 'CMD_START_QUEUE' as const;
-// Feature 063 — Clean All atomic queue reset. Replaces the separate
-// CMD_CLEAR_COMPLETED and CMD_CLEAR_FAILED commands. Mutating: drops
-// every queue item (pending, in-flight, paused), cancels the active
-// runner if any, and clears the watchdog backoff window in a single
-// batched memento write. Member of `MUTATING_COMMAND_REASONS` and
-// gated by the primary-host + workspace-lock guards.
-export const CMD_CLEAR_ALL = 'CMD_CLEAR_ALL' as const;
+// FR-R3-150 (T1618) — queue-scoped Clean All, replacing `CMD_CLEAR_ALL` as
+// the sidebar-postable route (research.md D1). Subsumes the separate
+// CMD_CLEAR_COMPLETED and CMD_CLEAR_FAILED commands; the lifecycle
+// round-check of 2026-08-30 (finding D) deleted the latter, which had
+// carried a handler, a guard and a validator arm for a route no webview
+// surface took after FR-R3-140 removed ControlPanel.svelte. Mutating: drops
+// every task (pending, in-flight, paused, terminal) belonging to the
+// addressed queue, cancels its active run if any, and clears its pause and
+// scheduled-start state in a single batched memento write — never a
+// sibling queue's. Declared gated in `COMMAND_AUTHORITY`, so the primary-host
+// + workspace-lock guards apply. The workspace-wide reset survives
+// as `schegent.clearAll`, a Command Palette entry only (FR-009).
+export const CMD_CLEAR_QUEUE = 'CMD_CLEAR_QUEUE' as const;
 // Feature 063 — per-action confirmation-prompt suppression persistence.
 // Mutating: writes to the `schegent.ui.confirmSuppression` memento via
-// `WorkspaceState`. Member of `MUTATING_COMMAND_REASONS` for audit
+// `WorkspaceState`. Declared gated in `COMMAND_AUTHORITY` for audit
 // completeness, even though it does not touch run state.
 export const CMD_SET_CONFIRM_SUPPRESSION = 'CMD_SET_CONFIRM_SUPPRESSION' as const;
 // Feature 065 (T054a / FR-020) — operator dismisses the one-time post-migration
 // notice that surfaces when at least one queue migrated into `idle-pending`.
-// NON-mutating: the handler performs a single `setQueue({...migrationNotice:
-// 'dismissed'})` write that flips a UI flag and does NOT touch workflow,
-// queue, or task state. NOT a member of `MUTATING_COMMANDS` — the dismiss
-// is non-destructive UX state per FR-020 and parity with the other
-// `CMD_OPEN_*` non-mutating commands.
+// The handler performs a single `setQueue({...migrationNotice: 'dismissed'})`
+// write that flips a UI flag and does NOT touch workflow, queue, or task state.
+// FR-R4-F05 (FR-003) gates it all the same: it is a persisted write, so it is
+// declared `gated` (serialized) in `COMMAND_AUTHORITY`. Feature 065 left it
+// ungated as non-destructive UX state.
 export const CMD_DISMISS_MIGRATION_NOTICE = 'CMD_DISMISS_MIGRATION_NOTICE' as const;
-// Feature 073 — read-only Metrics Dashboard scan.
+// Feature 073 — Metrics Dashboard scan; gated by FR-R4-F05, it appends a row.
 export const CMD_READ_METRICS = 'CMD_READ_METRICS' as const;
 export const CMD_PING_BACKEND = 'CMD_PING_BACKEND' as const;
-// Feature 084 — read-only Phase export. NOT a member of
-// `MUTATING_COMMAND_REASONS`: it writes a file the operator named in a host
-// dialog and changes no extension state. Import commits through
-// `CMD_PUBLISH_PACKAGE`, so the exchange feature adds no mutating command.
+// Feature 084 — Phase export. It writes a file the operator named in a host
+// dialog and appends an export row, so FR-R4-F05 (FR-003) gates it
+// (`COMMAND_AUTHORITY`, concurrent). Import commits through
+// `CMD_PUBLISH_PACKAGE`, which is gated too.
 export const CMD_EXPORT_PROCESS_YAML = 'CMD_EXPORT_PROCESS_YAML' as const;
-// Feature 084 — read-only import preflight. Also NOT mutating: it reads the
-// operator's chosen document once and returns a plan. Nothing is written until
-// the operator confirms, and that confirmation is a `CMD_PUBLISH_PACKAGE`.
+// Feature 084 — import preflight. It reads one document and returns a plan, but a
+// refusal appends an audit row, so FR-R4-F05 gates it (concurrent). Nothing is
+// written until the operator confirms: that is a `CMD_PUBLISH_PACKAGE`.
 export const CMD_PREFLIGHT_PROCESS_YAML = 'CMD_PREFLIGHT_PROCESS_YAML' as const;
-// Feature 087 — compose, validate, freeze, enqueue. Mutating, unlike the two
-// exchange commands above; see `MUTATING_COMMAND_REASONS`.
+// Feature 087 — compose, validate, freeze, enqueue. Mutating, as the two
+// exchange commands above now are; see `COMMAND_AUTHORITY`.
 export const CMD_LAUNCH_PIPELINE = 'CMD_LAUNCH_PIPELINE' as const;
 // Feature 088 — connected Workflow runs. Both mutating: the first creates the
 // aggregate and enqueues its first child, the second appends an attempt and
 // increments the revision. Neither name carries a mutating verb prefix, so the
 // naming-convention lint would not have caught an omission from
-// `MUTATING_COMMAND_REASONS` — both entries are deliberate.
+// `COMMAND_AUTHORITY` — both entries are deliberate.
 export const CMD_LAUNCH_WORKFLOW = 'CMD_LAUNCH_WORKFLOW' as const;
 export const CMD_CONTINUE_WORKFLOW = 'CMD_CONTINUE_WORKFLOW' as const;
+// FR-R3-144 (T015, D-2) — grant or revoke ONE backend's uncontained posture.
+// Mutating: it writes `schegent.backend.uncontainedBackends` at application
+// scope, the setting that decides whether a backend with no OS-enforced bound may
+// spawn at all. Why it is a command of its own rather than a key inside
+// `CMD_SAVE_GENERAL_SETTINGS`: sidebar-ipc/uncontained-grant.ts.
+export const CMD_SET_UNCONTAINED_BACKEND_GRANT = 'CMD_SET_UNCONTAINED_BACKEND_GRANT' as const;
+// Feature 195 (T035, FR-018, FR-019) — this queue's own halt-on-failure
+// answer, or `null` to follow the workspace default. Mutating: writes (or,
+// for `null`, removes) `QueueState.failurePolicy`.
+export const CMD_SET_QUEUE_FAILURE_POLICY = 'CMD_SET_QUEUE_FAILURE_POLICY' as const;
+// Feature 195 (T064, FR-025) — the operator asserts that a `failed` task's work
+// actually completed outside the tool, so the halt it caused ends without a
+// re-run and without discarding the row. Mutating: it writes the task's status.
+// The name carries no mutating verb prefix, so the naming-convention lint would
+// not have caught an omission from `COMMAND_AUTHORITY` — that entry is
+// deliberate, as `CMD_LAUNCH_PIPELINE`'s and the two Workflow ones are.
+export const CMD_ATTEST_TASK_COMPLETED = 'CMD_ATTEST_TASK_COMPLETED' as const;
 
 // -- Host message literals (host → webview) ----------------------------------
 
 export const STATE_SNAPSHOT = 'STATE_SNAPSHOT' as const;
 export const CMD_ACK = 'CMD_ACK' as const;
-// Feature 020 — host → webview push for a single new phase-log entry
-// while a tail session is active. See `MSG_PHASE_LOG_ENTRY` payload
-// shape below.
-export const MSG_PHASE_LOG_ENTRY = 'MSG_PHASE_LOG_ENTRY' as const;
+// FR-R6-F07 (FR-004, FR-008) — a bounded, positioned batch of live entries.
+// It replaced Feature 020's one-entry push.
+export const MSG_PHASE_LOG_BATCH = 'MSG_PHASE_LOG_BATCH' as const;
 
 export const COMMAND_TYPES = [
   CMD_START,
   CMD_CANCEL,
-  CMD_RESUME,
-  CMD_RESET,
   CMD_REMOVE_QUEUE_ITEM,
   CMD_OPEN_AUDIT_LOG,
   CMD_RETRY_QUEUE_ITEM,
   CMD_MOVE_QUEUE_ITEM_UP,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
   CMD_OPEN_DASHBOARD,
-  CMD_RETRY_ACTIVE_RUN,
   CMD_RERUN_FROM_HISTORY,
-  CMD_OPEN_QUEUE_ITEM_DETAILS,
   CMD_OPEN_HISTORY_ITEM_DETAILS,
   CMD_SAVE_MODELS,
   CMD_SAVE_DEFINITION_DRAFT,
@@ -194,12 +259,24 @@ export const COMMAND_TYPES = [
   CMD_READ_PHASE_LOG,
   CMD_START_PHASE_LOG_TAIL,
   CMD_STOP_PHASE_LOG_TAIL,
+  CMD_ACK_PHASE_LOG_TAIL,
   CMD_OPEN_VERBOSE_SETTING,
+  CMD_OPEN_TRUST_SETTINGS,
   CMD_RESOLVE_AUDIT_POINTER,
+  CMD_RESOLVE_HISTORY_DESCRIPTION,
+  CMD_READ_FAILURE_RECORD,
+  CMD_OPEN_DECISION_RECORD,
+  CMD_READ_STORAGE_DETAILS,
+  CMD_READ_USAGE_ACCOUNTING,
+  CMD_READ_REPORT,
+  CMD_MUTATE_REPORT,
+  CMD_READ_EXECUTION_VISIBILITY,
+  CMD_OPEN_CHANGE_REVIEW,
+  CMD_DECIDE_PHASE_HANDOFF,
   CMD_SET_PHASE_BREAKPOINT,
   CMD_CLEAR_PHASE_BREAKPOINT,
   CMD_START_QUEUE,
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_SET_CONFIRM_SUPPRESSION,
   CMD_DISMISS_MIGRATION_NOTICE,
   CMD_READ_METRICS,
@@ -208,10 +285,13 @@ export const COMMAND_TYPES = [
   CMD_PREFLIGHT_PROCESS_YAML,
   CMD_LAUNCH_PIPELINE,
   CMD_LAUNCH_WORKFLOW,
-  CMD_CONTINUE_WORKFLOW
+  CMD_CONTINUE_WORKFLOW,
+  CMD_SET_UNCONTAINED_BACKEND_GRANT,
+  CMD_SET_QUEUE_FAILURE_POLICY,
+  CMD_ATTEST_TASK_COMPLETED
 ] as const;
 
-export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_ENTRY] as const;
+export const HOST_MESSAGE_TYPES = [STATE_SNAPSHOT, CMD_ACK, MSG_PHASE_LOG_BATCH] as const;
 export type CommandType = (typeof COMMAND_TYPES)[number];
 export type HostMessageType = (typeof HOST_MESSAGE_TYPES)[number];
 // -- Command payload interfaces ---------------------------------------------
@@ -232,19 +312,93 @@ export type {
   StartQueueIntent
 } from './start-intent-types';
 
-import type { EnqueueStartIntent, StartQueueIntent } from './start-intent-types';
 import {
   isValidEnqueueStartIntent,
   isValidStartQueueIntent
 } from './start-intent-types';
 import type {
+  AckPhaseLogTailCommand,
   ReadPhaseLogCommand,
   StartPhaseLogTailCommand,
   StopPhaseLogTailCommand
 } from './sidebar-ipc/phase-log';
+import { isBackendRunnerKind } from './backend-kinds';
 import type { ReadMetricsCommand } from './sidebar-ipc/metrics';
 import { isReadMetricsRequest } from './sidebar-ipc/metrics';
 import type { ResolveAuditPointerCommand } from './sidebar-ipc/history-evidence';
+import type { ResolveHistoryDescriptionCommand } from './sidebar-ipc/history-description';
+import type { ReadFailureRecordCommand } from './sidebar-ipc/failure-record';
+import type { OpenDecisionRecordCommand } from './sidebar-ipc/decision-record';
+import type { ReadStorageDetailsCommand } from './sidebar-ipc/storage-details';
+import type { ReadUsageAccountingCommand } from './sidebar-ipc/usage-accounting';
+import type { MutateReportCommand, ReadReportCommand } from './sidebar-ipc/reporting';
+import type {
+  DecidePhaseHandoffCommand,
+  OpenChangeReviewCommand,
+  ReadExecutionVisibilityCommand
+} from './sidebar-ipc/execution-visibility';
+export type {
+  SavedReportListPage,
+  ReadReportRequest,
+  ReadReportCommand,
+  ReadReportResponse,
+  MutateReportRequest,
+  MutateReportCommand,
+  HostReportExportResult,
+  MutateReportResponse
+} from './sidebar-ipc/reporting';
+export type {
+  VisibilityDataQuality,
+  VisibilityStreamState,
+  VisibilityRecoveryPosture,
+  NormalizedAcpActivityState,
+  AttemptVisibilityRow,
+  ExecutionHierarchySummary,
+  ExecutionLiveLogVisibility,
+  ExecutionRecoveryVisibility,
+  ExecutionAcpVisibility,
+  ExecutionLaneCandidateVisibility,
+  ExecutionAttemptVisibility,
+  RuntimeLanePosture,
+  RuntimeTelemetryPosture,
+  RuntimePostureVisibility,
+  ReadExecutionVisibilityRequest,
+  ReadExecutionVisibilityCommand,
+  ReadExecutionVisibilityResponse,
+  OpenChangeReviewRequest,
+  OpenChangeReviewCommand,
+  ChangeReviewEditorOpenOutcome,
+  OpenChangeReviewResponse,
+  DecidePhaseHandoffRequest,
+  DecidePhaseHandoffCommand,
+  DecidePhaseHandoffResponse
+} from './sidebar-ipc/execution-visibility';
+export type {
+  ReadUsageAccountingRequest,
+  ReadUsageAccountingCommand,
+  ReadUsageAccountingResponse,
+  UsageAccountingReader
+} from './sidebar-ipc/usage-accounting';
+export type {
+  ReadStorageDetailsRequest,
+  ReadStorageDetailsCommand,
+  ReadStorageDetailsResponse,
+  StorageDetails,
+  StorageDetailsReader
+} from './sidebar-ipc/storage-details';
+export type {
+  OpenDecisionRecordRequest,
+  OpenDecisionRecordCommand,
+  DecisionRecordOutcome,
+  OpenDecisionRecordResponse
+} from './sidebar-ipc/decision-record';
+export type {
+  ResolveHistoryDescriptionRequest,
+  ResolveHistoryDescriptionCommand,
+  ResolveHistoryDescriptionResponse
+} from './sidebar-ipc/history-description';
+export type { ReadFailureRecordRequest, ReadFailureRecordCommand,
+  ReadFailureRecordResponse } from './sidebar-ipc/failure-record';
 export type { HistoryEvidenceEntry, ResolveAuditPointerRequest, ResolveAuditPointerCommand,
   ResolveAuditPointerResponse } from './sidebar-ipc/history-evidence';
 import type {
@@ -252,6 +406,12 @@ import type {
   PreflightProcessYamlCommand
 } from './sidebar-ipc/process-yaml';
 import { admitsExportInclusion } from './sidebar-ipc/process-yaml';
+import {
+  isSetUncontainedBackendGrantPayload,
+  type SetUncontainedBackendGrantCommand } from './sidebar-ipc/uncontained-grant';
+export type {
+  SetUncontainedBackendGrantPayload,
+  SetUncontainedBackendGrantCommand } from './sidebar-ipc/uncontained-grant';
 import { isLaunchPipelinePayload, type LaunchPipelineCommand } from './sidebar-ipc/run-launcher';
 export type {
   LaunchPipelineRequest, LaunchPipelineCommand, LaunchPipelineResult,
@@ -260,22 +420,24 @@ import {
   isContinueWorkflowPayload, isLaunchWorkflowPayload,
   type ContinueWorkflowCommand, type LaunchWorkflowCommand } from './sidebar-ipc/workflow-run';
 export type {
-  ConnectedNodeAction, ConnectedNodeProjection, ConnectedNodeState,
-  ConnectedRunProjection, ConnectedRunStateRefusal, ContinueWorkflowCommand,
-  ContinueWorkflowOutcome, ContinueWorkflowPayload, ContinueWorkflowResult,
-  LaunchWorkflowCommand, LaunchWorkflowOutcome, LaunchWorkflowPayload,
-  LaunchWorkflowResult, WorkflowDefinitionRefusal } from './sidebar-ipc/workflow-run';
+  ConnectedInvocationAttemptProjection, ConnectedInvocationProjection, ConnectedNodeAction, ConnectedNodeProjection,
+  ConnectedNodeState, ConnectedRunProjection, ConnectedRunStateRefusal, ContinueWorkflowCommand, ContinueWorkflowOutcome,
+  ContinueWorkflowPayload, ContinueWorkflowResult, ControlAction, ControlActionKind, ControlCandidateProjection,
+  ControlCommandAcknowledgement, ControlCommandEnvelope, ControlCommandRefusalReason, ControlLegalActionEntry, ControlProjection,
+  LaunchWorkflowCommand, LaunchWorkflowOutcome, LaunchWorkflowPayload, LaunchWorkflowResult, WorkflowControlAction, WorkflowDefinitionRefusal } from './sidebar-ipc/workflow-run';
 // Feature 092 (US1, FR-019/FR-020) — the seven reinstated queue commands. Their
 // wire shapes live in sidebar-ipc/queue.ts, as every family since 084 does; what
 // stays here is the registration the drift test requires be exhaustive — the
-// literal, the SIDEBAR_COMMAND_TYPES entry, this re-export, the SidebarCommand
+// literal, the COMMAND_TYPES entry, this re-export, the SidebarCommand
 // member, and the COMMAND_GUARDS entry.
 import type {
-  CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
-  RenameQueueCommand, SaveQueueSettingsCommand } from './sidebar-ipc/queue';
+  AttestTaskCompletedCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  RenameQueueCommand, SaveQueueSettingsCommand,
+  SetQueueFailurePolicyCommand } from './sidebar-ipc/queue';
 export type {
-  CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
-  RenameQueueCommand, SaveQueueSettingsCommand } from './sidebar-ipc/queue';
+  AttestTaskCompletedCommand, CreateQueueCommand, DeleteQueueCommand, MoveTaskCommand,
+  RenameQueueCommand, SaveQueueSettingsCommand,
+  SetQueueFailurePolicyCommand } from './sidebar-ipc/queue';
 
 export type {
   ReadPhaseLogRequest,
@@ -286,7 +448,9 @@ export type {
   StartPhaseLogTailResponse,
   StopPhaseLogTailRequest,
   StopPhaseLogTailCommand,
-  StopPhaseLogTailResponse
+  StopPhaseLogTailResponse,
+  AckPhaseLogTailRequest, AckPhaseLogTailCommand, AckPhaseLogTailResponse, PhaseLogCursorStatus,
+  PhaseLogTailCounters, PhaseLogWireEntry, LiveLogBatchEntry, LiveLogBatchMode, PhaseLogBatchPayload
 } from './sidebar-ipc/phase-log';
 export type {
   PhaseRecord,
@@ -303,7 +467,6 @@ export type {
 export { READ_METRICS_RUN_IDS_MAX, isReadMetricsRunIdList } from './sidebar-ipc/metrics';
 export type {
   ProcessYamlResourceKind,
-  PipelineExportInclusion,
   WorkflowExportInclusion,
   ExportProcessYamlRequest,
   ExportProcessYamlCommand,
@@ -332,114 +495,66 @@ export type {
 export type {
   StateSnapshotMessage,
   CommandAckMessage,
-  PhaseLogEntryPushMessage,
+  PhaseLogBatchPushMessage,
   HostMessage
 } from './sidebar-ipc/host-messages';
+// FR-R3-154 (T1646) — the ACK's `outcome` vocabulary, published here because
+// `webview-ui/src/lib/messages.ts` re-exports this module and nothing else: a
+// webview that narrows on `outcome` must read the same four words the host
+// writes, not a copy of them.
+export { COMMAND_ACK_OUTCOMES, type CommandAckOutcome } from './command-outcome';
 
-export interface StartCommand extends CommandBase<typeof CMD_START> {
-  readonly payload: {
-    readonly description: string;
-    // Feature 011 — optional catalog pipeline override; absent payload
-    // means "use the default pipeline at submission time".
-    readonly pipelineId?: string;
-    // Feature 017 — optional target queue and insertion position. Missing
-    // `queueId` resolves to the configured default queue; missing `position`
-    // appends at the end of that queue.
-    readonly queueId?: string;
-    readonly position?: number;
-    // Feature 065 — optional start-mode intent (additive). Omission is
-    // valid; the host's policy table routes it to the chooser default or
-    // the warn-level automation default. See sidebar-ipc.diff.md.
-    readonly startIntent?: EnqueueStartIntent;
-  };
-}
-
-// Feature 017 — BUG-001. The required `taskId` resolves the operator's
-// intended cancel target by `FeatureRequest.id` instead of via the
-// singular `store.getRun()` projection. This preserves action identity
-// when `globalConcurrencyCap > 1` AND after a queue pause/resume swaps
-// the current in-flight run.
-export interface CancelCommand extends CommandBase<typeof CMD_CANCEL> {
-  readonly payload: { readonly taskId: string };
-}
-export interface ResumeCommand extends CommandBase<typeof CMD_RESUME> {
-  readonly payload?: { readonly prompt?: string };
-}
-
-export interface ResetCommand extends CommandBase<typeof CMD_RESET> {
-  readonly payload: { readonly confirmed: true };
-}
-
-export interface RemoveQueueItemCommand extends CommandBase<typeof CMD_REMOVE_QUEUE_ITEM> {
-  readonly payload: { readonly id: string; readonly confirmed: true };
-}
-
-export interface OpenAuditLogCommand extends CommandBase<typeof CMD_OPEN_AUDIT_LOG> {}
-
-export interface RetryQueueItemCommand extends CommandBase<typeof CMD_RETRY_QUEUE_ITEM> {
-  readonly payload: { readonly id: string };
-}
-
-export interface MoveQueueItemUpCommand extends CommandBase<typeof CMD_MOVE_QUEUE_ITEM_UP> {
-  readonly payload: { readonly id: string };
-}
-
-export interface MoveQueueItemDownCommand extends CommandBase<typeof CMD_MOVE_QUEUE_ITEM_DOWN> {
-  readonly payload: { readonly id: string };
-}
-
-export interface ClearCompletedCommand extends CommandBase<typeof CMD_CLEAR_COMPLETED> {}
-export interface ClearFailedCommand extends CommandBase<typeof CMD_CLEAR_FAILED> {}
-
-// Feature 063 — Clean All atomic queue reset. Empty payload object so the
-// router can distinguish "operator confirmed" from a malformed message
-// without introducing optional fields.
-export interface ClearAllCommand extends CommandBase<typeof CMD_CLEAR_ALL> {
-  readonly payload?: Record<string, never>;
-}
-
-// Feature 063 — per-action confirmation-prompt suppression. The actionKey
-// is validated against the closed `ActionKey` union in the suppression
-// handler before any memento write.
-export interface SetConfirmSuppressionCommand
-  extends CommandBase<typeof CMD_SET_CONFIRM_SUPPRESSION> {
-  readonly payload: {
-    readonly actionKey: string;
-    readonly suppressed: boolean;
-  };
-}
-
-// Feature 065 (T054a / FR-020) — operator dismisses the one-time post-migration
-// notice. Payload is empty (the dismiss applies to the single workspace queue;
-// the host writes `migrationNotice: 'dismissed'` via `setQueue({...})`).
-export interface DismissMigrationNoticeCommand
-  extends CommandBase<typeof CMD_DISMISS_MIGRATION_NOTICE> {}
-
-export interface PauseQueueCommand extends CommandBase<typeof CMD_PAUSE_QUEUE> {
-  readonly payload?: { readonly queueId?: string; readonly reason?: string };
-}
-
-export interface ResumeQueueCommand extends CommandBase<typeof CMD_RESUME_QUEUE> {
-  readonly payload?: { readonly queueId?: string; readonly prompt?: string };
-}
-export interface OpenDashboardCommand extends CommandBase<typeof CMD_OPEN_DASHBOARD> {}
-export interface RetryActiveRunCommand extends CommandBase<typeof CMD_RETRY_ACTIVE_RUN> {}
-
-export interface RerunFromHistoryCommand extends CommandBase<typeof CMD_RERUN_FROM_HISTORY> {
-  // Feature 013 — Wave 6 (US6, FR-031): `force` is the operator opt-in for
-  // legacy entries (recorded before `originalDescription` was persisted).
-  // When `force === true`, the rerun proceeds with the truncated preview;
-  // otherwise the command rejects with a sanitized warning.
-  readonly payload: { readonly runId: string; readonly force?: boolean };
-}
-
-export interface OpenQueueItemDetailsCommand extends CommandBase<typeof CMD_OPEN_QUEUE_ITEM_DETAILS> {
-  readonly payload: { readonly id: string };
-}
-
-export interface OpenHistoryItemDetailsCommand extends CommandBase<typeof CMD_OPEN_HISTORY_ITEM_DETAILS> {
-  readonly payload: { readonly id: string };
-}
+// FR-R7-05 — Core inbound command interfaces derived from the declarative IPC
+// descriptors (`scripts/contracts/ipc-descriptors/`). Re-exported here so all
+// host and webview callers keep importing from `./sidebar-ipc`.
+import type {
+  CancelCommand,
+  ClearCompletedCommand,
+  ClearQueueCommand,
+  DismissMigrationNoticeCommand,
+  MoveQueueItemDownCommand,
+  MoveQueueItemUpCommand,
+  OpenAuditLogCommand,
+  OpenDashboardCommand,
+  OpenHistoryItemDetailsCommand,
+  OpenTrustSettingsCommand,
+  OpenVerboseSettingCommand,
+  PauseQueueCommand,
+  PingBackendCommand,
+  RemoveQueueItemCommand,
+  RerunFromHistoryCommand,
+  ResumeQueueCommand,
+  RetryQueueItemCommand,
+  SaveGeneralSettingsCommand,
+  SaveModelsCommand,
+  SetConfirmSuppressionCommand,
+  StartCommand,
+  StartQueueCommand
+} from './generated/sidebar-ipc-types';
+export type {
+  CancelCommand,
+  ClearCompletedCommand,
+  ClearQueueCommand,
+  DismissMigrationNoticeCommand,
+  MoveQueueItemDownCommand,
+  MoveQueueItemUpCommand,
+  OpenAuditLogCommand,
+  OpenDashboardCommand,
+  OpenHistoryItemDetailsCommand,
+  OpenTrustSettingsCommand,
+  OpenVerboseSettingCommand,
+  PauseQueueCommand,
+  PingBackendCommand,
+  RemoveQueueItemCommand,
+  RerunFromHistoryCommand,
+  ResumeQueueCommand,
+  RetryQueueItemCommand,
+  SaveGeneralSettingsCommand,
+  SaveModelsCommand,
+  SetConfirmSuppressionCommand,
+  StartCommand,
+  StartQueueCommand
+} from './generated/sidebar-ipc-types';
 
 // Feature 100 — the per-definition lifecycle shapes and their payload
 // predicates. Same split as the launcher commands: the payload checks live in
@@ -467,43 +582,6 @@ export type {
 import { isCmdReadDefinitionVersion, type ReadDefinitionVersionCommand } from './sidebar-ipc/catalog-history';
 export * from './sidebar-ipc/catalog-history';
 
-export interface SaveModelsCommand extends CommandBase<typeof CMD_SAVE_MODELS> {
-  readonly payload: {
-    readonly models: Record<string, readonly string[]>;
-    /**
-     * Feature 096 — present only on the import-confirm call site
-     * (`mutation` always accompanies it there); the manual add/remove call
-     * site omits both and keeps its unconditional-write behavior unchanged.
-     */
-    readonly expectedRevision?: string;
-    readonly mutation?: { readonly kind: 'manual-edit' | 'import-package' };
-  };
-}
-
-// Feature 011 — keys in `updates` are unprefixed scalar setting names;
-// the host prepends `schegent.` and validates the full batch against an
-// allowlist before writing any key. If a later workspace write fails, the
-// host compensates by restoring any keys already written by that batch. See
-// specs/011-webui-config-editor/contracts/general-settings-ipc.md.
-//
-// Supported keys (host-side allowlist lives in
-// src/config/general-settings.ts `KEY_SPECS` — webview must mirror but
-// is NOT the source of truth):
-//   - cli.path, logging.verbose, loop.maxIterations,
-//     invocation.timeoutSeconds, watchdog.pollIntervalMinutes,
-//     audit.rotation.sizeMB, audit.rotation.maxAgeDays,
-//     defaultPipelineId, fatalSignatures,
-//     queue.globalConcurrencyCap, logging.runtimeLogLevel,
-//     logging.runtimeLogFilePath, logging.runtimeLogMaxBytes,
-//     logging.runtimeLogMaxGenerations, retry.maxAttempts.
-//   - Feature 012: `claude.autoCompactPctOverride`.
-export interface SaveGeneralSettingsCommand
-  extends CommandBase<typeof CMD_SAVE_GENERAL_SETTINGS> {
-  readonly payload: {
-    readonly updates: Readonly<Record<string, unknown>>;
-  };
-}
-
 // The live-queue controls — the phase controls, the two breakpoint commands,
 // and the task edits — moved to a focused module in feature 100 (FR-R3-016).
 // The ratchet in tests/lint/source-loc-budget.test.ts is what asked: this
@@ -527,50 +605,22 @@ import type {
   SkipPhaseCommand
 } from './sidebar-ipc/run-controls';
 export type * from './sidebar-ipc/run-controls';
-
-export interface OpenVerboseSettingCommand
-  extends CommandBase<typeof CMD_OPEN_VERBOSE_SETTING> {}
-
-export interface PingBackendCommand extends CommandBase<typeof CMD_PING_BACKEND> {
-  readonly payload: { readonly runner: 'claude' | 'codex' | 'agy' }; }
-
-// BUG-002 (FR-012a) — start-queue command. No payload; the host promotes
-// the oldest pending task to in-flight. Rejected when no pending tasks
-// exist, when the queue is paused, or when a run is already in-flight.
-//
-// Feature 065 — optional `startIntent` payload (additive). Carries
-// `startMode` for now/scheduled/cancel-schedule and the `'operator-restart'`
-// source literal. Omission preserves the legacy "no-op promote" semantics.
-//
-// Feature 092 (T061, FR-034) — optional `queueId` (additive). It names which
-// queue the start addresses; omission means the default queue, which is what
-// every pre-092 sender meant when there was only one. Sending it is how the
-// webview addresses a specific queue now that several may exist.
-export interface StartQueueCommand extends CommandBase<typeof CMD_START_QUEUE> {
-  readonly payload?: {
-    readonly queueId?: string;
-    readonly startIntent?: StartQueueIntent;
-  } | Record<string, never>;
-}
+// FR-R4-F04 (FR-003) — the transport usage the Settings tab shows; its one home is the sub-module.
+export * from './sidebar-ipc/transport-usage';
 
 export type SidebarCommand =
   | StartCommand
   | CancelCommand
-  | ResumeCommand
-  | ResetCommand
   | RemoveQueueItemCommand
   | OpenAuditLogCommand
   | RetryQueueItemCommand
   | MoveQueueItemUpCommand
   | MoveQueueItemDownCommand
   | ClearCompletedCommand
-  | ClearFailedCommand
   | PauseQueueCommand
   | ResumeQueueCommand
   | OpenDashboardCommand
-  | RetryActiveRunCommand
   | RerunFromHistoryCommand
-  | OpenQueueItemDetailsCommand
   | OpenHistoryItemDetailsCommand
   | SaveModelsCommand
   | SaveDefinitionDraftCommand
@@ -592,10 +642,22 @@ export type SidebarCommand =
   | ReadPhaseLogCommand
   | StartPhaseLogTailCommand
   | StopPhaseLogTailCommand
+  | AckPhaseLogTailCommand
   | OpenVerboseSettingCommand
+  | OpenTrustSettingsCommand
   | ResolveAuditPointerCommand
+  | ResolveHistoryDescriptionCommand
+  | ReadFailureRecordCommand
+  | OpenDecisionRecordCommand
+  | ReadStorageDetailsCommand
+  | ReadUsageAccountingCommand
+  | ReadReportCommand
+  | MutateReportCommand
+  | ReadExecutionVisibilityCommand
+  | OpenChangeReviewCommand
+  | DecidePhaseHandoffCommand
   | StartQueueCommand
-  | ClearAllCommand
+  | ClearQueueCommand
   | SetConfirmSuppressionCommand
   | DismissMigrationNoticeCommand
   | ReadMetricsCommand
@@ -604,14 +666,17 @@ export type SidebarCommand =
   | PreflightProcessYamlCommand
   | LaunchPipelineCommand
   | LaunchWorkflowCommand
-  | ContinueWorkflowCommand;
+  | ContinueWorkflowCommand
+  | SetUncontainedBackendGrantCommand
+  | SetQueueFailurePolicyCommand
+  | AttestTaskCompletedCommand;
 
 // -- Runtime guards ----------------------------------------------------------
 //
 // Each guard validates the discriminator literal only — the deeper
 // payload validation is performed by `src/ui/sidebar/ipc-validator.ts`.
-// The exhaustive `COMMAND_GUARDS` registry is what the message router
-// uses to reject unknown command types before any further processing.
+// The exhaustive `COMMAND_GUARDS` registry has no production reader (ingress is
+// `validateInboundMessage`; the router decides from `COMMAND_AUTHORITY`); tests read it.
 
 function isObjectWithType<T extends string>(value: unknown, type: T): boolean {
   return (
@@ -636,12 +701,6 @@ export function isCmdStart(value: unknown): value is StartCommand {
 export function isCmdCancel(value: unknown): value is CancelCommand {
   return isObjectWithType(value, CMD_CANCEL);
 }
-export function isCmdResume(value: unknown): value is ResumeCommand {
-  return isObjectWithType(value, CMD_RESUME);
-}
-export function isCmdReset(value: unknown): value is ResetCommand {
-  return isObjectWithType(value, CMD_RESET);
-}
 export function isCmdRemoveQueueItem(value: unknown): value is RemoveQueueItemCommand {
   return isObjectWithType(value, CMD_REMOVE_QUEUE_ITEM);
 }
@@ -660,9 +719,6 @@ export function isCmdMoveQueueItemDown(value: unknown): value is MoveQueueItemDo
 export function isCmdClearCompleted(value: unknown): value is ClearCompletedCommand {
   return isObjectWithType(value, CMD_CLEAR_COMPLETED);
 }
-export function isCmdClearFailed(value: unknown): value is ClearFailedCommand {
-  return isObjectWithType(value, CMD_CLEAR_FAILED);
-}
 export function isCmdPauseQueue(value: unknown): value is PauseQueueCommand {
   return isObjectWithType(value, CMD_PAUSE_QUEUE);
 }
@@ -672,14 +728,8 @@ export function isCmdResumeQueue(value: unknown): value is ResumeQueueCommand {
 export function isCmdOpenDashboard(value: unknown): value is OpenDashboardCommand {
   return isObjectWithType(value, CMD_OPEN_DASHBOARD);
 }
-export function isCmdRetryActiveRun(value: unknown): value is RetryActiveRunCommand {
-  return isObjectWithType(value, CMD_RETRY_ACTIVE_RUN);
-}
 export function isCmdRerunFromHistory(value: unknown): value is RerunFromHistoryCommand {
   return isObjectWithType(value, CMD_RERUN_FROM_HISTORY);
-}
-export function isCmdOpenQueueItemDetails(value: unknown): value is OpenQueueItemDetailsCommand {
-  return isObjectWithType(value, CMD_OPEN_QUEUE_ITEM_DETAILS);
 }
 export function isCmdOpenHistoryItemDetails(value: unknown): value is OpenHistoryItemDetailsCommand {
   return isObjectWithType(value, CMD_OPEN_HISTORY_ITEM_DETAILS);
@@ -773,6 +823,24 @@ export function isCmdDeleteQueue(value: unknown): value is DeleteQueueCommand {
 export function isCmdSaveQueueSettings(value: unknown): value is SaveQueueSettingsCommand {
   return isObjectWithType(value, CMD_SAVE_QUEUE_SETTINGS);
 }
+// Feature 195 (T035) — discriminator only, same split as every other guard
+// here: the deeper `policy ∈ QUEUE_FAILURE_POLICIES ∪ {null}` check lives in
+// `validators/queue-management.ts`, the ingress gate `MessageRouter`
+// dispatches behind.
+export function isCmdSetQueueFailurePolicy(
+  value: unknown
+): value is SetQueueFailurePolicyCommand {
+  return isObjectWithType(value, CMD_SET_QUEUE_FAILURE_POLICY);
+}
+// Feature 195 (T064, FR-025) — discriminator only. The `confirmed: true` check
+// that makes this an assertion rather than a click lives in the ingress gate
+// (`runtime-validators.ts`), which is the single site allowed to decide whether
+// the operator asserted anything.
+export function isCmdAttestTaskCompleted(
+  value: unknown
+): value is AttestTaskCompletedCommand {
+  return isObjectWithType(value, CMD_ATTEST_TASK_COMPLETED);
+}
 export function isCmdMoveTask(value: unknown): value is MoveTaskCommand {
   return isObjectWithType(value, CMD_MOVE_TASK);
 }
@@ -795,11 +863,51 @@ export function isCmdStartPhaseLogTail(value: unknown): value is StartPhaseLogTa
 export function isCmdStopPhaseLogTail(value: unknown): value is StopPhaseLogTailCommand {
   return isObjectWithType(value, CMD_STOP_PHASE_LOG_TAIL);
 }
+export function isCmdAckPhaseLogTail(value: unknown): value is AckPhaseLogTailCommand {
+  return isObjectWithType(value, CMD_ACK_PHASE_LOG_TAIL);
+}
 export function isCmdOpenVerboseSetting(value: unknown): value is OpenVerboseSettingCommand {
   return isObjectWithType(value, CMD_OPEN_VERBOSE_SETTING);
 }
+export function isCmdOpenTrustSettings(value: unknown): value is OpenTrustSettingsCommand {
+  return isObjectWithType(value, CMD_OPEN_TRUST_SETTINGS);
+}
 export function isCmdResolveAuditPointer(value: unknown): value is ResolveAuditPointerCommand {
   return isObjectWithType(value, CMD_RESOLVE_AUDIT_POINTER);
+}
+export function isCmdResolveHistoryDescription(
+  value: unknown
+): value is ResolveHistoryDescriptionCommand {
+  return isObjectWithType(value, CMD_RESOLVE_HISTORY_DESCRIPTION);
+}
+export function isCmdReadFailureRecord(value: unknown): value is ReadFailureRecordCommand {
+  return isObjectWithType(value, CMD_READ_FAILURE_RECORD);
+}
+export function isCmdOpenDecisionRecord(value: unknown): value is OpenDecisionRecordCommand {
+  return isObjectWithType(value, CMD_OPEN_DECISION_RECORD);
+}
+export function isCmdReadStorageDetails(value: unknown): value is ReadStorageDetailsCommand {
+  return isObjectWithType(value, CMD_READ_STORAGE_DETAILS);
+}
+export function isCmdReadUsageAccounting(value: unknown): value is ReadUsageAccountingCommand {
+  return isObjectWithType(value, CMD_READ_USAGE_ACCOUNTING);
+}
+export function isCmdReadReport(value: unknown): value is ReadReportCommand {
+  return isObjectWithType(value, CMD_READ_REPORT);
+}
+export function isCmdMutateReport(value: unknown): value is MutateReportCommand {
+  return isObjectWithType(value, CMD_MUTATE_REPORT);
+}
+export function isCmdReadExecutionVisibility(
+  value: unknown
+): value is ReadExecutionVisibilityCommand {
+  return isObjectWithType(value, CMD_READ_EXECUTION_VISIBILITY);
+}
+export function isCmdOpenChangeReview(value: unknown): value is OpenChangeReviewCommand {
+  return isObjectWithType(value, CMD_OPEN_CHANGE_REVIEW);
+}
+export function isCmdDecidePhaseHandoff(value: unknown): value is DecidePhaseHandoffCommand {
+  return isObjectWithType(value, CMD_DECIDE_PHASE_HANDOFF);
 }
 // Feature 028 — phase breakpoint set/clear guards.
 export function isCmdSetPhaseBreakpoint(value: unknown): value is SetPhaseBreakpointCommand {
@@ -834,18 +942,13 @@ export function isCmdStartQueue(value: unknown): value is StartQueueCommand {
   }
   return startIntent === undefined || isValidStartQueueIntent(startIntent);
 }
-// Feature 063 — Clean All guard. Accepts `payload` absent or as an empty
-// object; rejects arrays and non-empty payloads.
-export function isCmdClearAll(value: unknown): value is ClearAllCommand {
-  if (!isObjectWithType(value, CMD_CLEAR_ALL)) return false;
-  const payload = (value as { payload?: unknown }).payload;
-  return payload === undefined
-    || (
-      payload !== null
-      && typeof payload === 'object'
-      && !Array.isArray(payload)
-      && Object.keys(payload).length === 0
-    );
+// FR-R3-150 (T1618) — shallow discriminator-only check, matching
+// `isCmdClearCompleted` above: deep `queueId` validation (non-empty,
+// length-bounded, registry membership) is architecturally out of scope
+// here (see this file's own header comment) and lives in
+// `validateQueueCleanupPayload` / `QueueManager.clearQueue`.
+export function isCmdClearQueue(value: unknown): value is ClearQueueCommand {
+  return isObjectWithType(value, CMD_CLEAR_QUEUE);
 }
 // Feature 063 — confirmation-suppression guard. Validates the discriminator
 // and the payload shape `{ actionKey: string; suppressed: boolean }`.
@@ -887,13 +990,22 @@ export function isCmdReadMetrics(value: unknown): value is ReadMetricsCommand {
   return isReadMetricsRequest((value as { payload?: unknown }).payload);
 }
 
+// FR-R3-144 — same split as 087 and 088 above: only the discriminator needs a
+// runtime value from this module.
+export function isCmdSetUncontainedBackendGrant(
+  value: unknown
+): value is SetUncontainedBackendGrantCommand {
+  return isObjectWithType(value, CMD_SET_UNCONTAINED_BACKEND_GRANT)
+    && isSetUncontainedBackendGrantPayload((value as { payload?: unknown }).payload);
+}
+
 export function isCmdPingBackend(value: unknown): value is PingBackendCommand {
   if (!isObjectWithType(value, CMD_PING_BACKEND)) return false;
   const payload = (value as { payload?: unknown }).payload;
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return false;
   if (Object.keys(payload).length !== 1) return false;
   const runner = (payload as { runner?: unknown }).runner;
-  return runner === 'claude' || runner === 'codex' || runner === 'agy';
+  return isBackendRunnerKind(runner);
 }
 
 // Feature 084 / feature 085 — read-only export guard. The payload is the
@@ -961,21 +1073,16 @@ export const COMMAND_GUARDS: Readonly<
 > = Object.freeze({
   [CMD_START]: isCmdStart,
   [CMD_CANCEL]: isCmdCancel,
-  [CMD_RESUME]: isCmdResume,
-  [CMD_RESET]: isCmdReset,
   [CMD_REMOVE_QUEUE_ITEM]: isCmdRemoveQueueItem,
   [CMD_OPEN_AUDIT_LOG]: isCmdOpenAuditLog,
   [CMD_RETRY_QUEUE_ITEM]: isCmdRetryQueueItem,
   [CMD_MOVE_QUEUE_ITEM_UP]: isCmdMoveQueueItemUp,
   [CMD_MOVE_QUEUE_ITEM_DOWN]: isCmdMoveQueueItemDown,
   [CMD_CLEAR_COMPLETED]: isCmdClearCompleted,
-  [CMD_CLEAR_FAILED]: isCmdClearFailed,
   [CMD_PAUSE_QUEUE]: isCmdPauseQueue,
   [CMD_RESUME_QUEUE]: isCmdResumeQueue,
   [CMD_OPEN_DASHBOARD]: isCmdOpenDashboard,
-  [CMD_RETRY_ACTIVE_RUN]: isCmdRetryActiveRun,
   [CMD_RERUN_FROM_HISTORY]: isCmdRerunFromHistory,
-  [CMD_OPEN_QUEUE_ITEM_DETAILS]: isCmdOpenQueueItemDetails,
   [CMD_OPEN_HISTORY_ITEM_DETAILS]: isCmdOpenHistoryItemDetails,
   [CMD_SAVE_MODELS]: isCmdSaveModels,
   [CMD_SAVE_DEFINITION_DRAFT]: isCmdSaveDefinitionDraft,
@@ -998,6 +1105,8 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_RENAME_QUEUE]: isCmdRenameQueue,
   [CMD_DELETE_QUEUE]: isCmdDeleteQueue,
   [CMD_SAVE_QUEUE_SETTINGS]: isCmdSaveQueueSettings,
+  [CMD_SET_QUEUE_FAILURE_POLICY]: isCmdSetQueueFailurePolicy,
+  [CMD_ATTEST_TASK_COMPLETED]: isCmdAttestTaskCompleted,
   [CMD_MOVE_TASK]: isCmdMoveTask,
   [CMD_MODIFY_TASK]: isCmdModifyTask,
   [CMD_REORDER_TASK]: isCmdReorderTask,
@@ -1005,12 +1114,24 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_READ_PHASE_LOG]: isCmdReadPhaseLog,
   [CMD_START_PHASE_LOG_TAIL]: isCmdStartPhaseLogTail,
   [CMD_STOP_PHASE_LOG_TAIL]: isCmdStopPhaseLogTail,
+  [CMD_ACK_PHASE_LOG_TAIL]: isCmdAckPhaseLogTail,
   [CMD_OPEN_VERBOSE_SETTING]: isCmdOpenVerboseSetting,
+  [CMD_OPEN_TRUST_SETTINGS]: isCmdOpenTrustSettings,
   [CMD_RESOLVE_AUDIT_POINTER]: isCmdResolveAuditPointer,
+  [CMD_RESOLVE_HISTORY_DESCRIPTION]: isCmdResolveHistoryDescription,
+  [CMD_READ_FAILURE_RECORD]: isCmdReadFailureRecord,
+  [CMD_OPEN_DECISION_RECORD]: isCmdOpenDecisionRecord,
+  [CMD_READ_STORAGE_DETAILS]: isCmdReadStorageDetails,
+  [CMD_READ_USAGE_ACCOUNTING]: isCmdReadUsageAccounting,
+  [CMD_READ_REPORT]: isCmdReadReport,
+  [CMD_MUTATE_REPORT]: isCmdMutateReport,
+  [CMD_READ_EXECUTION_VISIBILITY]: isCmdReadExecutionVisibility,
+  [CMD_OPEN_CHANGE_REVIEW]: isCmdOpenChangeReview,
+  [CMD_DECIDE_PHASE_HANDOFF]: isCmdDecidePhaseHandoff,
   [CMD_SET_PHASE_BREAKPOINT]: isCmdSetPhaseBreakpoint,
   [CMD_CLEAR_PHASE_BREAKPOINT]: isCmdClearPhaseBreakpoint,
   [CMD_START_QUEUE]: isCmdStartQueue,
-  [CMD_CLEAR_ALL]: isCmdClearAll,
+  [CMD_CLEAR_QUEUE]: isCmdClearQueue,
   [CMD_SET_CONFIRM_SUPPRESSION]: isCmdSetConfirmSuppression,
   [CMD_DISMISS_MIGRATION_NOTICE]: isCmdDismissMigrationNotice,
   [CMD_READ_METRICS]: isCmdReadMetrics,
@@ -1019,5 +1140,6 @@ export const COMMAND_GUARDS: Readonly<
   [CMD_PREFLIGHT_PROCESS_YAML]: isCmdPreflightProcessYaml,
   [CMD_LAUNCH_PIPELINE]: isCmdLaunchPipeline,
   [CMD_LAUNCH_WORKFLOW]: isCmdLaunchWorkflow,
-  [CMD_CONTINUE_WORKFLOW]: isCmdContinueWorkflow
+  [CMD_CONTINUE_WORKFLOW]: isCmdContinueWorkflow,
+  [CMD_SET_UNCONTAINED_BACKEND_GRANT]: isCmdSetUncontainedBackendGrant
 });

@@ -144,6 +144,45 @@ export function filesMatching(root: string, pattern: string, options: MatchOptio
   });
 }
 
+/**
+ * `filesMatching`, as repo-relative paths — the shape every inline-IPC gate wants.
+ *
+ * FR-R3-121 follow-up (2026-08-27). Ten gates carried a private
+ * `listMatchingFiles` doing exactly this, in six textual variants, each wrapping
+ * the call in:
+ *
+ * ```ts
+ * catch (err) { const e = err as { status?: number; stdout?: string };
+ *               if (e.status === 1 ...) return []; ... throw err; }
+ * ```
+ *
+ * **That handling is unreachable and has been since the scan stopped shelling
+ * out.** `status` and `stdout` are `grep`/`rg` process artifacts; `filesMatching`
+ * is a `node:fs` walk that catches its own read errors internally, so it never
+ * throws an object carrying either. Every variant's conditions are therefore
+ * always false and every variant falls through to the same `throw err` — the
+ * three "different failure semantics" the census recorded are three flavours of
+ * dead code with identical runtime behaviour.
+ *
+ * It mattered anyway: reading those branches is what made a reviewer conclude the
+ * gates diverged behaviourally and defer a consolidation twice. Dead error
+ * handling for a mechanism that is gone does not just take up room, it answers
+ * questions wrongly.
+ *
+ * Errors propagate. A scan that genuinely fails is a red gate, which is what
+ * every variant already did.
+ */
+export function matchingRelativePaths(
+  repoRoot: string,
+  root: string,
+  pattern: string,
+  options: MatchOptions = {}
+): readonly string[] {
+  return filesMatching(root, pattern, options).map((abs) =>
+    abs.startsWith(`${repoRoot}/`) ? abs.slice(repoRoot.length + 1) : abs
+  );
+}
+
 export interface LineMatch {
   /** Absolute path of the file the line came from. */
   readonly file: string;

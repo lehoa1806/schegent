@@ -2,7 +2,15 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import ts from 'typescript';
-import { SUPPORTED_BACKENDS, DEFAULT_BACKEND } from '../../src/runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, DEFAULT_BACKEND } from '../../src/contracts/backend-kinds';
+import {
+  ALLOW_UNCONTAINED_SETTING,
+  REMOVED_ALLOW_UNCONTAINED_SETTING,
+  containmentOf,
+  judgeBackendContainment,
+  uncontainedGrantNotice
+} from '../../src/services/backend-containment-policy';
+import { createUncontainedConsentRequester } from '../../src/activation/uncontained-consent';
 
 const ROOT = resolve(__dirname, '../..');
 const DECISION_DOC = 'docs/concepts/unprompted-agent-not-contained.md';
@@ -402,6 +410,36 @@ describe('backend permission posture', () => {
     }
   });
 
+  it('names the first-run gate setting on every onboarding surface (FR-R3-073)', () => {
+    if (readPosture() !== 'prompts-disabled') return;
+    // FR-R3-073 (feature 152) — the review's reading-path finding: the course
+    // told the default-case operator "you do not need to set any Schegent
+    // setting" while the shipped posture refuses a fresh install's first run
+    // until this one is set. The two onboarding surfaces a first run passes
+    // through must name the setting and say what happens without it.
+    // FR-R3-125 — the key, lowercased because these surfaces are read case-folded.
+    // It was `schegent.backend.allowuncontainedbackends` until 2026-08-27, when one
+    // boolean became a list of backend ids so a grant applies to the backend it
+    // names and no other. Taken from the policy module rather than retyped, so a
+    // future rename fails at the source of truth instead of here.
+    const FIRST_RUN_GATE_SETTING = ALLOW_UNCONTAINED_SETTING.toLowerCase();
+    for (const surface of ['README.md', 'docs/courses/use-schegent.md']) {
+      const text = collapse(read(surface));
+      expect(
+        text,
+        seeDoc(
+          `${surface} does not name ${FIRST_RUN_GATE_SETTING}. A fresh install refuses its ` +
+            'first run without it, so an onboarding page that omits it sends the reader to a ' +
+            'refusal with no pointer back'
+        )
+      ).toContain(FIRST_RUN_GATE_SETTING);
+      expect(
+        text,
+        seeDoc(`${surface} must say the first run is refused without the setting`)
+      ).toContain('refuses its first run');
+    }
+  });
+
   it('names every runner on every disclosure surface', () => {
     if (readPosture() !== 'prompts-disabled') return;
     for (const surface of [...PACKAGED_SURFACES, ...SOURCE_SURFACES]) {
@@ -486,18 +524,23 @@ describe('backend permission posture', () => {
  * date. Enumerated deliberately: a directory-wide exclusion would let the next
  * drift land in a file nobody re-reads.
  *
- * Honest note: on today's tree this list excludes nothing — neither review
- * currently pairs the vocabulary with a `sideEffects` reference, so removing the
- * list would not turn the suite red. It is here because a dated review that
- * quotes the old wording is a normal thing to write, and the mechanism was
- * observed working (a record was given the old wording, the gate stayed green,
- * and the change was reverted) rather than assumed. An allowlist nobody has
- * seen fire is one nobody should trust.
+ * FR-R3-063 — this list is now EMPTY, and the note above it was wrong.
+ *
+ * It named `docs/operations/principal-architecture-review-2026-05-18.md` and
+ * asserted, in the present tense, that "the listed review currently pairs the
+ * vocabulary with a `sideEffects` reference". That file does not exist. So the
+ * entry excused nothing, while standing ready to excuse whatever might later
+ * appear at that path -- and an exemption matching no file produces no signal, so
+ * nothing was going to notice.
+ *
+ * The mechanism is kept rather than deleted: a dated review that quotes the old
+ * containment wording is a normal thing to write, and the mechanism was observed
+ * working once (a record was given the old wording, the gate stayed green, and the
+ * change was reverted). Kept empty is honest; kept populated with a path that
+ * does not exist was not. The assertion below fails a dead entry, so the next one
+ * cannot sit here unnoticed.
  */
-const HISTORICAL_RECORDS = Object.freeze([
-  'docs/operations/principal-architecture-review-2026-05-18.md',
-  'docs/operations/superseded-architecture-review.md'
-]);
+const HISTORICAL_RECORDS: readonly string[] = Object.freeze([]);
 
 /** Phrases that describe `sideEffects` as bounding the subprocess. */
 const CONTAINMENT_VOCABULARY = Object.freeze([
@@ -890,5 +933,203 @@ describe('documented containment matches the spawned argv', () => {
     expect(collapse(read('docs/security/threat-model.md'))).toContain(
       'shell: false'
     );
+  });
+});
+
+/**
+ * FR-R3-063 — an exemption for a path that does not exist is dead standing
+ * permission, and silent: a rule matching no file reports nothing.
+ */
+describe('the historical-record exemption list is live', () => {
+  it('names only paths that exist', () => {
+    const missing = HISTORICAL_RECORDS.filter(
+      (relative) => !existsSync(resolve(ROOT, relative))
+    );
+    expect(missing).toEqual([]);
+  });
+});
+
+/**
+ * FR-R3-125 (FR-005a, T017/T018) — the consent surface says what is being granted.
+ *
+ * `schegent.backend.uncontainedBackends` is the whole consent mechanism: shape 3's
+ * recorded decision is that the setting IS the consent surface, not a prompt. So
+ * the text of that setting and the text of the refusal an operator hits before
+ * setting it are the two places the authority is described, and both are asserted
+ * here.
+ *
+ * FR-R3-146 (FR-004, plan A4) — a THIRD surface, and the recorded position above is
+ * amended rather than deleted. "Not a prompt" was aimed at FR-R3-031/032's
+ * disclosure, which FR-R3-056 rejected with "a document does not bound a process":
+ * a notice shown beside a spawn that happened anyway. The modal is answered BEFORE
+ * one — the refusal is thrown inside `createBackendRunner`, so no runner exists
+ * while it is open — and the manifest default stays `[]`, so the shipped posture is
+ * exactly as closed as it was. What changed is that a fresh install can now answer
+ * the refusal instead of only reading it.
+ *
+ * The modal is held to the SAME list, not a second one beside it. Three surfaces
+ * describing one authority in three vocabularies is how two of them come to be
+ * wrong without anything failing.
+ *
+ * THREE SUBSTANCES, each because omitting it produced a real misunderstanding the
+ * audit of 2026-08-27 recorded as an edge case:
+ *
+ *   - **the authority** — that model-generated actions run with the operator's own
+ *     local user authority, in the threat model's terms rather than a euphemism
+ *     like "reduced sandboxing";
+ *   - **the application scope** — that the grant applies to every workspace in the
+ *     installation. The audit's edge-case list names the operator who enables it in
+ *     one trusted workspace and assumes it is workspace-local;
+ *   - **the per-backend shape** — that naming one backend does not name the others,
+ *     which is the entire change FR-R3-125 made and is invisible from the type.
+ */
+describe('the uncontained-backend consent surface states what it grants (FR-R3-125)', () => {
+  /** The setting's rendered description, from the manifest. */
+  const description = (): string => {
+    const manifest = JSON.parse(read('package.json')) as {
+      contributes?: {
+        configuration?: { properties?: Record<string, { markdownDescription?: string }> };
+      };
+    };
+    const text =
+      manifest.contributes?.configuration?.properties?.[ALLOW_UNCONTAINED_SETTING]
+        ?.markdownDescription;
+    expect(
+      text,
+      `${ALLOW_UNCONTAINED_SETTING} is not declared at contributes.configuration.properties, so ` +
+        'there is no consent surface to check. If the key moved, point this gate at it.'
+    ).toBeTypeOf('string');
+    return text as string;
+  };
+
+  /** The refusal an operator meets before they have granted anything. */
+  const refusal = (): string => {
+    const verdict = judgeBackendContainment('claude', new Set());
+    expect(verdict.outcome).toBe('refused');
+    return verdict.outcome === 'refused' ? verdict.message : '';
+  };
+
+  /**
+   * Markdown is formatting, not substance. The manifest description writes
+   * "`application`-scoped" with the word fenced, and a pattern that could not see
+   * past the backticks would report a missing substance that is plainly present —
+   * a gate failing on punctuation teaches contributors to edit the gate.
+   */
+  const substance = (text: string): string => text.replace(/[`*_]/g, '');
+
+  const SUBSTANCES: ReadonlyArray<{ what: string; pattern: RegExp }> = [
+    { what: 'the authority being granted', pattern: /local user authority/i },
+    { what: 'the application scope of the grant', pattern: /application[- ]scoped/i },
+    { what: 'the per-backend shape', pattern: /this backend only|one at a time|does not allow/i }
+  ];
+
+  it('states all three substances in the setting description', () => {
+    const text = substance(description());
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+    expect(
+      missing,
+      'This is the text an operator reads while deciding whether to permit an unbounded agent. ' +
+        'A euphemism here is worse than silence, because it reads as a considered description.'
+    ).toEqual([]);
+  });
+
+  it('states all three substances in the refusal message', () => {
+    const text = substance(refusal());
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+    expect(
+      missing,
+      'The refusal is the surface most operators actually meet — they hit it before they read the ' +
+        'setting. A refusal that does not say what accepting it means is a refusal they will ' +
+        'work around without understanding.'
+    ).toEqual([]);
+  });
+
+  /**
+   * The modal an operator meets AT the refusal (FR-R3-146, contract C1).
+   *
+   * Composed by the real requester rather than restated here, because a gate that
+   * asserts against its own copy of the text asserts nothing about the product. The
+   * dialog dismisses, and the config double throws on write: this gate reads what
+   * an operator would see and must not be able to grant anything while doing it.
+   */
+  const modal = async (): Promise<string> => {
+    let shown = '';
+    const request = createUncontainedConsentRequester({
+      confirm: async (message, detail, approveLabel) => {
+        shown = [message, detail, approveLabel].join('\n');
+        return undefined;
+      },
+      config: {
+        get: () => undefined,
+        update: () => {
+          throw new Error('a gate that reads the consent text must not be able to grant');
+        }
+      },
+      logger: { info: () => {}, warn: () => {} }
+    });
+    await request({ kind: 'claude', message: refusal() });
+    return shown;
+  };
+
+  it('states all three substances in the consent modal', async () => {
+    const text = substance(await modal());
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+    expect(
+      missing,
+      'The modal is the surface a fresh install meets first, and the only one that can be ' +
+        'answered on the spot. It carries the refusal message verbatim precisely so these three ' +
+        'stay one text — a modal that paraphrases them is a fourth vocabulary for one authority.'
+    ).toEqual([]);
+  });
+
+  /**
+   * FR-R4-F06 (FR-007; L3; contract D, D2) -- a FOURTH surface: the sentence the launch
+   * surface shows for a granted backend. It is held to the same list as the other three,
+   * for each uncontained backend, for the reason the modal is: four surfaces describing
+   * one authority in four vocabularies is how some of them come to be wrong without
+   * anything failing. Enumerated over `SUPPORTED_BACKENDS`, so a backend added to the
+   * platform is held to it on the day it is added.
+   */
+  it('states all three substances in the launch notice, for every uncontained backend', () => {
+    const uncontained = SUPPORTED_BACKENDS.filter((kind) => containmentOf(kind) === 'none');
+    expect(uncontained.length, 'no uncontained backend to hold the notice to').toBeGreaterThan(0);
+    for (const kind of uncontained) {
+      const text = substance(uncontainedGrantNotice(kind));
+      const missing = SUBSTANCES.filter((s) => !s.pattern.test(text)).map((s) => s.what);
+      expect(missing, `the launch notice for '${kind}' omits a substance`).toEqual([]);
+    }
+  });
+
+  it('names the backend and the installation scope in what the operator clicks', async () => {
+    // The action is the consent. It must say which backend it grants and how far
+    // the grant reaches, because that is what pressing it does.
+    const text = await modal();
+    expect(text).toContain("Enable 'claude' for This Installation");
+    expect(text).toContain("Schegent cannot start the 'claude' backend without your approval.");
+  });
+
+  it('names the removed key in the refusal, so a stale grant is explicable', () => {
+    // FR-R3-125 removed a boolean rather than reading it as a fallback, so an
+    // operator who had accepted the posture months ago now hits a refusal they did
+    // not expect. Without this sentence that reads as a regression.
+    expect(refusal()).toContain(REMOVED_ALLOW_UNCONTAINED_SETTING);
+    expect(description()).toContain('allowUncontainedBackends');
+  });
+
+  it('is red on a euphemism and green on the real text — proved, not assumed', () => {
+    // T018. Every assertion above is "the missing list is empty", which passes over
+    // a pattern that matches anything. Each substance is driven against a plausible
+    // euphemistic rewrite of the same sentence.
+    const euphemism =
+      'Allow backends that run with reduced sandboxing. Enabling this permits advanced ' +
+      'automation features for the selected runners.';
+    const missing = SUBSTANCES.filter((s) => !s.pattern.test(substance(euphemism))).map(
+      (s) => s.what
+    );
+    expect(
+      missing.length,
+      'the substance patterns must reject a euphemism that mentions none of the three'
+    ).toBe(SUBSTANCES.length);
+    expect(SUBSTANCES).toHaveLength(3);
   });
 });

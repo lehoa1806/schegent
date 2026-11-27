@@ -79,7 +79,7 @@ import { deriveWorkflowPorts } from '../../src/config/workflow-derived-ports';
 import type { WorkflowDefinition } from '../../src/contracts/workflow-definitions';
 import { SanitizedLogger } from '../../src/lib/logger';
 import { QueueManager } from '../../src/queue/queue-manager';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { MessageRouter, type RouterDeps } from '../../src/ui/sidebar/message-router';
 import {
@@ -180,17 +180,19 @@ function authoredRow(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
-const nodeOrder = (nodes: readonly { nodeId: string; pipelineId: string }[]): string[] =>
-  nodes.map((node) => `${node.nodeId}:${node.pipelineId}`);
+const nodeOrder = (
+  nodes: readonly { nodeId: string; pipelineId?: string; phaseId?: string; workflowId?: string }[]
+): string[] =>
+  nodes.map((node) => `${node.nodeId}:${node.pipelineId ?? node.phaseId ?? node.workflowId ?? ''}`);
 
 const edgeOrder = (
   connections: readonly {
-    from: { nodeId: string; portId: string };
-    to: { nodeId: string; portId: string };
+    from: { nodeId: string; portId?: string };
+    to: { nodeId: string; portId?: string };
   }[]
 ): string[] =>
   connections.map(
-    (edge) => `${edge.from.nodeId}.${edge.from.portId}->${edge.to.nodeId}.${edge.to.portId}`
+    (edge) => `${edge.from.nodeId}.${edge.from.portId ?? ''}->${edge.to.nodeId}.${edge.to.portId ?? ''}`
   );
 
 const AUTHORED_NODE_ORDER = nodeOrder(AUTHORED_NODES);
@@ -302,7 +304,6 @@ async function commit(
   });
   const deps: Record<string, unknown> = {
     executeCommand: vi.fn(),
-    queueRemover: { remove: vi.fn() },
     isPrimary: () => true,
     isTrusted: () => true,
     notifyWarning: vi.fn(),
@@ -328,9 +329,9 @@ async function commit(
   const ack =
     saved.status === 'accepted'
       ? await dispatch(router, CMD_PUBLISH_DEFINITION, {
-          ...target,
-          expectedDraftVersion: tokenFor(store, 'workflow', id)
-        })
+        ...target,
+        expectedDraftVersion: tokenFor(store, 'workflow', id)
+      })
       : saved;
 
   return {
@@ -979,7 +980,8 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
 
   const CATALOG_READER: CatalogConfigReader = {
     getModels: () => [],
-    getDefaultPipelineId: () => undefined
+    getDefaultWorkflowId: () => undefined,
+    getDeprecatedDefaultPipelineId: () => undefined
   };
 
   const REFERENCED_PIPELINE_IDS = [DESIGN_PIPELINE.id, BUILD_PIPELINE.id] as const;
@@ -1116,13 +1118,11 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
   function workStartingSeams() {
     return {
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       queueOps: {
         retry: vi.fn(),
         moveUp: vi.fn(),
         moveDown: vi.fn(),
         clearCompleted: vi.fn(),
-        clearFailed: vi.fn(),
         setQueuePausedState: vi.fn()
       },
       phaseOps: { skipPhase: vi.fn(), disablePhase: vi.fn(), enablePhase: vi.fn() }
@@ -1131,7 +1131,12 @@ describe('Workflow catalog management — Pipeline independence (US6, T053)', ()
 
   function expectNoSeamReached(deps: Record<string, unknown>): void {
     const spies: unknown[] = [deps.executeCommand];
-    for (const group of ['queueRemover', 'queueOps', 'phaseOps']) {
+    // FR-R3-161 (T047) — `'queueRemover'` led this list. `workStartingSeams()`
+    // no longer declares that group, because the router no longer declares the
+    // capability; iterating a group that is not there would throw on
+    // `Object.values(undefined)` rather than assert anything. The seam it stood
+    // for is gone from the product, not merely unobserved here.
+    for (const group of ['queueOps', 'phaseOps']) {
       spies.push(...Object.values(deps[group] as Record<string, unknown>));
     }
     for (const spy of spies) {

@@ -1,5 +1,7 @@
+import { authoredPhaseTimeoutMs } from './effective-phase-timeout';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { openWithinRootByPath } from '../lib/safe-open';
 import type { Phase } from './phase';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { AuditEntryFields } from '../audit/audit-entry';
@@ -252,22 +254,59 @@ export class PhaseSidecarReader {
     // not present; we OR with `0` (identity) and rely on Windows' own
     // symlink-creation ACL (admin or Developer Mode) for partial defense.
     const silent = options.silentOnFailure === true;
-    const NOFOLLOW: number =
-      (fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
+    /**
+ * FR-R3-052 — a phase message above this is refused, not truncated. Far above
+ * any real sidecar; the bound exists so the allocation is not the file's size.
+ */
+const MAX_SIDECAR_BYTES = 8 * 1024 * 1024;
+
+    // FR-R3-080 (T1067) — `O_NOFOLLOW` moved INTO the walk, which applies it to
+    // the leaf exactly as this file did and `lstat`s every component above it
+    // besides. The local constant went with the call that used it.
     let handle: fs.FileHandle | null = null;
     let bytes: Buffer;
     try {
-      handle = await fs.open(
-        absolutePath,
-        fs.constants.O_RDONLY | NOFOLLOW
-      );
-      const stat = await handle.stat();
+      // FR-R3-080 (T1067) — the whole component chain, not only the leaf.
+      //
+      // `O_NOFOLLOW` closes the window on the FINAL component and the comment
+      // above is right about that. It says nothing about the components ABOVE
+      // it: a link at any parent redirects the open before the kernel ever looks
+      // at the leaf. The checked walk `lstat`s each component in turn and then
+      // opens with the same `O_NOFOLLOW`, so both halves are covered by one
+      // call, and everything the block above describes — fstat binding to the
+      // descriptor, the read going through the descriptor — is unchanged.
+      const opened = await openWithinRootByPath(inputs.cwd, absolutePath, { flags: 'r' });
+      if (opened.outcome === 'refused') {
+        if (silent) return null;
+        // A link — at the leaf OR at any component above it — is reported as the
+        // redirect it is, which is what the ELOOP branch did for the leaf alone.
+        // `reparse-point-leaf` is that same fact by the weaker Windows route
+        // FR-R3-083 added (`docs/architecture/native-binding-decision.md`); omitted,
+        // a Windows operator is told "no message" for a redirected sidecar.
+        // Everything else (absent, not a file, unreadable) stays `missing-sidecar`.
+        const redirected =
+          opened.reason === 'symlink-leaf' || opened.reason === 'symlink-component' || opened.reason === 'reparse-point-leaf';
+        const reason = redirected ? 'path-symlink-redirect' : 'missing-sidecar';
+        await this.emitPhaseMessageInvalid(inputs, reason);
+        return this.invalidPhaseMessage(inputs, reason);
+      }
+      handle = opened.handle;
+      const openedHandle = opened.handle;
+      const stat = await openedHandle.stat();
       if (!stat.isFile()) {
         if (silent) return null;
         await this.emitPhaseMessageInvalid(inputs, 'missing-sidecar');
         return this.invalidPhaseMessage(inputs, 'missing-sidecar');
       }
-      bytes = await handle.readFile();
+      // FR-R3-052 (H-03) — the size, checked BEFORE the read. `stat()` was
+      // already here and only `isFile()` was consulted. Refused rather than
+      // truncated: half a phase message is invalid input, not a smaller message.
+      if (stat.size > MAX_SIDECAR_BYTES) {
+        if (silent) return null;
+        await this.emitPhaseMessageInvalid(inputs, 'malformed-sidecar');
+        return this.invalidPhaseMessage(inputs, 'malformed-sidecar');
+      }
+      bytes = await openedHandle.readFile();
       // Windows defense-in-depth: lstat after read catches the case where
       // open() followed a symlink at the dentry level (no O_NOFOLLOW on Win).
       try {
@@ -376,9 +415,8 @@ export class PhaseSidecarReader {
     };
     if (inputs.phaseDef?.model) meta.model = inputs.phaseDef.model;
     if (inputs.phaseDef?.effort) meta.effort = inputs.phaseDef.effort;
-    if (inputs.phaseDef?.timeoutSeconds) {
-      meta.timeoutMs = inputs.phaseDef.timeoutSeconds * 1000;
-    }
+    const authoredTimeoutMs = authoredPhaseTimeoutMs(inputs.phaseDef);
+    if (authoredTimeoutMs !== undefined) meta.timeoutMs = authoredTimeoutMs;
     return meta;
   }
 

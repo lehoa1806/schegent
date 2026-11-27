@@ -1,0 +1,135 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Configuration resolution. No I/O, no collaborators constructed, no side effects.
+
+import * as vscode from 'vscode';
+
+import type { SanitizedLogger } from '../lib/logger';
+import type { ProcessEnvironmentPolicy } from '../runner/spawn-env';
+import { readProcessEnvironmentPolicy } from './uncached-settings-accessors';
+import { validateWorkspaceSettings } from '../config/settings-schema-validator';
+import { RUN_LIMIT_KEYS, mergeIdleTimeoutLayers, resolveRunLimit } from '../config/tighten-only-limits';
+import type { EffectiveLimit, LimitOrigin } from '../contracts/snapshot-projections';
+
+/** The layers `WorkspaceConfiguration.inspect` reports, as far as an origin is concerned. */
+interface InspectedLayers {
+  readonly workspaceFolderValue?: unknown;
+  readonly workspaceValue?: unknown;
+  readonly globalValue?: unknown;
+}
+
+/**
+ * FR-R4-F02 (contract E2 G5, G7) — which settings layer an `inspect` result says supplied the value,
+ * in the order `get` resolves them: folder, then workspace, then user, then the manifest default.
+ *
+ * It lives beside the resolver and not in `general-settings.ts`: `inspectScope` there answers a
+ * three-valued question for the settings tab and is unchanged. Only these four members are ever
+ * returned; `phase` is a value a Run's frozen plan carries and is not a settings layer.
+ */
+export function originOf(inspected: InspectedLayers | undefined): LimitOrigin {
+  if (inspected?.workspaceFolderValue !== undefined) return 'workspace-folder';
+  if (inspected?.workspaceValue !== undefined) return 'workspace';
+  if (inspected?.globalValue !== undefined) return 'user';
+  return 'default';
+}
+
+/**
+ * FR-R3-119 — the workspace settings `wireStage2` resolves before it builds
+ * anything, gathered in one place.
+ *
+ * The third extraction out of `wireStage2()`, and the cleanest available: **two**
+ * bindings in (`workspaceRoot`, `logger`), nine values out, no side effects, no
+ * late binding, and nothing here constructs a collaborator. It is configuration
+ * resolution, which is what `src/config/`-shaped code is for — it lived in the
+ * composition root only because that is where it was first written.
+ *
+ * The two timeout keys carry their own history and it is kept verbatim below:
+ * `invocation.idleTimeoutSeconds` superseded `invocation.timeoutSeconds`, and the
+ * resolution order is load-bearing rather than incidental.
+ */
+export interface WorkspaceSettings {
+  readonly config: vscode.WorkspaceConfiguration;
+  readonly cliPath: string;
+  readonly processEnvironmentPolicy: ProcessEnvironmentPolicy;
+  readonly iterationCap: number;
+  readonly pollIntervalMinutes: number;
+  readonly timeoutSeconds: number;
+  readonly maxDurationSeconds: number;
+  readonly rotationSizeMB: number;
+  readonly rotationMaxAgeDays: number;
+  /**
+   * FR-R4-F02 (contract E1, E2 G5) — the three limits the runner receives, each beside the layer that
+   * supplied it. The scalar fields above are unchanged and equal `limits.*.value` by construction:
+   * both come from the one reading below, so the value shown to the operator and the value the runner
+   * is built with cannot be two readings of the settings.
+   */
+  readonly limits: {
+    readonly iterationCap: EffectiveLimit<number>;
+    readonly idleTimeoutSeconds: EffectiveLimit<number>;
+    readonly maxDurationSeconds: EffectiveLimit<number>;
+  };
+}
+
+export function resolveWorkspaceSettings(input: {
+  readonly workspaceRoot: string;
+  readonly logger: SanitizedLogger;
+}): WorkspaceSettings {
+  const { workspaceRoot, logger } = input;
+
+const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
+// Feature 056 follow-on — one-shot drift guard. Compares every layer
+// (workspace folder / workspace / global) against SETTINGS_SCHEMA and
+// emits a sanitized warn per finding. Operator typos (e.g. a hand-set
+// `loop.maxIterations: 0`) surface in the runtime log at activation
+// instead of producing a confusing downstream reject. Sync, no I/O.
+validateWorkspaceSettings(config, logger, new Set());
+// Review gap GC-10 — a repository layer may tighten a spend, retry, loop or invocation time limit and
+// never loosen it. The readers ignore a looser value silently on every read; activation says so once
+// per key. The idle window folds in its deprecated alias (FR-R3-075), so it is read through the merge.
+const idleLayers = mergeIdleTimeoutLayers(
+  config.inspect('invocation.idleTimeoutSeconds'),
+  config.inspect('invocation.timeoutSeconds')
+);
+for (const key of RUN_LIMIT_KEYS) {
+  const layers = key === 'invocation.idleTimeoutSeconds' ? idleLayers : config.inspect(key);
+  const { ignoredLayers } = resolveRunLimit(key, layers);
+  if (ignoredLayers.length === 0) continue;
+  logger.warn('workspace setting may only tighten an operator limit; value ignored', {
+    key,
+    layers: ignoredLayers.join(',')
+  });
+}
+const cliPath = config.get<string>('cli.path', 'claude');
+// Feature 098 (PRIV-02) — the reader's fallbacks mirror the manifest default, which moved
+// `inherit` -> `allowlist`; one reader serves this and lane verification (review gap GC-15).
+const processEnvironmentPolicy = readProcessEnvironmentPolicy(workspaceRoot, config);
+const iterationLimit = resolveRunLimit('loop.maxIterations', config.inspect('loop.maxIterations'));
+const iterationCap = iterationLimit.value;
+const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
+// FR-R3-075 — the idle window, renamed to say what it is. The old key is honored while the operator
+// set it explicitly and has not yet adopted the new name (`mergeIdleTimeoutLayers`). FR-R4-F02 (E2
+// G5) — the origin names the layer that won, not the key.
+const idleLimit = resolveRunLimit('invocation.idleTimeoutSeconds', idleLayers);
+const timeoutSeconds = idleLimit.value;
+// FR-R3-075 — the absolute per-invocation bound; reasoning beside the
+// default's declaration in general-settings.ts.
+const maxDurationLimit = resolveRunLimit('invocation.maxDurationSeconds', config.inspect('invocation.maxDurationSeconds'));
+const maxDurationSeconds = maxDurationLimit.value;
+const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
+const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
+  return {
+    config,
+    cliPath,
+    processEnvironmentPolicy,
+    iterationCap,
+    pollIntervalMinutes,
+    timeoutSeconds,
+    maxDurationSeconds,
+    rotationSizeMB,
+    rotationMaxAgeDays,
+    limits: {
+      iterationCap: { value: iterationCap, origin: iterationLimit.origin },
+      idleTimeoutSeconds: { value: timeoutSeconds, origin: idleLimit.origin },
+      maxDurationSeconds: { value: maxDurationSeconds, origin: maxDurationLimit.origin }
+    }
+  };
+}

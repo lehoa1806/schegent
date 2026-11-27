@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import type { WorkflowRunPipeline } from '../../../src/state/workflow-run';
 import {
   COMPARED_MAX_LENGTH,
@@ -17,11 +17,14 @@ import {
   appendAttempt,
   appendDecision,
   assertConnectedRunInvariants,
+  assertInvocationControlMarkers,
   createConnectedRun,
+  createInvocationFrame,
   renderCompared,
   resolveBoundQueueId,
   type ConnectedWorkflowRun,
-  type RoutingDecision
+  type RoutingDecision,
+  type WorkflowInvocationFrame
 } from '../../../src/state/connected-workflow-run';
 
 function graph(): WorkflowDefinition {
@@ -392,7 +395,7 @@ describe('connected run — the queue binding (FR-041, FR-045, FR-046)', () => {
 
   it('resolves an absent binding to the default queue on read (FR-046)', () => {
     const run = started();
-    expect(run.queueId).toBeUndefined();
+    expect(run.queueId).toBeUndefined(); // 2026-09-06 coincidental: a WorkflowRun, not a ScheduleEventPayloadCore
     expect(resolveBoundQueueId(run)).toBe(DEFAULT_QUEUE_ID);
     // No migration entry: a record with no binding satisfies the invariants as
     // it stands, which is what lets it load rather than be lifted.
@@ -460,5 +463,516 @@ describe('a Task carries no Workflow graph (T072, FR-040a)', () => {
     // so membership is readable in one direction only: aggregate → Task.
     expect(run.graph.nodes).toHaveLength(3);
     expect(Object.keys(run.nodes)).toEqual([]);
+  });
+});
+
+describe('connected run — structural guards never throw raw TypeError (FR-R8-01 / 01-08)', () => {
+  function expectInvariantError(fn: () => void, label: string): void {
+    let caught: unknown;
+    try {
+      fn();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, `${label}: expected ConnectedRunInvariantError`).toBeInstanceOf(
+      ConnectedRunInvariantError
+    );
+    expect(caught, `${label}: must never throw raw TypeError`).not.toBeInstanceOf(TypeError);
+  }
+
+  it('rejects non-object top-level inputs and malformed top-level primitives with ConnectedRunInvariantError', () => {
+    for (const bad of [null, undefined, 'string', 42, true, []]) {
+      expectInvariantError(
+        () => assertConnectedRunInvariants(bad as unknown as ConnectedWorkflowRun),
+        `top-level ${String(bad)}`
+      );
+    }
+    const base = started();
+    const badTopFields: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['empty connectedRunId', { ...base, connectedRunId: '' }],
+      ['numeric connectedRunId', { ...base, connectedRunId: 123 }],
+      ['null workflowId', { ...base, workflowId: null }],
+      ['NaN startedAt', { ...base, startedAt: Number.NaN }],
+      ['Infinity startedAt', { ...base, startedAt: Number.POSITIVE_INFINITY }],
+      ['string startedAt', { ...base, startedAt: '1000' }],
+      ['NaN revision', { ...base, revision: Number.NaN }],
+      ['float revision', { ...base, revision: 1.5 }]
+    ];
+    for (const [label, candidate] of badTopFields) {
+      expectInvariantError(
+        () => assertConnectedRunInvariants(candidate as unknown as ConnectedWorkflowRun),
+        label
+      );
+    }
+  });
+
+  it('defeats the ES2015 Object.isFrozen(null|undefined|primitive) trap on every frozen field', () => {
+    const base = started();
+    const malformedCases: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['graph: null', { ...base, graph: null }],
+      ['graph: primitive', { ...base, graph: 'frozen-primitive' }],
+      ['graph: frozen array', { ...base, graph: Object.freeze([]) }],
+      ['graph: empty frozen obj', { ...base, graph: Object.freeze({}) }],
+      ['graph.nodes: null', { ...base, graph: Object.freeze({ nodes: null, connections: [] }) }],
+      ['graph.nodes: [null]', { ...base, graph: Object.freeze({ nodes: [null], connections: [] }) }],
+      ['graph.nodes: [{}]', { ...base, graph: Object.freeze({ nodes: [{}], connections: [] }) }],
+      ['graph.connections: null', { ...base, graph: Object.freeze({ nodes: [{ nodeId: 'n-triage' }], connections: null }) }],
+      ['graph.connections: [null]', { ...base, graph: Object.freeze({ nodes: [{ nodeId: 'n-triage' }], connections: [null] }) }],
+      ['pipelines: null', { ...base, pipelines: null }],
+      ['pipelines: primitive', { ...base, pipelines: 7 }],
+      ['pipelines: frozen array', { ...base, pipelines: Object.freeze([]) }],
+      ['pipelines entry null', { ...base, pipelines: Object.freeze({ p: null }) }],
+      ['pipelines entry bad phases', { ...base, pipelines: Object.freeze({ p: Object.freeze({ id: 'p', phases: null }) }) }],
+      ['frozenClosure: null', { ...base, frozenClosure: null }],
+      ['frozenClosure: primitive', { ...base, frozenClosure: 'bad' }],
+      ['frozenClosure: frozen array', { ...base, frozenClosure: Object.freeze([]) }],
+      ['frozenClosure.workflowsById: null', { ...base, frozenClosure: Object.freeze({ workflowsById: null, phasesById: Object.freeze({}) }) }],
+      ['frozenClosure.phasesById: null', { ...base, frozenClosure: Object.freeze({ workflowsById: Object.freeze({}), phasesById: null }) }],
+      ['frozenClosure.workflowsById entry null', { ...base, frozenClosure: Object.freeze({ workflowsById: Object.freeze({ w: null }), phasesById: Object.freeze({}) }) }],
+      ['invocations: null', { ...base, invocations: null }],
+      ['invocations: frozen array', { ...base, invocations: Object.freeze([]) }],
+      ['invocations frame null', { ...base, invocations: Object.freeze({ root: null }) }],
+      [
+        'invocations frame attemptsByNodeId null',
+        {
+          ...base,
+          invocations: Object.freeze({
+            root: Object.freeze({
+              invocationId: 'root',
+              parentInvocationId: null,
+              status: 'in-flight',
+              startedAt: 1,
+              attemptsByNodeId: null
+            })
+          })
+        }
+      ],
+      [
+        'invocations frame attempts list null',
+        {
+          ...base,
+          invocations: Object.freeze({
+            root: Object.freeze({
+              invocationId: 'root',
+              parentInvocationId: null,
+              status: 'in-flight',
+              startedAt: 1,
+              attemptsByNodeId: Object.freeze({ 'n-triage': null })
+            })
+          })
+        }
+      ],
+      [
+        'invocations frame attempt element null',
+        {
+          ...base,
+          invocations: Object.freeze({
+            root: Object.freeze({
+              invocationId: 'root',
+              parentInvocationId: null,
+              status: 'in-flight',
+              startedAt: 1,
+              attemptsByNodeId: Object.freeze({ 'n-triage': Object.freeze([null]) })
+            })
+          })
+        }
+      ],
+      [
+        'invocations frame controlMarkers null',
+        {
+          ...base,
+          invocations: Object.freeze({
+            root: Object.freeze({
+              invocationId: 'root',
+              parentInvocationId: null,
+              status: 'in-flight',
+              startedAt: 1,
+              controlMarkers: null,
+              attemptsByNodeId: Object.freeze({})
+            })
+          })
+        }
+      ],
+      ['inputEnvelopes: null', { ...base, inputEnvelopes: null }],
+      ['inputEnvelopes: frozen object', { ...base, inputEnvelopes: Object.freeze({}) }],
+      ['inputEnvelopes: [null]', { ...base, inputEnvelopes: Object.freeze([null]) }],
+      ['launchContext: null', { ...base, launchContext: null }],
+      ['launchContext: frozen array', { ...base, launchContext: Object.freeze([]) }],
+      ['launchContext: bad arrays', { ...base, launchContext: Object.freeze({ supplemental: null, outputs: [] }) }],
+      ['pendingHandoff: primitive', { ...base, pendingHandoff: 'bad' }],
+      ['pendingHandoff: array', { ...base, pendingHandoff: [] }],
+      ['recoveryDisposition: primitive', { ...base, recoveryDisposition: 99 }],
+      ['commandReceipts: null', { ...base, commandReceipts: null }],
+      ['commandReceipts: frozen object', { ...base, commandReceipts: Object.freeze({}) }],
+      ['commandReceipts: [null]', { ...base, commandReceipts: Object.freeze([null]) }],
+      ['decisionObservations: null', { ...base, decisionObservations: null }],
+      ['decisionObservations: frozen object', { ...base, decisionObservations: Object.freeze({}) }],
+      ['decisionObservations: [null]', { ...base, decisionObservations: Object.freeze([null]) }],
+      ['controlState: null', { ...base, controlState: null }],
+      ['controlState: frozen array', { ...base, controlState: Object.freeze([]) }]
+    ];
+    for (const [label, candidate] of malformedCases) {
+      expectInvariantError(
+        () => assertConnectedRunInvariants(candidate as unknown as ConnectedWorkflowRun),
+        label
+      );
+    }
+  });
+
+  it('rejects malformed nodes, attempts, decisions, operands, and controlMarkers without TypeError', () => {
+    const base = started();
+    const malformedCases: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['nodes: null', { ...base, nodes: null }],
+      ['nodes: array', { ...base, nodes: [] }],
+      ['nodes record null', { ...base, nodes: { 'n-triage': null } }],
+      ['nodes attempts null', { ...base, nodes: { 'n-triage': { nodeId: 'n-triage', attempts: null } } }],
+      ['nodes attempts [null]', { ...base, nodes: { 'n-triage': { nodeId: 'n-triage', attempts: [null] } } }],
+      ['nodes attempt bad queueItemId', { ...base, nodes: { 'n-triage': { nodeId: 'n-triage', attempts: [{ queueItemId: 42, startedAt: 1 }] } } }],
+      ['decisions: null', { ...base, decisions: null }],
+      ['decisions: object', { ...base, decisions: {} }],
+      ['decisions: [null]', { ...base, decisions: [null] }],
+      ['decision attemptIndex NaN', { ...base, decisions: [decision({ attemptIndex: Number.NaN })] }],
+      ['decision prototype nodeId', { ...base, decisions: [decision({ nodeId: 'toString' })] }],
+      ['decision connections null', { ...base, decisions: [{ ...decision(), connections: null }] }],
+      ['decision connections [null]', { ...base, decisions: [{ ...decision(), connections: [null] }] }],
+      ['decision eligible null', { ...base, decisions: [{ ...decision(), eligible: null }] }],
+      ['decision eligible non-number', { ...base, decisions: [{ ...decision(), eligible: ['0'] }] }],
+      ['decision operands null', { ...base, decisions: [{ ...decision(), operands: null }] }],
+      ['decision operands [null]', { ...base, decisions: [{ ...decision(), operands: [null] }] }],
+      [
+        'decision operand compared null',
+        {
+          ...base,
+          decisions: [
+            {
+              ...decision(),
+              operands: [{ source: 'node-output', nodeId: 'n-triage', resolved: true, compared: null }]
+            }
+          ]
+        }
+      ],
+      [
+        'decision operand compared number',
+        {
+          ...base,
+          decisions: [
+            {
+              ...decision(),
+              operands: [{ source: 'node-output', nodeId: 'n-triage', resolved: true, compared: 123 }]
+            }
+          ]
+        }
+      ]
+    ];
+    for (const [label, candidate] of malformedCases) {
+      expectInvariantError(
+        () => assertConnectedRunInvariants(candidate as unknown as ConnectedWorkflowRun),
+        label
+      );
+    }
+
+    expectInvariantError(
+      () => assertInvocationControlMarkers(null as unknown as WorkflowInvocationFrame),
+      'assertInvocationControlMarkers(null)'
+    );
+    expectInvariantError(
+      () =>
+        assertInvocationControlMarkers({
+          invocationId: 'inv-1',
+          controlMarkers: null
+        } as unknown as WorkflowInvocationFrame),
+      'assertInvocationControlMarkers(controlMarkers: null)'
+    );
+  });
+
+  it('defends against prototype pollution in deepCopy and rejects dangerous keys, malformed graph/handoff/frame shapes, cycles, and excessive sizes', () => {
+    const base = started();
+    const validFrame = createInvocationFrame({
+      invocationId: 'inv-root',
+      rootRunId: base.connectedRunId,
+      parentInvocationId: null,
+      parentCallNodeId: null,
+      parentAttemptId: null,
+      workflowId: base.workflowId,
+      depth: 0,
+      nodePath: '/n-triage',
+      entryNodeId: 'n-triage',
+      boundInputs: {},
+      startedAt: 1_000
+    });
+
+    // deepCopy must use setOwnProp and never mutate Object.prototype even when fed a JSON-parsed __proto__ key.
+    const pollutedBoundInputs = JSON.parse('{"__proto__":{"pollutedFromDeepCopy":true}}') as Record<
+      string,
+      { readonly portId: string; readonly type: 'text'; readonly value: string }
+    >;
+    const frameWithProtoInput = createInvocationFrame({
+      invocationId: 'inv-proto',
+      rootRunId: 'cr-1',
+      parentInvocationId: null,
+      parentCallNodeId: null,
+      parentAttemptId: null,
+      workflowId: 'wf-triage',
+      depth: 0,
+      nodePath: '/n-triage',
+      entryNodeId: 'n-triage',
+      boundInputs: pollutedBoundInputs,
+      startedAt: 1_000
+    });
+    expect(({} as { pollutedFromDeepCopy?: boolean }).pollutedFromDeepCopy).toBeUndefined();
+    expect(Object.getPrototypeOf(frameWithProtoInput.boundInputs)).toBe(Object.prototype);
+    expect(Object.hasOwn(frameWithProtoInput.boundInputs, '__proto__')).toBe(true);
+    // And invariants reject the dangerous key on the aggregate.
+    expectInvariantError(
+      () =>
+        assertConnectedRunInvariants({
+          ...base,
+          invocations: Object.freeze({ 'inv-proto': frameWithProtoInput })
+        }),
+      'frame boundInputs __proto__'
+    );
+
+    // Valid return connection with empty to.nodeId is accepted.
+    const withReturnGraph = createConnectedRun({
+      connectedRunId: 'cr-return-ok',
+      workflowId: 'wf-triage',
+      graph: {
+        ...graph(),
+        connections: [{ from: { nodeId: 'n-triage' }, to: { nodeId: '', kind: 'return' } }]
+      },
+      pipelines: pipelines(),
+      startedAt: 1_000
+    });
+    expect(withReturnGraph.graph.connections).toHaveLength(1);
+
+    const malformedCases: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['connectedRunId constructor', { ...base, connectedRunId: 'constructor' }],
+      ['workflowId prototype', { ...base, workflowId: 'prototype' }],
+      ['queueId __proto__', { ...base, queueId: '__proto__' }],
+      [
+        'missing graph.startNodeIds',
+        {
+          ...base,
+          graph: Object.freeze({
+            workflowId: 'wf-triage',
+            name: 'Triage',
+            version: 1,
+            nodes: Object.freeze([{ nodeId: 'n-triage', pipelineId: 'p-triage' }]),
+            connections: Object.freeze([])
+          })
+        }
+      ],
+      [
+        'graph.startNodeIds contains empty string',
+        {
+          ...base,
+          graph: Object.freeze({
+            ...graph(),
+            startNodeIds: Object.freeze([''])
+          })
+        }
+      ],
+      [
+        'graph.connections[0] missing to',
+        {
+          ...base,
+          graph: Object.freeze({
+            ...graph(),
+            connections: Object.freeze([Object.freeze({})])
+          })
+        }
+      ],
+      [
+        'graph.connections[0] empty to.nodeId on node endpoint',
+        {
+          ...base,
+          graph: Object.freeze({
+            ...graph(),
+            connections: Object.freeze([Object.freeze({ from: { nodeId: 'n-triage' }, to: { nodeId: '' } })])
+          })
+        }
+      ],
+      ['pendingHandoff empty object', { ...base, pendingHandoff: Object.freeze({}) }],
+      [
+        'pendingHandoff missing target',
+        {
+          ...base,
+          pendingHandoff: Object.freeze({
+            invocationId: 'inv-root',
+            fromNodeId: 'n-triage',
+            fromAttemptId: 'att-1',
+            connectionIndex: 0,
+            prefilledInputsByPort: Object.freeze({}),
+            pausedAt: 10
+          })
+        }
+      ],
+      [
+        'frame pendingHandoff empty object',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root': Object.freeze({ ...validFrame, pendingHandoff: Object.freeze({}) })
+          })
+        }
+      ],
+      [
+        'frame missing resolvedOutputs',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root': Object.freeze({
+              invocationId: 'inv-root',
+              rootRunId: base.connectedRunId,
+              parentInvocationId: null,
+              workflowId: base.workflowId,
+              depth: 0,
+              nodePath: '/n-triage',
+              entryNodeId: 'n-triage',
+              status: 'in-flight',
+              attemptsByNodeId: Object.freeze({}),
+              startedAt: 1_000
+            })
+          })
+        }
+      ],
+      [
+        'frame negative depth',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root': Object.freeze({ ...validFrame, depth: -1 })
+          })
+        }
+      ],
+      [
+        'invocations duplicate root frames',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root-1': Object.freeze({ ...validFrame, invocationId: 'inv-root-1' }),
+            'inv-root-2': Object.freeze({ ...validFrame, invocationId: 'inv-root-2' })
+          })
+        }
+      ],
+      [
+        'invocations missing parentInvocationId target',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root': validFrame,
+            'inv-child': Object.freeze({
+              ...validFrame,
+              invocationId: 'inv-child',
+              parentInvocationId: 'inv-missing',
+              depth: 1
+            })
+          })
+        }
+      ],
+      [
+        'invocations cyclic parentInvocationId',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root': validFrame,
+            'inv-a': Object.freeze({ ...validFrame, invocationId: 'inv-a', parentInvocationId: 'inv-b', depth: 1 }),
+            'inv-b': Object.freeze({ ...validFrame, invocationId: 'inv-b', parentInvocationId: 'inv-a', depth: 2 })
+          })
+        }
+      ],
+      [
+        'graph.nodes exceeds upper bound',
+        {
+          ...base,
+          graph: Object.freeze({
+            ...graph(),
+            nodes: Object.freeze(
+              Array.from({ length: 513 }, (_, idx) => Object.freeze({ nodeId: `n-${idx}`, pipelineId: 'p-triage' }))
+            )
+          })
+        }
+      ],
+      [
+        'frozenClosure workflow nodes contains null element',
+        {
+          ...base,
+          frozenClosure: Object.freeze({
+            workflowsById: Object.freeze({
+              'wf-triage': Object.freeze({
+                workflowId: 'wf-triage',
+                nodes: Object.freeze([null]),
+                connections: Object.freeze([])
+              })
+            }),
+            phasesById: Object.freeze({})
+          })
+        }
+      ],
+      [
+        'frozenClosure catalogVersionsById entry is null',
+        {
+          ...base,
+          frozenClosure: Object.freeze({
+            workflowsById: Object.freeze({}),
+            phasesById: Object.freeze({}),
+            catalogVersionsById: Object.freeze({ 'wf-triage': null })
+          })
+        }
+      ],
+      [
+        'invocation attempt declaredOutputs is null',
+        {
+          ...base,
+          invocations: Object.freeze({
+            'inv-root': Object.freeze({
+              ...validFrame,
+              attemptsByNodeId: Object.freeze({
+                'n-triage': Object.freeze([
+                  Object.freeze({
+                    attemptId: 'att-1',
+                    nodeId: 'n-triage',
+                    nodeKind: 'phase',
+                    attemptIndex: 1,
+                    status: 'completed',
+                    startedAt: 1_000,
+                    declaredOutputs: null
+                  })
+                ])
+              })
+            })
+          })
+        }
+      ],
+      [
+        'inputEnvelopes inputsByPort is null',
+        {
+          ...base,
+          inputEnvelopes: Object.freeze([
+            Object.freeze({
+              envelopeId: 'env-1',
+              invocationId: 'inv-root',
+              targetNodeId: 'n-triage',
+              acceptedAt: 1_000,
+              inputsByPort: null
+            })
+          ])
+        }
+      ],
+      [
+        'empty laneId string',
+        {
+          ...base,
+          laneId: ''
+        }
+      ]
+    ];
+
+    for (const [label, candidate] of malformedCases) {
+      expectInvariantError(
+        () => assertConnectedRunInvariants(candidate as unknown as ConnectedWorkflowRun),
+        label
+      );
+    }
   });
 });

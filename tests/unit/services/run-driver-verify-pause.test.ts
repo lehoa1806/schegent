@@ -31,6 +31,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { fakeRunLogger } from './fake-run-logger';
 
 const NOW = 1_700_000_000_000;
 const TASK_ID = 'task-1';
@@ -93,19 +94,21 @@ describe('RunDriver completes the verify pause (BUG-003)', () => {
           exitCode: 0,
           warnings: [],
           auditEntryId: null
-        })
+        }),
+        evictStagnationTracker: vi.fn()
       },
       store: { findRunByTask: vi.fn(() => null) },
       queue: {
         notifyStatusChange: vi.fn(),
         finish: vi.fn(),
-        pause: vi.fn(),
+        // FR-R3-153 — `pause` now returns `MutationResult`, not `void`.
+        pause: vi.fn(async () => ({ ok: true })),
         cascadedPause: vi.fn(),
         findById: vi.fn(() => ({ id: TASK_ID, queueId: QUEUE_ID }))
       },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       options: { cliPath: 'claude', cwd: '/tmp', iterationCap: 5 },
       monitor: { emit: vi.fn() },

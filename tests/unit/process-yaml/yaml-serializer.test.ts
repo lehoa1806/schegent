@@ -10,20 +10,14 @@
 
 import { describe, it, expect } from 'vitest';
 import type { PhaseDefinitionEffort } from '../../../src/contracts/process-definitions';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import {
-  BINDING_SOURCE_KEY_ORDER,
   DOCUMENT_KEY_ORDER,
   EXECUTION_DEFAULTS_KEY_ORDER,
-  INPUT_BINDING_KEY_ORDER,
-  INPUT_PORT_KEY_ORDER,
   METADATA_KEY_ORDER,
-  OUTPUT_BINDING_KEY_ORDER,
-  OUTPUT_PORT_KEY_ORDER,
-  PACKAGE_DOCUMENT_KEY_ORDER,
-  PIPELINE_METADATA_KEY_ORDER,
-  PIPELINE_SPEC_KEY_ORDER,
   SPEC_KEY_ORDER,
+  WORKFLOW_BINDING_KEY_ORDER,
+  WORKFLOW_BINDING_SOURCE_KEY_ORDER,
   WORKFLOW_CONDITION_KEY_ORDER,
   WORKFLOW_CONNECTION_KEY_ORDER,
   WORKFLOW_ENDPOINT_KEY_ORDER,
@@ -32,6 +26,7 @@ import {
   WORKFLOW_NODE_KEY_ORDER,
   WORKFLOW_OPERAND_KEY_ORDER,
   WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER,
+  WORKFLOW_PORT_KEY_ORDER,
   WORKFLOW_SPEC_KEY_ORDER,
   emitEntry,
   emitKey,
@@ -92,14 +87,79 @@ describe('yaml-serializer — property order (FR-017)', () => {
       'runner',
       'sideEffects',
       'evidencePolicy',
+      // FR-R3-058 — the second evidence axis, emitted beside the first.
+      'hostVerification',
+      // FR-R3-086 — the declared capability set. A scalar, not a list, and the
+      // serializer records why: this format's list convention reads an absent
+      // key as `[]`, which for this field would turn the most restrictive
+      // declaration into the least.
+      'capabilities',
       'model',
       'effort',
       'timeoutSeconds',
+      // FR-R3-112 — the per-phase spend bound, both denominations. Pinned here because this
+      // literal is the whole authored spec surface in one place: a field that reached the format
+      // without passing through this list would be authorable and unpinned.
+      'spendBoundUsd',
+      'spendBoundTokens',
       'loopable',
       'isRequired',
       'forceContinueOnRetryCap',
-      'retryCondition'
+      // FR-R3-157 — the three-valued outcome, emitted immediately after the
+      // boolean it supersedes. Adjacency is the point: an author reading a file
+      // that carries both sees them on consecutive lines, which is the only
+      // place the format itself can say they are the same decision written twice.
+      'onRetryCap',
+      'retryCondition',
+      'nativeReview',
+      'resultContract'
     ]);
+  });
+
+  // FR-R3-157 — a phase may carry BOTH authored forms (contract V2), so the
+  // serializer has to emit both, in one order, every time. A format that dropped
+  // either one would silently rewrite the author's file on save: dropping the
+  // boolean breaks the older reader, dropping `onRetryCap` reverts the decision.
+  it('emits both retry-cap forms, in the declared order, whichever order they were built in', () => {
+    // Typed as the real spec, not `Record<string, unknown>` behind a cast: the
+    // cast would have let a misspelled key through, and this test's whole claim
+    // is about which keys reach the file.
+    const withBoth = (spec: PhaseYamlDocument['spec']): PhaseYamlDocument => ({
+      apiVersion: PHASE_YAML_API_VERSION,
+      kind: PHASE_YAML_KIND,
+      // `My Phase` rather than a single letter: the serializer quotes `N`,
+      // because YAML 1.1 reads a bare `N` as a boolean, and a quoted name in
+      // the expected block would read as noise in a test about two other keys.
+      metadata: { phaseId: 'p', name: 'My Phase', version: 1 },
+      spec
+    });
+    const emitted = serializePhaseDocument(
+      withBoth({ instruction: 'i', onRetryCap: 'continue-degraded', forceContinueOnRetryCap: true })
+    );
+    expect(emitted).toBe(
+      [
+        'apiVersion: schegent/v1',
+        'kind: Phase',
+        'metadata:',
+        '  phaseId: p',
+        '  name: My Phase',
+        '  version: 1',
+        'spec:',
+        '  instruction: i',
+        '  forceContinueOnRetryCap: true',
+        '  onRetryCap: continue-degraded',
+        ''
+      ].join('\n')
+    );
+    expect(
+      serializePhaseDocument(
+        withBoth({
+          forceContinueOnRetryCap: true,
+          instruction: 'i',
+          onRetryCap: 'continue-degraded'
+        })
+      )
+    ).toBe(emitted);
   });
 
   it('emits in the declared order whatever order the object was built in', () => {
@@ -435,32 +495,29 @@ function parsed(text: string): YamlMappingNode {
   return result.node;
 }
 
-describe('yaml-serializer — declared key order for the package mappings', () => {
-  it('holds every order this format writes as a constant in this module', () => {
-    expect(PACKAGE_DOCUMENT_KEY_ORDER).toEqual([
-      'apiVersion',
+describe('yaml-serializer — declared key order for Workflow port and binding mappings', () => {
+  it('holds every port, binding, and executionDefaults order this format writes as a constant in this module', () => {
+    expect(WORKFLOW_PORT_KEY_ORDER).toEqual([
+      'portId',
+      'label',
+      'type',
+      'required',
+      'description'
+    ]);
+    expect(WORKFLOW_BINDING_KEY_ORDER).toEqual([
       'kind',
-      'metadata',
-      'spec',
-      'included'
+      'nodeId',
+      'inputKey',
+      'portId',
+      'outputKey',
+      'sourcePortId',
+      'type',
+      'required',
+      'label',
+      'source',
+      'selection'
     ]);
-    // Mirrors the single-Phase METADATA_KEY_ORDER so the two documents' identity
-    // blocks read the same way; data-model.md §2.2 declares the fields, and §2.3
-    // is the only section that fixes an order for itself.
-    expect(PIPELINE_METADATA_KEY_ORDER).toEqual(['id', 'name', 'version', 'description']);
-    expect(PIPELINE_SPEC_KEY_ORDER).toEqual([
-      'phaseIds',
-      'inputs',
-      'outputs',
-      'bindings',
-      'executionDefaults',
-      'recommendedNext'
-    ]);
-    expect(INPUT_PORT_KEY_ORDER).toEqual(['portId', 'label', 'type', 'required', 'description']);
-    expect(OUTPUT_PORT_KEY_ORDER).toEqual(['portId', 'label', 'type', 'description']);
-    expect(INPUT_BINDING_KEY_ORDER).toEqual(['kind', 'phaseIndex', 'inputKey', 'source']);
-    expect(OUTPUT_BINDING_KEY_ORDER).toEqual(['kind', 'phaseIndex', 'portId', 'outputKey']);
-    expect(BINDING_SOURCE_KEY_ORDER).toEqual(['from', 'phaseIndex', 'portId']);
+    expect(WORKFLOW_BINDING_SOURCE_KEY_ORDER).toEqual(['from', 'nodeId', 'portId']);
     expect(EXECUTION_DEFAULTS_KEY_ORDER).toEqual([
       'runner',
       'model',
@@ -470,13 +527,13 @@ describe('yaml-serializer — declared key order for the package mappings', () =
   });
 
   it('emits a mapping in the declared order whatever order the object was built in', () => {
-    const forwards = emitMapping(PHASE_YAML_INDENT, INPUT_PORT_KEY_ORDER, {
+    const forwards = emitMapping(PHASE_YAML_INDENT, WORKFLOW_PORT_KEY_ORDER, {
       portId: 'brief',
       label: 'Brief',
       type: 'text',
       required: true
     });
-    const backwards = emitMapping(PHASE_YAML_INDENT, INPUT_PORT_KEY_ORDER, {
+    const backwards = emitMapping(PHASE_YAML_INDENT, WORKFLOW_PORT_KEY_ORDER, {
       required: true,
       type: 'text',
       label: 'Brief',
@@ -489,7 +546,7 @@ describe('yaml-serializer — declared key order for the package mappings', () =
   });
 
   it('skips an absent optional rather than emitting a bare key', () => {
-    const text = emitMapping('', OUTPUT_PORT_KEY_ORDER, {
+    const text = emitMapping('', WORKFLOW_PORT_KEY_ORDER, {
       portId: 'plan',
       label: 'Plan',
       type: 'markdown'
@@ -501,8 +558,8 @@ describe('yaml-serializer — declared key order for the package mappings', () =
 
 describe('yaml-serializer — scalar sequences (research R3)', () => {
   it('writes the items one level below the key', () => {
-    expect(emitSequence('', 'phaseIds', ['specify', 'plan'])).toBe(
-      ['phaseIds:', '  - specify', '  - plan', ''].join('\n')
+    expect(emitSequence('', 'startNodeIds', ['specify', 'plan'])).toBe(
+      ['startNodeIds:', '  - specify', '  - plan', ''].join('\n')
     );
   });
 
@@ -522,15 +579,13 @@ describe('yaml-serializer — scalar sequences (research R3)', () => {
   });
 
   it('measures a block-literal item body from the dash level + 1', () => {
-    // Dash at column 2 -> body at column 4 -> literal content at column 6, which
-    // is what the scanner reads back.
     expect(emitScalarItem('  ', 'first\nsecond')).toBe('  - |-\n      first\n      second\n');
   });
 
   it('round-trips a scalar sequence through the reader', () => {
     const values = ['specify', 'true', '42', 'has: colon', '-1'];
-    const tree = parsed(emitSequence('', 'phaseIds', values));
-    expect((nodeAt(tree, ['phaseIds']) as { items: readonly YamlNode[] }).items.map((i) =>
+    const tree = parsed(emitSequence('', 'startNodeIds', values));
+    expect((nodeAt(tree, ['startNodeIds']) as { items: readonly YamlNode[] }).items.map((i) =>
       i.kind === 'scalar' ? i.value : null
     )).toEqual(values);
   });
@@ -538,16 +593,16 @@ describe('yaml-serializer — scalar sequences (research R3)', () => {
 
 describe('yaml-serializer — mapping sequences (data-model.md §2.3)', () => {
   const BINDINGS = [
-    { kind: 'input', phaseIndex: 0, inputKey: 'brief' },
-    { kind: 'output', phaseIndex: 1, portId: 'plan-document', outputKey: 'plan' }
+    { kind: 'input', nodeId: 'specify', inputKey: 'brief' },
+    { kind: 'output', nodeId: 'plan', portId: 'plan-document', outputKey: 'plan' }
   ] as const;
 
   it('puts the dash on the first line of each item and leaves the rest at the body column', () => {
     const text = emitMappingSequence('', 'bindings', [BINDINGS[0]], (bodyIndent, item) =>
-      emitMapping(bodyIndent, INPUT_BINDING_KEY_ORDER, item)
+      emitMapping(bodyIndent, WORKFLOW_BINDING_KEY_ORDER, item)
     );
     expect(text).toBe(
-      ['bindings:', '  - kind: input', '    phaseIndex: 0', '    inputKey: brief', ''].join('\n')
+      ['bindings:', '  - kind: input', '    nodeId: specify', '    inputKey: brief', ''].join('\n')
     );
   });
 
@@ -559,11 +614,11 @@ describe('yaml-serializer — mapping sequences (data-model.md §2.3)', () => {
     const text = emitMappingSequence('', 'bindings', [BINDINGS[0]], (bodyIndent, item) => {
       const nestedIndent = `${bodyIndent}${PHASE_YAML_INDENT}`;
       return (
-        emitMapping(bodyIndent, INPUT_BINDING_KEY_ORDER, item) +
+        emitMapping(bodyIndent, WORKFLOW_BINDING_KEY_ORDER, item) +
         emitKey(bodyIndent, 'source') +
-        emitMapping(nestedIndent, BINDING_SOURCE_KEY_ORDER, {
-          from: 'phase-output',
-          phaseIndex: 0,
+        emitMapping(nestedIndent, WORKFLOW_BINDING_SOURCE_KEY_ORDER, {
+          from: 'node-output',
+          nodeId: 'specify',
           portId: 'spec-document'
         })
       );
@@ -572,11 +627,11 @@ describe('yaml-serializer — mapping sequences (data-model.md §2.3)', () => {
       [
         'bindings:',
         '  - kind: input',
-        '    phaseIndex: 0',
+        '    nodeId: specify',
         '    inputKey: brief',
         '    source:',
-        '      from: phase-output',
-        '      phaseIndex: 0',
+        '      from: node-output',
+        '      nodeId: specify',
         '      portId: spec-document',
         ''
       ].join('\n')
@@ -585,10 +640,10 @@ describe('yaml-serializer — mapping sequences (data-model.md §2.3)', () => {
 
   it('nests a sequence inside an item body one level below it', () => {
     const text = emitMappingSequence('', 'included', [{ id: 'p' }], (bodyIndent, item) =>
-      emitMapping(bodyIndent, ['id'], item) + emitSequence(bodyIndent, 'phaseIds', ['specify'])
+      emitMapping(bodyIndent, ['id'], item) + emitSequence(bodyIndent, 'startNodeIds', ['specify'])
     );
     expect(text).toBe(
-      ['included:', '  - id: p', '    phaseIds:', '      - specify', ''].join('\n')
+      ['included:', '  - id: p', '    startNodeIds:', '      - specify', ''].join('\n')
     );
   });
 
@@ -596,11 +651,7 @@ describe('yaml-serializer — mapping sequences (data-model.md §2.3)', () => {
     const text =
       emitKey('', 'spec') +
       emitMappingSequence(PHASE_YAML_INDENT, 'bindings', BINDINGS, (bodyIndent, item) =>
-        emitMapping(
-          bodyIndent,
-          item.kind === 'input' ? INPUT_BINDING_KEY_ORDER : OUTPUT_BINDING_KEY_ORDER,
-          item
-        )
+        emitMapping(bodyIndent, WORKFLOW_BINDING_KEY_ORDER, item)
       );
     const tree = parsed(text);
     expect(textAt(tree, ['spec', 'bindings', 0, 'kind'])).toBe('input');
@@ -617,18 +668,8 @@ describe('yaml-serializer — mapping sequences (data-model.md §2.3)', () => {
   });
 });
 
-// Feature 086 T008 — the Workflow package document's nine key orders
-// (contracts/workflow-yaml-grammar.md §2), test-first.
-//
-// Nothing below reaches for a new emit primitive. That is the point: 086 widens
-// the grammar by ZERO productions, so a Workflow document must be expressible in
-// the exact primitives 084 and 085 already shipped. If one of these tests needed
-// a tenth emitter, the grammar would have moved and the T001 gate would be lying.
 describe('yaml-serializer — declared key order for the Workflow mappings', () => {
   it('holds every order the Workflow format writes as a constant in this module', () => {
-    // The same five keys as PACKAGE_DOCUMENT_KEY_ORDER; a separate constant
-    // because each order is ALSO the unknown-key oracle on read, and a Workflow
-    // document that drifts from the Pipeline one must be free to say so.
     expect(WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER).toEqual([
       'apiVersion',
       'kind',
@@ -637,50 +678,68 @@ describe('yaml-serializer — declared key order for the Workflow mappings', () 
       'included'
     ]);
     expect(WORKFLOW_METADATA_KEY_ORDER).toEqual(['id', 'name', 'description', 'version']);
-    expect(WORKFLOW_SPEC_KEY_ORDER).toEqual(['nodes', 'connections', 'startNodeIds']);
-    expect(WORKFLOW_NODE_KEY_ORDER).toEqual(['nodeId', 'pipelineId', 'label']);
+    expect(WORKFLOW_SPEC_KEY_ORDER).toEqual([
+      'inputs',
+      'outputs',
+      'nodes',
+      'connections',
+      'bindings',
+      'startNodeIds',
+      'executionDefaults',
+      'recommendedNext',
+      'control',
+      'decisionResults'
+    ]);
+    expect(WORKFLOW_NODE_KEY_ORDER).toEqual([
+      'nodeId',
+      'kind',
+      'phaseId',
+      'workflowId',
+      'label',
+      'control'
+    ]);
     expect(WORKFLOW_CONNECTION_KEY_ORDER).toEqual([
       'from',
       'to',
+      'handoff',
       'condition',
       'priority',
       'isDefault',
-      'selection'
+      'selection',
+      'contextPolicy'
     ]);
-    expect(WORKFLOW_ENDPOINT_KEY_ORDER).toEqual(['nodeId', 'portId']);
+    expect(WORKFLOW_ENDPOINT_KEY_ORDER).toEqual(['nodeId', 'portId', 'kind']);
     expect(WORKFLOW_CONDITION_KEY_ORDER).toEqual(['left', 'operator', 'right']);
     expect(WORKFLOW_OPERAND_KEY_ORDER).toEqual(['source', 'nodeId', 'field']);
-    expect(WORKFLOW_INCLUDED_KEY_ORDER).toEqual(['pipelines', 'phases']);
+    expect(WORKFLOW_INCLUDED_KEY_ORDER).toEqual(['workflows', 'phases']);
   });
 
   it('emits a node in the declared order whatever order the object was built in', () => {
     const forwards = emitMapping(PHASE_YAML_INDENT, WORKFLOW_NODE_KEY_ORDER, {
       nodeId: 'design',
-      pipelineId: 'plan-pipeline',
+      kind: 'phase',
+      phaseId: 'plan-phase',
       label: 'Design'
     });
     const backwards = emitMapping(PHASE_YAML_INDENT, WORKFLOW_NODE_KEY_ORDER, {
       label: 'Design',
-      pipelineId: 'plan-pipeline',
+      phaseId: 'plan-phase',
+      kind: 'phase',
       nodeId: 'design'
     });
     expect(backwards).toBe(forwards);
     expect(forwards).toBe(
-      ['  nodeId: design', '  pipelineId: plan-pipeline', '  label: Design', ''].join('\n')
+      ['  nodeId: design', '  kind: phase', '  phaseId: plan-phase', '  label: Design', ''].join('\n')
     );
   });
 
   it('gives a multi-line label the block style, measured from the item body', () => {
-    // `label` is the one free-text field a Workflow carries, so it is the one
-    // field an operator can put a newline in. The literal's content sits one
-    // level below the mapping that owns it — the dash's level plus two — which
-    // is what the scanner measures when it reads the label back.
     const text =
       emitKey('', 'spec') +
       emitMappingSequence(
         PHASE_YAML_INDENT,
         'nodes',
-        [{ nodeId: 'design', pipelineId: 'plan-pipeline', label: 'Draft the plan\nthen hand off' }],
+        [{ nodeId: 'design', kind: 'phase', phaseId: 'plan-phase', label: 'Draft the plan\nthen hand off' }],
         (bodyIndent, item) => emitMapping(bodyIndent, WORKFLOW_NODE_KEY_ORDER, item)
       );
     expect(text).toBe(
@@ -688,7 +747,8 @@ describe('yaml-serializer — declared key order for the Workflow mappings', () 
         'spec:',
         '  nodes:',
         '    - nodeId: design',
-        '      pipelineId: plan-pipeline',
+        '      kind: phase',
+        '      phaseId: plan-phase',
         '      label: |-',
         '        Draft the plan',
         '        then hand off',
@@ -701,10 +761,6 @@ describe('yaml-serializer — declared key order for the Workflow mappings', () 
   });
 
   it('writes a condition, and its right-hand sequence, one level below its own key', () => {
-    // The deepest nesting the format reaches: a connection item body holds
-    // `condition`, whose `right` is a sequence for the `in` operator. Each level
-    // is exactly one indent below its parent, all the way down — no production
-    // beyond the bounded block sequence 085 admitted.
     const text = emitMappingSequence(
       '',
       'connections',
@@ -771,19 +827,14 @@ describe('yaml-serializer — declared key order for the Workflow mappings', () 
   });
 
   it('omits an empty list rather than writing a bare key', () => {
-    // A Workflow whose graph is a single node has no connections and an included
-    // block with no Pipelines of its own. `key:` with no children reads back as an
-    // empty mapping, so every one of these must vanish entirely (research R3).
     expect(
       emitMappingSequence(PHASE_YAML_INDENT, 'connections', [], () => 'unreachable')
     ).toBe('');
     expect(emitSequence(PHASE_YAML_INDENT, 'startNodeIds', [])).toBe('');
-    expect(emitMappingSequence('', 'pipelines', [], () => 'unreachable')).toBe('');
+    expect(emitMappingSequence('', 'workflows', [], () => 'unreachable')).toBe('');
   });
 
   it('skips an absent optional on a connection rather than emitting a bare key', () => {
-    // `condition`, `priority`, `isDefault` and `selection` are all optional; an
-    // unconditional connection writes its two endpoints and nothing else.
     const text = emitMapping('', WORKFLOW_CONNECTION_KEY_ORDER, { priority: 1 });
     expect(text).toBe('priority: 1\n');
     expect(text).not.toMatch(/^\w+: *$/m);

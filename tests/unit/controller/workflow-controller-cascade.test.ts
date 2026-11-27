@@ -6,6 +6,7 @@
 // when a phase pause subsequently fires (FR-004 / FR-005).
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -16,7 +17,8 @@ import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { findQueue, DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { findQueue } from '../../../src/queue/queue-registry';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -74,7 +76,7 @@ beforeEach(async () => {
   store = new WorkspaceStateStore(memento);
   await store.initialize();
   queue = new QueueManager(store);
-  phaseRunner = { run: vi.fn() } as unknown as PhaseRunner;
+  phaseRunner = { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   controller = new SchegentWorkflowController(
     phaseRunner,
     store,
@@ -113,7 +115,7 @@ async function seedInFlightRun(
     phaseBreakpoints: [],
     resumeTargetPhaseId: null
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
   return { feature, run };
 }
 
@@ -190,7 +192,7 @@ describe('SchegentWorkflowController — cascade-pause integration (Feature 028,
     // existing `run-already-paused` reject path. Here we exercise the
     // pure cascade-only path by clearing the run's pause first.)
     const run = store.getRun(DEFAULT_QUEUE_ID)!;
-    await store.setRun(DEFAULT_QUEUE_ID, { ...run, manualPauseAt: null, manualPauseCause: null });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...run, manualPauseAt: null, manualPauseCause: null }, unfencedCommit('test-fixture'));
 
     await queue.cascadedPause(DEFAULT_QUEUE_ID);
     entry = findQueue(store.getProjectedQueueRegistry(), DEFAULT_QUEUE_ID);

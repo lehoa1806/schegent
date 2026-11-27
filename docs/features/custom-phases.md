@@ -1,329 +1,205 @@
-# Custom Phases and Pipelines
+# Custom Phases and Workflows
 
-Schegent ships no phases and no pipelines, so in a strict sense every definition in your catalog is a custom one. What this page covers is *authoring* — writing a definition yourself rather than importing it. The two produce identical rows; the distinction is only where the text came from.
+Schegent starts with an empty catalog: it ships no active Phase, Workflow, or model selection. Operators populate the catalog by importing one of the repository's `schegent/v1` documents or by authoring definitions in the Dashboard Builder.
 
-## When to author rather than import
+<!-- Source: src/config/pipeline-config.ts -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
+<!-- Source: webview-ui/src/dashboard/routes.ts -->
 
-- You have a workflow step that no document you have covers — for example, "run lint and security scans before implement".
-- You have a multi-step flow you want to reuse across runs — a pipeline with its own ordering.
-- You want a loop phase with a non-default exit condition (e.g., "loop until a metric is zero" rather than the default `[SCHEGENT_STATUS: CLEAR]` sentinel).
+## Import a real Workflow package
 
-If you just want to tune the model, effort, or timeout of a phase you already imported, you do not need to author a new one — see [Phase Overrides](phase-overrides.md).
+The repository includes `examples/speckit-new-feature.workflow.yaml`, `examples/speckit-bugfix.workflow.yaml`, and `examples/model-catalog.yaml`. Open the Dashboard Builder, run the process-YAML preflight, inspect the resource plan, then confirm publication. Preflight is read-only; publication uses the catalog lifecycle and its workspace-trust, primary-window, revision, and capability gates.
 
-If the phase you want already exists on someone else's machine, you do not need to retype it — see [Phase YAML Exchange](phase-yaml-exchange.md), which moves a phase definition between catalogs as a portable YAML document and never overwrites a phase you already have.
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: examples/speckit-bugfix.workflow.yaml -->
+<!-- Source: examples/model-catalog.yaml -->
+<!-- Source: src/services/process-yaml/preflight-service.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
 
-## Defining a new phase
+The new-feature example declares Workflow `speckit-new-feature` and includes its Phase definitions
+and backend variants. Import the example to add them to the catalog.
 
-You define new phases visually via the **Pipeline Builder > Phases** dashboard, or as a `schegent/v1` document you import:
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: src/config/pipeline-config.ts -->
 
-![Phase Builder](../assets/walkthrough/01_phase_builder.png)
+## Phase definition reference
 
-```yaml
-apiVersion: schegent/v1
-kind: Phase
-metadata:
-  phaseId: lint-and-scan
-  name: Lint and Scan
-  version: 1
-spec:
-  instruction: >-
-    Run the linter and security scanner. If both pass, emit
-    [SCHEGENT_STATUS: CLEAR] on the last line of stdout. If either fails, fix
-    the reported issues and re-run. After three iterations, emit a
-    SCHEGENT_AUDIT_LOG block summarizing the remaining issues and exit.
-  model: claude-sonnet-4-6
-  effort: medium
-  loopable: true
-```
+| Field | Contract |
+|---|---|
+| `phaseId` | Required identifier, maximum 64 characters. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-definition-validator.ts --> |
+| `name` | Required non-empty display name validated by the definition validator. <!-- Source: src/config/process-definition-validator.ts --> |
+| `version` | Required positive integer in portable documents; catalog versions are immutable records. <!-- Source: src/services/process-yaml/phase-yaml-validator.ts --><!-- Source: src/contracts/catalog-store.ts --> |
+| `instruction` / `skill` | Exactly one non-empty directive form. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-definition-validator.ts --> |
+| `runner` | Optional `claude`, `codex`, or `agy`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/runner/backend-runner-factory.ts --> |
+| `model` | Optional backend model identifier. <!-- Source: src/contracts/process-definitions.ts --> |
+| `effort` | Optional `low`, `medium`, `high`, `xhigh`, or `max`; Agy rejects the last two. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/runner/agy-cli.ts --> |
+| `timeoutSeconds` | Optional integer validated against the Phase timeout bounds. When present it **bounds this Phase's invocation**, overriding the workspace-wide `schegent.timeoutSeconds` default; when absent the workspace value applies. <!-- Source: src/config/process-definition-validator.ts --><!-- Source: src/controller/effective-phase-timeout.ts --> |
+| `spendBoundUsd` / `spendBoundTokens` | Optional per-Phase spend bound, in force while this Phase runs when it is tighter than the operator's bound or the operator set none; a looser value is not used. `spendBoundUsd` is a number from 0.01 to 10000; `spendBoundTokens` is an integer from 1 to 1000000000. Two fields because one number cannot carry two units: `claude` reports a cost, while `codex` and `agy` report tokens and no cost at all, so the bound in force follows what the backend reports. Precedence is **per denomination**: declaring only one leaves the operator's other bound in place. Crossing the bound pauses the run; it never fails or cancels it. <!-- Source: src/config/process-definition-validator.ts --><!-- Source: src/services/spend-bound.ts --> |
+| `hostVerification` | Optional `model-token` or `exit-code`; decides who is believed when the host and the model disagree about the outcome. **Omission resolves to `exit-code` for any Phase whose `sideEffects` is other than `none`, or which produces a declared output** — and `sideEffects` itself resolves to `workspace` when omitted, so a Phase that declares nothing is judged on its process's exit status (`FR-R3-117`). Explicit `model-token` is the opt-out. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/phase-runner-policy.ts --> |
+| `nativeReview` | Optional `code` or `security`. Schegent runs the selected backend reviewer first and gives its report to the Phase instruction for repair. The run uses the review finding and verification metrics as the default retry condition. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/native-review.ts --> |
+| `capabilities` | Optional list of `workspace-write`, `outside-workspace-write`, `process-spawn`, `network`. **Omission grants every capability** and produces exactly the argv the Phase spawned with before this field existed; naming a subset withholds the rest by translating them into the chosen backend's own permission flags. A capability the backend cannot express refuses the Phase before it starts rather than running it unbounded. Enforcement is the backend CLI's, not the host's, and on Claude it is a tool-access restriction rather than OS isolation: a shell the Phase still holds can do what a denied tool would have — see the threat model for that limit. <!-- Source: src/contracts/phase-capabilities.ts --><!-- Source: src/services/capability-enforcement-plan.ts --> |
+| `sideEffects` | Optional `none`, `workspace`, `git`, or `unrestricted`; omission resolves to `workspace`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-catalog.ts --> |
+| `evidencePolicy` | Optional `required`, `best-effort`, or `none`. **Omitted, or `required`**: a turn that prints no complete audit block does not advance on a completion token, however the token is placed, and the next iteration is told to print the block. **Declaring `required`** also withholds advancement when a block is present but its entry cannot be read, and the record names the missing evidence as the cause. **`best-effort` and `none`** relax only the missing-block report (`best-effort` records an expectation not met, `none` expects no block and says nothing) and keep one fallback: with no complete block, the token on the last non-empty line completes the Phase, labelled as a degraded read. The origin still decides in one place, a block that is present but unparseable: the resolved default was written into every snapshot taken before the setting meant anything, so enforcing on it would retroactively change what advances for authors who said nothing. Enforcement follows the declaration, never the resolved value, so declaring `required` explicitly is not the same as leaving the field out for that case. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/pipeline-snapshot.ts --><!-- Source: src/parser/stdout-parser.ts --> |
+| `loopable` | Optional compatibility boolean for legacy outcome looping. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
+| `retryCondition` | Optional non-empty expression, maximum 512 characters, parsed before the definition becomes effective. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/config/process-definition-validator.ts --> |
+| `isRequired` | Optional boolean; `false` lets a failed/timeout Phase advance. It also decides how a Run ends: a required last Phase with no `retryCondition` that ends with remaining issues or open questions — including an exit 0 with no contract block — fails the Run instead of completing it, and resuming re-runs that Phase. With `false` the Run completes. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/controller/phase.ts --> |
+| `onRetryCap` | Optional `fail`, `continue`, or `continue-degraded`; decides what this Phase does when its `retryCondition` is still truthy at the final allowed iteration. `fail` ends the Phase failed with the cap-exhausted cause. `continue` advances with an explicit unverified warning and records nothing durable. `continue-degraded` advances *and* records on the Task that this Phase's condition was never satisfied, so the run stays distinguishable from a clean one after the run itself is gone. Omission inherits the workspace default; an unconfigured workspace resolves to `fail`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/retry-cap-outcome.ts --> |
+| `forceContinueOnRetryCap` | **Deprecated by `onRetryCap`, and still loaded.** `true` means `continue`, `false` means `fail` — exactly what those values have always meant — so no definition already on disk needs editing, now or later. The boolean covers two of the three outcomes and cannot reach `continue-degraded`. A Phase declaring both is resolved by `onRetryCap`. <!-- Source: src/contracts/process-definitions.ts --><!-- Source: src/contracts/retry-cap-outcome.ts --> |
+| `resultContract` | Optional versioned (`version: 1`) structured or diagnostic result contract (`kind: structured-result` or `diagnostic-result`) declaring typed `fields` (`1..32`), `source` (`evidence` or `execution-diagnostics`), and optional `completion` (`TypedCondition`) evaluated in a bounded worker after the attempt finishes. <!-- Source: src/contracts/decision-results.ts --><!-- Source: src/services/result-operator.ts --> |
 
-Either way the result is the same: a phase definition in the catalog under `<workspaceRoot>/.schegent/catalog/`, at version 1. Every later save writes a new immutable version.
+`sideEffects` controls the mutation plan, consent, and rollback checkpoint; it does not restrict the backend. A Phase declaring `sideEffects: git` is refused unless it uses a Git-capable runner, because Codex's `workspace-write` sandbox keeps `.git` read-only.
 
-Field requirements:
+<!-- Source: src/services/mutation-plan.ts -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: src/config/phase-runner-policy.ts -->
 
-- `phaseId` — kebab-case, ≤ 64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved. It is the definition's identity: an import naming an id the catalog already holds is reported as `skip` rather than overwriting it.
-- `name` — display name (1–80 chars).
-- `instruction` or `skill` — exactly one non-empty directive is required on every definition. A definition is complete in itself; nothing is inherited.
-- `loopable` — optional deprecated compatibility boolean.
-- `sideEffects` — optional declared side effects: `none`, `workspace`, `git`, or `unrestricted`. **Omitted, it is `workspace`.** Declare it accurately, and know what the declaration buys: `git` and `unrestricted` get a consent prompt before the run and a rollback checkpoint, `none` and `workspace` get neither, and `git` additionally pins the phase to a Git-capable runner. **It is not a sandbox** — it does not restrict what the spawned subprocess may write, run, or send, because the backend runs with its approval prompts disabled regardless of what you declare (see [unprompted-agent-not-contained.md](../concepts/unprompted-agent-not-contained.md)). Nothing infers it from the phase's name.
-- `evidencePolicy` — optional: `required`, `best-effort`, or `none`. **Omitted, it is `required`.**
+## Workflow definition reference
 
-Optional fields (`model`, `effort`, `timeoutSeconds`, `retryCondition`) follow the same semantics as overrides; see [Phase Overrides](phase-overrides.md).
+A Workflow orders **nodes**. A node runs one Phase (`kind: phase` with a `phaseId`) or one child Workflow (`kind: workflow` with a `workflowId`), and its `nodeId` is its address, so two nodes may name the same Phase or the same child Workflow. `startNodeIds` lists the nodes a launch may start at; a launch at any other node is refused. `connections` route control from one node to the next: a connection with no `condition` is the success path, followed after a completed attempt, and the optional `condition`, `priority`, `isDefault` and `handoff` keys add branching and manual hand-offs. A Workflow may also declare public `inputs` and `outputs`, and `bindings` that feed a node's inputs and publish its outputs. Bindings address a node by `nodeId`, never by position. Workflow IDs are bounded to 64 characters. The [Workflow YAML grammar reference](../reference/workflow-yaml-grammar.md) lists every key, its rule and its refusal code.
 
-### Declaring Git side effects
+`executionDefaults` is advisory: the frozen run snapshot keeps it for provenance and the launch projection never reads it, so a Run does not apply it. The Runs launcher shows the settings host policy resolves for each Phase, and lists the authored defaults on a separate line labelled advisory and not applied.
 
-A phase that commits, tags, or otherwise writes `.git` must say so and must run on a Git-capable runner:
+<!-- Source: src/contracts/workflow-definitions.ts -->
+<!-- Source: src/services/process-yaml/workflow-document.ts -->
 
-```yaml
-metadata:
-  phaseId: commit-and-tag
-  name: Commit and Tag
-  version: 1
-spec:
-  instruction: ...
-  sideEffects: git
-  runner: claude
-```
-
-Saving `sideEffects: git` with `runner: codex` is refused — Codex's workspace-write sandbox keeps `.git` read-only, so the phase would fail mid-run instead of at save time. The check reads the declaration, never the id: a phase called `finalize` that declares nothing is a `workspace` phase like any other, and a phase called `commit-and-tag` gets Git access because it asked for it.
-
-## Using the new phase in a pipeline
-
-A new phase id is only useful if some pipeline references it. Define a custom pipeline visually in the **Pipelines** dashboard, or as a document you import:
-
-![Pipeline Builder](../assets/walkthrough/02_pipeline_builder.png)
+The `speckit-new-feature` example chains eleven nodes from Specify through Finalize.
+Each Phase ID names its backend, such as `claude-speckit-specify`. The Spec Kit phases start
+with the corresponding slash command, and Schegent supplies the audit and completion format.
+Implement, Converge, Code Review, and Security Review each offer Claude, Codex, and Agy variants.
+Select each node's Phase in the Workflow editor and publish the revised Workflow to change backends.
 
 ```yaml
 apiVersion: schegent/v1
-kind: Pipeline
+kind: Workflow
 metadata:
-  id: speckit-with-security
-  name: Spec-kit (with lint and security)
+  id: speckit-new-feature
+  name: Spec-kit New Feature
   version: 1
 spec:
-  phaseIds:
-    - speckit-specify
-    - speckit-clarify
-    - speckit-plan
-    - speckit-tasks
-    - speckit-analyze
-    - speckit-implement
-    - lint-and-scan
-    - finalize
+  startNodeIds:
+    - claude-speckit-specify
+  nodes:
+    - nodeId: claude-speckit-specify
+      kind: phase
+      phaseId: claude-speckit-specify
+    - nodeId: claude-speckit-clarify
+      kind: phase
+      phaseId: claude-speckit-clarify
+    # nine more nodes
+  connections:
+    - from:
+        nodeId: claude-speckit-specify
+      to:
+        nodeId: claude-speckit-clarify
+    # nine more connections
 ```
 
-Pipeline rules:
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
-- `id` — kebab-case, ≤ 64 chars. No id is reserved; `speckit-new-feature` is simply the id the shipped example happens to use, and yours may reuse or replace it.
-- `phaseIds` — 1 to 50 entries. Each must reference a phase id your catalog holds, whether you authored it or imported it. Do **not** list `done` — it is the terminal state the host appends after your last phase, not a phase you declare.
+## Retry conditions
 
-If a referenced id is unknown at load time, the pipeline is rejected with a warning.
+The DSL supports identifiers, signed numbers, comparisons, `and`/`&&`, `or`/`||`, `not`/`!`, and parentheses. It does not support arithmetic, calls, member access, string literals, or I/O. Missing metrics are reported and evaluate as the evaluator's default numeric value; a parse/evaluation error is reported and treated as false at the transition boundary.
 
-## Setting the default pipeline
+<!-- Source: src/lib/retry-condition.ts -->
+<!-- Source: src/controller/phase.ts -->
 
-`schegent.defaultPipelineId` ships **empty**. Until you set it, a launch that names no pipeline is refused with the missing id named — it does not fall back to anything, because there is nothing to fall back to. To make a pipeline the default, set:
-
-```jsonc
-{
-  "schegent.defaultPipelineId": "speckit-with-security"
-}
-```
-
-This sets the default selection in the enqueue dialog. You can still pick a different pipeline per task, and leaving the setting empty is a supported configuration rather than an unfinished one.
-
-## Loopable phases
-
-A phase with `loopable: true` is re-invoked until **one of two conditions** is met:
-
-1. The phase's stdout last line equals `[SCHEGENT_STATUS: CLEAR]`. (Default exit.)
-2. The configured `retryCondition` evaluates to false. (Custom exit — see below.)
-
-Or until the iteration cap is reached (`schegent.loop.maxIterations`, default 10).
-
-## Retry condition DSL
-
-Loopable phases can declare a `retryCondition` expression that is evaluated against a structured metrics map the phase emitted. This lets you control the loop with a real expression instead of a hard-coded sentinel.
-
-The host parses the phase's stdout for a `SCHEGENT AUDIT LOG` block of the form:
-
-```text
-=== SCHEGENT AUDIT LOG ===
-open_questions: 3
-unresolved_findings: 1
-confidence: 0.78
-=== END SCHEGENT AUDIT LOG ===
-```
-
-Each `<identifier>: <number>` line becomes an entry in the metrics map (the parser is whitespace-tolerant; only `<identifier>: <number>` lines are extracted). The expression in `retryCondition` is then evaluated:
+Each Implement variant in the repository example declares:
 
 ```yaml
-retryCondition: open_questions > 0
+retryCondition: pending_tasks > 0
 ```
 
-A truthy result means "loop"; a falsy result means "advance to the next phase".
+That Phase instructs the backend to emit a top-level `pending_tasks: <N>` metric in the audit block. A truthy result loops until the iteration cap; a falsy result advances.
 
-### Supported syntax
+From version 3 of the example the Phase also emits `spec_gaps`, `blocked_tasks` and `user_run_tasks`, and only `pending_tasks` feeds the condition. That is deliberate: a condition that counted a blocked task or a hand-off would repeat the iteration to the cap on something no further iteration can change. The Phase lists each open hand-off under `Hand-off tasks (for the user):` as `- <task id> (<basis>): <task text>`, outside `Remaining issues:`, and `user_run_tasks` equals the number it lists.
 
-- **Identifiers** — `[a-zA-Z_][a-zA-Z0-9_]*`, case-sensitive. Refer to metrics map keys.
-- **Numeric literals** — signed numbers, e.g., `0`, `-1`, `3.14`.
-- **Comparisons** — `>`, `>=`, `<`, `<=`, `==`, `!=`.
-- **Boolean combinators** — `and` / `&&`, `or` / `||`.
-- **Negation** — `not` / `!`.
-- **Parentheses** — `(`, `)`.
+A task the agent cannot settle by the precedence its instruction gives it (the constitution, then `spec.md`, `plan.md`, `research.md`, `tasks.md`) is *blocked*: it is recorded in `<feature_dir>/decisions.md` as `Status: needs-maintainer`, left unchecked, and left out of `pending_tasks`. A blocked task is listed under `Remaining issues:`, and the Phase does not report `CLEAR` while one is open.
 
-Operator precedence (highest to lowest): `not` / `!` → comparisons → `and` / `&&` → `or` / `||`.
+A *hand-off* is an incomplete task only a person can finish, in three cases and no other. Its own line in `tasks.md` carries the `USER-RUN` marker outside inline code, so a line that only quotes the marker in inline code is not marked. Or its own line names a person's approval as the condition, so review and test wording do not count. Or every other step is done and the only one left is pushing, opening or merging a pull request, watching CI, or deploying outside the repository. A task with implementation still undone is pending, however hard it is, and a failing test the agent can fix never makes a hand-off. Only the tasks Phase writes the `[USER-RUN]` label, and only on work that needs a person; the implement Phase never adds, removes or edits a marker or an approval wording, and never ticks a hand-off. A Phase with only hand-offs left reports `CLEAR`, so the Run advances after one iteration instead of spending its retries.
 
-### Not supported
+Implement can advance to Converge with `Remaining issues:` when no actionable tasks are pending. Converge compares the implementation with the feature artifacts, appends uncovered work to `tasks.md`, and addresses those tasks on later passes. It retries until the backend reports `converged: 1` in the audit block. At the retry cap, missing or unsuccessful convergence fails the Run before review. Task classifications and the convergence report come from the backend.
 
-- Arithmetic (`+`, `-`, `*`, `/`).
-- Function calls.
-- Member access (`a.b`).
-- String literals.
-- Any kind of I/O.
+Code Review and Security Review run independently. The repair pass applies confirmed fixes.
+Each review repeats when fixes change the patch or when findings or incomplete verification remain.
+Finalize reports checks and commits feature-owned paths.
 
-The DSL is sandboxed by design (no arbitrary code, no eval). Any new evaluator that grows the surface must preserve these invariants.
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: src/controller/phase.ts -->
 
-### Examples
+### When the condition is still true at the cap
 
-```yaml
-retryCondition: open_questions > 0
-retryCondition: unresolved_findings > 0 or open_questions > 0
-retryCondition: not (confidence > 0.85)
-retryCondition: (severity_high > 0 and severity_medium >= 3) or coverage < 80
-```
+`onRetryCap` decides that, per Phase, between three outcomes. The choice is about what an unsatisfied condition is worth to *this* Phase: a formatting check that never settles is not the same event as a test suite that never goes green, and before this field both were governed by one workspace-wide boolean.
 
-### Decision audit trail
+| Outcome | What the Phase does | What survives |
+|---|---|---|
+| `fail` | Ends failed, with the cap-exhausted cause. | The ordinary failure record. |
+| `continue` | Advances with an explicit unverified warning. | Nothing durable; the warning lives with the run. |
+| `continue-degraded` | Advances, exactly as `continue` does. | A degraded mark on the **Task**, naming this Phase and the condition that was never satisfied. |
 
-Each evaluation emits a `phase.retry_evaluated` audit event with:
+The mark is what separates the two continuing outcomes. It is captured onto the Task record rather than left on the run, so it is still there after the run is disposed of, and it is cleared when the Task is retried — a fresh attempt is not degraded by a previous one. Nothing else about the run changes: the fail path's behaviour, warning text, and cause value are exactly what they were.
 
-- `pipelineId`
-- `phaseId`
-- `expression` — the DSL string evaluated.
-- `metrics` — the extracted metrics map.
-- `decision` — boolean. `true` means loop; `false` means advance.
-- `missingKeys` — optional array. Identifiers in the expression that the metrics map did not contain.
-- `evaluationError` / `errorMessage` — optional on parse/eval failure.
+**A degraded Phase does not fail, and so does not halt its queue.** Under the `halt-on-failure` policy a Queue stops admitting work when one of its rows ended `failed`; `continue-degraded` produces a Task that completed, so the Queue drains on. That is the intended trade and the reason the mark exists — see [Failure policy](../operations/multi-queue-concurrency.md#failure-policy-halting-a-queue-on-a-failed-task). Choose `fail` for a Phase whose unsatisfied condition should stop the queue.
 
-When `missingKeys` is non-empty, the expression evaluates as if those identifiers were `0` (or false, depending on context). When `evaluationError` is true, the host falls back to the default loop semantics (`[SCHEGENT_STATUS: CLEAR]` sentinel).
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
+<!-- Source: src/queue/queue-halt-policy.ts -->
 
-### Invalid expressions
+## Author a verification Phase
 
-An invalid expression invalidates that definition. The catalog keeps it visible with a field error so you can repair it. There is nothing to fall back to — one layer means an invalid definition costs only itself, and every other definition still resolves. The previous version of that definition is still in its history, so you can see what the expression was before you broke it.
+The host does not verify your Phase. Outcome classification reads the backend's own audit report, and `resolveRunOutputs` checks whether a declared target exists rather than whether its content is correct. An unattended Workflow therefore needs an ordinary Phase whose instruction runs the repository's real checks and reports their exit status.
 
-## Writing a verification phase
+<!-- Source: src/parser/stdout-parser.ts -->
+<!-- Source: src/services/run-output/run-output-resolver.ts -->
 
-**The host does not verify your phase.** It reads the phase's own audit block and
-classifies the outcome from what the model wrote there; a phase resolving `clean`
-advances the pipeline. Nothing runs your test suite, checks that the build still
-compiles, or confirms that a declared output is correct — `resolveRunOutputs`
-probes whether a declared output *exists*, which is a different question.
+For that verifier, declare `sideEffects: none` so the authored contract says it should report rather than repair, require evidence, and attach a `retryCondition` to the emitted failure metric so a failing report does not advance. The declaration is not process enforcement; the instruction and backend report still determine what happens.
 
-That is unavoidable in a design where the model is the worker, and it is stated
-plainly here rather than left to be discovered: in an unattended pipeline, **the
-only verification is the verification you author**. The same honesty appears in
-`schegent.forceContinueOnRetryCap`, whose description says of a forced advance
-that "whatever the condition gates is left unverified".
+<!-- Source: src/contracts/process-definitions.ts -->
+<!-- Source: src/controller/phase.ts -->
 
-A verification phase is an ordinary phase whose instruction is to run the checks
-and report what they said. What makes it useful is that its `retryCondition`
-consults its own result, so a failing check keeps the pipeline on that phase
-instead of advancing past it:
+The example's `claude-finalize` Phase formats feature-owned files, runs the repository's
+checks, and reports `checks_passing` and `checks_failing`. It commits owned paths after checks pass
+and approvals or decisions are settled. A failing check is reported for repair in the phase or
+task that owns it. As the last node by default, Finalize
+fails the Run when it reports remaining issues. See
+[Finalize across repositories](../operations/process-yaml.md#finalize-across-repositories).
 
-```yaml
-metadata:
-  phaseId: verify-build
-  name: Verify Build
-  version: 1
-spec:
-  instruction: |
-    Run the project's full check chain. Do not fix anything and do not edit any
-    file. Report, in the audit block, the exact command you ran, its exit code,
-    and the failing output verbatim if it is non-zero.
-  sideEffects: none
-  evidencePolicy: required
-  retryCondition: "exitCode != 0"
-```
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
+<!-- Source: src/controller/phase.ts -->
 
-Three things make this a check rather than a formality:
+## Versioning and publication
 
-- **`sideEffects: none`** — a verification phase that repairs what it finds is not a verification phase. Keep the phase that reports separate from the phase that fixes, or a green report may only mean the reporter fixed it quietly.
-- **`evidencePolicy: required`** — the audit record is the only trace. A phase permitted to report without evidence can report anything.
-- **A `retryCondition` that reads the result** — without one, a failing verification phase resolves and the pipeline advances past the failure it just recorded. See [Retry condition DSL](#retry-condition-dsl).
+Catalog definitions are stored as immutable version records. Draft and active pointers derive the lifecycle state (`draft`, `active`, or `active-with-draft`). Saving, publishing, restoring, deactivating, and discarding use an expected draft token; stale callers are refused instead of overwriting a newer edit of the same definition. The store runs its writes in turn within one extension host; another process writing the same catalog directory is unsupported, and the last manifest rename would win.
 
-Place it after the phase whose work it checks, and remember what it cannot do: it
-is still a model reporting on a command it ran. It narrows the gap between "said
-it was done" and "was done"; it does not close it.
+<!-- Source: src/contracts/catalog-lifecycle.ts -->
+<!-- Source: src/catalog/lifecycle-service.ts -->
+<!-- Source: src/catalog/catalog-store.ts -->
 
-### Two things deliberately not built
+Phase authoring additionally requires the `phases` capability. A newly supplied body that declares `retryCondition` also requires the `retryConditions` capability. Publishing or restoring a Phase rechecks `phases`; deactivation and draft discard are removal operations and add no content capability gate.
 
-**No Builder hint.** The Pipeline Builder does not warn that a pipeline contains
-no verification phase. It was considered and declined: the Builder has no way to
-tell a verification phase from any other, since "runs the checks" is a property
-of an instruction rather than of a field, and a heuristic that guessed would
-either nag correct pipelines or miss the ones that matter. A hint that is wrong
-half the time trains an operator to dismiss it. The guidance lives here, where a
-phase is authored, instead.
+<!-- Source: src/ui/sidebar/commands/cmd-catalog-lifecycle.ts -->
+<!-- Source: src/state/capability-trust-resolver.ts -->
 
-**No `[notify]` record for a self-certified advance.** `forceContinueOnRetryCap`
-writes `[notify] forced-continue` to the runtime log when a phase advances with
-its condition unsatisfied, and the same trace for "advanced on the model's own
-verdict" was considered. It was not built, because *every* phase advance is
-self-certified: a line written on all of them records nothing that distinguishes
-one run from another, and a log line that always fires is noise with a timestamp.
-The forced-continue case is different precisely because it is the exception. If
-the host ever gains an independent oracle, the line becomes meaningful and worth
-adding then.
+## The verdict basis, and why it still is not verification
 
-## Audit trail
+Since `FR-R3-117` a Phase making a load-bearing claim is judged on its **process's exit
+status** rather than on the model's account of its work: a clean termination token
+cannot override a non-zero exit or a timeout. The shipped example,
+`examples/speckit-new-feature.workflow.yaml`, writes `hostVerification: exit-code` out
+explicitly on every Phase that makes a verifiable claim, even though those Phases would
+resolve to it anyway — an example is what an operator copies, and a Phase should say
+what judges it rather than inherit it silently.
 
-Every phase flows through the same audit + redaction + transcript path; there is exactly one, and nothing is exempt from it. The audit payload for a `phase-start` event includes the `pipelineId`, `phaseId`, and (when set) `model` / `effort` / `timeoutMs`. There is no separate audit channel for phases you authored, because there is no privileged channel for anything else to use.
+**A Phase that legitimately exits non-zero** — a linter used as a probe, a diff check
+that reports difference by exit code — needs `hostVerification: model-token` to opt out.
+That is the only way to get self-report on a load-bearing Phase, and choosing it is a
+decision worth a comment in your document.
 
-## Editing versus defining a new id
+**This does not replace an independent verification Phase, and the advice above stands.**
+Exit status proves the process did not report failure. It does not prove the work is
+correct, and `resolveRunOutputs` checks that a declared output *exists*, not that it is
+right. A Phase that runs the tests still tells you more than a Phase that says it did.
 
-There is one catalog and one definition per id, so tuning a phase you imported means **editing it** — nothing shadows anything, and there is no higher scope to author an override in. Two things make that safe:
-
-- **The edit is versioned.** Every save writes a new immutable version and leaves the previous one readable, so you can see exactly what you changed a phase from. Saving unchanged content writes nothing.
-- **Every definition is complete.** Omitted optional fields take runtime defaults; they are never inherited from the version you replaced. That includes `sideEffects` and `evidencePolicy` — a definition that omits them is `workspace` and `required`, whatever the version before it declared.
-
-Editing is the right move when you want to tune a step you already have. Defining a new id is the right move when you want an additional step — the original stays untouched and both can appear in the same pipeline.
-
-## Worked example: custom bugfix pipeline
-
-Suppose you want a smaller bugfix flow that skips the verify-pre phase:
-
-```yaml
-apiVersion: schegent/v1
-kind: Pipeline
-metadata:
-  id: bugfix-fast
-  name: Bugfix (fast)
-  version: 1
-spec:
-  phaseIds:
-    - bugfix-report
-    - bugfix-patch
-    - bugfix-implement
-    - bugfix-verify-post
-```
-
-You did not define any new phases — you reused the five bugfix phases from `examples/speckit-bugfix.pipeline.yaml` in a different order, which assumes you imported that document first. To use it, pick **Bugfix (fast)** in the enqueue dialog when you submit a task.
-
-## Worked example: custom phase with retry condition
-
-Suppose `lint-and-scan` (defined above) emits:
-
-```text
-=== SCHEGENT AUDIT LOG ===
-high_severity: 0
-medium_severity: 2
-low_severity: 5
-=== END SCHEGENT AUDIT LOG ===
-```
-
-You want it to loop until high and medium are zero (low can stay):
-
-```yaml
-apiVersion: schegent/v1
-kind: Phase
-metadata:
-  phaseId: lint-and-scan
-  name: Lint and Scan
-  version: 2
-spec:
-  instruction: >-
-    Run the linter and security scanner. Emit a SCHEGENT AUDIT LOG block with
-    the severity counts.
-  model: claude-sonnet-4-6
-  loopable: true
-  retryCondition: high_severity > 0 or medium_severity > 0
-```
-
-After the first iteration above, `high_severity > 0` is false and `medium_severity > 0` is true → decision is true → loop. The phase re-invokes. Eventually both are zero → decision is false → advance.
-
-## Things to watch out for
-
-- **Loop cap.** Even with a `retryCondition`, the loop hits `schegent.loop.maxIterations` (default 10). Force-advance fires beyond that.
-- **Phase id collisions.** There cannot be two definitions with one id — the catalog is keyed by id. What you get instead is a `skip` on an import that names an id you already hold, which is the store declining to overwrite your work.
-- **Pipeline that references a missing phase.** The pipeline is rejected; the audit log records the rejection.
-- **The DSL is for boolean decisions.** Do not try to use it for arithmetic.
-
-The next feature is [Verbose Diagnostics](verbose-diagnostics.md).
+Every completed Run's evidence names which basis judged each Phase: `phase-end` carries
+`verdictBasis`, so an audit can answer "was this believed, or checked?" per Phase.
+<!-- Source: src/config/phase-runner-policy.ts -->
+<!-- Source: docs/architecture/phase-verdict-default.md -->

@@ -19,6 +19,7 @@
 // testing the probe against a tree the Run never touched.
 
 import * as fs from 'node:fs/promises';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -37,7 +38,7 @@ import { HistoryStore } from '../../src/state/history-store';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import type { PhaseRunOutput } from '../../src/controller/phase-runner';
 import type { WorkflowRun } from '../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 const NOW = 1_700_000_000_000;
 
@@ -149,7 +150,8 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
       auditEntryId: null
     } as unknown as PhaseRunOutput),
     abort: vi.fn(),
-    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined)
+    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined),
+    evictStagnationTracker: vi.fn()
   };
 
   const deps: RunDriverDeps = {
@@ -197,7 +199,7 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
     isContinueGate: { consume: vi.fn().mockReturnValue(false) } as any,
     lock: makeLock(),
     persistTransition: async (_prev: WorkflowRun, next: WorkflowRun) => {
-      await store.setRun(DEFAULT_QUEUE_ID, next);
+      await store.setRun(DEFAULT_QUEUE_ID, next, unfencedCommit('test-fixture'));
       return next;
     },
     scheduleAutoDrain: vi.fn(),
@@ -227,7 +229,9 @@ async function completeRun(plan: FrozenRunPlan, runId: string) {
     phaseOverrides: [],
     resumeTargetPhaseId: null,
     envelope: plan
-  } as any);
+  } as any,
+    unfencedCommit('test-fixture')
+  );
 
   await new RunDriver(deps).drive(store.getRun(DEFAULT_QUEUE_ID)!, 'produce the report');
   return store.getRun(DEFAULT_QUEUE_ID)!;

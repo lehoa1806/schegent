@@ -18,34 +18,54 @@ import { describe, expect, it } from 'vitest';
 import {
   WORKFLOW_CONDITION_OPERATORS,
   WORKFLOW_NODE_TERMINAL_STATUSES,
+  type PortablePipelineDefinition,
   type WorkflowCatalogSourceProjection,
   type WorkflowCondition,
   type WorkflowConditionOperator
 } from '../../lib/snapshot-types';
 import {
+  addWorkflowBinding,
+  addWorkflowBranch,
   addWorkflowConditionValue,
   addWorkflowConnection,
+  addWorkflowInputPort,
   addWorkflowNode,
+  addWorkflowOutputPort,
+  appendWorkflowNode,
+  buildChildWorkflowPreview,
+  dependentWorkflowsForPhase,
+  dependentWorkflowsForWorkflow,
+  insertWorkflowNodeAfter,
+  spliceWorkflowNodeIntoConnection,
   conditionRightArity,
   conditionValues,
   formatWorkflowConditionLiteral,
   formatWorkflowSaveRejection,
   isWorkflowDirty,
+  makeDuplicateWorkflowDraft,
   makeNewWorkflowDraft,
   makeWorkflowCondition,
   parseWorkflowConditionLiteral,
   removeWorkflowConditionValue,
   removeWorkflowConnection,
   removeWorkflowNode,
+  retargetWorkflowConnection,
+  savedDefectsOutsideIssues,
   sourceRecordToMutableWorkflow,
   toSaveWorkflowRow,
+  updateWorkflowExecutionDefaults,
+  updateWorkflowRecommendedNext,
   updateWorkflowCondition,
   updateWorkflowConditionValue,
   updateWorkflowConnection,
   updateWorkflowNode,
   validateWorkflowDraft,
+  visibleWorkflowDefects,
   workflowErrorAnchor,
+  FIELD_ERROR_MESSAGE_MAX_LEN,
+  MAX_VISIBLE_FIELD_ERRORS,
   WORKFLOW_CONDITION_OPERAND_SOURCES,
+  WORKFLOW_LABEL_MAX_LEN,
   type WorkflowConditionRightArity,
   type WorkflowDraftError
 } from '../PipelineBuilderEditors/workflow-catalog-state';
@@ -164,6 +184,26 @@ describe('node and connection row editing', () => {
     expect(next.nodes.map((node) => node.nodeId)).toEqual(['ship', 'draft']);
   });
 
+  it('stores no label for a cleared or blank Label field, which the host would refuse', () => {
+    // The Label input patches on every keystroke, so clearing it patches `label: ''`. The host
+    // validates an authored node label as 1..80 characters, so keeping the empty string would let
+    // the draft save and then fail the Publish.
+    const labelled = updateWorkflowNode(row(), 0, { label: 'Ship it' });
+    expect(labelled.nodes.at(0)?.label).toBe('Ship it');
+
+    const cleared = updateWorkflowNode(labelled, 0, { label: '' });
+    expect(cleared.nodes.at(0)).toEqual({ nodeId: 'ship', pipelineId: 'release-pipeline' });
+    expect(cleared.nodes.at(0)).not.toHaveProperty('label');
+
+    const blank = updateWorkflowNode(labelled, 0, { label: '   ' });
+    expect(blank.nodes.at(0)).not.toHaveProperty('label');
+  });
+
+  it('keeps a label as typed, including a trailing space the operator is still typing past', () => {
+    const typing = updateWorkflowNode(row(), 0, { label: 'Ship ' });
+    expect(typing.nodes.at(0)?.label).toBe('Ship ');
+  });
+
   it('drops a node and every connection and allowed start that named it', () => {
     const next = removeWorkflowNode(row(), 1);
     expect(next.nodes.map((node) => node.nodeId)).toEqual(['ship']);
@@ -189,6 +229,25 @@ describe('node and connection row editing', () => {
     expect(removeWorkflowConnection(edited, 0).connections).toHaveLength(1);
   });
 
+  it('keeps an authored context handoff policy when the edge is edited (F15-FR-01)', () => {
+    const contextPolicy = {
+      version: 1,
+      approval: 'manual',
+      session: 'fresh',
+      selectors: []
+    } as const;
+    const withPolicy = addWorkflowConnection(row(), {
+      from: { nodeId: 'ship', portId: 'log' },
+      to: { nodeId: 'draft', portId: 'goal' },
+      contextPolicy
+    });
+    expect(withPolicy.connections.at(1)?.contextPolicy).toEqual(contextPolicy);
+
+    const edited = updateWorkflowConnection(withPolicy, 1, { priority: 3 });
+    expect(edited.connections.at(1)?.priority).toBe(3);
+    expect(edited.connections.at(1)?.contextPolicy).toEqual(contextPolicy);
+  });
+
   it('ignores an out-of-range index instead of corrupting the draft', () => {
     const base = row();
     expect(updateWorkflowNode(base, 9, { pipelineId: 'x' }).nodes).toEqual(base.nodes);
@@ -197,6 +256,28 @@ describe('node and connection row editing', () => {
       base.connections
     );
     expect(removeWorkflowConnection(base, 9).connections).toEqual(base.connections);
+  });
+
+  it('marks an arm as a return and clears the mark back to the endpoint it named', () => {
+    // The branch inspector's Return box writes `kind: 'return'` when ticked and
+    // `kind: 'node'` when cleared. The run engine reads `to.kind` alone, so a cleared
+    // box must leave no return behind: the arm goes back to the node and port it named.
+    const returning = retargetWorkflowConnection(row(), 0, 'to', { kind: 'return' }, []);
+    expect(returning.connections.at(0)?.to).toEqual({ nodeId: 'ship', portId: 'brief', kind: 'return' });
+
+    const cleared = retargetWorkflowConnection(returning, 0, 'to', { kind: 'node' }, []);
+    expect(cleared.connections.at(0)?.to).toEqual({ nodeId: 'ship', portId: 'brief' });
+    expect(isWorkflowDirty(cleared, row())).toBe(false);
+  });
+
+  it('points a cleared return that named no step at the first step past its source', () => {
+    // A YAML return may name no step; the host's parser then records the node id
+    // `return`, which no step carries. Clearing the mark must still leave an arm that
+    // names a declared step, chosen as a new branch's target is.
+    const imported = updateWorkflowConnection(row(), 0, { to: { nodeId: 'return', kind: 'return' } });
+    const cleared = retargetWorkflowConnection(imported, 0, 'to', { kind: 'node' }, []);
+    expect(cleared.connections.at(0)?.to.nodeId).toBe('ship');
+    expect(cleared.connections.at(0)?.to).not.toHaveProperty('kind');
   });
 });
 
@@ -210,6 +291,28 @@ describe('makeNewWorkflowDraft', () => {
     expect(draft.workflowId).not.toBe('new-workflow');
     expect(draft.nodes).toEqual([]);
     expect(draft.startNodeIds).toEqual([]);
+  });
+
+  it('gives every draft a source key of its own, whatever the first one is renamed to', () => {
+    // The editor keys drafts, edits and undo history by `sourceKey`. A key derived from the id the
+    // draft was born with is not stable under rename: rename the first draft, add another, and
+    // the id 'new-workflow' is free again, so both would be filed under the same key.
+    const first = makeNewWorkflowDraft([]);
+    const renamed: MutableWorkflow = { ...first, workflowId: 'renamed' };
+    const second = makeNewWorkflowDraft([renamed.workflowId]);
+
+    expect(second.workflowId).toBe(first.workflowId);
+    expect(second.sourceKey).not.toBe(renamed.sourceKey);
+
+    const copyOne = makeDuplicateWorkflowDraft(renamed, [renamed.workflowId, second.workflowId]);
+    const copyTwo = makeDuplicateWorkflowDraft(renamed, [renamed.workflowId, second.workflowId]);
+    expect(new Set([renamed.sourceKey, second.sourceKey, copyOne.sourceKey, copyTwo.sourceKey]).size).toBe(4);
+  });
+
+  it('never files a draft under a key the projection could assign to a stored record', () => {
+    // Stored records are keyed `<workflowId>::<index>`; a draft key that ended in a number could
+    // collide with one whose id happens to be 'draft'.
+    expect(makeNewWorkflowDraft([]).sourceKey).not.toMatch(/::\d+$/);
   });
 });
 
@@ -261,6 +364,132 @@ describe('workflowErrorAnchor', () => {
   });
 });
 
+// The Issues list and the lifecycle panel split a Workflow's saved defects between them. Issues
+// lists those the cap lets through that no step or branch owns, and the panel keeps the others
+// on demand. One function says which saved defects the cap lets through and both read it, so
+// no caller sets the order and the two cannot disagree about what lies past the cap.
+describe('visibleWorkflowDefects and savedDefectsOutsideIssues', () => {
+  const ON_A_STEP = 'nodes[0].pipelineId';
+  const ON_A_BRANCH = 'connections[0].to';
+  const ON_NO_ROW = 'somethingElse';
+
+  const defect = (message: string, field = ON_NO_ROW): WorkflowDraftError => ({
+    field,
+    code: 'invalid-pattern',
+    message
+  });
+  const numbered = (label: string, count: number, fields = [ON_NO_ROW]): WorkflowDraftError[] =>
+    Array.from({ length: count }, (_, index) =>
+      defect(`${label} ${index + 1}`, fields[index % fields.length])
+    );
+  const withSaved = (sourceErrors: readonly WorkflowDraftError[]): MutableWorkflow => ({
+    ...row(),
+    sourceErrors
+  });
+  const messages = (defects: readonly WorkflowDraftError[]): string[] =>
+    defects.map((entry) => entry.message);
+
+  it('lists the saved defects first, then the checks the draft fails, each under a cap of its own', () => {
+    const workflow = withSaved(numbered('saved', 3));
+
+    const visible = visibleWorkflowDefects(workflow, numbered('check', 4));
+
+    expect(messages(visible.rest)).toEqual([
+      'saved 1',
+      'saved 2',
+      'saved 3',
+      'check 1',
+      'check 2',
+      'check 3',
+      'check 4'
+    ]);
+    expect(visible.hiddenChecks).toBe(0);
+    expect(savedDefectsOutsideIssues(workflow)).toEqual([]);
+  });
+
+  it('shows the checks the draft fails however many saved defects fill the cap, and counts those past it', () => {
+    // Save stays disabled while the draft fails a check, so a check the saved defects pushed out
+    // of sight would leave the operator no reason for it.
+    const saved = numbered('saved', MAX_VISIBLE_FIELD_ERRORS);
+
+    const visible = visibleWorkflowDefects(
+      withSaved(saved),
+      numbered('check', MAX_VISIBLE_FIELD_ERRORS + 2)
+    );
+
+    expect(messages(visible.rest)).toEqual([
+      ...messages(saved),
+      ...messages(numbered('check', MAX_VISIBLE_FIELD_ERRORS))
+    ]);
+    expect(visible.hiddenChecks).toBe(2);
+  });
+
+  it('sorts a visible defect onto the step or branch that owns it', () => {
+    const workflow = withSaved([defect('saved step', ON_A_STEP), defect('saved 2')]);
+
+    const visible = visibleWorkflowDefects(workflow, [defect('check branch', ON_A_BRANCH)]);
+
+    expect(visible.byNode.map((defects) => messages(defects))).toEqual([['saved step'], []]);
+    expect(visible.byConnection.map((defects) => messages(defects))).toEqual([['check branch']]);
+    expect(messages(visible.rest)).toEqual(['saved 2']);
+  });
+
+  it('keeps on demand the saved defects a step or branch owns, and those past the cap', () => {
+    const workflow = withSaved([
+      defect('on a step', ON_A_STEP),
+      defect('saved 2'),
+      defect('on a branch', ON_A_BRANCH),
+      defect('saved 4'),
+      defect('saved 5'),
+      defect('past the cap'),
+      defect('past the cap, on a step', ON_A_STEP)
+    ]);
+
+    expect(messages(visibleWorkflowDefects(workflow, []).rest)).toEqual([
+      'saved 2',
+      'saved 4',
+      'saved 5'
+    ]);
+    expect(messages(savedDefectsOutsideIssues(workflow))).toEqual([
+      'on a step',
+      'on a branch',
+      'past the cap',
+      'past the cap, on a step'
+    ]);
+  });
+
+  it('lists each saved defect once, in Issues or in the panel, whatever the draft fails', () => {
+    // Every mix of up to eight saved defects and eight draft checks, with a saved defect on a
+    // step and one on a branch among each five. A saved defect in neither place is lost, and
+    // one in both is listed twice beside the panel.
+    const fields = [ON_NO_ROW, ON_A_STEP, ON_NO_ROW, ON_A_BRANCH, ON_NO_ROW];
+    for (let savedCount = 0; savedCount <= 8; savedCount += 1) {
+      for (let checkCount = 0; checkCount <= 8; checkCount += 1) {
+        const saved = numbered('saved', savedCount, fields);
+        const workflow = withSaved(saved);
+        const checks = numbered('check', checkCount);
+        const inIssues = messages(visibleWorkflowDefects(workflow, checks).rest);
+        const inPanel = messages(savedDefectsOutsideIssues(workflow));
+
+        for (const { message } of saved) {
+          const places = [inIssues, inPanel].filter((list) => list.includes(message)).length;
+          expect(places, `${message} of ${savedCount}, with ${checkCount} checks`).toBe(1);
+        }
+      }
+    }
+  });
+
+  it('cuts a visible message at the bound and keeps the saved one whole for the panel', () => {
+    const long = 'x'.repeat(FIELD_ERROR_MESSAGE_MAX_LEN + 40);
+    const workflow = withSaved([defect(long), defect(long, ON_A_STEP)]);
+
+    const visible = visibleWorkflowDefects(workflow, []);
+
+    expect(visible.rest[0].message).toHaveLength(FIELD_ERROR_MESSAGE_MAX_LEN);
+    expect(savedDefectsOutsideIssues(workflow)[0].message).toBe(long);
+  });
+});
+
 describe('validateWorkflowDraft', () => {
   it('accepts a complete draft', () => {
     expect(validateWorkflowDraft(row(), [])).toEqual([]);
@@ -306,6 +535,31 @@ describe('validateWorkflowDraft', () => {
       expect.objectContaining({ field: 'nodes[1].nodeId', code: 'duplicate-node-id' })
     );
   });
+
+  it.each(['inputs', 'outputs'] as const)('requires a %s port label of 1 to the host maximum characters', (side) => {
+    // The host refuses a declared port whose trimmed label is empty or over the bound, and only at
+    // Publish; checking here keeps a blank label from saving as a draft that can never publish.
+    const port = { portId: 'topic', label: 'Topic', type: 'text' as const };
+    const withLabel = (label: string): MutableWorkflow => ({ ...row(), [side]: [{ ...port, label }] });
+
+    expect(validateWorkflowDraft(withLabel('Topic'), [])).toEqual([]);
+    expect(validateWorkflowDraft(withLabel('   '), [])).toEqual([
+      expect.objectContaining({ field: `${side}[0].label`, code: 'required' })
+    ]);
+    expect(
+      validateWorkflowDraft(withLabel('x'.repeat(WORKFLOW_LABEL_MAX_LEN + 1)), [])
+    ).toEqual([expect.objectContaining({ field: `${side}[0].label`, code: 'too-long' })]);
+    expect(
+      validateWorkflowDraft(withLabel('x'.repeat(WORKFLOW_LABEL_MAX_LEN)), [])
+    ).toEqual([]);
+  });
+
+  it('reports a node label over the host maximum against that node', () => {
+    const workflow = updateWorkflowNode(row(), 1, { label: 'x'.repeat(WORKFLOW_LABEL_MAX_LEN + 1) });
+    expect(validateWorkflowDraft(workflow, [])).toEqual([
+      expect.objectContaining({ field: 'nodes[1].label', code: 'too-long' })
+    ]);
+  });
 });
 
 describe('isWorkflowDirty', () => {
@@ -346,8 +600,22 @@ describe('formatWorkflowSaveRejection', () => {
     expect(message).toContain('Cut the cycle');
   });
 
-  it('passes an unrecognized reason through unchanged', () => {
-    expect(formatWorkflowSaveRejection('trust-denied', undefined)).toBe('trust-denied');
+  // FR-R4-F05 (O1, FR-014; TA9) — this case pinned `trust-denied` passing through bare. A
+  // code-shaped reason is still named, inside the shared boundary sentence, and free text and
+  // the dispatch-failure code are not shown raw.
+  it('names an unrecognized code-shaped reason inside the boundary sentence', () => {
+    expect(formatWorkflowSaveRejection('trust-denied', undefined)).toBe(
+      'The host refused this action (trust-denied).'
+    );
+  });
+
+  it('never shows the bare dispatch-failure code or free text', () => {
+    expect(formatWorkflowSaveRejection('command-dispatch-failed', undefined)).not.toContain(
+      'command-dispatch-failed'
+    );
+    expect(formatWorkflowSaveRejection('write failed at /synthetic/user-252', undefined)).toBe(
+      'The host refused this action.'
+    );
   });
 });
 
@@ -363,7 +631,10 @@ describe('formatWorkflowSaveRejection', () => {
 describe('condition authoring (T048)', () => {
   const conditional = (condition: WorkflowCondition) =>
     updateWorkflowConnection(row(), 0, { condition });
-  const conditionOf = (workflow: MutableWorkflow) => workflow.connections[0].condition;
+  const conditionOf = (workflow: MutableWorkflow): WorkflowCondition | undefined => {
+    const condition = workflow.connections[0].condition;
+    return condition !== undefined && 'left' in condition ? condition : undefined;
+  };
 
   const OUTPUT_EQUALS: WorkflowCondition = {
     left: { source: 'node-output', nodeId: 'draft', field: 'risk' },
@@ -556,28 +827,34 @@ describe('condition authoring (T048)', () => {
     ]);
   });
 
-  it('reads typed text as a scalar literal, and shows it back unchanged', () => {
-    // A comparison against a number or a boolean is meaningless if the value is
-    // kept as text, so `5` and `true` are read as what they spell. The cost is
-    // that the *string* "5" is not authorable through this control.
-    expect(parseWorkflowConditionLiteral('true')).toBe(true);
-    expect(parseWorkflowConditionLiteral('false')).toBe(false);
-    expect(parseWorkflowConditionLiteral('5')).toBe(5);
-    expect(parseWorkflowConditionLiteral('-2.5')).toBe(-2.5);
-    expect(parseWorkflowConditionLiteral('  7  ')).toBe(7);
-    // Anything else is the operator's text, kept verbatim — including the shapes
-    // a looser rule would silently reinterpret.
-    expect(parseWorkflowConditionLiteral('high')).toBe('high');
+  // Feature 254 (FR-R4-F07, C-T6, contract C8; TA5; FR-027) -- v1 operands are text, so a typed literal is
+  // kept as the text typed. This read 'reads typed text as a scalar literal' and turned `5` into the
+  // number 5 and `true` into the boolean: a number or boolean under `equals` can never match a text
+  // operand, and the host now refuses it, so the Builder must not author one by accident. The cost of
+  // the old rule was that the string "8" was not authorable at all.
+  it('keeps typed text as text, whatever it spells', () => {
+    expect(parseWorkflowConditionLiteral('8')).toBe('8');
+    expect(parseWorkflowConditionLiteral('true')).toBe('true');
+    expect(parseWorkflowConditionLiteral('false')).toBe('false');
+    expect(parseWorkflowConditionLiteral('-2.5')).toBe('-2.5');
+    expect(parseWorkflowConditionLiteral(' 8 ')).toBe(' 8 ');
+    expect(parseWorkflowConditionLiteral('x')).toBe('x');
     expect(parseWorkflowConditionLiteral('')).toBe('');
     expect(parseWorkflowConditionLiteral('0x10')).toBe('0x10');
     expect(parseWorkflowConditionLiteral('007')).toBe('007');
-    expect(parseWorkflowConditionLiteral('5 apples')).toBe('5 apples');
     expect(parseWorkflowConditionLiteral('TRUE')).toBe('TRUE');
+    expect(parseWorkflowConditionLiteral('5 apples')).toBe('5 apples');
 
-    for (const text of ['true', 'false', '5', '-2.5', 'high', '']) {
+    for (const text of ['true', 'false', '5', '-2.5', 'high', '', ' 8 ']) {
+      expect(typeof parseWorkflowConditionLiteral(text)).toBe('string');
       expect(formatWorkflowConditionLiteral(parseWorkflowConditionLiteral(text))).toBe(text);
     }
     expect(formatWorkflowConditionLiteral(undefined)).toBe('');
+  });
+
+  it('still shows a stored numeric or boolean literal as its text, so it loads and can be repaired', () => {
+    expect(formatWorkflowConditionLiteral(5)).toBe('5');
+    expect(formatWorkflowConditionLiteral(true)).toBe('true');
   });
 
   it('only ever authors a status the contract calls terminal', () => {
@@ -591,5 +868,228 @@ describe('condition authoring (T048)', () => {
     expect(values.every((value) => WORKFLOW_NODE_TERMINAL_STATUSES.includes(value as never))).toBe(
       true
     );
+  });
+});
+
+// The canvas Builder's two composite edits (see `workflow-flow-layout.ts` for the
+// layout half). Both exist because the canvas offers one gesture where the list
+// Builder offered two controls, and a gesture that lands as two separate edits
+// renders an intermediate graph the operator never authored.
+describe('canvas composite edits', () => {
+  const pipeline = (
+    pipelineId: string,
+    ports: Pick<PortablePipelineDefinition, 'inputs' | 'outputs'>
+  ): PortablePipelineDefinition =>
+    ({
+      pipelineId,
+      name: pipelineId,
+      version: 1,
+      phaseIds: [],
+      bindings: [],
+      recommendedNext: [],
+      ...ports
+    }) as PortablePipelineDefinition;
+
+  const PIPELINES: readonly PortablePipelineDefinition[] = [
+    pipeline('spec-pipeline', {
+      inputs: [{ portId: 'goal', label: 'Goal', type: 'text' }],
+      outputs: [{ portId: 'spec', label: 'Spec', type: 'markdown' }]
+    }),
+    pipeline('release-pipeline', {
+      inputs: [{ portId: 'brief', label: 'Brief', type: 'text' }],
+      outputs: [{ portId: 'log', label: 'Log', type: 'markdown' }]
+    }),
+    pipeline('portless', { inputs: [], outputs: [] })
+  ];
+
+  describe('insertWorkflowNodeAfter', () => {
+    it('appends the node and one connection wiring the source to it', () => {
+      const next = insertWorkflowNodeAfter(row(), 'draft', 'release-pipeline', PIPELINES);
+
+      expect(next.nodes).toHaveLength(3);
+      const added = next.nodes[2];
+      expect(added.pipelineId).toBe('release-pipeline');
+      expect(next.connections).toHaveLength(2);
+      expect(next.connections[1]).toEqual({
+        from: { nodeId: 'draft', portId: 'spec' },
+        to: { nodeId: added.nodeId, portId: 'brief' }
+      });
+    });
+
+    it('never reuses an existing node identifier', () => {
+      const once = insertWorkflowNodeAfter(row(), 'draft', 'spec-pipeline', PIPELINES);
+      const twice = insertWorkflowNodeAfter(once, 'draft', 'spec-pipeline', PIPELINES);
+
+      const ids = twice.nodes.map((node) => node.nodeId);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
+    it('leaves the draft untouched when the source node is not in it', () => {
+      const before = row();
+      expect(insertWorkflowNodeAfter(before, 'ghost', 'spec-pipeline', PIPELINES)).toEqual(before);
+    });
+
+    it('seeds empty port ids rather than throwing when a Pipeline declares none', () => {
+      const next = insertWorkflowNodeAfter(row(), 'draft', 'portless', PIPELINES);
+
+      // The host answers this with `unresolved-endpoint`; the point is that the
+      // connection exists and is visible enough to retarget.
+      expect(next.connections[1].to.portId).toBe('');
+    });
+  });
+
+  describe('spliceWorkflowNodeIntoConnection', () => {
+    it('retargets the arm at the new node and carries on to the original target', () => {
+      const next = spliceWorkflowNodeIntoConnection(row(), 0, 'release-pipeline', PIPELINES);
+      const added = next.nodes[2];
+
+      expect(next.connections).toHaveLength(2);
+      expect(next.connections[0]).toEqual({
+        from: { nodeId: 'draft', portId: 'spec' },
+        to: { nodeId: added.nodeId, portId: 'brief' }
+      });
+      expect(next.connections[1]).toEqual({
+        from: { nodeId: added.nodeId, portId: 'log' },
+        to: { nodeId: 'ship', portId: 'brief' }
+      });
+    });
+
+    it('keeps the spliced arm branch metadata upstream and does not copy it downstream', () => {
+      // The condition and the fallback marker say when THIS branch is taken, which
+      // inserting a node on it did not change. Copying them downstream would
+      // evaluate the condition twice and break one-default-per-source-node.
+      const branching = updateWorkflowConnection(row(), 0, {
+        condition: makeWorkflowCondition('draft'),
+        isDefault: true,
+        priority: 3
+      });
+
+      const next = spliceWorkflowNodeIntoConnection(branching, 0, 'release-pipeline', PIPELINES);
+
+      expect(next.connections[0].condition).toBeDefined();
+      expect(next.connections[0].isDefault).toBe(true);
+      expect(next.connections[0].priority).toBe(3);
+      expect(next.connections[1].condition).toBeUndefined();
+      expect(next.connections[1].isDefault).toBeUndefined();
+      expect(next.connections[1].priority).toBeUndefined();
+    });
+
+    it('leaves a self-connection alone rather than turning it into a longer cycle', () => {
+      const selfEdge = addWorkflowConnection(row(), {
+        from: { nodeId: 'draft', portId: 'spec' },
+        to: { nodeId: 'draft', portId: 'goal' }
+      });
+
+      expect(spliceWorkflowNodeIntoConnection(selfEdge, 1, 'spec-pipeline', PIPELINES)).toEqual(
+        selfEdge
+      );
+    });
+
+    it('is a no-op for a connection index the draft does not hold', () => {
+      const before = row();
+      expect(spliceWorkflowNodeIntoConnection(before, 7, 'spec-pipeline', PIPELINES)).toEqual(
+        before
+      );
+    });
+  });
+
+  describe('addWorkflowBranch', () => {
+    it('does not mark the first arm on a node as the default', () => {
+      // `ship` has no outgoing connection in the fixture.
+      const next = addWorkflowBranch(row(), 'ship', PIPELINES);
+
+      expect(next.connections).toHaveLength(2);
+      expect(next.connections[1].from.nodeId).toBe('ship');
+      expect(next.connections[1].isDefault).toBeUndefined();
+    });
+
+    it('seeds the second arm as the default, which is what makes a split terminate', () => {
+      const next = addWorkflowBranch(row(), 'draft', PIPELINES);
+
+      expect(next.connections[1].isDefault).toBe(true);
+    });
+
+    it('stops seeding a default once the node already has one', () => {
+      const twoArms = addWorkflowBranch(row(), 'draft', PIPELINES);
+      const threeArms = addWorkflowBranch(twoArms, 'draft', PIPELINES);
+
+      expect(threeArms.connections.filter((edge) => edge.isDefault === true)).toHaveLength(1);
+    });
+
+    it('seeds a target that is not the source when another node exists', () => {
+      const next = addWorkflowBranch(row(), 'draft', PIPELINES);
+
+      expect(next.connections[1].to.nodeId).not.toBe('draft');
+    });
+
+    it('leaves the draft untouched when the source node is not in it', () => {
+      const before = row();
+      expect(addWorkflowBranch(before, 'ghost', PIPELINES)).toEqual(before);
+    });
+  });
+
+  describe('FR-R5-F05 unified Phase + child-Workflow authoring state', () => {
+    it('appends Phase and child Workflow nodes and seeds startNodeIds on the first node', () => {
+      let draft = makeNewWorkflowDraft([]);
+      draft = appendWorkflowNode(draft, { kind: 'phase', phaseId: 'speckit-specify' });
+      draft = appendWorkflowNode(draft, { kind: 'workflow', workflowId: 'child-wf' });
+
+      expect(draft.nodes).toEqual([
+        { nodeId: 'node', kind: 'phase', phaseId: 'speckit-specify' },
+        { nodeId: 'node-2', kind: 'workflow', workflowId: 'child-wf' }
+      ]);
+      expect(draft.startNodeIds).toEqual(['node']);
+      expect(draft.connections).toEqual([]);
+    });
+
+    it('authors public ports, bindings, execution defaults, and recommendedNext in save payload', () => {
+      let draft = makeNewWorkflowDraft([]);
+      draft = appendWorkflowNode(draft, { kind: 'phase', phaseId: 'speckit-specify' });
+      draft = addWorkflowInputPort(draft, { portId: 'goal', label: 'Goal', type: 'text', required: true });
+      draft = addWorkflowOutputPort(draft, { portId: 'spec', label: 'Spec', type: 'markdown' });
+      draft = addWorkflowBinding(draft, {
+        kind: 'input',
+        nodeId: 'node',
+        inputKey: 'in',
+        source: { from: 'workflow-input', portId: 'goal' }
+      });
+      draft = updateWorkflowExecutionDefaults(draft, { runner: 'claude', effort: 'high' });
+      draft = updateWorkflowRecommendedNext(draft, ['follow-up']);
+
+      const saved = toSaveWorkflowRow(draft);
+      expect(saved.inputs).toEqual([{ portId: 'goal', label: 'Goal', type: 'text', required: true }]);
+      expect(saved.outputs).toEqual([{ portId: 'spec', label: 'Spec', type: 'markdown', required: true }]);
+      expect(saved.bindings).toHaveLength(1);
+      expect(saved.executionDefaults).toEqual({ runner: 'claude', effort: 'high' });
+      expect(saved.recommendedNext).toEqual(['follow-up']);
+    });
+
+    it('derives dependent Workflows and bounds child Workflow preview against cycles', () => {
+      const wfA = {
+        workflowId: 'wf-a',
+        name: 'WF A',
+        nodes: [
+          { nodeId: 'p1', kind: 'phase' as const, phaseId: 'phase-1' },
+          { nodeId: 'sub', kind: 'workflow' as const, workflowId: 'wf-b' }
+        ]
+      };
+      const wfB = {
+        workflowId: 'wf-b',
+        name: 'WF B',
+        nodes: [{ nodeId: 'loop', kind: 'workflow' as const, workflowId: 'wf-a' }]
+      };
+
+      expect(dependentWorkflowsForPhase('phase-1', [wfA, wfB])).toEqual([
+        { workflowId: 'wf-a', name: 'WF A' }
+      ]);
+      expect(dependentWorkflowsForWorkflow('wf-b', [wfA, wfB])).toEqual([
+        { workflowId: 'wf-a', name: 'WF A' }
+      ]);
+
+      const preview = buildChildWorkflowPreview('wf-a', [wfA, wfB]);
+      expect(preview.nodes[1]?.children[0]?.truncatedReason).toBe('cycle');
+    });
+
+
   });
 });

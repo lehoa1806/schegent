@@ -1,4 +1,5 @@
 import type {
+  CandidateBlockControl,
   PhaseBinding,
   PhaseCatalogSourceRecord,
   PhaseDefinition,
@@ -11,10 +12,15 @@ import type {
   PipelineOutputPort,
   PipelineOutputPortType,
   PipelineSourceStatus,
+  RetryCapOutcome,
+  WorkflowBinding,
   WorkflowCatalogFieldErrorProjection,
   WorkflowCatalogPortProjection,
   WorkflowConnection,
+  WorkflowDecisionResults,
+  WorkflowInputPort,
   WorkflowNode,
+  WorkflowOutputPort,
   WorkflowSourceStatus
 } from '../../lib/snapshot-types';
 
@@ -73,6 +79,16 @@ export type MutablePhase = {
   loopable?: boolean;
   retryCondition?: string;
   isRequired?: boolean;
+  // FR-R3-157 (T047) — the two cap fields are named here, unlike most authored
+  // fields, which the index signature below carries as `unknown`. `unknown` is
+  // enough for a row that only round-trips through the save path; it is not
+  // enough for these two, because the editor has to *read* them and hand them to
+  // `resolveRetryCapOutcome`. Declaring them is what keeps that call a single
+  // shared reader rather than a local narrowing cast at the control — a cast
+  // would compile against a field this type had renamed out from under it.
+  onRetryCap?: RetryCapOutcome;
+  /** Deprecated by `onRetryCap`; a row carrying it is still read, never written. */
+  forceContinueOnRetryCap?: boolean;
   runner?: PhaseDefinition['runner'];
   sourceKey: string;
   sourceStatus: PhaseSourceStatus;
@@ -88,7 +104,7 @@ export type MutablePhase = {
  * component because both the shell that owns `activeTab` and the strip that
  * renders it need to name the same closed set.
  */
-export type BuilderTab = 'pipelines' | 'phases' | 'workflows' | 'models';
+export type BuilderTab = 'phases' | 'workflows' | 'models';
 
 export type PhaseEditState = {
   rawJsonMode: boolean;
@@ -111,9 +127,16 @@ export type MutableWorkflow = {
   name: string;
   description?: string;
   version: number;
+  inputs?: WorkflowInputPort[];
+  outputs?: WorkflowOutputPort[];
   nodes: WorkflowNode[];
   connections: WorkflowConnection[];
+  bindings?: WorkflowBinding[];
   startNodeIds: string[];
+  executionDefaults?: PipelineExecutionDefaults;
+  recommendedNext?: string[];
+  control?: CandidateBlockControl;
+  decisionResults?: WorkflowDecisionResults;
   /** Stable list key; mirrors the projection record key for persisted rows. */
   sourceKey: string;
   sourceStatus: WorkflowSourceStatus;

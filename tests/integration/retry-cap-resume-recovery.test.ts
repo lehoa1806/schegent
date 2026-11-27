@@ -15,7 +15,7 @@
 //   - The retry-handler call site goes through `setQueuePausedState(true, ...,
 //     'retry-cap')`. Both surfaces (registry + legacy boolean) update atomically.
 //   - The operator Resume succeeds (registry is now `'manually-paused'`).
-//   - The AutoDrainCoordinator promotes the next pending task on the next pump tick.
+//   - The operator's Start now promotes the next pending task.
 //   - No `WARN queue-manager.resume failed` line is emitted.
 //
 // The test exercises QueueManager, WorkspaceStateStore, and AutoDrainCoordinator
@@ -23,13 +23,49 @@
 // `setQueuePausedState` with the same arguments the retry-handler now passes
 // (verified by `tests/unit/controller/retry-handler.test.ts`). This isolates
 // the BUG-001 surface from the broader controller graph.
-
-import { describe, it, expect, beforeEach } from 'vitest';
+//
+// THE LAST STEP USED TO BE SIMULATED TOO, AND THAT WAS THE PROBLEM (lifecycle
+// round-check of 2026-08-30, T1612). It read:
+//
+//     const q = store.getQueue(DEFAULT_QUEUE_ID);
+//     await store.setQueue({ ...q, queueLifecycle: 'active-empty' });
+//     await coordinator.drainIfIdle();
+//
+// under a comment saying it was "simulating" `CMD_START_QUEUE`. Three things
+// were wrong with it, and the third is why this test is named in that
+// round-check's write-up:
+//
+//   1. No product path writes that. Operator Start-now goes through
+//      `GuardedRunService.applyStartQueueIntent`, which writes `'running'`.
+//   2. `active-empty` on a queue holding a pending task is not a state the
+//      product can hold at all — `refreshUnheldLifecycle` derives `'running'`
+//      whenever work remains. The test asserted a promotion out of a state that
+//      cannot occur.
+//   3. **A test that supplies the missing step itself cannot observe that the
+//      step is missing.** The round-check's finding A was exactly a resurrection
+//      path with no drain trigger, and this file's hand-mutation is the shape
+//      that let it stay invisible to integration coverage.
+//
+// It now drives `runStartQueueCommand` with the `startIntent` the sidebar sends.
+// Wiring a `GuardedRunService` to do it does not disturb what this file proves
+// about BUG-001: the service is constructed for the final step only, and every
+// pause/resume assertion above still runs against `QueueManager` directly.
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { QUEUE_A, fatalOutput, initGitRepo, makeHarness, removeWorkspace } from './concurrent-run-harness';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
+import { GuardedRunService } from '../../src/services/guarded-run-service';
+import { runStartQueueCommand } from '../../src/commands/start-queue';
 import { SanitizedLogger, type LogSink } from '../../src/lib/logger';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import type { AuditEntry } from '../../src/audit/audit-entry';
+import type { AuditLogWriter } from '../../src/audit/audit-log-writer';
+import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
+import type { WorkspaceLockManager } from '../../src/state/lock';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -59,6 +95,8 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
   let logger: SanitizedLogger;
   let promotedTasks: string[];
   let coordinator: AutoDrainCoordinator;
+  let auditEvents: AuditEntry[];
+  let guardedRunService: GuardedRunService;
 
   beforeEach(async () => {
     store = new WorkspaceStateStore(new FakeMemento());
@@ -81,7 +119,10 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
       // promotion is still live and the count is the promotion count.
       get liveRunCount(): number {
         return promotedTasks.length;
-      }
+      },
+      // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session. None of
+      // these promotions has one before it starts.
+      holdsSession: () => false
     };
     // Feature 092 (T051) — the drain's exclusion step is the per-queue
     // execution lease, not the workspace lock. Always granted here; this test
@@ -94,7 +135,33 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
       store,
       queue,
       executionLease: fakeLease as never,
-      controller: fakeController as never
+      controller: fakeController as never,
+      failurePolicyDefault: { resolve: () => 'halt-on-failure' }
+    });
+
+    // T1612 — the seam that owns operator Start-now. Only the final step of the
+    // first test uses it; nothing above touches it, which is what keeps the
+    // BUG-001 assertions unchanged.
+    //
+    // `lock` and `controller` are cast rather than built: `applyStartQueueIntent`
+    // reaches neither on any branch — it writes through `store` and emits through
+    // `audit` — and standing up a real lock manager here would add a filesystem
+    // dependency to a test about a memento. The audit double is real, though,
+    // because the transition this file now drives is an audited one and asserting
+    // the event is how it proves it went through the seam rather than around it.
+    auditEvents = [];
+    guardedRunService = new GuardedRunService({
+      isWorkspaceTrusted: () => true,
+      lock: null as unknown as WorkspaceLockManager,
+      queue,
+      controller: null as unknown as SchegentWorkflowController,
+      logger,
+      audit: {
+        append: async (entry: AuditEntry) => {
+          auditEvents.push(entry);
+        }
+      } as unknown as AuditLogWriter,
+      store
     });
   });
 
@@ -125,8 +192,8 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     expect(entryAfterPause?.state).toBe('manually-paused');
     expect(entryAfterPause?.pauseSource).toBe('retry-cap');
 
-    // While paused, the auto-drain pump must short-circuit at the paused
-    // guard. The pending task stays pending and is NOT promoted.
+    // While paused, a drain pass must short-circuit at the paused guard. The
+    // pending task stays pending and is NOT promoted.
     await coordinator.drainIfIdle();
     expect(promotedTasks).toEqual([]);
     expect(queue.findById(pending.id)?.status).toBe('pending');
@@ -161,14 +228,41 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     await coordinator.drainIfIdle();
     expect(promotedTasks).toEqual([]);
     expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('idle-pending');
-    // Now the operator presses Start now (CMD_START_QUEUE without
-    // startIntent) — the legacy drain path is the one in this test
-    // (no GuardedRunService wired). Simulating via direct lifecycle
-    // mutation followed by drainIfIdle.
-    const q = store.getQueue(DEFAULT_QUEUE_ID);
-    await store.setQueue({ ...q, queueLifecycle: 'active-empty'});
-    await coordinator.drainIfIdle();
+    // Now the operator presses Start now. This is the real command, with the
+    // `startIntent` the sidebar sends and the production handler deciding both
+    // the lifecycle transition and whether to drain after it. Nothing here
+    // supplies the step under test.
+    await runStartQueueCommand(
+      {
+        queueId: DEFAULT_QUEUE_ID,
+        startIntent: { startMode: 'now', source: 'operator-restart' }
+      },
+      {
+        guardedRunService,
+        // The production `drainQueuedWork` is a one-line delegation to
+        // `drainIfIdle` (`workflow-controller.ts`), and the coordinator below is
+        // the real one — so the drain that runs is the product's, reached
+        // through the product's decision about whether to run it.
+        controller: { drainQueuedWork: (id?: string) => coordinator.drainIfIdle(id) },
+        logger,
+        startFailures: { get: () => null }
+      }
+    );
     expect(promotedTasks).toEqual([pending.id]);
+
+    // The transition went through the audited seam, not around it. This is the
+    // assertion the hand-mutation could not make: a bare `setQueue` leaves the
+    // queue in the right state and no record that an operator decided it.
+    expect(
+      auditEvents.map((e) => e.eventType),
+      'operator Start-now out of idle-pending must emit `idle-pending-exited`'
+    ).toContain('idle-pending-exited');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('running');
+    // The promotion is attributable to the command and not to the coordinator
+    // being run again: the `drainIfIdle` twenty lines above, on the same queue
+    // in the state the operator left it, promoted nothing. That pair is the
+    // control — one drain over `idle-pending` promotes nothing, and the same
+    // drain reached through Start-now promotes.
 
     // No `WARN queue-manager.resume failed` line should appear in the
     // syslog for this scenario — FR-022 downgrades idempotent rejections
@@ -223,3 +317,51 @@ describe('Feature 030 BUG-001 T057 (SC-009) — retry-cap-exhausted → operator
     );
   });
 });
+
+// FR-R4-F02 (spec 240, US1; contract U3 G11; FR-005, US1-6) — an operator's explicit retry of a
+// failed Run still resets its retry count. The unattended resume must not, and a pin on this half is
+// what keeps the other half honest: `resumeAdmissionPatch` writes no `delayedRetryCount` for an
+// unattended wakeup, and writes `0` for a failed Run resumed without one. Driven through the real
+// controller: the retry re-pends the Task preserving its run id, and the drain's step 7 resumes it.
+describe('FR-R4-F02 (FR-005; pins) — an operator retry of a failed Run resets its retry count', () => {
+  let tmpRoot: string;
+  let h: Awaited<ReturnType<typeof makeHarness>>;
+
+  beforeEach(async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-retry-reset-'));
+    await initGitRepo(tmpRoot);
+    h = await makeHarness(tmpRoot, { concurrencyCap: 5 });
+  });
+
+  afterEach(async () => {
+    await h.quiesce();
+    await h.controller.drainedRunsSettled();
+    await removeWorkspace(tmpRoot);
+  });
+
+  it('retry then drain step 7 resumes the Task\'s run id with the count back at zero', async () => {
+    const admitted = await h.admit(QUEUE_A, 'a task that fails');
+    h.script(() => fatalOutput());
+    await h.runToTerminal(QUEUE_A, admitted.runId);
+    // The Run is failed before its Task is: the driver keeps the failure record between the two
+    // (spec 243, C6.1), and a retry needs the Task failed. Wait for the drive to finish.
+    await admitted.completed;
+    await h.store.updateRun(
+      QUEUE_A,
+      { runId: admitted.runId, allowedStatuses: ['failed'], label: 'resume', patch: () => ({ delayedRetryCount: 5 }) },
+      h.store.runCommitClaim(QUEUE_A)
+    );
+    expect(h.store.getRun(QUEUE_A)?.status).toBe('failed');
+    expect(h.store.getRun(QUEUE_A)?.delayedRetryCount).toBe(5);
+
+    const retried = await h.queue.retry(admitted.feature.id);
+    expect(retried.ok).toBe(true);
+    await h.controller.drainQueuedWork(QUEUE_A);
+
+    const run = h.store.getRun(QUEUE_A)!;
+    expect(run.id, 'the same Run was resumed, not a fresh one').toBe(admitted.runId);
+    expect(run.status).toBe('running');
+    expect(run.delayedRetryCount).toBe(0);
+  });
+});
+

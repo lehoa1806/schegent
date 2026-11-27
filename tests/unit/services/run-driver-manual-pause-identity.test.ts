@@ -24,6 +24,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RunDriver } from '../../../src/services/run-driver';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { fakeRunLogger } from './fake-run-logger';
 
 const NOW = 1_700_000_000_000;
 const TASK_ID = 'task-1';
@@ -86,19 +87,23 @@ describe('RunDriver resolves the manual-pause snapshot by the Run own identity (
           exitCode: 0,
           warnings: [],
           auditEntryId: null
-        })
+        }),
+        evictStagnationTracker: vi.fn()
       },
-      store: { findRunByTask: vi.fn(() => null) },
+      store: { findRunByTask: vi.fn(() => null),
+        // FR-R3-077 — no record to judge, so the read side has nothing to decline.
+        readRunIfLive: vi.fn(async () => ({ outcome: 'absent' as const })) },
       queue: {
         notifyStatusChange: vi.fn(),
         finish: vi.fn(),
-        pause: vi.fn(),
+        // FR-R3-153 — `pause` now returns `MutationResult`, not `void`.
+        pause: vi.fn(async () => ({ ok: true })),
         cascadedPause: vi.fn(),
         findById: vi.fn(() => null)
       },
       statusBar: { update: vi.fn() },
       notifier: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
+      logger: fakeRunLogger(),
       lock: {},
       options: { cliPath: 'claude', cwd: '/tmp', iterationCap: 5 },
       monitor: { emit: vi.fn() },
@@ -164,5 +169,36 @@ describe('RunDriver resolves the manual-pause snapshot by the Run own identity (
     const run = makeRun();
     await new RunDriver(deps).drive(run, 'desc');
     expect(deps.store.findRunByTask).toHaveBeenCalledWith(TASK_ID);
+  });
+
+  // FR-R3-209 — MP1: the manual-pause write carries the cost figure the invocation reported.
+  it('carries the session id and its cost figure onto the manual-pause write', async () => {
+    deps.runner.run.mockResolvedValue({
+      result: { kind: 'clean', auditEntry: null },
+      outcome: 'clean',
+      terminationReason: 'token',
+      stdoutSummary: '',
+      stderrSummary: '',
+      exitCode: 0,
+      warnings: [],
+      auditEntryId: null,
+      cliSessionId: 's1',
+      cliSessionCostUsd: 1.6
+    });
+    deps.store.findRunByTask.mockReturnValue({
+      queueId: 'default',
+      run: makeRun({ manualPauseAt: NOW, manualPauseCause: 'operator-paused' })
+    });
+
+    await new RunDriver(deps).drive(makeRun(), 'desc');
+
+    const transitions: WorkflowRun[] = deps.persistTransition.mock.calls.map(
+      (call: unknown[]) => call[1] as WorkflowRun
+    );
+    const pausedTransition = transitions.find((next) => next.status === 'paused');
+    expect(pausedTransition).toMatchObject({
+      lastCliSessionId: 's1',
+      lastCliSessionCostUsd: 1.6
+    });
   });
 });

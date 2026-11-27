@@ -175,7 +175,7 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
   });
 
   it('sanitizes node labels, connection endpoints, start ids, and display alike', () => {
-    const secret = 'sk-ant-api03-0123456789abcdefghijklmnopqrstuvwxyz0123456789';
+    const secret = ['sk', '-ant-', 'api03-0123456789abcdefghijklmnopqrstuvwxyz0123456789'].join('');
     const projection = project({
       rows: [
         {
@@ -190,6 +190,82 @@ describe('projectWorkflowCatalog — sanitization and bounds (C5, C6, C7)', () =
       ]
     });
     expect(strings(projection).some((value) => value.includes(secret))).toBe(false);
+  });
+
+  it('sanitizes the ports, bindings, execution defaults and recommendations of a unified Workflow alike', () => {
+    // These are the fields a unified Workflow carries that a Pipeline-backed one
+    // did not copy raw: nothing about them is closed, so each can hold a secret.
+    const secret = ['sk', '-ant-', 'api03-0123456789abcdefghijklmnopqrstuvwxyz0123456789'].join('');
+    const resolution = resolveWorkflowCatalog({
+      rows: [
+        {
+          workflowId: 'flow',
+          name: 'Flow',
+          version: 1,
+          inputs: [
+            {
+              portId: 'brief',
+              label: `Brief ${secret}`,
+              type: 'text',
+              required: true,
+              description: `see ${secret}`
+            }
+          ],
+          outputs: [
+            {
+              portId: 'report',
+              label: `Report ${secret}`,
+              type: 'markdown',
+              required: true,
+              description: `see ${secret}`
+            }
+          ],
+          nodes: [{ nodeId: 'step', kind: 'phase', phaseId: 'specify' }],
+          connections: [],
+          bindings: [
+            {
+              kind: 'input',
+              nodeId: 'step',
+              inputKey: 'brief',
+              source: { from: 'workflow-input', portId: 'brief' }
+            },
+            {
+              kind: 'output',
+              nodeId: 'step',
+              portId: 'report',
+              outputKey: 'report',
+              type: 'markdown',
+              label: `from ${secret}`
+            }
+          ],
+          startNodeIds: ['step'],
+          executionDefaults: { model: `claude ${secret}` },
+          recommendedNext: [secret]
+        }
+      ],
+      revision: 'w-rev-secret',
+      phaseCatalog: {
+        effective: [{ phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Write spec' }],
+        records: [
+          {
+            key: 'specify::0',
+            phaseId: 'specify',
+            status: 'effective',
+            definition: { phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Write spec' },
+            display: {},
+            errors: []
+          }
+        ]
+      }
+    });
+    const projection = projectWorkflowCatalog(resolution, { sanitize, effectivePipelines: [] });
+    const projected = projection.records.find((record) => record.workflowId === 'flow');
+    // A record that failed validation carries no definition and would pass the
+    // scan below for the wrong reason.
+    expect(projected?.definition).toBeDefined();
+    expect(strings(projection).some((value) => value.includes(secret))).toBe(false);
+    expect(projected?.definition?.inputs?.at(0)?.label).toContain('Brief');
+    expect(projected?.definition?.executionDefaults?.model).toContain('claude');
   });
 
   it('caps each projected error field at its declared length', () => {
@@ -368,5 +444,114 @@ describe('projectWorkflowCatalog — authored order and Pipeline drift (C12, C13
     expect(record?.status).toBe('invalid');
     expect(record?.errors.map((error) => error.code)).toContain('pipeline-invalid');
     expect(record?.errors.some((error) => error.message.includes('ghost'))).toBe(true);
+  });
+
+  it('projects unified Phase and child-Workflow compositions with inputs, outputs, bindings, executionDefaults, and recommendedNext without Pipeline definitions (FR-R5-F05-T02)', () => {
+    const childRow = {
+      workflowId: 'child-flow',
+      name: 'Child Flow',
+      version: 1,
+      inputs: [{ portId: 'spec', label: 'Spec', type: 'text', required: true }],
+      outputs: [{ portId: 'report', label: 'Report', type: 'markdown', required: true }],
+      nodes: [{ nodeId: 'step-a', kind: 'phase', phaseId: 'specify', label: 'Specify Step' }],
+      connections: [],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'step-a',
+          inputKey: 'spec',
+          type: 'text',
+          required: true,
+          source: { from: 'workflow-input', portId: 'spec' }
+        },
+        {
+          kind: 'output',
+          nodeId: 'step-a',
+          portId: 'report',
+          outputKey: 'report',
+          type: 'markdown'
+        }
+      ],
+      startNodeIds: ['step-a'],
+      executionDefaults: { runner: 'claude', model: 'claude-sonnet-4-6', effort: 'high', timeoutSeconds: 600 },
+      recommendedNext: ['parent-flow']
+    };
+    const parentRow = {
+      workflowId: 'parent-flow',
+      name: 'Parent Flow',
+      version: 1,
+      inputs: [{ portId: 'brief', label: 'Brief', type: 'text', required: true }],
+      outputs: [{ portId: 'final', label: 'Final', type: 'markdown', required: true }],
+      nodes: [
+        { nodeId: 'p1', kind: 'phase', phaseId: 'specify', label: 'Draft Spec' },
+        { nodeId: 'c1', kind: 'workflow', workflowId: 'child-flow', label: 'Run Child' }
+      ],
+      connections: [
+        { from: { nodeId: 'p1' }, to: { nodeId: 'c1' }, handoff: 'manual' }
+      ],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'p1',
+          inputKey: 'brief',
+          type: 'text',
+          required: true,
+          source: { from: 'workflow-input', portId: 'brief' }
+        },
+        {
+          kind: 'input',
+          nodeId: 'c1',
+          inputKey: 'spec',
+          source: { from: 'node-output', nodeId: 'p1', portId: 'spec-out' }
+        },
+        {
+          kind: 'output',
+          nodeId: 'c1',
+          portId: 'final',
+          sourcePortId: 'report'
+        }
+      ],
+      startNodeIds: ['p1']
+    };
+    const resolution = resolveWorkflowCatalog({
+      rows: [childRow, parentRow],
+      revision: 'w-rev-1',
+      phaseCatalog: {
+        effective: [{ phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Write spec' }],
+        records: [
+          {
+            key: 'specify::0',
+            phaseId: 'specify',
+            status: 'effective',
+            definition: { phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Write spec' },
+            display: {},
+            errors: []
+          }
+        ]
+      }
+    });
+    const projection = projectWorkflowCatalog(resolution, {
+      sanitize,
+      effectivePipelines: []
+    });
+    expect(projection.state).toBe('ready');
+    expect(projection.effective).toHaveLength(2);
+    const projectedChild = projection.records.find((r) => r.workflowId === 'child-flow')?.definition;
+    const projectedParent = projection.records.find((r) => r.workflowId === 'parent-flow')?.definition;
+    expect(projectedChild?.inputs).toEqual([{ portId: 'spec', label: 'Spec', type: 'text', required: true }]);
+    expect(projectedChild?.outputs).toEqual([{ portId: 'report', label: 'Report', type: 'markdown', required: true }]);
+    expect(projectedChild?.executionDefaults).toEqual({
+      runner: 'claude',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+      timeoutSeconds: 600
+    });
+    expect(projectedChild?.recommendedNext).toEqual(['parent-flow']);
+    expect(projectedParent?.nodes).toEqual([
+      { nodeId: 'p1', kind: 'phase', phaseId: 'specify', label: 'Draft Spec' },
+      { nodeId: 'c1', kind: 'workflow', workflowId: 'child-flow', label: 'Run Child' }
+    ]);
+    expect(projectedParent?.connections[0]?.handoff).toBe('manual');
+    expect(projectedParent?.bindings).toHaveLength(3);
   });
 });

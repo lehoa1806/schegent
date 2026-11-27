@@ -241,29 +241,27 @@ describe('a Builder save writes a draft (T020-T022, FR-026a, FR-026b)', () => {
     expect((request.body as { name?: string }).name).toBe('Edited name');
   });
 
-  it('pipeline: editing a name dispatches saveDefinitionDraft for that Pipeline alone', async () => {
+  it('workflow: editing a stored Workflow name dispatches saveDefinitionDraft for that Workflow alone', async () => {
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot(), initialTab: 'pipelines' }
+      props: { snapshot: buildSnapshot(), initialTab: 'workflows' }
     });
-    await fireEvent.click(container.querySelector('[data-testid="pipelines-list-item-ship-it"]')!);
-    await fireEvent.input(container.querySelector('[data-testid="pipelines-name-field-ship-it"]')!, {
-      target: { value: 'Ship it later' }
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-list-item-design-then-build"]')!
+    );
+    await fireEvent.input(container.querySelector('[data-testid="workflow-field-name"]')!, {
+      target: { value: 'Design then Build later' }
     });
-    await fireEvent.click(container.querySelector('[data-testid="pipelines-save-all"]')!);
+    await fireEvent.click(container.querySelector('[data-testid="workflows-save-all"]')!);
     await tick();
 
     const request = soleDraftRequest();
-    expect(request.kind).toBe('pipeline');
-    expect(request.id).toBe('ship-it');
+    expect(request.kind).toBe('workflow');
+    expect(request.id).toBe('design-then-build');
     expect(request.expectedDraftVersion).toBe('v-pending');
-    expect((request.body as { name?: string }).name).toBe('Ship it later');
+    expect((request.body as { name?: string }).name).toBe('Design then Build later');
   });
 
   it('workflow: saving a duplicated draft dispatches saveDefinitionDraft for the copy', async () => {
-    // A stored Workflow row is not editable in place — duplicating it is the path
-    // the editor offers (FR-026 of feature 083) — so the copy is what gets saved.
-    // Its target is a definition the store has never seen, which is the one case
-    // where `NO_DRAFT` is the correct token rather than a hardcoded guess.
     const { container, getByTestId } = render(WorkflowCatalogEditor, {
       props: { snapshot: buildSnapshot(), trusted: true }
     });
@@ -299,20 +297,6 @@ describe('a save publishes nothing (T020-T022, FR-026b, SC-001a)', () => {
     // makes the claim independent of what the host happens to send back.
     expect(publishDefinitionPackage).not.toHaveBeenCalled();
     expect(deactivateDefinition).not.toHaveBeenCalled();
-  });
-
-  it('pipeline: no package publish', async () => {
-    const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot(), initialTab: 'pipelines' }
-    });
-    await fireEvent.click(container.querySelector('[data-testid="pipelines-list-item-ship-it"]')!);
-    await fireEvent.input(container.querySelector('[data-testid="pipelines-name-field-ship-it"]')!, {
-      target: { value: 'Ship it later' }
-    });
-    await fireEvent.click(container.querySelector('[data-testid="pipelines-save-all"]')!);
-    await tick();
-
-    expect(publishDefinitionPackage).not.toHaveBeenCalled();
   });
 
   it('workflow: no package publish', async () => {

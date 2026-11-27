@@ -59,7 +59,14 @@ describe('release qualification', () => {
     expect(manifest.scripts['verify:all']).toContain('security:secrets');
     expect(manifest.scripts['verify:all']).toContain('security:actions');
     expect(manifest.scripts['contracts:check']).toBeTruthy();
-    expect(existsSync('.github/workflows/release.yml')).toBe(true);
+    // FR-R3-099 — `release.yml` and its Actions-run binding were withdrawn by
+    // operator decision; `docs/release/withdrawn-ci-controls.md` records what they
+    // were. The auditable release surface is now wholly local, so this asserts the
+    // two things that carry it: the attested gate command, and the record the
+    // release path refuses without.
+    expect(manifest.scripts['gate'], 'the attested chain must exist').toBeTruthy();
+    expect(existsSync('scripts/gate-attestation.mjs')).toBe(true);
+    expect(existsSync('docs/release/actions-terminal-record.md')).toBe(true);
     expect(existsSync('src/commands/export-audit.ts')).toBe(true);
   });
 
@@ -70,10 +77,11 @@ describe('release qualification', () => {
     // with each forward-only migration — v10 was feature 092's per-queue
     // `KEYS.queue` step, v11 is feature 093's per-queue `KEYS.run` step, v12 is
     // FR-R3-010's per-queue history reshape and v13 FR-R3-011's queue-pause
-    // collapse. The pin is the point: a version that changed without anyone
+    // collapse, v14 FR-R3-117's resolved verdict basis and v15 FR-R4-F02's credit-pause default.
+    // The pin is the point: a version that changed without anyone
     // editing this line is a migration nobody wrote.
     expect(readFileSync('src/contracts/state-schema.ts', 'utf8'))
-      .toContain('STATE_SCHEMA_VERSION = 13');
+      .toContain('STATE_SCHEMA_VERSION = 15');
     expect(existsSync('src/services/terminal-transition-coordinator.ts')).toBe(true);
     expect(existsSync('Cargo.toml')).toBe(false);
     expect(existsSync('src/engine/index.ts')).toBe(false);

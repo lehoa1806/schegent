@@ -1,10 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { Readable, Writable } from 'stream';
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { AgyCliRunner, type SpawnFn } from '../../../src/runner/agy-cli';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { MAX_STREAM_BUFFER_BYTES } from '../../../src/runner/zipped-stream-buffer';
+import { composeVerboseDiagnosticPath } from '../../../src/audit/verbose-diagnostic-path';
+import type { VerboseDiagnosticTarget } from '../../../src/runner/invocation-result';
 
 interface FakeChild extends EventEmitter {
   stdin: Writable;
@@ -48,7 +53,7 @@ function silentLogger(): SanitizedLogger {
 }
 
 describe('AgyCliRunner.invoke', () => {
-  it('spawns agy with --dangerously-skip-permissions -p and pipes prompt via stdin', async () => {
+  it('spawns agy with --dangerously-skip-permissions and pipes prompt via stdin', async () => {
     const child = makeFakeChild();
     const seen: { command: string; args: ReadonlyArray<string>; options: SpawnOptions } = {
       command: '',
@@ -59,7 +64,7 @@ describe('AgyCliRunner.invoke', () => {
       seen.command = command;
       seen.args = args;
       seen.options = options;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -73,19 +78,52 @@ describe('AgyCliRunner.invoke', () => {
     });
     expect(seen.command).toBe('agy');
     expect(seen.args).toContain('--dangerously-skip-permissions');
-    expect(seen.args).toContain('-p');
     expect(seen.args).toContain('--output-format');
     expect(seen.args).toContain('stream-json');
     expect(seen.options.shell).toBe(false);
     expect(seen.options.stdio).toEqual(['pipe', 'pipe', 'pipe']);
+    // Was `toContain('-p')` and a raw `'do work'` on stdin. Both PINNED A DEFECT:
+    // `-p` takes the prompt as its value, so `['-p', '-']` prompted agy with `-`
+    // and the stdin bytes were never read. The transport shape is asserted in
+    // full by the stream-json test below; this one keeps to spawn options.
     const captured = (child.stdin as Writable & { __captured: string[] }).__captured;
-    expect(captured.join('')).toBe('do work');
+    expect(captured.join('')).toContain('do work');
+  });
+
+  it('sends the prompt as agy stream-json stdin, never on the command line', async () => {
+    const child = makeFakeChild();
+    const seen: { args: ReadonlyArray<string> } = { args: [] };
+    const spawnFn: SpawnFn = (_command, args, _options) => {
+      seen.args = args;
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
+      return child as unknown as ChildProcess;
+    };
+    const runner = new AgyCliRunner(spawnFn, null, silentLogger());
+    await runner.invoke({
+      phase: 'speckit-specify',
+      iteration: 1,
+      prompt: 'do work',
+      timeoutMs: 5_000,
+      cliPath: 'agy',
+      cwd: '/repo'
+    });
+    // `--print`/`-p` takes the prompt as its VALUE. Passing `-p -` sent the
+    // literal `-` as the prompt and agy answered that, ignoring the stdin bytes
+    // entirely -- it only reads stdin under `--input-format stream-json`.
+    expect(seen.args).toContain('--input-format');
+    expect(seen.args).not.toContain('-p');
+    expect(seen.args).not.toContain('--print');
+    const captured = (child.stdin as Writable & { __captured: string[] }).__captured;
+    expect(JSON.parse(captured.join(''))).toEqual({
+      event: 'user',
+      message: { content: 'do work' }
+    });
   });
 
   it('rejects effort xhigh with an Error', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -103,7 +141,7 @@ describe('AgyCliRunner.invoke', () => {
   it('rejects effort max with an Error', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -124,7 +162,7 @@ describe('AgyCliRunner.invoke', () => {
       const seen: { args: ReadonlyArray<string> } = { args: [] };
       const spawnFn: SpawnFn = (_cmd, args, _opts) => {
         seen.args = args;
-        setImmediate(() => child.emit('exit', 0, null));
+        setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
         return child as unknown as ChildProcess;
       };
       const logger = silentLogger();
@@ -150,7 +188,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -173,7 +211,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -197,7 +235,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -221,7 +259,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { args: ReadonlyArray<string> } = { args: [] };
     const spawnFn: SpawnFn = (_cmd, args, _opts) => {
       seen.args = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(spawnFn, null, silentLogger());
@@ -240,7 +278,7 @@ describe('AgyCliRunner.invoke', () => {
   it('emits started/exited monitor events', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const events: Array<{ kind: string }> = [];
@@ -288,12 +326,22 @@ describe('AgyCliRunner.invoke', () => {
     expect(result.cliSessionId).toBe('agy-conv-123');
     // Feature 093 (T046) — every sidecar event names its Run; this request
     // carries none, so the runner stamps `null` rather than guessing.
+    //
+    // Feature 093 BUG-001 (T100) — and every one names its invocation, which a
+    // request cannot decline to carry. Matched by shape rather than by value:
+    // the id is minted from a process-wide counter, so its number depends on how
+    // many invocations ran before this one. `invocation-identity.ts` owns the
+    // format; what this assertion pins is that the stamp is here at all.
+    const invocationId = expect.stringMatching(/^agy-cli#\d+$/) as unknown as string;
     expect(events).toContainEqual({
       kind: 'stdout-chunk',
       runId: null,
+      invocationId,
       chunk: '{"type":"result","conversation_id":"agy-conv-123"}\n'
     });
-    expect(events).toContainEqual({ kind: 'stderr-chunk', runId: null, chunk: 'progress\n' });
+    expect(events).toContainEqual({
+      kind: 'stderr-chunk', runId: null, invocationId, chunk: 'progress\n'
+    });
     expect(outputSink.write).toHaveBeenCalledWith(
       'stdout',
       '{"type":"result","conversation_id":"agy-conv-123"}\n'
@@ -307,6 +355,7 @@ describe('AgyCliRunner.invoke', () => {
       setImmediate(() => {
         child.stdout.emit('data', 'x'.repeat(MAX_STREAM_BUFFER_BYTES + 1024));
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
@@ -347,6 +396,7 @@ describe('AgyCliRunner.invoke', () => {
       await vi.advanceTimersByTimeAsync(1_001);
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
       child.emit('exit', null, 'SIGTERM');
+      child.emit('close', null, 'SIGTERM');
 
       const result = await invocation;
       expect(result.timedOut).toBe(true);
@@ -365,7 +415,7 @@ describe('AgyCliRunner.invoke', () => {
     const seen: { options: SpawnOptions } = { options: {} };
     const capturingSpawnFn: SpawnFn = (_cmd, _args, options) => {
       seen.options = options;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new AgyCliRunner(capturingSpawnFn, null, silentLogger());
@@ -403,7 +453,114 @@ describe('AgyCliRunner.invoke', () => {
     child.exitCode = null;
     child.signalCode = 'SIGTERM';
     child.emit('exit', null, 'SIGTERM');
+    child.emit('close', null, 'SIGTERM');
     const result = await invokePromise;
     expect(result.killed).toBe(true);
+  });
+});
+
+// Feature 020 BUG-002 (T080, FR-002a) — the Phase Log reads an iteration's
+// `stream.jsonl`, and only the claude adapter wrote one, so an agy iteration
+// left its pane nothing to read or tail. With a verbose-diagnostics target the
+// adapter tees the CLI's stdout through `VerboseDiagnosticWriter`, as the claude
+// adapter does. A real directory, because the claims are what the file holds
+// and what modes the filesystem granted.
+describe('BUG-002 — agy tees its stdout into stream.jsonl (FR-002a)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  const OWNER_ONLY_DIR = 0o700;
+  const OWNER_ONLY_FILE = 0o600;
+  // A line, one multi-byte character split across two chunks, and a last line
+  // with no newline: the shapes a pipe hands the runner. Built from bytes, so
+  // no escape sequence sits in this source.
+  const STDOUT_CHUNKS: readonly Buffer[] = [
+    Buffer.from('{"type":"init"}\n', 'utf8'),
+    Buffer.concat([Buffer.from('{"text":"a', 'utf8'), Buffer.from([0xe2])]),
+    Buffer.concat([Buffer.from([0x80, 0x94]), Buffer.from('b"}\n', 'utf8')]),
+    Buffer.from('{"type":"result"', 'utf8')
+  ];
+  let root = '';
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'schegent-agy-tee-')));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const diagnosticsTarget = (): VerboseDiagnosticTarget => composeVerboseDiagnosticPath({
+    workspaceRoot: root,
+    runId: 'run-x',
+    pipelineId: 'standard',
+    phaseId: 'speckit-plan',
+    iterationN: 1
+  });
+
+  function emittingSpawn(child: FakeChild): SpawnFn {
+    return () => {
+      setImmediate(() => {
+        for (const chunk of STDOUT_CHUNKS) child.stdout.push(chunk);
+        child.stderr.push('progress\n');
+        child.emit('close', 0, null);
+      });
+      return child as unknown as ChildProcess;
+    };
+  }
+
+  function invokeWith(verboseDiagnostics?: VerboseDiagnosticTarget) {
+    const runner = new AgyCliRunner(emittingSpawn(makeFakeChild()), null, silentLogger());
+    return runner.invoke({
+      phase: 'speckit-plan',
+      iteration: 1,
+      prompt: 'hi',
+      timeoutMs: 5_000,
+      cliPath: 'agy',
+      cwd: root,
+      ...(verboseDiagnostics === undefined ? {} : { verboseDiagnostics })
+    });
+  }
+
+  it('copies every stdout byte into stream.jsonl, unaltered and without stderr', async () => {
+    const target = diagnosticsTarget();
+    await invokeWith(target);
+    expect(readFileSync(target.streamFile)).toEqual(Buffer.concat(STDOUT_CHUNKS));
+  });
+
+  posixOnly('creates each directory it writes 0700 and the file 0600', async () => {
+    const target = diagnosticsTarget();
+    await invokeWith(target);
+    const modeOf = (p: string): number => statSync(p).mode & 0o777;
+    let dir = target.workspaceRoot;
+    for (const segment of target.segments) {
+      dir = join(dir, segment);
+      expect(modeOf(dir), segment).toBe(OWNER_ONLY_DIR);
+    }
+    expect(modeOf(target.streamFile)).toBe(OWNER_ONLY_FILE);
+  });
+
+  it('writes nothing when the request carries no verbose-diagnostics target', async () => {
+    await invokeWith();
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  it('completes and reports a warning when the stream file cannot be written', async () => {
+    // A file where the first directory belongs, so the writer cannot create it.
+    writeFileSync(join(root, '.schegent'), 'not a directory');
+    const result = await invokeWith(diagnosticsTarget());
+    expect(result.exitCode).toBe(0);
+    expect(result.diagnosticWarnings ?? []).not.toHaveLength(0);
+  });
+
+  // T084 — what `cli-invocation` records as `diagnosticsEnabled`. An agy Run
+  // recorded `true` while this adapter wrote nothing.
+  it('reports diagnosticsCaptured once stdout reached stream.jsonl, and not without a target', async () => {
+    expect((await invokeWith()).diagnosticsCaptured).toBeUndefined();
+    expect((await invokeWith(diagnosticsTarget())).diagnosticsCaptured).toBe(true);
+  });
+
+  it('does not report diagnosticsCaptured when the stream file cannot be written', async () => {
+    writeFileSync(join(root, '.schegent'), 'not a directory');
+    expect((await invokeWith(diagnosticsTarget())).diagnosticsCaptured).toBeUndefined();
   });
 });

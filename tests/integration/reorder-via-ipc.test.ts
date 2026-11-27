@@ -34,10 +34,8 @@ import {
   type CommandAckMessage,
   type SidebarCommand
 } from '../../src/ui/sidebar/messages';
-import {
-  DEFAULT_QUEUE_ID,
-  type QueueRegistry
-} from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { type QueueRegistry } from '../../src/queue/queue-registry';
 import type { FeatureRequest, QueueState } from '../../src/queue/feature-request';
 import type { AuditEventType } from '../../src/contracts/audit-events';
 
@@ -139,13 +137,11 @@ async function makeHarness(): Promise<Harness> {
   const auditEntries: CapturedAuditEntry[] = [];
   const deps: RouterDeps = {
     executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-    queueRemover: { remove: async () => false },
     queueOps: {
       retry: async () => ({ ok: true }),
       moveUp: (id: string) => manager.moveUp(id),
       moveDown: (id: string) => manager.moveDown(id),
       clearCompleted: () => manager.clearCompleted(),
-      clearFailed: () => manager.clearFailed(),
       setQueuePausedState: (
         paused: boolean,
         queueId?: string,

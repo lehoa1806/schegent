@@ -1,7 +1,7 @@
 // Feature 019 — Unit tests for the RuntimeLogSink ENOENT-recovery
 // path (T018):
 //   1. First `appendFile` fails ENOENT → sink invokes
-//      `mkdir(parent, { recursive: true })` → retries `appendFile` once
+//      `mkdir(parent, { recursive: true, mode: 0o700 })` → retries `appendFile` once
 //      → success.
 //   2. mkdir itself fails (EACCES) → sink records the synthetic
 //      `'ENOENT-parent'` suppression and emits a single WARN through
@@ -90,7 +90,9 @@ describe('RuntimeLogSink — ENOENT → mkdir → retry success', () => {
 
     expect(appendFile).toHaveBeenCalledTimes(2);
     expect(mkdir).toHaveBeenCalledTimes(1);
-    expect(mkdir).toHaveBeenCalledWith(TARGET_PARENT, { recursive: true });
+    // Feature 217 (FR-004) — the parent it re-creates is owner-only, like every
+    // directory the walk creates.
+    expect(mkdir).toHaveBeenCalledWith(TARGET_PARENT, { recursive: true, mode: 0o700 });
     expect(sink.isSuppressed(TARGET_PATH)).toBe(false);
     expect(fallback.warnings).toHaveLength(0);
   });

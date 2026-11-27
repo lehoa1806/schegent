@@ -3,7 +3,8 @@
   // dropdowns (Queue → Task → Phase) have been removed in favour of
   // direct panel/phase-step selection. This component now shows only a
   // compact breadcrumb trail reflecting the current selection and the
-  // "Jump to current phase" affordance.
+  // "Live" button (which jumps to the currently executing Phase, or arms
+  // Live Mode when nothing is in flight).
   //
   // Props come from PhaseLogFeed.svelte; this component owns no state.
 
@@ -64,7 +65,7 @@
   // treatment, but the click handler still fires so the store can set
   // intent ON for the next non-null inFlight push (FR-008).
   const jumpDisabled = $derived(snapshot.queue.inFlight === null);
-  const jumpTooltip = $derived(jumpDisabled ? 'No in-flight phase (click to enable Live Mode)' : 'Jump to the currently executing phase');
+  const jumpTooltip = $derived(jumpDisabled ? 'No in-flight Phase (click to enable Live Mode)' : 'Jump to the currently executing Phase');
 
   // Breadcrumb derivations — show the user what's currently selected
   // without requiring dropdowns.
@@ -101,6 +102,9 @@
   }
 </script>
 
+<!-- Drawn as the redesign's log toolbar: what the log shows, then its actions at the end. The
+     product follows live output with a ghost "Live" button where the redesign has a checkbox, and
+     copies with the redesign's copy icon. -->
 <div class="selectors" data-testid="phase-log-selectors">
   <div class="breadcrumb-trail" data-testid="phase-log-breadcrumb">
     {#if selectedQueueName}
@@ -112,7 +116,7 @@
           <span class="crumb-separator" aria-hidden="true">›</span>
           <span class="crumb crumb-phase" title="Selected phase">{selectedPhaseName}</span>
           {#if selectedRunner}
-            <span class="runner-badge" title="Executing on {selectedRunner}">{selectedRunner}</span>
+            <span class="tag runner-badge" title="Executing on {selectedRunner}">{selectedRunner}</span>
           {/if}
         {/if}
       {/if}
@@ -123,198 +127,102 @@
 
   <button
     type="button"
-    class="jump-btn {jumpDisabled ? 'is-aria-disabled' : ''}"
+    class="btn btn-ghost btn-sm jump-btn {jumpDisabled ? 'is-aria-disabled' : ''}"
     data-testid="phase-log-jump-current"
     aria-disabled={jumpDisabled}
     title={jumpTooltip}
     onclick={handleJumpClick}
   >
-    <svg class="jump-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="12" cy="12" r="10"></circle>
-      <polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"></polygon>
-    </svg>
+    <svg class="i" aria-hidden="true"><use href="#i-play"></use></svg>
     <span class="jump-label">Live</span>
   </button>
   {#if entryCount > 0}
     <button
       type="button"
-      class="copy-btn {copyFeedback ? 'copied' : ''}"
+      class="icon-btn copy-btn {copyFeedback ? 'copied' : ''}"
       data-testid="phase-log-copy-all"
       title="Copy all entries to clipboard"
       onclick={handleCopy}
     >
       {#if copyFeedback}
-        <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <svg class="i" aria-hidden="true"><use href="#i-check"></use></svg>
       {:else}
-        <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <svg class="i" aria-hidden="true"><use href="#i-copy"></use></svg>
       {/if}
     </button>
   {/if}
 </div>
 
 <style>
+  /* The rest of the log's toolbar row; below the stepper when the row cannot hold both. */
   .selectors {
     display: flex;
-    gap: var(--schegent-space-2);
+    flex: 1 1 20rem;
+    min-width: 0;
     align-items: center;
+    gap: var(--schegent-space-2);
     min-height: var(--schegent-control-height-compact);
   }
 
+  /* What the log shows, in secondary text: where it sits muted and the step itself in the
+     foreground, as the redesign's run page names a step. Long names end in an ellipsis. */
   .breadcrumb-trail {
     display: flex;
     align-items: center;
-    gap: 6px;
-    flex: 1;
+    gap: var(--schegent-space-1-5);
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-muted-fg);
   }
-
   .crumb {
-    font-size: var(--schegent-text-caption);
-    font-weight: 500;
-    white-space: nowrap;
+    max-width: 160px;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 160px;
-    padding: 0;
-    border-radius: 0;
-    background: transparent;
+    white-space: nowrap;
   }
-
-  .crumb-queue {
-    color: var(--schegent-color-active);
-  }
-
-  .crumb-task {
-    color: var(--schegent-fg);
-  }
-
+  /* The step keeps its name when the row is tight, up to half the trail; the queue and the task
+     give way first. */
   .crumb-phase {
-    color: var(--schegent-color-completed);
-  }
-
-  .crumb-empty {
-    color: var(--schegent-muted-fg);
-    font-style: italic;
-    background: transparent;
-  }
-
-  .crumb-separator {
-    color: var(--schegent-disabled-fg);
-    font-size: 0.85rem;
     flex-shrink: 0;
+    max-width: min(160px, 50%);
+    color: var(--schegent-fg);
+    font-weight: 600;
+  }
+  .crumb-empty {
+    font-style: italic;
+  }
+  .crumb-separator,
+  .runner-badge,
+  .jump-btn,
+  .copy-btn {
+    flex-shrink: 0;
+  }
+  .crumb-separator {
     user-select: none;
   }
 
-  .jump-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    min-height: var(--schegent-control-height-compact);
-    padding: 3px 9px 3px 7px;
-    border-radius: var(--schegent-radius-sm);
-    border: 1px solid var(--schegent-color-active);
-    background: color-mix(in srgb, var(--schegent-color-active) 12%, transparent);
-    color: var(--schegent-color-active);
-    font-size: var(--schegent-text-caption);
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    cursor: pointer;
-    white-space: nowrap;
-    flex-shrink: 0;
-    transition:
-      background-color var(--schegent-duration-base) var(--schegent-ease-out),
-      border-color var(--schegent-duration-base) var(--schegent-ease-out),
-      color var(--schegent-duration-base) var(--schegent-ease-out),
-      opacity var(--schegent-duration-base) var(--schegent-ease-out);
+  /* The play icon takes the active colour while there is a phase to follow. With nothing in
+     flight the button reads as off but stays a button, since a click arms Live Mode for the next
+     phase (FR-008). */
+  .jump-btn .i {
+    --sg-status-color: var(--schegent-color-active);
   }
-
-  .jump-btn:hover:not(.is-aria-disabled) {
-    background: color-mix(in srgb, var(--schegent-color-active) 25%, transparent);
-  }
-
-  .jump-btn:active:not(.is-aria-disabled) {
-    opacity: 0.8;
-  }
-
   .jump-btn.is-aria-disabled {
-    opacity: 0.55;
-    cursor: pointer;
-    border-color: var(--schegent-disabled-fg);
-    color: var(--schegent-disabled-fg);
-    background: transparent;
+    color: var(--schegent-muted-fg);
   }
-
-  .jump-label {
-    display: none;
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .runner-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 6px;
-    height: 18px;
-    border-radius: 4px;
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-left: 6px;
-    background: var(--vscode-badge-background);
-    color: var(--vscode-badge-foreground);
-    opacity: 0.9;
-  }
-
-  .jump-icon {
-    width: 14px;
-    height: 14px;
-    flex-shrink: 0;
-  }
-
-  .jump-label {
-    line-height: 1;
+  .jump-btn.is-aria-disabled .i {
+    --sg-status-color: currentColor;
   }
 
   .copy-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border-radius: var(--schegent-radius-sm);
-    border: 1px solid color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
-    background: transparent;
     color: var(--schegent-muted-fg);
-    cursor: pointer;
-    flex-shrink: 0;
-    transition:
-      background-color 0.15s ease,
-      border-color 0.15s ease,
-      color 0.15s ease,
-      opacity 0.15s ease;
   }
-
   .copy-btn:hover {
     color: var(--schegent-fg);
-    border-color: var(--schegent-focus-border);
-    background: color-mix(in srgb, var(--vscode-list-hoverBackground) 60%, transparent);
   }
-
-  .copy-btn:active {
-    opacity: 0.8;
-  }
-
-  .copy-btn.copied {
-    color: var(--schegent-color-completed);
-    border-color: var(--schegent-color-completed);
-  }
-
-  .copy-icon {
-    width: 14px;
-    height: 14px;
+  .copy-btn.copied .i {
+    --sg-status-color: var(--schegent-color-completed);
   }
 </style>

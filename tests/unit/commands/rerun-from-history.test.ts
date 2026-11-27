@@ -80,6 +80,11 @@ let notifier: ReturnType<typeof makeNotifier>;
 let guarded: ReturnType<typeof makeGuarded>;
 let lock: ReturnType<typeof makeLock>;
 let logger: SanitizedLogger;
+// FR-R3-071 -- the sidecar read half. The default double answers 'missing',
+// which keeps every pre-existing case on the branch it was written for:
+// entries with inline originalDescription resolve 'legacy' without the store,
+// and legacy fixtures without it still refuse.
+const missingDescriptions = { read: async () => ({ outcome: 'missing' as const }) };
 
 beforeEach(() => {
   notifier = makeNotifier();
@@ -96,6 +101,7 @@ describe('runRerunFromHistory (US5 / T038 / FR-029)', () => {
       {
         guarded: guarded as never,
         history: history as never,
+        descriptions: missingDescriptions as never,
         lock: lock as never,
         notifier: notifier as never,
         logger
@@ -117,6 +123,7 @@ describe('runRerunFromHistory (US5 / T038 / FR-029)', () => {
       {
         guarded: guarded as never,
         history: history as never,
+        descriptions: missingDescriptions as never,
         lock: lock as never,
         notifier: notifier as never,
         logger
@@ -136,6 +143,7 @@ describe('runRerunFromHistory (US5 / T038 / FR-029)', () => {
       {
         guarded: guarded as never,
         history: history as never,
+        descriptions: missingDescriptions as never,
         lock: lock as never,
         notifier: notifier as never,
         logger
@@ -145,6 +153,29 @@ describe('runRerunFromHistory (US5 / T038 / FR-029)', () => {
     expect(notifier.warn).toHaveBeenCalled();
   });
 
+  it('force=true replays the truncated preview knowingly, and logs the divergence (FR-R3-071)', async () => {
+    // The branch no test covered while it silently became every entry's only
+    // outcome. With the resolver wired it is reachable only when the entry
+    // genuinely cannot be resolved AND the operator opted in.
+    const history = makeHistoryStore([legacyEntry]);
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    await runRerunFromHistory(
+      { runId: 'run-legacy', force: true },
+      {
+        guarded: guarded as never,
+        history: history as never,
+        descriptions: missingDescriptions as never,
+        lock: lock as never,
+        notifier: notifier as never,
+        logger
+      }
+    );
+    expect(guarded.scheduleOrEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ description: 'short legacy preview' })
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('forced-legacy-preview'));
+  });
+
   it('rejects when the workspace lock is not held (foreign window)', async () => {
     const history = makeHistoryStore([baseEntry]);
     await runRerunFromHistory(
@@ -152,6 +183,7 @@ describe('runRerunFromHistory (US5 / T038 / FR-029)', () => {
       {
         guarded: guarded as never,
         history: history as never,
+        descriptions: missingDescriptions as never,
         lock: makeLock(false) as never,
         notifier: notifier as never,
         logger
@@ -169,6 +201,7 @@ describe('runRerunFromHistory (US5 / T038 / FR-029)', () => {
       {
         guarded: pausedGuarded as never,
         history: history as never,
+        descriptions: missingDescriptions as never,
         lock: lock as never,
         notifier: notifier as never,
         logger
@@ -195,6 +228,7 @@ describe('runRetryActiveRun (US5 / T046 / FR-029) — falls back to history with
       guarded: guarded as never,
       queue: queue as never,
       history: history as never,
+      descriptions: missingDescriptions as never,
       lock: lock as never,
       notifier: notifier as never,
       logger
@@ -211,6 +245,7 @@ describe('runRetryActiveRun (US5 / T046 / FR-029) — falls back to history with
       guarded: guarded as never,
       queue: queue as never,
       history: history as never,
+      descriptions: missingDescriptions as never,
       lock: lock as never,
       notifier: notifier as never,
       logger
@@ -227,6 +262,7 @@ describe('runRetryActiveRun (US5 / T046 / FR-029) — falls back to history with
       guarded: guarded as never,
       queue: queue as never,
       history: history as never,
+      descriptions: missingDescriptions as never,
       lock: lock as never,
       notifier: notifier as never,
       logger

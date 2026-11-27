@@ -103,8 +103,8 @@ describe('a connected run whose catalog moves under it', () => {
     workflow = editableRelease();
   });
 
-  afterEach(() => {
-    harness.cleanup();
+  afterEach(async () => {
+    await harness.cleanup();
   });
 
   /**

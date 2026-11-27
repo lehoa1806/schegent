@@ -1,4 +1,5 @@
 import type { AuditAppendListener, AuditDisposable } from '../../audit/audit-log-writer';
+import { DEFAULT_BACKEND } from '../../contracts/backend-kinds';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { Disposable, StoreChangeListener } from '../../state/workspace-state';
@@ -6,7 +7,22 @@ import type { StateProjectorDeps, ProjectorListener, ProjectorTimer } from './st
 import { buildIdleSnapshot, type AuditTailEntry, type WorkflowSnapshot } from './snapshot';
 import { AuditTailState } from './audit-tail-state';
 import { ProjectorBookkeepingRegistry } from './projector-bookkeeping-registry';
-import { composeWorkflowSnapshot } from './snapshot-composer';
+import { ProjectionFailureEpisodes } from './projection-failure-episodes';
+
+/**
+ * The staleness bound on a projected frame, in ms.
+ *
+ * Deliberately NOT derived from `tickIntervalMs` (1 s): the tick is a liveness
+ * heartbeat for elapsed counters, this is a staleness bound on the whole frame, and
+ * tying them would make one number answer two questions.
+ *
+ * FR-R3-128 — moved here from `state-projector.ts`, which value-imported this
+ * module while this module imported the constant back: a two-file cycle over one
+ * number, reported by `tests/lint/import-graph-acyclic.test.ts` on its first run.
+ * It lives with the consumer that applies it as a default; `state-projector.ts`
+ * re-exports it so existing importers are unchanged.
+ */
+export const DEFAULT_MAX_WAIT_MS = 500;
 
 const STUB_STORE: NonNullable<StateProjectorDeps['store']> = Object.freeze({
   getRunMap: () => ({}),
@@ -36,10 +52,21 @@ export class StateProjectorRuntime {
   private readonly externalSanitize: ((value: string | null | undefined) => string) | null;
   private readonly debounceMs: number;
   private readonly tickIntervalMs: number;
+  private readonly maxWaitMs: number;
+  /**
+   * Monotonic clock, for the max-wait deadline (FR-R3-106).
+   *
+   * Monotonic rather than wall-clock deliberately: a deadline measured with `Date.now()`
+   * would move if the system clock stepped, and the failure would be a display that froze
+   * or thrashed for a reason nothing in this file could explain. The same clock already
+   * drives the bookkeepers, so the projector keeps one notion of elapsed time.
+   */
+  private readonly monotonicNow: () => number;
   private readonly timer: ProjectorTimer;
   private readonly now: () => Date;
   private readonly logger: Pick<SanitizedLogger, 'warn' | 'debug' | 'sanitize'> | null;
   private readonly listeners = new Set<ProjectorListener>();
+  private readonly failureEpisodes = new ProjectionFailureEpisodes();
   private readonly auditTailState = new AuditTailState();
   private readonly bookkeepers: ProjectorBookkeepingRegistry;
   private storeSub: Disposable | null = null;
@@ -48,6 +75,11 @@ export class StateProjectorRuntime {
   private historySub: Disposable | null = null;
   private debounceHandle: unknown = null;
   private tickHandle: unknown = null;
+  /**
+   * FR-R3-106 (FR-069) — when the current burst of events started, or `null` between
+   * bursts. The max-wait deadline is measured from this rather than from the last event.
+   */
+  private burstStartedAt: number | null = null;
   private currentSnapshot: WorkflowSnapshot;
   private disposed = false;
   private started = false;
@@ -61,6 +93,7 @@ export class StateProjectorRuntime {
     this.externalSanitize = deps.sanitize ?? null;
     this.debounceMs = deps.debounceMs ?? 100;
     this.tickIntervalMs = deps.tickIntervalMs ?? 1_000;
+    this.maxWaitMs = deps.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
     this.timer = deps.timer ?? {
       setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
       clearTimeout: (handle) => globalThis.clearTimeout(
@@ -72,6 +105,7 @@ export class StateProjectorRuntime {
       const perf = (globalThis as { performance?: { now: () => number } }).performance;
       return perf ? perf.now() : Date.now();
     });
+    this.monotonicNow = monotonicNow;
     this.logger = deps.logger ?? null;
     this.bookkeepers = new ProjectorBookkeepingRegistry(monotonicNow);
     try {
@@ -153,7 +187,7 @@ export class StateProjectorRuntime {
     // still using. `ProjectorBookkeeping` used to cancel from inside its own
     // update for want of anywhere else to ask.
     if (!this.bookkeepers.anyRunning) this.cancelTick();
-    return composeWorkflowSnapshot({
+    return this.failureEpisodes.compose({
       deps: this.deps,
       store: this.store,
       runs,
@@ -164,7 +198,7 @@ export class StateProjectorRuntime {
       externalSanitize: this.externalSanitize,
       monitor: this.deps.monitor ?? null,
       history: this.deps.history ?? null,
-      defaultRunnerKind: this.deps.defaultRunnerKind ?? 'claude',
+      defaultRunnerKind: this.deps.defaultRunnerKind ?? DEFAULT_BACKEND,
       auditTail: this.auditTailState.snapshot(),
       bookkeepers: this.bookkeepers,
       telemetry: this.stagedTelemetry
@@ -193,8 +227,41 @@ export class StateProjectorRuntime {
     this.scheduleProjection();
   }
 
+  /**
+   * Trailing debounce **with a deadline** (FR-R3-106, FR-069).
+   *
+   * THE STARVATION THIS FIXES. This was a pure trailing debounce: every event cleared the
+   * pending timer and re-armed it, so under sustained sub-`debounceMs` output the timer
+   * never fired at all. Eight event sources feed this projector, and a busy run produces
+   * exactly that stream — so the display froze on a stale frame at the moment the run was
+   * busiest, which is when an operator is most likely to be watching.
+   *
+   * It was also **hidden**: webview-local timers keep ticking, so elapsed counters kept
+   * moving on a frame that was no longer being refreshed. And it self-healed at the first
+   * gap ≥ `debounceMs`, which is why it never presented as a reproducible bug.
+   *
+   * The 1 Hz tick could not rescue it either: `rearmTick()` is called only from `flush()`,
+   * so a projector that never flushed never re-armed its tick.
+   *
+   * THE DEADLINE. `burstStartedAt` records when the current burst began; once
+   * `maxWaitMs` has elapsed since then, the next event flushes immediately instead of
+   * re-arming. So a quiet stream still coalesces (the trailing debounce is unchanged) and
+   * a saturated one is bounded — the display can be at most `maxWaitMs` stale.
+   *
+   * `debounceMs` and `tickIntervalMs` are unchanged: this changes what FEEDS them.
+   */
   private scheduleProjection(): void {
     if (this.disposed) return;
+    const now = this.monotonicNow();
+    if (this.burstStartedAt === null) this.burstStartedAt = now;
+    else if (now - this.burstStartedAt >= this.maxWaitMs) {
+      // The deadline has passed: flush now rather than re-arming into a timer that a
+      // sustained stream will keep pushing away.
+      if (this.debounceHandle !== null) this.timer.clearTimeout(this.debounceHandle);
+      this.debounceHandle = null;
+      this.flush();
+      return;
+    }
     if (this.debounceHandle !== null) this.timer.clearTimeout(this.debounceHandle);
     this.debounceHandle = this.timer.setTimeout(() => {
       this.debounceHandle = null;
@@ -204,6 +271,10 @@ export class StateProjectorRuntime {
 
   private flush(): void {
     if (this.disposed) return;
+    // The burst is over: the next event starts a fresh deadline window. Reset here rather
+    // than in `scheduleProjection` so a flush from ANY path — the debounce, the deadline,
+    // or the tick — ends the window it belongs to.
+    this.burstStartedAt = null;
     const snapshot = this.project();
     this.currentSnapshot = snapshot;
     for (const listener of this.listeners) {

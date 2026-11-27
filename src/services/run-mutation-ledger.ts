@@ -1,14 +1,30 @@
 import * as path from 'node:path';
+import type { RecoveryWorkspaceAttribution } from '../contracts/recovery-envelope';
+import type { WorkspaceObservationSnapshot } from './workflow-execution/recovery-envelope-builder';
 
 /**
  * FR-R3-004 — attribution of working-tree changes to one Run.
  *
- * The decision record is
- * [`docs/architecture/checkpoint-attribution-decision.md`](../../docs/architecture/checkpoint-attribution-decision.md).
- * The short version: a checkpoint is a diff of one shared working tree, and this
- * project forbids `git worktree`, so a patch is only attributable if something
- * knows who wrote what. Two sources are available and this ledger uses both, in
- * different roles.
+ * FR-R3-062 — the cited decision record
+ * (`docs/architecture/checkpoint-attribution-decision.md`) does not exist and did
+ * not when this comment was written. Retargeted rather than restored: the
+ * reasoning is already stated below in full, so a page whose only purpose is to
+ * be the destination of this link would add a maintenance burden and no
+ * information. See `docs/operations/recovery-checkpoints.md` for the operator
+ * view of checkpoints.
+ * The short version: a checkpoint is a diff of one shared working tree, so a
+ * patch is only attributable if something knows who wrote what. Two sources are
+ * available and this ledger uses both, in different roles.
+ *
+ * FR-R3-124 (2026-08-27) — this docblock used to say "this project forbids
+ * `git worktree`". The flat ban is gone: `AGENTS.md` now permits it narrowly, for
+ * Schegent-provisioned per-Run execution roots only, and
+ * `docs/architecture/run-isolation-decision.md` chose that as the shape of
+ * execution isolation. **The mechanism does not exist** — §9 of that record gates
+ * building it — so everything below is unchanged and remains the operative
+ * behaviour. When it does exist, §8b Q1 is the position this file inherits: a
+ * Run whose worktree is its own takes the cap-1 path and this ledger is not
+ * consulted for its checkpoint, moving to make merge-back reviewable instead.
  *
  * **The declaration is the attribution source.** Each phase's audit record names
  * the files it created, modified, and deleted, and those paths — canonicalised
@@ -168,7 +184,7 @@ export interface LedgerRunView {
 }
 
 export interface RunMutationLedgerDeps {
-  /** Raw `git diff --binary --no-ext-diff HEAD` output for the shared tree. */
+  /** Raw `git diff --binary --no-ext-diff --no-textconv HEAD` output for the shared tree. */
   readonly readDiff: () => Promise<string>;
   /** Run ids that could currently hold uncommitted work. Bounds ledger memory. */
   readonly listInFlightRunIds: () => readonly string[];
@@ -197,9 +213,47 @@ export class RunMutationLedger {
   private baselineTaken = false;
   /** Left behind by a Run that terminated without committing. */
   private readonly retired = new Set<string>();
+  /** Bounded pre-attempt workspace snapshots keyed by `<runId>:<attemptId>` (`SPEC-05` / `D5`). */
+  private readonly candidateSnapshots = new Map<string, WorkspaceObservationSnapshot>();
 
   constructor(private readonly deps: RunMutationLedgerDeps) {
     this.createdAt = (deps.now ?? Date.now)();
+  }
+
+  public recordCandidateBeforeSnapshot(
+    attemptKey: string,
+    snapshot: WorkspaceObservationSnapshot
+  ): void {
+    this.candidateSnapshots.set(attemptKey, snapshot);
+  }
+
+  public getCandidateBeforeSnapshot(
+    attemptKey: string
+  ): WorkspaceObservationSnapshot | undefined {
+    return this.candidateSnapshots.get(attemptKey);
+  }
+
+  public clearCandidateSnapshot(attemptKey: string): void {
+    this.candidateSnapshots.delete(attemptKey);
+  }
+
+  public classifyWorkspacePathAttribution(
+    runId: string,
+    relativePath: string
+  ): RecoveryWorkspaceAttribution {
+    this.syncLiveness();
+    const others = this.pathsAttributedToOthers(runId);
+    if (others.has(relativePath)) {
+      return 'concurrent';
+    }
+    const ownEvidence = this.evidenceFor(runId);
+    if (ownEvidence.complete && ownEvidence.paths.has(relativePath)) {
+      return 'attempt';
+    }
+    if (this.baseline.has(relativePath)) {
+      return 'preexisting';
+    }
+    return ownEvidence.complete ? 'attempt' : 'unknown';
   }
 
   /**

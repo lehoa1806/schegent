@@ -1,19 +1,58 @@
 // Feature 011 — typed read/write surface for scalar `schegent.*` keys.
 //
 // Two responsibilities:
-//   1. `readGeneralSettings(config)` projects the current effective
-//      values into a typed `GeneralSettings` snapshot for the webview,
-//      including a per-key `scopes` map (workspace > user > default).
-//   2. `writeGeneralSettings(config, updates)` validates a batch of
-//      updates transactionally — every key must be in the allowlist
-//      AND every value must match the declared runtime type — and then
-//      writes each accepted key to `vscode.ConfigurationTarget.Workspace`
-//      (FR-020). On validation failure no key is written; on a later
-//      persistence failure, keys already written by the batch are restored
-//      to their previous workspace-scope values.
+//   1. `readGeneralSettings(config)` projects the current effective values into a
+//      typed `GeneralSettings` snapshot for the webview, including a per-key
+//      `scopes` map (workspace > user > default).
+//   2. `writeGeneralSettings(config, updates)` validates a batch transactionally —
+//      every key in the allowlist, every value matching its declared runtime type —
+//      then writes each accepted key at the target its MANIFEST SCOPE requires:
+//      `Global` for an `application`-scoped key, which has no workspace layer, and
+//      `Workspace` otherwise (FR-R3-051 / M-05, superseding FR-020's "Workspace
+//      only"). On validation failure no key is written; on a later persistence
+//      failure, keys already written are restored at the layer they went to.
 //
-// The host adds the `schegent.` prefix; payload keys are unprefixed
-// scalar setting names. See contracts/general-settings-ipc.md.
+// The host adds the `schegent.` prefix; payload keys are unprefixed scalar setting
+// names. See contracts/general-settings-ipc.md.
+//
+
+// FR-R3-144 (T001) — the table, the payload shape and the validator moved out;
+// this module keeps the two functions that touch the host config object. Every
+// moved name is re-exported below, so no importer changed.
+import {
+  ALLOWED_KEYS,
+  CONFIGURATION_TARGET_GLOBAL,
+  CONFIGURATION_TARGET_WORKSPACE,
+  KEY_SPECS,
+  configurationTargetFor,
+  type AllowedKey,
+  type GeneralSettings,
+  type ManifestSettingScope,
+  type SettingScope
+} from './general-settings-keys';
+import { reportWriteFailure, type SettingsWriteFailure } from './general-settings-failure';
+import {
+  checkArrayElements,
+  checkType,
+  isAllowedKey,
+  type WriteResult
+} from './general-settings-validate';
+
+export {
+  ALLOWED_KEYS,
+  CONFIGURATION_TARGET_GLOBAL,
+  CONFIGURATION_TARGET_WORKSPACE,
+  KEY_SPECS,
+  configurationTargetFor
+};
+export type {
+  AllowedKey,
+  GeneralSettings,
+  ManifestSettingScope,
+  SettingScope,
+  WriteResult
+};
+export type { KeySpec, RuntimeType } from './general-settings-keys';
 
 /**
  * Minimal slice of `vscode.WorkspaceConfiguration` that this surface
@@ -32,368 +71,19 @@ export interface GeneralSettingsConfig {
         workspaceFolderValue?: T;
       }
     | undefined;
-  update(key: string, value: unknown, target: number): Promise<void> | Thenable<void>;
+  // FR-R3-143 (T022) — `Promise<void> | Thenable<void>`, until the payload-parity
+  // gate imported this module from the webview and `Thenable` turned out to be an
+  // ambient `@types/vscode` global. The module's header says it is `vscode`-free
+  // so it can be tested without the electron harness; that was true of its imports
+  // and false of its types. `@types/vscode` declares `Thenable<T> extends
+  // PromiseLike<T>` with no members, so the real `WorkspaceConfiguration.update`
+  // still satisfies this and nothing that assigned before stops.
+  update(key: string, value: unknown, target: number): PromiseLike<void>;
 }
 
-/** Mirrors `vscode.ConfigurationTarget.Workspace`. */
-export const CONFIGURATION_TARGET_WORKSPACE = 2;
-
-/** Setting scope as projected to the webview. */
-export type SettingScope = 'workspace' | 'user' | 'default';
-
-export interface GeneralSettings {
-  readonly cliPath: string;
-  readonly loggingVerbose: boolean;
-  readonly loopMaxIterations: number;
-  readonly invocationTimeoutSeconds: number;
-  readonly watchdogPollIntervalMinutes: number;
-  readonly auditRotationSizeMB: number;
-  readonly auditRotationMaxAgeDays: number;
-  readonly defaultPipelineId: string;
-  readonly fatalSignatures: readonly string[];
-  readonly claudeAutoCompactPctOverride: number | undefined;
-  readonly queueGlobalConcurrencyCap: number;
-  readonly queueDefaultQueueId: string;
-  readonly runtimeLogLevel: string;
-  readonly runtimeLogFilePath: string;
-  readonly retryMaxAttempts: number;
-  readonly retryForceContinueOnCap: boolean;
-  readonly codexPath: string;
-  readonly agyPath: string;
-  readonly runtimeLogMaxBytes: number;
-  readonly runtimeLogMaxGenerations: number;
-  readonly sessionRetentionMaxAgeDays: number;
-  readonly sessionRetentionMaxBytes: number;
-  readonly rawTranscriptMode: import('../state/workflow-run').RawTranscriptMode;
-  readonly scopes: {
-    readonly cliPath: SettingScope;
-    readonly loggingVerbose: SettingScope;
-    readonly loopMaxIterations: SettingScope;
-    readonly invocationTimeoutSeconds: SettingScope;
-    readonly watchdogPollIntervalMinutes: SettingScope;
-    readonly auditRotationSizeMB: SettingScope;
-    readonly auditRotationMaxAgeDays: SettingScope;
-    readonly defaultPipelineId: SettingScope;
-    readonly fatalSignatures: SettingScope;
-    readonly claudeAutoCompactPctOverride: SettingScope;
-    readonly queueGlobalConcurrencyCap: SettingScope;
-    readonly queueDefaultQueueId: SettingScope;
-    readonly runtimeLogLevel: SettingScope;
-    readonly runtimeLogFilePath: SettingScope;
-    readonly retryMaxAttempts: SettingScope;
-    readonly retryForceContinueOnCap: SettingScope;
-    readonly codexPath: SettingScope;
-    readonly agyPath: SettingScope;
-    readonly runtimeLogMaxBytes: SettingScope;
-    readonly runtimeLogMaxGenerations: SettingScope;
-    readonly sessionRetentionMaxAgeDays: SettingScope;
-    readonly sessionRetentionMaxBytes: SettingScope;
-    readonly rawTranscriptMode: SettingScope;
-  };
-}
-
-type AllowedKey =
-  | 'cli.path'
-  | 'logging.verbose'
-  | 'loop.maxIterations'
-  | 'invocation.timeoutSeconds'
-  | 'watchdog.pollIntervalMinutes'
-  | 'audit.rotation.sizeMB'
-  | 'audit.rotation.maxAgeDays'
-  | 'defaultPipelineId'
-  | 'fatalSignatures'
-  | 'claude.autoCompactPctOverride'
-  | 'queue.globalConcurrencyCap'
-  | 'queue.defaultQueueId'
-  | 'logging.runtimeLogLevel'
-  | 'logging.runtimeLogFilePath'
-  | 'retry.maxAttempts'
-  | 'retry.forceContinueOnCap'
-  | 'codex.path'
-  | 'agy.path'
-  | 'logging.runtimeLogMaxBytes'
-  | 'logging.runtimeLogMaxGenerations'
-  | 'logging.sessionRetentionMaxAgeDays'
-  | 'logging.sessionRetentionMaxBytes'
-  | 'logging.rawTranscriptMode';
-
-type RuntimeType =
-  | 'string'
-  | 'number'
-  | 'boolean'
-  | 'array-of-string'
-  | 'number-int-range'
-  | 'string-enum'
-  | 'string-no-traversal';
-
-interface KeySpec {
-  readonly type: RuntimeType;
-  readonly typedField: keyof Omit<GeneralSettings, 'scopes'>;
-  readonly defaultValue: unknown;
-  readonly min?: number;
-  readonly max?: number;
-  readonly allowClear?: boolean;
-  readonly allowedValues?: readonly string[];
-}
-
-const KEY_SPECS: Readonly<Record<AllowedKey, KeySpec>> = Object.freeze({
-  'cli.path': { type: 'string', typedField: 'cliPath', defaultValue: 'claude' },
-  'codex.path': { type: 'string', typedField: 'codexPath', defaultValue: 'codex' },
-  'agy.path': { type: 'string', typedField: 'agyPath', defaultValue: 'agy' },
-  'logging.verbose': {
-    type: 'boolean',
-    typedField: 'loggingVerbose',
-    defaultValue: false
-  },
-  'loop.maxIterations': {
-    type: 'number',
-    typedField: 'loopMaxIterations',
-    defaultValue: 10,
-    min: 1,
-    max: 50
-  },
-  'invocation.timeoutSeconds': {
-    type: 'number',
-    typedField: 'invocationTimeoutSeconds',
-    defaultValue: 5400,
-    min: 30
-  },
-  'watchdog.pollIntervalMinutes': {
-    type: 'number',
-    typedField: 'watchdogPollIntervalMinutes',
-    defaultValue: 30,
-    min: 1
-  },
-  'audit.rotation.sizeMB': {
-    type: 'number',
-    typedField: 'auditRotationSizeMB',
-    defaultValue: 5,
-    min: 1
-  },
-  'audit.rotation.maxAgeDays': {
-    type: 'number',
-    typedField: 'auditRotationMaxAgeDays',
-    defaultValue: 30,
-    min: 1
-  },
-  defaultPipelineId: {
-    type: 'string',
-    typedField: 'defaultPipelineId',
-    // Feature 056 Track 3 (FR-013..FR-017) — Align host default with the
-    // package.json contribution default so a fresh workspace and the webview
-    // idle snapshot agree. Feature 098 (T047, FR-033a) — that value is unset.
-    defaultValue: ''
-  },
-  fatalSignatures: {
-    type: 'array-of-string',
-    typedField: 'fatalSignatures',
-    defaultValue: []
-  },
-  'claude.autoCompactPctOverride': {
-    type: 'number-int-range',
-    typedField: 'claudeAutoCompactPctOverride',
-    defaultValue: undefined,
-    min: 1,
-    max: 100,
-    allowClear: true
-  },
-  'queue.globalConcurrencyCap': {
-    type: 'number-int-range',
-    typedField: 'queueGlobalConcurrencyCap',
-    // Feature 092 (T055, FR-026/FR-027) — the cap was pinned at 1 by feature
-    // 056 Track 4 (FR-018..FR-022) because one workspace lock meant one run.
-    // US2 split that lock into window primacy plus a per-queue execution
-    // lease, so the RANGE opened to [1, 20]; `settings-schema-parity.test.ts`
-    // fails unless the advertising sites agree. Feature 098 (REL-02) moved the
-    // DEFAULT back to 1 — range untouched — as concurrent Runs share a tree.
-    //
-    // Feature 094 — the bound lives in six sites, not the "three and a fourth"
-    // this comment used to claim: three advertise (this one,
-    // `settings-schema.ts`, package.json) and three enforce. All six, the
-    // authority for a range wider than one, and the 098 default's reasoning:
-    // `docs/architecture/local-queue-parallelism-ratification.md`.
-    defaultValue: 1,
-    min: 1,
-    max: 20
-  },
-  'queue.defaultQueueId': {
-    type: 'string',
-    typedField: 'queueDefaultQueueId',
-    defaultValue: 'default'
-  },
-  'logging.runtimeLogLevel': {
-    type: 'string-enum',
-    typedField: 'runtimeLogLevel',
-    defaultValue: 'INFO',
-    allowedValues: ['DEBUG', 'INFO', 'WARN', 'ERROR']
-  },
-  'logging.runtimeLogFilePath': {
-    type: 'string-no-traversal',
-    typedField: 'runtimeLogFilePath',
-    defaultValue: ''
-  },
-  'retry.maxAttempts': {
-    type: 'number-int-range',
-    typedField: 'retryMaxAttempts',
-    // Feature 056 Track 4 (FR-018..FR-022) — The advertised maximum
-    // matches the effective implementation cap (`DELAYED_RETRY_CAP = 5`)
-    // in src/controller/retry-handler.ts. Previously the contribution
-    // schema and host validator exposed [1, 20] which silently saturated
-    // at 5 in production.
-    defaultValue: 5,
-    min: 1,
-    max: 5
-  },
-  // Workspace-wide default for a phase's `forceContinueOnRetryCap`. Defaults
-  // OFF: advancing on an unsatisfied condition is a deliberate trade of
-  // verification for progress, so it is opted into, never inherited.
-  'retry.forceContinueOnCap': {
-    type: 'boolean',
-    typedField: 'retryForceContinueOnCap',
-    defaultValue: false
-  },
-  'logging.runtimeLogMaxBytes': {
-    type: 'number-int-range',
-    typedField: 'runtimeLogMaxBytes',
-    // Feature 056 Track 7 (F-009 runtime-log retention) — Default 5 MiB.
-    // 64 KiB minimum is large enough to avoid pathological rotation
-    // thrash; 1 GiB upper bound prevents accidental fork-bomb-style
-    // unbounded growth via the workspace mirror.
-    defaultValue: 5 * 1024 * 1024,
-    min: 65536,
-    max: 1073741824
-  },
-  'logging.runtimeLogMaxGenerations': {
-    type: 'number-int-range',
-    typedField: 'runtimeLogMaxGenerations',
-    // Feature 056 Track 7 (F-009 runtime-log retention) — Default 3
-    // rotated generations (current + 3 = 4 files total). Operators can
-    // disable rotation entirely with 0; the upper bound caps the
-    // worst-case disk footprint at (1 + 20) × runtimeLogMaxBytes.
-    defaultValue: 3,
-    min: 0,
-    max: 20
-  },
-  'logging.sessionRetentionMaxAgeDays': {
-    type: 'number-int-range',
-    typedField: 'sessionRetentionMaxAgeDays',
-    defaultValue: 30,
-    min: 1,
-    max: 3650
-  },
-  'logging.sessionRetentionMaxBytes': {
-    type: 'number-int-range',
-    typedField: 'sessionRetentionMaxBytes',
-    defaultValue: 512 * 1024 * 1024,
-    min: 1024 * 1024,
-    max: 10 * 1024 * 1024 * 1024
-  },
-  'logging.rawTranscriptMode': {
-    type: 'string-enum',
-    typedField: 'rawTranscriptMode',
-    defaultValue: 'always',
-    allowedValues: ['always', 'errors-only', 'off']
-  }
-});
-
-/** Unprefixed scalar setting names accepted by `writeGeneralSettings`. */
-export const ALLOWED_KEYS: ReadonlySet<string> = new Set(Object.keys(KEY_SPECS));
-
-export type WriteResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string };
-
-interface WorkspaceValueSnapshot {
-  readonly hadWorkspaceValue: boolean;
+interface WrittenValueSnapshot {
+  readonly hadValue: boolean;
   readonly value: unknown;
-}
-
-function isAllowedKey(key: string): key is AllowedKey {
-  return ALLOWED_KEYS.has(key);
-}
-
-function checkType(spec: KeySpec, value: unknown): WriteResult {
-  switch (spec.type) {
-    case 'string':
-      return typeof value === 'string'
-        ? { ok: true }
-        : { ok: false, reason: 'type-mismatch' };
-    case 'number':
-      if (typeof value !== 'number' || !Number.isFinite(value)) {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      if (spec.min !== undefined && value < spec.min) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      if (spec.max !== undefined && value > spec.max) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      return { ok: true };
-    case 'boolean':
-      return typeof value === 'boolean'
-        ? { ok: true }
-        : { ok: false, reason: 'type-mismatch' };
-    case 'array-of-string':
-      return Array.isArray(value)
-        ? { ok: true }
-        : { ok: false, reason: 'type-mismatch' };
-    case 'number-int-range': {
-      // `null` / `undefined` are accepted as a clear sentinel iff `allowClear`.
-      if (value === null || value === undefined) {
-        return spec.allowClear === true
-          ? { ok: true }
-          : { ok: false, reason: 'type-mismatch' };
-      }
-      if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      if (spec.min !== undefined && value < spec.min) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      if (spec.max !== undefined && value > spec.max) {
-        return { ok: false, reason: 'out-of-range' };
-      }
-      return { ok: true };
-    }
-    case 'string-enum': {
-      if (typeof value !== 'string') {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      if (!spec.allowedValues || !spec.allowedValues.includes(value)) {
-        return { ok: false, reason: 'invalid-enum' };
-      }
-      return { ok: true };
-    }
-    case 'string-no-traversal': {
-      // Allow empty string (= default), any absolute path, and relative
-      // paths that contain no `..` segment. Path resolution against a
-      // workspace happens at read time via `resolveRuntimeLogPath`.
-      if (typeof value !== 'string') {
-        return { ok: false, reason: 'type-mismatch' };
-      }
-      const trimmed = value.trim();
-      if (trimmed.length === 0) return { ok: true };
-      const isAbsolute =
-        trimmed.startsWith('/') ||
-        trimmed.startsWith('\\\\') ||
-        trimmed.startsWith('//') ||
-        /^[A-Za-z]:[\\/]?/.test(trimmed);
-      if (isAbsolute) return { ok: true };
-      const segments = trimmed.split(/[\\/]+/);
-      if (segments.some((seg) => seg === '..')) {
-        return { ok: false, reason: 'relative-traversal' };
-      }
-      return { ok: true };
-    }
-  }
-}
-
-function checkArrayElements(value: readonly unknown[]): WriteResult {
-  for (const el of value) {
-    if (typeof el !== 'string') return { ok: false, reason: 'invalid-array' };
-    if (el.trim().length === 0) return { ok: false, reason: 'invalid-array' };
-  }
-  return { ok: true };
 }
 
 /**
@@ -410,8 +100,11 @@ function checkArrayElements(value: readonly unknown[]): WriteResult {
  *   - `out-of-range:<key>` — integer outside the declared `[min, max]` range
  *   - `write-failed:<key>` — underlying `config.update()` rejected
  *   - `clear-failed:<key>` — clear via `config.update(key, undefined)` rejected
- *   - `rollback-failed:<key>:after:<reason>:<detail>` — a write failed and
- *     the compensating rollback for a previously-written key also failed
+ *   - `rollback-failed:<key>:after:<reason>` — a write failed and the
+ *     compensating rollback for a previously-written key also failed
+ *
+ * FR-R4-F05 — no reason carries exception text (a settings-file fault names a
+ * path): the detail goes to `hooks.onWriteFailure`, the host's sanitizing logger.
  */
 /**
  * Optional callback fired AFTER a successful write that touched either
@@ -422,6 +115,8 @@ function checkArrayElements(value: readonly unknown[]): WriteResult {
  */
 export interface WriteGeneralSettingsHooks {
   readonly onRuntimeLogSettingChanged?: () => void;
+  /** FR-R4-F05 — each rejected `config.update` with its exception: the one place the detail survives. */
+  readonly onWriteFailure?: (failure: SettingsWriteFailure) => void;
 }
 
 // Feature 056 Track 9 (T060) — runtimeLogMaxBytes / runtimeLogMaxGenerations
@@ -437,46 +132,56 @@ const RUNTIME_LOG_KEYS = new Set<string>([
   'logging.runtimeLogMaxGenerations'
 ]);
 
-function captureWorkspaceValue(
+/**
+ * FR-R3-051 (M-05) — snapshot the layer this batch is about to WRITE, which is
+ * the only layer a rollback may restore. Scope-aware through the same resolver
+ * as the write, not a parallel pair; see the contract for why.
+ */
+function captureWrittenValue(
   config: GeneralSettingsConfig,
-  key: string
-): WorkspaceValueSnapshot {
+  key: string,
+  scope: ManifestSettingScope
+): WrittenValueSnapshot {
   const inspected = config.inspect<unknown>(key);
-  const value = inspected?.workspaceValue;
+  const value =
+    configurationTargetFor(scope) === CONFIGURATION_TARGET_GLOBAL
+      ? inspected?.globalValue
+      : inspected?.workspaceValue;
   return {
-    hadWorkspaceValue: value !== undefined,
+    hadValue: value !== undefined,
     value
   };
 }
 
-async function restoreWorkspaceValue(
+async function restoreWrittenValue(
   config: GeneralSettingsConfig,
-  key: string,
-  snapshot: WorkspaceValueSnapshot
+  key: AllowedKey,
+  snapshot: WrittenValueSnapshot
 ): Promise<void> {
   await Promise.resolve(
     config.update(
       key,
-      snapshot.hadWorkspaceValue ? snapshot.value : undefined,
-      CONFIGURATION_TARGET_WORKSPACE
+      snapshot.hadValue ? snapshot.value : undefined,
+      configurationTargetFor(KEY_SPECS[key].scope)
     )
   );
 }
 
 async function rollbackWrittenSettings(
   config: GeneralSettingsConfig,
-  snapshots: ReadonlyMap<string, WorkspaceValueSnapshot>,
+  snapshots: ReadonlyMap<string, WrittenValueSnapshot>,
   writtenKeys: readonly string[],
-  primaryReason: string
+  primaryReason: string,
+  hooks: WriteGeneralSettingsHooks | undefined
 ): Promise<string | null> {
   for (const key of [...writtenKeys].reverse()) {
     const snapshot = snapshots.get(key);
     if (!snapshot) continue;
     try {
-      await restoreWorkspaceValue(config, key, snapshot);
+      await restoreWrittenValue(config, key as AllowedKey, snapshot);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : 'unknown';
-      return `rollback-failed:${key}:after:${primaryReason}:${detail}`;
+      reportWriteFailure(hooks?.onWriteFailure, { key, stage: 'rollback', error: err });
+      return `rollback-failed:${key}:after:${primaryReason}`;
     }
   }
   return null;
@@ -499,16 +204,16 @@ export async function writeGeneralSettings(
       return { ok: false, reason: `${typeCheck.reason}:${key}` };
     }
     if (spec.type === 'array-of-string') {
-      const arrCheck = checkArrayElements(value as readonly unknown[]);
+      const arrCheck = checkArrayElements(spec, value as readonly unknown[]);
       if (!arrCheck.ok) {
         return { ok: false, reason: `invalid-array:${key}` };
       }
     }
   }
 
-  const snapshots = new Map<string, WorkspaceValueSnapshot>();
+  const snapshots = new Map<string, WrittenValueSnapshot>();
   for (const [key] of entries) {
-    snapshots.set(key, captureWorkspaceValue(config, key));
+    snapshots.set(key, captureWrittenValue(config, key, KEY_SPECS[key as AllowedKey].scope));
   }
 
   // All valid — write each. Surface the first underlying failure as
@@ -517,25 +222,36 @@ export async function writeGeneralSettings(
   const writtenKeys: string[] = [];
   for (const [key, value] of entries) {
     const spec = KEY_SPECS[key as AllowedKey];
-    const isClear =
-      spec.type === 'number-int-range' &&
-      spec.allowClear === true &&
-      (value === null || value === undefined);
+    // FR-R3-144 (T008) — the third and last place the clear sentinel was pinned
+    // to `number-int-range`. Found by a test, not by reading: `spend.maxUsdPerRun`
+    // is a `number`, so clearing it fell through to `config.update(key, null)`
+    // and wrote an explicit null, while its twin `spend.maxTokensPerRun` took
+    // this branch and REMOVED the key. Same operator action on two settings that
+    // mean the same thing, two different `settings.json` states — and two
+    // different scope labels afterwards, since an explicit null reads back as
+    // `workspace` and a removal as `default`.
+    //
+    // Clearing is a property of `allowClear`; the runtime type decides what a
+    // non-cleared value must look like and nothing else.
+    const isClear = spec.allowClear === true && (value === null || value === undefined);
+    // FR-R3-051 (M-05) — the target the key's manifest scope requires.
+    const target = configurationTargetFor(spec.scope);
     try {
       if (isClear) {
-        await Promise.resolve(config.update(key, undefined, CONFIGURATION_TARGET_WORKSPACE));
+        await Promise.resolve(config.update(key, undefined, target));
       } else {
-        await Promise.resolve(config.update(key, value, CONFIGURATION_TARGET_WORKSPACE));
+        await Promise.resolve(config.update(key, value, target));
       }
       writtenKeys.push(key);
     } catch (err) {
-      const detail = err instanceof Error ? err.message : 'unknown';
-      const primaryReason = isClear ? `clear-failed:${key}` : `write-failed:${key}:${detail}`;
+      reportWriteFailure(hooks?.onWriteFailure, { key, stage: isClear ? 'clear' : 'write', error: err });
+      const primaryReason = isClear ? `clear-failed:${key}` : `write-failed:${key}`;
       const rollbackReason = await rollbackWrittenSettings(
         config,
         snapshots,
         writtenKeys,
-        primaryReason
+        primaryReason,
+        hooks
       );
       return { ok: false, reason: rollbackReason ?? primaryReason };
     }
@@ -597,9 +313,24 @@ export function readGeneralSettings(
   for (const key of Object.keys(KEY_SPECS) as AllowedKey[]) {
     const spec = KEY_SPECS[key];
     let value = config.get(key, spec.defaultValue);
+    if (spec.type === 'boolean') {
+      if (typeof value !== 'boolean') {
+        // FR-R7-18 (`N07`) — fail closed on malformed `cli.inheritEnvironment`
+        // so the Settings UI agrees with `readProcessEnvironmentPolicy` (`minimal`).
+        value = key === 'cli.inheritEnvironment' ? false : spec.defaultValue;
+      }
+    }
     if (spec.type === 'array-of-string') {
+      // FR-R3-143 (T019) — a hand-edited settings.json can hold an element the
+      // write path refuses. Drop it here too, so the tab never shows a value it
+      // could not save back.
+      const itemPattern = spec.itemPattern === undefined ? null : new RegExp(spec.itemPattern);
       if (!Array.isArray(value)) value = [];
-      else value = (value as unknown[]).filter((el) => typeof el === 'string' && el.length > 0);
+      else
+        value = (value as unknown[]).filter(
+          (el) =>
+            typeof el === 'string' && el.length > 0 && (itemPattern === null || itemPattern.test(el))
+        );
     }
     if (spec.type === 'number') {
       if (
@@ -619,7 +350,16 @@ export function readGeneralSettings(
         (spec.min !== undefined && value < spec.min) ||
         (spec.max !== undefined && value > spec.max)
       ) {
-        value = spec.allowClear === true ? undefined : spec.defaultValue;
+        // FR-R3-144 (T006) — a cleared key projects ITS OWN declared default,
+        // which for an `allowClear` key IS the cleared value. This used to be a
+        // literal `undefined`, correct for the one `allowClear` key that existed
+        // (`claude.autoCompactPctOverride`, whose `defaultValue` is `undefined`)
+        // and wrong for `spend.maxTokensPerRun`, whose manifest default is
+        // `null`. Its sibling `spend.maxUsdPerRun` is a `number` and reaches the
+        // branch above, which already projects `defaultValue`; two settings that
+        // mean the same thing would otherwise have arrived at the webview as
+        // `undefined` and `null`. No behaviour changed for the autocompact key.
+        value = spec.defaultValue;
       }
     }
     if (spec.type === 'string-enum') {

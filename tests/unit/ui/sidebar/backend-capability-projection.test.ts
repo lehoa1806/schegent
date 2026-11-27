@@ -5,7 +5,7 @@ describe('StateProjector backend capability projection', () => {
   it('uses authoritative capability getters and preserves unavailable model emptiness', () => {
     const getAvailableBackends = vi.fn(() => ['claude', 'agy'] as const);
     const getAvailableModels = vi.fn(() => ({
-      claude: Object.freeze(['claude-sonnet-5']),
+      claude: Object.freeze(['claude-sonnet-5-5']),
       codex: Object.freeze([]),
       agy: Object.freeze(['model-a', 'model-b'])
     }));
@@ -18,7 +18,7 @@ describe('StateProjector backend capability projection', () => {
 
     expect(snapshot.availableBackends).toEqual(['claude', 'agy']);
     expect(snapshot.availableModels).toEqual({
-      claude: ['claude-sonnet-5'],
+      claude: ['claude-sonnet-5-5'],
       codex: [],
       agy: ['model-a', 'model-b']
     });

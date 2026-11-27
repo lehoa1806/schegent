@@ -32,8 +32,18 @@
 // arrive through `containmentRoots` and are NOT re-derived here — the accessor
 // and the sink must agree on what "allowed" means or one of them is enforcing
 // a different policy from the other.
+//
+// Feature 217 (FR-004, FR-005) — owner-only. With a containment layer, which
+// production always supplies, every open this sink makes declares
+// `RUNTIME_LOG_FILE_MODE` and `RUNTIME_LOG_DIR_MODE`: the append, and the
+// successor or truncate a rollover leaves at the live path. The open narrows a
+// log or directory an earlier release left wider, and the generations beside
+// it are narrowed where they lie once per destination, because a rename keeps
+// the mode a file was born with. The ENOENT retry above is the rootless
+// branch's: the walk creates a missing parent itself.
 
 import * as fs from 'fs/promises';
+import type { FileHandle } from 'fs/promises';
 import * as path from 'path';
 
 import {
@@ -41,7 +51,10 @@ import {
   resolveContainedLink,
   type ContainmentVerdict
 } from '../path-containment';
+import { listGenerations, NarrowingReporter, narrowRotatedFiles } from '../evidence-narrowing';
+import { openWithinRootByPath, type SafeOpenRefusal } from '../safe-open';
 import type { LogSink, SanitizedLogger } from '../logger';
+import { HeldAppendHandles } from './held-append-handles';
 import {
   isRuntimeLogLevel,
   shouldEmit,
@@ -49,6 +62,14 @@ import {
 } from './runtime-log-level';
 import type { RuntimeLogAccessor } from './runtime-log-settings';
 import type { EvidenceHealthReporter } from '../../services/evidence-health/evidence-health-monitor';
+
+/**
+ * Feature 217 (FR-004) — owner-only. Before this, the append open and the
+ * rollover's successor both declared no mode, so a 022 umask gave every local
+ * account read access to the host's log.
+ */
+const RUNTIME_LOG_FILE_MODE = 0o600;
+const RUNTIME_LOG_DIR_MODE = 0o700;
 
 /** Stable causes recorded against a suppressed path. */
 type SuppressionCause =
@@ -66,6 +87,36 @@ type SuppressionCause =
   | 'not-contained'
   | 'resolve-failed';
 
+/**
+ * FR-R3-080 (T1064) — the checked walk's refusal vocabulary, mapped onto the
+ * suppression causes this sink already reports.
+ *
+ * Deliberately lossy in one direction only: every walk refusal that means "this
+ * path is not somewhere I may write" becomes `not-contained`, and every one that
+ * means "I could not find out" becomes `resolve-failed`. The distinction the
+ * union's own comment draws — the write failed vs. it never ran — is what has to
+ * survive, and both arms of this map are on the "never ran" side.
+ */
+function mapSafeOpenRefusal(reason: SafeOpenRefusal): SuppressionCause {
+  // FR-R3-083 — `reparse-point-leaf` sits with the two symlink refusals, not in
+  // `default`. It is the Windows leaf check standing in for the `O_NOFOLLOW`
+  // that platform does not have (`docs/architecture/native-binding-decision.md`),
+  // so it answers the same question `symlink-leaf` answers by a weaker route: the
+  // path is not somewhere this sink may write. Left in `default` it reported
+  // "I could not find out", which is the one thing the walk did in fact find out.
+  switch (reason) {
+    case 'escapes-root':
+    case 'symlink-component':
+    case 'symlink-leaf':
+    case 'reparse-point-leaf':
+    case 'not-a-directory':
+    case 'not-a-regular-file':
+      return 'not-contained';
+    default:
+      return 'resolve-failed';
+  }
+}
+
 /** The refusal causes, so the WARN text can distinguish them from failures. */
 const CONTAINMENT_CAUSES: ReadonlySet<SuppressionCause> = new Set([
   'not-contained',
@@ -76,7 +127,7 @@ interface AppendFn {
   (target: string, data: string): Promise<void>;
 }
 interface MkdirFn {
-  (target: string, opts: { recursive: true }): Promise<unknown>;
+  (target: string, opts: { recursive: true; mode?: number }): Promise<unknown>;
 }
 // Feature 056 Track 9 — rotation injection points. Each defaults to the
 // matching `fs.promises` call in production but is overridable from
@@ -100,7 +151,12 @@ interface ReaddirFn {
 export interface RuntimeLogSinkDeps {
   readonly accessor: RuntimeLogAccessor;
   readonly fallbackLogger: SanitizedLogger;
-  /** Optional injection points used by the unit tests. */
+  /**
+   * Optional injection points used by the unit tests. With `containmentRoots`
+   * supplied, the append and the rollover's successor open through the checked
+   * walk, and `appendFile`, `writeFile` and `mkdir` serve only the rootless
+   * branch below.
+   */
   readonly appendFile?: AppendFn;
   readonly mkdir?: MkdirFn;
   readonly rename?: RenameFn;
@@ -127,6 +183,8 @@ export interface RuntimeLogSinkDeps {
   readonly containmentRoots?: () => readonly string[];
   /** The oracle's own seam, on the same optional terms. */
   readonly realpath?: (target: string) => Promise<string>;
+  /** Feature 218 (FR-003) — the release's drain bound; omitted, the module's default applies. */
+  readonly drainGraceMs?: number;
 }
 
 /**
@@ -213,6 +271,29 @@ export class RuntimeLogSink implements LogSink {
    */
   private readonly containmentCache: Map<string, ContainmentVerdict> = new Map();
 
+  /**
+   * FR-R3-080 (T1064) — the append path's descriptors, held per target path, and
+   * feature 218's release of them. `held-append-handles.ts` says why both.
+   */
+  private readonly appendHandles: HeldAppendHandles;
+
+  /** Feature 218 (FR-002) — set by `flushAndDispose`; from then on every new line is refused. */
+  private closed = false;
+
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('runtime-log-sink:', (message) =>
+    this.fallback.warn(message)
+  );
+
+  /**
+   * Feature 217 (FR-005) — destinations whose generations have been narrowed.
+   *
+   * Once per destination is enough: the generations an earlier release left
+   * widened are narrowed the first time this sink opens the destination, and
+   * every generation after that is a file this sink created or narrowed, renamed.
+   */
+  private readonly generationsNarrowed: Set<string> = new Set();
+
   constructor(deps: RuntimeLogSinkDeps) {
     this.accessor = deps.accessor;
     this.fallback = deps.fallbackLogger;
@@ -231,6 +312,10 @@ export class RuntimeLogSink implements LogSink {
     this.evidenceHealth = deps.evidenceHealth;
     this.containmentRoots = deps.containmentRoots;
     this.containmentFs = { realpath: deps.realpath ?? fs.realpath };
+    this.appendHandles = new HeldAppendHandles(
+      (message) => this.fallback.warn(`runtime-log-sink: ${message}`),
+      deps.drainGraceMs
+    );
   }
 
   /**
@@ -253,6 +338,7 @@ export class RuntimeLogSink implements LogSink {
     // byte seed, and for the same reason: the operator may have just repointed
     // the path at something else.
     this.containmentCache.delete(targetPath);
+    void this.appendHandles.close(targetPath);
   }
 
   /**
@@ -267,6 +353,7 @@ export class RuntimeLogSink implements LogSink {
     this.bytesOnDisk.clear();
     this.bytesSeeded.clear();
     this.containmentCache.clear();
+    this.appendHandles.closeAll();
   }
 
   /** Read-only view used by tests. */
@@ -281,6 +368,8 @@ export class RuntimeLogSink implements LogSink {
    * Schedules an async write but never throws.
    */
   public appendLine(line: string): void {
+    // Feature 218 (FR-002) — check 1: a released writer reads no settings and reports nothing.
+    if (this.closed) return;
     const settings = this.accessor.read();
     if (!settings) {
       this.evidenceHealth?.reportFailure('runtimeLog', 'configuration');
@@ -325,6 +414,21 @@ export class RuntimeLogSink implements LogSink {
   }
 
   /**
+   * Feature 218 (FR-001 to FR-008) — the release: refuse every new line now,
+   * then let `HeldAppendHandles.release` bound the drain and close every
+   * descriptor. Not `async`, so every call receives the same promise.
+   */
+  public flushAndDispose(): Promise<void> {
+    this.closed = true;
+    return this.appendHandles.release(() => this.flushPendingWrites());
+  }
+
+  /** Feature 218 (FR-009) — the descriptors held now, read from the writer's own record. */
+  public get openDescriptorCount(): number {
+    return this.appendHandles.size;
+  }
+
+  /**
    * The containment layer, or `null` when this sink was built without one.
    * Returning `null` rather than a permissive verdict keeps the two states
    * distinguishable at every call site: "proven contained" and "never asked"
@@ -351,6 +455,127 @@ export class RuntimeLogSink implements LogSink {
       this.recordSuppressionDirect(targetPath, verdict.reason);
     }
     return false;
+  }
+
+  /**
+   * FR-R3-080 (T1064) — the append descriptor for `targetPath`, opened through
+   * the checked walk (`openRooted`) and held until the target's identity can
+   * change.
+   */
+  private async appendHandleFor(targetPath: string): Promise<FileHandle | null> {
+    const roots = this.roots();
+    if (!roots) return null;
+    // The roots are read FRESH on every append, exactly as they were before the
+    // descriptor was held: a workspace folder can change under a host that
+    // outlives it, and a handle proved against the old set must not keep
+    // admitting writes under the new one. The held descriptor removes the
+    // check-to-use window; it does not license inheriting an admission.
+    return this.appendHandles.acquire(targetPath, roots, () =>
+      this.openRooted(targetPath, roots, 'a')
+    );
+  }
+
+  /**
+   * FR-R3-080 (T1064) — open `targetPath` through the checked walk.
+   *
+   * The root is CHOSEN by trying each configured containment root in turn: the
+   * walk answers `escapes-root` for a root the path does not sit under, and
+   * succeeds for the one it does. Roots are one or two in practice, and letting
+   * the walk decide is what keeps the selection from becoming a second, lexical
+   * containment rule of its own.
+   *
+   * Feature 217 — every open this sink makes, the append and the rollover's
+   * successor alike, comes through here with both modes declared; what the
+   * open narrowed is said once, and the destination's generations are narrowed
+   * the first time it is opened. A refusal is recorded here, so `null` means
+   * the caller drops the line and says nothing more.
+   */
+  private async openRooted(
+    targetPath: string,
+    roots: readonly string[],
+    flags: 'a' | 'w'
+  ): Promise<FileHandle | null> {
+    for (const root of roots) {
+      const opened = await openWithinRootByPath(root, targetPath, {
+        flags,
+        createDirs: true,
+        dirMode: RUNTIME_LOG_DIR_MODE,
+        fileMode: RUNTIME_LOG_FILE_MODE
+      });
+      if (opened.outcome === 'opened') {
+        this.narrowing.report(opened.narrowing);
+        await this.narrowGenerationsOnce(targetPath, roots);
+        return opened.handle;
+      }
+      if (opened.reason === 'escapes-root') continue;
+      // A real refusal against a root this path DOES sit under: record it and
+      // stop, rather than letting a later root's `escapes-root` mask it.
+      this.recordSuppressionDirect(targetPath, mapSafeOpenRefusal(opened.reason));
+      return null;
+    }
+    this.recordSuppressionDirect(targetPath, 'not-contained');
+    return null;
+  }
+
+  /**
+   * Feature 217 (FR-004, FR-005) — narrow the generations beside `targetPath`
+   * where they lie. A rotation renames, and a rename keeps the mode, so the
+   * generations a widened live log was rotated into are widened too, and no
+   * open ever reaches them. A first emit that overflows rotates the widened
+   * live log before any open has narrowed it, which is why this runs after the
+   * successor's open as well as the append's.
+   *
+   * Only after an open through the walk succeeded, so a refused destination is
+   * never touched; and only what the stale-generation sweep would also call a
+   * generation, so an operator's `<live>.bak` keeps its mode.
+   *
+   * Marked before the listing, so opens that overlap list once; unmarked when
+   * the directory could not be listed, so the next open lists again rather than
+   * leaving the generations widened for the life of the sink. The append handle
+   * is held, so the next open is usually a rotation's successor.
+   */
+  private async narrowGenerationsOnce(
+    targetPath: string,
+    roots: readonly string[]
+  ): Promise<void> {
+    if (this.generationsNarrowed.has(targetPath)) return;
+    this.generationsNarrowed.add(targetPath);
+    const generations = await listGenerations(targetPath, this.readdir);
+    if (generations === null) {
+      this.generationsNarrowed.delete(targetPath);
+      return;
+    }
+    this.narrowing.report(
+      await narrowRotatedFiles(generations, RUNTIME_LOG_FILE_MODE, roots, this.containmentFs)
+    );
+  }
+
+  /**
+   * The file a rollover leaves at the live path: the successor after a shift,
+   * or the live log itself, truncated, when no generations are kept.
+   *
+   * Feature 217 (FR-005) — with a containment layer, through the checked walk
+   * with both modes declared, exactly like the append. It used to be
+   * `writeFile` on the pathname with no mode, so every file a rotation created
+   * was the umask's to decide, and a truncate kept whatever mode it found. Not
+   * held afterwards: the next emit opens its own append descriptor, as it
+   * always has. Without a containment layer the injected port stands in, for
+   * the reason it does for the append.
+   */
+  private async writeSuccessor(targetPath: string, data: string): Promise<boolean> {
+    const roots = this.roots();
+    if (roots === null) return this.writeFileWithEnoentRecovery(targetPath, data);
+    const handle = await this.openRooted(targetPath, roots, 'w');
+    if (handle === null) return false;
+    try {
+      await handle.write(data, null, 'utf8');
+      return true;
+    } catch (err) {
+      this.recordSuppressionDirect(targetPath, mapSuppressionCause(errnoCode(err)));
+      return false;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
   }
 
   /**
@@ -383,6 +608,8 @@ export class RuntimeLogSink implements LogSink {
     maxBytes: number,
     maxGenerations: number
   ): Promise<void> {
+    // Feature 218 (FR-004) — check 2: a queued line whose chain resumed after the close step.
+    if (this.appendHandles.isReleased()) return;
     // Before the stat, so a refused path costs one resolution and not a
     // syscall against a location the host was never allowed to look at.
     if (!(await this.appendTargetIsContained(targetPath))) return;
@@ -430,10 +657,15 @@ export class RuntimeLogSink implements LogSink {
     const wouldOverflow = currentBytes + dataBytes > maxBytes;
 
     if (wouldOverflow) {
+      // FR-R3-080 (T1064) — drop the held descriptor before either branch. A
+      // rotation renames this file and a truncate replaces its contents; a
+      // descriptor held across either would follow the inode into the rotated
+      // generation and append there forever.
+      await this.appendHandles.close(targetPath);
       if (maxGenerations === 0) {
         // Operator opted out of rotation; truncate in place. The new
         // line is the only content after this call.
-        const ok = await this.writeFileWithEnoentRecovery(targetPath, data);
+        const ok = await this.writeSuccessor(targetPath, data);
         if (ok) {
           this.bytesOnDisk.set(targetPath, dataBytes);
         }
@@ -445,7 +677,7 @@ export class RuntimeLogSink implements LogSink {
       // we don't keep retrying a doomed rename loop.
       const rotated = await this.rotateGenerations(targetPath, maxGenerations);
       if (!rotated) return;
-      const ok = await this.writeFileWithEnoentRecovery(targetPath, data);
+      const ok = await this.writeSuccessor(targetPath, data);
       if (ok) {
         this.bytesOnDisk.set(targetPath, dataBytes);
       }
@@ -453,12 +685,32 @@ export class RuntimeLogSink implements LogSink {
     }
 
     try {
-      await this.appendFile(targetPath, data);
+      // FR-R3-080 (T1064) — the append goes to the DESCRIPTOR the walk produced,
+      // not to the pathname a verdict once approved. When this sink was built
+      // without a containment layer at all there is no root to walk from, and
+      // the injected port stands in — the same "proven contained" vs. "never
+      // asked" distinction `roots()` keeps everywhere else in this file.
+      // Feature 218 (FR-004) — check 2b: the close step may have run during the awaits above.
+      if (this.appendHandles.isReleased()) return;
+      const handle = this.roots() === null ? null : await this.appendHandleFor(targetPath);
+      if (this.roots() !== null && handle === null) return;
+      if (handle === null) await this.appendFile(targetPath, data);
+      else await handle.write(data, null, 'utf8');
       this.bytesOnDisk.set(targetPath, currentBytes + dataBytes);
       return;
     } catch (err) {
+      // The held descriptor is dropped on ANY write failure: the next emit
+      // re-walks rather than retrying a handle whose file may have been
+      // unlinked, rotated or filled.
+      await this.appendHandles.close(targetPath);
       const code = errnoCode(err);
-      if (code === 'ENOENT') {
+      // Feature 217 — the recovery is the rootless branch's. It re-creates the
+      // parent and appends by name, which with a containment layer would be a
+      // write the walk never proved, at a mode the walk never declared; and a
+      // write to a descriptor the walk opened cannot meet a missing parent, so
+      // a rooted failure is recorded like any other.
+      // Feature 218 (FR-004) — check 6: no recovery opens anything after the close step.
+      if (code === 'ENOENT' && this.roots() === null && !this.appendHandles.isReleased()) {
         if (this.retryInFlight.has(targetPath)) {
           // A concurrent emit arrived while the first ENOENT-recovery
           // is still in flight. The recovery promise will fix the
@@ -482,7 +734,7 @@ export class RuntimeLogSink implements LogSink {
         }
         this.retryInFlight.add(targetPath);
         try {
-          await this.mkdir(path.dirname(targetPath), { recursive: true });
+          await this.mkdir(path.dirname(targetPath), { recursive: true, mode: RUNTIME_LOG_DIR_MODE });
           await this.appendFile(targetPath, data);
           // The parent directory was just created, so the file is fresh
           // after this appendFile — its on-disk size is exactly
@@ -502,7 +754,7 @@ export class RuntimeLogSink implements LogSink {
           this.retryInFlight.delete(targetPath);
         }
       }
-      this.recordSuppression(targetPath, mapSuppressionCause(code));
+      this.recordSuppressionDirect(targetPath, mapSuppressionCause(code));
     }
   }
 
@@ -510,7 +762,8 @@ export class RuntimeLogSink implements LogSink {
    * Single source of truth for the `writeFile + ENOENT-recovery + suppress`
    * pattern. Used by both the `maxGenerations === 0` truncate-in-place
    * branch and the post-rotation fresh-file write — those two call sites
-   * had drifted into byte-identical duplicates. Returns false on any
+   * had drifted into byte-identical duplicates. Feature 217 — reached only
+   * from `writeSuccessor`'s rootless branch. Returns false on any
    * failure (path is then suppressed; the suppression callback already
    * emits a WARN, so the caller does not need to log again).
    *
@@ -530,7 +783,7 @@ export class RuntimeLogSink implements LogSink {
       const code = errnoCode(err);
       if (code === 'ENOENT') {
         try {
-          await this.mkdir(path.dirname(targetPath), { recursive: true });
+          await this.mkdir(path.dirname(targetPath), { recursive: true, mode: RUNTIME_LOG_DIR_MODE });
           await this.writeFile(targetPath, data);
           return true;
         } catch {
@@ -695,6 +948,13 @@ export class RuntimeLogSink implements LogSink {
     targetPath: string,
     cause: SuppressionCause
   ): void {
+    // FR-R3-080 (T1075) — a containment refusal reaches evidence health as a
+    // refusal, so the phase runner can surface it at phase end. The failure
+    // causes keep their own codes: "the write went wrong" and "the write never
+    // ran" are different facts and an operator acts on them differently.
+    if (CONTAINMENT_CAUSES.has(cause)) {
+      this.evidenceHealth?.reportFailure('runtimeLog', 'path-refused');
+    }
     let set = this.suppressed.get(targetPath);
     if (!set) {
       set = new Set();

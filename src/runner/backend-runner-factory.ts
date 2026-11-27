@@ -2,40 +2,101 @@ import type { BackendRunner, MonitorSidecarHook } from '../contracts/backend-run
 import { ClaudeCliRunner } from './claude-cli';
 import { CodexCliRunner } from './codex-cli';
 import { AgyCliRunner } from './agy-cli';
+import {
+  AcpBackedRunner,
+  type AcpRunnerObservationEvent
+} from './acp-backed-runner';
+import { SpawnGatedRunner } from './spawn-gated-runner';
+import type { SpawnGate } from '../contracts/containment-qualification';
+import type { DeliveryRepresentation } from '../contracts/phase-context/context-delivery';
+import type { AcpSessionBindingStore } from '../services/acp-runtime/acp-durable-runtime-store';
+import type { AcpHostLocality } from '../services/acp-runtime/profiles';
+import type { AcpAuthorityGate } from '../services/containment-qualification/acp-authority-gate';
 import { SanitizedLogger } from '../lib/logger';
+import {
+  ALLOW_UNCONTAINED_SETTING,
+  UncontainedBackendRefusedError,
+  judgeBackendContainment
+} from '../services/backend-containment-policy';
+import type { ProcessEnvironmentMode, ProcessEnvironmentPolicy } from './spawn-env';
+import {
+  DEFAULT_BACKEND,
+  SUPPORTED_BACKENDS,
+  type BackendRunnerKind
+} from '../contracts/backend-kinds';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
 // Feature 034 Item 050 — backend selection.
 //
 // The `schegent.backend.runner` workspace setting picks the concrete
 // `BackendRunner` implementation at activation time. The default is
 // `'claude'`; existing workspaces see no behavior change. Adding a new
-// backend means:
-//   1. Implement `BackendRunner` in `src/runner/<your>-cli.ts` (no
-//      `shell:true`, monitor sidecar events, cancellation/timeout
-//      discipline — see `docs/operations/backends.md`).
-//   2. Extend the union literal below and the `package.json` enum.
-//   3. Add a `case` here that constructs the new runner.
+// backend (FR-R7-06) follows the four-step recipe:
+//   1. Record an expansion-freeze decision (`tests/lint/expansion-freeze.test.ts`).
+//   2. Extend `BackendRunnerKind` and `SUPPORTED_BACKENDS` in
+//      `src/contracts/backend-kinds.ts` and `package.json`.
+//   3. Add the backend's pure-data row in `src/contracts/backend-descriptors.ts`
+//      and regenerate the webview mirror (`npm run contracts:generate`).
+//   4. Implement `BackendRunner` in `src/runner/<your>-cli.ts` (see
+//      `docs/operations/backends.md`), add a `case` here, and register any
+//      behavioural parser/bridge sites listed in `tests/fixtures/backend-recipe-sites.ts`.
+//
+// FR-R3-089 — the backend *identity* surface (`BackendRunnerKind`,
+// `SUPPORTED_BACKENDS`, `DEFAULT_BACKEND`, `isBackendRunnerKind`) moved to
+// `src/contracts/backend-kinds.ts`. This module keeps construction. Do not
+// re-export identity from here: `tests/lint/backend-kind-placement.test.ts`
+// forbids both a value import of this module from outside `src/runner/` and a
+// re-export hub anywhere.
 //
 // All runners receive the same monitor hook so the controller's audit
 // pipeline, telemetry sampler, and live-activity projector remain
 // backend-agnostic.
 
-export type BackendRunnerKind = 'claude' | 'codex' | 'agy';
 
-export const SUPPORTED_BACKENDS: ReadonlyArray<BackendRunnerKind> = Object.freeze([
-  'claude',
-  'codex',
-  'agy'
-]);
-
-export const DEFAULT_BACKEND: BackendRunnerKind = 'claude';
-
-export function isBackendRunnerKind(value: unknown): value is BackendRunnerKind {
-  return typeof value === 'string' &&
-    (SUPPORTED_BACKENDS as ReadonlyArray<string>).includes(value);
-}
+// FR-R3-146 (FR-005) — `UncontainedBackendRefusedError` was declared here, beside
+// the throw. It now lives with `judgeBackendContainment` in
+// `services/backend-containment-policy.ts`, which is where its message is built and
+// where the controller can import it: `tests/lint/backend-kind-placement.test.ts`
+// forbids a value import of THIS module from outside `src/runner/`. Deliberately not
+// re-exported from here — a second name for one type is how the two come to disagree
+// about which one an `instanceof` is testing.
 
 export interface BackendRunnerFactoryOptions {
+  /**
+   * FR-R3-056, reshaped by FR-R3-125 — the backends this host accepts WITHOUT an
+   * OS-enforced bound. Required: see `createBackendRunner`.
+   *
+   * A set, not a boolean: allowing `agy` must not allow `claude`. Resolved from
+   * `schegent.backend.uncontainedBackends` by `resolveUncontainedGrant`, which
+   * also reports the entries that grant nothing.
+   *
+   * FR-R3-146 (FR-003) — a THUNK, not a set. It was a set, and the one production
+   * caller resolved it once at activation and handed the result to a registry that
+   * lives as long as the window, so a grant written at runtime was invisible until
+   * a reload. The hard rule against caching settings on long-lived objects already
+   * said not to; the type is what makes it so. Called at judgement time, once per
+   * construction — cheap, since `getConfiguration` reads an in-memory model.
+   */
+  readonly uncontainedGranted: () => ReadonlySet<BackendRunnerKind>;
+  /**
+   * FR-R3-125 (FR-007) — the environment policy mode, so the compounding case can
+   * be stated where both facts are known. Optional and defaulting to `undefined`
+   * ONLY because a caller that cannot know it must not be forced to guess; a
+   * missing mode suppresses the compound warning rather than fabricating one.
+   */
+  readonly environmentMode?: ProcessEnvironmentMode;
+  /**
+   * FR-R4-F06 (FR-004) -- the resolved environment policy, so the registry's CLI
+   * version probe starts its `--version` child under the same policy a Run spawn
+   * gets. Optional because a registry built by a test needs no policy; absent
+   * means the shipped allowlist default, never `inherit`.
+   */
+  readonly environmentPolicy?: ProcessEnvironmentPolicy;
+  /**
+   * FR-R7-16 (16-14) -- live workspace trust check, read before `--version` probes so untrusted
+   * entry paths perform zero backend executable invocations.
+   */
+  readonly isTrusted?: () => boolean;
   readonly monitorHook?: MonitorSidecarHook | null;
   /**
    * Probe `<cli> --help` once per activation to pick the safest available
@@ -44,6 +105,40 @@ export interface BackendRunnerFactoryOptions {
    */
   readonly probeTransport?: boolean;
   readonly logger?: SanitizedLogger;
+  readonly evidenceHealth?: EvidenceHealthReporter;
+  /**
+   * FR-R6-F09 (FR-003) -- when present, every invocation of the built runner awaits this gate
+   * before its child is started (`SpawnGatedRunner`). Construction is unchanged.
+   */
+  readonly spawnGate?: SpawnGate;
+  /**
+   * FR-R6-F13 (F13-C; FR-001, FR-021) -- when present and `enabled: true`, wraps the constructed
+   * runner in `AcpBackedRunner` so all post-cutover invocations run over ACP with `AcpAuthorityGate`
+   * and only pre-cutover in-flight legacy attempts (`legacyDrain: true`) drain through `inner`.
+   */
+  readonly acpDispatch?: {
+    readonly enabled: boolean;
+    readonly readConfiguredProfile?: () => string;
+    readonly allowLegacyDrain?: boolean;
+    readonly bridgeScriptPath?: string;
+    readonly authorityGate?: AcpAuthorityGate;
+    readonly primaryWorkspaceRoot?: string;
+    readonly protectedDatabasePaths?: readonly string[] | (() => readonly string[]);
+    readonly currentOwnershipGeneration?: () => number;
+    /** See `AcpBackedRunnerOptions.primeAuthority`. */
+    readonly primeAuthority?: () => Promise<boolean>;
+    readonly onAcpObservation?: (event: AcpRunnerObservationEvent) => void;
+    /** FR-R7-14 (14-04): durable session binding store for bridged ACP profiles. */
+    readonly sessionBindingStore?: AcpSessionBindingStore;
+    /** FR-R7-14 (14-06): persistent monotonic connection-generation allocator. */
+    readonly allocateConnectionGeneration?: () => number;
+    /** FR-R7-14 (14-11): host locality classification (`'local'` vs `'remote'`). */
+    readonly hostLocality?: AcpHostLocality;
+    /** FR-035: persisted phase-handoff DeliveryRepresentation lookup verified before ACP dispatch. */
+    readonly resolveHandoffRepresentation?: (attemptId: string) => DeliveryRepresentation | null;
+    /** FR-035: current handoff manifest contentDigest lookup verified against persisted representation. */
+    readonly resolveHandoffContentDigest?: (handoffId: string) => string | null;
+  };
 }
 
 /**
@@ -78,24 +173,134 @@ export function resolveBackendKind(
  * downstream (controller, monitor, sampler, audit) consumes the
  * `BackendRunner` interface only.
  */
+/**
+ * FR-R3-056 (H-01) — refused here, at the construction point.
+ *
+ * This is the last place before an uncontained backend exists as an object, and
+ * every route reaches it: admission, resume, an auto-drain, a continuation. A
+ * check placed at admission alone would be bypassed by every path that does not
+ * go through admission, which is most of them.
+ *
+ * `uncontainedGranted` is a REQUIRED option, not an optional one defaulting to
+ * permissive. An optional gate is a gate omitted at the one call site nobody
+ * revisits; making it required means `tsc` enumerates every construction site
+ * and no new one can be added without stating its posture. Same reasoning as the
+ * required `environmentPolicy` on `WatchdogOptions` (FR-R3-049).
+ *
+ * FR-R3-125 (FR-008) — the enforcement point does NOT move. This is still the
+ * last place before an uncontained backend exists as an object, and the change is
+ * to the shape of what is granted, not to where the grant is checked.
+ */
 export function createBackendRunner(
   kind: BackendRunnerKind,
-  options: BackendRunnerFactoryOptions = {}
+  options: BackendRunnerFactoryOptions
 ): BackendRunner {
+  const cliRunner = constructBackendRunner(kind, options);
+  const runner =
+    options.acpDispatch?.enabled === true
+      ? new AcpBackedRunner({
+          kind,
+          inner: cliRunner,
+          monitorHook: options.monitorHook ?? null,
+          ...(options.logger !== undefined ? { logger: options.logger } : {}),
+          ...(options.evidenceHealth !== undefined ? { evidenceHealth: options.evidenceHealth } : {}),
+          readConfiguredProfile: options.acpDispatch.readConfiguredProfile,
+          allowLegacyDrain: options.acpDispatch.allowLegacyDrain,
+          bridgeScriptPath: options.acpDispatch.bridgeScriptPath,
+          authorityGate: options.acpDispatch.authorityGate,
+          primaryWorkspaceRoot: options.acpDispatch.primaryWorkspaceRoot,
+          protectedDatabasePaths: options.acpDispatch.protectedDatabasePaths,
+          currentOwnershipGeneration: options.acpDispatch.currentOwnershipGeneration,
+          primeAuthority: options.acpDispatch.primeAuthority,
+          onAcpObservation: options.acpDispatch.onAcpObservation,
+          ...(options.acpDispatch.sessionBindingStore !== undefined
+            ? { sessionBindingStore: options.acpDispatch.sessionBindingStore }
+            : {}),
+          ...(options.acpDispatch.allocateConnectionGeneration !== undefined
+            ? { allocateConnectionGeneration: options.acpDispatch.allocateConnectionGeneration }
+            : {}),
+          ...(options.acpDispatch.hostLocality !== undefined
+            ? { hostLocality: options.acpDispatch.hostLocality }
+            : {}),
+          ...(options.acpDispatch.resolveHandoffRepresentation !== undefined
+            ? { resolveHandoffRepresentation: options.acpDispatch.resolveHandoffRepresentation }
+            : {}),
+          ...(options.acpDispatch.resolveHandoffContentDigest !== undefined
+            ? { resolveHandoffContentDigest: options.acpDispatch.resolveHandoffContentDigest }
+            : {})
+        })
+      : cliRunner;
+  return options.spawnGate === undefined ? runner : new SpawnGatedRunner(kind, runner, options.spawnGate);
+}
+
+function constructBackendRunner(kind: BackendRunnerKind, options: BackendRunnerFactoryOptions): BackendRunner {
+  // FR-R3-146 (FR-003) — read here, at judgement time, never captured by a caller.
+  const verdict = judgeBackendContainment(kind, options.uncontainedGranted());
+  if (verdict.outcome === 'refused') {
+    throw new UncontainedBackendRefusedError(verdict.kind, verdict.message);
+  }
   const monitorHook = options.monitorHook ?? null;
   const logger = options.logger ?? new SanitizedLogger();
+  if (verdict.containment === 'none') {
+    // FR-R3-056 — say it out loud. The operator accepted this posture in a
+    // setting they may have set months ago; the run it applies to is now.
+    //
+    // Once per constructed runner, not once per run: the registry caches by
+    // kind, so this cannot claim to be a per-run record and does not. The
+    // per-run record is `backend-posture-admitted` (FR-R3-064), which also
+    // carries the mechanism as of FR-R3-125.
+    logger.warn(
+      `backend '${kind}' has no OS-enforced bound; permitted by ` +
+        `${ALLOW_UNCONTAINED_SETTING} naming '${kind}'`
+    );
+    // FR-R3-125 (FR-007) — the COMPOUNDING case, said once, as one fact.
+    //
+    // `warnIfEnvironmentIsUnrestricted` in `activation/backend-wiring.ts` already
+    // warns about `inherit`, once per workspace at activation. It is correct and
+    // is deliberately left alone: it is about the environment policy ON ITS OWN,
+    // and it does not know which backend is spawning. This warning is about the
+    // conjunction, and this is the only place both facts are in hand.
+    //
+    // It fires on ONE of four combinations. The other three are silent by
+    // construction and asserted so — a warning that fires on three of four is
+    // noise, and noise gets filtered, which is how the one that mattered is lost.
+    //
+    // Once per CONSTRUCTED RUNNER, like the warning above it: the registry caches
+    // by kind, so this is not a per-run record and does not claim to be. The
+    // per-run record is `backend-posture-admitted`, which carries the containment
+    // and the mechanism; the environment mode is deliberately NOT in that payload,
+    // which is closed to three bounded primitives plus the mechanism (FR-R3-064).
+    if (options.environmentMode === 'inherit') {
+      logger.warn(
+        `backend '${kind}' has no OS-enforced bound AND schegent.cli.environmentMode is ` +
+          "'inherit', so it receives the full ambient environment: credentials in the shell " +
+          'that launched this window are reachable by model-generated actions. Set ' +
+          'schegent.cli.environmentMode to allowlist or minimal, or use a contained backend. ' +
+          'See docs/operations/untrusted-repositories.md.'
+      );
+    }
+  }
   switch (kind) {
     case 'codex':
-      return new CodexCliRunner(undefined, monitorHook, logger);
+      return new CodexCliRunner(undefined, monitorHook, logger, options.evidenceHealth);
     case 'agy':
-      return new AgyCliRunner(undefined, monitorHook, logger);
+      return new AgyCliRunner(undefined, monitorHook, logger, options.evidenceHealth);
     case 'claude':
-    default:
       return new ClaudeCliRunner(
         undefined,
         monitorHook,
         { probeTransport: options.probeTransport ?? false },
-        logger
+        logger,
+        options.evidenceHealth
       );
+    default: {
+      // FR-R4-F06 (TA7; R44) -- `claude` used to share this label, so a fourth backend added to the union
+      // would have been built as Claude with no compile error and no test failing. The unknown-backend
+      // fallback (`resolveBackendKind`) resolves the kind BEFORE it reaches here, so the three kinds are
+      // unchanged. A new kind now stops compiling on this assignment, and refuses at run time if it is
+      // forced through, instead of quietly spawning the wrong CLI.
+      const unhandled: never = kind;
+      throw new Error(`createBackendRunner: no runner is built for backend '${String(unhandled)}'`);
+    }
   }
 }

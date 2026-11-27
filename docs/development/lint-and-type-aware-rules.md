@@ -1,214 +1,189 @@
 # Lint and type-aware rules
 
-What lints this repository, which ESLint generation it runs on, why that
-generation and not the next one, and what was deliberately left undone. Recorded
-so the next upgrade starts from the constraint that decides it rather than
-rediscovering the constraint.
+Schegent has separate compiler and ESLint passes for the host repository and the Svelte webview. Run the npm scripts rather than invoking ESLint directly: `scripts/lint.mjs` is the sole ESLint entry point and applies both error enforcement and the repository's warning-count ratchet.
 
-This file exists because the previous arrangement looked fine from the script
-table and was not. `lint:webview` ran `npm --prefix webview-ui run lint`, and the
-webview's own `lint` was `svelte-check --tsconfig ./tsconfig.json` — a second copy
-of its `typecheck`, which `verify:all` already ran as `typecheck:webview`. So the
-webview lint gate was a duplicate type check: it cost time, it went green, and no
-lint rule had ever read a `.svelte` file. Sixty `no-unnecessary-condition`
-findings across twenty-five components were sitting behind a passing gate.
+## Commands
 
----
+| Command | Scope |
+|---|---|
+| `npm run typecheck` | Root TypeScript project over `src/` and `tests/`, with no emit. |
+| `npm run typecheck:tests` | The explicit test compiler project, with no emit. |
+| `npm run typecheck:webview` | Svelte and TypeScript checking through the webview package. |
+| `npm run lint` | Host pass over `src/`, `tests/`, `scripts/`, and root-level tooling files. |
+| `npm run lint:webview` | Webview pass over `webview-ui/src/`, `webview-ui/tests/`, and webview root tooling files. |
+| `node scripts/lint.mjs host --census` | Non-failing host rule-count inventory. |
+| `node scripts/lint.mjs webview --sites` | Webview lint with individual sites for baselined findings. |
 
-## The route: ESLint 9 flat config
+<!-- Source: package.json -->
+<!-- Source: webview-ui/package.json -->
+<!-- Source: scripts/lint.mjs -->
+<!-- Source: tsconfig.json -->
+<!-- Source: tsconfig.tests.json -->
+<!-- Source: webview-ui/tsconfig.json -->
 
-**The deciding constraint was the Node floor, and it has since moved.**
-When this route was chosen, [.nvmrc](../../.nvmrc) pinned `20.18.0` and ESLint 10
-(10.9.0 at the time of writing) declared:
+## Configuration shape
 
+The project uses ESLint 9 with flat configuration supplied as importable objects from `scripts/lint-config.mjs`. The runner uses the ESLint Node API with automatic config discovery disabled, so there is intentionally no root `eslint.config.*` file.
+
+The host pass applies type-aware rules to `src/**/*.ts` and `tests/**/*.ts` through the root TypeScript program. Root tooling and script files outside a TypeScript project still receive syntactic rules, while type-dependent rules are disabled for those files because no program can answer them.
+
+The webview pass uses `svelte-eslint-parser`, delegates component scripts to the TypeScript ESLint parser, and binds both TypeScript and Svelte source to `webview-ui/tsconfig.json`. A positive lint probe verifies that `@typescript-eslint/no-floating-promises` can report inside a rune-using component; a clean control proves the probe is testing type information rather than a parse failure.
+
+<!-- Source: package.json -->
+<!-- Source: scripts/lint-config.mjs -->
+<!-- Source: scripts/lint.mjs -->
+<!-- Source: tests/lint/svelte-type-information-reaches-runes.test.ts -->
+
+## Input set (untracked source, scratch and generated files)
+
+`npm run lint` selects host targets by walking `src/`, `tests/`, `scripts/`, and root-level files (such as root `.mjs` and `.ts` tooling scripts) directly on disk rather than filtering through `git ls-files`. That is deliberate: a newly authored untracked source file in `src/`, `tests/`, or `scripts/` is linted before it is staged or committed, so defects cannot wait until after `git add` to surface.
+
+Because `tests/` is walked in full, a stray untracked copy left inside `tests/` (for example, a scratch copy of a visual spec placed in `tests/visual/`) is linted as live test source. It can add new lint errors or raise baselined warning counts and per-file breakdowns even though it is untracked.
+
+Keep disposable scratch copies in one of the documented scratch locations instead:
+
+- `repo/scratch/`
+- `repo/.tmp/`
+- the workspace root `scratch/`
+
+These locations are gitignored, excluded from ESLint by root-anchored entries in `CARRIED_IGNORES` (`scripts/lint-config.mjs`), and sit outside the `src/`, `tests/`, and `scripts/` trees walked by suppression-directive scanning (`tests/lint/eslint-baseline.test.ts`).
+
+Generated and artifact directories excluded from host linting are `dist/`, `out/`, `coverage/`, `.vscode-test/`, `.release/`, `tests/visual/.artifacts/`, and `tests/soak/.artifacts/` (alongside `node_modules/`, `.specify/`, `specs/`, `docs/`, and `.claude/`). `tests/lint/eslint-baseline.test.ts` derives its tree-relative directory exclusions directly from the global `{ ignores }` blocks in `scripts/lint-config.mjs`, so nested source directories named `scratch`, `.tmp`, `.release`, or `.artifacts` inside `src/`, `tests/`, or `scripts/` remain checked by both ESLint and the suppression-directive ratchet.
+
+<!-- Source: scripts/lint.mjs -->
+<!-- Source: scripts/lint-config.mjs -->
+<!-- Source: tests/lint/eslint-baseline.test.ts -->
+<!-- Source: tests/unit/scripts/lint-input-set.test.ts -->
+
+## Type-aware policy
+
+These rules have one severity across each tree:
+
+| Rule | Severity |
+|---|---|
+| `@typescript-eslint/no-floating-promises` | error |
+| `@typescript-eslint/no-misused-promises` | error |
+| `@typescript-eslint/await-thenable` | error |
+| `@typescript-eslint/no-unnecessary-condition` | warning, count-bounded |
+
+Unused-disable directives are errors. Empty catch blocks are syntactically allowed because a separate source-aware gate requires an explanatory comment. `_`-prefixed bindings are the declared convention for deliberately unused parameters and variables.
+
+<!-- Source: scripts/lint-config.mjs -->
+<!-- Source: tests/lint/empty-catch-declares-intent.test.ts -->
+
+## Indexed reads, and the one form that satisfies both gates
+
+Two gates type-check `src/` and `tests/`, and they do it under different compiler settings. The same
+line can therefore satisfy one and fail the other, and this is the place authors meet that — in both
+directions.
+
+`npm run lint` runs its type-aware rules through the root TypeScript program exactly as
+`tsconfig.json` configures it. There, `map[id]` is typed `T`. A guard after it is a check against a
+value the compiler has already promised is present, so `@typescript-eslint/no-unnecessary-condition`
+reports it — and that rule is count-bounded, so one new finding fails the run.
+
+`tests/lint/compiler-strictness-ratchet.test.ts` type-checks the same files with
+`noUncheckedIndexedAccess` layered on top. There, `map[id]` is typed `T | undefined`, so using it
+without a guard is a type error — and that gate is a pinned ratchet, so one new site fails it too.
+
+**Write the guard and the lint fails. Delete the guard and the ratchet fails.** Both gates run in
+`npm run gate`.
+
+### Use the bounds-checked accessor when the result will be guarded
+
+```ts
+const first = phases.at(0);
+if (first === undefined) return 'none';
+return first;
 ```
-engines = { node: '^20.19.0 || ^22.13.0 || >=24' }
-```
 
-`20.18.0` satisfied none of those three ranges — it was two patch releases under
-the first. That is why ESLint 9 was chosen, and the paragraphs below record the
-reasoning as it stood.
+`Array.prototype.at` is declared to return `T | undefined` whatever `noUncheckedIndexedAccess` is set
+to. The guard is necessary under **both** settings: the linter does not read it as dead code, and the
+compiler does not read its absence as an error. This exact shape was run against both gates in one
+tree state and both were green — the reasoning was checked rather than assumed.
 
-The floor has now moved: `engines.node` is `^22 || ^24` and `.nvmrc` pins
-`24.19.0`, which satisfies the `>=24` range — as does the `22.23.2` floor CI
-also builds on, via `^22.13.0`. **ESLint 10 is therefore
-available and still not adopted.** The reason is no longer a constraint but a
-choice about diff shape, recorded under `TOOLCHAIN-1` below.
+Bracket indexing stays correct wherever the result is used without a guard, and wherever the key is a
+literal into a tuple or another type the compiler already knows is total. The rule is about the
+guard, not about the bracket.
 
-**Rejected — staying on ESLint 8 with `.eslintrc`.** The item that opened this
-work offered it as the low-risk option, on the grounds that the existing
-`eslintConfig` block in `package.json` already worked. It was rejected because
-the version it would pin is out of support. The registry says so itself:
+### Why the two settings differ, and why that is not a bug
 
-```
-$ npm view eslint@8.57.1 deprecated
-This version is no longer supported. Please see
-https://eslint.org/version-support for other options.
-```
+`noUncheckedIndexedAccess` is deliberately not enabled in `tsconfig.json`. It is *measured* there
+instead, by the strictness ratchet, alongside its sibling `exactOptionalPropertyTypes` under the same
+mechanism: the count is pinned, growth is refused, and the flag graduates into the build when its
+count reaches zero. Turning it on in one change is the bulk refactor `AGENTS.md`'s work-style rule
+bans.
 
-Adding five devDependencies and a webview parser chain to a deprecated major, in
-order to avoid a migration that would then be owed anyway, buys nothing but the
-migration's interest.
+So the lint pass checks the settings the build uses today, and the ratchet checks the settings the
+build is moving toward. Both are correct about their own subject. An author writing one line meets
+both at once, which is why the convention above exists rather than a preference.
 
-**Chosen — ESLint 9, flat config.** It is the only generation that both runs on
-the pinned Node floor and is supported. The installed set:
+The live diagnostic count and its pin are printed by the ratchet when it fails, and are not restated
+here. That file owns them.
 
-| Package | Range | Installed |
-|---|---|---|
-| `eslint` | `^9.39.5` | 9.39.5 |
-| `@eslint/js` | `^9.39.5` | 9.39.5 |
-| `typescript-eslint` | `^8.67.0` | 8.67.0 |
-| `eslint-plugin-svelte` | `^3.23.0` | 3.23.0 |
-| `globals` | `^14.0.0` | 14.0.0 |
-| `svelte` | `^5.55.7` | 5.56.10 |
+### Decision — deliberately not aligned, 2026-09-14 (FR-R3-176)
 
-`typescript-eslint` replaces the separate `@typescript-eslint/eslint-plugin` and
-`@typescript-eslint/parser` entries the eslintrc block used; it is the flat-config
-entry point for both. `svelte` appears as a root devDependency because
-`eslint-plugin-svelte`'s rules import the Svelte compiler, and linting the webview
-from the repository root needs it resolvable there. It carries the same range as
-[webview-ui/package.json](../../webview-ui/package.json) so the linter parses
-against the compiler that builds, and
-[tests/lint/svelte-version-parity.test.ts](../../tests/lint/svelte-version-parity.test.ts)
-fails if the two ever diverge.
+**Decision.** The two gates are **not** aligned, and the disagreement stays. `noUncheckedIndexedAccess`
+is not enabled in `tsconfig.json`; the ratchet's pin is not lowered, raised or removed; and
+`@typescript-eslint/no-unnecessary-condition` is not suppressed — not per site, not per directory,
+not globally. The remedy shipped instead is the convention above: authors are told which form
+satisfies both gates, rather than one gate being switched off so the other can be obeyed.
 
-**Residual — ESLint 10, now unblocked.** Named `TOOLCHAIN-1` below. It was a
-different item because its work is not lint work: the deciding change was the
-Node floor, which touches `.nvmrc`, the CI setup steps, the `engines` field, and
-the expectations of everyone with a local `nvm`. Folding it into a lint migration
-would mean a diff where a broken CI runner and a new lint finding are
-indistinguishable causes of the same red.
+**Measurement.** The cost of aligning is the live `noUncheckedIndexedAccess` diagnostic count across
+`src/` and `tests/`. `tests/lint/compiler-strictness-ratchet.test.ts` owns that number, pins it, and
+prints it on failure; run that file to read it. Measured on 2026-09-14 it stood **equal to its pin**,
+which is that gate's own definition of a ratchet still ratcheting. The population the convention
+addresses is separate and larger: **586 index-then-guard sites** across `src/` and `tests/`, of which
+495 use bracket indexing and 91 already use the accessor, and of which **136 are in `src/`**. Method,
+coverage and error bars are in `specs/213-claims-nothing-verifies/decisions.md` section M9, in the
+planning envelope above this repository — including that 38% of the bracket sites are `expect(...)`
+assertion ergonomics rather than load-bearing guards, which is why the `src/` figure is the one to
+weigh. That path is written out rather than linked because it does not resolve in a standalone
+`repo/` checkout.
 
-**That floor bump has since landed, on its own, for exactly that reason.**
-`engines.node` is `^22 || ^24`; `.nvmrc` pins the active LTS `24.19.0`; every CI job
-installs from `.nvmrc`, and one extra Linux job in
-[ci.yml](../../.github/workflows/ci.yml) runs `verify:all` on the `22.23.2`
-floor so the `^22` half of the declared range is not an unchecked claim. The bump deliberately
-carried no ESLint change, so its red could only mean "the new runtime broke
-something". `TOOLCHAIN-1` is now a plain dependency upgrade with no blocker in
-front of it: bump `eslint` and `@eslint/js` to 10, re-measure the six
-[eslint-baseline.json](../../tests/lint/eslint-baseline.json) counts in the same
-change, and expect the ratchet to fail in the *falling* direction first.
+**Reason.** Alignment has exactly two forms and both cost more than the disagreement does. Enabling
+the flag means rewriting every site the live count names, in one change, to satisfy a compiler
+option — the bulk refactor the ratchet was built to avoid, with near-zero review value and non-zero
+risk. Disabling `no-unnecessary-condition`, or baselining it away, removes the only pressure holding its
+recorded host count where it is — `tests/lint/eslint-baseline.json` owns that count and fails in both
+directions — and it would silence the rule across both trees to resolve a conflict that arises in one
+narrow shape. Meanwhile the disagreement is **entirely avoidable per line**: the
+accessor form satisfies both, costs one character more than the bracket, and 91 sites already use it.
+A documented convention buys the whole benefit of alignment at none of its price. What was actually
+missing was never the alignment — it was that nothing said so anywhere an author would look.
 
----
+**Revisit condition.** Reopen when the ratchet's `noUncheckedIndexedAccess` count reaches zero, at
+which point the flag graduates into `tsconfig.json` and the disagreement dissolves on its own — the
+two gates would then be checking the same settings and this section should be deleted rather than
+maintained. Reopen early if `no-unnecessary-condition`'s host count rises for a reason traced to this
+conflict, because that would mean the convention is not being read and the cost has moved.
 
-## Where the configuration lives
+<!-- Source: tsconfig.json -->
+<!-- Source: tests/lint/compiler-strictness-ratchet.test.ts -->
+<!-- Source: tests/lint/eslint-baseline.json -->
+<!-- Source: tests/integration/cap-one-parity.test.ts -->
 
-There is no `eslint.config.mjs`. Both trees are configured from one module,
-[scripts/lint-config.mjs](../../scripts/lint-config.mjs), and run through one
-runner, [scripts/lint.mjs](../../scripts/lint.mjs):
+## Baseline ratchet
 
-| Command | Tree | Config export |
-|---|---|---|
-| `npm run lint` | repository root (`src`, `tests`, `scripts`, root tooling) | `hostConfig` |
-| `npm run lint:webview` | `webview-ui` (`src`, incl. `.svelte`) | `createWebviewConfig()` |
+`tests/lint/eslint-baseline.json` records the approved nonzero counts for selected warning rules separately by tree, along with an owning decision and reduction note. The lint runner fails when a count rises above the record and also when it falls below the record: a reduction must update the baseline in the same change so later regressions cannot hide inside stale allowance.
 
-The host export is a plain array; the webview export is an async function because
-`eslint-plugin-svelte` must be imported dynamically. Each tree gets its own
-`parserOptions.project`, so a type-aware rule in the webview reasons about the
-webview's program and not the host's.
+Rules absent from the baseline are enforced normally; any error-severity finding fails. A separate test verifies that every baseline rule is still enabled at warning severity, its owner reference resolves, and the total number of suppression directives has not silently grown.
 
-A single module rather than two config files, invoked through a runner rather than
-by `eslint` directly, because the runner owns the baseline ratchet described
-below — the same findings have to be counted the same way in both trees, and that
-is one implementation, not a convention.
+When fixing a baselined site:
 
-**Editor integration.** ESLint extensions look for `eslint.config.*` at the root
-and will not find one, so editor squiggles are off by default. A one-line
-`eslint.config.mjs` re-exporting `hostConfig` restores them and is deliberately
-not committed; the gate of record is the command, and a second config file at the
-root is a second thing to keep in step.
+1. Run the relevant lint command with `--sites` to identify current locations.
+2. Make the behavior-aware fix and rerun the normal lint command.
+3. Lower the corresponding count in `tests/lint/eslint-baseline.json` in the same change.
+4. If the count reaches zero, remove the baseline entry; promote a deliberately baselined warning back to error only when all of its sites are cleared.
 
----
+<!-- Source: scripts/lint.mjs -->
+<!-- Source: tests/lint/eslint-baseline.json -->
+<!-- Source: tests/lint/eslint-baseline.test.ts -->
 
-## Runtime cost
+## Verification perimeter
 
-Measured on darwin, Node 20.18.0 (the `.nvmrc` pin at the time; the floor has
-since moved to 24.19.0), warm `node_modules`, before and after the
-change. Wall is `real`; CPU is `user + sys`.
+`npm run verify:all` executes all three typechecks and both lint trees before the host and webview test gates complete. Lint-policy tests themselves must not depend on undeclared external binaries; their file discovery uses Node and TypeScript APIs so the documented npm workflow remains portable across the CI matrix.
 
-| Command | Before | After |
-|---|---|---|
-| `npm run lint` (host) | 7.7 s wall / 10.3 s CPU | 16.3 s wall / 20.3 s CPU |
-| `npm run lint:webview` | 6.0 s wall / 9.4 s CPU (`svelte-check`, linting nothing) | 11.5 s wall / 19.5 s CPU |
-
-Net effect on `verify:all`: about **+14 s wall** — `+8.6` on the host and `+5.5`
-on the webview, the latter measured against what the duplicate `svelte-check`
-already cost rather than against zero. That is the "about +15 s" the plan
-budgeted, confirmed.
-
-**Why CPU is recorded beside wall.** Both figures show CPU above wall, so both
-runs use more than one core. Wall time therefore describes this machine's core
-count and this moment's load, and it moves when either changes; the CPU figure is
-what a CI runner with fewer cores will converge toward, and it is what the bill is
-drawn against. Recording only wall time is how a gate that costs 20 s of CPU gets
-budgeted as 11 s of wall and then "mysteriously" doubles on a two-core runner.
-
----
-
-## The baseline is a ratchet, not a waiver
-
-Six rules report findings this migration did not fix. Their counts live in
-[tests/lint/eslint-baseline.json](../../tests/lint/eslint-baseline.json), one
-entry per rule, each with the deciding decision, a reference that resolves, and a
-`reductionNote` saying how the count is meant to come down.
-
-The runner compares actual to recorded and fails **in both directions**: a rise is
-a regression, and a fall is a stale record. Counts, not site lists, because a list
-would turn every unrelated edit into a merge conflict in a JSON file — which is
-also why a regression message names the files it found and then tells you how to
-diff the sites, rather than pretending it knows which of them are new.
-
-The procedure for promoting a baselined rule to `error`, and the rules about
-`eslint-disable` comments, are in
-[CONTRIBUTING.md](../../CONTRIBUTING.md#lint-baselines-and-suppressions). They
-live there because they are things a contributor does, not things this document
-records.
-
----
-
-## Deferred: two compiler strictness flags
-
-[tsconfig.json](../../tsconfig.json) is unchanged by this work — `strict: true`
-with `noImplicitAny`, `noImplicitReturns`, `noUnusedLocals` and
-`noUnusedParameters`, and neither flag below. Both were measured, both were
-deferred, and the price of each is recorded here so the deferral is a decision
-with a number attached rather than an omission.
-
-### `TOOLCHAIN-2` — `noUncheckedIndexedAccess`
-
-**Measured cost: 1,176 errors.** Enabling it is a multi-week change of its own
-shape: every index and every `Record` access becomes `T | undefined`, and the
-correct fix differs site by site — a guard, a non-null assertion with a reason, or
-a redesign of the container.
-
-It is also the flag that governs the largest baseline entry.
-`@typescript-eslint/no-unnecessary-condition` records 620 findings (346 host, 274
-webview), and most of them are not dead code: they are checks against values the
-compiler already types as non-nullable *because this flag is off*. Turning the
-flag on removes the cause of that entry rather than editing its 620 sites, which
-is why the entry's `reductionNote` points here instead of proposing a sweep.
-
-**Acceptance for the follow-on item:** the flag on, `npm run typecheck` and
-`typecheck:webview` green, and the `no-unnecessary-condition` baseline entry
-re-measured — expected to fall sharply — in the same change.
-
-### `TOOLCHAIN-3` — `exactOptionalPropertyTypes`
-
-**Measured cost: 130 errors.** Small enough to look like it belongs in this
-migration, which is exactly why it does not. This feature's diff already touches
-every file the linter newly covers; folding 130 type errors into it would leave a
-change where nobody can review either half. The two failures also read
-identically at a glance — a rule newly reporting and a type newly narrowing both
-show up as "a line I did not write is now red".
-
-**Acceptance for the follow-on item:** the flag on, both typechecks green, and no
-`?:` property silently widened to `| undefined` to make a site compile — that is
-the change the flag exists to prevent.
-
-### Why these carry `TOOLCHAIN-` names
-
-Round 3's item numbering closed at `FR-R3-030`, so appending to it would extend a
-set that has an exit condition. These three are named here, in the document that
-defers them, so the deferral has an addressee that a future reader can grep for.
-They are engineering items in this repository, not planning-envelope items.
+<!-- Source: package.json -->
+<!-- Source: tests/lint/lint-gates-are-hermetic.test.ts -->
+<!-- Source: ../release/actions-terminal-record.md -->

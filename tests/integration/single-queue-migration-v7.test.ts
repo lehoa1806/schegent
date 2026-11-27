@@ -31,7 +31,8 @@ import {
   WorkspaceStateStore,
   type Memento
 } from '../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID, makeDefaultRegistry } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { makeDefaultRegistry } from '../../src/queue/queue-registry';
 import type { QueueRegistry } from '../../src/queue/queue-registry';
 import type { FeatureRequest, QueueState } from '../../src/queue/feature-request';
 import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
@@ -365,11 +366,15 @@ describe('Feature 065 (T054 / SC-005) — v6 → v7 single-queue migration', () 
     expect(emitted).toHaveLength(1);
     expect(emitted[0].eventType).toBe('state-migrated-v6-to-v7');
 
-    // After the append, the audit log file must CONTAIN the pre-migration
-    // bytes (prefix) and ALSO have appended the new entry. The pre-existing
-    // lines must not be rewritten.
+    // After the append, the pre-migration bytes must still be there, unrewritten, and the new entry must
+    // follow them. FR-R4-F04 (FR-016) changed WHERE the old bytes sit: a generation's age is now measured
+    // from its oldest usable row, and these two rows are dated 2025, so the first append rotates the log and
+    // the old generation becomes an archive. The bytes are what this case guards, so they are found in the
+    // live log (the prefix) or in an archive that holds exactly them; either way none is rewritten.
     const finalBody = await fs.readFile(auditPath, 'utf8');
-    expect(finalBody.startsWith(preMigrationBody)).toBe(true);
+    const archives = (await fs.readdir(auditDir)).filter((name) => /^audit\.log\.\d/.test(name));
+    const archivedBodies = await Promise.all(archives.map((name) => fs.readFile(path.join(auditDir, name), 'utf8')));
+    expect(finalBody.startsWith(preMigrationBody) || archivedBodies.includes(preMigrationBody)).toBe(true);
     expect(finalBody).toContain('"state-migrated-v6-to-v7"');
   });
 });

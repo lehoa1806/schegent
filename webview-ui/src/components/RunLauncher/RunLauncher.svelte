@@ -25,7 +25,10 @@
   import RunInputFields from './RunInputFields.svelte';
   import SupplementalInputs from './SupplementalInputs.svelte';
   import RunOutputTargets from './RunOutputTargets.svelte';
-  import { launchPipeline } from '../../lib/run-launcher-ipc';
+  import { OUTCOME_NOT_YET_KNOWN_TEXT, boundaryRefusalText } from '../../lib/boundary-refusal-text';
+  import { launchPipeline, type NotYetKnown } from '../../lib/run-launcher-ipc';
+  import { snapshotStore } from '../../lib/snapshot-store.svelte';
+  import LaunchAuthorityNotice from '../Runs/LaunchAuthorityNotice.svelte';
   import {
     composeRunRequest,
     errorsByField as mapErrorsByField,
@@ -34,14 +37,12 @@
     supplementalErrors as mapSupplementalErrors
   } from '../../lib/run-composition';
   import type { LaunchPipelineResult } from '../../lib/messages';
-  import type { PipelineDefinition } from '../../lib/snapshot-types';
+  import type { Launchable, PipelineDefinition } from '../../lib/snapshot-types';
   import type { RunRequestFieldError } from '../../../../src/contracts/run-request';
 
-  /** The outer bound on a submission (FR-046, SC-012). */
-  const SUBMIT_TIMEOUT_MS = 30_000;
-
-  const TIMEOUT_MESSAGE =
-    'The host did not answer within 30 seconds. Nothing was queued; your composition is unchanged.';
+  // FR-R4-F05 (I7, O3) — the 30 s outer timer and its message are gone. The wait is the ledger's
+  // 5 s, a timeout says the outcome is NOT YET KNOWN (never "Nothing was queued": the host may
+  // still queue it), and the late outcome replaces that message once (O4).
 
   interface Props {
     readonly pipeline: PipelineDefinition;
@@ -69,6 +70,19 @@
   }
 
   const { pipeline, onClose, initialSupplemental, queueId }: Props = $props();
+
+  // FR-R4-F06 (FR-007; D4) -- the launch notice for THIS Pipeline. `HistoryRerunPanel` mounts
+  // this component too, so a History re-run is covered by the same read. The entry is found by
+  // id in the snapshot's launch projection, which is where the host put the backends this
+  // Pipeline would spawn; a Pipeline the projection does not offer shows no backend notice,
+  // and a start of it is refused by the host regardless.
+  const launchEntry = $derived.by(() => {
+    const section = snapshotStore.snapshot?.launchables?.pipelines;
+    return section?.state === 'entries'
+      ? section.entries.find((entry) => entry.id === pipeline.id)
+      : undefined;
+  });
+  const postures = $derived(snapshotStore.snapshot?.backendPostures ?? []);
 
   let inputValues = $state<Record<string, string>>({});
   // `untrack` states the intent the compiler otherwise warns about: this reads
@@ -109,18 +123,50 @@
   );
   const overwriteRequested = $derived(overwriteRequestedPorts(fieldErrors));
 
-  const effectiveSettings = $derived.by(() => {
+  // FR-R4-F07 (FR-021 to FR-025; contract D, D4) -- the settings the Run will use are the host's
+  // `runSettings` on this Pipeline's launch entry, resolved by the functions execution calls. This
+  // component words them and derives none of them. It does not read `executionDefaults` as settings
+  // in force: nothing applies them, so they are disclosed on their own line as advisory. Present only
+  // when the host sent settings for every Phase this form lists; otherwise the form says they are
+  // resolved when the Run starts.
+  type PhaseSettings = NonNullable<Launchable['runSettings']>['phases'][number];
+  const runSettings = $derived.by(() => {
+    const settings = launchEntry?.runSettings;
+    return settings !== undefined && settings.phases.length === pipeline.phases.length
+      ? settings
+      : undefined;
+  });
+  const advisoryDefaults = $derived.by(() => {
     const defaults = pipeline.executionDefaults;
-    if (!defaults) return 'Workspace defaults';
+    if (!defaults) return null;
     const parts: string[] = [];
     if (defaults.runner) parts.push(`Runner ${defaults.runner}`);
     if (defaults.model) parts.push(`Model ${defaults.model}`);
     if (defaults.effort) parts.push(`Effort ${defaults.effort}`);
     if (defaults.timeoutSeconds !== undefined) parts.push(`Timeout ${defaults.timeoutSeconds}s`);
-    return parts.length > 0 ? parts.join(' · ') : 'Workspace defaults';
+    return parts.length > 0 ? parts.join(' · ') : null;
   });
+  const SECONDS_PER_HOUR = 3600;
+  const SECONDS_PER_MINUTE = 60;
+  /** "6 h", "90 min" or "45 s": the largest whole unit, so a figure never rounds. */
+  function duration(seconds: number): string {
+    if (seconds % SECONDS_PER_HOUR === 0) return `${seconds / SECONDS_PER_HOUR} h`;
+    if (seconds % SECONDS_PER_MINUTE === 0) return `${seconds / SECONDS_PER_MINUTE} min`;
+    return `${seconds} s`;
+  }
+  const backendName = (kind: string): string => kind.charAt(0).toUpperCase() + kind.slice(1);
+  function phaseLine(settings: PhaseSettings): string {
+    const model = settings.model.kind === 'value' ? settings.model.value : 'backend default';
+    const effort = settings.effort.kind === 'value' ? settings.effort.value : 'backend default';
+    return `${backendName(settings.backend)} · model: ${model} · effort: ${effort} · idle limit ${duration(settings.idleTimeoutSeconds.value)}`;
+  }
 
-  function applyResult(result: LaunchPipelineResult): void {
+  function applyResult(result: LaunchPipelineResult | NotYetKnown): void {
+    if (result.outcome === 'not-yet-known') {
+      fieldErrors = [];
+      statusMessage = OUTCOME_NOT_YET_KNOWN_TEXT;
+      return;
+    }
     if (result.outcome === 'enqueued') {
       fieldErrors = [];
       statusMessage = `Queued as ${result.requestId}.`;
@@ -136,10 +182,16 @@
       statusMessage = `This Pipeline could not be resolved: ${result.reason}.`;
       return;
     }
+    // FR-R4-F05 (O1) — neither the code `queue-refused` nor the guard's detail is shown raw.
     statusMessage = result.detail
-      ? `The queue refused this run: ${result.reason} (${result.detail}).`
-      : `The queue refused this run: ${result.reason}.`;
+      ? `The queue refused this run. ${boundaryRefusalText(result.detail)}`
+      : 'The queue refused this run.';
   }
+
+  // FR-R4-F05 (I8) — the in-flight submission's signal, aborted when this component goes: the
+  // wait's timer and late callback are removed, and the ledger keeps the identity for a retry.
+  let submission: AbortController | null = null;
+  $effect(() => () => submission?.abort());
 
   async function submitRequest(): Promise<void> {
     if (pending) return;
@@ -149,22 +201,18 @@
     statusMessage = null;
     submittedSupplementalKeys = supplementalKeys;
 
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      pending = false;
-      statusMessage = TIMEOUT_MESSAGE;
-    }, SUBMIT_TIMEOUT_MS);
-
+    const controller = new AbortController();
+    submission = controller;
     try {
-      const result = await launchPipeline(request, queueId);
-      // The outer bound already restored the form and said so; a late answer must
-      // not overwrite that with a verdict the operator can no longer act on.
-      if (timedOut) return;
+      const result = await launchPipeline(request, queueId, {
+        signal: controller.signal,
+        // O4 — the outcome of a send whose wait ran out, shown once through the same text path.
+        onLateOutcome: (late) => applyResult(late)
+      });
+      if (controller.signal.aborted) return;
       applyResult(result);
     } finally {
-      clearTimeout(timer);
-      if (!timedOut) pending = false;
+      if (!controller.signal.aborted) pending = false;
     }
   }
 
@@ -194,7 +242,7 @@
     />
   {:else}
     <p class="no-contract" data-testid="run-launcher-no-contract">
-      This Pipeline declares no inputs, so there is nothing to supply. It can be run as it is.
+      This Workflow declares no inputs, so there is nothing to supply. It can be run as it is.
     </p>
   {/if}
 
@@ -223,18 +271,40 @@
     <p class="preview-line" data-testid="run-launcher-preview-pipeline">
       {pipeline.name} ({pipeline.id})
     </p>
-    <ol class="phase-order" data-testid="run-launcher-preview-phases">
-      {#each pipeline.phases as phaseId, index (`${index}-${phaseId}`)}
-        <li>{phaseId}</li>
-      {/each}
-    </ol>
-    <p class="preview-line" data-testid="run-launcher-preview-settings">{effectiveSettings}</p>
+    <div class="settings-block" data-testid="run-launcher-preview-settings">
+      <ol class="phase-order" data-testid="run-launcher-preview-phases">
+        {#each pipeline.phases as phaseId, index (`${index}-${phaseId}`)}
+          <li>
+            {phaseId}
+            {#if runSettings}
+              <span class="phase-settings">{phaseLine(runSettings.phases[index]!)}</span>
+            {/if}
+          </li>
+        {/each}
+      </ol>
+      {#if runSettings}
+        <p class="preview-line">Run time limit {duration(runSettings.maxDurationSeconds.value)}</p>
+      {:else}
+        <p class="preview-line">Settings are resolved when the Run starts</p>
+      {/if}
+    </div>
+    {#if advisoryDefaults}
+      <p class="preview-line" data-testid="run-launcher-preview-advisory">
+        Authored defaults (advisory, not applied): {advisoryDefaults}
+      </p>
+    {/if}
     <pre class="request-preview" data-testid="run-launcher-preview-request">{JSON.stringify(
         composition.request,
         null,
         2
       )}</pre>
   </section>
+
+  <LaunchAuthorityNotice
+    backends={launchEntry?.backends ?? []}
+    {postures}
+    capabilityNotices={launchEntry?.capabilityNotices ?? []}
+  />
 
   <footer class="launcher-footer">
     <button
@@ -244,7 +314,7 @@
       disabled={pending}
       onclick={() => submitRequest()}
     >
-      {pending ? 'Queueing…' : 'Run Pipeline'}
+      {pending ? 'Queueing…' : 'Run Workflow'}
     </button>
     {#if statusMessage}
       <p class="status-line" data-testid="run-launcher-status" role="status">{statusMessage}</p>
@@ -272,7 +342,7 @@
   .close-button {
     background: transparent;
     border: none;
-    color: var(--vscode-textLink-foreground);
+    color: var(--schegent-link-fg);
     cursor: pointer;
     text-decoration: underline;
   }
@@ -290,6 +360,11 @@
     flex-direction: column;
     gap: 6px;
   }
+  .phase-settings {
+    display: block;
+    opacity: 0.8;
+    font-size: 0.9em;
+  }
   .preview-line {
     margin: 0;
     font-size: 0.85em;
@@ -304,7 +379,7 @@
     padding: 8px;
     max-height: 220px;
     overflow: auto;
-    background: var(--vscode-textCodeBlock-background);
+    background: var(--schegent-code-bg);
     border-radius: var(--schegent-radius);
     font-size: 0.8em;
     white-space: pre-wrap;
@@ -319,7 +394,7 @@
     align-self: flex-start;
     padding: 6px 12px;
     background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
+    color: var(--schegent-button-fg);
     border: none;
     border-radius: var(--schegent-radius);
     cursor: pointer;

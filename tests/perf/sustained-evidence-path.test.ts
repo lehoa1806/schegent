@@ -222,6 +222,7 @@ describe('sustained execution evidence path', () => {
         iterationN: 1
       },
       isInFlight: false,
+      progress: 'not-running',
       caps: { perFieldBytes: 4_096, maxEntries: MAX_PHASE_LOG_ENTRIES },
       sanitize: (value) => value
     });

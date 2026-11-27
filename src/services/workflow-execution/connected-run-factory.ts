@@ -21,12 +21,30 @@
 // Workflow (plan D2).
 
 import type { PipelineCatalog, PhaseDef } from '../../config/pipeline-config';
-import { snapshotPhaseDef, snapshotPipelineContract } from '../../config/pipeline-snapshot';
+import {
+  createFrozenWorkflowClosure,
+  snapshotPhaseDef,
+  snapshotPipelineContract
+} from '../../config/pipeline-snapshot';
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
+import type { PhaseDefinition } from '../../contracts/process-definitions';
+import type {
+  FrozenWorkflowClosure,
+  ResolvedPortValue
+} from '../../contracts/run-request';
 import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
-import { createConnectedRun } from '../../state/connected-workflow-run';
-import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import {
+  attemptsForNode,
+  createConnectedRun,
+  createInvocationFrame,
+  deriveNodePath,
+  type ConnectedRunLaunchContext,
+  type ConnectedWorkflowRun,
+  type InvocationInputEnvelope,
+  type NodeAttemptRecord,
+  type WorkflowInvocationFrame
+} from '../../state/connected-workflow-run';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 
 /**
@@ -126,7 +144,7 @@ export function createConnectedRunSnapshot(
   for (const node of input.workflow.nodes) {
     // Two nodes may name the same Pipeline (FR-003); it is frozen once, and both
     // read the same snapshot.
-    if (pipelines[node.pipelineId] !== undefined) continue;
+    if (node.pipelineId === undefined || pipelines[node.pipelineId] !== undefined) continue;
     const frozen = freezeOne(
       node.pipelineId,
       input.catalog,
@@ -148,4 +166,264 @@ export function createConnectedRunSnapshot(
       ...(input.queueId !== undefined ? { queueId: input.queueId } : {})
     })
   };
+}
+
+export interface ComposableWorkflowRunFactoryInput {
+  readonly connectedRunId: string;
+  readonly workflow: WorkflowDefinition;
+  readonly entryNodeId?: string;
+  readonly effectiveWorkflows?: readonly WorkflowDefinition[];
+  readonly effectivePhases?: readonly PhaseDefinition[];
+  readonly catalog?: PipelineCatalog;
+  readonly startedAt: number;
+  readonly defaultRunnerKind?: BackendRunnerKind;
+  readonly queueId?: string;
+  readonly boundInputs?: Readonly<Record<string, ResolvedPortValue>>;
+  readonly frozenClosure?: FrozenWorkflowClosure;
+  readonly launchContext?: ConnectedRunLaunchContext;
+  readonly resolveCatalogVersion?: (id: string) => CatalogVersionRef | undefined;
+}
+
+export type ComposableWorkflowRunFactoryRejection =
+  | { readonly reason: 'invalid-entry-node'; readonly detail: string }
+  | { readonly reason: 'workflow-closure-invalid'; readonly detail: string }
+  | { readonly reason: 'unsupported-control-version'; readonly detail: string };
+
+export type ComposableWorkflowRunFactoryResult =
+  | {
+      readonly outcome: 'created';
+      readonly run: ConnectedWorkflowRun;
+      readonly rootInvocationId: string;
+    }
+  | ({ readonly outcome: 'rejected' } & ComposableWorkflowRunFactoryRejection);
+
+/**
+ * FR-R5-F02 — synthesize a single-Phase `WorkflowRunPipeline` from a frozen
+ * `PhaseDefinition` so Phase-node execution reuses the runner boundary cleanly.
+ */
+export function synthesizePhasePipelineSnapshot(
+  phase: PhaseDefinition,
+  defaultRunnerKind?: BackendRunnerKind,
+  catalogVersion?: CatalogVersionRef
+): WorkflowRunPipeline {
+  const phaseDef: PhaseDef = snapshotPhaseDef(
+    {
+      ...phase,
+      id: phase.phaseId
+    },
+    defaultRunnerKind
+  );
+  const contract = snapshotPipelineContract(
+    {
+      id: phase.phaseId,
+      name: phase.name,
+      phases: [phase.phaseId],
+      ...(phase.description !== undefined ? { description: phase.description } : {}),
+      ...(phase.version !== undefined ? { version: phase.version } : {})
+    },
+    [phaseDef]
+  );
+  return catalogVersion === undefined ? contract : Object.freeze({ ...contract, catalogVersion });
+}
+
+/**
+ * FR-R5-F02 — create a root `ConnectedWorkflowRun` with its frozen transitive
+ * closure and root `WorkflowInvocationFrame`.
+ */
+export function createComposableWorkflowRunSnapshot(
+  input: ComposableWorkflowRunFactoryInput
+): ComposableWorkflowRunFactoryResult {
+  const phasesFromCatalog: PhaseDefinition[] =
+    input.effectivePhases !== undefined
+      ? [...input.effectivePhases]
+      : input.catalog !== undefined
+        ? [...input.catalog.phasesById.values()].map((p): PhaseDefinition => {
+            const { instruction, skill, id, ...rest } = p;
+            if (skill !== undefined) {
+              return {
+                ...rest,
+                phaseId: id,
+                version: p.version ?? 1,
+                skill
+              };
+            }
+            return {
+              ...rest,
+              phaseId: id,
+              version: p.version ?? 1,
+              instruction: instruction ?? ''
+            };
+          })
+        : [];
+
+  let closure: FrozenWorkflowClosure;
+  if (input.frozenClosure !== undefined) {
+    closure = input.frozenClosure;
+  } else {
+    const closureOutcome = createFrozenWorkflowClosure({
+      rootWorkflow: input.workflow,
+      ...(input.entryNodeId !== undefined ? { entryNodeId: input.entryNodeId } : {}),
+      effectiveWorkflows: input.effectiveWorkflows ?? [],
+      effectivePhases: phasesFromCatalog,
+      ...(input.defaultRunnerKind !== undefined
+        ? { defaultRunnerKind: input.defaultRunnerKind }
+        : {})
+    });
+    if (!closureOutcome.ok) {
+      return {
+        outcome: 'rejected',
+        reason: closureOutcome.code,
+        detail: closureOutcome.message
+      };
+    }
+
+    if (input.resolveCatalogVersion !== undefined) {
+      const catalogVersionsById: Record<string, CatalogVersionRef> = {};
+      for (const wfId of Object.keys(closureOutcome.closure.workflowsById)) {
+        const ref = input.resolveCatalogVersion(wfId);
+        if (ref !== undefined) catalogVersionsById[wfId] = ref;
+      }
+      for (const phaseId of Object.keys(closureOutcome.closure.phasesById)) {
+        const ref = input.resolveCatalogVersion(phaseId);
+        if (ref !== undefined) catalogVersionsById[phaseId] = ref;
+      }
+      closure = Object.freeze({
+        ...closureOutcome.closure,
+        catalogVersionsById: Object.freeze(catalogVersionsById)
+      });
+    } else {
+      closure = closureOutcome.closure;
+    }
+  }
+
+  const pipelines: Record<string, WorkflowRunPipeline> = {};
+  for (const [phaseId, phase] of Object.entries(closure.phasesById)) {
+    const catalogVersion = closure.catalogVersionsById?.[phaseId];
+    pipelines[phaseId] = synthesizePhasePipelineSnapshot(
+      phase,
+      input.defaultRunnerKind,
+      catalogVersion
+    );
+  }
+
+  const rootInvocationId = `${input.connectedRunId}:root`;
+  const rootFrame = createInvocationFrame({
+    invocationId: rootInvocationId,
+    rootRunId: input.connectedRunId,
+    parentInvocationId: null,
+    parentCallNodeId: null,
+    parentAttemptId: null,
+    workflowId: closure.rootWorkflowId,
+    depth: 0,
+    nodePath: deriveNodePath('', closure.entryNodeId),
+    entryNodeId: closure.entryNodeId,
+    boundInputs: input.boundInputs ?? {},
+    startedAt: input.startedAt
+  });
+
+  const run = createConnectedRun({
+    connectedRunId: input.connectedRunId,
+    workflowId: closure.rootWorkflowId,
+    graph: closure.workflowsById[closure.rootWorkflowId] ?? input.workflow,
+    pipelines,
+    startedAt: input.startedAt,
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+    frozenClosure: closure,
+    ...(input.launchContext !== undefined ? { launchContext: input.launchContext } : {}),
+    invocations: { [rootInvocationId]: rootFrame }
+  });
+
+  return {
+    outcome: 'created',
+    run,
+    rootInvocationId
+  };
+}
+
+export interface CreateChildInvocationInput {
+  readonly parentFrame: WorkflowInvocationFrame;
+  readonly callNodeId: string;
+  readonly parentAttemptId: string;
+  readonly childWorkflow: WorkflowDefinition;
+  readonly boundInputs: Readonly<Record<string, ResolvedPortValue>>;
+  readonly startedAt: number;
+}
+
+/**
+ * FR-R5-F02 — create a child `WorkflowInvocationFrame` when a parent Workflow
+ * node invokes a nested `workflow` definition. Always enters at `childWorkflow.startNodeIds[0]`.
+ */
+export function createChildWorkflowInvocationFrame(
+  input: CreateChildInvocationInput
+): WorkflowInvocationFrame {
+  const childEntryNodeId = input.childWorkflow.startNodeIds[0] ?? '';
+  const callPath =
+    input.parentFrame.depth === 0
+      ? deriveNodePath('', input.callNodeId)
+      : deriveNodePath(input.parentFrame.nodePath, input.callNodeId);
+  const childNodePath = deriveNodePath(callPath, childEntryNodeId);
+  const invocationId = `${input.parentFrame.invocationId}:${input.callNodeId}:${input.parentAttemptId}`;
+  return createInvocationFrame({
+    invocationId,
+    rootRunId: input.parentFrame.rootRunId,
+    parentInvocationId: input.parentFrame.invocationId,
+    parentCallNodeId: input.callNodeId,
+    parentAttemptId: input.parentAttemptId,
+    workflowId: input.childWorkflow.workflowId,
+    depth: input.parentFrame.depth + 1,
+    nodePath: childNodePath,
+    entryNodeId: childEntryNodeId,
+    boundInputs: input.boundInputs,
+    startedAt: input.startedAt
+  });
+}
+
+export interface CreateNodeAttemptInput {
+  readonly frame: WorkflowInvocationFrame;
+  readonly nodeId: string;
+  readonly nodeKind: 'phase' | 'workflow';
+  readonly targetDefinitionId: string;
+  readonly inputEnvelope: InvocationInputEnvelope;
+  readonly startedAt: number;
+  readonly attemptId?: string;
+  readonly attemptIndex?: number;
+  readonly status?: 'pending-dispatch' | 'in-flight';
+  readonly queueItemId?: string;
+  readonly childInvocationId?: string;
+}
+
+/**
+ * FR-R5-F02 — construct a `NodeAttemptRecord` with deterministic 1-based
+ * `attemptIndex` and hierarchical `nodePath`.
+ */
+export function createNodeAttemptRecord(input: CreateNodeAttemptInput): NodeAttemptRecord {
+  const existingAttempts = attemptsForNode(input.frame, input.nodeId);
+  const attemptIndex = input.attemptIndex ?? existingAttempts.length + 1;
+  const attemptId =
+    input.attemptId ?? `${input.frame.invocationId}:${input.nodeId}:attempt-${attemptIndex}`;
+  const parentPrefix =
+    input.frame.parentInvocationId === null
+      ? ''
+      : input.frame.nodePath.slice(0, input.frame.nodePath.lastIndexOf('/'));
+  const nodePath = deriveNodePath(parentPrefix, input.nodeId);
+
+  return Object.freeze({
+    attemptId,
+    attemptIndex,
+    rootRunId: input.frame.rootRunId,
+    invocationId: input.frame.invocationId,
+    parentInvocationId: input.frame.parentInvocationId,
+    nodePath,
+    nodeId: input.nodeId,
+    nodeKind: input.nodeKind,
+    targetDefinitionId: input.targetDefinitionId,
+    status: input.status ?? 'in-flight',
+    startedAt: input.startedAt,
+    ...(input.queueItemId !== undefined ? { queueItemId: input.queueItemId } : {}),
+    ...(input.childInvocationId !== undefined
+      ? { childInvocationId: input.childInvocationId }
+      : {}),
+    inputEnvelope: input.inputEnvelope,
+    declaredOutputs: Object.freeze({})
+  });
 }

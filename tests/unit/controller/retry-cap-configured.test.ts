@@ -75,7 +75,7 @@ function makeDeps(retryCap: number, spy: CallSpy) {
   const setQueuePausedState = vi.fn(async () => {
     spy.queuePauseCalled = true;
   });
-  const pause = vi.fn(async () => {});
+  const pause = vi.fn(async () => ({ ok: true }));
   return {
     store: {
       setRun: vi.fn(async () => {})

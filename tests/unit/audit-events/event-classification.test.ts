@@ -45,12 +45,31 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'monitor-invocation-failed': 'task',
   'monitor-invocation-canceled': 'task',
   'monitor-invocation-summary': 'task',
+  // Feature 093 BUG-001 (T102a) — task scope like every other monitor event:
+  // both are statements about one Run's subprocesses, not about the host.
+  'monitor-helper-invocation-exited': 'task',
+  'monitor-chunk-declined': 'task',
+  // Feature 211 — task scope: the bound belongs to one Run's invocation, not
+  // to the host, even though the setting that sets it is host-wide.
+  'monitor-deadline-approaching': 'task',
   // Audit pipeline housekeeping (system)
   'audit-rotated': 'system',
   'audit-retention-applied': 'system',
   'audit-hydration-warning': 'system',
   'audit-schema-warning': 'system',
   'session-retention-applied': 'system',
+  // Feature 250 — the writer's own record about the history, with no run (system)
+  'audit-integrity-condition': 'system',
+  // Feature 251 — the operator's reset of their attribution pseudonym, with no run (system)
+  'operator-pseudonym-reset': 'system',
+  // Feature 304 — an artifact lifecycle mutation, with no run (system)
+  'artifact-lifecycle-mutation': 'system',
+  // FR-R7-03 — SQLite store backup and restore have no run; System tab only.
+  'store-backup': 'system',
+  'store-restore': 'system',
+  // Principal Review F5/F6 — standalone scanner consent and OTLP credential actions have no run; System tab only.
+  'scanner-consent-changed': 'system',
+  'telemetry-credential-changed': 'system',
   // Retry-condition decision (task)
   'phase.retry_evaluated': 'task',
   // Delayed retry (system)
@@ -107,6 +126,9 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'trust.capability-denied': 'system',
   // Queue full reset (system)
   'queue-cleared-all': 'system',
+  // FR-R3-150 (T1620) — queue-scoped Clean All (system), same reasoning as
+  // queue-cleared-all above.
+  'queue-cleared': 'system',
   // Feature FR-R3-006 — the workspace-state reset transaction (system). Its
   // subject is the whole workspace state rather than any one Run, and it carries
   // no runId, so there is nothing for the Activity Feed to attach it to.
@@ -126,6 +148,10 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   'system-pause-restore-unavailable': 'system',
   // Feature 065 — v6 → v7 state migration (system)
   'state-migrated-v6-to-v7': 'system',
+  // FR-R5-F09 — v9 → v10 and v12 → v13 state migrations (system)
+  'state-migrated-v9-to-v10': 'system',
+  'state-migrated-v12-to-v13': 'system',
+  'queue-pause-divergence-resolved': 'system',
   // Feature 093 — v10 → v11 Run-record reshape and its repairs (system). The
   // reassign event names a Run, which normally reads as task scope; it is
   // system-scoped anyway because it is emitted during `initialize()`, before any
@@ -149,6 +175,28 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // Feature 076 — optional-phase continuation is task-scoped.
   'phase-optional-failure-continued': 'task',
   'backend-ping': 'system',
+  // FR-R3-064 — task-scoped: it records which backend a specific Run was
+  // admitted to and under what posture, so it belongs to that Run's story
+  // rather than to the window's. `phase-start`, which it precedes, is task too.
+  'backend-posture-admitted': 'task',
+  // FR-R7-04 — task-scoped: records per-workspace repository agent config acknowledgement
+  // for one Run (`backend`, `fileCount`, `decision` only — zero paths or values).
+  'agent-config-acknowledged': 'task',
+  // FR-R3-086 — task-scoped for the same reason its sibling is: it records what
+  // one Run was allowed to do, not a workspace-level event. An operator
+  // reconstructing why a phase never started reads it beside that Run's other
+  // entries, not in the System tab.
+  'capability-refused': 'task',
+  'capability-applied': 'task',
+  // FR-R3-083 / FR-R3-054 §5 — task-scoped. A process group that survived SIGKILL
+  // is a fact about the Run whose phase spawned it: the operator reading it is
+  // asking why a LATER phase of that Run saw foreign writes. Window-scoped would
+  // put it in the system feed, where it would be true and unattributable.
+  'process-tree-unconfirmed': 'task',
+  // FR-R4-F06 (FR-023) -- task-scoped for the same reason: it is a fact about the Run whose tree
+  // shutdown could not answer for, and the operator reading it is asking whether that Run's
+  // backend is still alive after the window closed.
+  'host-teardown-unconfirmed': 'task',
   // Feature 073 — Metrics Dashboard adoption tracking; not tied to a
   // specific workflow run (system)
   'metrics-view-opened': 'system',
@@ -165,12 +213,50 @@ const EXPECTED_SCOPE: Readonly<Record<AuditEventType, AuditScope>> = {
   // Feature 092 — a concurrency overlap is a workspace-level fact, not a
   // property of any one Run.
   'runs-overlapped': 'system',
+  // FR-R3-077 / FR-R3-079 — both name a run, so both are task-scoped: the
+  // decline is about one Run's record and the refusal is about one Run's
+  // declared output.
+  'run-snapshot-declined': 'task',
+  'output-target-refused-at-dispatch': 'task',
   // Feature 100 (T513) — the three catalog lifecycle transitions. Catalog writes
   // the operator asked for, belonging to no Run: they carry no `runId`, and a run
   // holding a frozen plan is unaffected by them by construction (FR-010, FR-026).
   'definition-published': 'system',
   'definition-deactivated': 'system',
-  'definition-restored': 'system'
+  'definition-restored': 'system',
+  // FR-R3-127 — an operator removed or exported a Run's evidence. `task`: both
+  // name a Run in the envelope, and a reader asking "what happened to this Run's
+  // evidence?" is asking a per-Run question.
+  'evidence-deleted': 'task',
+  'evidence-exported': 'task',
+  // FR-R3-103 — all three name a Run, so all three are task-scoped.
+  //
+  // `run-resume-declined-orphan-alive` is the one worth arguing about: it is a decision made
+  // at ACTIVATION, which is window-scoped work, and it would be defensible to call it system.
+  // Task wins because of who reads it. The operator's question is "why did MY Run not come
+  // back", and a system-scoped entry would be true and unattributable — the same reasoning
+  // `process-tree-unconfirmed` records above.
+  'run-resumed': 'task',
+  'run-resume-declined-orphan-alive': 'task',
+  'run-invocation-aborted-on-supersession': 'task',
+  // FR-R3-111 — task-scoped: it names the queue whose Run record was preserved, and the operator
+  // reading it is asking what happened to THAT Run. System scope would put it in the window feed,
+  // where it would be true and unattributable.
+  'run-record-quarantined': 'task',
+  // System, and it is the near-neighbour of the entry above that goes the other
+  // way. `run-record-quarantined` is task-scoped because the operator asking
+  // "what happened to THAT Run" still has a row to read the answer beside. Here
+  // the row is precisely what is gone — that is the event — so a task-scoped
+  // entry would hang off nothing, which is the failure mode both notes above
+  // call true and unattributable.
+  'run-canceled-task-row-removed': 'system',
+  // FR-R5-F30 — control-flow audit events (task)
+  'control-decision': 'task',
+  'control-attempt-admitted': 'task',
+  'control-wait': 'task',
+  'control-return': 'task',
+  'control-notice': 'task',
+  'control-command': 'task'
 };
 
 function assertExhaustive(value: never): never {
@@ -253,11 +339,17 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'monitor-invocation-failed':
         case 'monitor-invocation-canceled':
         case 'monitor-invocation-summary':
+        case 'monitor-helper-invocation-exited':
+        case 'monitor-chunk-declined':
+        case 'monitor-deadline-approaching':
         case 'audit-rotated':
         case 'audit-retention-applied':
         case 'audit-hydration-warning':
         case 'audit-schema-warning':
         case 'session-retention-applied':
+        case 'audit-integrity-condition':
+        case 'operator-pseudonym-reset':
+        case 'artifact-lifecycle-mutation':
         case 'phase.retry_evaluated':
         case 'retry-scheduled':
         case 'retry-manual':
@@ -302,6 +394,7 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'multi-root.warning-shown':
         case 'trust.capability-denied':
         case 'queue-cleared-all':
+        case 'queue-cleared': // FR-R3-150 (T1620)
         case 'workspace-state-reset':
         case 'scheduled-start-armed':
         case 'scheduled-start-fired':
@@ -315,12 +408,15 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'system-pause-scheduled-restore':
         case 'system-pause-restore-unavailable':
         case 'state-migrated-v6-to-v7':
+        case 'state-migrated-v9-to-v10':
         case 'state-migrated-v10-to-v11':
         case 'run-reassigned-to-default-queue':
         case 'run-record-repaired':
         case 'state-migrated-v11-to-v12':
         case 'history-entries-unattributed':
         case 'history-record-repaired':
+        case 'state-migrated-v12-to-v13':
+        case 'queue-pause-divergence-resolved':
         case 'task-execution-started':
         case 'task-execution-ended':
         case 'task-execution-paused':
@@ -328,14 +424,39 @@ describe('classifyAuditEvent (Feature 064 T007)', () => {
         case 'phase-jumped':
         case 'phase-optional-failure-continued':
         case 'backend-ping':
+        case 'backend-posture-admitted':
+        case 'agent-config-acknowledged':
+        case 'capability-refused':
+        case 'capability-applied':
+        case 'process-tree-unconfirmed':
+        case 'host-teardown-unconfirmed':
         case 'metrics-view-opened':
         case 'process-exchange-export':
         case 'process-exchange-import-refused':
         case 'process-exchange-import-committed':
+        case 'run-snapshot-declined':
+        case 'output-target-refused-at-dispatch':
         case 'runs-overlapped':
         case 'definition-published':
         case 'definition-deactivated':
-        case 'definition-restored': {
+        case 'definition-restored':
+        case 'run-resumed': // FR-R3-103 — activation's resume decision
+        case 'run-resume-declined-orphan-alive': // FR-R3-103
+        case 'run-invocation-aborted-on-supersession': // FR-R3-103 — the supersession abort
+        case 'evidence-deleted': // FR-R3-127 — an operator action on a Run's evidence
+        case 'evidence-exported': // FR-R3-127
+        case 'run-record-quarantined': // FR-R3-111 — a corrupt record preserved, not destroyed
+        case 'run-canceled-task-row-removed': // a Run ended at load, its Task row gone
+        case 'control-decision':
+        case 'control-attempt-admitted':
+        case 'control-wait':
+        case 'control-return':
+        case 'control-notice':
+        case 'control-command':
+        case 'store-backup':
+        case 'store-restore':
+        case 'scanner-consent-changed':
+        case 'telemetry-credential-changed': {
           const scope = classifyAuditEvent(evt);
           expect(scope === 'task' || scope === 'system').toBe(true);
           break;

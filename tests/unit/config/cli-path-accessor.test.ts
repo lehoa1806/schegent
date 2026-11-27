@@ -14,6 +14,7 @@ vi.mock('vscode', () => ({
   }
 }));
 
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 import { resolveCliPath } from '../../../src/config/cli-path-accessor';
 
 beforeEach(() => {
@@ -49,9 +50,18 @@ describe('resolveCliPath', () => {
     expect(resolveCliPath('claude', '/workspace', '/old/claude')).toBe('/new/claude');
   });
 
-  it('uses the validated Claude fallback for unset Claude and unknown kinds', () => {
+  it('uses the validated Claude fallback for an unset Claude path', () => {
     expect(resolveCliPath('claude', '/workspace', ' /opt/claude ')).toBe('/opt/claude');
-    expect(resolveCliPath('future', '/workspace', '   ')).toBe('claude');
+    expect(resolveCliPath('claude', '/workspace', '   ')).toBe('claude');
+  });
+
+  // Review gap GC-06 (2026-11-12) — an unknown kind used to fall through to Claude's binary, so a
+  // backend added without a path setting would have launched `claude` under another backend's name.
+  it('refuses an unknown backend kind instead of resolving Claude for it', () => {
+    mocks.values.set('cli.path', '/opt/claude');
+    expect(() => resolveCliPath('future' as BackendRunnerKind, '/workspace', 'claude')).toThrow(
+      'no CLI path setting for backend kind "future"'
+    );
   });
 
   it('reads configuration at resource scope', () => {

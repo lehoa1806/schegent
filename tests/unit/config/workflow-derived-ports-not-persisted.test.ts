@@ -36,6 +36,7 @@ import { describe, expect, it } from 'vitest';
 import { draftTokenOf, NO_DRAFT } from '../../../src/contracts/catalog-lifecycle';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
 import type { WorkflowDefinition } from '../../../src/contracts/workflow-definitions';
+import { validateWorkflowDefinition } from '../../../src/config/workflow-definition-validator';
 import { deriveWorkflowPorts } from '../../../src/config/workflow-derived-ports';
 import { createTestStore, type TestStore } from '../../fixtures/catalog-memory-fs';
 
@@ -51,8 +52,19 @@ const CATALOG_DIR = join(SRC_DIR, 'catalog');
  * A guard that quietly admitted new callers would guard nothing.
  */
 const PERMITTED_IMPORTERS: readonly string[] = [
+  // FR-R3-132 (T1502) — `ui/sidebar/snapshot.ts` was on this list for a PROSE
+  // mention, not a call: the check is `code.includes('deriveWorkflowPorts')`, and
+  // the only occurrence in that file was a JSDoc sentence explaining where the
+  // derivation happens. When the declaration carrying that sentence moved to
+  // `src/contracts/snapshot-projections.ts`, the mention moved with it and the
+  // entry moved too. Neither file calls the function.
+  //
+  // Worth saying rather than silently swapping: a textual check cannot tell a
+  // mention from a call, so this list has always mixed the two. It still holds the
+  // invariant it exists for — the derivation reaches no storage path — because a
+  // module of type declarations has no storage path to reach.
+  'contracts/snapshot-projections.ts',
   'ui/sidebar/launch-projection.ts',
-  'ui/sidebar/snapshot.ts',
   'ui/sidebar/workflow-catalog-projector.ts'
 ];
 
@@ -162,6 +174,25 @@ describe('what a published Workflow leaves on disk (FR-018)', () => {
     // are not, `repo` among them on both nodes.
     expect(written).not.toContain('"unsatisfied"');
     expect(written).not.toContain('"ports"');
+  });
+
+  it('rejects derivedInputs and derivedOutputs on candidate-block and control workflows (FR-R5-F25)', () => {
+    const controlGraph = {
+      ...GRAPH,
+      nodes: [{ nodeId: 'c1', kind: 'phase', phaseId: 'plan' }],
+      connections: [],
+      startNodeIds: ['c1'],
+      control: {
+        version: 1,
+        kind: 'candidate-block',
+        candidates: [{ candidateId: 'cand-1', nodeId: 'c1' }]
+      },
+      derivedInputs: [],
+      derivedOutputs: []
+    };
+    const validated = validateWorkflowDefinition(controlGraph);
+    expect(validated.definition).toBeNull();
+    expect(validated.errors.filter((e) => e.code === 'derived-ports-not-storable')).toHaveLength(2);
   });
 
   it('records the same bytes however many times the ports are derived', async () => {

@@ -20,10 +20,30 @@
    * are gated by Workspace Trust alone, which the first arm already reports.
    * The two survivors gate document CONTENT and are untouched (FR-053).
    */
+  /**
+   * FR-R3-143 (T040) — `decidedBy`, and why the two per-capability titles
+   * stopped saying "workspace policy".
+   *
+   * They said it unconditionally, and it is false whenever the deciding step is
+   * `user`: the ladder reads a user-layer `false` as a first-class deny
+   * (`src/state/capability-trust-decision.ts`), so an operator whose own user
+   * settings denied the capability was told the workspace had done it — and
+   * would go looking in the wrong file for a setting that is not there. It is
+   * equally false at the Workspace Trust ceiling.
+   *
+   * The projection that makes the correction possible arrives with this feature
+   * (`snapshot.resolvedScope`, T036); before it the banner had no way to know
+   * which layer decided, which is why the wrong sentence survived this long.
+   *
+   * `decidedBy` is optional and `undefined` means UNKNOWN, not a step: an older
+   * host bundle omits the field. The banner then names no layer at all, which
+   * is the one reading that cannot mislead.
+   */
   interface Props {
     variant: 'workspace-trust' | 'phases' | 'retry-conditions';
+    decidedBy?: 'user' | 'workspace' | 'workspace-trust';
   }
-  const { variant }: Props = $props();
+  const { variant, decidedBy }: Props = $props();
 
   const TEMPLATES: Record<Props['variant'], { title: string; body: string }> = {
     'workspace-trust': {
@@ -32,41 +52,54 @@
         'Schegent edits are disabled until VS Code workspace trust is granted. See docs/operations/trust-scopes.md.'
     },
     phases: {
-      title: 'Custom phase prompts disabled by workspace policy',
+      title: 'Custom phase prompts are disabled',
       body:
         'Reset-to-defaults remains available. See docs/operations/trust-scopes.md.'
     },
     'retry-conditions': {
-      title: 'Custom retry-condition expressions disabled by workspace policy',
+      title: 'Custom retry-condition expressions are disabled',
       body:
-        'Default retry-conditions for each phase remain editable. See docs/operations/trust-scopes.md.'
+        'Default retry-conditions for each Phase remain editable. See docs/operations/trust-scopes.md.'
     }
   };
 
+  const DECIDED_BY_TEXT: Record<NonNullable<Props['decidedBy']>, string> = {
+    user: 'Denied by your user settings; a workspace setting cannot override it.',
+    workspace: "Denied by this workspace's settings.",
+    'workspace-trust': 'Denied by VS Code Workspace Trust; no Schegent setting can widen it.'
+  };
+
   const tpl = $derived(TEMPLATES[variant]);
+  // Only the per-capability variants carry a deciding step. The
+  // `'workspace-trust'` banner is already a statement about the ceiling, and
+  // appending "denied by Workspace Trust" to it would say the same thing twice.
+  const cause = $derived(
+    variant === 'workspace-trust' || decidedBy === undefined ? null : DECIDED_BY_TEXT[decidedBy]
+  );
   const testId = $derived(`trust-banner-${variant}`);
 </script>
 
-<div class="trust-banner" data-testid={testId} role="status">
-  <div class="trust-banner-title">{tpl.title}</div>
-  <div class="trust-banner-body">{tpl.body}</div>
+<!-- Drawn as the redesign's warning banner (`.attn.warn` in `sg-core.css`): the warning icon from the
+     dashboard's sprite, then the title in bold, the deciding step and the body, each on a line of
+     its own as before. -->
+<div class="attn warn trust-banner" data-testid={testId} role="status">
+  <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+  <div class="body small">
+    <b class="title">{tpl.title}</b>
+    {#if cause}
+      <div data-testid="{testId}-decided-by">{cause}</div>
+    {/if}
+    <div>{tpl.body}</div>
+  </div>
 </div>
 
 <style>
-  .trust-banner {
-    border: 1px solid var(--vscode-inputValidation-warningBorder);
-    background: var(--vscode-inputValidation-warningBackground);
-    color: var(--vscode-inputValidation-warningForeground, var(--schegent-fg));
-    padding: 8px 12px;
-    margin-bottom: 8px;
-    border-radius: 4px;
-    font-size: 0.92em;
+  .title {
+    display: block;
   }
-  .trust-banner-title {
-    font-weight: 600;
-    margin-bottom: 2px;
-  }
-  .trust-banner-body {
-    opacity: 0.9;
+  /* Where nothing follows the banner (the add-task drawer of an untrusted workspace), the
+     container's own spacing applies instead of the banner's. */
+  .attn.trust-banner:last-child {
+    margin-bottom: 0;
   }
 </style>

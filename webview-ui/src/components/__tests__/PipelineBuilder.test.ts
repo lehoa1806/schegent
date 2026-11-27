@@ -27,11 +27,18 @@ import {
   saveDefinitionDraft as saveDraftHelper
 } from '../../lib/catalog-lifecycle';
 import { saveModels as saveModelsHelper } from '../../lib/save-models';
+import { preflightProcessYaml as preflightHelper } from '../../lib/process-yaml-ipc';
 import { useConfirm } from '../../lib/use-confirm';
 import { foldLegacyRun } from '../../lib/__tests__/queue-runtime-fixture';
+import { isMenuItemOff } from '../sg/__tests__/menu-item-state';
 
+let mockedWebviewState: unknown = undefined;
 vi.mock('../../lib/vscode-api', () => ({
-  postCommand: vi.fn(() => ({ correlationId: 'corr-test' }))
+  postCommand: vi.fn(() => ({ correlationId: 'corr-test' })),
+  getWebviewState: vi.fn(() => mockedWebviewState),
+  setWebviewState: vi.fn((next: unknown) => {
+    mockedWebviewState = next;
+  })
 }));
 vi.mock('../../lib/snapshot-store.svelte', () => ({
   snapshotStore: {
@@ -53,12 +60,17 @@ vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
 vi.mock('../../lib/save-models', () => ({
   saveModels: vi.fn(async () => ({ status: 'accepted' as const }))
 }));
+vi.mock('../../lib/process-yaml-ipc', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/process-yaml-ipc')>()),
+  preflightProcessYaml: vi.fn(async () => ({ outcome: 'canceled' as const }))
+}));
 vi.mock('../../lib/use-confirm', () => ({
   useConfirm: vi.fn(async () => true)
 }));
 
 afterEach(() => {
   cleanup();
+  mockedWebviewState = undefined;
   vi.clearAllMocks();
 });
 
@@ -81,15 +93,17 @@ function buildSnapshot(
     ...(phase.isRequired !== undefined ? { isRequired: phase.isRequired } : {}),
     ...(phase.runner !== undefined ? { runner: phase.runner } : {})
   }));
-  const portablePipelines = pipelines.map((pipeline) => ({
-    pipelineId: pipeline.id,
+  const portableWorkflows = pipelines.map((pipeline) => ({
+    workflowId: pipeline.id,
     name: pipeline.name,
     version: 1,
-    phaseIds: [...pipeline.phases],
-    inputs: [],
-    outputs: [],
-    bindings: [],
-    recommendedNext: []
+    nodes: pipeline.phases.map((phaseId) => ({
+      nodeId: phaseId,
+      kind: 'phase' as const,
+      phaseId
+    })),
+    connections: [],
+    startNodeIds: pipeline.phases[0] ? [pipeline.phases[0]] : []
   }));
   return Object.freeze({
     schemaVersion: 4,
@@ -136,6 +150,7 @@ function buildSnapshot(
     // same value here, because seeding the page from detection is the defect
     // that made a confirmed import invisible.
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    workspaceModelCatalog: { models: { claude: models, codex: [], agy: [] }, revision: models.join(',') || 'empty' },
     configuredModels: Object.freeze({ claude: models, codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze(['claude', 'codex', 'agy']) as readonly BackendRunnerKind[],
     phaseCatalog: {
@@ -152,21 +167,20 @@ function buildSnapshot(
       revision: 'phase-revision',
       warnings: []
     },
-    // Feature 082 — the Pipeline tab reads the authoritative catalog
-    // projection, not `availablePipelines` (which keeps its runtime-selection
-    // meaning). Legacy fixtures declare a Pipeline once; both fields mirror it.
-    pipelineCatalog: {
+    workflowCatalog: {
       state: 'ready',
-      records: portablePipelines.map((definition) => ({
-        key: `${definition.pipelineId}::0`,
-        pipelineId: definition.pipelineId,
+      records: portableWorkflows.map((definition) => ({
+        key: `${definition.workflowId}::0`,
+        workflowId: definition.workflowId,
         status: 'effective',
         definition,
         display: definition,
-        errors: []
+        errors: [],
+        derivedInputs: [],
+        derivedOutputs: []
       })),
-      effective: portablePipelines,
-      revision: 'pipeline-revision',
+      effective: portableWorkflows,
+      revision: 'workflow-revision',
       warnings: []
     },
     generalSettings: IDLE_GENERAL_SETTINGS
@@ -196,6 +210,21 @@ async function switchTab(container: HTMLElement, label: string): Promise<void> {
  */
 function savedBody(call = 0): Record<string, unknown> {
   return vi.mocked(saveDraftHelper).mock.calls[call][0].body as Record<string, unknown>;
+}
+
+const PHASE_ROW_TESTID = 'phases-list-item-';
+
+/**
+ * The Phase ids the Phases list shows, in its order.
+ *
+ * The redesign draws the list as a table and sets each id beside the name rather
+ * than in an element of its own, so the order is read off the name buttons' test
+ * ids, which end in the id.
+ */
+function getPhaseIds(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll(`[data-testid^="${PHASE_ROW_TESTID}"]`)).map(
+    (row) => (row.getAttribute('data-testid') ?? '').slice(PHASE_ROW_TESTID.length)
+  );
 }
 
 describe('PipelineBuilder — restored 3-tab design', () => {
@@ -244,7 +273,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
         // sentinel rather than a version id (FR-024).
         expectedDraftVersion: 'no-draft'
       },
-      { definitionName: 'Remove me', originatingElement: deleteBtn }
+      expect.objectContaining({ definitionName: 'Remove me', originatingElement: deleteBtn })
     );
     // Asking here as well would prompt twice for one removal.
     expect(useConfirm).not.toHaveBeenCalled();
@@ -262,11 +291,11 @@ describe('PipelineBuilder — restored 3-tab design', () => {
 
     // A decline is not a rejection to report: the operator closed a dialog.
     expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
-    // And the row is still there, still deletable — the pending flag cleared.
-    expect(container.querySelector('[data-testid="phases-list-item-remove-me"]')).not.toBeNull();
-    expect(
-      (container.querySelector('[data-testid="phases-remove"]') as HTMLButtonElement).disabled
-    ).toBe(false);
+    // And the row is still there, still deletable — the pending flag cleared. The
+    // redesign shows the open Phase's editor page in place of the list, so the row
+    // is read off that page: still open on the Phase, its Deactivate… enabled again.
+    expect(container.querySelector('[data-testid="phases-editor-remove-me"]')).not.toBeNull();
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-remove"]'))).toBe(false);
   });
 
   it('duplicates a Phase into a version-1 draft', async () => {
@@ -399,7 +428,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'concurrent-phase',
       body: expect.objectContaining({ name: 'Dirty draft' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
     const retry = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await vi.waitFor(() => expect(retry.disabled).toBe(false));
     await fireEvent.click(retry);
@@ -416,7 +445,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'concurrent-phase',
       body: expect.objectContaining({ name: 'Dirty draft' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
     const retried = vi.mocked(saveDraftHelper).mock.calls[1][0] as { body: unknown };
     expect(retried.body).not.toMatchObject({ id: 'inserted-phase' });
     expect(retried.body).not.toMatchObject({ id: 'sibling-phase' });
@@ -501,7 +530,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'shared',
       body: expect.objectContaining({ id: 'shared', name: 'Second row edited' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
   });
 
   it('discards an unsaved new Phase draft', async () => {
@@ -510,10 +539,9 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     });
     await fireEvent.click(container.querySelector('[data-testid="phases-add"]')!);
     expect(container.textContent).toContain('new-phase');
-    const discard = [...container.querySelectorAll('button')].find(
-      (button) => button.textContent?.trim() === 'Discard Draft'
-    );
-    await fireEvent.click(discard!);
+    // The redesign moved "Discard Draft" into the editor page's "More phase actions"
+    // menu, where it reads "Revert unsaved changes".
+    await fireEvent.click(container.querySelector('[data-testid="phases-revert"]')!);
     await tick();
     expect(container.textContent).not.toContain('new-phase');
     expect(saveDraftHelper).not.toHaveBeenCalled();
@@ -539,13 +567,18 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(model.selectedOptions[0]?.textContent).toContain('Unavailable');
   });
 
-  // Feature 083 added the Workflows tab; the Workflow Library has no other
-  // mount site, so the tab bar is 4-wide from this feature forward.
-  it('renders the 4-tab bar: Pipelines, Phases, Workflows, Models', () => {
+  it('renders the 3-tab bar: Phases, Workflows, Models', () => {
     const snap = buildSnapshot();
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     const tabs = [...container.querySelectorAll('.tab-btn')].map((t) => t.textContent?.trim());
-    expect(tabs).toEqual(['Pipelines', 'Phases', 'Workflows', 'Models']);
+    expect(tabs).toEqual(['Phases', 'Workflows', 'Models']);
+  });
+
+  it('states its purpose with the Phase and Workflow kinds capitalised', () => {
+    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
+    expect(container.querySelector('.purpose')?.textContent.trim()).toBe(
+      'Reusable Phases, Workflows and models.'
+    );
   });
 
   it('implements the catalog switcher as keyboard-operable tabs', async () => {
@@ -563,7 +596,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
     expect(tabs[1]?.getAttribute('aria-selected')).toBe('true');
     expect(document.activeElement).toBe(tabs[1]);
     expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
-      .toBe('builder-tab-phases');
+      .toBe('builder-tab-workflows');
   });
 
   it('Phases tab: phase list renders after switching tabs', async () => {
@@ -640,7 +673,7 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       kind: 'phase',
       id: 'repaired-id',
       body: expect.objectContaining({ id: 'repaired-id' })
-    }));
+    }), undefined, expect.objectContaining({ onLateOutcome: expect.any(Function) }));
   });
 
   it('Phases tab: RetryCondition editor renders for ALL phases (not just loopable)', async () => {
@@ -663,38 +696,34 @@ describe('PipelineBuilder — restored 3-tab design', () => {
   });
 
   it('Models tab: renders the model list', async () => {
-    const snap = buildSnapshot([], [], ['claude-sonnet-4-6', 'claude-opus-4-6']);
+    const snap = buildSnapshot([], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Models');
     const items = container.querySelectorAll('.model-list-item');
     expect(items.length).toBe(2);
   });
 
-  // Feature 096 T025 — the Model Catalog import trigger. Unmounted on every
-  // other tab, same as the per-tab save affordances above: it must not be
-  // reachable before the Models tab is active.
-  //
-  // Feature 101 (US6, T065) — the pre-switch assertion used to be "no preflight
-  // at all", which held only because this fixture opens on Pipelines and that
-  // tab had no import entry. It has one now: an empty catalog renders the shared
-  // front door, and the front door offers the import (FR-032). The claim the
-  // test is actually for survives intact — each tab mounts exactly one entry
-  // point and unmounts it with the tab — so that is what it asserts.
-  it('Models tab: mounts the Model Catalog import entry point', async () => {
-    const snap = buildSnapshot([], [], ['claude-sonnet-4-6']);
-    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
-    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).not.toBeNull();
+  it('header mounts one top-level Import… button and zero inline import bands across all tabs', async () => {
+    const snap = buildSnapshot([], [], ['claude-sonnet-5-5']);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'workflows' }
+    });
+    expect(container.querySelectorAll('[data-testid="builder-import-btn"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-import-workflow"]')).not.toBeNull();
+
     await switchTab(container, 'Models');
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).toBeNull();
-    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(1);
-    expect(container.querySelector('[data-testid="process-import-inspect"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="builder-import-btn"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
+
+    await switchTab(container, 'Phases');
+    expect(container.querySelectorAll('[data-testid="builder-import-btn"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="process-import-preflight"]')).toHaveLength(0);
   });
 
-  // Feature 082 — saves are mutation-scoped: the operator declares a change,
-  // and only that change is submitted against the adopted layer revision. A
-  // Save click with nothing declared is inert (FR-029).
-  it('Pipelines tab: save is inert until a mutation is declared', async () => {
+  it('Workflows tab: opens list-first and Save inside the editor is inert until a mutation is declared', async () => {
     vi.mocked(saveDraftHelper).mockClear();
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
@@ -702,64 +731,115 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       phases: Object.freeze(['speckit-specify', 'speckit-plan'])
     }) as unknown as PipelineDefinition;
     const snap = buildSnapshot([], [pipeline]);
-    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'workflows' }
+    });
     await tick();
+    // List view has no editor Save button until a Workflow is opened.
+    expect(container.querySelector('[data-testid="workflows-save-all"]')).toBeNull();
+    const row = container.querySelector('[data-testid="workflows-list-item-custom"]') as HTMLButtonElement;
+    expect(row).not.toBeNull();
+    await fireEvent.click(row);
+    await tick();
+
     const saveBtn = container.querySelector(
-      '[data-testid="pipelines-save-all"]'
+      '[data-testid="workflows-save-all"]'
     ) as HTMLButtonElement | null;
     expect(saveBtn).not.toBeNull();
+    expect(saveBtn!.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn!.getAttribute('aria-disabled')).toBe('true');
     await fireEvent.click(saveBtn!);
     await tick();
     expect(saveDraftHelper).not.toHaveBeenCalled();
   });
 
-  it('Models tab: saves through the shared save-models helper', async () => {
+  it('Models tab: gates Save on dirty state, saves edits through save-models, and reverts cleanly', async () => {
     vi.mocked(saveModelsHelper).mockClear();
-    const snap = buildSnapshot([], [], ['claude-sonnet-4-6', 'claude-opus-4-6']);
+    const snap = buildSnapshot([], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Models');
-    const saveBtn = [...container.querySelectorAll('button')].find(
-      (btn) => btn.textContent?.trim() === 'Save All Models'
-    ) as HTMLButtonElement | undefined;
-    expect(saveBtn).toBeDefined();
-    await fireEvent.click(saveBtn!);
+
+    const saveBtn = container.querySelector('[data-testid="models-save"]') as HTMLButtonElement;
+    expect(saveBtn).not.toBeNull();
+    expect(saveBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="models-unsaved"]')).toBeNull();
+
+    // Edit the first model entry to dirty the catalog
+    const firstInput = container.querySelector('.model-list-item input') as HTMLInputElement;
+    await fireEvent.input(firstInput, { target: { value: 'claude-sonnet-5-6' } });
+    await tick();
+
+    expect(container.querySelector('[data-testid="models-unsaved"]')?.textContent?.trim()).toBe('Unsaved changes');
+    expect(saveBtn.disabled).toBe(false);
+
+    // Revert restores adopted models and clears dirty state
+    await fireEvent.click(container.querySelector('[data-testid="models-revert"]')!);
+    await tick();
+    expect(firstInput.value).toBe('claude-sonnet-5-5');
+    expect(container.querySelector('[data-testid="models-unsaved"]')).toBeNull();
+    expect(saveBtn.disabled).toBe(true);
+
+    // Edit again and Save
+    await fireEvent.input(firstInput, { target: { value: 'claude-sonnet-5-6' } });
+    await tick();
+    await fireEvent.click(saveBtn);
     await tick();
     expect(saveModelsHelper).toHaveBeenCalledTimes(1);
     expect(vi.mocked(saveModelsHelper).mock.calls[0][0]).toEqual({
-      claude: ['claude-sonnet-4-6', 'claude-opus-4-6'],
+      claude: ['claude-sonnet-5-6', 'claude-opus-5-5'],
       codex: [],
       agy: []
     });
   });
-  it('Pipelines tab: Pipeline Name field updates name and saves correctly (BUG-005)', async () => {
+  it('keeps the dirty draft on its original revision and reverts to the latest workspace models', async () => {
+    const original = buildSnapshot([], [], ['old']);
+    const changed = buildSnapshot([], [], ['external']);
+    const { container, rerender } = render(PipelineBuilder, { props: { snapshot: original, initialTab: 'models' } });
+    const input = () => container.querySelector('.model-list-item input') as HTMLInputElement;
+    await fireEvent.input(input(), { target: { value: 'local' } });
+    await rerender({ snapshot: changed, initialTab: 'models' });
+    expect(input().value).toBe('local');
+    vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'rejected', reason: 'stale-catalog' });
+    await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
+    expect(saveModelsHelper).toHaveBeenLastCalledWith({ claude: ['local'], codex: [], agy: [] }, 'old');
+    await fireEvent.click(container.querySelector('[data-testid="models-revert"]')!);
+    expect(input().value).toBe('external');
+  });
+
+  it('Workflows tab: Workflow Name field updates name and saves correctly (BUG-005)', async () => {
     vi.mocked(saveDraftHelper).mockClear();
+    const phase: PhaseDefinition = Object.freeze({
+      id: 'speckit-specify',
+      name: 'Specify',
+      instruction: 'Write the spec.'
+    }) as unknown as PhaseDefinition;
     const pipeline: PipelineDefinition = Object.freeze({
       id: 'custom',
       name: 'Custom Pipeline',
       phases: Object.freeze(['speckit-specify'])
     }) as unknown as PipelineDefinition;
-    const snap = buildSnapshot([], [pipeline]);
-    const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
+    const snap = buildSnapshot([phase], [pipeline]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'workflows' }
+    });
     await tick();
 
-    // Select pipeline
-    const pipelineItem = container.querySelector('.phase-list-item') as HTMLButtonElement;
-    expect(pipelineItem).not.toBeNull();
-    await fireEvent.click(pipelineItem);
+    const workflowItem = container.querySelector(
+      '[data-testid="workflows-list-item-custom"]'
+    ) as HTMLButtonElement;
+    expect(workflowItem).not.toBeNull();
+    await fireEvent.click(workflowItem);
     await tick();
 
-    // Find the Name field in the form grid
-    const nameInput = container.querySelector('[data-testid="pipelines-name-field-custom"]') as HTMLInputElement;
+    const nameInput = container.querySelector('[data-testid="workflow-field-name"]') as HTMLInputElement;
     expect(nameInput).not.toBeNull();
     expect(nameInput.value).toBe('Custom Pipeline');
 
-    // Edit Name
     await fireEvent.input(nameInput, { target: { value: 'Renamed Pipeline' } });
     await tick();
 
-    // Save
     const saveBtn = container.querySelector(
-      '[data-testid="pipelines-save-all"]'
+      '[data-testid="workflows-save-all"]'
     ) as HTMLButtonElement | null;
     expect(saveBtn).not.toBeNull();
     await fireEvent.click(saveBtn!);
@@ -767,12 +847,17 @@ describe('PipelineBuilder — restored 3-tab design', () => {
 
     expect(saveDraftHelper).toHaveBeenCalledTimes(1);
     expect(vi.mocked(saveDraftHelper).mock.calls[0][0]).toEqual({
-      kind: 'pipeline',
+      kind: 'workflow',
       id: 'custom',
-      // The fixture record carries no draft, so the staleness token is the
-      // sentinel rather than a version id (FR-024).
       expectedDraftVersion: 'no-draft',
-      body: { id: 'custom', name: 'Renamed Pipeline', version: 1, phases: ['speckit-specify'] }
+      body: {
+        workflowId: 'custom',
+        name: 'Renamed Pipeline',
+        version: 1,
+        nodes: [{ nodeId: 'speckit-specify', kind: 'phase', phaseId: 'speckit-specify' }],
+        connections: [],
+        startNodeIds: ['speckit-specify']
+      }
     });
   });
 });
@@ -803,7 +888,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
       ...(extra.model ? { model: extra.model } : {}),
       ...(extra.runner ? { runner: extra.runner } : {})
     } as PhaseDefinition;
-    const snap = buildSnapshot([seeded], [], ['claude-sonnet-4-6', 'claude-opus-4-6']);
+    const snap = buildSnapshot([seeded], [], ['claude-sonnet-5-5', 'claude-opus-5-5']);
     const { container } = render(PipelineBuilder, { props: { snapshot: snap } });
     await switchTab(container, 'Phases');
     const item = container.querySelector(`[data-testid="phases-list-item-${p.id}"]`) as HTMLButtonElement;
@@ -993,7 +1078,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
 
   it('FR-003 orthogonality: changing Effort does not clear an existing Model override', async () => {
     vi.mocked(saveDraftHelper).mockClear();
-    const { container } = await openPhasesEditor(phase, { model: 'claude-sonnet-4-6' });
+    const { container } = await openPhasesEditor(phase, { model: 'claude-sonnet-5-5' });
     const effort = container.querySelector(
       '[data-testid="phases-effort-speckit-plan"]'
     ) as HTMLSelectElement;
@@ -1005,7 +1090,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     expect(savedBody()).toMatchObject({
       id: 'speckit-plan',
       effort: 'high',
-      model: 'claude-sonnet-4-6'
+      model: 'claude-sonnet-5-5'
     });
   });
 
@@ -1013,7 +1098,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     vi.mocked(saveDraftHelper).mockClear();
     const { container } = await openPhasesEditor(phase, {
       effort: 'high',
-      model: 'claude-sonnet-4-6'
+      model: 'claude-sonnet-5-5'
     });
     const effort = container.querySelector(
       '[data-testid="phases-effort-speckit-plan"]'
@@ -1023,7 +1108,7 @@ describe('PipelineBuilder — Feature 026 per-phase Effort + runner overrides', 
     const saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     await fireEvent.click(saveBtn);
     await tick();
-    expect(savedBody()).toMatchObject({ id: 'speckit-plan', model: 'claude-sonnet-4-6' });
+    expect(savedBody()).toMatchObject({ id: 'speckit-plan', model: 'claude-sonnet-5-5' });
     expect(savedBody().effort).toBeUndefined();
   });
 
@@ -1057,30 +1142,40 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     await fireEvent.click(addPhaseBtn);
     await tick();
 
-    // Verify the new phase appears in the Phases tab sidebar
-    const phaseItems = container.querySelectorAll('.phase-list-item');
-    expect(phaseItems.length).toBe(2); // existing + new
+    // Verify the new phase appears in the Phases list. Adding opens the new Phase's
+    // editor page, which the redesign shows in place of the list and the Builder's
+    // tabs, so its breadcrumb leads back to both first.
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    expect(getPhaseIds(container)).toHaveLength(2); // existing + new
 
-    // 2. Switch to Pipelines tab before saving.
-    await switchTab(container, 'Pipelines');
+    // 2. Switch to Workflows tab before saving.
+    await switchTab(container, 'Workflows');
 
-    // 3. Select the existing pipeline to open its editor
-    const pipelineItem = container.querySelector('.phase-list-item') as HTMLButtonElement;
-    expect(pipelineItem).not.toBeNull();
-    await fireEvent.click(pipelineItem);
+    // 3. Select the existing workflow to open its editor
+    const workflowItem = container.querySelector(
+      '[data-testid="workflows-list-item-default"]'
+    ) as HTMLButtonElement;
+    expect(workflowItem).not.toBeNull();
+    await fireEvent.click(workflowItem);
     await tick();
 
-    // 4. Check the "Add Phase" dropdown in the pipeline editor
-    const addPhaseDropdown = container.querySelector('.add-phase-row .select-input') as HTMLSelectElement;
-    expect(addPhaseDropdown).not.toBeNull();
-    const optionValues = Array.from(addPhaseDropdown.querySelectorAll('option')).map(o => o.value);
+    // 4. Check what the append affordance offers.
+    const offered = Array.from(
+      container.querySelectorAll('[data-testid^="workflow-palette-phase-"]')
+    ).map((button) => button.getAttribute('data-testid'));
 
-    // An unsaved draft must not be offered to a persistable Pipeline.
-    expect(optionValues).toContain('speckit-specify');
-    expect(optionValues).not.toContain('new-phase');
+    // An unsaved draft must not be offered to a persistable Workflow.
+    expect(offered).toContain('workflow-palette-phase-speckit-specify');
+    expect(offered).not.toContain('workflow-palette-phase-new-phase');
 
-    // 5. Also check the inline sequence select for the existing pipeline phase
-    const sequenceSelect = container.querySelector('.sequence-select') as HTMLSelectElement;
+    // 5. Also check the Phase select for the existing workflow node in the inspector.
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflow-node-0"]') as HTMLButtonElement
+    );
+    await tick();
+    const sequenceSelect = container.querySelector(
+      '[data-testid="workflow-node-phase-select-0"]'
+    ) as HTMLSelectElement;
     expect(sequenceSelect).not.toBeNull();
     const seqOptions = Array.from(sequenceSelect.querySelectorAll('option')).map(o => o.value);
     expect(seqOptions).toContain('speckit-specify');
@@ -1089,167 +1184,253 @@ describe('PipelineBuilder — BUG-002 cross-tab phase visibility', () => {
     // The authoritative catalog refresh makes the saved Phase available.
     const savedPhase: PhaseDefinition = Object.freeze({
       id: 'new-phase', name: 'New Phase', version: 1,
-      instruction: 'Describe the phase objective here.'
+      instruction: 'Describe the Phase objective here.'
     });
     await rerender({
       snapshot: buildSnapshot([existingPhase, savedPhase], [pipeline]),
       initialTab: 'phases'
     });
     await tick();
-    expect(Array.from(addPhaseDropdown.querySelectorAll('option')).map(o => o.value))
-      .toContain('new-phase');
+    expect(
+      Array.from(container.querySelectorAll('[data-testid^="workflow-palette-phase-"]')).map(
+        (button) => button.getAttribute('data-testid')
+      )
+    ).toContain('workflow-palette-phase-new-phase');
   });
 });
 
-describe('PipelineBuilder — BUG-012 phase list reordering', () => {
+describe('PipelineBuilder — Track 2 Builder UX unification (no Phase reorder, single Import modal, full-page Workflow editor)', () => {
   const phaseA: PhaseDefinition = Object.freeze({
     id: 'phase-a', name: 'Alpha', instruction: 'Do alpha.'
   }) as unknown as PhaseDefinition;
   const phaseB: PhaseDefinition = Object.freeze({
     id: 'phase-b', name: 'Beta', instruction: 'Do beta.'
   }) as unknown as PhaseDefinition;
-  const phaseC: PhaseDefinition = Object.freeze({
-    id: 'phase-c', name: 'Charlie', instruction: 'Do charlie.'
-  }) as unknown as PhaseDefinition;
+  const workflowA: PipelineDefinition = Object.freeze({
+    id: 'wf-a', name: 'Workflow A', phases: Object.freeze(['phase-a'])
+  }) as unknown as PipelineDefinition;
 
-  async function renderPhasesList() {
-    const snap = buildSnapshot([phaseA, phaseB, phaseC]);
-    const { container } = render(PipelineBuilder, {
-      props: { snapshot: snap, initialTab: 'phases' }
-    });
-    await tick();
-    return container;
-  }
-
-  function getPhaseIds(container: HTMLElement): string[] {
-    return Array.from(container.querySelectorAll('.phase-list-item'))
-      .map((el) => {
-        const idEl = el.querySelector('.phase-list-id');
-        return idEl?.textContent?.trim() ?? '';
-      });
-  }
-
-  it('move down swaps a phase with the one below it', async () => {
-    const container = await renderPhasesList();
-    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-b', 'phase-c']);
-
-    const moveDown = container.querySelector('[data-testid="phases-move-down-phase-a"]') as HTMLButtonElement;
-    expect(moveDown).not.toBeNull();
-    await fireEvent.click(moveDown);
-    await tick();
-
-    expect(getPhaseIds(container)).toEqual(['phase-b', 'phase-a', 'phase-c']);
-  });
-
-  it('saves the moved row after a reorder, the list order being the store\'s to keep', async () => {
-    const container = await renderPhasesList();
-    await fireEvent.click(container.querySelector(
-      '[data-testid="phases-move-down-phase-a"]'
-    )!);
-    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
-    await tick();
-
-    // Feature 101 (T030) — this asserted the reordered layer travelled as one
-    // atomic write: `phase-b`, `phase-a`, `phase-c`, in that order. It could,
-    // because the write WAS the layer and the array's order was the catalog's
-    // order. A draft write names one definition, and the order definitions are
-    // listed in belongs to the store's manifest (FR-002, FR-018), which no
-    // lifecycle command reorders. So the reorder is a view arrangement, and what
-    // the save persists is the moved row's body.
-    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
-    expect(saveDraftHelper).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'phase',
-      id: 'phase-a',
-      body: expect.objectContaining({ id: 'phase-a' })
-    }));
-  });
-
-  it('reorders any two adjacent rows, there being no boundary left to cross', async () => {
-    // Feature 099 (T496f, FR-042) — this seeded `phase-a` at `user` and
-    // `phase-b` at `workspace` and pinned both move controls DISABLED: a reorder
-    // is one save against one layer, so a pair straddling two layers had no
-    // single save to express it. One layer removes the straddle, and the
-    // inversion is the point — the same fixture that could not move must now
-    // move, or the controls are dead for a reason nothing states.
+  it('renders zero Phase reorder controls in both the Phases list and Phase Editor', async () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot([phaseA, phaseB]), initialTab: 'phases' }
     });
-    const moveDown = container.querySelector(
-      '[data-testid="phases-move-down-phase-a"]'
-    ) as HTMLButtonElement;
-    const moveUp = container.querySelector(
-      '[data-testid="phases-move-up-phase-b"]'
-    ) as HTMLButtonElement;
-    expect(moveDown.disabled).toBe(false);
-    expect(moveUp.disabled).toBe(false);
-    await fireEvent.click(moveDown);
     await tick();
-    expect(getPhaseIds(container)).toEqual(['phase-b', 'phase-a']);
+    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-b']);
+    expect(container.querySelector('[data-testid^="phases-move-"]')).toBeNull();
+
+    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-phase-a"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid^="phases-move-"]')).toBeNull();
   });
 
-  it('move up swaps a phase with the one above it', async () => {
-    const container = await renderPhasesList();
-
-    const moveUp = container.querySelector('[data-testid="phases-move-up-phase-c"]') as HTMLButtonElement;
-    expect(moveUp).not.toBeNull();
-    await fireEvent.click(moveUp);
-    await tick();
-
-    expect(getPhaseIds(container)).toEqual(['phase-a', 'phase-c', 'phase-b']);
+  it('disables header Import… with an inline reason in a secondary window', () => {
+    const secondary = { ...buildSnapshot([phaseA]), isPrimary: false } as WorkflowSnapshot;
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: secondary, initialTab: 'phases' }
+    });
+    const importBtn = container.querySelector('[data-testid="builder-import-btn"]') as HTMLButtonElement;
+    expect(importBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="builder-import-unavailable"]')?.textContent)
+      .toContain('primary window');
   });
 
-  it('first item up button is disabled', async () => {
-    const container = await renderPhasesList();
-    const upBtn = container.querySelector('[data-testid="phases-move-up-phase-a"]') as HTMLButtonElement;
-    expect(upBtn).not.toBeNull();
-    expect(upBtn.disabled).toBe(true);
+  it('opens BuilderImportModal from header Import… and gates commit by inspected target kind', async () => {
+    vi.mocked(preflightHelper).mockResolvedValueOnce({
+      outcome: 'planned',
+      plan: {
+        rows: [
+          {
+            outcome: 'import',
+            resourceKind: 'phase',
+            resourceId: 'imported-phase',
+            name: 'Imported',
+            requiresRetryConditionCapability: false,
+            definition: { phaseId: 'imported-phase', name: 'Imported', version: 1, instruction: 'Run.' }
+          }
+        ],
+        counts: { import: 1, skip: 0, blocked: 0, invalid: 0 },
+        computedAgainstRevision: 'phase-revision'
+      }
+    });
+
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA], [workflowA], ['claude-sonnet-5-5']), initialTab: 'phases' }
+    });
+    await tick();
+
+    // Dirty a Phase, then return to list
+    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-phase-a"]')!);
+    await tick();
+    await fireEvent.input(container.querySelector('[data-testid="phases-name-field-phase-a"]')!, {
+      target: { value: 'Alpha Edited' }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    await tick();
+
+    // Open BuilderImportModal — autoInspect runs preflight returning a Phase entry
+    await fireEvent.click(container.querySelector('[data-testid="builder-import-btn"]')!);
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-testid="builder-import-modal"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="process-import-plan"]')).not.toBeNull();
+    });
+
+    // Confirm is blocked specifically because Phases has pending edits
+    const confirmBtn = container.querySelector('[data-testid="process-import-confirm"]') as HTMLButtonElement;
+    expect(confirmBtn.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="process-import-confirm-blocked"]')?.textContent)
+      .toContain('pending Phase changes');
+
+    // Now re-inspect a Model Catalog YAML — commit MUST be allowed even though Phases is dirty!
+    vi.mocked(preflightHelper).mockResolvedValueOnce({
+      outcome: 'planned',
+      plan: {
+        rows: [
+          {
+            outcome: 'import',
+            resourceKind: 'modelCatalog',
+            resourceId: 'custom-model-a',
+            backend: 'claude',
+            modelId: 'custom-model-a'
+          }
+        ],
+        counts: { import: 1, skip: 0, blocked: 0, invalid: 0 },
+        computedAgainstRevision: 'phase-revision',
+        computedAgainstModelsRevision: 'models-rev-1'
+      }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="process-import-inspect"]')!);
+    await vi.waitFor(() => {
+      expect((container.querySelector('[data-testid="process-import-confirm"]') as HTMLButtonElement).disabled)
+        .toBe(false);
+    });
   });
 
-  it('last item down button is disabled', async () => {
-    const container = await renderPhasesList();
-    const downBtn = container.querySelector('[data-testid="phases-move-down-phase-c"]') as HTMLButtonElement;
-    expect(downBtn).not.toBeNull();
-    expect(downBtn.disabled).toBe(true);
+  it('hides Builder header and tabs in full-page Workflow Editor and restores them with unsaved banner on return', async () => {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA], [workflowA]), initialTab: 'workflows' }
+    });
+    await tick();
+    expect(container.querySelector('.phead')).not.toBeNull();
+    expect(container.querySelector('.builder-tabs')).not.toBeNull();
+
+    // Open Workflow Editor
+    await fireEvent.click(container.querySelector('[data-testid="workflows-list-item-wf-a"]')!);
+    await tick();
+    expect(container.querySelector('.phead')).toBeNull();
+    expect(container.querySelector('.builder-tabs')).toBeNull();
+
+    // Make an edit, then click the Workflows breadcrumb to return to the list
+    await fireEvent.input(container.querySelector('[data-testid="workflow-field-name"]')!, {
+      target: { value: 'Workflow A Edited' }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="workflow-crumb-list"]')!);
+    await tick();
+
+    // Builder header + tabs are back, and the unsaved banner + row chip preserve the edit
+    expect(container.querySelector('.phead')).not.toBeNull();
+    expect(container.querySelector('.builder-tabs')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflows-unsaved-banner"]')?.textContent)
+      .toContain('Workflow A Edited');
+    expect(container.querySelector('[data-testid="workflows-row-unsaved-wf-a"]')).not.toBeNull();
+
+    // Resume editing returns straight to the edited Workflow
+    await fireEvent.click(container.querySelector('[data-testid="workflows-resume-editing"]')!);
+    await tick();
+    expect((container.querySelector('[data-testid="workflow-field-name"]') as HTMLInputElement).value)
+      .toBe('Workflow A Edited');
   });
 
-  it('selectedPhaseIndex follows the moved phase when moving down', async () => {
-    const container = await renderPhasesList();
-
-    // Select phase-a (index 0)
-    const itemA = container.querySelector('[data-testid="phases-list-item-phase-a"]') as HTMLButtonElement;
-    await fireEvent.click(itemA);
+  it('preserves post-save Models edits across later snapshot updates and isolates Models vs Phases save errors', async () => {
+    vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'accepted' });
+    const snapV1 = buildSnapshot([phaseA], [], ['claude-sonnet-5-5']);
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: snapV1, initialTab: 'models' }
+    });
     await tick();
 
-    // Verify it's selected (has the editor open)
-    expect(container.querySelector('[data-testid="phases-editor-phase-a"]')).not.toBeNull();
-
-    // Move phase-a down
-    const moveDown = container.querySelector('[data-testid="phases-move-down-phase-a"]') as HTMLButtonElement;
-    await fireEvent.click(moveDown);
+    const input = () => container.querySelector('.model-list-item input') as HTMLInputElement;
+    await fireEvent.input(input(), { target: { value: 'claude-sonnet-5-6' } });
     await tick();
+    await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid="models-unsaved"]')).toBeNull();
 
-    // phase-a is now at index 1 — selection should follow it
-    // The editor should still show phase-a
-    expect(container.querySelector('[data-testid="phases-editor-phase-a"]')).not.toBeNull();
+    // Start a NEW edit before a delayed snapshot arrives — snapshot must NOT clobber it!
+    await fireEvent.input(input(), { target: { value: 'claude-sonnet-5-7' } });
+    await tick();
+    await rerender({ snapshot: buildSnapshot([phaseA], [], ['claude-sonnet-5-6']), initialTab: 'models' });
+    await tick();
+    expect(input().value).toBe('claude-sonnet-5-7');
+    expect(container.querySelector('[data-testid="models-unsaved"]')).not.toBeNull();
+
+    // A rejected Models save shows models-save-error-banner on Models, NEVER save-error-banner on Phases
+    vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'rejected', reason: 'stale-catalog' });
+    await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid="models-save-error-banner"]')?.textContent).toContain('Revert the draft and reapply your edits');
+
+    await switchTab(container, 'Phases');
+    expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
   });
 
-  it('selectedPhaseIndex follows the moved phase when moving up', async () => {
-    const container = await renderPhasesList();
+  it('blocks Phase row Deactivate… while another Phase has unsaved edits and avoids false unsaved banner during clean removal', async () => {
+    vi.mocked(deactivateHelper).mockClear();
+    let resolveRemove!: (result: { status: 'rejected'; reason: 'declined' }) => void;
+    vi.mocked(deactivateHelper).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveRemove = resolve; })
+    );
 
-    // Select phase-c (index 2)
-    const itemC = container.querySelector('[data-testid="phases-list-item-phase-c"]') as HTMLButtonElement;
-    await fireEvent.click(itemC);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA, phaseB]), initialTab: 'phases' }
+    });
     await tick();
 
-    expect(container.querySelector('[data-testid="phases-editor-phase-c"]')).not.toBeNull();
-
-    // Move phase-c up
-    const moveUp = container.querySelector('[data-testid="phases-move-up-phase-c"]') as HTMLButtonElement;
-    await fireEvent.click(moveUp);
+    // Trigger Deactivate… on clean phase-a — no false "has unsaved changes" banner/chip should flash!
+    await fireEvent.click(container.querySelector('[data-testid="phases-row-remove-phase-a"]')!);
+    await tick();
+    expect(container.querySelector('[data-testid="phases-unsaved-banner"]')).toBeNull();
+    expect(container.querySelector('[data-testid="phases-row-unsaved-phase-a"]')).toBeNull();
+    resolveRemove({ status: 'rejected', reason: 'declined' });
+    await tick();
     await tick();
 
-    // phase-c is now at index 1 — selection should follow
-    expect(container.querySelector('[data-testid="phases-editor-phase-c"]')).not.toBeNull();
+    // Now dirty phase-a, return to list, and verify phase-b Deactivate… is disabled & inert
+    await fireEvent.click(container.querySelector('[data-testid="phases-list-item-phase-a"]')!);
+    await tick();
+    await fireEvent.input(container.querySelector('[data-testid="phases-name-field-phase-a"]')!, {
+      target: { value: 'Alpha Edited' }
+    });
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    await tick();
+
+    vi.mocked(deactivateHelper).mockClear();
+    const removeB = container.querySelector('[data-testid="phases-row-remove-phase-b"]') as HTMLButtonElement;
+    expect(isMenuItemOff(removeB)).toBe(true);
+    await fireEvent.click(removeB);
+    await tick();
+    expect(deactivateHelper).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="phases-unsaved-banner"]')).not.toBeNull();
+  });
+
+  it('unlocks Phases controls cleanly when host rejects Deactivate… with a non-declined reason', async () => {
+    vi.mocked(deactivateHelper).mockResolvedValueOnce({
+      status: 'rejected',
+      reason: 'referenced'
+    });
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([phaseA, phaseB]), initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(container.querySelector('[data-testid="phases-row-remove-phase-a"]')!);
+    await tick();
+    await tick();
+
+    expect(container.querySelector('[data-testid="save-error-banner"]')).not.toBeNull();
+    expect((container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-row-duplicate-phase-a"]'))).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-row-remove-phase-a"]'))).toBe(false);
+    expect(isMenuItemOff(container.querySelector('[data-testid="phases-row-remove-phase-b"]'))).toBe(false);
   });
 });
 
@@ -1271,19 +1452,55 @@ describe('PipelineBuilder — BUG-012 addPhase append regression guard', () => {
     await fireEvent.click(addBtn);
     await tick();
 
-    let ids = Array.from(container.querySelectorAll('.phase-list-item'))
-      .map((el) => el.querySelector('.phase-list-id')?.textContent?.trim() ?? '');
-    expect(ids).toEqual(['existing-1', 'new-phase']);
+    // Adding opens the new Phase's editor page, which the redesign shows in place of
+    // the list; the list comes back with an add button of its own, so it is queried
+    // again rather than read off the first one.
+    await fireEvent.click(container.querySelector('[data-testid="phases-editor-back"]')!);
+    expect(getPhaseIds(container)).toEqual(['existing-1', 'new-phase']);
 
-    expect(addBtn.disabled).toBe(true);
+    const addAgain = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    expect(addAgain.disabled).toBe(true);
 
     // An atomic Phase save carries one explicit mutation only.
+    await fireEvent.click(addAgain);
+    await tick();
+
+    expect(getPhaseIds(container)).toEqual(['existing-1', 'new-phase']);
+  });
+
+  it('opens the newly inserted Phase draft editor with an editable name input that updates immediately (W12, FR-012)', async () => {
+    const existing: PhaseDefinition = Object.freeze({
+      id: 'existing-1', name: 'Existing', instruction: 'Already here.'
+    }) as unknown as PhaseDefinition;
+    const snap = buildSnapshot([existing]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    const addBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
+    expect(addBtn).not.toBeNull();
     await fireEvent.click(addBtn);
     await tick();
 
-    ids = Array.from(container.querySelectorAll('.phase-list-item'))
-      .map((el) => el.querySelector('.phase-list-id')?.textContent?.trim() ?? '');
-    expect(ids).toEqual(['existing-1', 'new-phase']);
+    const editor = container.querySelector('[data-testid="phases-editor-new-phase"]');
+    expect(editor).not.toBeNull();
+
+    const nameField = container.querySelector(
+      '[data-testid="phases-name-field-new-phase"]'
+    ) as HTMLInputElement;
+    expect(nameField).not.toBeNull();
+    expect(nameField.readOnly).toBe(false);
+    expect(nameField.disabled).toBe(false);
+    expect(nameField.value).toBe('New Phase');
+
+    await fireEvent.input(nameField, { target: { value: 'Security Audit' } });
+    await tick();
+
+    expect(nameField.value).toBe('Security Audit');
+    const heading = editor!.querySelector('h1.phase-title');
+    expect(heading).not.toBeNull();
+    expect(heading!.textContent.trim()).toBe('Security Audit');
   });
 
   it('no order or position dropdown exists in the phase form grid', async () => {
@@ -1309,31 +1526,28 @@ describe('PipelineBuilder — BUG-012 addPhase append regression guard', () => {
   });
 });
 
-// Feature 082 (US7, T054) — the Pipeline delete control is destructive, so it
-// is gated on the shared confirmation and never on its own click (FR-023). The
-// prompt has to describe the target, not just the action, and the triggering
-// control is handed to `useConfirm` so focus returns to it when the dialog
-// closes (FR-038).
-describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
+describe('PipelineBuilder — confirmed Workflow removal (US7, T054)', () => {
   const REMOVABLE: PipelineDefinition = Object.freeze({
     id: 'custom',
     name: 'Custom Pipeline',
     phases: Object.freeze(['speckit-specify'])
   }) as unknown as PipelineDefinition;
 
-  /** Renders the Pipelines tab, selects the row, and returns its delete button. */
+  /** Renders the Workflows tab, selects the row, and returns its delete button. */
   async function openDeleteControl(): Promise<{
     container: HTMLElement;
     deleteBtn: HTMLButtonElement;
   }> {
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot([], [REMOVABLE]) }
+      props: { snapshot: buildSnapshot([], [REMOVABLE]), initialTab: 'workflows' }
     });
     await tick();
-    await fireEvent.click(container.querySelector('.phase-list-item') as HTMLButtonElement);
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-list-item-custom"]') as HTMLButtonElement
+    );
     await tick();
     const deleteBtn = container.querySelector(
-      '[data-testid="pipelines-remove"]'
+      '[data-testid="workflows-remove"]'
     ) as HTMLButtonElement | null;
     expect(deleteBtn).not.toBeNull();
     return { container, deleteBtn: deleteBtn! };
@@ -1344,10 +1558,6 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     vi.mocked(useConfirm).mockClear();
   });
 
-  // Feature 100 (T509b, FR-049) — the prompt is raised by `deactivateDefinition`,
-  // which is the only function that can post the command it authorises. What the
-  // Pipelines tab still owns is everything the prompt needs in order to name the
-  // right row and return focus to the control that opened it.
   it('submits one removal, addressed by id, carrying what the prompt must say', async () => {
     const { deleteBtn } = await openDeleteControl();
 
@@ -1355,18 +1565,13 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     await tick();
 
     expect(deactivateHelper).toHaveBeenCalledTimes(1);
-    // Feature 101 (T030) — `toEqual` on both arguments is exact. The empty
-    // `pipelines: []` that stood here was the removal itself, an omission from a
-    // republished layer; a deactivation names the definition and carries no rows.
     expect(deactivateHelper).toHaveBeenCalledWith(
       {
-        kind: 'pipeline',
+        kind: 'workflow',
         id: 'custom',
-        // The fixture record carries no draft, so the staleness token is the
-        // sentinel rather than a version id (FR-024).
         expectedDraftVersion: 'no-draft'
       },
-      { definitionName: 'Custom Pipeline', originatingElement: deleteBtn }
+      expect.objectContaining({ definitionName: 'Custom Pipeline', originatingElement: deleteBtn })
     );
   });
 
@@ -1390,11 +1595,488 @@ describe('PipelineBuilder — confirmed Pipeline removal (US7, T054)', () => {
     await tick();
     await tick();
 
-    // Nothing was sent and nothing failed, so there is no rejection to report —
-    // and the row stays selected with its delete control live.
-    expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-save-error-banner"]')).toBeNull();
+    expect(isMenuItemOff(container.querySelector('[data-testid="workflows-remove"]'))).toBe(false);
+  });
+});
+
+describe('PipelineBuilder — Workflow canvas behaviour (Feature 184 / 264)', () => {
+  const SPECIFY: PhaseDefinition = Object.freeze({
+    id: 'speckit-specify', name: 'Specify', version: 1, instruction: 'Specify.'
+  }) as unknown as PhaseDefinition;
+  const PLAN: PhaseDefinition = Object.freeze({
+    id: 'speckit-plan', name: 'Plan', version: 1, instruction: 'Plan.'
+  }) as unknown as PhaseDefinition;
+  const CUSTOM: PipelineDefinition = Object.freeze({
+    id: 'custom',
+    name: 'Custom Pipeline',
+    phases: Object.freeze(['speckit-specify'])
+  }) as unknown as PipelineDefinition;
+
+  /** Renders the Workflows tab on a two-Phase catalog and opens the stored row. */
+  async function openCanvas(): Promise<HTMLElement> {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([SPECIFY, PLAN], [CUSTOM]), initialTab: 'workflows' }
+    });
+    await tick();
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflows-list-item-custom"]') as HTMLButtonElement
+    );
+    await tick();
+    return container;
+  }
+
+  const at = (container: HTMLElement, id: string) =>
+    container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
+
+  it('T031a: Undo reverts the row and Redo returns it, across panes', async () => {
+    const container = await openCanvas();
+    const name = () => at(container, 'workflow-field-name') as HTMLInputElement;
+
+    expect(name().value).toBe('Custom Pipeline');
+    await fireEvent.input(name(), { target: { value: 'Renamed Pipeline' } });
+    await tick();
+    expect(name().value).toBe('Renamed Pipeline');
+
+    await fireEvent.click(at(container, 'workflows-undo') as HTMLButtonElement);
+    await tick();
+    expect(name().value).toBe('Custom Pipeline');
+
+    await fireEvent.click(at(container, 'workflows-redo') as HTMLButtonElement);
+    await tick();
+    expect(name().value).toBe('Renamed Pipeline');
+  });
+
+  it('T031b: a stored Workflow is editable in place, on the canvas and in the inspector', async () => {
+    vi.mocked(saveDraftHelper).mockClear();
+    const container = await openCanvas();
+
+    await fireEvent.click(at(container, 'workflow-palette-phase-speckit-plan') as HTMLElement);
+    await tick();
+    await fireEvent.input(at(container, 'workflow-field-name') as HTMLInputElement, {
+      target: { value: 'Renamed Pipeline' }
+    });
+    await tick();
+
+    await fireEvent.click(at(container, 'workflows-save-all') as HTMLButtonElement);
+    await tick();
+
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(savedBody()).toEqual({
+      workflowId: 'custom',
+      name: 'Renamed Pipeline',
+      version: 1,
+      nodes: [
+        { nodeId: 'speckit-specify', kind: 'phase', phaseId: 'speckit-specify' },
+        { nodeId: 'node', kind: 'phase', phaseId: 'speckit-plan' }
+      ],
+      connections: [],
+      startNodeIds: ['speckit-specify']
+    });
+  });
+
+  it('T031b: nothing but the ID field is gated on `persisted`', async () => {
+    const container = await openCanvas();
+    const id = at(container, 'workflow-field-workflowId') as HTMLInputElement;
+
+    expect(id.readOnly).toBe(true);
+    expect((at(container, 'workflow-field-name') as HTMLInputElement).readOnly).toBe(false);
+    expect((at(container, 'workflow-field-description') as HTMLTextAreaElement).readOnly).toBe(
+      false
+    );
+    const saveBtn = at(container, 'workflows-save-all') as HTMLButtonElement;
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('true');
+
+    await fireEvent.input(at(container, 'workflow-field-name') as HTMLInputElement, {
+      target: { value: 'Edited' }
+    });
+    await tick();
+    // A node's operations live in the selected card's toolbar.
+    await fireEvent.click(at(container, 'workflow-node-0') as HTMLElement);
+    await tick();
+    expect(saveBtn.hasAttribute('disabled')).toBe(false);
+    expect(saveBtn.getAttribute('aria-disabled')).toBe('false');
+    for (const control of [
+      'workflow-palette-phase-speckit-plan',
+      'workflow-node-remove-0'
+    ]) {
+      expect((at(container, control) as HTMLButtonElement).disabled).toBe(false);
+    }
+    // The toolbar's menu items say they are off with `aria-disabled` instead.
+    for (const item of ['workflows-remove', 'workflows-duplicate', 'workflows-discard']) {
+      expect(isMenuItemOff(at(container, item)), item).toBe(false);
+    }
+  });
+});
+
+/**
+ * FR-R3-157 (T050, FR-017, C4.6, SC-012) — the cap outcome travels the path every
+ * other authored field travels, and the surface reports success only for a change
+ * the host accepted.
+ *
+ * There is no new IPC message and this file is where that is proved: the
+ * assertions below are against `saveDefinitionDraft`, the same mock the effort,
+ * runner and required cases assert against. A new message would have shown up
+ * here as a missing call, not as a passing test.
+ */
+describe('PipelineBuilder — per-phase retry cap outcome (T050, FR-017)', () => {
+  const RETRYING_PHASE = Object.freeze({
+    id: 'gated-phase',
+    name: 'Gated',
+    version: 1,
+    instruction: 'Run.',
+    retryCondition: 'tests-passed'
+  }) as unknown as PhaseDefinition;
+
+  async function openGatedPhase(): Promise<HTMLElement> {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([RETRYING_PHASE]), initialTab: 'phases' }
+    });
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-gated-phase"]') as HTMLButtonElement
+    );
+    await tick();
+    return container;
+  }
+
+  it('carries the chosen outcome on the accepted draft write, and reports success', async () => {
+    vi.mocked(saveDraftHelper).mockClear();
+    const container = await openGatedPhase();
+
+    await fireEvent.change(
+      container.querySelector('[data-testid="phases-retry-cap-gated-phase"]') as HTMLSelectElement,
+      { target: { value: 'continue-degraded' } }
+    );
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+
+    expect(saveDraftHelper).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(saveDraftHelper).mock.calls[0][0].kind).toBe('phase');
+    expect(savedBody()).toMatchObject({ id: 'gated-phase', onRetryCap: 'continue-degraded' });
     expect(
-      (container.querySelector('[data-testid="pipelines-remove"]') as HTMLButtonElement).disabled
-    ).toBe(false);
+      container.querySelector('[data-testid="save-error-banner"]'),
+      'an accepted write reports no error'
+    ).toBeNull();
+  });
+
+  it('does not report success for a change the host refused (SC-012)', async () => {
+    // The half that regresses silently. A surface that treated the *send* as the
+    // success would leave an operator believing a phase now continues past its
+    // cap when the host kept the old definition — and the disagreement surfaces
+    // as a failed task hours later, in a run nobody connects to this edit.
+    vi.mocked(saveDraftHelper).mockClear();
+    vi.mocked(saveDraftHelper).mockResolvedValueOnce({
+      status: 'rejected',
+      reason: 'invalid',
+      result: { errors: [{ field: 'onRetryCap', code: 'invalid-value', message: 'Unknown outcome' }] }
+    });
+    const container = await openGatedPhase();
+
+    await fireEvent.change(
+      container.querySelector('[data-testid="phases-retry-cap-gated-phase"]') as HTMLSelectElement,
+      { target: { value: 'continue' } }
+    );
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+
+    expect(
+      container.querySelector('[data-testid="save-error-banner"]'),
+      'a refused write must say so'
+    ).not.toBeNull();
+    // And the draft is still the operator's, not the host's: a refusal that
+    // silently reverted the control would lose the edit it just refused.
+    expect(
+      (container.querySelector('[data-testid="phases-retry-cap-gated-phase"]') as HTMLSelectElement)
+        .value
+    ).toBe('continue');
+  });
+});
+
+describe('PipelineBuilder — Phase and Workflow cross-links', () => {
+  const PHASE_A: PhaseDefinition = Object.freeze({
+    id: 'speckit-specify',
+    name: 'Specify',
+    version: 1,
+    instruction: 'Specify.'
+  });
+  const WORKFLOW_A: PipelineDefinition = Object.freeze({
+    id: 'spec-workflow',
+    name: 'Spec Workflow',
+    phases: ['speckit-specify']
+  });
+
+  it('navigates from a Phase dependent Workflow badge to that Workflow in the Workflows tab, and back to the Phase definition from the node inspector', async () => {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([PHASE_A], [WORKFLOW_A]), initialTab: 'phases' }
+    });
+
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-speckit-specify"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const depBtn = container.querySelector(
+      '[data-testid="phase-dependent-workflow-spec-workflow"]'
+    ) as HTMLButtonElement;
+    expect(depBtn).not.toBeNull();
+    expect(depBtn.textContent).toBe('Spec Workflow');
+
+    await fireEvent.click(depBtn);
+    await tick();
+
+    const wfToggle = container.querySelector(
+      '[data-testid="workflow-picker-toggle"]'
+    ) as HTMLButtonElement;
+    expect(wfToggle).not.toBeNull();
+    expect(wfToggle.textContent).toContain('Spec Workflow');
+
+    await fireEvent.click(
+      container.querySelector('[data-testid="workflow-node-0"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const openPhaseBtn = container.querySelector(
+      '[data-testid="workflow-inspector-open-phase-0"]'
+    ) as HTMLButtonElement;
+    expect(openPhaseBtn).not.toBeNull();
+    await fireEvent.click(openPhaseBtn);
+    await tick();
+
+    expect(container.querySelector('[data-testid="phases-editor-speckit-specify"]')).not.toBeNull();
+  });
+});
+
+// The redesign heads the open Phase's editor page with its name as a title rather
+// than an input, so these edit the name in the Basics form's field.
+describe('PipelineBuilder — FR-R5-F10 draft persistence and bounded undo history', () => {
+  const PHASE_ONE: PhaseDefinition = Object.freeze({
+    id: 'phase-one',
+    name: 'Phase One',
+    version: 1,
+    instruction: 'Original instruction.'
+  });
+  const PHASE_TWO: PhaseDefinition = Object.freeze({
+    id: 'phase-two',
+    name: 'Phase Two',
+    version: 1,
+    instruction: 'Second instruction.'
+  });
+
+  it('persists unsaved Phase drafts and selection across unmount/remount while preserving isLiveMode', async () => {
+    mockedWebviewState = { isLiveMode: false };
+    const snap = buildSnapshot([PHASE_ONE, PHASE_TWO]);
+
+    const first = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(
+      first.container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const nameInput = first.container.querySelector(
+      '[data-testid="phases-name-field-phase-one"]'
+    ) as HTMLInputElement;
+    await fireEvent.input(nameInput, { target: { value: 'Phase One Edited' } });
+    await tick();
+
+    // Unmount (simulate webview hide/dispose without retainContextWhenHidden)
+    first.unmount();
+
+    expect((mockedWebviewState as { isLiveMode?: boolean }).isLiveMode).toBe(false);
+
+    // Remount with the same snapshot
+    const second = render(PipelineBuilder, {
+      props: { snapshot: snap }
+    });
+    await tick();
+
+    const restoredName = second.container.querySelector(
+      '[data-testid="phases-name-field-phase-one"]'
+    ) as HTMLInputElement | null;
+    expect(restoredName).not.toBeNull();
+    expect(restoredName?.value).toBe('Phase One Edited');
+    expect((mockedWebviewState as { isLiveMode?: boolean }).isLiveMode).toBe(false);
+  });
+
+  it('merges dirty Phase drafts onto a newer catalog revision without losing operator edits', async () => {
+    const snapV1 = buildSnapshot([PHASE_ONE, PHASE_TWO]);
+    const first = render(PipelineBuilder, {
+      props: { snapshot: snapV1, initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(
+      first.container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+    await fireEvent.input(
+      first.container.querySelector('[data-testid="phases-name-field-phase-one"]') as HTMLInputElement,
+      { target: { value: 'Dirty Phase One' } }
+    );
+    await tick();
+    first.unmount();
+
+    // Host catalog advances revision and updates PHASE_TWO while PHASE_ONE stays dirty
+    const snapV2Base = buildSnapshot([
+      PHASE_ONE,
+      { ...PHASE_TWO, name: 'Phase Two Updated From Host' }
+    ]);
+    const snapV2: WorkflowSnapshot = {
+      ...snapV2Base,
+      phaseCatalog: {
+        ...snapV2Base.phaseCatalog!,
+        revision: 'rev-2'
+      }
+    };
+
+    const second = render(PipelineBuilder, {
+      props: { snapshot: snapV2 }
+    });
+    await tick();
+
+    const restoredOne = second.container.querySelector(
+      '[data-testid="phases-name-field-phase-one"]'
+    ) as HTMLInputElement | null;
+    expect(restoredOne?.value).toBe('Dirty Phase One');
+
+    // The restored selection reopens Phase One's editor page, which stands in for
+    // the list, so the breadcrumb leads back to the list before Phase Two is opened.
+    await fireEvent.click(
+      second.container.querySelector('[data-testid="phases-editor-back"]') as HTMLButtonElement
+    );
+    await fireEvent.click(
+      second.container.querySelector('[data-testid="phases-list-item-phase-two"]') as HTMLButtonElement
+    );
+    await tick();
+    const updatedTwo = second.container.querySelector(
+      '[data-testid="phases-name-field-phase-two"]'
+    ) as HTMLInputElement | null;
+    expect(updatedTwo?.value).toBe('Phase Two Updated From Host');
+  });
+
+  it('bounds Phase undo history at 50 entries and truncates redo tail on branched edit', async () => {
+    const snap = buildSnapshot([PHASE_ONE]);
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: snap, initialTab: 'phases' }
+    });
+    await tick();
+
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+
+    const nameInput = container.querySelector(
+      '[data-testid="phases-name-field-phase-one"]'
+    ) as HTMLInputElement;
+
+    for (let i = 1; i <= 60; i += 1) {
+      await fireEvent.input(nameInput, { target: { value: `Edit ${i}` } });
+      await tick();
+    }
+
+    const persisted = (mockedWebviewState as {
+      builderState?: { phaseSlice?: { history?: unknown[] } };
+    } | undefined)?.builderState?.phaseSlice;
+    expect(persisted?.history?.length).toBeLessThanOrEqual(50);
+
+    // The redesign's editor page puts Undo and Redo in its header as icon buttons,
+    // named by their labels rather than their text.
+    const editorPage = container.querySelector('[data-testid="phases-editor-phase-one"]')!;
+    const undoBtn = editorPage.querySelector('[aria-label="Undo"]') as HTMLButtonElement;
+    const redoBtn = editorPage.querySelector('[aria-label="Redo"]') as HTMLButtonElement;
+    await fireEvent.click(undoBtn);
+    await tick();
+    expect(redoBtn.disabled).toBe(false);
+
+    await fireEvent.input(nameInput, { target: { value: 'Branched Edit' } });
+    await tick();
+    expect(redoBtn.disabled).toBe(true);
+  });
+
+  // Finding 17 of the webview port review. A step from before a save holds rows
+  // the catalog has moved on from, and stepping back to it leaves no pending
+  // edit, so Save stayed off while the editor showed what the save replaced.
+  it('starts Undo afresh from the rows a save is adopted as', async () => {
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([PHASE_ONE]), initialTab: 'phases' }
+    });
+    await tick();
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+    const nameInput = () =>
+      container.querySelector('[data-testid="phases-name-field-phase-one"]') as HTMLInputElement;
+    const undoBtn = () =>
+      container.querySelector('[data-testid="phases-editor-phase-one"] [aria-label="Undo"]') as HTMLButtonElement;
+
+    await fireEvent.input(nameInput(), { target: { value: 'Saved Name' } });
+    await tick();
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+    const saved = buildSnapshot([{ ...PHASE_ONE, name: 'Saved Name' }]);
+    await rerender({
+      snapshot: { ...saved, phaseCatalog: { ...saved.phaseCatalog!, revision: 'rev-2' } },
+      initialTab: 'phases'
+    });
+    await tick();
+
+    expect(nameInput().value).toBe('Saved Name');
+    expect(undoBtn().disabled).toBe(true);
+
+    await fireEvent.input(nameInput(), { target: { value: 'Next Edit' } });
+    await tick();
+    expect(undoBtn().disabled).toBe(false);
+    await fireEvent.click(undoBtn());
+    await tick();
+    expect(nameInput().value).toBe('Saved Name');
+  });
+
+  // A save refused as stale replays its edit over the newer catalog's rows, and
+  // the edit stays pending. A step from before the replay holds the rows the
+  // newer catalog replaced, so Undo and then Save would write them back.
+  it('starts Undo afresh from the rows a refused save is rebased onto', async () => {
+    vi.mocked(saveDraftHelper).mockResolvedValueOnce({
+      status: 'rejected', reason: 'stale-catalog',
+      result: { currentRevision: 'rev-2' }
+    });
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot([PHASE_ONE, PHASE_TWO]), initialTab: 'phases' }
+    });
+    await tick();
+    await fireEvent.click(
+      container.querySelector('[data-testid="phases-list-item-phase-one"]') as HTMLButtonElement
+    );
+    await tick();
+    const nameInput = () =>
+      container.querySelector('[data-testid="phases-name-field-phase-one"]') as HTMLInputElement;
+    const undoBtn = () =>
+      container.querySelector('[data-testid="phases-editor-phase-one"] [aria-label="Undo"]') as HTMLButtonElement;
+
+    await fireEvent.input(nameInput(), { target: { value: 'Local Edit' } });
+    await tick();
+    await fireEvent.click(container.querySelector('[data-testid="phases-save-all"]')!);
+    await tick();
+    const newer = buildSnapshot([PHASE_ONE, { ...PHASE_TWO, name: 'Concurrent Edit' }]);
+    await rerender({
+      snapshot: { ...newer, phaseCatalog: { ...newer.phaseCatalog!, revision: 'rev-2' } },
+      initialTab: 'phases'
+    });
+    await tick();
+
+    expect(nameInput().value).toBe('Local Edit');
+    expect(undoBtn().disabled).toBe(true);
+
+    await fireEvent.input(nameInput(), { target: { value: 'Next Edit' } });
+    await tick();
+    await fireEvent.click(undoBtn());
+    await tick();
+    expect(nameInput().value).toBe('Local Edit');
+    expect(undoBtn().disabled).toBe(true);
   });
 });

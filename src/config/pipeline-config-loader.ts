@@ -4,13 +4,17 @@ import {
   mergeRuntimePolicy,
   validateCatalog,
   type PipelineCatalog,
+  type PipelineDef,
   type ValidationError,
   type ValidationWarning
 } from './pipeline-config';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../runner/backend-runner-factory';
+import { DEFAULT_BACKEND, SUPPORTED_BACKENDS } from '../contracts/backend-kinds';
+import { mapMutableBackends, type BackendMap } from '../contracts/backend-descriptors';
 import { resolvePhaseCatalog, type ResolvedPhaseCatalog } from './process-catalog';
 import { resolvePipelineCatalog, type ResolvedPipelineCatalog } from './pipeline-catalog';
-import { storedRows } from '../catalog';
+import { resolveWorkflowCatalog } from './workflow-catalog';
+import { resolveDefaultWorkflowId, type DefaultWorkflowReader } from './default-workflow';
+import { storedDraftOnlyRows, storedRows } from '../catalog';
 import type { CatalogSnapshot } from '../contracts/catalog-store';
 
 /**
@@ -22,21 +26,25 @@ import type { CatalogSnapshot } from '../contracts/catalog-store';
  * to migrate, so a read-once path would be a migration for nobody that outlives
  * the release it was written for (FR-055).
  *
- * `schegent.models` and `schegent.defaultPipelineId` are **not** retired keys and
- * keep both scopes. Neither is a definition — one names what a Pipeline may
- * select, the other which Pipeline the surfaces open on — so neither belongs in a
- * store of versioned definitions.
+ * `schegent.models` and the default-Workflow keys are **not** retired keys and
+ * keep both scopes. Neither is a definition — one names what a Phase may select,
+ * the other which Workflow the surfaces open on — so neither belongs in a store of
+ * versioned definitions. Feature 285 (D2): the default is `schegent.defaultWorkflowId`
+ * with the deprecated `schegent.defaultPipelineId` as a read-only fallback, and the
+ * reader has no write method for either.
  */
-export interface CatalogConfigReader {
+export interface CatalogConfigReader extends DefaultWorkflowReader {
   getModels(scope: 'user' | 'workspace'): readonly unknown[] | undefined;
-  getDefaultPipelineId(scope: 'user' | 'workspace'): string | undefined;
 }
 
 export interface LoadCatalogResult {
   readonly catalog: PipelineCatalog;
   readonly errors: readonly ValidationError[];
   readonly warnings: readonly ValidationWarning[];
+  /** Always `''`: the settings no longer source the linear default (feature 285, FR-007). */
   readonly defaultPipelineId: string;
+  /** The resolved default Workflow ID, `''` for none (feature 285, FR-005). */
+  readonly defaultWorkflowId: string;
   readonly usedFallback: boolean;
   readonly phaseCatalog: ResolvedPhaseCatalog;
   /**
@@ -78,20 +86,16 @@ function pipelineResolutionWarnings(
  * exact same legacy-array-migration + trim/filter coercion the Pipeline
  * catalog loader already uses, rather than a second copy of this logic.
  */
-export function coerceModels(raw: unknown): Record<BackendRunnerKind, readonly string[]> {
-  const out: Record<BackendRunnerKind, string[]> = {
-    claude: [],
-    codex: [],
-    agy: []
-  };
+export function coerceModels(raw: unknown): BackendMap<readonly string[]> {
+  const out = mapMutableBackends<string[]>(() => []);
 
   if (!raw) return out;
 
-  // Migration for old array format (assumes claude models)
+  // Migration for old array format (assumes default backend models)
   if (Array.isArray(raw)) {
     for (const entry of raw) {
       if (typeof entry === 'string' && entry.trim().length > 0) {
-        out.claude.push(entry.trim());
+        out[DEFAULT_BACKEND].push(entry.trim());
       }
     }
     return out;
@@ -133,17 +137,38 @@ export function loadCatalog(
   snapshot: CatalogSnapshot,
   reader?: CatalogConfigReader
 ): LoadCatalogResult {
+  // BUG-001 (101) — `draftOnlyRows` beside `rows`, out of the one snapshot, so the two
+  // lists cannot describe different reads. They stay separate all the way to the
+  // Builder projection: `rows` is what the workspace runs, and a saved-but-
+  // unpublished definition is not part of that (100 FR-007/FR-009) — it is only
+  // something the Library has to keep showing its author.
   const phaseCatalog = resolvePhaseCatalog({
     rows: storedRows(snapshot, 'phase'),
+    draftOnlyRows: storedDraftOnlyRows(snapshot, 'phase'),
     revision: snapshot.revisions.phase
   });
   // Pipeline bindings and Phase references resolve against the effective Phase
-  // catalog, so the Phase catalog must be resolved first (FR-011).
+  // catalog, so the Phase catalog must be resolved first (FR-011). A draft Phase is
+  // not in `effective`, so a draft Pipeline binding it reports an unknown-Phase
+  // error — which is the truth: publishing that Pipeline today would bind nothing
+  // (hard rule 38).
   const pipelineCatalog = resolvePipelineCatalog({
     rows: storedRows(snapshot, 'pipeline'),
+    draftOnlyRows: storedDraftOnlyRows(snapshot, 'pipeline'),
     revision: snapshot.revisions.pipeline,
     phaseCatalog: phaseCatalog.effective
   });
+  const workflowRows = storedRows(snapshot, 'workflow');
+  const workflowCatalog =
+    workflowRows.length > 0
+      ? resolveWorkflowCatalog({
+          rows: workflowRows,
+          draftOnlyRows: storedDraftOnlyRows(snapshot, 'workflow'),
+          revision: snapshot.revisions.workflow,
+          phaseCatalog,
+          pipelineCatalog
+        })
+      : null;
 
   const phaseWarnings: ValidationWarning[] = phaseCatalog.warnings.map((warning) => ({
     source: warning.code === 'phase-soft-cap' ? 'limit' : 'phase',
@@ -159,26 +184,28 @@ export function loadCatalog(
   // branch. It used to be one because it answered with a constant catalog — there
   // were no definitions without a reader to hold them. There are: they came out of
   // the store above, before this line, and all the reader still decides is which
-  // models a Pipeline may select and which Pipeline the surfaces open on. Its
+  // models a Pipeline may select and which Workflow the surfaces open on. Its
   // absence must move those two answers and nothing else, and a second return path
   // is how it would come to move a third — the branch this replaces returned
   // `errors: []` without validating the catalog at all.
+  //
+  // Feature 285 (FR-007, D3): no `defaultPipelineId` is passed, so the linear catalog's default is
+  // `''`, and the settings name a default Workflow only.
   const policy = mergeRuntimePolicy(
-    {
-      models: coerceModels(reader?.getModels('user')),
-      defaultPipelineId: reader?.getDefaultPipelineId('user')
-    },
-    {
-      models: coerceModels(reader?.getModels('workspace')),
-      defaultPipelineId: reader?.getDefaultPipelineId('workspace')
-    }
+    { models: coerceModels(reader?.getModels('user')) },
+    { models: coerceModels(reader?.getModels('workspace')) }
   );
+
+  const effectivePipelineDefs: PipelineDef[] = [...pipelineCatalog.effectivePipelineDefs];
+  const effectiveWorkflows = workflowCatalog?.effective ?? [];
+  const defaultWorkflowId = resolveDefaultWorkflowId(reader, effectiveWorkflows);
 
   const merged = buildCatalog(
     phaseCatalog.effectivePhaseDefs,
-    pipelineCatalog.effectivePipelineDefs,
+    effectivePipelineDefs,
     policy.models,
-    policy.defaultPipelineId
+    policy.defaultPipelineId,
+    effectiveWorkflows
   );
   const report = validateCatalog(merged);
   const allWarnings = [
@@ -209,6 +236,7 @@ export function loadCatalog(
       errors: report.errors,
       warnings: allWarnings,
       defaultPipelineId: '',
+      defaultWorkflowId: '',
       usedFallback: true,
       phaseCatalog,
       pipelineCatalog
@@ -225,10 +253,17 @@ export function loadCatalog(
   return {
     catalog: defaultNamesAPipeline
       ? merged
-      : buildCatalog(merged.phases, merged.pipelines, merged.models, ''),
+      : buildCatalog(
+          merged.phases,
+          merged.pipelines,
+          merged.models,
+          '',
+          effectiveWorkflows
+        ),
     errors: [],
     warnings: allWarnings,
     defaultPipelineId: resolvedDefaultId,
+    defaultWorkflowId,
     usedFallback: false,
     phaseCatalog,
     pipelineCatalog

@@ -31,8 +31,8 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
-  h.cleanup();
+afterEach(async () => {
+  await h.cleanup();
 });
 
 describe('Feature 065 (T030) — User Story 2: running queue silent enqueue', () => {

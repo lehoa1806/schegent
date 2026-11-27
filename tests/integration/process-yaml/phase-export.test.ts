@@ -107,7 +107,7 @@ const AUTHORED_PHASE = Object.freeze({
   name: 'Ship It',
   version: 3,
   instruction: 'Ship the thing.',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   timeoutSeconds: 900
 });
 
@@ -124,7 +124,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     expect(text).toContain('name: Ship It');
     expect(text).toContain('version: 3');
     expect(text).toContain('instruction: Ship the thing.');
-    expect(text).toContain('model: claude-opus-5');
+    expect(text).toContain('model: claude-opus-5-5');
     expect(text).toContain('timeoutSeconds: 900');
 
     // Nothing else: every top-level and nested key in the document is one of
@@ -244,21 +244,21 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
           name: 'Decoy Before',
           version: 1,
           instruction: 'Not the one.',
-          model: 'claude-opus-5'
+          model: 'claude-opus-5-5'
         },
         {
           phaseId: 'speckit-specify',
           name: 'Locally Authored Specify',
           version: 2,
           instruction: 'Use the local house style.',
-          model: 'claude-sonnet-5'
+          model: 'claude-sonnet-5-5'
         },
         {
           phaseId: 'decoy-after',
           name: 'Decoy After',
           version: 1,
           instruction: 'Also not the one.',
-          model: 'claude-opus-5'
+          model: 'claude-opus-5-5'
         }
       ]
     });
@@ -267,7 +267,7 @@ describe('Feature 084 — Phase export (QS-1..QS-7)', () => {
     const text = h.saved[0]!.text;
     expect(text).toContain('phaseId: speckit-specify');
     expect(text).toContain('name: Locally Authored Specify');
-    expect(text).toContain('model: claude-sonnet-5');
+    expect(text).toContain('model: claude-sonnet-5-5');
     // Neither neighbour's values reached the document.
     expect(text).not.toContain('Decoy Before');
     expect(text).not.toContain('Decoy After');

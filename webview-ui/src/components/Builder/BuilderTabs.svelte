@@ -13,8 +13,11 @@
     onactivate: (tab: BuilderTab) => void;
   }
   const { activeTab, onactivate }: Props = $props();
+  // Feature 180 (T1554, FR-001) / FR-R5-F05 — the strip reads in the order
+  // definitions compose: atomic Phases first, composable Workflows second, and
+  // the backend Models catalog third. Order only — every id and label is
+  // canonical, and `BuilderTab` is a set, not a sequence.
   const BUILDER_TABS = Object.freeze([
-    { id: 'pipelines', label: 'Pipelines' },
     { id: 'phases', label: 'Phases' },
     { id: 'workflows', label: 'Workflows' },
     { id: 'models', label: 'Models' }
@@ -47,12 +50,12 @@
      term surviving in the one place a sighted reader never looks.
      `tests/lint/no-legacy-surface-name.test.ts` is why it cannot come back, and
      why this comment does not spell it out. -->
-<div class="builder-tabs" role="tablist" aria-label="Builder catalogs">
+<div class="tabs builder-tabs" role="tablist" aria-label="Builder sections">
   {#each BUILDER_TABS as tab (tab.id)}
     <button
       id="builder-tab-{tab.id}"
       type="button"
-      class="tab-btn {activeTab === tab.id ? 'active' : ''}"
+      class="tab tab-btn {activeTab === tab.id ? 'active' : ''}"
       role="tab"
       aria-selected={activeTab === tab.id}
       aria-controls="builder-panel-{tab.id}"

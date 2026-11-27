@@ -1,9 +1,14 @@
 import type { StopPhaseLogTailCommand, StopPhaseLogTailResponse } from '../messages';
 import type { CommandHandler } from './handler-contract';
 import { ack } from './handler-helpers';
+import { logPhaseLogTailFailure } from './phase-log-tail-error';
 
-// Feature 020 T048 — stop a phase-log tail session. Read-only by
-// construction. The registry emits the `phase-log-tail-stopped` audit event.
+// Feature 020 T048 / FR-R5-F10 — stop a phase-log tail session. Gated, not serialized
+// (FR-R4-F05, FR-003): the registry emits a `phase-log-tail-stopped` audit row, so
+// a window that has lost primacy cannot stop its tail through this command. The
+// tail still ends without it: when its task leaves in flight, when the next tail
+// starts (one runs at a time), when the owning dashboard panel disposes, or at
+// extension teardown (`activation/phase-log-tail-wiring.ts`).
 export const handler: CommandHandler<StopPhaseLogTailCommand> = async (ctx, command) => {
   if (!ctx.deps.phaseLogTailService) {
     const failure: StopPhaseLogTailResponse = {
@@ -19,11 +24,7 @@ export const handler: CommandHandler<StopPhaseLogTailCommand> = async (ctx, comm
   try {
     stopResp = await ctx.deps.phaseLogTailService.stop(stopReq);
   } catch (err) {
-    ctx.deps.logger.warn(
-      `sidebar router: phase-log tail stop failed: ${ctx.deps.logger.sanitize(
-        (err as Error).message ?? 'unknown error'
-      )}`
-    );
+    logPhaseLogTailFailure(ctx.deps.logger, 'stop', err);
     stopResp = {
       outcome: 'failure',
       sessionId: stopReq.sessionId,

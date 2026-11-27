@@ -1,0 +1,109 @@
+/* Redesign design language: the scope root, utilities and the controls every surface shares.
+   Ported from the mockups `schegent_redesign_surfaces.html` and `workflow_builder_redesign.html`.
+
+   Opt-in. Nothing here applies outside an element that carries `.sg`, and that class also scopes
+   in the redesign geometry and type ramp (see the end of `theme.css`). Colour comes from the
+   `--schegent-*` tokens only, so these rules follow the operator's theme as the product does.
+
+   A status class sets two things: the text colour, which is a contrast-safe mix, and
+   `--sg-status-color`, the saturated colour that the dot, icon or ring beside the text draws with.
+
+   One rule per line. `src/lib/__tests__/sg-stylesheets.test.ts` holds the contract. */
+
+/* Scope base */
+.sg { font-size: var(--schegent-text-body); line-height: 1.45; color: var(--schegent-fg); }
+.sg :focus-visible { outline: 2px solid var(--schegent-focus-border); outline-offset: 2px; }
+.sg h1, .sg h2, .sg h3, .sg h4 { margin: 0; }
+.sg h1 { font-size: var(--schegent-text-heading); }
+.sg h2 { font-size: var(--schegent-text-subheading); }
+.sg h3 { font-size: var(--schegent-text-secondary); }
+.sg h4 { font-size: var(--schegent-text-caption); }
+
+/* Utilities */
+.sg .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sg svg.i { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: var(--sg-status-color, currentColor); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.sg .muted { color: var(--schegent-muted-fg); }
+.sg .mono { font-family: var(--schegent-mono-font); font-size: var(--schegent-text-secondary); }
+.sg .small { font-size: var(--schegent-text-secondary); }
+.sg .rel { position: relative; }
+.sg [hidden] { display: none !important; }
+.sg .push { margin-left: auto; }
+.sg summary { cursor: pointer; }
+
+/* Buttons. The mockups draw them without a border, in a palette that defines none; here the border
+   is the theme's own button border, so it stays transparent unless the theme draws one, as a high
+   contrast theme always does. A ghost button reads as text until pointed at, so it keeps no border
+   but the one a high contrast theme draws around every control. */
+.sg .btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--schegent-space-1-5); height: var(--schegent-control-height); padding: 0 var(--schegent-space-3); border-radius: var(--schegent-radius-sm); border: 1px solid var(--schegent-button-border); cursor: pointer; white-space: nowrap; text-decoration: none; }
+.sg .btn-primary { background: var(--schegent-button-bg); color: var(--schegent-button-fg); }
+.sg .btn-primary:hover:not(:disabled, [aria-disabled='true']) { background: var(--schegent-button-hover); }
+.sg .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
+.sg .btn-secondary:hover:not(:disabled, [aria-disabled='true']) { background: var(--schegent-button-secondary-hover); }
+.sg .btn-ghost { background: transparent; border-color: var(--schegent-contrast-border); }
+.sg .btn-ghost:hover:not(:disabled, [aria-disabled='true']), .sg .icon-btn:hover:not(:disabled, [aria-disabled='true']) { background: var(--schegent-list-hover); }
+.sg .btn-danger { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-error-border); }
+.sg .btn-danger:hover:not(:disabled, [aria-disabled='true']) { background: var(--schegent-error-bg); border-color: var(--schegent-error-border); }
+.sg .btn-sm { height: var(--schegent-control-height-compact); padding: 0 var(--schegent-space-2); font-size: var(--schegent-text-secondary); }
+.sg .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: var(--schegent-control-height); height: var(--schegent-control-height); border-radius: var(--schegent-radius-sm); border: 0; background: transparent; cursor: pointer; }
+.sg .btn:is(:disabled, [aria-disabled='true']), .sg .icon-btn:is(:disabled, [aria-disabled='true']) { opacity: 0.4; cursor: default; }
+.sg .linkbtn { background: none; border: 0; padding: 0; color: var(--schegent-link-fg); cursor: pointer; text-align: left; }
+.sg .sep { width: 1px; height: 20px; background: var(--schegent-border); }
+
+/* Inputs, search, segmented control, filter pill */
+.sg .input { height: var(--schegent-control-height); padding: 0 var(--schegent-space-2); border-radius: var(--schegent-radius-sm); border: 1px solid var(--schegent-input-border); background: var(--schegent-input-bg); color: var(--schegent-input-fg); width: 100%; }
+.sg textarea.input { height: auto; padding: var(--schegent-space-1-5) var(--schegent-space-2); }
+.sg .search { position: relative; }
+/* The magnifier centres in its field's height: 28px, or 44px under a coarse pointer. */
+.sg .search svg { position: absolute; left: var(--schegent-space-2); top: 0; bottom: 0; margin-block: auto; opacity: 0.7; }
+.sg .search .input { padding-left: var(--schegent-space-5-5); }
+.sg .seg { display: inline-flex; align-items: stretch; min-height: var(--schegent-control-height); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm); overflow: hidden; }
+.sg .seg button { display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; min-height: calc(var(--schegent-control-height) - 2px); padding: 0 var(--schegent-space-2-5); cursor: pointer; white-space: nowrap; }
+.sg .seg button + button { border-left: 1px solid var(--schegent-border); }
+.sg .seg button[aria-pressed='true'] { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); box-shadow: inset 0 0 0 1px var(--schegent-selection-outline); }
+.sg .seg button:focus-visible { outline-offset: -2px; }
+.sg .filter-btn { display: inline-flex; align-items: center; gap: var(--schegent-space-1); height: var(--schegent-control-height); padding: 0 var(--schegent-space-2); border-radius: calc(var(--schegent-control-height) / 2); border: 1px dashed var(--schegent-border); background: none; cursor: pointer; font-size: var(--schegent-text-secondary); }
+.sg .filter-btn.on { border-style: solid; border-color: var(--schegent-focus-border); }
+
+/* Status chips and tags */
+.sg .chip { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 var(--schegent-space-2); border-radius: 10px; font-size: var(--schegent-text-caption); border: 1px solid var(--schegent-border); white-space: nowrap; vertical-align: middle; }
+.sg .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sg-status-color, currentColor); }
+.sg .chip svg.i { width: 12px; height: 12px; }
+.sg .s-run, .sg .s-draft, .sg .st-draft { color: var(--schegent-status-active-text); --sg-status-color: var(--schegent-color-active); }
+.sg .s-ok, .sg .st-published, .sg .run-ok { color: var(--schegent-status-completed-text); --sg-status-color: var(--schegent-color-completed); }
+.sg .s-err, .sg .st-invalid, .sg .run-fail { color: var(--schegent-status-error-text); --sg-status-color: var(--schegent-color-error); }
+.sg .s-warn, .sg .st-modified { color: var(--schegent-status-warning-text); --sg-status-color: var(--schegent-color-warning); }
+.sg .s-idle, .sg .st-inactive { color: var(--schegent-muted-fg); --sg-status-color: var(--schegent-muted-fg); }
+.sg .tag { display: inline-flex; align-items: center; height: 18px; padding: 0 var(--schegent-space-1-5); border-radius: 4px; font-size: var(--schegent-text-caption); background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); vertical-align: middle; }
+
+/* Attention banner */
+.sg .attn { display: flex; gap: var(--schegent-space-2-5); align-items: flex-start; padding: var(--schegent-space-2-5) var(--schegent-space-3); border: 1px solid color-mix(in srgb, var(--schegent-color-error) 55%, transparent); background: color-mix(in srgb, var(--schegent-color-error) 9%, transparent); border-radius: var(--schegent-radius); margin-bottom: var(--schegent-space-3-5); }
+.sg .attn.warn { border-color: color-mix(in srgb, var(--schegent-color-warning) 55%, transparent); background: color-mix(in srgb, var(--schegent-color-warning) 9%, transparent); }
+.sg .attn .ic { color: var(--schegent-color-error); margin-top: 1px; }
+.sg .attn.warn .ic { color: var(--schegent-color-warning); }
+.sg .attn .body { flex: 1; }
+.sg .attn .acts { display: flex; flex-wrap: wrap; gap: var(--schegent-space-1-5); margin-top: var(--schegent-space-2); }
+
+/* Kind icons */
+.sg .kicon { width: 24px; height: 24px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+.sg .k-phase { background: color-mix(in srgb, var(--schegent-color-active) 18%, transparent); color: var(--schegent-color-active); }
+.sg .k-workflow { background: color-mix(in srgb, var(--schegent-color-workflow) 20%, transparent); color: var(--schegent-color-workflow); }
+.sg .k-logic { background: color-mix(in srgb, var(--schegent-color-warning) 20%, transparent); color: var(--schegent-color-warning); }
+
+/* Form primitives */
+.sg .field { display: flex; flex-direction: column; gap: var(--schegent-space-1); margin-bottom: var(--schegent-space-3); }
+.sg .field > span:not(.unit), .sg .field > label { font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+.sg .hint { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+.sg .unit { display: flex; align-items: center; gap: var(--schegent-space-1-5); }
+.sg .unit .input { width: 110px; }
+.sg .pick { display: flex; gap: var(--schegent-space-2); align-items: flex-start; width: 100%; padding: 7px var(--schegent-space-2); border: 1px solid var(--schegent-input-border); border-radius: var(--schegent-radius-sm); background: var(--schegent-input-bg); color: var(--schegent-input-fg); text-align: left; cursor: pointer; margin-bottom: var(--schegent-space-1); }
+/* A pick that toggles (a second press clears it) carries aria-pressed in place of aria-checked. */
+.sg .pick[aria-checked='true'], .sg .pick[aria-pressed='true'] { border-color: var(--schegent-focus-border); box-shadow: var(--schegent-ring-selected); }
+.sg .pick .t { font-weight: 600; display: block; }
+.sg .pick .d { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); display: block; }
+.sg .kv { display: grid; grid-template-columns: max-content 1fr; gap: 5px var(--schegent-space-4); font-size: var(--schegent-text-secondary); margin: 0; }
+.sg .kv dt { color: var(--schegent-muted-fg); }
+.sg .kv dd { margin: 0; }
+.sg summary + .kv { margin-top: var(--schegent-space-2); }
+.sg fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.sg legend { padding: 0; margin-bottom: var(--schegent-space-2); font-weight: 600; font-size: var(--schegent-text-secondary); }
+.sg :where(label:has(> input[type='checkbox']), label:has(> input[type='radio'])) { display: flex; align-items: center; gap: var(--schegent-space-1-5); }

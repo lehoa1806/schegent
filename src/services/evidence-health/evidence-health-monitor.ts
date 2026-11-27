@@ -3,18 +3,26 @@ export type EvidenceSinkName =
   | 'rawTranscript'
   | 'runtimeLog'
   | 'metricsRollup'
-  | 'historyPointer';
-export type EvidenceSinkStatus = 'healthy' | 'degraded' | 'unavailable';
-export type EvidenceOverallStatus = 'healthy' | 'degraded' | 'unavailable';
-export type EvidenceContinuationPolicy = 'fail-closed' | 'continue-degraded';
+  | 'historyPointer'
+  | 'auditCheckpoint'
+  | 'transport'
+  | 'verboseDiagnostics';
 
-export interface EvidenceSinkHealth {
-  readonly status: EvidenceSinkStatus;
-  readonly continuationPolicy: EvidenceContinuationPolicy;
-  readonly failureCount: number;
-  readonly lastFailureAt: string | null;
-  readonly cause: string | null;
-}
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports them instead of restating them. Re-exported unchanged.
+import type {
+  EvidenceContinuationPolicy,
+  EvidenceOverallStatus,
+  EvidenceSinkHealth,
+  EvidenceSinkStatus
+} from '../../contracts/snapshot-vocabulary';
+
+export type {
+  EvidenceContinuationPolicy,
+  EvidenceOverallStatus,
+  EvidenceSinkHealth,
+  EvidenceSinkStatus
+};
 
 export interface EvidenceHealthSnapshot {
   readonly overall: EvidenceOverallStatus;
@@ -45,12 +53,68 @@ export interface EvidenceHealthSnapshot {
    * `fail-closed` status that governs writes.
    */
   readonly historyPointer: EvidenceSinkHealth;
+  /**
+   * FR-R5-F13 (NS-07) — head checkpoint tracking in per-user global storage.
+   * `continue-degraded`: ordinary `audit.log` appends continue while checkpoint
+   * tracking is degraded, and `reportSuccess('audit')` never clears this sink.
+   */
+  readonly auditCheckpoint: EvidenceSinkHealth;
+  /**
+   * FR-R5-F13 (NS-05) — CLI transport capture (`TransportRouter`).
+   * `continue-degraded`: disabled capture stays healthy; enabled capture failures
+   * or path refusals surface here without failing the Run.
+   */
+  readonly transport: EvidenceSinkHealth;
+  /**
+   * FR-R5-F13 (NS-05) — opt-in verbose diagnostic capture (`VerboseDiagnosticWriter`).
+   * `continue-degraded`: disabled capture stays healthy; enabled diagnostic directory
+   * or stream failures/refusals surface here without failing the Run.
+   */
+  readonly verboseDiagnostics: EvidenceSinkHealth;
+  /**
+   * FR-R3-106 (FR-075) — transport lines refused because the sink's pending queue was
+   * already at its bound.
+   *
+   * WHY IT BELONGS HERE. `CliTransportSink` has counted these since `FR-R3-052` and exposed
+   * them on a getter whose only readers were two unit tests. So the operator question "did
+   * the transport log lose lines?" was answerable by the code and answered nowhere — the
+   * bound was real, the loss was real, and the evidence said nothing. Same class as a
+   * declared threshold no command enforces.
+   *
+   * A COUNT, not a status, and it deliberately does not feed `overall`. A drop is not a sink
+   * failure: the cap did its job and the run continued. What it means is that the transcript
+   * is **incomplete**, which matters when someone later reads that transcript to explain a
+   * run. Folding it into `overall` would put the whole surface amber for a working system,
+   * which is how a status people learn to ignore gets made.
+   *
+   * Zero is the common value and is reported as zero rather than omitted — "no drops" and
+   * "nobody looked" must not read the same.
+   */
+  readonly transportDrops: TransportDropCounts;
+}
+
+/**
+ * Lines and bytes the transport sink refused under backpressure.
+ *
+ * Both, because they answer different questions: a thousand dropped short lines and one
+ * dropped megabyte-long line are the same number to a line counter, and only one of them
+ * loses a meaningful amount of a transcript.
+ */
+export interface TransportDropCounts {
+  readonly lines: number;
+  readonly bytes: number;
 }
 
 export interface EvidenceHealthReporter {
   /** Returns true when this sink/cause transition should emit a warning. */
   reportFailure(sink: EvidenceSinkName, cause: string): boolean;
   reportSuccess(sink: EvidenceSinkName): void;
+  /**
+   * FR-R4-F03 (FR-017) — the operator's reset ends the two history findings. Optional, so a reporter
+   * that has no audit integrity causes need not know it.
+   */
+  clearAuditIntegrity?(codes: readonly AuditIntegrityCause[]): void;
+  getSnapshot?(): EvidenceHealthSnapshot;
 }
 
 export interface EvidenceHealthDisposable {
@@ -59,13 +123,73 @@ export interface EvidenceHealthDisposable {
 
 export type EvidenceHealthListener = (snapshot: EvidenceHealthSnapshot) => void;
 
+/**
+ * FR-R3-080 (T1075) — the phase-end warning code for a sink whose write was
+ * REFUSED rather than failed.
+ *
+ * One code per sink, composed here rather than at the call sites, so the
+ * phase-end allowlist can hold the literals and no caller can invent a code the
+ * allowlist has never seen. `SEC-06` / `SEC-07`'s refusals reached the log and
+ * stopped there, and a refusal nobody surfaces is a refusal nobody acts on.
+ */
+export function pathRefusedWarning(sink: EvidenceSinkName): string {
+  return `evidence-path-refused:${sink}`;
+}
+
+/**
+ * Every sink name, so the allowlist and its test enumerate the same set the
+ * type does rather than a hand-copied echo of it.
+ */
+export const EVIDENCE_SINK_NAMES: readonly EvidenceSinkName[] = [
+  'audit',
+  'rawTranscript',
+  'runtimeLog',
+  'metricsRollup',
+  'historyPointer',
+  'auditCheckpoint',
+  'transport',
+  'verboseDiagnostics'
+];
+
 const POLICIES: Readonly<Record<EvidenceSinkName, EvidenceContinuationPolicy>> = Object.freeze({
   audit: 'fail-closed',
   rawTranscript: 'continue-degraded',
   runtimeLog: 'continue-degraded',
   metricsRollup: 'continue-degraded',
-  historyPointer: 'continue-degraded'
+  historyPointer: 'continue-degraded',
+  auditCheckpoint: 'continue-degraded',
+  transport: 'continue-degraded',
+  verboseDiagnostics: 'continue-degraded'
 });
+
+/**
+ * FR-R4-F03 (FR-006, FR-009, FR-016, FR-022; data-model §6, R8) — the audit sink's causes, in the two
+ * classes the monitor treats differently.
+ *
+ * A WRITE cause says one write went wrong (the disk refused, was full, timed out). Nothing is wrong
+ * with the history, so the next landed append clears it, which is what makes "non-healthy until an
+ * append lands" true and not "non-healthy until the window reloads".
+ *
+ * An INTEGRITY cause is a finding about the history itself: a broken link, history shorter than its
+ * checkpoint, history missing. A landed append says nothing about any of them, so it must never clear
+ * one, and a later write failure must not replace one. Only the operator's reset clears the two
+ * history causes (`clearAuditIntegrity`), and an activation `reset()` clears every cause, as before.
+ */
+export const AUDIT_WRITE_CAUSES = [
+  'permission-denied',
+  'disk-full',
+  'read-only-filesystem',
+  'timeout',
+  'path-refused',
+  'partial-write',
+  'io-error'
+] as const;
+export const AUDIT_INTEGRITY_CAUSES = ['chain-broken', 'history-shorter', 'history-missing'] as const;
+export type AuditWriteCause = (typeof AUDIT_WRITE_CAUSES)[number];
+export type AuditIntegrityCause = (typeof AUDIT_INTEGRITY_CAUSES)[number];
+
+const isAuditIntegrityCause = (cause: string | null): boolean =>
+  (AUDIT_INTEGRITY_CAUSES as readonly string[]).includes(cause ?? '');
 
 function healthySink(sink: EvidenceSinkName): EvidenceSinkHealth {
   return Object.freeze({
@@ -83,7 +207,10 @@ function healthySinks(): Record<EvidenceSinkName, EvidenceSinkHealth> {
     rawTranscript: healthySink('rawTranscript'),
     runtimeLog: healthySink('runtimeLog'),
     metricsRollup: healthySink('metricsRollup'),
-    historyPointer: healthySink('historyPointer')
+    historyPointer: healthySink('historyPointer'),
+    auditCheckpoint: healthySink('auditCheckpoint'),
+    transport: healthySink('transport'),
+    verboseDiagnostics: healthySink('verboseDiagnostics')
   };
 }
 
@@ -94,6 +221,11 @@ function healthySinks(): Record<EvidenceSinkName, EvidenceSinkHealth> {
  * availability-preserving.
  */
 export class EvidenceHealthMonitor implements EvidenceHealthReporter {
+  private transportDrops: TransportDropCounts = { lines: 0, bytes: 0 };
+
+  /** FR-R3-080 — refusal codes awaiting a phase end to report them. */
+  private readonly pathRefusals = new Set<string>();
+
   private readonly listeners = new Set<EvidenceHealthListener>();
   private readonly now: () => Date;
   private sinks: Record<EvidenceSinkName, EvidenceSinkHealth> = healthySinks();
@@ -102,10 +234,30 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
     this.now = now;
   }
 
+  /**
+   * FR-R3-080 (T1075) — refusal codes recorded since the last drain.
+   *
+   * Drained rather than read, and drained by the phase runner at phase end, so
+   * each refusal is reported against the phase it happened in and is not
+   * repeated on every phase after it. A `Set`, so a sink refusing on every line
+   * of output contributes one warning rather than ten thousand.
+   */
+  public drainPathRefusals(): readonly string[] {
+    const drained = [...this.pathRefusals];
+    this.pathRefusals.clear();
+    return drained;
+  }
+
   public reportFailure(sink: EvidenceSinkName, cause: string): boolean {
     const previous = this.sinks[sink];
     const normalizedCause = normalizeEvidenceFailureCause(cause);
-    const shouldWarn = previous.status === 'healthy' || previous.cause !== normalizedCause;
+    if (normalizedCause === 'path-refused') this.pathRefusals.add(pathRefusedWarning(sink));
+    // FR-R4-F03 — a write failure never replaces an integrity finding: the cause stays, and the
+    // failure is still counted. An integrity cause replaces anything.
+    const keepsIntegrityCause =
+      sink === 'audit' && isAuditIntegrityCause(previous.cause) && !isAuditIntegrityCause(normalizedCause);
+    const recordedCause = keepsIntegrityCause ? previous.cause : normalizedCause;
+    const shouldWarn = previous.status === 'healthy' || previous.cause !== recordedCause;
     this.sinks = {
       ...this.sinks,
       [sink]: Object.freeze({
@@ -113,7 +265,7 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
         continuationPolicy: POLICIES[sink],
         failureCount: previous.failureCount + 1,
         lastFailureAt: this.now().toISOString(),
-        cause: normalizedCause
+        cause: recordedCause
       })
     };
     this.notify();
@@ -122,7 +274,20 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
 
   public reportSuccess(sink: EvidenceSinkName): void {
     if (this.sinks[sink].status === 'healthy') return;
+    // FR-R4-F03 — a landed append ends only the state a write failure caused.
+    if (sink === 'audit' && isAuditIntegrityCause(this.sinks.audit.cause)) return;
     this.sinks = { ...this.sinks, [sink]: healthySink(sink) };
+    this.notify();
+  }
+
+  /**
+   * FR-R4-F03 (FR-017; R17) — the operator's reset ends a history finding. Clears the audit sink only
+   * when its cause is one of `codes`, so a broken link, and a write failure, are never cleared by it.
+   */
+  public clearAuditIntegrity(codes: readonly AuditIntegrityCause[]): void {
+    const { cause } = this.sinks.audit;
+    if (cause === null || !(codes as readonly string[]).includes(cause)) return;
+    this.sinks = { ...this.sinks, audit: healthySink('audit') };
     this.notify();
   }
 
@@ -137,10 +302,37 @@ export class EvidenceHealthMonitor implements EvidenceHealthReporter {
       : this.sinks.rawTranscript.status === 'degraded' ||
           this.sinks.runtimeLog.status === 'degraded' ||
           this.sinks.metricsRollup.status === 'degraded' ||
-          this.sinks.historyPointer.status === 'degraded'
+          this.sinks.historyPointer.status === 'degraded' ||
+          this.sinks.auditCheckpoint.status === 'degraded' ||
+          this.sinks.transport.status === 'degraded' ||
+          this.sinks.verboseDiagnostics.status === 'degraded'
         ? 'degraded'
         : 'healthy';
-    return Object.freeze({ overall, ...this.sinks });
+    // FR-R3-106 (FR-075) — the drop counts ride along, and deliberately do NOT feed
+    // `overall`. A drop means the transcript is incomplete, not that a sink is failing: the
+    // cap did its job and the run continued. Folding it into `overall` would put the whole
+    // surface amber for a working system, which is how a status people learn to ignore gets
+    // made.
+    return Object.freeze({ overall, ...this.sinks, transportDrops: this.transportDrops });
+  }
+
+  /**
+   * Record the transport sink's current refusal counts.
+   *
+   * Absolute values rather than a delta, because the sink already keeps a cumulative total
+   * and two counters that must be kept in step is how they come to disagree. Called from
+   * wherever the sink is observed; until then the reported value is zero, which is the
+   * truthful reading of "the sink has refused nothing that anyone has told us about".
+   */
+  public noteTransportDrops(counts: TransportDropCounts): void {
+    if (
+      counts.lines === this.transportDrops.lines &&
+      counts.bytes === this.transportDrops.bytes
+    ) {
+      return;
+    }
+    this.transportDrops = { lines: counts.lines, bytes: counts.bytes };
+    this.notify();
   }
 
   public subscribe(listener: EvidenceHealthListener): EvidenceHealthDisposable {
@@ -177,6 +369,31 @@ export function normalizeEvidenceFailureCause(cause: unknown): string {
     case 'ETIMEDOUT':
     case 'timeout':
       return 'timeout';
+    case 'chain-broken':
+    case 'history-shorter':
+    case 'history-missing':
+      // FR-R4-F03 — the three integrity findings, each its own code. `chain-broken` used to fold
+      // into `io-error`, so even a broken link had no reason code of its own to report.
+      return raw;
+    case 'symlink-component':
+    case 'outside-root':
+    case 'invalid-segment':
+    case 'stage-symlink-component':
+    case 'stage-outside-root':
+    case 'stage-not-owned':
+    case 'path-refused':
+      // FR-R3-080 (T1075), FR-R5-F13 (NS-05) — a REFUSAL, not a failure, and the
+      // distinction is the whole point of the round that added it: `io-error` says
+      // the write was attempted and went wrong, and this says the write never ran
+      // because the path could not be proven. Folding the two would tell an
+      // operator to look at their disk when they should be looking at their tree.
+      // Carries no path, like every case here.
+      return 'path-refused';
+    case 'checkpoint-unavailable':
+    case 'corrupt':
+    case 'version-unknown':
+    case 'unreachable':
+      return 'checkpoint-unavailable';
     case 'partial-write':
     case 'stream-error':
     case 'cleanup-failed':

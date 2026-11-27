@@ -1,37 +1,48 @@
-// QueueManager — single-queue mode (Feature 030).
+// QueueManager — the workspace's queues, up to `MAX_QUEUES` (FR-R3-145, T1569).
 //
-// The unified workspace queue is the canonical `'default'` queue defined
-// in `queue-registry`. The manager exposes pause/resume + task-level
-// mutators (reorder, modify, remove, retry, clear) plus the headless
-// pump helpers (peekNextPending, hasCapacity, markInFlight, finish).
+// `'default'` is the canonical queue defined in `queue-registry`, and the one a
+// call that names no queue id lands on. The manager exposes pause/resume + task-level
+// mutators (reorder, modify, remove, retry, clear) plus the helpers a
+// drain pass calls (peekNextPending, hasCapacity, markInFlight, finish).
 //
-// Multi-queue management surface (create/rename/delete/move-between/save
-// queue settings) was removed in Feature 030; the v6 migration coalesced
-// any prior multi-queue state into the single `'default'` entry. The
-// registry never carries a schedule under single-queue mode, so the
-// `fireDueSchedules` watchdog path is a no-op in practice (the function
-// is retained for migration robustness and to keep the watchdog wiring
-// stable).
+// Those four were called "pump helpers" until the lifecycle round-check of
+// 2026-08-30. Nothing pumps. `AutoDrainCoordinator` is edge-triggered, and a
+// caller that returns a row to `pending` and waits will wait forever — which is
+// the bug that round-check was opened on. The word is avoided here because this
+// header is where a reader forms the model.
+//
+// Feature 030 removed the multi-queue management surface and its v6 migration
+// coalesced prior multi-queue state into the single `'default'` entry; Feature
+// 092 brought the surface back, so create/rename/delete/move-between/save queue
+// settings are live methods below. No caller attaches a schedule — the one call
+// to `setQueueSchedule` clears one — so the `fireDueSchedules` watchdog path is
+// a no-op in practice (the function is retained for migration robustness and to
+// keep the watchdog wiring stable).
 //
 // Pause semantics (preserved):
 //   - operator pause/resume: `setQueuePausedState`
 //   - cascade pause/resume:  `cascadedPause`, `cascadedResume`
 //     (cascade is overridden by an explicit operator pause; cascadedResume
 //      is a strict no-op when the entry's `pauseSource !== 'cascade'`.)
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
+import type { QueueFailurePolicy } from '../contracts/queue-failure-policy';
+import { errorMessage } from '../lib/errors';
 import { randomUUID } from 'crypto';
 import {
+  isRunRaceRefusal,
   MAX_GLOBAL_CONCURRENCY_CAP,
   QueueMutationRejected,
+  StorageWriteQuarantinedError,
+  type QueueDeletionView,
   type WorkspaceStateStore
 } from '../state/workspace-state';
-import type { WorkflowRun } from '../state/workflow-run';
-import { resolveBoundQueueId } from '../state/connected-workflow-run';
+import type { RunPatch, WorkflowRun } from '../state/workflow-run';
+import { allowedSameStatusFor } from '../state/run-transition-decision';
+import { connectedRunOwnsQueueItem, resolveBoundQueueId, workflowAttemptEndedForQueueItem } from '../state/connected-workflow-run';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { SanitizedLogger } from '../lib/logger';
 import {
   createQueue,
-  deleteQueue,
-  DEFAULT_QUEUE_ID,
   findQueue,
   renameQueue,
   setQueueSchedule,
@@ -39,21 +50,63 @@ import {
   type QueuePauseSource
 } from './queue-registry';
 import {
+  // Feature 195 (T065, FR-026).
+  type CompletionProvenance,
   type FeatureRequest,
   type FeatureRequestFailure,
   type FeatureRequestPauseCause,
   type FeatureRequestRerun,
   type FeatureRequestStatus,
+  type QueueState,
+  type TerminalRequestStatus,
+  type WorkflowOccurrenceIdentity,
   validateDescription
 } from './feature-request';
+import { terminalCapture, withoutTerminalCapture } from './terminal-capture';
+import { withRefreshedLifecycle } from './queue-lifecycle-refresh';
+import { hasResettableQueueState, queueResetFields } from './queue-reset-settle';
+import { decideTaskTransition, TASK_TRANSITION_REJECTION_REASONS } from './task-transition-decision';
+import { unexpectedMutationFailureReason } from './unexpected-mutation-failure';
 
 export interface MutationResult {
   ok: boolean;
   reason?: string;
 }
 
+/**
+ * Code-review fix (2026-09-03) — `finish`/`pause`/`retry` each catch
+ * `QueueMutationRejected` to convert an *ineligible transition* (decided by
+ * `decideTaskTransition`) into their own `{ ok: false, reason }` result.
+ * `store.updateQueue`'s own commit-fence check (`checkCommitFence`) throws the
+ * SAME error class for an unrelated reason — a stale or unverifiable
+ * ownership fence — and that failure must keep propagating exactly as it did
+ * before FR-R3-153, so an existing caller's own try/catch (which logs it)
+ * still sees it instead of a silently-discarded `{ ok: false }`. The imported
+ * set is the closed vocabulary `decideTaskTransition` itself can produce;
+ * anything else (including every commit-fence reason) is re-thrown.
+ *
+ * FR-R3-161 (T057/T062) — a hand-written `Set` of those literals stood here
+ * and carried `'queue-mismatch'`, a reason nothing could produce. Both the
+ * stale member and the second enumeration that let it go stale are gone: the
+ * set is now derived from the union in `task-transition-decision.ts`, so this
+ * file cannot fall behind a reason the classifier gains.
+ */
+function isTaskTransitionRejection(err: unknown): err is QueueMutationRejected {
+  return err instanceof QueueMutationRejected && TASK_TRANSITION_REJECTION_REASONS.has(err.reason);
+}
+
 export interface ClearResult {
   removed: number;
+}
+
+// FR-R3-150 (T1621) — widens `ClearResult` with the `ok`/`reason` shape the
+// rest of this file already uses for a refusable mutation (`MutationResult`,
+// `setQueuePausedState`'s registry check); `ok`/`reason` are additive, so
+// every existing `.removed`-only reader stays correct unchanged. Named for
+// both `clearByStatus` siblings (renamed from `ClearCompletedResult`).
+export interface ClearByStatusResult extends ClearResult {
+  readonly ok: boolean;
+  readonly reason?: 'unknown-queue-id';
 }
 
 // Feature 063 (FR-005 / data-model §CleanAllResetOperation) — result of
@@ -74,6 +127,12 @@ export interface CleanAllResult {
   readonly pauseSource: 'operator' | 'cascade' | 'retry-cap' | null;
   readonly activeRunCleared: boolean;
   readonly watchdogCleared: boolean;
+  // FR-R3-150 (T1619c) — `true` when at least one queue carried an armed
+  // scheduled start that this reset disarmed. On the result for the same
+  // reason `ClearQueueResult.scheduleCleared` is: FR-009 wants the recorded
+  // history to state what the action affected, and a disarmed timer is
+  // otherwise only inferable from a start that never came.
+  readonly scheduleCleared: boolean;
   // `true` when ALL pre-state fields were already empty — the handler
   // uses this to skip emitting an audit event for the no-op case
   // (contracts/cmd-clear-all.md §Idempotency).
@@ -86,11 +145,52 @@ export interface CleanAllResult {
 // in-flight task existed (we never have to wait on the runner).
 export type CleanAllRunnerAckProbe = () => Promise<boolean>;
 
+// FR-R3-150 (T1619, LC-Q-01/LC-Q-05) — queue-scoped Clean All. `clearAll()`
+// above resets every queue; `clearQueue()` below resets exactly one,
+// addressed by `queueId`. It is *not* implemented by filtering the
+// workspace-wide write (a queue-scoped reset is never derived that way —
+// see `clearQueue()`'s own header comment).
+//
+// Code-review finding — research.md D2's "compose `clearAll()` over this" is
+// closed as will-not-implement (tasks.md T1619b, 2026-09-03). What the two
+// methods genuinely share is the per-queue field write and the no-op
+// predicate, and those are extracted to `queue-reset-settle.ts`, whose header
+// records why the methods themselves stay separate.
+//
+// A discriminated union rather than a result with optional fields, on the
+// same precedent as `QueueDeletionImpact` above: a refusal has no impact to
+// report, and a cleared queue has no reason.
+export type ClearQueueResult =
+  | { readonly outcome: 'refused'; readonly reason: 'unknown-queue-id' }
+  | {
+      readonly outcome: 'cleared';
+      readonly queueId: string;
+      readonly wasNoop: boolean;
+      readonly removed: {
+        readonly pending: number;
+        readonly completed: number;
+        readonly failed: number;
+        readonly canceled: number;
+      };
+      readonly inflightAborted: boolean;
+      readonly runnerAcked: boolean;
+      readonly pauseCleared: boolean;
+      readonly pauseSource: QueuePauseSource;
+      readonly activeRunCleared: boolean;
+      readonly scheduleCleared: boolean;
+      readonly lifecycle: 'active-empty';
+    };
+
 export interface QueueMutationDetail extends MutationResult {
   queueId?: string;
   taskId?: string;
   priorStatus?: FeatureRequestStatus;
   runId?: string | null;
+  /**
+   * FR-R4-F16 (contract P2) — `removeTask` only: the removed row's own value, `null` when it held
+   * none, passed on as stored so the audit projection alone decides what reaches disk.
+   */
+  completionProvenance?: CompletionProvenance | null;
   taskCount?: number;
   /**
    * Feature 092 (T083, FR-016a) — how many connected-run aggregates a queue
@@ -139,7 +239,13 @@ export type QueueDeletionImpact =
     };
 
 // BUG-001 (FR-022): idempotent rejection reasons → DEBUG, not WARN.
-const IDEMPOTENT_REJECT_REASONS: ReadonlySet<string> = new Set(['not-paused', 'already-paused']);
+// Feature 195 (T036) — 'failure-policy-unchanged' joins this set for the
+// same reason: the operator asked for the state the queue is already in.
+const IDEMPOTENT_REJECT_REASONS: ReadonlySet<string> = new Set([
+  'not-paused',
+  'already-paused',
+  'failure-policy-unchanged'
+]);
 
 /**
  * Feature 092 (T050, FR-025) — how many Tasks one queue may run at once.
@@ -186,6 +292,28 @@ export interface LifecycleAuditHook {
     outcome: 'info' | 'success';
     payload: Record<string, unknown>;
   }): Promise<unknown>;
+}
+
+// Code-review finding (reuse) — the one fold both `clearAll()` and
+// `clearQueue()` need: how many of a set of Tasks are in each terminal-or-
+// pending status. Shared so the four-branch chain (and any status the two
+// resets grow to need) is written once. `clearAll()` calls this once per
+// queue over a workspace-wide loop; `clearQueue()` calls it once over a
+// single queue's own `requests`.
+function countRemovedByStatus(requests: readonly FeatureRequest[]): {
+  pending: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+} {
+  const removed = { pending: 0, completed: 0, failed: 0, canceled: 0 };
+  for (const r of requests) {
+    if (r.status === 'pending') removed.pending++;
+    else if (r.status === 'completed') removed.completed++;
+    else if (r.status === 'failed') removed.failed++;
+    else if (r.status === 'canceled') removed.canceled++;
+  }
+  return removed;
 }
 
 export class QueueManager {
@@ -348,9 +476,28 @@ export class QueueManager {
       // Pipeline already frozen at validation. The manager carries the plan
       // through verbatim; it never inspects or re-expands it.
       runPlan?: FrozenRunPlan;
+      // FR-R5-F08 — occurrence identity for workflow-dispatched Phase attempts.
+      workflowOccurrence?: WorkflowOccurrenceIdentity;
     } = {}
   ): Promise<FeatureRequest> {
     const validated = validateDescription(description);
+    const targetQueueId = options.queueId ?? this.store.getDefaultQueueId();
+    if (options.workflowOccurrence !== undefined) {
+      const occ = options.workflowOccurrence;
+      const existing = this.store
+        .getQueue(targetQueueId)
+        .requests.find(
+          (r) =>
+            r.status !== 'canceled' &&
+            r.workflowOccurrence !== undefined &&
+            r.workflowOccurrence.rootRunId === occ.rootRunId &&
+            r.workflowOccurrence.invocationId === occ.invocationId &&
+            r.workflowOccurrence.attemptId === occ.attemptId
+        );
+      if (existing !== undefined) {
+        return existing;
+      }
+    }
     const now = Date.now();
     const request: FeatureRequest = {
       id: randomUUID(),
@@ -361,7 +508,7 @@ export class QueueManager {
       updatedAt: now,
       completedAt: null,
       status: 'pending',
-      queueId: options.queueId ?? this.store.getDefaultQueueId(),
+      queueId: targetQueueId,
       position: options.position ?? 0,
       pauseCause: null,
       runId: null,
@@ -372,7 +519,8 @@ export class QueueManager {
       ...(options.rerun ? { rerun: options.rerun } : {}),
       // Written only when supplied, so an item enqueued by any pre-existing
       // path serializes exactly as it did before this feature (T034).
-      ...(options.runPlan ? { runPlan: options.runPlan } : {})
+      ...(options.runPlan ? { runPlan: options.runPlan } : {}),
+      ...(options.workflowOccurrence ? { workflowOccurrence: options.workflowOccurrence } : {})
     };
     const inserted = await this.store.insertPendingRequest(request, {
       queueId: options.queueId,
@@ -388,30 +536,86 @@ export class QueueManager {
     return inserted;
   }
 
-  public async markInFlight(featureId: string, runId: string, isResume: boolean = false): Promise<void> {
+  private applyMarkInFlight(
+    queue: QueueState,
+    featureId: string,
+    runId: string,
+    now: number
+  ): { readonly queue: QueueState; readonly result: FeatureRequest | undefined } {
+    const current = queue.requests.find((r) => r.id === featureId);
+    const decision = decideTaskTransition({
+      operation: 'mark-in-flight',
+      currentStatus: current?.status,
+      queueAlreadyHasDifferentInFlight: queue.inFlightId !== null && queue.inFlightId !== featureId
+    });
+    if (!decision.eligible) {
+      // Thrown, not returned — a value returned from this mutator is always
+      // committed (with a bumped `updatedAt`) by `store.updateQueue` / `admitRunAtomically`, so
+      // the only way to leave the task row, queue ownership, and
+      // timestamps completely unchanged on refusal (spec FR-004) is to
+      // never reach that commit at all.
+      throw new QueueMutationRejected(
+        decision.reason,
+        `Cannot mark ${featureId} in-flight: ${decision.reason}`
+      );
+    }
+    const requests = queue.requests.map((r) =>
+      r.id === featureId
+        ? {
+            ...r,
+            status: 'in-flight' as FeatureRequestStatus,
+            runId,
+            startedAt: r.startedAt ?? now,
+            updatedAt: now
+          }
+        : r
+    );
+    return {
+      queue: withRefreshedLifecycle({ ...queue, requests, inFlightId: featureId }),
+      result: requests.find((request) => request.id === featureId)
+    };
+  }
+
+  /**
+   * FR-R7-01 — atomically persist a new `WorkflowRun` and mark its Task `in-flight` in one
+   * commit, then emit the post-commit dequeue debug log and `task-execution-started` audit event.
+   */
+  public async admitRun(featureId: string, run: WorkflowRun): Promise<void> {
     const now = Date.now();
     const ownerQueueId = this.queueIdForTask(featureId);
-    const movedRequest = await this.store.updateQueue((queue) => {
-      if (queue.inFlightId !== null && queue.inFlightId !== featureId) {
-        throw new Error(`Another request is already in flight: ${queue.inFlightId}`);
-      }
-      const requests = queue.requests.map((r) =>
-        r.id === featureId
-          ? {
-              ...r,
-              status: 'in-flight' as FeatureRequestStatus,
-              runId,
-              startedAt: r.startedAt ?? now,
-              updatedAt: now
-            }
-          : r
-      );
-      return {
-        queue: { ...queue, requests, inFlightId: featureId },
-        result: requests.find((request) => request.id === featureId)
-      };
-    }, ownerQueueId);
-    // Feature 019 — DEBUG instrumentation. `markInFlight` is the
+    const movedRequest = await this.store.admitRunAtomically(
+      ownerQueueId,
+      run,
+      (queue) => this.applyMarkInFlight(queue, featureId, run.id, now),
+      this.store.runCommitClaim(ownerQueueId)
+    );
+    await this.emitTaskStartedPostCommit(ownerQueueId, featureId, run.id, movedRequest, false);
+  }
+
+  public async markInFlight(featureId: string, runId: string, isResume: boolean = false): Promise<void> {
+    const now = Date.now();
+    // FR-R3-153 (T1636/T1637) — strict resolution (research.md R2): a missing
+    // task falls back to Default only as "some queue to open" for the
+    // mutator's own not-found check below, never as a guessed owner. A found
+    // row is opened at its own queue, so the mutator's `queue.requests.find`
+    // is the true, race-safe answer to "does this queue own it."
+    const ownerQueueId = this.queueIdForTask(featureId);
+    const movedRequest = await this.store.updateQueue(
+      (queue) => this.applyMarkInFlight(queue, featureId, runId, now),
+      ownerQueueId,
+      this.store.runCommitClaim(ownerQueueId)
+    );
+    await this.emitTaskStartedPostCommit(ownerQueueId, featureId, runId, movedRequest, isResume);
+  }
+
+  private async emitTaskStartedPostCommit(
+    ownerQueueId: string,
+    featureId: string,
+    runId: string,
+    movedRequest: FeatureRequest | undefined,
+    isResume: boolean
+  ): Promise<void> {
+    // Feature 019 — DEBUG instrumentation. `markInFlight` / `admitRun` is the
     // effective "dequeue" — a pending task transitions to in-flight.
     // `sizeAfter` reflects the pending count after the transition.
     const updatedQueue = this.store.getQueue(ownerQueueId);
@@ -422,7 +626,7 @@ export class QueueManager {
       sizeAfter: pendingAfter
     });
 
-    // Feature 072 — emit task-execution-started after markInFlight succeeds
+    // Feature 072 — emit task-execution-started after admission / markInFlight succeeds
     if (this.lifecycleAuditHook) {
       try {
         // Feature 093 (T022) — the queue is already resolved above as the one
@@ -457,15 +661,57 @@ export class QueueManager {
     }
   }
 
+  /**
+   * FR-R3-153 (code-review fix, 2026-09-03) — `finish` and `pause` share this
+   * exact wrapper: run a mutator through `store.updateQueue`, and translate
+   * a `decideTaskTransition` refusal (thrown as `QueueMutationRejected`, so
+   * a refused write never reaches the commit that would bump `updatedAt` —
+   * spec FR-004) back into the `{ ok: false, reason }` shape both methods
+   * return. `retry` does NOT use this: its catch remaps `task-not-found` to
+   * its own pre-existing `'not-found'`/`'illegal-state'` vocabulary, a
+   * translation this shared helper would have to special-case for one
+   * caller — not extracted here for that reason.
+   */
+  private async runTaskTransitionMutation(
+    ownerQueueId: string,
+    mutator: (queue: QueueState) => { readonly queue: QueueState; readonly result: MutationResult }
+  ): Promise<MutationResult> {
+    try {
+      return await this.store.updateQueue<MutationResult>(
+        mutator,
+        ownerQueueId,
+        this.store.runCommitClaim(ownerQueueId)
+      );
+    } catch (err) {
+      if (isTaskTransitionRejection(err)) return { ok: false, reason: err.reason };
+      throw err;
+    }
+  }
+
   public async finish(
     featureId: string,
-    status: FeatureRequestStatus,
+    status: TerminalRequestStatus,
     lastError: FeatureRequestFailure | string | null = null
-  ): Promise<void> {
+  ): Promise<MutationResult> {
     const now = Date.now();
-    await this.store.updateQueue(
-      (queue) => ({
-        queue: {
+    const ownerQueueId = this.queueIdForTask(featureId);
+    // FR-R3-158 (T018) / FR-R3-157 (T035, C3.5) — looked up by Task, on `retry()`'s
+    // pattern, so a task finishing beside a running sibling cannot be handed the
+    // sibling's Run. One lookup for every captured field: see `terminal-capture.ts`.
+    const captured = terminalCapture(this.store.findRunByTask(featureId)?.run ?? null);
+    return this.runTaskTransitionMutation(ownerQueueId, (queue) => {
+      const current = queue.requests.find((r) => r.id === featureId);
+      const decision = decideTaskTransition({
+        operation: 'finish',
+        currentStatus: current?.status,
+        targetStatus: status,
+        queueAlreadyHasDifferentInFlight: false
+      });
+      if (!decision.eligible) {
+        throw new QueueMutationRejected(decision.reason, `Cannot finish ${featureId}: ${decision.reason}`);
+      }
+      return {
+        queue: withRefreshedLifecycle({
           ...queue,
           requests: queue.requests.map((r) =>
             r.id === featureId
@@ -474,16 +720,89 @@ export class QueueManager {
                   status,
                   completedAt: now,
                   updatedAt: now,
-                  lastError: status === 'failed' ? lastError ?? r.lastError : r.lastError
+                  lastError: status === 'failed' ? lastError ?? null : r.lastError, // retry keeps old text as history (FR-R5-F19, FR-006)
+                  ...captured
                 }
               : r
           ),
           inFlightId: queue.inFlightId === featureId ? null : queue.inFlightId
-        },
-        result: undefined
-      }),
-      this.queueIdForTask(featureId)
-    );
+        }),
+        result: { ok: true }
+      };
+    });
+  }
+
+  /**
+   * FR-025 (feature 195, T063, BUG-001) — 2026-09-08. The third way out of a
+   * halted queue: record that a failed task's work completed, without
+   * re-running it and without discarding its row.
+   *
+   * It exists for the case the other two cannot serve — a task whose phase
+   * committed an irreversible side effect and was *then* recorded `failed`.
+   * `retry` would repeat the side effect; `removeTask` would destroy the
+   * record that the work happened.
+   *
+   * **A separate method rather than a flag on `finish`, deliberately.** FR-025
+   * requires the operator to assert the outcome explicitly and forbids the
+   * system inferring it. `finish` is the generic terminal-write path every
+   * failure handler in the product already calls; an `operatorAttested` option
+   * on it would put the attestation one argument away from every one of those
+   * call sites. Here there is exactly one caller that can attest, and it is
+   * reached only from the operator's own command.
+   *
+   * The halt then ends with nothing added: `completed` is already outside the
+   * blocking set, so `evaluateQueueHalt` simply stops naming this row on the
+   * next pass (FR-003 — the halt was never stored, so there is nothing to
+   * clear). No new lifecycle value, no acknowledgement field, no audit event.
+   *
+   * Fields are preserved, not refreshed. `completedAt` keeps the moment the
+   * task actually terminated and `lastError` keeps the failure it terminated
+   * with: both are truthful evidence that this row failed and was later
+   * attested, and overwriting either to match the attestation would erase the
+   * history FR-026 exists to make readable. `inFlightId` is not touched
+   * because edge 4 admits only from `failed`, and `finish` cleared the pointer
+   * when it wrote that status — a clear here could never fire.
+   */
+  public async attestCompleted(featureId: string): Promise<MutationResult> {
+    const now = Date.now();
+    const ownerQueueId = this.queueIdForTask(featureId);
+    return this.runTaskTransitionMutation(ownerQueueId, (queue) => {
+      const current = queue.requests.find((r) => r.id === featureId);
+      const decision = decideTaskTransition({
+        operation: 'finish',
+        currentStatus: current?.status,
+        targetStatus: 'completed',
+        queueAlreadyHasDifferentInFlight: false,
+        operatorAttestedCompletion: true
+      });
+      if (!decision.eligible) {
+        throw new QueueMutationRejected(
+          decision.reason,
+          `Cannot attest ${featureId} completed: ${decision.reason}`
+        );
+      }
+      return {
+        queue: withRefreshedLifecycle({
+          ...queue,
+          requests: queue.requests.map((r) =>
+            r.id === featureId
+              ? {
+                  ...r,
+                  status: 'completed' as FeatureRequestStatus,
+                  // T065 (FR-026, SC-017) — written in the same `updateQueue`
+                  // call as the status it qualifies, so the pair cannot be
+                  // split. This is the only site that writes it: the marker
+                  // means "the operator asserted this", and this method is the
+                  // only route by which an operator can.
+                  completionProvenance: 'operator-attested' as CompletionProvenance,
+                  updatedAt: now
+                }
+              : r
+          )
+        }),
+        result: { ok: true }
+      };
+    });
   }
 
   /**
@@ -499,11 +818,20 @@ export class QueueManager {
     featureId: string,
     pauseCause: FeatureRequestPauseCause | null = null,
     preserveInFlightForRestore: boolean = false
-  ): Promise<boolean> {
+  ): Promise<MutationResult> {
     const now = Date.now();
-    return this.store.updateQueue((queue) => {
+    const ownerQueueId = this.queueIdForTask(featureId);
+    return this.runTaskTransitionMutation(ownerQueueId, (queue) => {
       const idx = queue.requests.findIndex((r) => r.id === featureId);
-      if (idx === -1) return { queue, result: false };
+      const current = idx === -1 ? undefined : queue.requests[idx];
+      const decision = decideTaskTransition({
+        operation: 'pause',
+        currentStatus: current?.status,
+        queueAlreadyHasDifferentInFlight: false
+      });
+      if (!decision.eligible) {
+        throw new QueueMutationRejected(decision.reason, `Cannot pause ${featureId}: ${decision.reason}`);
+      }
       const requests = queue.requests.map((r, i) =>
         i === idx
           ? {
@@ -515,37 +843,37 @@ export class QueueManager {
           : r
       );
       const inFlightId =
-        queue.inFlightId === featureId && !preserveInFlightForRestore
-          ? null
-          : queue.inFlightId;
-      return { queue: { ...queue, requests, inFlightId }, result: true };
-    }, this.queueIdForTask(featureId));
+        queue.inFlightId === featureId && !preserveInFlightForRestore ? null : queue.inFlightId;
+      return { queue: withRefreshedLifecycle({ ...queue, requests, inFlightId }), result: { ok: true } };
+    });
   }
 
-  public async cancel(featureId: string): Promise<boolean> {
-    const now = Date.now();
-    return this.store.updateQueue((queue) => {
-      const idx = queue.requests.findIndex((r) => r.id === featureId);
-      if (idx === -1 || queue.requests[idx].status !== 'pending') {
-        return { queue, result: false };
-      }
-      const requests = queue.requests.map((r, i) =>
-        i === idx
-          ? { ...r, status: 'canceled' as FeatureRequestStatus, completedAt: now, updatedAt: now }
-          : r
-      );
-      return { queue: { ...queue, requests }, result: true };
-    }, this.queueIdForTask(featureId));
-  }
+  // FR-R3-161 (T032, FR-005/FR-012) — 2026-09-04. `cancel(featureId)` stood
+  // here and is removed, not rewritten. It wrote `canceled` from its own inline
+  // rule — `status !== 'pending'` refuses — while `finish(id, 'canceled')`
+  // decides the same edge through `decideTaskTransition` and admits an in-flight
+  // row: two protocols for one question, disagreeing silently on a status that
+  // reaches both. Routing it through the classifier instead would have left a
+  // second cancellation entry point with nothing to distinguish it from the
+  // first, so it goes on the precedent `removeTask` below already set under
+  // FR-R3-153 — "so a second, weaker cancellation protocol cannot silently
+  // reappear here." It had no production caller; every call site was a fixture
+  // producing a canceled row and each now says `finish(id, 'canceled')`
+  // (research F5, F17). The one assertion that could not follow pinned this
+  // method's refusal of an in-flight row — behaviour gone with the method, so
+  // deliberately removed rather than weakened (T034).
 
-  public async remove(featureId: string): Promise<boolean> {
-    try {
-      await this.store.removePendingRequest(featureId);
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  // FR-R3-161 (T043, FR-007/FR-012) — 2026-09-04. `remove(featureId)` stood
+  // here and is removed. It was the second spelling of "delete a queue row",
+  // reached only through a fallback branch the wiring makes unreachable
+  // (research F8), and the weaker spelling on both counts that matter: no
+  // refreshed lifecycle after the row left, and a `catch { return false }` that
+  // collapsed "no such task" and "not removable" into one boolean — the exact
+  // loss `src/ui/sidebar/commands/cmd-remove-queue-item.ts:6-10` records the
+  // typed path as having been introduced to fix (research F7). `removeTask`
+  // below answers both; `src/controller/task-deletion.ts` cancels a live Run
+  // before either runs. Its sole callee `WorkspaceState.removePendingRequest`
+  // goes too (T044); the reason that primitive raised stays (T045).
 
   // Canonical single-writer for a queue's pause state.
   //
@@ -628,7 +956,8 @@ export class QueueManager {
               },
               result: undefined
             }),
-            resolvedQueueId
+            resolvedQueueId,
+            this.store.runCommitClaim(resolvedQueueId)
           );
           // Note: `scheduled-start-canceled` is emitted by the coordinator's
           // own `cancel()` method (above), not duplicated here. We only emit
@@ -662,7 +991,8 @@ export class QueueManager {
               },
               result: undefined
             }),
-            resolvedQueueId
+            resolvedQueueId,
+            this.store.runCommitClaim(resolvedQueueId)
           );
           if (
             nextLifecycle === 'idle-pending' &&
@@ -725,7 +1055,8 @@ export class QueueManager {
             },
             result: undefined
           }),
-          queueId
+          queueId,
+          this.store.runCommitClaim(queueId)
         );
         return { ok: true, queueId };
       } catch (err) {
@@ -770,7 +1101,8 @@ export class QueueManager {
             },
             result: undefined
           }),
-          queueId
+          queueId,
+          this.store.runCommitClaim(queueId)
         );
         return { ok: true, queueId };
       } catch (err) {
@@ -790,9 +1122,10 @@ export class QueueManager {
     const queueId = randomUUID();
     return this.logMutation('queue-manager.create-queue', { queueId }, async () => {
       try {
-        await this.store.setQueueRegistry(
-          createQueue(this.store.getQueueRegistry(), { id: queueId, name, now: Date.now() })
-        );
+        await this.store.updateQueueRegistry((registry) => ({
+          registry: createQueue(registry, { id: queueId, name, now: Date.now() }),
+          result: undefined
+        }));
         await this.armConcurrencyNotice();
         return { ok: true, queueId };
       } catch (err) {
@@ -842,14 +1175,20 @@ export class QueueManager {
   /** Feature 092 (T029, US1, FR-013) — rename a queue in place. */
   public async renameQueue(queueId: string, name: string): Promise<QueueMutationDetail> {
     return this.logMutation('queue-manager.rename-queue', { queueId }, async () => {
-      const existing = findQueue(this.store.getQueueRegistry(), queueId);
       try {
-        await this.store.setQueueRegistry(
-          renameQueue(this.store.getQueueRegistry(), { id: queueId, name, now: Date.now() })
+        const fromName = await this.store.updateQueueRegistry(
+          (registry) => {
+            const existing = findQueue(registry, queueId);
+            return {
+              registry: renameQueue(registry, { id: queueId, name, now: Date.now() }),
+              result: existing?.name
+            };
+          },
+          [queueId]
         );
         // Names are operator-authored, so they stay out of the audit payload
         // (FR-023a); the handler reports the id and the caller-visible result.
-        return { ok: true, queueId, fromName: existing?.name, toName: name.trim() };
+        return { ok: true, queueId, fromName, toName: name.trim() };
       } catch (err) {
         return { ok: false, reason: this.registryErrorReason(err) };
       }
@@ -866,17 +1205,38 @@ export class QueueManager {
    * (FR-014). A bound connected run that is mid-node holds an in-flight Task,
    * so it is refused at step 2 and never reaches the terminate branch — step 3
    * is only ever reached by an aggregate sitting between nodes.
+   *
+   * FR-R4-F01 (FR-012, decision D1, data-model §3) — three more refusals follow the
+   * in-flight Task, for a queue whose Run is still live: running, waiting to retry, and
+   * any other pause (a breakpoint, the spend bound, the operator, or a paused Task row).
+   * A Run that is `completed`, `failed` or `canceled` blocks nothing, and a queue holding
+   * pending Tasks only has no Run and deletes as before.
+   *
+   * With no `view` this reads the store, which is the operator's preview. `deleteQueue` hands
+   * the SAME function a view read inside the commit link, so the check that decides is the one
+   * the operator was shown, evaluated over values no other writer can change in between.
    */
-  public queueDeletionImpact(queueId: string): QueueDeletionImpact {
+  public queueDeletionImpact(queueId: string, view?: QueueDeletionView): QueueDeletionImpact {
     if (queueId === DEFAULT_QUEUE_ID) {
       return { outcome: 'refused', reason: 'default-queue-undeletable' };
     }
-    if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+    if (!findQueue(view?.registry ?? this.store.getQueueRegistry(), queueId)) {
       return { outcome: 'refused', reason: 'unknown-queue-id' };
     }
-    const requests = this.store.getRequestsForQueue(queueId);
+    const requests = view?.requests ?? this.store.getRequestsForQueue(queueId);
     if (requests.some((request) => request.status === 'in-flight')) {
       return { outcome: 'refused', reason: 'queue-has-in-flight-task' };
+    }
+    // Hard rule 57: the queue's own Run, named by the queue.
+    const run = view === undefined ? this.store.getRun(queueId) : view.run;
+    if (run?.status === 'running') {
+      return { outcome: 'refused', reason: 'queue-has-running-run' };
+    }
+    if (run?.status === 'paused' && run.pendingRetryAt !== null) {
+      return { outcome: 'refused', reason: 'queue-has-retry-pending-run' };
+    }
+    if (run?.status === 'paused' || requests.some((request) => request.status === 'paused')) {
+      return { outcome: 'refused', reason: 'queue-has-paused-run' };
     }
     // Feature 092 (T083, FR-041/FR-016a) — the aggregates are scanned by their
     // own `queueId`, not derived from the Tasks this queue happens to hold.
@@ -890,8 +1250,8 @@ export class QueueManager {
     // nodes has no live child, so a Task-scan reports it as unaffected and the
     // operator would delete its queue without being told.
     const boundConnectedRunIds = Object.values(this.store.getConnectedRuns())
-      .filter((run) => resolveBoundQueueId(run) === queueId)
-      .map((run) => run.connectedRunId)
+      .filter((connected) => resolveBoundQueueId(connected) === queueId)
+      .map((connected) => connected.connectedRunId)
       .sort();
     return {
       outcome: 'deletable',
@@ -910,56 +1270,61 @@ export class QueueManager {
    */
   public async deleteQueue(queueId: string): Promise<QueueMutationDetail> {
     return this.logMutation('queue-manager.delete-queue', { queueId }, async () => {
-      const impact = this.queueDeletionImpact(queueId);
-      if (impact.outcome === 'refused') return { ok: false, reason: impact.reason, queueId };
+      let impact: QueueDeletionImpact;
       try {
-        // Registry first: it owns the position compaction (FR-016) and is the
-        // authority on the queue's existence. The execution state is dropped
-        // second so a failure between the two leaves an orphan record rather
-        // than a registry entry pointing at nothing.
-        await this.store.setQueueRegistry(
-          deleteQueue(this.store.getQueueRegistry(), { id: queueId, now: Date.now() })
-        );
-        await this.store.deleteQueueState(queueId);
-        // Feature 092 (T083, FR-016a) — terminate every aggregate bound here,
-        // and terminate rather than rebind. Rebinding would move a run the
-        // operator confirmed the deletion of onto a queue they did not choose,
-        // and picking that queue is a decision nothing in this method is
-        // entitled to make; the alternative, leaving the record, is the one
-        // outcome FR-016a names outright — no aggregate pointing at a queue
-        // that no longer exists.
-        //
-        // The ids come from the impact that was just re-checked, so exactly the
-        // set the operator was shown is the set that is removed.
-        const terminated = await this.store.deleteConnectedRuns(impact.boundConnectedRunIds);
-        // Feature 092 (T059, FR-030) — disarm this queue's scheduled start,
-        // and only this queue's. The disarm lives here rather than in
-        // `cmd-delete-queue.ts` because this method is the single site every
-        // deletion entrance passes through; a webview-only disarm would leave
-        // an orphan timer behind any other caller. It runs after the deletion
-        // succeeds: disarming first would strand a live queue's start if the
-        // registry write then failed.
-        if (this.scheduledStartCancelHook) {
-          try {
-            await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
-          } catch (err) {
-            // The queue is already gone; a failed disarm must not turn a
-            // completed deletion into a refusal. A stray fire finds no
-            // `idle-pending` state and supersedes itself.
-            this.logger?.warn(
-              `queue-manager.delete-queue: scheduled-start disarm failed: ${(err as Error).message}`
-            );
-          }
-        }
-        return {
-          ok: true,
+        // FR-R4-F01 (FR-013, contract D3 G1) — the ordered refusals are re-checked INSIDE the
+        // commit, not trusted from the caller's earlier read: the confirmation is a round
+        // trip, and a Task may have gone in flight or a Run been committed in between. The
+        // registry entry and the queue state go in that same link, in the order they always
+        // went: the registry first, which owns the position compaction (FR-016) and is the
+        // authority on the queue's existence, the execution state second.
+        impact = await this.store.deleteQueueIfNoLiveRun(
           queueId,
-          taskCount: impact.pendingTaskCount,
-          connectedRunCount: terminated
-        };
+          (view) => this.queueDeletionImpact(queueId, view),
+          Date.now()
+        );
       } catch (err) {
         return { ok: false, reason: this.registryErrorReason(err), queueId };
       }
+      if (impact.outcome === 'refused') return { ok: false, reason: impact.reason, queueId };
+      // The queue is gone. What follows is best effort and can no longer turn the deletion
+      // into a refusal (hard rule 10, FR-015): a failure is logged and the result is `ok`.
+      //
+      // Feature 092 (T083, FR-016a) — terminate every aggregate bound here, and terminate
+      // rather than rebind. Rebinding would move a run the operator confirmed the deletion of
+      // onto a queue they did not choose, and picking that queue is a decision nothing in this
+      // method is entitled to make; the alternative, leaving the record, is the one outcome
+      // FR-016a names outright — no aggregate pointing at a queue that no longer exists. The
+      // ids come from the impact evaluated inside the link, so exactly the set the operator
+      // was shown is the set that is removed.
+      let terminated = 0;
+      try {
+        terminated = await this.store.deleteConnectedRuns(impact.boundConnectedRunIds);
+      } catch (err) {
+        this.logger?.warn(
+          `queue-manager.delete-queue: connected-run removal failed: ${errorMessage(err)}`
+        );
+      }
+      // Feature 092 (T059, FR-030) — disarm this queue's scheduled start, and only this
+      // queue's. The disarm lives here rather than in `cmd-delete-queue.ts` because this method
+      // is the single site every deletion entrance passes through; a webview-only disarm would
+      // leave an orphan timer behind any other caller. A stray fire finds no `idle-pending`
+      // state and supersedes itself.
+      if (this.scheduledStartCancelHook) {
+        try {
+          await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
+        } catch (err) {
+          this.logger?.warn(
+            `queue-manager.delete-queue: scheduled-start disarm failed: ${(err as Error).message}`
+          );
+        }
+      }
+      return {
+        ok: true,
+        queueId,
+        taskCount: impact.pendingTaskCount,
+        connectedRunCount: terminated
+      };
     });
   }
 
@@ -973,9 +1338,10 @@ export class QueueManager {
     // multi-active-run lock semantics; US2 did exactly that — the workspace
     // lock now carries window primacy only, and mutual exclusion between Runs
     // moved to the per-queue execution lease — so the precondition is met.
-    // The package contribution, `SETTINGS_SCHEMA`, the host validator
-    // (`KEY_SPECS['queue.globalConcurrencyCap']`), `setGlobalConcurrencyCap`
-    // and this validator all share the bound.
+    // FR-R3-145 (T1569) corrected the sentence that stood here: it listed five
+    // sites sharing the bound, of which three — the package contribution,
+    // `SETTINGS_SCHEMA` and `KEY_SPECS` — went with the configuration key,
+    // which was on no scheduling path. `setGlobalConcurrencyCap` remains.
     //
     // Feature 094 — the authority for a cap above one is
     // `docs/architecture/local-queue-parallelism-ratification.md`, which
@@ -983,8 +1349,7 @@ export class QueueManager {
     // single-operator shape only. The 092 note above explains the mechanism
     // that made a cap above one representable; it is not the decision to use
     // one. This is one of the three sites that *enforce* the bound, alongside
-    // `state/workspace-state.ts` and `contracts/validators/
-    // queue-management.ts`; three further sites advertise it.
+    // `state/workspace-state.ts` and `contracts/validators/queue-management.ts`.
     if (
       !Number.isInteger(params.globalConcurrencyCap) ||
       params.globalConcurrencyCap < 1 ||
@@ -1004,6 +1369,51 @@ export class QueueManager {
     }
   }
 
+  /**
+   * Feature 195 (T036, FR-018, FR-019) — this queue's own halt-on-failure
+   * answer. `policy: null` removes the stored field rather than writing a
+   * concrete value: the shape gate data-model.md §2 describes — a record
+   * carrying `failurePolicy` has been touched by an operator, one without it
+   * has not — is what lets a later change to the workspace default reach
+   * exactly the queues that never stated an opinion (FR-018). A request that
+   * asks for the queue's current answer (stored or absent, matching `policy`
+   * exactly) is refused idempotently rather than written, so a redundant
+   * write never bumps `updatedAt` for nothing.
+   *
+   * No audit event (FR-023, data-model.md §7): the preference this writes is
+   * not an outcome any audit consumer classifies.
+   */
+  public async setFailurePolicy(
+    queueId: string,
+    policy: QueueFailurePolicy | null
+  ): Promise<QueueMutationDetail> {
+    return this.logMutation('queue-manager.set-failure-policy', { queueId }, async () => {
+      if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+        return { ok: false, reason: 'unknown-queue-id' };
+      }
+      try {
+        const current = this.store.getQueue(queueId);
+        if ((current.failurePolicy ?? null) === policy) {
+          return { ok: false, reason: 'failure-policy-unchanged', queueId };
+        }
+        await this.store.updateQueue(
+          (queue) => {
+            if (policy === null) {
+              const { failurePolicy: _drop, ...rest } = queue;
+              return { queue: rest, result: undefined };
+            }
+            return { queue: { ...queue, failurePolicy: policy }, result: undefined };
+          },
+          queueId,
+          this.store.runCommitClaim(queueId)
+        );
+        return { ok: true, queueId };
+      } catch (err) {
+        return { ok: false, reason: this.registryErrorReason(err) };
+      }
+    });
+  }
+
   public async modifyTask(
     taskId: string,
     description: string
@@ -1016,27 +1426,34 @@ export class QueueManager {
     }
   }
 
+  /**
+   * Removes a Task row. Deliberately does not cancel or clean up a Run this
+   * task might own — that ordering (cancel → release the execution lease →
+   * remove the row) is `task-deletion.ts#deleteTaskWithSessionCleanup`'s job,
+   * and it is this method's only production caller.
+   *
+   * FR-R3-153 (T1640, research.md R6) — this method used to also mark an
+   * in-flight task's Run `canceled` in the store directly, as a fallback for
+   * callers that bypass `deleteTaskWithSessionCleanup`. That fallback never
+   * called `cancelActive` (so nothing told the actual running process to
+   * stop) or released the execution lease — worse than doing nothing, since
+   * a caller could see `status: 'canceled'` and believe cleanup had
+   * happened. `QueueManager` has no access to `cancelActive` or the
+   * execution-lease releaser (both live one layer up, in
+   * `TaskDeletionDeps`), so this method cannot safely perform that sequence
+   * itself; removed rather than rewritten, so a second, weaker cancellation
+   * protocol cannot silently reappear here.
+   */
   public async removeTask(taskId: string): Promise<QueueMutationDetail> {
     try {
       const removed = await this.store.removeRequest(taskId);
-      // Feature 093 (T022) — pattern B: the Task id is what is held, so the
-      // store resolves the Run *and* its queue together. The old form compared
-      // `featureId` against the one ambient Run, which in a window running
-      // several would have cancelled whichever happened to be there.
-      const active = this.store.findRunByTask(removed.id);
-      if (removed.status === 'in-flight' && active !== null) {
-        await this.store.setRun(active.queueId, {
-          ...active.run,
-          status: 'canceled',
-          lastTransitionAt: Date.now()
-        });
-      }
       return {
         ok: true,
         taskId: removed.id,
         queueId: removed.queueId ?? DEFAULT_QUEUE_ID,
         priorStatus: removed.status,
-        runId: removed.runId
+        runId: removed.runId,
+        completionProvenance: removed.completionProvenance ?? null
       };
     } catch (err) {
       return { ok: false, reason: this.taskErrorReason(err) };
@@ -1266,35 +1683,34 @@ export class QueueManager {
   /**
    * The connected run that enqueued `taskId` as a child, or `null`.
    *
-   * A child Run is recorded as a `ChildRunRef.queueItemId` on the node record
-   * of the attempt that started it, so membership is a scan of every
-   * aggregate's node attempts. Returns the identifier only — the caller refuses
-   * on presence and never on the aggregate's contents.
+   * A child Run is recorded as a `queueItemId` on the attempt that started it, so
+   * membership is a scan of every aggregate's attempts. Returns the identifier
+   * only — the caller refuses on presence and never on the aggregate's contents.
    */
   private connectedRunOwning(taskId: string): string | null {
     for (const run of Object.values(this.store.getConnectedRuns())) {
-      for (const node of Object.values(run.nodes)) {
-        if (node.attempts.some((attempt) => attempt.queueItemId === taskId)) {
-          return run.connectedRunId;
-        }
-      }
+      if (connectedRunOwnsQueueItem(run, taskId)) return run.connectedRunId;
     }
     return null;
   }
 
   public async fireDueSchedules(now: number = Date.now()): Promise<readonly string[]> {
-    const registry = this.store.getQueueRegistry();
-    const due = registry.entries.filter((entry) => {
-      if (!entry.schedule) return false;
-      const target = Date.parse(entry.schedule.targetAt);
-      return Number.isFinite(target) && target <= now;
+    const due = await this.store.updateQueueRegistry((registry) => {
+      const dueEntries = registry.entries.filter((entry) => {
+        if (!entry.schedule) return false;
+        const target = Date.parse(entry.schedule.targetAt);
+        return Number.isFinite(target) && target <= now;
+      });
+      if (dueEntries.length === 0) {
+        return { registry, result: [] as readonly typeof dueEntries[number][] };
+      }
+      let next = registry;
+      for (const entry of dueEntries) {
+        next = setQueueSchedule(next, { id: entry.id, schedule: null, now });
+      }
+      return { registry: next, result: dueEntries };
     });
     if (due.length === 0) return [];
-    let next = registry;
-    for (const entry of due) {
-      next = setQueueSchedule(next, { id: entry.id, schedule: null, now });
-    }
-    await this.store.setQueueRegistry(next);
     // FR-R3-011 — the unpause half moved to the queue record, and moving it is
     // what makes a fired schedule actually resume the queue. This loop used to
     // call `setQueuePaused(next, { paused: false })` on the registry alone,
@@ -1319,13 +1735,18 @@ export class QueueManager {
           },
           result: undefined
         }),
-        entry.id
+        entry.id,
+        this.store.runCommitClaim(entry.id)
       );
     }
     return due.map((entry) => entry.id);
   }
 
   public async retry(featureId: string): Promise<MutationResult> {
+    // Retried from the Workflow run, which is what would read the result.
+    if (Object.values(this.store.getConnectedRuns()).some((run) => workflowAttemptEndedForQueueItem(run, featureId))) {
+      return { ok: false, reason: 'workflow-attempt-ended' };
+    }
     // Check whether the task's run context is still the active workspace
     // run. If so, preserve runId and startedAt so the auto-drain
     // coordinator can resume the failed phase instead of restarting the
@@ -1334,39 +1755,80 @@ export class QueueManager {
     // Run it compares against is the one executing that Task, not whichever
     // Run the workspace happened to hold.
     const activeRun = this.store.findRunByTask(featureId)?.run ?? null;
-    return this.store.updateQueue<MutationResult>((queue) => {
-      const idx = queue.requests.findIndex((r) => r.id === featureId);
-      if (idx === -1) return { queue, result: { ok: false, reason: 'not-found' } };
-      const target = queue.requests[idx];
-      if (target.status !== 'failed' && target.status !== 'canceled' && target.status !== 'paused') {
-        return { queue, result: { ok: false, reason: 'illegal-state' } };
+    const ownerQueueId = this.queueIdForTask(featureId);
+    try {
+      return await this.store.updateQueue<MutationResult>((queue) => {
+        const idx = queue.requests.findIndex((r) => r.id === featureId);
+        const target = idx === -1 ? undefined : queue.requests[idx];
+        // FR-R3-153 (T1636/T1637) — routed through the shared classifier.
+        // Ineligible is thrown, not returned (spec FR-004 — a refused
+        // transition must leave timestamps completely unchanged, and
+        // `store.updateQueue` unconditionally bumps `updatedAt` on any
+        // returned value); the catch below translates it back to this
+        // method's own pre-existing `'not-found'`/`'illegal-state'`
+        // vocabulary so every current caller (queue-ops.ts's message
+        // lookup, this file's own tests) keeps working unchanged
+        // (research.md/T010 — "preserving each caller's existing
+        // {ok, reason} return shape").
+        //
+        const decision = decideTaskTransition({
+          operation: 'return-to-pending',
+          currentStatus: target?.status,
+          queueAlreadyHasDifferentInFlight: false
+        });
+        // Checked as two separate guards (rather than one `||`-joined
+        // condition with a ternary picking the reason) so each narrows on its
+        // own: `target === undefined` narrows `target` for the rest of this
+        // callback, and `!decision.eligible` narrows `decision` to the
+        // `{ eligible: false, reason }` arm so `decision.reason` is a real
+        // read, not a guess. `decideTaskTransition` already refuses with
+        // `'task-not-found'` on every path where `target` is undefined
+        // (currentStatus undefined is its first check, ahead of every edge),
+        // so the two throws below never disagree with each other.
+        if (target === undefined) {
+          throw new QueueMutationRejected('task-not-found', `Cannot retry ${featureId}`);
+        }
+        if (!decision.eligible) {
+          throw new QueueMutationRejected(decision.reason, `Cannot retry ${featureId}`);
+        }
+        const canResume =
+          target.status === 'failed' &&
+          target.runId !== null &&
+          activeRun !== null &&
+          activeRun.id === target.runId &&
+          (activeRun.status === 'failed' || activeRun.status === 'paused');
+        // FR-R3-158 (T031, FR-009b) / FR-R3-157 (T036, FR-013, C3.8) — everything
+        // captured off the previous attempt's Run is dropped at the moment the
+        // retry is requested; `terminal-capture.ts` says why it is removed, not zeroed.
+        const retained = withoutTerminalCapture(target);
+        const updated: FeatureRequest = {
+          ...retained,
+          status: 'pending',
+          retryCount: target.retryCount + 1,
+          // FR-R5-F19 (FR-006): the failure this retry came from stays on the row. Every surface names it
+          // "Previous failure" unless the row is failed again, so it is never read as the row's present state.
+          pausedReason: null,
+          completedAt: null,
+          startedAt: canResume ? target.startedAt : null,
+          updatedAt: Date.now(),
+          runId: canResume ? target.runId : null
+        };
+        const without = queue.requests.filter((_, i) => i !== idx);
+        const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');
+        const insertAt = inFlightIdx === -1 ? 0 : inFlightIdx + 1;
+        const reordered = [...without.slice(0, insertAt), updated, ...without.slice(insertAt)];
+        const repositioned = reordered.map((r, i) => ({ ...r, position: i }));
+        return {
+          queue: withRefreshedLifecycle({ ...queue, requests: repositioned }),
+          result: { ok: true }
+        };
+      }, ownerQueueId, this.store.runCommitClaim(ownerQueueId));
+    } catch (err) {
+      if (isTaskTransitionRejection(err)) {
+        return { ok: false, reason: err.reason === 'task-not-found' ? 'not-found' : 'illegal-state' };
       }
-      const canResume =
-        target.status === 'failed' &&
-        target.runId !== null &&
-        activeRun !== null &&
-        activeRun.id === target.runId &&
-        (activeRun.status === 'failed' || activeRun.status === 'paused');
-      const updated: FeatureRequest = {
-        ...target,
-        status: 'pending',
-        retryCount: target.retryCount + 1,
-        lastError: null,
-        pausedReason: null,
-        completedAt: null,
-        startedAt: canResume ? target.startedAt : null,
-        updatedAt: Date.now(),
-        runId: canResume ? target.runId : null
-      };
-      const without = queue.requests.filter((_, i) => i !== idx);
-      const inFlightIdx = without.findIndex((r) => r.status === 'in-flight');
-      const insertAt = inFlightIdx === -1 ? 0 : inFlightIdx + 1;
-      const reordered = [...without.slice(0, insertAt), updated, ...without.slice(insertAt)];
-      return {
-        queue: { ...queue, requests: reordered.map((r, i) => ({ ...r, position: i })) },
-        result: { ok: true }
-      };
-    }, this.queueIdForTask(featureId));
+      throw err;
+    }
   }
 
   public async moveUp(featureId: string): Promise<MutationResult> {
@@ -1377,12 +1839,36 @@ export class QueueManager {
     return this.move(featureId, 1);
   }
 
-  public async clearCompleted(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearResult> {
-    return this.clearByStatus('completed', queueId);
+  // Code-review finding (iteration 4) — `clearCompleted` and `clearFailed`
+  // each hand-copied this same three-line guard. Both delegate their
+  // removal to the shared `clearByStatus`; this is the shared refusal ahead
+  // of it, so a future third `clearByStatus` sibling (or a change to the
+  // refusal shape) has one call site to edit instead of two.
+  private refuseIfUnknownQueue(queueId: string): ClearByStatusResult | null {
+    if (findQueue(this.store.getQueueRegistry(), queueId)) return null;
+    return { ok: false, reason: 'unknown-queue-id', removed: 0 };
   }
 
-  public async clearFailed(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearResult> {
-    return this.clearByStatus('failed', queueId);
+  // FR-R3-150 (T1621) — refuses an unknown queue id rather than silently
+  // returning `{ removed: 0 }` (which `getQueue()`'s born-empty fallback
+  // would otherwise make indistinguishable from "known queue, nothing to
+  // clear"). The default parameter itself is unchanged and remains valid for
+  // the separate `schegent.clearCompleted` palette route (`queue-ops.ts`),
+  // which is not gated by this check — it is a trusted internal caller
+  // naming Default explicitly, not a queue id arriving over IPC (FR-011).
+  public async clearCompleted(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearByStatusResult> {
+    const refusal = this.refuseIfUnknownQueue(queueId);
+    if (refusal !== null) return refusal;
+    const { removed } = await this.clearByStatus('completed', queueId);
+    return { ok: true, removed };
+  }
+
+  // `clearCompleted`'s sibling gets the same refusal.
+  public async clearFailed(queueId: string = DEFAULT_QUEUE_ID): Promise<ClearByStatusResult> {
+    const refusal = this.refuseIfUnknownQueue(queueId);
+    if (refusal !== null) return refusal;
+    const { removed } = await this.clearByStatus('failed', queueId);
+    return { ok: true, removed };
   }
 
   // Feature 063 — atomic queue + run + pause + watchdog reset (FR-005).
@@ -1411,6 +1897,16 @@ export class QueueManager {
   // work while reporting the workspace clean. The result shape is unchanged and
   // stays workspace-scoped; the one field that cannot be pluralised without
   // changing the contract is `pauseSource`, which is documented below.
+
+  // Code-review finding (reuse) — the "clear the active run snapshot" write
+  // `clearAll()`/`clearQueue()` each issued twice (pre-probe, then the
+  // BUG-003 compensating re-clear — see each call site), factored to one.
+  private async clearRunSnapshots(queueIds: readonly string[]): Promise<void> {
+    for (const queueId of queueIds) {
+      await this.store.setRun(queueId, null, this.store.runCommitClaim(queueId));
+    }
+  }
+
   public async clearAll(probe?: CleanAllRunnerAckProbe | null): Promise<CleanAllResult> {
     const queuesBefore = this.store.getQueueStates();
     const queueIdsBefore = Object.keys(queuesBefore);
@@ -1420,28 +1916,25 @@ export class QueueManager {
     const runQueueIdsBefore = Object.keys(this.store.getRunMap());
     const watchdogBefore = this.store.getWatchdog();
 
-    const removed = {
-      pending: 0,
-      completed: 0,
-      failed: 0,
-      canceled: 0
-    };
-    for (const queue of Object.values(queuesBefore)) {
-      for (const r of queue.requests) {
-        if (r.status === 'pending') removed.pending++;
-        else if (r.status === 'completed') removed.completed++;
-        else if (r.status === 'failed') removed.failed++;
-        else if (r.status === 'canceled') removed.canceled++;
-      }
-    }
+    const removed = countRemovedByStatus(
+      Object.values(queuesBefore).flatMap((queue) => queue.requests)
+    );
 
     const inflightBefore = Object.values(queuesBefore).some(
       (queue) =>
         queue.inFlightId !== null || queue.requests.some((r) => r.status === 'in-flight')
     );
-    const pausedQueueIdsBefore = queueIdsBefore.filter(
-      (id) => queuesBefore[id].queueLifecycle === 'operator-paused'
+    // Filtered over `Object.entries` rather than over `queueIdsBefore` with a
+    // `queuesBefore[id]` read in the predicate: `getQueueStates()` returns a
+    // `Record<string, QueueState>`, so an index by a key that is not there is
+    // `undefined` at runtime and a crash on the property access. Every
+    // key-and-state pair this method needs is carried from one iteration
+    // instead, which is also what `tests/lint/compiler-strictness-ratchet.test.ts`
+    // asks for under `noUncheckedIndexedAccess`.
+    const pausedEntriesBefore = Object.entries(queuesBefore).filter(
+      ([, queue]) => queue.queueLifecycle === 'operator-paused'
     );
+    const pausedQueueIdsBefore = pausedEntriesBefore.map(([id]) => id);
     const pauseBefore = pausedQueueIdsBefore.length > 0;
     // Feature 092 — `CleanAllResult.pauseSource` is one nullable field and N
     // queues may each carry their own, so it reports the reserved queue's
@@ -1452,12 +1945,11 @@ export class QueueManager {
     // FR-R3-011 — the source is read off the paused queue's own record. The
     // selection rule is unchanged: the reserved queue's source when that queue
     // was paused, otherwise the first paused queue's.
-    const pauseSourceQueueId = pausedQueueIdsBefore.includes(DEFAULT_QUEUE_ID)
-      ? DEFAULT_QUEUE_ID
-      : pausedQueueIdsBefore[0];
+    const pauseSourceEntry =
+      pausedEntriesBefore.find(([id]) => id === DEFAULT_QUEUE_ID) ?? pausedEntriesBefore[0];
     const pauseSourceBefore: CleanAllResult['pauseSource'] =
-      pauseSourceQueueId !== undefined
-        ? (queuesBefore[pauseSourceQueueId].pauseSource as CleanAllResult['pauseSource']) ?? null
+      pauseSourceEntry !== undefined
+        ? (pauseSourceEntry[1].pauseSource as CleanAllResult['pauseSource']) ?? null
         : null;
     const activeRunBefore = runQueueIdsBefore.length > 0;
     const watchdogActiveBefore =
@@ -1465,11 +1957,18 @@ export class QueueManager {
       watchdogBefore.pausedSince !== null ||
       watchdogBefore.nextPollAt !== null ||
       watchdogBefore.cause !== null;
+    // FR-R3-150 (T1619c, LC-Q-05) — a list and not a flag because step 0 has to
+    // name each queue whose timer it disarms; timers are keyed by queue id.
+    const scheduledQueueIdsBefore = Object.entries(queuesBefore)
+      .filter(([, queue]) => queue.scheduledStartAt !== null)
+      .map(([id]) => id);
+    const scheduleBefore = scheduledQueueIdsBefore.length > 0;
 
+    // LC-Q-05 — the per-queue half of this gate is the shared predicate, so the
+    // two resets cannot disagree about what "already clean" means. The Run and
+    // the watchdog are not queue-record fields, so they stay named here.
     const wasNoop =
-      Object.values(queuesBefore).every((queue) => queue.requests.length === 0) &&
-      !inflightBefore &&
-      !pauseBefore &&
+      Object.values(queuesBefore).every((queue) => !hasResettableQueueState(queue)) &&
       !activeRunBefore &&
       !watchdogActiveBefore;
 
@@ -1482,28 +1981,37 @@ export class QueueManager {
         pauseSource: null,
         activeRunCleared: false,
         watchdogCleared: false,
+        scheduleCleared: false,
         wasNoop: true
       };
     }
 
-    // 1. Clear queue items (also drops `inFlightId`), on every queue.
+    // 0. Disarm every armed timer before persisting the clear — the ordering
+    //    `setQueuePausedState`'s pause branch and `clearQueue` both use, so no
+    //    window exists where a timer is still armed against fields that already
+    //    read as cleared. Unconditional on the armed schedule, not gated on
+    //    `operator-paused`: that gate was this method's LC-Q-05 bug.
+    for (const queueId of scheduledQueueIdsBefore) {
+      if (!this.scheduledStartCancelHook) break;
+      try {
+        await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
+      } catch (err) {
+        this.logger?.warn(`scheduled-start cancel on clear-all failed: ${errorMessage(err)}`);
+      }
+    }
+
+    // 1. Clear queue items (also drops `inFlightId`), on every queue, and
+    //    settle the lifecycle and schedule fields with them (T1619c, LC-Q-05).
+    //    `defer-pause-release` is what leaves step 2 below the owner of an
+    //    `operator-paused` queue's release; see `queue-reset-settle.ts`.
     for (const queueId of queueIdsBefore) {
       await this.store.updateQueue(
         (queue) => ({
-          queue: {
-            ...queue,
-            requests: [],
-            inFlightId: null,
-            // FR-R3-011 — `paused: false` used to be written here too. It is not
-            // a second way of saying what step 2 says; it was the retired mirror,
-            // and writing it back would put a record on disk that the v13
-            // collapse then has to lift again on the next activation.
-            pausedReason: null,
-            updatedAt: Date.now()
-          },
+          queue: { ...queue, ...queueResetFields(queue, Date.now(), 'defer-pause-release') },
           result: undefined
         }),
-        queueId
+        queueId,
+        this.store.runCommitClaim(queueId)
       );
     }
 
@@ -1517,9 +2025,7 @@ export class QueueManager {
     }
 
     // 3. Clear the active run snapshot — one per queue that held one.
-    for (const queueId of runQueueIdsBefore) {
-      await this.store.setRun(queueId, null);
-    }
+    await this.clearRunSnapshots(runQueueIdsBefore);
 
     // 4. Reset watchdog backoff fields. Preserve `pollIntervalMs` (config)
     //    and `lastStatusOk` (observability scalar) — only the active-pause
@@ -1531,6 +2037,7 @@ export class QueueManager {
         nextPollAt: null,
         pollIntervalMs: watchdogBefore.pollIntervalMs,
         lastStatusOk: watchdogBefore.lastStatusOk,
+        lastPollOutcome: null,
         cause: null
       });
     }
@@ -1561,9 +2068,7 @@ export class QueueManager {
     //    before the clear, and re-reading would additionally clear a Run started
     //    on some *other* queue while the probe was awaited — work `clearAll`
     //    never saw and has no mandate over.
-    for (const queueId of runQueueIdsBefore) {
-      await this.store.setRun(queueId, null);
-    }
+    await this.clearRunSnapshots(runQueueIdsBefore);
 
     return {
       removed,
@@ -1573,7 +2078,115 @@ export class QueueManager {
       pauseSource: pauseSourceBefore,
       activeRunCleared: activeRunBefore,
       watchdogCleared: watchdogActiveBefore,
+      scheduleCleared: scheduleBefore,
       wasNoop: false
+    };
+  }
+
+  // FR-R3-150 (T1619) — the queue-scoped reset. Unlike `clearAll()` above,
+  // this never iterates `getQueueStates()` — every read and write below is
+  // keyed to the single addressed `queueId`, so a sibling queue's tasks,
+  // run, pause, schedule, timer, and execution claim are never read, let
+  // alone written (FR-006, LC-Q-01). Workspace-wide watchdog state (the one
+  // surface `clearAll()` also resets) is out of scope here by design
+  // (FR-007) — it is not a per-queue field.
+  //
+  // Closes LC-Q-05 for the addressed queue, in one memento write and not two:
+  // the field rule and the no-op predicate are `queue-reset-settle.ts`, which
+  // says why they are shared with `clearAll()` and why the two methods are
+  // still separate.
+  public async clearQueue(
+    queueId: string,
+    probe?: CleanAllRunnerAckProbe | null
+  ): Promise<ClearQueueResult> {
+    if (!findQueue(this.store.getQueueRegistry(), queueId)) {
+      return { outcome: 'refused', reason: 'unknown-queue-id' };
+    }
+
+    const before = this.store.getQueue(queueId);
+    const removed = countRemovedByStatus(before.requests);
+    const inflightBefore =
+      before.inFlightId !== null || before.requests.some((r) => r.status === 'in-flight');
+    const pauseBefore = before.queueLifecycle === 'operator-paused';
+    const activeRunBefore = this.store.getRun(queueId) !== null;
+    const scheduleBefore = before.scheduledStartAt !== null;
+
+    // The Run is not a queue-record field, so it is named alongside the shared
+    // predicate rather than inside it (FR-008/SC-004).
+    const wasNoop = !hasResettableQueueState(before) && !activeRunBefore;
+
+    if (wasNoop) {
+      return {
+        outcome: 'cleared',
+        queueId,
+        wasNoop: true,
+        removed,
+        inflightAborted: false,
+        runnerAcked: false,
+        pauseCleared: false,
+        pauseSource: null,
+        activeRunCleared: false,
+        scheduleCleared: false,
+        lifecycle: 'active-empty'
+      };
+    }
+
+    // Disarm the timer before persisting the clear — the same ordering
+    // `setQueuePausedState`'s pause branch already uses (cancel the external
+    // hook first, then write the fields it fed), so no window exists where
+    // the timer is still armed against fields that already read as cleared.
+    // Unconditional on `scheduleBefore`, not gated on `operator-paused` —
+    // that gate was `clearAll()`'s LC-Q-05 bug.
+    if (scheduleBefore && this.scheduledStartCancelHook) {
+      try {
+        await this.scheduledStartCancelHook.cancel(queueId, 'operator-cancel');
+      } catch (err) {
+        this.logger?.warn(`scheduled-start cancel on clear-queue failed: ${errorMessage(err)}`);
+      }
+    }
+
+    await this.store.updateQueue(
+      (queue) => ({
+        queue: { ...queue, ...queueResetFields(queue, Date.now(), 'release-pause') },
+        result: undefined
+      }),
+      queueId,
+      this.store.runCommitClaim(queueId)
+    );
+
+    if (activeRunBefore) {
+      await this.clearRunSnapshots([queueId]);
+    }
+
+    let runnerAcked = false;
+    if (inflightBefore && probe) {
+      try {
+        runnerAcked = await probe();
+      } catch {
+        runnerAcked = false;
+      }
+    }
+
+    // BUG-003 compensating re-clear (mirrors `clearAll()`'s step 6, via the
+    // shared `clearRunSnapshots`): the probe's `cancelActive()` can
+    // repopulate `run` with a canceled-status snapshot, landing after this
+    // method's own clear above.
+    if (activeRunBefore) {
+      await this.clearRunSnapshots([queueId]);
+    }
+
+    return {
+      outcome: 'cleared',
+      queueId,
+      wasNoop: false,
+      removed,
+      inflightAborted: inflightBefore,
+      runnerAcked,
+      pauseCleared: pauseBefore,
+      pauseSource: pauseBefore ? before.pauseSource : null,
+      activeRunCleared: activeRunBefore,
+      scheduleCleared: scheduleBefore,
+      lifecycle: 'active-empty'
     };
   }
 
@@ -1674,7 +2287,9 @@ export class QueueManager {
           : { ...queue, requests: filtered.map((r, i) => ({ ...r, position: i })) },
         result: before - filtered.length
       };
-    }, queueId);
+    }, queueId,
+      this.store.runCommitClaim(queueId)
+    );
     if (removed === 0) return { removed: 0 };
     // BUG-001 escape hatch: when the operator clears completed/failed items
     // and no in-flight task remains, also release any lingering pause so a
@@ -1737,33 +2352,57 @@ export class QueueManager {
     const matching = this.matchingRunForQueue(run, queueId);
     if (!matching) return;
     if (matching.manualPauseAt !== null) return;
-    await this.store.setRun(queueId, {
-      ...matching,
-      manualPauseAt: now,
-      manualPauseCause: 'queue-paused-mid-run'
-    });
+    // FR-R4-F01 (FR-008) — a PATCH of the pause pair on the Run as it is inside the
+    // chain, not a whole Run built from the read above. A Run that ended or was
+    // replaced since is a race, not a failure: there is nothing left to pause.
+    await this.patchMatchingRun(queueId, matching.id, 'queue-pause', (current) =>
+      current.manualPauseAt !== null
+        ? {}
+        : { manualPauseAt: now, manualPauseCause: 'queue-paused-mid-run' }
+    );
   }
 
   private async resumeMatchingRunForQueue(queueId: string, now: number, resumePrompt?: string): Promise<void> {
     const run = this.store.getRun(queueId);
-    const matching = this.matchingRunForQueue(run, queueId);
+    const matching = this.matchingRunForQueue(run, queueId, true);
     if (!matching || matching.manualPauseCause !== 'queue-paused-mid-run') return;
-    await this.store.setRun(queueId, {
-      ...matching,
-      status: matching.status === 'paused' ? 'running' : matching.status,
-      manualPauseAt: null,
-      manualPauseCause: null,
-      lastTransitionAt: now,
-      resumePrompt
-    });
+    const keepPaused = this.findById(matching.featureId)?.status === 'paused';
+    await this.patchMatchingRun(queueId, matching.id, 'queue-resume', (current) =>
+      current.manualPauseCause !== 'queue-paused-mid-run'
+        ? {}
+        : {
+            status: !keepPaused && current.status === 'paused' ? 'running' : current.status,
+            manualPauseAt: null,
+            manualPauseCause: null,
+            lastTransitionAt: now,
+            resumePrompt
+          }
+    );
   }
 
-  private matchingRunForQueue(run: WorkflowRun | null, queueId: string): WorkflowRun | null {
+  /** The cascade's one write: a patch of the queue's Run, and a lost race is not an error. */
+  private async patchMatchingRun(
+    queueId: string,
+    runId: string,
+    label: 'queue-pause' | 'queue-resume',
+    patch: (current: WorkflowRun) => RunPatch
+  ): Promise<void> {
+    try {
+      await this.store.updateRun(
+        queueId,
+        { runId, allowedStatuses: allowedSameStatusFor('operator'), label, patch },
+        this.store.runCommitClaim(queueId)
+      );
+    } catch (error) {
+      if (!isRunRaceRefusal(error)) throw error;
+    }
+  }
+
+  private matchingRunForQueue(run: WorkflowRun | null, queueId: string, allowPaused = false): WorkflowRun | null {
     if (!run) return null;
     const feature = this.findById(run.featureId);
-    if (!feature) return null;
-    if ((feature.queueId ?? DEFAULT_QUEUE_ID) !== queueId) return null;
-    if (feature.status !== 'in-flight') return null;
+    if (!feature || (feature.queueId ?? DEFAULT_QUEUE_ID) !== queueId) return null;
+    if (feature.status !== 'in-flight' && !(allowPaused && feature.status === 'paused')) return null;
     return run;
   }
 
@@ -1804,7 +2443,13 @@ export class QueueManager {
     if (err instanceof QueueRegistryViolation) {
       return err.code === 'invalid-queue-name' ? 'invalid-name' : err.code;
     }
-    return err instanceof Error ? err.message : 'operation-rejected';
+    if (err instanceof QueueMutationRejected) {
+      return err.reason;
+    }
+    if (err instanceof StorageWriteQuarantinedError) {
+      return err.reason;
+    }
+    return unexpectedMutationFailureReason(this.logger, err);
   }
 
   private taskErrorReason(err: unknown): string {
@@ -1812,9 +2457,12 @@ export class QueueManager {
       if (err.reason === 'task-not-found') return 'unknown-task-id';
       return err.reason;
     }
+    if (err instanceof StorageWriteQuarantinedError) {
+      return err.reason;
+    }
     if (err instanceof Error && /non-empty|exceeds/i.test(err.message)) {
       return 'invalid-description';
     }
-    return err instanceof Error ? err.message : 'operation-rejected';
+    return unexpectedMutationFailureReason(this.logger, err);
   }
 }

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
+import { countFileCodeLines, topLevelFunctionCodeLines } from './code-lines';
+import { envelopePresent } from './envelope-presence';
+import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const ENVELOPE_ROOT = resolve(REPO_ROOT, '..');
@@ -44,9 +47,9 @@ interface WaivedEntry {
      * The file's size when this waiver was last reconciled — a ratchet, not a
      * ceiling.
      *
-     * The decision these two files carry retired the *budget* as a forcing
-     * function: neither is forced to extract helpers, and neither gets an
-     * arbitrary number to fit under. That decision stands. What it left behind
+     * The decision workspace-state.ts and queue-manager.ts carry retired the
+     * *budget* as a forcing function: neither is forced to extract helpers, and
+     * neither gets an arbitrary number to fit under. That decision stands. What it left behind
      * was no forcing function at all, and the 2026-08-22 architecture review
      * called that out as STATE-1 — "a waiver that removed the forcing function
      * without replacing it".
@@ -81,6 +84,55 @@ function isWaived(entry: BudgetEntry): entry is WaivedEntry {
  */
 const WAIVER_FACTOR = 3;
 
+/**
+ * FR-R3-119 — how close to its ceiling a file may sit before the ceiling stops
+ * being a decision. Two parts, because one does not fit both ends of the range:
+ * 2% alone would give a 250-line file five lines of slack, which is ordinary
+ * editing; 25 lines alone would give a 2,700-line file less than 1%, which is
+ * noise. `max` of the two catches the one-line-of-headroom shape without flagging
+ * small files where a little headroom is normal.
+ */
+function tightMargin(maxLines: number): number {
+  return Math.max(25, Math.floor(maxLines * 0.02));
+}
+
+/**
+ * Feature 217 (FR-039, FR-040) — the size at which a source file has to be in
+ * an explicit state. Chosen against the measured three-state distribution, and
+ * recorded with that distribution and every threshold it rejected in
+ * `ENTRY_CONDITION_RECORD`, which also says what would move it.
+ */
+const ENTRY_CONDITION_LINES = 1_000;
+const ENTRY_CONDITION_RECORD = 'docs/development/size-gate-entry-condition.md';
+
+/**
+ * THE NOTES BELOW ARE RECORD, NOT INSTRUCTION (FR-R3-143 T056).
+ *
+ * Thirty-three times, across twenty-seven of them, a note closes by telling the
+ * next editor to set the ceiling to what the file now measures — and `no NEW
+ * plain ceiling sits at its file` names that exact shape as the failure mode: a
+ * ceiling at its file is a high-water mark nobody decided on, and the next edit
+ * raises it by what the edit added. One file held both, and a maintainer
+ * reading top to bottom met the advice thirty-three times before meeting the
+ * gate once. Both halves were true when written. The gate is the newer, and it
+ * is the one that stands.
+ *
+ * THE RULE FOR A PLAIN CEILING, TODAY. It keeps more than `tightMargin` above
+ * its file, or it is not a budget. A size that is genuinely accepted already
+ * has a name here — a waiver, carrying a quoted decision, an ISO date, a
+ * resolvable reference and a high-water mark, all four gated. "Raise it to
+ * what the file measures" is that second thing wearing the first thing's
+ * clothes: it reads as a budget and ratchets like a waiver with nobody's name
+ * on it. When an edit genuinely cannot be size-neutral, the routes are the
+ * ones the failure messages name — reduce and tighten, or declare the waiver.
+ *
+ * The notes stay exactly as written. Each records what an edit extracted
+ * first, what could not move, and why, and that history is most of this
+ * file's value; rewriting twenty-seven of them would destroy the record to
+ * correct a sentence at the end of each. They stop being advice, which is a
+ * change of status rather than of text. `the retired convention gains no new
+ * instances` holds the count to a ratchet so a thirty-fourth cannot arrive.
+ */
 const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // P4 activation extraction ratchet: 1,500 → 1,305. Backend/evidence
   // composition and Stage-2 dashboard/command lifecycle now have focused
@@ -262,7 +314,137 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // `store` is a local of `activate()`, so the binding has to be written where
   // the projector is constructed, which is the trade the run-plan enumerator
   // entry above declines by name. Set to exactly what the file measures.
-  { path: 'src/extension.ts', maxLines: 1_335 },
+  //
+  // FR-R3-056 / H-01 (2026-08-24) — 1,335 → 1,343 for the capability posture: the
+  // configuration read that supplies `allowUncontained`, and deferring the credit
+  // watchdog's runner behind a thunk so an uncontained refusal no longer kills
+  // activation before it can say why. Both are wiring, and wiring is what this
+  // file is; the policy itself lives in
+  // src/services/backend-containment-policy.ts and the rationale in
+  // docs/architecture/agent-capability-posture.md, so nothing movable was left
+  // here. Prose trimmed before raising, per the note on general-settings.ts.
+  // FR-R3-064 — bumped +12. The posture the runner registry already reads at
+  // activation is now also read per emission for the per-run audit record, so the
+  // wiring site gains one reader function, one accessor object, and the note
+  // recording that the difference between the two uses is WHEN, not WHAT. No new
+  // responsibility: `extension.ts` still only wires.
+  // FR-R3-070 (feature 152) — 1,355 → 1,385 for elect-before-recovering: the
+  // election hoisted above the recovery installers, three lockResult.acquired
+  // gates with their decline logs, and the watchdog sweep's fire-time
+  // hasPrimacy() re-check. All of it is activation ordering, which is this
+  // file's one responsibility and cannot move — the landmarks are pinned by
+  // tests/lint/elect-before-recovering.test.ts, which reads this file by name.
+  // Prose trimmed before raising. Set to exactly what the file measures.
+  // FR-R3-075 (feature 152) — 1,385 → 1,405 for the idle/deadline settings
+  // read: the inspect-based legacy-key fallback (an explicit old value is
+  // honoured while the renamed key is unset — `get` cannot tell explicit from
+  // manifest default), the max-duration read, and threading both into the
+  // controller options. Wiring, which is this file's one responsibility.
+  // Set to exactly what the file measures.
+  // FR-R3-071 (feature 152) — 1,405 → 1,423 for the sidebar replay panel's
+  // description read: the history-row lookup plus the resolver call, wired as a
+  // closure beside the evidence service for the same reason that one is here —
+  // the workspace root reaches the sidecar store at this site and nowhere else,
+  // and a handler may not learn one of its own. Wiring, which is this file's one
+  // responsibility. Set to what the file measures.
+  // FR-R3-080 / T1075 (2026-08-25) — 1423 → 1447. Twenty-four lines: the evidence-health drain, the queue claims at the three queue mutation sites in activation, and the run-id-to-pid map the telemetry sampler's exit path needs — without it an exit could only guess which child it was, and with two runs the guess stopped the wrong series: the evidence-health
+  // drain reaching the phase runner, and the note on why an absent drain is the
+  // state this item exists to leave. Wiring, which is what this file is.
+  // FR-R3-083 (T1172a, 2026-08-25) — 1447 → 1450. Three lines: the import and the
+  // one-line launch of the mount-capability probe, plus its pointer comment. The
+  // probe's own reasoning, its bound, its warn-once record and its notification
+  // decision all live in src/activation/mount-capability-wiring.ts, which is why
+  // this is three lines and not seventeen — the first draft put the whole
+  // fire-and-forget expression here and this gate is what sent it to a module.
+  // Prose trimmed before raising. Set to exactly what the file measures.
+  // FR-R3-083 (T1162, 2026-08-25) — 1450 → 1456. Six lines: the degradation
+  // recorder's construction and the `tree-unconfirmed` arm of the monitor hook.
+  // Both are here for the same reason the rest of that hook is: this is the one
+  // place a runner's sidecar report meets the audit writer, and a runner that
+  // reached for the writer itself would be a second audit author writing outside
+  // any phase's lifetime. The reasoning lives in
+  // src/controller/process-tree-degradation-recorder.ts; what is here is the wiring.
+  // FR-R3-083 (review remediation, 2026-08-25) — 1456 → 1457. One line: the probe
+  // launch is now registered on `disposables` so a verdict cannot surface against a
+  // workspace this window has left, which needs a two-line comment rather than one.
+  // Set to exactly what the file measures.
+  // FR-R3-106 (FR-075) — 1457 -> 1459. Two lines: one import, and one line of the wrapped
+  // `transport` construction.
+  //
+  // WHAT IT BUYS. `CliTransportSink` counted lines and bytes refused under backpressure
+  // from FR-R3-052 onward, and the only readers of that counter were two unit tests — so the
+  // operator question "did the transport log lose lines?" was answerable by the code and
+  // answered nowhere. The counts now reach the evidence-health surface.
+  //
+  // WHY IT IS ONLY TWO LINES. The first draft put the reporting closure inline here and
+  // measured 1478 — 21 over — and this gate refused it, correctly: the activation shell was
+  // taking on a policy rather than making a call. The closure became
+  // `src/monitor/drop-reporting-transport.ts`, which is also where the reasoning for
+  // wrapping rather than changing the sink lives. What is left here is the seam.
+  // FR-R3-112 — 1486 -> 1488, two lines: `auditWriter` and `notifier` join the
+  // run-safety wiring input so the spend bound can observe the record that carries
+  // usage and tell the operator when it pauses a run. One line per argument.
+  //
+  // FR-R3-111 follow-up — 1488 -> 1490, two more: the quarantine drain, forwarded where the audit
+  // writer exists. It is here rather than in a leaf because the drain has exactly one correct
+  // moment — after `initialize()` buffered it and after the writer was constructed — and that
+  // moment is a line of activation. Bought by a defect, not by a preference: the drain had been
+  // called by nothing but its own test, so a corrupt run record was quarantined and the event that
+  // replaces the silent discard was never written.
+  //
+  // WHY THE LINE IS HERE AND NOT THE WATCHER. Everything the bound does — the
+  // accumulation, the precedence, the verdict, the pause write — lives in
+  // `src/services/spend-bound.ts`, `spend-bound-watcher.ts` and
+  // `activation/run-safety-wiring.ts`. What activation gained is two arguments to a
+  // call it already made. That is the shape this budget is meant to permit: the shell
+  // hands over a dependency, the behaviour lives in a leaf.
+  // FR-R3-119 — 1,490 -> 1,300 after the composition-root extraction. The old
+  // entry was the shape the tight-ceiling check now reports: a 1,490 ceiling on a
+  // 1,489-line file, one line of headroom, a plain number with no recorded
+  // decision — while its two LARGER peers both carried dated waivers with
+  // ratchets. The largest cohesion problem in the tree was the one the waiver
+  // machinery never saw.
+  //
+  // The file is 684 after eight extractions: `sidebar-router-wiring.ts` (240
+  // lines of `MessageRouter` construction), `backend-execution-wiring.ts` (148
+  // lines of monitor, sampler and runner-registry construction),
+  // `workspace-settings.ts` (36 lines of configuration resolution) and
+  // `workspace-session.ts` (77 lines of catalog, leases and UI shell) and
+  // `scheduled-work-wiring.ts` (168 lines of clock-driven work) and
+  // `evidence-wiring.ts` (91 lines of audit writer and retention) and
+  // `live-picture-wiring.ts` (140 lines of projector and phase-log tail) and
+  // `phase-execution-wiring.ts` (69 lines of runner accessors). 715 is set
+  // deliberately rather than pinned to the measurement: 34 lines is room for an
+  // ordinary edit, and it is outside the 25-line margin, so this stays a budget
+  // rather than a high-water mark. Lower it when the next extraction earns it.
+  // FR-R3-136 — 715 → 709, the next extraction having earned it.
+  // `trust-grant-wiring.ts` took the `onDidGrantWorkspaceTrust` subscription and
+  // its two arguments out of the composition root (23 lines), which is what put
+  // the file back outside the margin: this feature's trust wiring had pushed it
+  // to within 25 lines of 715, and the gate below caught that before review did.
+  // Same rule as the line above — measurement plus 34.
+  // FR-R7-08 (2026-11-19) — migrated to code lines (`tests/lint/code-lines.ts`):
+  // prior raw ceiling 709 (measured 683 raw) → 516 code lines; ceiling 555.
+  { path: 'src/extension.ts', maxLines: 555 },
+  //
+  // FR-R3-103 (FR-042, FR-046) — 1459 -> 1471. Nine lines for the dependency wiring of the resume
+  // liveness check plus two imports, three more registering the fence-loss abort, and the
+  // spawn-identity recorder's construction and its two hook calls.
+  //
+  // WHAT IT BUYS. Activation resumed every persisted `running` Run without asking whether the
+  // previous host's process tree was still alive. Children spawn detached and no identity was
+  // ever persisted, so after a host crash the resumed phase and the orphaned CLI both operated
+  // on one shared working tree. The ownership fence protects Memento writes and says nothing
+  // about the tree, which is what the CLI actually mutates.
+  //
+  // WHY NINE AND NOT FORTY. This gate refused two earlier drafts and both refusals were right.
+  // The first inlined the whole decision — probe, verdict, audit append, notification — at 32
+  // lines over; the second still carried the walk. What is left here is a `resumePersistedRuns`
+  // call and its six injected seams, which is activation WIRING rather than policy: the
+  // decision lives in `src/services/resume-decision.ts` and the probing in
+  // `src/services/process-liveness.ts`, both testable without crashing a host. Recording the
+  // two refusals matters more than the number — this file's budget exists precisely to catch
+  // the shape those drafts had.
   // P4 phase-control and lifecycle-auditor extraction ratchet: 1,200 → 730.
   // This file owns only the workflow facade, run dispatch, deletion, retry
   // entry, and persistence.
@@ -473,7 +655,56 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // other site. Not a budget manoeuvre: it is the move this entry named, and it
   // is taken now because this feature is what made the duplication cost
   // something. No ceiling change — a ratchet that only ever loosens is not one.
-  { path: 'src/controller/workflow-controller.ts', maxLines: 973 },
+  //
+  // FR-R3-070 (feature 152) — 973 → 993 for the resume path's execution-lease
+  // claim: the field, the claim-and-verify block in resumeExistingOnQueue
+  // (mirroring the drain's step 6 + T301 re-check), and its two decline logs.
+  // The extraction note above already named resumeExistingOnQueue as the block
+  // that carries the lease and primacy invariants and should stay put; this is
+  // that block gaining the invariant it was named for. Prose trimmed before
+  // raising. Set to exactly what the file measures.
+  // FR-R3-075 (feature 152) — 993 → 995 for the optional maxDurationMs on the
+  // controller options and its one-line doc. Set to what the file measures.
+  // FR-R3-077 / FR-R3-079 (feature 153) — 995 → 1007. Eleven lines: the store learns its
+  // claim source where the lease manager is resolved (six-line note included),
+  // and the two driver deps that carry the read-side decline and the
+  // dispatch-time output refusal into evidence.
+  // Extraction was measured and declined: `executionLease` is a local of this
+  // constructor, so a helper module would hide a one-line binding behind an
+  // import and a call site — the trade the entries above decline by name.
+  // FR-R3-103 (FR-046, FR-047) — 1007 -> 1025. `abortOnSupersession()`, which fans a window's
+  // lost fence out to every live session's driver.
+  //
+  // Most of the eighteen lines are the docstring, and it is worth them: this method looks like
+  // `cancelActive` and must not become it. It takes no queue argument, because supersession is a
+  // WINDOW-level fact — the fence is per workspace, so losing it means none of this window's Runs
+  // may keep writing the tree, and a per-queue variant would invite terminating one Run while
+  // leaving its siblings unfenced. It also must not release the primacy lease, which AGENTS.md
+  // states as a hard rule with FR-028's history behind it: a window that stopped being primary
+  // while still executing work.
+  // FR-R3-146 (feature 179) — 1,025 -> 1,040, and the extraction was taken FIRST.
+  //
+  // Two responsibilities arrived: how a start failure is reported (FR-005) and the consent
+  // recovery above a containment refusal (FR-002/FR-003). The reporting one was what pushed
+  // this file to 1,068 against a ceiling with one line to give, and this entry's own message
+  // asked for the split; `controller/start-failure-classification.ts` now owns the five
+  // ternaries that decided the code, the message, the log level, the status detail and the
+  // announcement, and the file came back to 1,024. `controller/uncontained-consent-gate.ts`
+  // owns the second: the port, the one-grant-per-kind bound, and the retry routing.
+  //
+  // The fifteen lines are what is left when both are gone, and every one of them is a
+  // binding this file cannot delegate: the import, the optional dep, the window-lived field
+  // and its construction, and the `drive()` local the catch needs so the retry re-drives the
+  // same Run rather than a second copy of the expression. The four-line comment at that catch
+  // is deliberate and is not prose to trim — it records why the admission catch beside it is
+  // left alone (no runner is constructed there), which is the question the next reader will
+  // have. Set to exactly what the file measures.
+  // Feature 308 (FR-R6-F09, 2026-11-10) — 1,040 -> 1,041: the optional acceptance dep the
+  // consent gate is constructed with (the binding an accepted fingerprint writes) adds 1 line
+  // and lands the file at 1,015 by this gate's count, inside `tightMargin`'s band. Measurement
+  // plus 26, the rule the runtime-validators entry uses.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,041 (1,012 raw) → 613 code; ceiling 650.
+  { path: 'src/controller/workflow-controller.ts', maxLines: 650 },
   // P4 domain-validator extraction ratchet: 1,200 → 775. The registry owns
   // command coverage; phase-log and metrics validators own shape rules.
   // Feature 088 (T032) — 775 → 776 for the two connected-run commands. Both
@@ -483,7 +714,22 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // irreducible registration: two literal imports, one module import, and two
   // switch arms — seven lines for two command families, against a ceiling that
   // had seven to give.
-  { path: 'src/contracts/runtime-validators.ts', maxLines: 776 },
+  // Feature 305 (FR-R6-F06, 2026-11-10) — 776 -> 780: the read-usage-accounting command (its
+  // literal import, validator import, response re-export and switch arm) adds 5 lines and lands
+  // the file at 754 by this gate's count, inside `tightMargin`'s band. Measurement plus 26, the
+  // rule the sidebar-ipc entry below uses.
+  // Feature 306 (FR-R6-F07, 2026-11-10) — 780 -> 784: the phase-log tail acknowledgement
+  // command (its literal import, validator import and switch arm) adds 4 lines and lands the
+  // file at 758 by this gate's count, inside `tightMargin`'s band. Measurement plus 26, the
+  // rule the entry above it states.
+  // Features 310/311/314 (FR-R6-F11/F12/F15, 2026-11-12) — 784 -> 814: the reporting and
+  // execution-visibility command families (five literal imports, two validator module imports,
+  // response guard re-exports and five switch arms) add 30 lines and land the file at 788 by
+  // this gate's count. Measurement plus 26, keeping domain payload validation in focused modules.
+  // FR-R7-05 — inbound validators generated into `src/contracts/generated/validators/*.ts`;
+  // `runtime-validators.ts` shrinks to the switch dispatch barrel (357 lines + headroom).
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 390 (358 raw) → 342 code; ceiling 380.
+  { path: 'src/contracts/runtime-validators.ts', maxLines: 380 },
   // P4 IPC-family extraction ratchet: 1,250 → 885. The stable barrel retains
   // literals and guards while domain wire shapes live in focused modules.
   // Feature 084 (T071) — 885 → 950 for the process-YAML command family. Its
@@ -528,7 +774,78 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // fields stay optional so the pre-096 unconditional manual-edit call site
   // keeps compiling unmodified. Joining them would misstate the module for a
   // command that does not fit its shape.
-  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 1024 },
+  //
+  // FR-R3-071 (feature 152) — 1,024 → 1,041 for CMD_RESOLVE_HISTORY_DESCRIPTION:
+  // the constant, its COMMAND_TYPES and command-union memberships, the type
+  // re-exports, the type guard and its guard-table row. That is the per-command
+  // shape this file holds for every command; the request and response types
+  // live in their own module under sidebar-ipc/, exactly as the sibling
+  // read-only command's do. Set to what the file measures.
+  // FR-R3-110 (FR-103) — 1041 -> 1058, for the docstring on `SIDEBAR_IPC_SCHEMA_VERSION`.
+  //
+  // The rename itself is one line. The docstring is the rest, and it earns its place: TWO
+  // constants named `SCHEMA_VERSION` sat on the same host -> webview path with different values
+  // (3 here, 4 in `src/ui/sidebar/snapshot.ts`), so an unqualified import picked a number by
+  // module path — and both numbers are plausible in both places, so a wrong import would not
+  // look wrong. There was a THIRD, `src/state/workspace-state.ts`'s `SCHEMA_VERSION = '1.0.0'`,
+  // a string. Three constants, one name, two types. A reader who arrives at this line needs to
+  // know which of the three they have.
+  //
+  // FR-R3-144 — 1058 -> 1100, and this one is a budget rather than a high-water
+  // mark, which is what FR-R3-119's gate below now requires of it.
+  //
+  // The previous number was "what the file measured" at the time, the form every
+  // bump above used. That form ran out here: the ceiling sat 28 lines above a
+  // 1,030-line file, inside the 25-line margin `undecidedCeilings()` flags, so the
+  // NEXT command to be registered was always going to trip the gate no matter how
+  // small it was. CMD_SET_UNCONTAINED_BACKEND_GRANT is that command, and it costs
+  // this file 24 lines — its constant, its COMMAND_TYPES membership, its
+  // SidebarCommand member, a three-line discriminator guard, its COMMAND_GUARDS
+  // row, and the import/re-export pair for the sub-module.
+  //
+  // That list is the decision. Since feature 087 the per-command cost of this file
+  // has been the five mandatory registration edits and nothing else — payload
+  // shapes, request/response types and payload predicates live in their own
+  // modules under `sidebar-ipc/`, and this command's do too
+  // (`sidebar-ipc/uncontained-grant.ts`). So the budget is set to what that shape
+  // costs for the next few commands rather than to today's measurement: 46 lines
+  // of headroom is roughly three more registrations. When it runs out, the
+  // question on the table will be whether the barrel itself should be generated or
+  // split — an architectural question, which is what should force it, rather than
+  // whichever feature happens to add the next command.
+  //
+  // Feature 195 — 1100 -> 1150. `CMD_SET_QUEUE_FAILURE_POLICY`'s registration
+  // (its constant, `COMMAND_TYPES` membership, `SidebarCommand` member, type
+  // guard, `MUTATING_COMMAND_REASONS`/`COMMAND_GUARDS` rows) spent the last of
+  // the FR-R3-144 headroom, landing this file at 1090 — inside
+  // `tightMargin(1100)`'s 25-line band. Fifty lines restores the same three-ish
+  // registrations of headroom FR-R3-144 sized for, on the same terms: when it
+  // runs out again, the question is still whether the barrel should split, not
+  // whichever feature adds the next command.
+  // Feature 278 (FR-R5-F19, 2026-11-06) — 1150 -> 1165: the open-decision-record command (its
+  // constant, the barrel re-exports, the union member, the guard and the validator-table row)
+  // adds 16 lines, which put the file inside `tightMargin`'s band. Measurement plus 26, the same
+  // rule as the entries above.
+  // Feature 304 (FR-R6-F05, 2026-11-10) — 1165 -> 1182: the storage-details read (its constant, the
+  // `COMMAND_TYPES` member, the barrel re-exports, the union member and the guard) adds 17 lines and
+  // lands the file at 1156 by this gate's count, inside the band. Measurement plus 26, the same rule.
+  // Feature 305 (FR-R6-F06, 2026-11-10) — 1182 -> 1198: the read-usage-accounting command (its
+  // constant, `COMMAND_TYPES` member, barrel re-exports, union member, guard and guard-map row)
+  // adds 16 lines and lands the file at 1172 by this gate's count, inside the band. Measurement
+  // plus 26, the same rule.
+  // Feature 306 (FR-R6-F07, 2026-11-10) — 1198 -> 1208: the phase-log tail acknowledgement
+  // command (its constant, `COMMAND_TYPES` member, barrel re-exports, union member, guard and
+  // guard-map row) and the batch message that replaced the one-entry push add 10 lines and land
+  // the file at 1182 by this gate's count, inside the band. Measurement plus 26, the same rule.
+  // Features 310/311/314 (FR-R6-F11/F12/F15, 2026-11-12) — 1208 -> 1296: five commands across
+  // `sidebar-ipc/reporting.ts` and `sidebar-ipc/execution-visibility.ts` (five constants,
+  // `COMMAND_TYPES` members, barrel re-exports, union members, discriminator guards and
+  // `COMMAND_GUARDS` rows) add 85 lines and land the file at 1268 by this gate's count;
+  // payload types stay in their sub-modules. Measurement plus 28 keeps headroom outside
+  // `tightMargin(1296)` (25 lines).
+  // FR-R7-05 — 22 core command interfaces re-exported from `generated/sidebar-ipc-types.ts` (1,146 + headroom).
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,185 (1,148 raw) → 874 code; ceiling 920.
+  { path: 'src/contracts/sidebar-ipc.ts', maxLines: 920 },
   // Waived, not budgeted. Feature 063's operator decision retired the ceiling
   // on this file and on queue-manager.ts below; it did not set a large one. The
   // entries used to say `maxLines: 10_000` against files of 2,500 and 1,821,
@@ -544,14 +861,255 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
       decidedOn: '2026-05-22',
       reference: 'specs/063-clean-all-confirmations/plan.md',
-      highWaterMark: 2513
+      // FR-R3-055 / H-06 (2026-08-24) — 2513 → 2554 for the fence carried to the
+      // Run commit point: the optional claim on `setRun`, and the verify moved
+      // INSIDE the `KEYS.run` serialize chain so verify-and-write are one link
+      // rather than two operations. It has to be in this file because the commit
+      // point is, and the whole finding is that the check was not at the commit
+      // point. The protocol and its rationale are in
+      // docs/architecture/workspace-ownership-fencing.md.
+      // FR-R3-071 (feature 152) — 2554 → 2564: the terminal-intent validator
+      // grew a tolerated-optional `description` arm (dropped when non-string,
+      // never grounds to reject a replayable transition). Validator shape, not
+      // new responsibility.
+      // FR-R3-077 (feature 153) — 2564 → 2736: the claim on `setRun` stopped
+      // being optional. What grew is the claim SOURCE (`bindRunClaimSource` /
+      // `runCommitClaim`) and the reasoning for its shape, plus the queue
+      // commit point's own claim. The source has to be here because the commit
+      // points are here and because `PhaseControlService` and friends take a
+      // `Pick<>` of this store and nothing else; the alternative was widening a
+      // dozen constructors to thread a lease manager, which is a larger diff
+      // that changes nothing about which commits are fenced. The reason SET is
+      // extracted — it is in src/state/ownership-claim.ts, with its own test.
+      // The queue commit point's own claim (FR-R3-077b, T1045) is the second
+      // half, landed as its own change after the Run half, which is the order
+      // the escalated-residuals decision sets.
+      // The read side (`readRunIfLive`) and the guarded mirror commit
+      // (`refreshLockMirrorGuarded`) are here for the same reason, and the
+      // latter is a REPLACEMENT: `writeGuarded` was deleted in the same change,
+      // so the net is smaller than the additions.
+      // FR-R3-111 (FR-112, FR-113) — 2736 → 2769: the Run quarantine.
+      //
+      // Two branches of the Run load path destroyed unparseable records in silence. The map branch
+      // did `changed = true; continue;` — dropped, written over, no audit event — and the singular
+      // branch did `return []` without even that flag. Meanwhile an unparseable QUEUE entry had
+      // been preserved for inspection since the v9 → v10 migrator, under
+      // `KEYS.queueMigrationQuarantine`. The asymmetry was unexplained, and the silence was the
+      // worse half: an operator whose Run vanished had nothing to read.
+      //
+      // WHAT THIS ENTRY BOUGHT AND WHAT IT DID NOT. The first draft was +92, and this forcing
+      // function refused it — correctly. The quarantine writer, its bound, and its event buffer
+      // moved to `src/state/run-quarantine.ts`; the long explanation of why the map branch is
+      // currently unreachable moved to the test that asserts it. What is left here is the key, the
+      // two call sites, a delegate and a drain: the seam, not the mechanism.
+      //
+      // The remaining 33 are that seam plus imports. Raised rather than compressed further,
+      // because the next compression available was deleting the pointers that tell a reader where
+      // the mechanism went.
+      //
+      // FR-R3-146 (FR-006, FR-011) — 2769 → 2815: durable Git-plan consent.
+      //
+      // A drain of twenty tasks over one pipeline showed twenty byte-identical modals, because
+      // the consent unit was the mutation plan and the storage unit was the Run. The fix is a
+      // record keyed by fingerprint, which needs a key and a way to read and write it.
+      //
+      // The mechanism is NOT here. `src/state/git-plan-grants.ts` holds the whole narrowing —
+      // the total reader, its per-entry rejections, the bounded problem echo, the immutable
+      // writer — with its own tests, following the `confirm-suppression.ts` precedent one entry
+      // above. What is left in this file is the seam that has to be here because the memento is:
+      // the `KEYS` entry, the imports, the warn-once set, and three accessors of one to three
+      // statements each.
+      //
+      // The first draft was +69 and this forcing function refused it, correctly: it was comment,
+      // not code. The `hasOwnProperty` rationale is now one clause instead of a docblock, and the
+      // reasoning about re-reading through the narrowing reader moved to the tests that assert
+      // it. What survives is why the key is its own key, which is the one thing a reader of
+      // `KEYS` cannot recover from anywhere else.
+      //
+      // Cross-queue move, index-vs-slot — 2815 → 2832.
+      //
+      // `movePendingRequest` read its `position` argument, a PENDING-ARRAY index, as if it were a
+      // `.position` slot. Those coincide only on a queue whose rows are all pending, so moving a
+      // Task onto a queue that was executing one appended it second-to-last. The correction is a
+      // translation from one space to the other, and it has to be at this call site: the two
+      // spaces meet here and nowhere else.
+      //
+      // NOT extracted, and the reason is that extraction would mislead. The arithmetic is four
+      // statements that read `targetPending` and the destination row set — a module boundary
+      // around them would advertise a concept the codebase does not have, and would sit next to
+      // `reorderPendingRequest`, which does the same translation inline. Kept size-honest
+      // instead: the first draft was +24, and the comment that explained the two index spaces at
+      // length is now six lines, with the measurement and the two-defect account in
+      // `docs/features/bugs/DONE_cross-queue-move-is-reachable-and-untested.md`.
+      //
+      // Of the 17, six are that comment and eleven are the translation, the sort that makes
+      // indexing `targetPending` meaningful, and the widened shift.
+      //
+      // FR-R3-146 (FR-012, SC-005) — 2832 → 2866: withdrawing a stored Git-plan grant.
+      //
+      // The +34 above is the same shape as the +46 two paragraphs up, and for the same reason.
+      // Five surfaces told operators to open `.schegent/state.json` and delete a grant from it.
+      // No such file exists and nothing has ever written one — the grants are a memento key, so
+      // FR-012's "observable and revocable" was reachable only by a route that does not exist.
+      // `schegent.gitApprovals` is the route that does, and it needs two writes this store has
+      // to own: forget one fingerprint, forget them all.
+      //
+      // The mechanism is NOT here. `forgetGitPlanGrant` in `src/state/git-plan-grants.ts` holds
+      // the narrowing — the has-own-property probe that distinguishes "withdrawn" from "was
+      // never there", and the immutable copy — beside the writer it mirrors. What is left here
+      // is the memento boundary, which is where it belongs: two accessors of three to five
+      // statements that read through the same narrowing reader, `await this.memento.update`, and
+      // report what the caller has to tell the operator.
+      //
+      // Of the 34, twelve are code and the rest is why `forgetAllGitPlanGrants` writes even at
+      // zero — the key may hold a value the reader dropped as malformed, and "forget everything"
+      // has to clear that too, which is the one thing a reader of the two bodies cannot recover.
+      //
+      // FR-R3-153 (T1637) — 2866 → 2873: three new members
+      // (`queue-mismatch`, `illegal-source-status`, `in-flight-ownership-conflict`) on
+      // `QueueMutationRejectReason`, extending the existing closed union rather than
+      // introducing a second, parallel reason type for the Task-transition classifier
+      // in `src/queue/task-transition-decision.ts`. Four lines of literals, three of
+      // comment pointing at the decision that added them.
+      //
+      // FR-R3-161 (T060, 2026-09-04) — the first of those three members is gone.
+      // Nothing in the product could produce `'queue-mismatch'`, so it left every
+      // vocabulary that carried it, this union included. The arithmetic above is
+      // history and stays as written; the enumeration beside it was not, and a
+      // stale comment fails no test, which is why the removal named this line
+      // explicitly instead of trusting a search to reach it.
+      //
+      // Feature 195 (T039, 2026-09-04) — 2873 → 2902: `getProjectedQueueRegistry`
+      // gained an optional `workspaceFailurePolicyDefault` parameter and now builds
+      // a second per-queue map (`failurePolicyByQueueId`) alongside the existing
+      // pause-view one, in the same loop; and `ensureExtendedQueueShape` gained one
+      // conditional spread carrying `QueueState.failurePolicy` through reads and
+      // writes, the same shape `migrationNotice` already used. No new method, no
+      // new file — the two existing normalisation/projection sites this feature's
+      // stored field has to pass through.
+      //
+      // Orphaned-run reconciliation (2026-09-06) — 2902 → 2952. A deleted Task
+      // row left its non-terminal Run in `KEYS.run`, and the drain's occupancy
+      // gate then refused to start anything on that queue forever, with no route
+      // left to end the Run because every cancel and resume path resolves the
+      // Task by row identity first. The load path is the only place that can
+      // clear one already persisted in the field.
+      //
+      // The repair is NOT here. `src/state/orphaned-run-reconciler.ts` holds all
+      // of it — a pure function over the Run map and a row-exists predicate, with
+      // its own tests — following the `run-quarantine.ts` and `git-plan-grants.ts`
+      // precedents above. What landed in this file is the seam that has to be
+      // here because the memento is: one import, one field on `InitializeResult`,
+      // one ladder step, and a twelve-line method that reads `KEYS.run`, hands
+      // the store's own `queueIdForPersistedTask` over as the predicate, and
+      // performs the single write.
+      //
+      // Of the 50, eighteen are code. The rest is why a standing invariant runs
+      // from a version ladder and why its position in that ladder is load-bearing
+      // — it needs `KEYS.queue` in map shape and `KEYS.run` in v11 shape, so
+      // running it earlier would have it read both in a shape it does not
+      // understand and conclude that every Task row is missing. The first draft
+      // was +62; the compression moved the repair's own rationale to the module
+      // header, where its reader already is.
+      //
+      // Feature 239 (FR-R4-F01, 2026-10-27) — 2952 → 3293: 341 lines, all of them the
+      // seam the memento forces into this file and none a new responsibility. They are
+      // `updateRun` and its patch application on the `KEYS.run` chain, the refusal and
+      // commit helpers (`refuseIfClaimLost`, `refuseCommit`, `isRunRaceRefusal`) that
+      // every commit point shares, `removeTerminalIntentIfOwn` (the journal's
+      // compare-and-delete), `deleteQueueIfNoLiveRun` with the three chains it
+      // serializes across, the bounded verify at the commit points, the `setRun`
+      // in-link queue re-check, and the verdict-basis ladder step with its event
+      // surface. The vocabulary they share was extracted rather than added:
+      // `RUN_UPDATE_LABELS` and `RunUpdate` live in `run-update.ts`, the status sets and
+      // `RunPatch` in `workflow-run.ts`, the verify deadline in `ownership-claim.ts`, and
+      // the classification and rewrite of the verdict basis in
+      // `host-verification-migrator.ts`. What is left here is what has to run inside the
+      // store's own serialized links, which is the reason these are methods of it.
+      //
+      // Feature 240 (FR-R4-F02, 2026-10-28) — 3293 → 3354: 61 lines, again the seam the memento
+      // forces and nothing that decides. They are the v14 → v15 ladder step (`migrateCreditPauseIfNeeded`,
+      // two reads and two writes of keys only this store may write, plus the ladder's restructure to
+      // run it between the two steps that report events), the one-line standing invariant call,
+      // and the load-repair warning (`warnLoadRepairs`) that reports a repair with no audit event of
+      // its own. The decisions were extracted rather than added: the invariant's check and both
+      // defaults are pure functions in `credit-pause-state.ts`, and the repair itself is in
+      // `workflow-run-migrator.ts`; this file keeps the `update()` of each key. US6 adds four:
+      // `setWatchdog` validates `lastPollOutcome` and tells subscribers (the surface reads it), and
+      // the change-key union names the watchdog key.
+      //
+      // Feature 242 (FR-R4-F14, 2026-10-28) — 3354 → 3355, +1: the standing invariant that a
+      // failure cause exists only on a failed Run, written as one line in `validateRunInvariants`
+      // because the check is this store's to run on both write paths. Its reasoning is on
+      // `WorkflowRun.failureCause` and in `tests/unit/state/failure-cause-invariant.test.ts`.
+      //
+      // Feature 251 (FR-R4-F04, 2026-10-31) — 3355 → 3379, +24, by this gate's count. The lines are the
+      // `operatorPseudonym` entry in `KEYS` with its reason (six), the same key's reason on
+      // `RESET_EXEMPT_KEYS` (seven, with the comma the previous last entry now needs changing a line and
+      // adding none), and the pseudonym's read and write beside the run quarantine's (eleven, with their
+      // docblocks). The key is this store's: it is a memento value, and every memento key is declared and
+      // accounted for here (`reset-covers-every-key.test.ts` holds the partition). The attribution
+      // logic itself lives in `src/lib/operator-attribution.ts`.
+      //
+      // Feature 255 (FR-R4-F08, 2026-11-01) — 3379 → 3390, +11, by this gate's count. The close audit
+      // found `getConnectedRuns()` writing its dropped-record WARN on every read; the composer reads it on
+      // every compose, so the log-sink-kicks-projector loop ran there too (6,000 composes in 600 idle
+      // seconds, F-T9 in `tests/unit/ui/sidebar/projection-feedback.test.ts`). The fix is the rule
+      // `gitPlanGrantProblemsWarned` already applies: one field with its note (two), the compare in the
+      // getter (four) and the paragraph that says why (five). The field and the getter are this store's,
+      // so the change cannot move; the warning's decision is the set of dropped ids, nothing larger.
+      //
+      // Feature 267 (FR-R5-F08, 2026-11-06) — 3390 → 3447, +57: `PrimacyClaimSource`
+      // (`bindPrimacyClaimSource`, `canCommitConnectedRun`) and the commit-point ownership and
+      // primacy verification inside `compareAndSetConnectedRun` so a superseded or non-primary
+      // window cannot overwrite a rival primary's connected-run state.
+      //
+      // Feature 268 (FR-R5-F09, 2026-11-06) — 3447 → 3754, +307: bounded `writeMemento` deadline
+      // and quarantine (`MEMENTO_WRITE_DEADLINE_MS`, `StorageWriteQuarantinedError`), serialized and
+      // fenced `updateQueueRegistry`, multi-queue fenced `updateQueueMap` / `movePendingRequest`,
+      // fenced `deleteQueueIfNoLiveRun`, and reload-time `reconcileDeletedQueueResidueIfNeeded` and
+      // `pruneExcessDeletedHistoryPartitions`.
+      //
+      // Feature 278 (FR-R5-F19, 2026-11-06) — 3754 → 3757, +3: `validateRunInvariants` takes the
+      // stored Run and calls `assertPendingRetryShape` (the check itself lives in
+      // `pending-retry-shape.ts`); the two write sites pass the Run they replace.
+      //
+      // Feature 289 (FR-R5-F26, 2026-11-08) — 3757 → 3795, +38: `KEYS.controlLedger` memento
+      // registration and the read/write seam that `ControlLedgerStore` delegates to.
+      //
+      // Review gap GC-04 (2026-11-12) — 3795 → 3737, -58: the bounded write, its deadline and its
+      // quarantine moved to `memento-write-gate.ts`, which now also lifts the quarantine when the
+      // timed-out write settles.
+      //
+      // Feature 315 (FR-R7-01, 2026-11-19) — 3737 → 3933, +196: typed `RunFieldInvariantError`
+      // throws in `validateRunInvariants`, `decideRunTransition` enforcement in `setRun` and
+      // `updateRun`, re-exports of the new pure modules (`run-invariant-error.ts`,
+      // `run-transition-decision.ts`), and `admitRunAtomically` inside
+      // `serializeAcrossKeys([KEYS.run, KEYS.queue])` with same-`run.id` transition and
+      // `running`-status admission checks. Pure transition and error definitions live
+      // in their own modules; relocation of existing `workspace-state.ts` code belongs to FR-R7-07.
+      //
+      // Feature 318 (FR-R7-04, 2026-11-19) — 3933 → 3983, +50: minimal memento seam for
+      // `KEYS.agentConfigGrants` (`schegent.consent.agentConfigGrants.v1`) mirroring `gitPlanGrants`.
+      // All validation, narrowing, and pure writers live in `src/state/agent-config-grants.ts`.
+      //
+      // Feature 321 (FR-R7-07, 2026-11-19) — 3983 → 926, -3057: split by key family into
+      // `workspace-state-{types,migrations,queue,runs,locks,history,grants,connected}.ts`
+      // behind the `WorkspaceStateStore` facade and single serialize chain.
+      // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 926 (926 raw) → 775 code lines.
+      highWaterMark: 775
     }
   },
   // Feature 077 — public facade and every state-projection collaborator have
-  // hard physical-LOC ceilings. Composition, lifecycle, and timing are split.
-  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 250 },
-  { path: 'src/ui/sidebar/state-projector-runtime.ts', maxLines: 300 },
-  { path: 'src/ui/sidebar/projector-bookkeeping.ts', maxLines: 300 },
+  // hard code-line ceilings (migrated from physical lines in FR-R7-08).
+  // FR-R7-08 (2026-11-19) — state-projector.ts: prior raw ceiling 250 (218 raw) → 110 code; ceiling 145.
+  // FR-R7-08 / FR-021 retirements (2026-11-19):
+  //   - `src/ui/sidebar/state-projector-runtime.ts` (prior raw ceiling 300, 300 raw → 212 code)
+  //   - `src/ui/sidebar/projector-bookkeeping.ts` (prior raw ceiling 300, 216 raw → 182 code)
+  //   Both entries are retired from `BUDGETS` under FR-021 because the wildcard check in this
+  //   same file (`every sidebar projector module stays at or below 300 code lines`, matching
+  //   every `src/ui/sidebar/*projector*.ts` module) enforces the exact same `<= 300` bound.
+  { path: 'src/ui/sidebar/state-projector.ts', maxLines: 145 },
   // Feature 087 (T064) — 300 → 301 for the recorded-run-outputs projection
   // (FR-043). The composition itself was extracted first, to
   // `projectRunOutputs` in run-projector.ts; what landed here is the one thing
@@ -586,7 +1144,44 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // the alternative to recording this is a ceiling that quietly absorbs
   // explanation, which is the opposite of what the entries above are for. Set
   // to exactly what the file measures.
-  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 308 },
+  // FR-R3-130 (T1496) — 308 -> 312, for the live stream-pressure projection: one
+  // import of `readStreamPressure`, one of `totalmem`, one composed field and its
+  // one-line reason. The composer's job is composing a snapshot from projections and
+  // this is a projection; nothing was moved here that belongs elsewhere.
+  //
+  // Prose trimmed before raising, per this file's convention: the first draft carried
+  // a four-line comment on the field, which said what
+  // `src/ui/sidebar/snapshot.ts`'s `StreamPressureProjection` docblock already says
+  // at length. Set to exactly what the file measures.
+  //
+  // FR-R3-145 (T1572) — 312 -> 320, for the queue-settings projection: one import
+  // of `DEFAULT_GLOBAL_CONCURRENCY_CAP`, two getters added to `ProjectorStore`'s
+  // optional half, one composed field, and a two-line reason for the one thing a
+  // reader would otherwise "fix" — the field reads `store`, while its neighbour
+  // `generalSettings` reads `deps`. Same shape as the raise above: a projection
+  // in the module whose job is composing projections, with nothing movable added.
+  //
+  // Prose trimmed before raising, per this file's convention. The first draft put
+  // a six-line comment inside the `ProjectorStore` union restating the
+  // configuration-versus-memento split that `QueueSettingsProjection`'s docblock
+  // in `src/contracts/snapshot-projections.ts` already sets out at length, and
+  // spread five union members over five lines to hold it. Set to exactly what the
+  // file measures.
+  //
+  // FR-R3-144 (T021) — 320 -> 322, for the backend-posture projection: one import
+  // of `composeBackendPostures` and one spread. A spread rather than a named field
+  // because the projection contributes two snapshot fields — the per-backend
+  // postures and the grant entries that name no backend and so have no row to hang
+  // off — and spreading one call keeps the composer's cost at the same two lines a
+  // single field would have cost.
+  //
+  // Nothing was trimmed because there was nothing to trim: the derivation is 100
+  // lines and all of it went to `src/ui/sidebar/backend-posture-projection.ts`,
+  // capped separately, which is the same move `trust-projection.ts` and
+  // `phase-catalog-projection.ts` record above. Set to exactly what the file
+  // measures.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 322 (319 raw) → 242 code; ceiling 280 (departs UNDECIDED_CEILING_BASELINE).
+  { path: 'src/ui/sidebar/snapshot-composer.ts', maxLines: 280 },
   // The second file of the same 2026-05-22 decision; see the waiver above.
   {
     path: 'src/queue/queue-manager.ts',
@@ -596,15 +1191,224 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
         'helpers may be extracted for cohesion, but the budget is no longer the forcing function',
       decidedOn: '2026-05-22',
       reference: 'specs/063-clean-all-confirmations/plan.md',
-      highWaterMark: 1821
+      // FR-R3-077 (feature 153) — 1821 → 1842: five Run commit points and ten
+      // queue mutation points in this file now name the claim they commit
+      // under. One line each, no new responsibility.
+      //
+      // 1842 → 1844: the `queueLifecycle` writer the terminal and promotion
+      // paths never had. The behaviour itself went to `queue-lifecycle-refresh.ts`
+      // — this file's share is the import and one local for the repositioned
+      // rows in `retry`; the five mapper call sites are each still one line.
+      //
+      // 1844 → 1850 (lifecycle round-check of 2026-08-30): six comment lines and
+      // no code. The header called `peekNextPending`/`hasCapacity`/`markInFlight`/
+      // `finish` the "pump helpers", and nothing pumps — `AutoDrainCoordinator` is
+      // edge-triggered. That word is the round-check's finding A: three separate
+      // implementations returned a Task to `pending` and waited for a tick that
+      // does not exist, two of them citing the pump in a comment. This header is
+      // where a reader forms the model, so the correction belongs here and being
+      // six lines rather than one is the point — a one-word fix is what left the
+      // belief intact the first three times.
+      //
+      // FR-R3-153 (T1636/T1637/T1640) — 1850 → 1935: `markInFlight`, `finish`,
+      // `pause`, and `retry` each now call the shared `decideTaskTransition`
+      // classifier before writing, and `removeTask`'s own weaker, second
+      // in-flight-cancel fallback was deleted (replaced by an explanatory
+      // doc comment on why it cannot safely be rewritten in place — it has no
+      // access to `cancelActive`/the execution-lease releaser, both one layer
+      // up in `task-deletion.ts`). Most of the growth is the reasoning each
+      // call site records for why it checks inside the mutator rather than
+      // before it (spec FR-004 — a refused transition must leave timestamps
+      // completely unchanged, and `store.updateQueue` unconditionally bumps
+      // them on any committed value) — the classifier itself lives in its own
+      // new file, `src/queue/task-transition-decision.ts`, capped separately.
+      //
+      // Code review fix (2026-09-03) — 1935 → 1972: `finish`, `pause`, and
+      // `retry`'s catch blocks were built on `err instanceof
+      // QueueMutationRejected`, which also matches `store.updateQueue`'s own
+      // commit-fence rejection (`checkCommitFence`, an unrelated ownership-race
+      // failure) — silently turning a genuine store-level race into the same
+      // `{ ok: false }` a refused transition returns, where before this feature
+      // it always propagated as a throw for an existing caller's own try/catch
+      // to log. `isTaskTransitionRejection` narrows the catch to the four
+      // reasons `decideTaskTransition` itself can produce, so a fence rejection
+      // is re-thrown again. `retry`'s dead ternary (`decision.eligible ?
+      // 'task-not-found' : decision.reason` — the true branch is unreachable,
+      // since `decideTaskTransition` already refuses with `'task-not-found'`
+      // whenever `target` is undefined) was split into two guards for the same
+      // reason TypeScript needs the direct `!decision.eligible` check to
+      // narrow `decision` to its `reason`-carrying arm. `finish`, `pause`, and
+      // `retry` also each cache `queueIdForTask(featureId)` once instead of
+      // calling it twice (mirroring `markInFlight`'s existing local), since it
+      // is a linear scan over every queue's requests, not a cheap lookup.
+      //
+      // Code review fix (2026-09-03) — 1972 → 1982: `finish` and `pause`
+      // shared the identical try/catch-and-translate wrapper around
+      // `store.updateQueue` verbatim; extracted into one private
+      // `runTaskTransitionMutation` helper both now call. `retry` keeps its
+      // own inline catch (it remaps `task-not-found` to a different public
+      // vocabulary the shared helper does not special-case). The extraction
+      // removes the duplicated wrapper from both call sites but the shared
+      // helper's own signature and doc comment cost slightly more than that
+      // saved — a net +10, in exchange for one fewer thing to keep in sync
+      // by hand the next time this translation changes.
+      //
+      // 1982 → 2200 (FR-R3-150, 2026-09-03): the queue-scoped Clean All
+      // primitive, recovered from the stash that held it and merged over the
+      // FR-R3-153 transition work above. `ClearQueueResult` (a discriminated
+      // union, on `QueueDeletionImpact`'s precedent) and `clearQueue(queueId,
+      // probe?)` itself — one memento write clearing tasks/run/pause/schedule
+      // and settling `active-empty`, the unconditional schedule-cancel-hook
+      // call that closes LC-Q-05, and the no-op gate widened to inspect the
+      // schedule fields so a queue whose only residue is an armed timer is not
+      // reported already-clean. Plus `ClearByStatusResult` and the shared
+      // `refuseIfUnknownQueue` guard `clearCompleted`/`clearFailed` now call to
+      // refuse an unknown queue id (FR-011) rather than silently no-op through
+      // `getQueue()`'s born-empty fallback, and two folds — `countRemovedByStatus`
+      // and `clearRunSnapshots` — that `clearAll` and `clearQueue` now share
+      // instead of hand-copying.
+      //
+      // Extraction into a sibling module was considered and rejected: both
+      // additions are methods on `QueueManager` operating on its own private
+      // `store`, the same shape as `clearAll` immediately above them, and
+      // splitting them out would separate the two methods `clearAll`'s own
+      // header points readers to as the sibling primitive it composes over
+      // (research.md D2 in specs/188-queue-cleanup-scope/).
+      //
+      // 2200 → 2207 (FR-R3-154, 2026-09-03): no behaviour, only narrowing.
+      // `clearAll` read `queuesBefore[id]` off a `Record<string, QueueState>`
+      // in three places, which `noUncheckedIndexedAccess` types as possibly
+      // `undefined` and which really does crash on a key that is not there.
+      // The reads became `Object.entries`/`Object.values` iterations that carry
+      // the key and the state together, and one `find(...) ?? [0]` kept its
+      // existing conditional shape so the `no-unnecessary-condition` baseline
+      // count is unchanged. Six of the seven lines are the comment explaining
+      // that at the site; deleting it to stay under the mark was the other
+      // option and is the wrong one — the mark exists so growth is a decision,
+      // and a decision recorded nowhere is what the next reader pays for. The
+      // new mark is the exact count, not a round number with slack, so the next
+      // line added here trips this gate again.
+      //
+      // Feature 195 (T036, 2026-09-04) — 2207 → 2259: `setFailurePolicy`, one
+      // method beside `saveQueueSettings` reading and writing this queue's own
+      // `failurePolicy` field through `store.updateQueue`, on the same idempotent-
+      // reject-reason shape `setQueuePausedState`'s `already-paused` already uses.
+      // No new file: the method needs `store.getQueue`/`store.updateQueue`, which
+      // only `QueueManager` composes for a caller outside `WorkspaceStateStore`
+      // itself.
+      //
+      // Feature 198 (T037, FR-R3-158, 2026-09-04) — 2259 → 2269: four functional
+      // lines and seven of comment. The functional four are the import of
+      // `phaseProgressPatch`, the by-Task run lookup in `finish()` that feeds it,
+      // its spread into the terminal write, and the destructure in `retry()` that
+      // drops the pair when a task returns to pending. No new file: both sites are
+      // inside existing transition writes, and pulling two spreads out of the
+      // literals they belong to would put the capture somewhere other than the
+      // write it must be atomic with. The arithmetic itself is not here — it lives
+      // in `run-planned-total.ts` and is called, which is FR-003a.
+      //
+      // Seven of the eleven are the comments at those two sites, kept on the
+      // reasoning recorded three entries above: the mark exists so that growth is
+      // a decision, and deleting the explanation to fit under it spends the next
+      // reader's time to buy a number. Exact count again, no slack.
+      //
+      // Feature 195 (T063, BUG-001, FR-025, 2026-09-08) — 2269 → 2330:
+      // `attestCompleted`, the third exit from a halted queue. One insertion of
+      // 67 lines and no deletions — 35 of method beside `finish`/`pause`/`retry`,
+      // 31 of doc comment above it, one blank between. The mark moves 61 rather
+      // than 67 because the file sat six lines under it: the entry below claimed
+      // an exact count and the FR-R3-158 work that followed came in six short of
+      // it, so those six are spent here rather than left as slack nobody decided
+      // to grant.
+      //
+      // Extraction was considered and rejected on the same grounds as the Clean
+      // All primitive two entries above, and more narrowly: the method is one
+      // `runTaskTransitionMutation` call, and both that private helper and the
+      // private `store` it closes over are members of this class. A sibling
+      // module could not reach either, so the extraction would have to take the
+      // whole transition family with it — a refactor of the four methods this
+      // task does not touch, to move the fifth.
+      //
+      // The doc comment is the larger half and is the part worth keeping. It
+      // records why this is a method rather than an `operatorAttested` flag on
+      // `finish` (a flag would put the attestation one argument from every
+      // failure handler in the product, which is exactly what FR-025's ban on
+      // inferring the outcome excludes), and why `completedAt` and `lastError`
+      // are preserved rather than refreshed (they are the evidence that this row
+      // failed and was later attested — the history FR-026 exists to make
+      // readable). Both are decisions a reader would otherwise re-litigate at
+      // the first sight of the method. Exact count again, no slack.
+      //
+      // Feature 195 (T065, FR-026, SC-017, 2026-09-08) — 2330 → 2338: eight
+      // lines, none of them a new responsibility. Two are the
+      // `CompletionProvenance` type import; six are `attestCompleted` writing
+      // `completionProvenance: 'operator-attested'` into the row it already
+      // rewrites, five of those the comment recording why the marker is written
+      // in the same `updateQueue` call as the status it qualifies — the pair
+      // cannot be split, which is the whole reason it is not a second write.
+      // Nothing to extract: the field's declaration and its doc comment live in
+      // `src/queue/feature-request.ts`, and what is here is one property in an
+      // existing object literal. Exact count again, no slack.
+      //
+      // Feature 239 (FR-R4-F01, 2026-10-27) — 2338 → 2385: forty-seven lines, no new
+      // responsibility. The queue-deletion predicate learned that a queue holding a
+      // running, retry-pending or paused Run is not empty (three reasons in
+      // `queueDeletionImpact`), the deletion cascades route through
+      // `deleteQueueIfNoLiveRun` so the predicate and the delete are one serialized
+      // step, and `clearRunSnapshots` stays the one whole-Run removal the census
+      // keeps. The decision of what counts as a live Run is `LIVE_RUN_STATUSES` in
+      // `workflow-run.ts`, not here.
+      //
+      // Feature 240 (FR-R4-F02, 2026-10-28) — 2385 → 2386: one line. Clean All's watchdog
+      // reset also writes `lastPollOutcome: null`, which is the one field it would otherwise leave
+      // behind (contract W6b G23); the reset stays window-wide, as Clean All means.
+      //
+      // Feature 244 (FR-R4-F16, 2026-10-29) — 2386 → 2392: six lines, no new responsibility. They
+      // are the `completionProvenance?` field on `QueueMutationDetail` (the field and a four-line
+      // note) and `removeTask` returning the removed row's value beside `priorStatus`, from the same
+      // row (contract P2.1, P2.2). What the value means, and what reaches disk, is decided in
+      // `src/contracts/completion-provenance.ts` and `src/audit/audit-payload.ts`, not here.
+      //
+      // Feature 252 (FR-R4-F05, 2026-11-01) — 2392 → 2393: one line, no new responsibility. It is
+      // the import of `unexpectedMutationFailureReason`; the two reason helpers each swapped one
+      // line, `err.message` for a call. What the closed reason is, and where the detail goes, is
+      // decided in `src/queue/unexpected-mutation-failure.ts`, not here.
+      //
+      // Feature 267 (FR-R5-F08, 2026-11-06) — 2393 → 2413, +20: occurrence-idempotent
+      // admission in `enqueue` (`workflowOccurrence`), returning the existing non-canceled
+      // request when a workflow node attempt (`rootRunId`, `invocationId`, `attemptId`) is
+      // re-dispatched after a crash or retry race.
+      //
+      // Feature 268 (FR-R5-F09, 2026-11-06) — 2413 → 2434, +21: routing `createQueue`,
+      // `renameQueue`, and `fireDueSchedules` through `store.updateQueueRegistry` and preserving
+      // typed `QueueMutationRejected` reasons in `registryErrorReason`.
+      //
+      // Feature 278 (FR-R5-F19, 2026-11-06) — 2434 → 2435, +1: the retry keeps the failure it came
+      // from, so one `lastError: null` line became a two-line comment saying why it stays.
+      //
+      // Feature 315 (FR-R7-01, 2026-11-19) — 2435 → 2469, +34: `admitRun` routing new-Run admission
+      // through `store.admitRunAtomically` plus shared `applyMarkInFlight` and
+      // `emitTaskStartedPostCommit` helpers so `markInFlight` and `admitRun` share one Task
+      // transition site and post-commit audit hook without duplicating either.
+      // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 2,469 (2,469 raw) → 1,477 code lines.
+      highWaterMark: 1477
     }
   },
+  // Feature 267 (FR-R5-F08, 2026-11-06) — `workflow-control-service.ts` crossed the
+  // 1,000-line entry condition (1,095 lines) with evidence-aware resume reconciliation
+  // (`checkDurableAttemptEvidence` and `isQueueOrTaskPresent` before re-dispatching a
+  // paused leaf Phase node). Budgeted at 1,200 with ~105 lines of headroom.
+  // Feature 294 (FR-R5-F31, 2026-11-08) — 1,200 -> 1,260 for `executeCandidateControlCommand`
+  // and generic `retry-phase` redirection to `ControlCommandService`, keeping ~49 lines of headroom.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,260 (1,234 raw) → 1,068 code; ceiling 1,125.
+  { path: 'src/services/workflow-execution/workflow-control-service.ts', maxLines: 1_125 },
   // Speckit-auto alignment (2026-07-30) — bumped 700 → 800 to absorb two new
   // built-in phases (speckit-checklist, speckit-review) and enriched
   // skill-aligned instruction text for clarify, analyze, review, and finalize.
   // Feature 074 — bumped 800 → 850 for runner field on PhaseDef, ALLOWED_PHASE_FIELDS,
   // isPhaseDef runner check, and validatePhaseRaw runner validation.
-  { path: 'src/config/pipeline-config.ts', maxLines: 900 },
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 900 (494 raw) → 331 code; ceiling 370.
+  { path: 'src/config/pipeline-config.ts', maxLines: 370 },
   // `retry.forceContinueOnCap` (2026-08-16) — 650 → 660 for the retry-cap
   // force-continue default. Extraction was considered and rejected on shape,
   // not on cost: every line added is a row in a declaration this file exists to
@@ -614,12 +1418,449 @@ const BUDGETS: ReadonlyArray<BudgetEntry> = [
   // which hides the growth rather than recording it. Raised to exactly what the
   // file now measures, not to a round number with slack, per the note on
   // snapshot-composer.ts above.
-  { path: 'src/config/general-settings.ts', maxLines: 660 }
+  //
+  // FR-R3-051 / M-05 (2026-08-24) — 660 → 698 for the manifest scope becoming a
+  // declared, required field on every spec, one resolver from scope to
+  // configuration target, and the rollback capture/restore pair becoming
+  // scope-aware. Same shape as the note above: `scope` is a new column in the
+  // table this file exists to be, so extraction would split one declaration
+  // across two files to keep a ceiling. The prose that justified the change was
+  // moved OUT, to
+  // specs/136-settings-scope-and-defaults/contracts/settings-write-target.md,
+  // before raising — the budget buys the note, not the explanation.
+  // FR-R3-075 (feature 152) — 698 → 712 for the idle/max-duration split:
+  // one typed field became two, with their scope-map rows and the KEY_SPECS
+  // entries (the max-duration default's reasoning lives beside its entry).
+  // The four-surface lock-step means this file grows exactly when the manifest
+  // does; nothing movable was added.
+  //
+  // FR-R3-143 (T026), 2026-08-30 — 712 → 800, and the sentence that used to end
+  // the note above ("Set to what the file measures") is gone with it. That shape
+  // is the one `no NEW plain ceiling sits at its file` now rejects, and this file
+  // had already been taken OFF `UNDECIDED_CEILING_BASELINE` by FR-R3-145 the same
+  // morning, so there was no list left to absorb it.
+  //
+  // The change admits six manifest settings the tab could not offer — six typed
+  // fields, six scope rows, six `KEY_SPECS` entries with the manifest's own
+  // defaults — taking the file from 682 to 771. 800 is 29 lines above that,
+  // clear of `tightMargin(800)` = 25, and is deliberately NOT a waiver: a waiver
+  // is the form for a file whose growth is unbounded, and this file's growth is
+  // bounded by the manifest it is in lock-step with. One more setting fits; a
+  // seventh needs a decision, which is what a ceiling is for.
+  //
+  // FR-R3-144 (T001/T002), 2026-08-30 — 800 → 420, because the seventh setting
+  // arrived and the decision the ceiling asked for was taken. Three more keys
+  // did not fit under 800 in any honest sense, and the answer was the split the
+  // note above declined: the file is now the TRANSACTION — capture, write,
+  // rollback, and the read projection — at 384 lines, with the table and the
+  // validator in the two files below.
+  //
+  // Why the seam holds where the earlier note said extraction would only hide
+  // growth: that argument was about splitting ONE table across two files, and it
+  // still stands — the table did not split, it moved whole. What left with it is
+  // everything that is not the table, which is a different fact about the module
+  // and not a slice of the same one. This ceiling is retired DOWN, not raised;
+  // an 800 ceiling on a 384-line file has stopped being a forcing function long
+  // before `WAIVER_FACTOR` would notice at 3x.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 420 (393 raw) → 264 code; ceiling 300.
+  { path: 'src/config/general-settings.ts', maxLines: 300 },
+  // FR-R3-144 (T002) — the settings TABLE and the payload shape it projects.
+  //
+  // This is where the four-surface lock-step now lives, so this is the ceiling
+  // that means what the retired 800 meant: a new setting is four rows here —
+  // the typed field, its `scopes` row, its `AllowedKey` member and its
+  // `KEY_SPECS` entry — plus whatever its entry needs to explain itself. 450
+  // against 418 is roughly two more settings; a third needs a decision.
+  //
+  // FR-R4-F04 (feature 251, 2026-10-31) — 450 -> 475. The transport capture setting is the third and
+  // fourth settings' worth of rows the note above allowed for: the typed field, its scope, its
+  // `AllowedKey` member and its `KEY_SPECS` entry, plus the reason it exists. 437 by this gate's count.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 475 (439 raw) → 323 code; ceiling 360.
+  { path: 'src/config/general-settings-keys.ts', maxLines: 360 },
+  // FR-R3-144 (T002) — the validator, a pure function of a spec and a value.
+  //
+  // Budgeted despite being the smallest entry in this list, because "it is only
+  // 136 lines, it does not need a budget" is precisely the reasoning recorded
+  // below as the FINDING behind `run-driver.ts`: the file nothing governed was
+  // the one that grew. Its growth is bounded by `RuntimeType`, a closed union in
+  // the file above, which is itself budgeted — so this number should move only
+  // when a runtime type is added, and that is a change worth seeing.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 165 (137 raw) → 98 code; ceiling 135.
+  { path: 'src/config/general-settings-validate.ts', maxLines: 135 },
+  // FR-R3-107 (FR-079) — `run-driver.ts` enters the ratchet at its measured size.
+  //
+  // WHY IT WAS NOT HERE BEFORE, which is the finding rather than an oversight. The
+  // 2026-08-26 adversarial pass CLEARED the other god-file suspects: `workspace-state.ts`
+  // is a delegating facade with extracted migrators, `Pick<>` consumers, a dated waiver and
+  // a two-directional ratchet — governed debt. `wireStage2` and `runInner` are budget-pinned
+  // shells with extraction history. What survived was `RunDriver.drive()`: **744 lines**, the
+  // centre of the control flow, with no size governance of any kind. This list had ten entries
+  // and none of them was the control-flow centre.
+  //
+  // The hazard was already visible rather than theoretical: `task-execution-ended` was emitted
+  // from three places inside `drive()` and the first copy had drifted — hand-written zero
+  // statistics, no `durationMs`, and a guard the others lacked. FR-R3-107 collapsed the three
+  // into one emitter, which is why this entry arrives WITH a reduction rather than as a note
+  // about future intent.
+  //
+  // THE MARK IS A HIGH-WATER MARK, not a target. The extraction candidates the review names
+  // are the per-outcome handlers: the completed path, the failed path and the probe-failure
+  // path each own a distinct terminal sequence, and each could become its own leaf the way the
+  // three recorder modules did for `phase-runner.ts`. That is the recorded next split, and it
+  // is deliberately NOT taken here — the 2026-08-23 review's warning against wholesale
+  // restructuring stands, and the serialized commit point and fencing semantics inside
+  // `drive()` are load-bearing enough that moving code around them earns its own change.
+  // FR-R3-128 (T1484) — HELD at 1,290, and the arithmetic is the point.
+  //
+  // `RunDriver.drive()` went from **708 lines to 688**: two of the three terminal
+  // arms performed the same effect sequence character-for-character and now share
+  // `run-terminal-effects.ts`. (The 744 this file recorded above, and the audit's
+  // 744, were both stale by 36 — corrected rather than inherited, because a target
+  // computed from a stale baseline is not a target.)
+  //
+  // THE FILE DID NOT SHRINK, and the ceiling therefore did not move. Extracting to a
+  // new module costs the binding: an import, a lazily-bound accessor, and the call
+  // shape at each site. Trimming twenty-four lines of comment to manufacture a
+  // file-level decrement would be exactly the number-chasing this file exists to
+  // refuse — so the file is held and the METHOD is governed instead, by
+  // `tests/lint/drive-loop-loc-budget.test.ts`, which is what `FR-R3-128` actually
+  // asks for.
+  //
+  // The remainder is named so the next decrement starts from a number: the four
+  // pause arms (breakpoint, delayed-retry, rate-limit, verify) are ~230 lines
+  // between them and are the next candidates. The probe-failure arm stays where it
+  // is — its audit emission order differs from the other two, and unifying it is an
+  // observable change.
+  //
+  // 2026-08-31 — 1,286 -> 1,246, and the ceiling is HELD again, for a different
+  // reason than above. `emitTerminalOutcome` and the thirty lines of FR-R3-107
+  // history explaining it left for `services/terminal-outcome-audit.ts`, because
+  // the controller's own terminal route needed the same emitter and could not
+  // reach a private method. The forty lines are a real decrement, not a comment
+  // trim: what moved is the payload the event carries. That took the file off
+  // `UNDECIDED_CEILING_BASELINE` — see the note there — so 1,290 is now a budget
+  // with 43 lines of measured headroom rather than a high-water mark.
+  //
+  // Feature 194 (FR-009, T019) — 1,290 -> 1,320. `drive()` itself is governed
+  // shrink-only by `tests/lint/drive-loop-loc-budget.test.ts` (FR-R3-128), so
+  // the stagnation-tracker eviction call could not be inlined there: it is a
+  // single call site inside `drive()` to a new extracted method,
+  // `handlePostPhaseDecisionSideEffects()`, which also absorbed the
+  // pre-existing `postDecision.warnings` logging loop (a genuine decrement to
+  // `drive()`, not a comment trim — see that method's docblock). The file
+  // grew by the extracted method's own body plus the one-line call site;
+  // 1,320 restores the same order of headroom `tightMargin` expects rather
+  // than leaving a five-line margin the next small change would immediately
+  // retrip.
+  //
+  // Feature 194 (FR-009, same feature, 2026-09-03) — 1,320 -> 1,330. The
+  // eviction wiring above covers only the decideAfterPhase()-mediated exits;
+  // three more bypass it entirely and leak the phase they left off at for
+  // the rest of the window's lifetime without their own call: mid-loop
+  // cancellation (its whole body moved to a new `handleCancellation()`
+  // method, a net decrease even with the eviction call added — see
+  // `drive-loop-loc-budget.test.ts`), a skip-phase override (one inline
+  // line; `decideBeforePhase()` has no extraction point to give it), and
+  // audit-evidence-unavailable fail-closed (one line in the existing
+  // `failClosedForAuditEvidence()`). 1,330 restores the same order of headroom
+  // the prior raise did, for the same reason.
+  //
+  // Feature 194 code review (2026-09-04) — no raise; a CORRECTION. The line
+  // above read "1,330 measured at 1,294 actual", and the file measured 1,303 by
+  // this gate's own `lineCount()` when that was written: a hand-written figure
+  // nothing recomputes, which is the rot this list's docblock says is the reason
+  // the measured half is no longer written here at all. It is struck rather than
+  // updated. The margin it was claiming to size is real but thin — 1,330 − 1,303
+  // = 27 against `tightMargin(1_330) = 26` — so FR-R3-119 passes by one line and
+  // the next two lines added to this file, by any feature, trip it.
+  //
+  // Every line figure in this note is `lineCount()`, this gate's own measure,
+  // which is `wc -l` PLUS ONE (it splits on newlines, so a trailing newline
+  // yields a final empty element). Named because the two measures differ by one
+  // at exactly the scale this margin is counted in: `wc -l` reports 1,302 for the
+  // same file `lineCount()` reports as 1,303, so a reader who checks the cheaper
+  // command reads the margin as 28 and the note as off by one. Two of the
+  // three eviction sites the raise above paid for are also gone: the fail-closed
+  // and cancellation calls were both inside `drive()`'s try, so the `finally`'s
+  // funnel already covered them, and that funnel now evicts the whole Run rather
+  // than one stale key. Deliberately NOT spent as a fourth raise in one
+  // uncommitted change — the file is at 1,303 and the next change here should
+  // reduce it or split it, not ratchet again.
+  // Feature 278 (FR-R5-F19, 2026-11-06) — 1,330 -> 1,345: the first-blocker notice hook (the
+  // `BlockerNoticeLedger` field, the `emitBlockerNotice` call in the post-phase side effects and the
+  // two parameters that carry the result to it; the logic is in `blocker-notice.ts`), +15 net.
+  // Raised because the margin rule left no choice; the note above stands: the next change here
+  // reduces or splits the file.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,345 (1,318 raw) → 942 code; ceiling 990.
+  { path: 'src/services/run-driver.ts', maxLines: 990 },
+  // FR-R3-128 — the extraction's destination is governed in the same change. An
+  // extraction that shrinks one method and adds an ungoverned file has moved the
+  // debt, not reduced it. 182 lines measured; 210 carries the 25-line margin this
+  // file requires of a plain ceiling, so it is a budget rather than a high-water mark
+  // the next edit raises by exactly what it added.
+  //
+  // FR-R3-153 (code-review fix, 2026-09-03) — 210 → 225. `settleTerminalRun`'s
+  // `queue.finish` call now checks the `MutationResult` it returns instead of
+  // only catching a thrown exception (`finish` refuses an illegal transition by
+  // returning rather than throwing, per this feature's closed transition
+  // table), adding ten measured lines. 192 lines measured; 225 keeps the same
+  // 25-line-plus margin this file's ceiling has always carried.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 225 (193 raw) → 81 code; ceiling 120.
+  { path: 'src/services/run-terminal-effects.ts', maxLines: 120 },
+  // Feature 217 (FR-R3-183; FR-041, FR-043) — the seven files the entry condition
+  // captured when it arrived. Every file at or above `ENTRY_CONDITION_LINES` has to
+  // carry an entry now, and these were the seven that carried none. Each is placed
+  // by its entry alone: nothing was split and no helper extracted to bring a file
+  // under the line (FR-046). Why 1,000, the distribution it was chosen from, and
+  // what would move it are in docs/development/size-gate-entry-condition.md.
+  //
+  // The five ceilings take the form this table already gives files of their size
+  // (run-driver.ts, sidebar-ipc.ts, workflow-controller.ts): about forty lines
+  // above the file, which clears `tightMargin` at each of them and sits far inside
+  // `WAIVER_FACTOR`. Every count here is this gate's, one above `wc -l`, measured
+  // 2026-10-01 once the feature's first workstream had landed.
+  //
+  // 1,281. The first workstream took it from 1,155 (FR-004, FR-005): every open
+  // declares the owner-only modes, a rotation's successor opens through the
+  // checked walk instead of a modeless `writeFile`, and rotated generations are
+  // narrowed where they lie. The ceiling is taken from that count, not from the
+  // one the review saw.
+  //
+  // FR-R4-F04 (feature 251, 2026-10-31) — 1,320 -> 650, lowered. The sink writes no file any more: the
+  // rotation, the generations, the containment cache, the held descriptors and the injected write ports
+  // (everything that was about a destination) moved to `src/monitor/transport/` (the router and the
+  // store), and what stays is the formatting, the redactor registry, the pending bound and the
+  // disposal. 594 by this gate's count; 50 lines keeps it clear of `tightMargin(650)` = 25 and below
+  // where it was.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 650 (596 raw) → 208 code; ceiling 245.
+  { path: 'src/monitor/cli-transport-sink.ts', maxLines: 245 },
+  // FR-R4-F04 (feature 251, 2026-10-31) — the audit writer crosses the 1,000-line entry condition (998 ->
+  // 1,009 by this gate's count). The age logic lives in three new modules (`audit-generation-age.ts`,
+  // `audit-generation-sidecar.ts`, `audit-generation-classify.ts`), so the writer gained only an import, a
+  // field, the clock's construction and its three calls (`observe`, `landed`, `rotated`), and `maybeRotate`
+  // lost the mtime read. 1,050 leaves 41 lines, clear of `tightMargin(1050)` = 25.
+  // FR-R5-F13 (feature 272, 2026-11-06) — 1,050 -> 1,220 for chronological pre-verified archive pruning,
+  // audited `chain-broken` recovery (`noteChainVerified`), and in-place checkpoint re-anchoring
+  // (`reanchorCheckpoint`), leaving ~43 lines of headroom above `tightMargin`.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,220 (1,175 raw) → 856 code; ceiling 900.
+  { path: 'src/audit/audit-log-writer.ts', maxLines: 900 },
+  // FR-R4-F04 (feature 251, 2026-10-31) — `audit-payload.ts` reaches the 1,000-line entry condition (998 ->
+  // 1,001 by this gate's count). The closed `evidence-exported` projection is its own module
+  // (`evidence-lifecycle-payload.ts`) and the validation error moved to `audit-payload-error.ts` so the
+  // two can be imported without a cycle; this file gained the two imports and one arm and lost the class.
+  // 1,050 leaves 49 lines, clear of `tightMargin(1050)` = 25.
+  // FR-R5-F13 (feature 272, 2026-11-06) — 1,050 -> 1,080 for `chain-verified` and `checkpoint-reanchored`
+  // projection arms and the three new evidence-sink path-refused warning literals.
+  // Feature 318 (FR-R7-04, 2026-11-19) — 1,080 -> 1,090 for the 3-line `agent-config-acknowledged`
+  // dispatch arm; the closed projector lives in `src/audit/agent-config-ack-payload.ts`.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,090 (1,057 raw) → 544 code; ceiling 580.
+  { path: 'src/audit/audit-payload.ts', maxLines: 580 },
+  // 1,186, unchanged by feature 217's workstream.
+  //
+  // FR-R4-F04 (feature 251, 2026-10-31) — 1,225 -> 1,250. The transport capture setting adds its idle
+  // default and scope (4 lines) and the snapshot's `GeneralSettingsProjection` type with its reason (14
+  // lines): 1,208 by this gate's count, and the ceiling is raised by the lines added, to the same order
+  // of headroom `tightMargin` expects.
+  // FR-R7-05 — snapshot projection interfaces generated into `src/contracts/generated/snapshot-types.ts`;
+  // `snapshot.ts` shrinks to barrel re-exports + idle constants + helpers (334 lines + headroom).
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 370 (336 raw) → 276 code; ceiling 315.
+  { path: 'src/ui/sidebar/snapshot.ts', maxLines: 315 },
+  // 1,100, unchanged by this feature.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,140 (1,112 raw) → 635 code; ceiling 670.
+  { path: 'src/monitor/claude-cli-monitor.ts', maxLines: 670 },
+  // 1,018, and captured only because the first workstream took it from 899
+  // (FR-004, FR-005): the rollover's successor opens through the checked walk and
+  // rotated generations are narrowed where they lie. It gets an entry rather than
+  // a trim back under 1,000, because cutting that work to slip below the condition
+  // is the gaming FR-046 exists to stop.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,060 (1,027 raw) → 536 code; ceiling 575.
+  { path: 'src/lib/runtime-log/runtime-log-sink.ts', maxLines: 575 },
+  // 1,008, unchanged by this feature, and the same size as workflow-controller.ts,
+  // which already carried a ceiling.
+  // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw ceiling 1,050 (1,008 raw) → 638 code; ceiling 675.
+  { path: 'src/state/queue-state-migrator.ts', maxLines: 675 },
+  // The two the filing named by hand. Both are larger than every ceiling in this
+  // table, and the review calls audit-events.ts "the most likely next god-file".
+  // They take a waiver because it is the tighter bound: a plain ceiling has to keep
+  // more than `tightMargin` of room nobody decides on, and a mark at the file's
+  // size keeps none, so the next added line needs a diff that moves the number.
+  // It is also the form their two larger peers above carry. Neither file is asked
+  // to shrink.
+  //
+  // audit-events.ts had no stated size anywhere. phase-runner.ts had one, which the
+  // filing missed: feature 057's tests/lint/phase-runner-loc-budget.test.ts holds it
+  // at 1,403 by `wc -l`, which is 1,404 by this gate's count, the mark below. The
+  // entry condition reads only this table, so the file needs its entry here as
+  // well, and growing it now means raising both numbers.
+  {
+    path: 'src/contracts/audit-events.ts',
+    waiver: {
+      decision:
+        'audit-events.ts and phase-runner.ts are accepted at their measured size and given ' +
+        'no room to grow: neither is required to shrink, and neither may get longer unless ' +
+        'its highWaterMark is raised in a diff that says why',
+      decidedOn: '2026-10-01',
+      reference: 'repo/docs/development/size-gate-entry-condition.md',
+      // Feature 242 (FR-R4-F14, 2026-10-28) — 1551 → 1559, +8. The lines are the additive
+      // `failureCause?` on `TaskExecutionEndedPayload` (the field, its type import and a one-line
+      // note) and the feature entry in the file's own header, which contract E1 requires and every
+      // earlier additive field carries. The vocabulary lives in `src/contracts/failure-cause.ts`,
+      // not here, and the projection arm lives in `src/audit/audit-payload.ts`.
+      //
+      // Feature 244 (FR-R4-F16, 2026-10-29) — 1559 → 1566, +7. The lines are the feature entry in
+      // the file's own header (contract P4.1), which every earlier additive field carries: the field
+      // on `task-removed`, its two values, absence meaning "not recorded", admission by identity in
+      // both copies, and no schema bump. No payload interface is added; there is none to extend.
+      //
+      // Feature 250 (FR-R4-F03, 2026-10-30) — 1566 → 1576, +10. The lines are the feature entry in
+      // the file's own header (six, with its blank comment line), which every earlier additive
+      // change carries; the new event type in `ALL_AUDIT_EVENT_TYPES` with its one-line note (two;
+      // the comma the previous last member now needs changes a line and adds none); and the same
+      // type in `SYSTEM_SCOPED_EVENT_TYPES` with its one-line note (two), because the row has no run
+      // and belongs on the System tab. The payload type lives in
+      // `src/contracts/audit-integrity-condition.ts`, not here, and the projection arm lives in
+      // `src/audit/audit-payload.ts`.
+      //
+      // Feature 251 (FR-R4-F04, 2026-10-31) — 1576 → 1590, +14, by this gate's count. The lines are the
+      // feature entry in the file's own header (seven, with its blank comment line), the new group
+      // `OPERATOR_ATTRIBUTION_EVENT_TYPES` with its doc comment (two) and its spread into
+      // `ALL_AUDIT_EVENT_TYPES` with its note (three, the comma the previous last member now needs
+      // changing a line and adding none), and the same type in `SYSTEM_SCOPED_EVENT_TYPES` with its
+      // one-line note (two), because the row has no run and belongs on the System tab. The payload is
+      // empty, so there is no type to add, and `evidence-exported`'s projection lives in
+      // `src/audit/evidence-lifecycle-payload.ts`.
+      //
+      // Feature 253 (FR-R4-F06, 2026-10-31) — 1590 → 1627, +37, by this gate's count. The lines are
+      // the feature entry in the file's own header (eight, with its blank comment line); the new family
+      // `HOST_TEARDOWN_EVENT_TYPES` with its doc comment (six) and its spread into
+      // `ALL_AUDIT_EVENT_TYPES` (one), kept apart from `PROCESS_TREE_EVENT_TYPES` because that gate pins
+      // the single-member form; the closed payload `HostTeardownUnconfirmedPayload` with its doc comment
+      // (nine), which every payload in this file carries; and the three additive capability fields,
+      // `enforcement` and `residuals` on `CapabilityAppliedPayload` and `unqualified` on
+      // `CapabilityRefusedPayload`, each with its one-line note, plus the import that names their closed
+      // unions. `RunResumePayload.liveness` gains a value and adds no line. The projection arm lives in
+      // `src/audit/audit-payload.ts`.
+      //
+      // Feature 259 (FR-R4-F12, 2026-11-01) — 1627 → 1631, +4, by this gate's count. The lines are
+      // the type-only import of `PromptIdentity` (one) and the additive optional field
+      // `PhaseStartPayload.promptIdentity` with its two-line note (three). No other payload, event
+      // type or constant changed, and `AUDIT_SCHEMA_VERSION` stays 3.
+      //
+      // Feature 268 (FR-R5-F09, 2026-11-06) — 1631 → 1646, +15: `MIGRATION_V10_EVENT_TYPES`
+      // (`state-migrated-v9-to-v10`) and `MIGRATION_V13_EVENT_TYPES` (`state-migrated-v12-to-v13`,
+      // `queue-pause-divergence-resolved`) added to `ALL_AUDIT_EVENT_TYPES` and
+      // `SYSTEM_SCOPED_EVENT_TYPES`.
+      //
+      // Feature 293 (FR-R5-F30, 2026-11-08) — 1646 → 1674, +28: `CANDIDATE_BLOCK_EVENT_TYPES`
+      // (`candidate-attempt-settled`, `candidate-block-settled`, `candidate-block-paused`,
+      // `control-notification-recorded`) and their metadata-only payload interfaces.
+      //
+      // Feature 304 (FR-R6-F05, 2026-11-10) — 1674 → 1684, +10 by this gate's count: the
+      // feature entry in the file's own header (three, with its blank comment line); the new group
+      // `ARTIFACT_LIFECYCLE_EVENT_TYPES` with its doc comment and blank line (three) and its spread into
+      // `ALL_AUDIT_EVENT_TYPES` with its note (two); and the same type in `SYSTEM_SCOPED_EVENT_TYPES`
+      // with its one-line note (two), because the row has no run. The payload type lives in
+      // `src/contracts/artifact-lifecycle/audit-payload.ts`, not here.
+      //
+      // Feature 308 (FR-R6-F09, 2026-11-10) — 1684 → 1688, +4 by this gate's count: the type-only
+      // import of `TeardownOutcome` and `TeardownResidual` (one) and the two fields
+      // `teardownOutcome` and `residuals` on `HostTeardownUnconfirmedPayload` with their one-line
+      // note (three), which state the ladder's result in the qualification vocabulary. No event
+      // type or constant changed; the mapping lives in
+      // `src/services/containment-qualification/teardown-qualification.ts`, not here.
+      //
+      // Feature 317 (FR-R7-03, 2026-11-19) — `STORE_BACKUP_RESTORE_EVENT_TYPES` (`'store-backup'`,
+      // `'store-restore'`), its spread into `ALL_AUDIT_EVENT_TYPES`, and `SYSTEM_SCOPED_EVENT_TYPES`.
+      // Feature 318 (FR-R7-04, 2026-11-19) — `AGENT_CONFIG_ACK_EVENT_TYPES` (`agent-config-acknowledged`)
+      // and its spread into `ALL_AUDIT_EVENT_TYPES`.
+      // FR-R7-08 (2026-11-19) — migrated to code lines (combined 317 + 318: 612 code lines).
+      // Principal Review F5/F6 (2026-11-26) — 612 → 619 (+7 code lines): `OPERATOR_SECURITY_EVENT_TYPES`
+      // (`'scanner-consent-changed'`, `'telemetry-credential-changed'`), its spread into
+      // `ALL_AUDIT_EVENT_TYPES`, and both system-scoped entries in `SYSTEM_SCOPED_EVENT_TYPES`.
+      // The closed payload types and projectors live in `src/audit/operator-security-audit-payload.ts`.
+      highWaterMark: 619
+    }
+  },
+  // Feature 317 + 324 (FR-R7-03 / FR-R7-10, 2026-11-19) — `sqlite-cutover-wiring.ts` (1,017 code
+  // lines) and `store-relocation.ts` (1,040 code lines) crossed the 1,000-line entry condition;
+  // declared with plain ceilings leaving ~55 lines of headroom above `tightMargin`.
+  { path: 'src/activation/sqlite-cutover-wiring.ts', maxLines: 1_075 },
+  { path: 'src/services/sqlite-store/store-relocation.ts', maxLines: 1_100 },
+  // Round 5 workflow control-flow, backend recovery, and admission modules (FR-R5-F26..F34, 2026-11-08) —
+  // each crosses the 1,000-line entry condition and carries a plain ceiling with ~50 lines of headroom
+  // above `tightMargin`.
+  // FR-R7-08 (2026-11-19) — migrated to code lines (prior raw ceiling / raw lines → code lines / new ceiling):
+  //   backend-availability-service.ts: 1,420 / 1,375 → 1,233 / 1,295
+  //   candidate-block-executor.ts:     1,980 / 1,921 → 1,752 / 1,840
+  //   connected-run-coordinator.ts:    1,450 / 1,409 → 1,262 / 1,330
+  //   control-attempt-admission.ts:    1,860 / 1,821 → 1,695 / 1,780
+  //   control-command-service.ts:      1,380 / 1,326 → 1,231 / 1,295
+  //   control-usage-accounting.ts:     1,220 / 1,168 → 1,020 / 1,075
+  //   control-wakeup-planner.ts:       1,330 / 1,273 → 1,124 / 1,185
+  //   quota-permit-arbiter.ts:         1,840 / 1,780 → 1,587 / 1,670
+  //   workflow-recovery-service.ts:    1,320 / 1,187 → 1,101 / 1,160
+  //   connected-workflow-run.ts:       1,070 / 1,038 →   794 /   835
+  { path: 'src/services/backend-availability-service.ts', maxLines: 1_295 },
+  { path: 'src/services/workflow-execution/candidate-block-executor.ts', maxLines: 1_840 },
+  { path: 'src/services/workflow-execution/connected-run-coordinator.ts', maxLines: 1_330 },
+  { path: 'src/services/workflow-execution/control-attempt-admission.ts', maxLines: 1_780 },
+  { path: 'src/services/workflow-execution/control-command-service.ts', maxLines: 1_295 },
+  { path: 'src/services/workflow-execution/control-usage-accounting.ts', maxLines: 1_075 },
+  { path: 'src/services/workflow-execution/control-wakeup-planner.ts', maxLines: 1_185 },
+  { path: 'src/services/workflow-execution/quota-permit-arbiter.ts', maxLines: 1_670 },
+  { path: 'src/services/workflow-execution/workflow-recovery-service.ts', maxLines: 1_160 },
+  { path: 'src/state/connected-workflow-run.ts', maxLines: 835 },
+  // The second file of the same 2026-10-01 decision; see the waiver above.
+  {
+    path: 'src/controller/phase-runner.ts',
+    waiver: {
+      decision:
+        'audit-events.ts and phase-runner.ts are accepted at their measured size and given ' +
+        'no room to grow: neither is required to shrink, and neither may get longer unless ' +
+        'its highWaterMark is raised in a diff that says why',
+      decidedOn: '2026-10-01',
+      reference: 'repo/docs/development/size-gate-entry-condition.md',
+      // Feature 228 (FR-R3-198, 2026-10-23) — 1404 → 1405, +1, by this gate's
+      // count. The line is the input field `PhaseRunInputs.continuationNote`: the
+      // two fields the file now forwards were paid for by joining three lines into
+      // one, and the input field was not. The why is the FR-R3-198 note on this
+      // file's entry in tests/lint/phase-runner-loc-budget.test.ts, whose ceiling
+      // moved 1,403 → 1,404 in the same diff.
+      //
+      // Feature 237 (FR-R3-209, 2026-10-26) — 1405 → 1409, +4, by this gate's count. The four
+      // lines are carriers for the session cost figure: an input field, an output field, the
+      // request's figure and the output's figure. The why is the FR-R3-209 note on this file's
+      // entry in tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,404 → 1,408
+      // in the same diff.
+      //
+      // Feature 259 (FR-R4-F12, 2026-11-01) — 1409 → 1410, +1, by this gate's count. The line
+      // forwards `textSource` from the unwrapper to the parser (CP7), so tool-output text cannot
+      // advance a Phase (FR-006). The why is the FR-R4-F12 note on this file's entry in
+      // tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,408 → 1,409 in the same
+      // diff.
+      //
+      // Feature 259 (FR-R4-F12, 2026-11-01), second raise — 1410 → 1414, +4, by this gate's count.
+      // The lines select the composed prompt's identity beside the prompt and set it on `phase-start`
+      // (PI4). The why is the second FR-R4-F12 note on this file's entry in
+      // tests/lint/phase-runner-loc-budget.test.ts, whose ceiling moved 1,409 → 1,413 in the same diff.
+      //
+      // Feature 318 (FR-R7-04, 2026-11-19) — 1414 → 1422, +8, by this gate's count. Optional
+      // `agentConfigAckGate` injection, call right after `resolveRunner`, and `preSpawnRefusal`
+      // recognition for `AgentConfigAcknowledgementRefusedError`. All preflight logic and the
+      // per-(runId, backend) ledger live in `src/controller/agent-config-ack-gate.ts`.
+      //
+      // FR-R7-08 (2026-11-19) — migrated to code lines: prior raw mark 1,422 (1,419 raw) → 845 code lines.
+      // Retained alongside `phase-runner-loc-budget.test.ts` (845 code lines) because this waiver also
+      // enforces the `RATCHET_SLACK` shrink-down check.
+      // Native review adds the orchestration seam and applies its evidence before
+      // the normal retry decision. Review execution lives in its own module.
+      highWaterMark: 871
+    }
+  }
 ];
 
 function lineCount(path: string): number {
-  const contents = readFileSync(resolve(REPO_ROOT, path), 'utf8');
-  return contents.length === 0 ? 0 : contents.split(/\r?\n/).length;
+  return countFileCodeLines(resolve(REPO_ROOT, path));
 }
 
 describe('large source file LOC budgets', () => {
@@ -651,6 +1892,472 @@ describe('large source file LOC budgets', () => {
     expect(offenders).toEqual([]);
   });
 
+  /**
+   * FR-R3-119 / FR-055 — the blind spot `WAIVER_FACTOR` cannot see by construction.
+   *
+   * The check above correctly refuses a LOOSE ceiling pretending to be a budget: a
+   * number set at a large multiple of its file has stopped being a forcing
+   * function. It has no opinion on a TIGHT ceiling on a file that should not be
+   * that size at all — and that is the shape a god file naturally produces,
+   * because every edit ratchets the ceiling up by exactly what the edit added.
+   *
+   * `src/extension.ts` was the instance: a 1,490 ceiling on a 1,489-line file, one
+   * line of headroom, a plain number with no recorded decision — while its two
+   * LARGER peers, `workspace-state.ts` (2,768) and `queue-manager.ts` (1,841),
+   * both carried dated waivers with ratchets. The largest cohesion problem in the
+   * tree was the one the waiver machinery never saw, and nobody had to write down
+   * why.
+   *
+   * A file sitting at its ceiling is not necessarily wrong. It is UN-DECIDED, and
+   * this reports it so that it becomes decided either way — tighten it after a
+   * real reduction, or convert it to a waiver that says why the size is accepted.
+   * A waived file is exempt: it is already decided.
+   */
+  /**
+   * THE BASELINE, and why this is a ratchet rather than a hard zero.
+   *
+   * Adding the check found EIGHT files at their ceilings, not one. The shape is
+   * systemic, not a property of `extension.ts`, which is itself the finding —
+   * every one of these was arrived at the same way, by an edit raising the number
+   * by what the edit added.
+   *
+   * Failing all six at once would force six architectural decisions inside a
+   * feature scoped to one of them, which is how a useful gate gets reverted. So
+   * this is the shape `compiler-strictness-ratchet.test.ts` already uses on 1,279
+   * pinned diagnostics: the existing set is recorded, it may only SHRINK, and a
+   * seventh cannot arrive. `src/extension.ts` is absent from this list because
+   * FR-R3-119 decided it — that is what coming off this list looks like.
+   */
+  // `runtime-validators.ts` and `sidebar-ipc.ts` came off this list on
+  // 2026-08-30. Not by an architectural decision — by deletion: the lifecycle
+  // round-check (finding D) removed five IPC commands that no webview surface
+  // could send, taking their constants, interfaces, type guards, guard-map
+  // entries, `case` arms and union members with them. 776 - 717 and 1058 - 1011
+  // is what five dead commands were costing two of the tree's largest files.
+  // Their ceilings are left where they are: real headroom on a file that shrank
+  // is a budget, which is the state this list exists to move files into.
+  //
+  // `general-settings.ts` came off this list on 2026-08-30, by the same mechanism
+  // as the two above: deletion, not an architectural decision. FR-R3-145 removed
+  // `schegent.queue.globalConcurrencyCap` — a configuration key whose value no
+  // scheduling path read, because the cap the drain gates on lives in the
+  // workspace memento — taking its typed field, its `scopes` row, its member of
+  // the `AllowedKey` union and its `KEY_SPECS` entry with it. 710 - 682 is what
+  // one advertised-but-unread key was costing the file this repository's settings
+  // table lives in. Its ceiling of 712 is left where it is: real headroom on a
+  // file that shrank is a budget, which is the state this list exists to move
+  // files into.
+  // `run-driver.ts` came off this list on 2026-08-31, and this one WAS an
+  // architectural decision rather than a deletion. FR-R3-107's "one emitter for
+  // `task-execution-ended`" was true of the driver and false of the host: the
+  // controller owns a second route to a terminal state and emitted nothing on it,
+  // so a failed run was `failed` in the state store and still open in the durable
+  // record. Closing that meant the emitter had to be reachable from both, so it
+  // moved to `services/terminal-outcome-audit.ts` — 1,286 - 1,246, the payload
+  // plus the thirty lines of history that explain it. Its ceiling of 1,290 is left
+  // where it is, on the same terms as the three above: real headroom on a file
+  // that shrank is a budget, which is the state this list exists to move files
+  // into. The next decrement is still the four pause arms named at the entry.
+  /**
+   * Recorded ceiling, not recorded headroom (FR-R3-143 T056).
+   *
+   * These four used to carry their measurement as a comment — `285 / 300 — 15
+   * lines`, `1025 / 1025 — no headroom`, and so on. Three of the four were
+   * wrong when checked on 2026-08-31: the real headroom on the first was **1**,
+   * an error of 14; `run-driver.ts` claimed 1 where it was 3; and
+   * `workflow-controller.ts` kept a verdict that still read true over two
+   * numbers that no longer did. A hand-written figure nothing recomputes rots
+   * silently, which is the defect this list exists to catch, one layer down. So
+   * the measured half is not written here any more — it is derived, and the
+   * failures below print it.
+   *
+   * `ceiling` IS recorded, because it is data a test reads rather than prose: a
+   * file on a shrink-only list may not raise its own ceiling. That gap was
+   * real. `workflow-controller.ts` went from 1,025 to 1,040 while listed — the
+   * list exempts a file from ARRIVING at its ceiling and says nothing about one
+   * already there raising it, so the growth this gate predicts in words
+   * happened to a file the list was protecting, and no test saw it. These are
+   * the numbers as of 2026-08-31, which freezes that raise rather than blessing
+   * it: from here they may only come down.
+   */
+  // `workflow-controller.ts` came off this list on 2026-09-04, and like
+  // `run-driver.ts` this one WAS an architectural decision. The concurrent-session
+  // checkpoint took it 1,039 -> 1,092 and red, and the gate's own instruction —
+  // "split new responsibilities into focused modules before adding more behavior"
+  // — named the response. `handleUnexpectedStartFailure` and its private
+  // sanitizer moved to `src/controller/unexpected-start-failure.ts`: 117 lines
+  // that answer one question, *a start failed; what does the workspace owe back?*,
+  // and whose module boundary FR-R3-146 had already half-drawn when the
+  // classification half left for `start-failure-classification.ts`. 1,092 - 1,003.
+  // Its ceiling of 1,040 is left where it is, on the same terms as the four above:
+  // real headroom on a file that shrank is a budget, which is the state this list
+  // exists to move files into.
+  // FR-R7-08 (2026-11-19) — both remaining entries departed upon migrating to code lines:
+  // `state-projector-runtime.ts` (212 code lines) retired under FR-021 to the 300-code-line
+  // sidebar projector wildcard check below; `snapshot-composer.ts` (242 code lines, ceiling 280)
+  // now carries real headroom above `tightMargin`. The baseline reaches zero; no new file may join.
+  const UNDECIDED_CEILING_BASELINE: ReadonlyArray<{
+    readonly path: string;
+    readonly ceiling: number;
+  }> = [];
+
+  const BASELINE_PATHS: ReadonlySet<string> = new Set(
+    UNDECIDED_CEILING_BASELINE.map((entry) => entry.path)
+  );
+
+  function undecidedCeilings(): readonly string[] {
+    return BUDGETS.filter((entry): entry is CeilingEntry => !isWaived(entry))
+      .map((entry) => ({ ...entry, actual: lineCount(entry.path) }))
+      .filter((entry) => entry.maxLines - entry.actual <= tightMargin(entry.maxLines))
+      .map((entry) => entry.path);
+  }
+
+  it('no NEW plain ceiling sits at its file (FR-R3-119)', () => {
+    const arrivals = undecidedCeilings().filter((path) => !BASELINE_PATHS.has(path));
+    expect(
+      arrivals,
+      `A ceiling this close to its file is not a budget, it is a high-water mark nobody ` +
+        `decided on: the next edit raises it by exactly what the edit added, which is how a ` +
+        `god file grows without anyone choosing. Either reduce the file and tighten the ` +
+        `ceiling, or replace maxLines with a waiver carrying a quoted decision, an ISO date, ` +
+        `a resolvable reference and a high-water mark — the form its larger peers use. Do ` +
+        `not add it to UNDECIDED_CEILING_BASELINE; that list is shrink-only.`
+    ).toEqual([]);
+  });
+
+  it('the un-decided baseline only shrinks', () => {
+    const stillUndecided = undecidedCeilings();
+    const departed = UNDECIDED_CEILING_BASELINE.map((entry) => entry.path).filter(
+      (path) => !stillUndecided.includes(path)
+    );
+    expect(
+      departed,
+      `These files no longer sit at their ceilings — the debt was paid. Remove them from ` +
+        `UNDECIDED_CEILING_BASELINE so the list keeps measuring something, which is the only ` +
+        `way a ratchet stays a ratchet.`
+    ).toEqual([]);
+  });
+
+  /**
+   * FR-R3-143 (T056) — the one motion this list exists to stop, which nothing
+   * observed.
+   *
+   * A file joins by sitting at its ceiling, and `no NEW plain ceiling sits at
+   * its file` then keeps others from joining. But a listed file raising its own
+   * number is exempt from that check by being listed, so it could ratchet
+   * freely — and one did, 1,025 to 1,040, which is precisely "the next edit
+   * raises it by exactly what the edit added" carried out on a file the list
+   * was protecting.
+   *
+   * That edit extracted two modules first and justified the remainder in
+   * thirteen lines, and it was right to. That is the point: a rule depending on
+   * every future editor writing thirteen good lines is not a gate. An entry
+   * whose path has left BUDGETS or become a waiver is skipped here and caught
+   * by the departure check above, which fails until the list is updated.
+   */
+  it('a listed file does not raise its own ceiling (FR-R3-143 T056)', () => {
+    const ceilings = new Map(
+      BUDGETS.filter((entry): entry is CeilingEntry => !isWaived(entry)).map((entry) => [
+        entry.path,
+        entry.maxLines
+      ])
+    );
+    const raised: string[] = [];
+    for (const entry of UNDECIDED_CEILING_BASELINE) {
+      const current = ceilings.get(entry.path);
+      if (current === undefined || current <= entry.ceiling) continue;
+      raised.push(
+        `${entry.path}: ceiling ${current}, recorded at ${entry.ceiling} ` +
+          `(+${current - entry.ceiling}), file measures ${lineCount(entry.path)}`
+      );
+    }
+    expect(
+      raised,
+      `A file on this shrink-only list raised its own ceiling. Sitting at a ceiling is what ` +
+        `puts a file here; raising it is the growth being listed was supposed to make someone ` +
+        `decide about, not a way around the decision. Reduce the file instead, or convert the ` +
+        `entry to a waiver carrying a quoted decision, an ISO date, a resolvable reference and ` +
+        `a high-water mark — and take the path off this list, because a waived file is decided.`
+    ).toEqual([]);
+  });
+
+  /**
+   * FR-R3-143 (T056) — the retired convention, held to a ratchet.
+   *
+   * The header on BUDGETS demotes these closing sentences from instruction to
+   * record. Prose alone cannot hold that, because the next editor copies the
+   * shape of the note above theirs — which is how there came to be this many.
+   * So the count is pinned.
+   *
+   * COUNTED ON NORMALIZED TEXT, which is not fussiness. The first draft of this
+   * check ran its regex over the raw slice and pinned **24**. The real figure is
+   * 33: five notes wrap between `exactly` and `what`, and four say "set to what
+   * the file measures" without the `exactly`, so a raw match was measuring where
+   * the comments happened to break rather than how often the convention appears.
+   * A gate whose number moves when someone re-wraps a paragraph is the defect
+   * this item is about, one layer down. Stripping `//` and collapsing whitespace
+   * first makes the count a property of the prose.
+   *
+   * One of the 33 is not an instruction: T026's note quotes the sentence while
+   * recording that it deleted it. It is counted anyway rather than special-cased,
+   * because a regex that tries to tell quotation from use is a second fragile
+   * thing to maintain, and the ratchet only needs the number to be stable and
+   * checked. Two further meta-references do not match at all — they describe the
+   * convention ("the form every bump above used") without restating it.
+   *
+   * Deliberately scoped to the BUDGETS literal: the header that retires the
+   * convention has to be able to quote it, and this message has to be able to
+   * name it, without either counting as an instance.
+   */
+  const CONVENTION_INSTANCES = 33;
+
+  it('the retired convention gains no new instances (FR-R3-143 T056)', () => {
+    const source = readFileSync(resolve(__dirname, 'source-loc-budget.test.ts'), 'utf8');
+    const start = source.indexOf('const BUDGETS');
+    const end = source.indexOf('function lineCount');
+    expect(start, 'the BUDGETS literal moved; this check no longer reads it').toBeGreaterThan(-1);
+    expect(end, 'lineCount moved; this check no longer bounds the notes').toBeGreaterThan(start);
+
+    const notes = source.slice(start, end).replace(/\/\//g, ' ').replace(/\s+/g, ' ');
+    const found = notes.match(/(?:set|raised) to (?:exactly )?what (?:the file|it) (?:now )?measures/gi);
+    expect(
+      found?.length ?? 0,
+      `The count of notes closing with the retired convention changed. Higher: a note was ` +
+        `written telling the next editor to set a ceiling to what the file measures, which is ` +
+        `the shape "no NEW plain ceiling sits at its file" fails — say what was extracted and ` +
+        `what could not move, and leave the ceiling with real headroom or declare a waiver. ` +
+        `Lower: a note was reworded or removed, which is fine — bring this number down with it. ` +
+        `Re-wrapping a comment must NOT move this number; if it did, the normalization above broke.`
+    ).toBe(CONVENTION_INSTANCES);
+  });
+
+  /**
+   * FR-R3-119 / FR-056 — a function-level bound for the composition root.
+   *
+   * The file-level number did not catch a **1,221-line function inside a
+   * 1,489-line file**. `wireStage2` spanned lines 263–1483 of `src/extension.ts`,
+   * roughly 245 top-level statements, while `ARCHITECTURE.md` stated that
+   * `src/activation/` is the composition root — a directory of eleven focused
+   * modules totalling 1,863 lines, whose largest is `ui-wiring.ts` at 387. The
+   * boundary was documented and one function in the entry file substantially
+   * bypassed it.
+   *
+   * A RATCHET, NOT A CLIFF — and the distinction is the whole design.
+   *
+   * The DESTINATION is 400 lines. That is observed, not invented: it is
+   * `src/activation/`'s own largest module (`ui-wiring.ts`, 387) rounded up, so it
+   * is this tree's demonstrated idea of a focused module rather than a number
+   * someone liked.
+   *
+   * The BOUND ENFORCED TODAY is the high-water mark below, and it may only ever be
+   * lowered. FR-R3-119 extracted the largest independent span in `wireStage2` —
+   * 240 lines of `MessageRouter` construction, now
+   * `src/activation/sidebar-router-wiring.ts` — taking the function from 1,221 to
+   * 1,010 with no behavioural change. Reaching 400 in the same cycle would have
+   * meant four to six further extractions of tightly interdependent construction
+   * on the extension's activation path, where each region's outputs feed the next.
+   * That is a single-change risk this feature's plan explicitly refused to take,
+   * and shipping a bound nobody can meet is how a gate gets deleted.
+   *
+   * So the shape is `compiler-strictness-ratchet.test.ts`'s, which governs 1,279
+   * pinned diagnostics the same way: record where you are, forbid going backwards,
+   * graduate at the target. The ratchet is the plan; this extraction is its first
+   * decrement. Lower `MAX_FUNCTION_LINES` whenever an edit earns it — and when it
+   * reaches 400, this comment and the two numbers collapse into one.
+   */
+  const FUNCTION_BOUND_SCOPE = ['src/extension.ts', 'src/activation'] as const;
+
+  /**
+   * The bound EVERY function in the composition root is held to — including every
+   * new one. `src/activation/`'s twelve modules already comply; nothing may arrive
+   * that does not.
+   */
+  const MAX_FUNCTION_LINES = 400;
+
+  /**
+   * The one exemption, named rather than folded into the bound — and as of
+   * 2026-08-27 a DECIDED one rather than a debt walking to a target.
+   *
+   * An earlier draft enforced a single flat mark of 1,010 across the whole scope.
+   * Mutation testing killed it: a NEW 407-line function in `src/activation/`
+   * passed, because 407 < 1,010. A ratchet set to the worst offender licenses
+   * every newcomer up to the worst offender. So the exemption is per-function,
+   * shrink-only, and the list is closed.
+   *
+   * `wireStage2` came down **1,221 -> 1,010 -> 894 -> 871 -> 823 -> 695 -> 630 ->
+   * 525 -> 480** across eight extractions in one session, none of which changed
+   * behaviour. `src/extension.ts` went 1,489 -> 684.
+   *
+   * WHY IT STOPS AT 480 AND NOT AT 400. The 400 target was derived from
+   * `ui-wiring.ts`'s 387 lines when `wireStage2` was 1,221 and nothing about its
+   * internal shape was known. The shape is now measured:
+   *
+   *   | part | lines |
+   *   |---|---|
+   *   | comments (house style) | 110 |
+   *   | blank | 20 |
+   *   | **call sites into the 11 extracted modules** | **148** |
+   *   | controller construction, teardown, recovery, the rest | 202 |
+   *
+   * The 148 IS the composition — destructuring what each module returns and
+   * naming what it takes. It cannot be reduced by extracting further, only by
+   * merging modules, which trades a shorter root for larger and less cohesive
+   * pieces. The largest remaining region is `controller + guardedRunService` at
+   * **36 bindings in**: the only one whose parameter object would be larger than
+   * the code it replaces, and therefore the composition itself rather than a
+   * region that failed to be extracted. Moving it relocates the composition root
+   * instead of reducing it.
+   *
+   * So this is now a **waiver in the FR-R3-027 sense** — a decision on the record,
+   * with a date, a reference and a shrink-only high-water mark — and not a
+   * ceiling waiting to be met. The decision is quoted below and argued in full in
+   * `docs/architecture/composition-root-extraction.md`.
+   *
+   * THIS IS NOT THE NUMBER BEING RAISED TO MAKE THE GATE GREEN. The gate was
+   * already green at 480; the guard below still refuses any increase; the list is
+   * still closed. What changed is the CHARACTER of the entry, and that change is
+   * argued rather than asserted — which is the distinction FR-R3-027 drew between
+   * a ceiling and a waiver, applied to a function instead of a file.
+   *
+   * FR-R3-136 — 480 → 437. The twelfth extraction, `stage2-producers.ts`, took the
+   * election and the four recovery landmarks out of the root, because they had to
+   * move behind Workspace Trust and a trust gate has to be one place. The waiver's
+   * argument is untouched by it: what left was ACTS, not composition, so the 148
+   * call-site lines the decision quotes are unchanged and the 202 shrank.
+   */
+  const EXEMPTION_DECISION =
+    'The composition root holds only composition: 148 of its 480 lines are call ' +
+    'sites into the eleven extracted modules, and the largest remaining region ' +
+    'takes 36 bindings — moving it would relocate the root, not reduce it.';
+  const EXEMPTION_DECIDED_ON = '2026-08-27';
+  const EXEMPTION_REFERENCE = 'docs/architecture/composition-root-extraction.md';
+
+  const LEGACY_FUNCTION_EXEMPTIONS: Readonly<Record<string, number>> = {
+    // FR-R3-137 (T1530d) — 437 -> 433. Stage 2's resource teardown moved to
+    // `src/activation/stage2-teardown.ts`; the two releases below it stayed,
+    // because AGENTS.md rule 4 puts primacy's release in the composition root.
+    //
+    // FR-R3-119 — 433 -> 414 (2026-09-04). The thirteenth extraction,
+    // `src/activation/uncached-settings-accessors.ts`, took the four settings
+    // reads the controller must never cache. They were four inline closures
+    // sharing one AGENTS.md rule written four times, and the fifth arrived
+    // here — Feature 195's `getQueueFailurePolicyDefault` — which is what put
+    // the function over. What left was configuration reading, not composition.
+    //
+    // 414 -> 403 (2026-09-06). No extraction: the six `let`s holding
+    // `initialize()`'s migration audit events collapsed into the one binding
+    // they always were. Each new event kind had cost three lines in three
+    // places — declaration, assignment, argument — and the load-time orphan
+    // reconciler was the kind that put the function over. Missing one of those
+    // three edits is how feature 092's v10 events shipped unaudited, so the
+    // per-kind form was a defect as well as a length.
+    //
+    // FR-R7-08 (2026-11-19) — graduated: on code lines (excluding comments and
+    // blank lines), `src/extension.ts:wireStage2` measures 319 code lines,
+    // strictly under `MAX_FUNCTION_LINES = 400`. The legacy exemption list is
+    // now empty and remains closed.
+  };
+
+  /** Top-level function declarations and their code-line extents (AST-derived). */
+  function topLevelFunctions(relPath: string): ReadonlyArray<{ name: string; lines: number }> {
+    const absPath = resolve(REPO_ROOT, relPath);
+    return topLevelFunctionCodeLines(readFileSync(absPath, 'utf8'), absPath).map((fn) => ({
+      name: fn.name,
+      lines: fn.lines
+    }));
+  }
+
+  function scopedFiles(): readonly string[] {
+    const files: string[] = [];
+    for (const entry of FUNCTION_BOUND_SCOPE) {
+      const absolute = resolve(REPO_ROOT, entry);
+      if (entry.endsWith('.ts')) {
+        files.push(entry);
+        continue;
+      }
+      for (const name of readdirSync(absolute)) {
+        if (name.endsWith('.ts')) files.push(`${entry}/${name}`);
+      }
+    }
+    return files;
+  }
+
+  it('finds the composition-root functions it governs', () => {
+    // Vacuity control: a detector that stops matching passes the bound silently.
+    const total = scopedFiles().reduce((sum, file) => sum + topLevelFunctions(file).length, 0);
+    expect(
+      total,
+      'no top-level function was found in the composition root — the detector no longer ' +
+        'matches how this tree declares them, so the bound below is measuring nothing'
+    ).toBeGreaterThan(10);
+  });
+
+  it('the composition-root exemption carries a decision, a date and a reference', () => {
+    // FR-R3-027's rule for files, applied to the one exempted function: a waiver
+    // is a decision somebody made, so it has to be reachable. A bare number is a
+    // high-water mark nobody argued for, which is what this entry was until the
+    // extraction finished and its shape could be measured.
+    expect(EXEMPTION_DECISION.trim().length).toBeGreaterThan(60);
+    expect(EXEMPTION_DECIDED_ON).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(
+      existsSync(resolve(REPO_ROOT, EXEMPTION_REFERENCE)),
+      `the exemption's reference must resolve on disk (got "${EXEMPTION_REFERENCE}")`
+    ).toBe(true);
+  });
+
+  it('every legacy exemption only shrinks, and none is stale', () => {
+    // The ratchet's own guard. Without it "shrink-only" is a comment, and the
+    // cheapest way past a red gate is to edit the number it compares against.
+    //
+    // FR-R3-119 — this ceiling MUST be lowered in step with the exemption above.
+    // It sat at the original 1,010 through three decrements, which meant the
+    // exemption could have been raised from 871 all the way back to 1,010 without
+    // failing anything: a ratchet that only refuses going backwards past where it
+    // STARTED is not a ratchet, it is a memory of one. Found while reviewing the
+    // third decrement.
+    //
+    // The two numbers being equal is the point. Lowering the exemption is a
+    // two-line edit that shows up in review as a pair; raising it fails here.
+    const CEILING: Readonly<Record<string, number>> = {};
+    expect(
+      Object.keys(LEGACY_FUNCTION_EXEMPTIONS),
+      'LEGACY_FUNCTION_EXEMPTIONS graduated to empty in FR-R7-08 and stays closed'
+    ).toEqual([]);
+    for (const [key, allowed] of Object.entries(LEGACY_FUNCTION_EXEMPTIONS)) {
+      expect(allowed, `${key}: an exemption may be lowered, never raised`).toBeLessThanOrEqual(
+        CEILING[key] ?? 0
+      );
+      const [file, name] = key.split(':');
+      const actual = topLevelFunctions(file!).find((fn) => fn.name === name);
+      expect(actual, `${key}: exempted but no longer present — delete the entry`).toBeDefined();
+      expect(
+        actual!.lines,
+        `${key} is ${actual!.lines} lines against an exemption of ${allowed}. Lower the ` +
+          `exemption to what it measures, or delete it if it is now under ${MAX_FUNCTION_LINES}.`
+      ).toBeGreaterThan(MAX_FUNCTION_LINES);
+    }
+  });
+
+  it(`no composition-root function exceeds ${MAX_FUNCTION_LINES} lines (FR-R3-119)`, () => {
+    const over = scopedFiles().flatMap((file) =>
+      topLevelFunctions(file)
+        .filter(
+          (fn) =>
+            fn.lines > (LEGACY_FUNCTION_EXEMPTIONS[`${file}:${fn.name}`] ?? MAX_FUNCTION_LINES)
+        )
+        .map(
+          (fn) =>
+            `${file}: ${fn.name}() is ${fn.lines} lines, over the ${MAX_FUNCTION_LINES}-line ` +
+            `composition-root bound. The file-level ceiling did not catch a 1,221-line function ` +
+            `inside a 1,489-line file, which is why this bound exists. Extract cohesive spans ` +
+            `into src/activation/*-wiring.ts modules, following the twelve already there. Do ` +
+            `NOT add an entry to LEGACY_FUNCTION_EXEMPTIONS: that list is shrink-only and ` +
+            `closed — it holds the one function that predates the bound.`
+        )
+    );
+    expect(over).toEqual([]);
+  });
+
   // A waiver is a decision on the record, so the record has to be reachable.
   // Growth on a waived file is reported rather than gated: the decision retired
   // the ceiling, and hiding the size would be a second silence on top of it.
@@ -658,12 +2365,20 @@ describe('large source file LOC budgets', () => {
     const waived = BUDGETS.filter(isWaived);
     expect(waived.length, 'the waiver path must stay exercised').toBeGreaterThan(0);
 
+    // FR-R3-118 — the reference resolves INTO THE PLANNING ENVELOPE. In a
+    // standalone execution-repository clone there is none, and checking it there
+    // does not report a missing envelope: it reports that a waiver this repository
+    // authored correctly `needs ... a reference that resolves on disk`. That is a
+    // false accusation, which is worse than a crash, because it is actionable and
+    // wrong. The quoted decision and the ISO date are properties of the entry
+    // itself and stay checked either way; only resolvability defers.
+    const envelopeHere = envelopePresent();
     const malformed = waived
       .filter(
         (entry) =>
           entry.waiver.decision.trim().length < 20 ||
           !/^\d{4}-\d{2}-\d{2}$/.test(entry.waiver.decidedOn) ||
-          !existsSync(resolve(ENVELOPE_ROOT, entry.waiver.reference))
+          (envelopeHere && !existsSync(resolve(ENVELOPE_ROOT, entry.waiver.reference)))
       )
       .map(
         (entry) =>
@@ -696,7 +2411,7 @@ describe('large source file LOC budgets', () => {
         `The waiver retired the ceiling, not the forcing function. Either keep the ` +
         `addition size-neutral, extract the new behaviour into its own module, or raise ` +
         `the mark in this file and say why in the commit — the point is that growing ` +
-        `these two takes a decision rather than happening quietly.`
+        `a waived file takes a decision rather than happening quietly.`
     ).toEqual([]);
   });
 
@@ -729,5 +2444,123 @@ describe('large source file LOC budgets', () => {
       .map((name) => ({ name, lines: lineCount(`src/ui/sidebar/${name}`) }))
       .filter(({ lines }) => lines > 300);
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * Feature 217 (FR-041, FR-042, SC-010) — the entry condition.
+   *
+   * The file-level checks above start from BUDGETS, and the two that scan the
+   * tree reach only the sidebar projectors and the composition root. Anywhere
+   * else, this gate bounded a file only if the table named it, and sixteen of 530
+   * source files were named. The one other gate that bounds whole files,
+   * phase-runner-loc-budget.test.ts, names four. This one starts from the whole
+   * of `src/`, every `.ts` file in it. A file at or above `ENTRY_CONDITION_LINES`
+   * has to be in one of the two states the table already knows, a ceiling or a
+   * waiver, and a file that reaches it unlisted fails here, named with its size.
+   *
+   * The match reads the `path` field of every entry and never a particular path
+   * (hard rule 67). A test naming the files it expects passes for ever after one
+   * rename, and says nothing about the next file to grow this large.
+   */
+  interface ScannedFile {
+    readonly path: string;
+    readonly lines: number;
+  }
+
+  interface EntryConditionVerdict {
+    readonly unentered: readonly string[];
+    readonly message: string;
+  }
+
+  /** Every `src/**` TypeScript file, repo-relative and `/`-separated, as BUDGETS spells paths. */
+  function scanSourceFiles(): readonly ScannedFile[] {
+    return filesUnder(resolve(REPO_ROOT, 'src'), { extensions: ['.ts'] })
+      .map((absolute) => relative(REPO_ROOT, absolute).split(sep).join('/'))
+      .map((path) => ({ path, lines: lineCount(path) }));
+  }
+
+  /**
+   * The verdict over any scan and any table: the real pair below, and the
+   * synthetic files that prove it can fail. One function, so the demonstration
+   * exercises the predicate the gate enforces rather than a copy of it.
+   */
+  function entryConditionVerdict(
+    scannedFiles: readonly ScannedFile[],
+    entries: readonly BudgetEntry[]
+  ): EntryConditionVerdict {
+    const unentered = scannedFiles
+      .filter((file) => file.lines >= ENTRY_CONDITION_LINES)
+      .filter((file) => !entries.some((entry) => entry.path === file.path))
+      .map((file) => `${file.path}: ${file.lines} lines`);
+    const message =
+      `At or above the entry condition of ${ENTRY_CONDITION_LINES} lines, with no entry in ` +
+      `BUDGETS:\n  ${unentered.join('\n  ')}\n\n` +
+      `A source file this large is in one of three states, and its author chooses which:\n` +
+      `  1. reduce it below ${ENTRY_CONDITION_LINES} lines, where it needs no entry;\n` +
+      `  2. declare a ceiling, { path, maxLines }, more than tightMargin above the file and ` +
+      `within ${WAIVER_FACTOR}x it;\n` +
+      `  3. declare a waiver, { path, waiver: { decision, decidedOn, reference, highWaterMark } }, ` +
+      `quoting the decision, with the ISO date it was taken, a reference that is a path to where ` +
+      `it is written down, and the file's size as the mark.\n` +
+      `Why the condition is ${ENTRY_CONDITION_LINES}, and what would move it: ${ENTRY_CONDITION_RECORD}`;
+    return { unentered, message };
+  }
+
+  it(`every source file at or above ${ENTRY_CONDITION_LINES} lines carries an entry (FR-041)`, () => {
+    const scanned = scanSourceFiles();
+    const scannedPaths = new Set(scanned.map((file) => file.path));
+    const unscanned = BUDGETS.map((entry) => entry.path).filter((path) => !scannedPaths.has(path));
+    expect(
+      unscanned,
+      'the scan has to see every file the table names, or it is not reading the tree the table bounds'
+    ).toEqual([]);
+
+    const verdict = entryConditionVerdict(scanned, BUDGETS);
+    expect(verdict.unentered, verdict.message).toEqual([]);
+  });
+
+  it('the entry condition fires on a file that reaches it unlisted (SC-010, FR-042)', () => {
+    // Composed at runtime, never written as one `src/…` literal:
+    // `lint-anchor-grounding.test.ts` requires every such literal in a lint to
+    // exist, and these deliberately do not. The last assertion here says so.
+    const fixtureDir = ['src', 'fixture'].join('/');
+    const below: ScannedFile = { path: `${fixtureDir}/below.ts`, lines: ENTRY_CONDITION_LINES - 1 };
+    const at: ScannedFile = { path: `${fixtureDir}/at.ts`, lines: ENTRY_CONDITION_LINES };
+    const above: ScannedFile = { path: `${fixtureDir}/above.ts`, lines: ENTRY_CONDITION_LINES + 200 };
+
+    const verdict = entryConditionVerdict([below, at, above], BUDGETS);
+
+    expect(verdict.unentered, 'at the condition is captured; one line under it is not').toEqual([
+      'src/fixture/at.ts: 1000 lines',
+      'src/fixture/above.ts: 1200 lines'
+    ]);
+    expect(verdict.message).toContain('src/fixture/above.ts: 1200 lines');
+    expect(verdict.message).toContain('1. reduce it below 1000 lines');
+    expect(verdict.message).toContain('2. declare a ceiling');
+    expect(verdict.message).toContain('3. declare a waiver');
+    expect(verdict.message).toContain('ISO date');
+    expect(
+      existsSync(resolve(REPO_ROOT, ENTRY_CONDITION_RECORD)),
+      'the message sends the author to the record, so the record has to be there'
+    ).toBe(true);
+
+    // Either explicit state satisfies it, and only the `path` field is read.
+    const ceiling: CeilingEntry = { path: above.path, maxLines: above.lines + 100 };
+    const waiver: WaivedEntry = {
+      path: above.path,
+      waiver: {
+        decision: 'a synthetic decision, quoted',
+        decidedOn: '2026-10-01',
+        reference: ENTRY_CONDITION_RECORD,
+        highWaterMark: above.lines
+      }
+    };
+    expect(entryConditionVerdict([above], [...BUDGETS, ceiling]).unentered).toEqual([]);
+    expect(entryConditionVerdict([above], [...BUDGETS, waiver]).unentered).toEqual([]);
+
+    expect(
+      existsSync(resolve(REPO_ROOT, fixtureDir)),
+      `${fixtureDir} exists, so these fixtures read as claims about files in the tree`
+    ).toBe(false);
   });
 });

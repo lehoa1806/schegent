@@ -4,26 +4,44 @@
 // stays in `WorkspaceStateStore.{get,set}ConfirmSuppression`, which
 // delegates the narrowing and merge logic to the helpers below.
 
+import { ACTION_KEYS } from '../contracts/action-keys';
+
 export const CONFIRM_SUPPRESSION_VERSION = 1 as const;
 
-// Host-side mirror of the webview's `ActionKey` union (action-copy.ts).
-// The drift test at
-// `repo/test/unit/sidebar-ipc-action-key-drift.test.ts` (T046 lint)
-// asserts the two sets stay in sync — adding a key here without
-// adding it to the webview (or vice versa) fails the build.
-export const KNOWN_ACTION_KEYS: ReadonlySet<string> = new Set<string>([
-  'queue.clean-all',
-  'queue.clear-done',
-  'queue.remove-item',
-  'queue.cancel-item',
-  'queue.pause',
-  'queue.resume',
-  'run.retry-phase-now',
-  'run.restart-canceled',
-  'run.modify-task',
-  'history.rerun',
-  'workspace.reset'
-]);
+// Feature 193 (T037, FR-001/FR-009) — derived from the canonical
+// `ACTION_KEYS` tuple, which is also the source the webview's `ActionKey`
+// union mirrors (via `webview-ui/src/lib/generated/action-keys.ts`). This
+// used to be an independently hand-written 11-entry set with a comment
+// claiming a drift test enforced parity with the webview at
+// `repo/test/unit/sidebar-ipc-action-key-drift.test.ts` — that file never
+// existed. Deriving from the one canonical tuple removes the need for such
+// a test: there is nothing left for it to keep in sync.
+//
+// Typed `ReadonlySet<string>` (not `ReadonlySet<ActionKey>`) so the existing
+// `.has(actionKey)` call sites — which validate an untrusted `string` off
+// the wire — keep compiling unchanged; only the set's contents are new.
+//
+// KNOWN RESIDUAL (code-review finding, iteration 5 — recorded, not fixed
+// here). Widening from 11 to 18 keys newly admits a memento write for the two
+// `NEVER_SUPPRESSIBLE` keys the old hand-written set happened to exclude,
+// `settings.disable-confirmations` and `backend.grant-uncontained` (the third,
+// `workspace.reset`, was always admitted). That floor — "no operator
+// preference can silence this prompt" — is declared in exactly one place,
+// `NEVER_SUPPRESSIBLE` in `webview-ui/src/lib/use-confirm.ts`, and this side
+// owns the persisted state it would have to be enforced against. Nothing is
+// silenced today: `use-confirm.ts` gates both the write (`settle`'s
+// `&& suppressible`) and the read (`isSuppressed` inside `if (suppressible)`),
+// so a persisted entry for one of the three is inert. It is inert only for as
+// long as that one webview-side set stays correct.
+//
+// Deliberately not refused here: `tests/parity/action-key-parity.test.ts`
+// pins "accepts and persists a suppression write for every one of the 18
+// canonical keys" as this feature's intended behaviour, so a host-side floor
+// is a contract decision (which set is canonical, and does the host mirror
+// it) rather than a local fix — most likely a `NEVER_SUPPRESSIBLE_ACTION_KEYS`
+// tuple beside `ACTION_KEYS` that both sides derive from, which the webview
+// mirror's generator would also have to carry.
+export const KNOWN_ACTION_KEYS: ReadonlySet<string> = new Set<string>(ACTION_KEYS);
 
 // Shape of the persisted memento at `schegent.ui.confirmSuppression`.
 // `version: 1` lets us migrate the persisted shape later without

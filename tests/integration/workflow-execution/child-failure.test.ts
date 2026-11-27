@@ -45,6 +45,7 @@ import {
 /** The closed key set of the aggregate, copied rather than imported on purpose. */
 const AGGREGATE_KEYS = [
   'connectedRunId',
+  'decisionObservations',
   'decisions',
   'graph',
   'nodes',
@@ -69,8 +70,8 @@ describe('a connected run whose child fails', () => {
     coordinator = makeCoordinatorDeps(harness, children);
   });
 
-  afterEach(() => {
-    harness.cleanup();
+  afterEach(async () => {
+    await harness.cleanup();
   });
 
   /**

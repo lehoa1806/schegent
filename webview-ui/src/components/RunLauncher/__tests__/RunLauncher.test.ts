@@ -19,11 +19,36 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LaunchPipelineResult } from '../../../lib/messages';
 import type { RunRequest } from '../../../../../src/contracts/run-request';
-import type { PipelineDefinition } from '../../../lib/snapshot-types';
+import type { BackendPosture, CapabilityNotice, PipelineDefinition } from '../../../lib/snapshot-types';
+import type { LaunchRunSettings } from '../../../../../src/contracts/snapshot-projections';
 
 const launchSpy = vi.fn<(request: RunRequest) => Promise<LaunchPipelineResult>>();
+// FR-R4-F05 (I6, I8) — the options the component passes (its abort signal and its late-outcome
+// callback) are captured so a case can answer a send whose wait ran out.
+let lastWaitOptions:
+  | { signal?: AbortSignal; onLateOutcome?: (result: LaunchPipelineResult) => void }
+  | undefined;
 vi.mock('../../../lib/run-launcher-ipc', () => ({
-  launchPipeline: (request: RunRequest) => launchSpy(request)
+  launchPipeline: (
+    request: RunRequest,
+    _queueId?: string,
+    options?: { signal?: AbortSignal; onLateOutcome?: (result: LaunchPipelineResult) => void }
+  ) => {
+    lastWaitOptions = options;
+    return launchSpy(request);
+  }
+}));
+
+// Feature 254 (FR-R4-F07, D-T1) — the launcher reads its launch entry, and the host's `runSettings` on
+// it, from the snapshot. The store is replaced by a holder whose `snapshot` a case sets before render;
+// null is the default, which is exactly what every earlier case in this file ran against.
+const storeState = vi.hoisted(() => ({ snapshot: null as unknown }));
+vi.mock('../../../lib/snapshot-store.svelte', () => ({
+  snapshotStore: {
+    get snapshot() {
+      return storeState.snapshot;
+    }
+  }
 }));
 
 // The overwrite decision is the one destructive choice inside a launch, and it
@@ -89,6 +114,7 @@ function submitted(): RunRequest {
 }
 
 beforeEach(() => {
+  storeState.snapshot = null;
   launchSpy.mockReset();
   launchSpy.mockResolvedValue(ENQUEUED);
   confirmSpy.mockReset();
@@ -264,8 +290,108 @@ describe('output section — one target per declared port (T054, FR-013, FR-023)
   });
 });
 
-describe('process preview (T055, FR-035)', () => {
-  it('shows the resolved Pipeline, its Phase order, the effective settings, and the request', async () => {
+// The redesign draws a box's name above it and what the definition says about it in a caption
+// under it, the way the add-task drawer's hint sits under its box. A caption that follows the box
+// reaches a screen reader after the box, so each box names its caption as its description.
+describe('each box is described by the caption under it', () => {
+  const DESCRIBED: PipelineDefinition = {
+    ...PIPELINE,
+    inputs: [{ portId: 'topic', label: 'Topic', type: 'text', required: true, description: 'What the run studies.' }],
+    outputs: [{ portId: 'report', label: 'Report', type: 'markdown', description: 'The written findings.' }]
+  };
+
+  /** The text of every element the control names in `aria-describedby`, in order. */
+  function description(control: HTMLElement): string {
+    const ids = (control.getAttribute('aria-describedby') ?? '').split(' ').filter((id) => id !== '');
+    return ids
+      .map((id) => document.getElementById(id)?.textContent ?? '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  it('describes a contract input by its declared type and its description', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: DESCRIBED } });
+
+    expect(description(getByTestId('run-input-topic'))).toBe('text What the run studies.');
+  });
+
+  it('describes a supplemental box by its hint', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: DESCRIBED } });
+
+    expect(description(getByTestId('run-supplemental-local-file'))).toBe('Workspace-relative path to a file.');
+    expect(description(getByTestId('run-supplemental-instruction'))).toBe('Free-form direction for this run.');
+  });
+
+  it('describes an output target by its declared type and its description', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: DESCRIBED } });
+
+    expect(description(getByTestId('run-output-report'))).toBe('markdown The written findings.');
+  });
+});
+
+/**
+ * What the host projects for `PIPELINE`'s two Phases: structured values and closed kinds, never
+ * sentences. The launcher words them; it derives none of them (FR-022).
+ */
+const RUN_SETTINGS: LaunchRunSettings = {
+  phases: [
+    {
+      phaseName: 'speckit-specify',
+      backend: 'claude',
+      model: { kind: 'backend-default' },
+      effort: { kind: 'value', value: 'high' },
+      idleTimeoutSeconds: { value: 5400, origin: 'default' }
+    },
+    {
+      phaseName: 'speckit-plan',
+      backend: 'codex',
+      model: { kind: 'value', value: 'gpt-6-sol' },
+      effort: { kind: 'backend-default' },
+      idleTimeoutSeconds: { value: 600, origin: 'phase' }
+    }
+  ],
+  maxDurationSeconds: { value: 21_600, origin: 'workspace' }
+};
+
+/** What the host projects about authority for a launch entry (FR-R4-F06): all three default to nothing. */
+interface AuthoritySeed {
+  readonly backends?: readonly string[];
+  readonly capabilityNotices?: readonly CapabilityNotice[];
+  readonly postures?: readonly BackendPosture[];
+}
+
+/** Seed the snapshot with the launch entry the host would project for `pipeline`. */
+function seedLaunchEntry(
+  pipeline: PipelineDefinition,
+  runSettings?: LaunchRunSettings,
+  authority: AuthoritySeed = {}
+): void {
+  storeState.snapshot = {
+    launchables: {
+      pipelines: {
+        state: 'entries',
+        entries: [
+          {
+            kind: 'pipeline',
+            id: pipeline.id,
+            name: pipeline.name,
+            activeVersionId: 'v1',
+            inputs: [],
+            backends: authority.backends ?? ['claude'],
+            capabilityNotices: authority.capabilityNotices ?? [],
+            ...(runSettings === undefined ? {} : { runSettings })
+          }
+        ]
+      }
+    },
+    backendPostures: authority.postures ?? []
+  };
+}
+
+describe('process preview (T055, FR-035; Feature 254 D-T1, FR-021, FR-022)', () => {
+  it('shows the resolved Pipeline, its Phase order and the request', async () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
     const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
 
     await type(getByTestId, 'run-input-topic', 'run composition');
@@ -275,14 +401,192 @@ describe('process preview (T055, FR-035)', () => {
     expect(phases.indexOf('speckit-specify')).toBeGreaterThanOrEqual(0);
     expect(phases.indexOf('speckit-specify')).toBeLessThan(phases.indexOf('speckit-plan'));
 
-    const settings = getByTestId('run-launcher-preview-settings').textContent ?? '';
-    expect(settings).toContain('claude');
-    expect(settings).toContain('opus');
-    expect(settings).toContain('high');
-
     // The complete request, as it will be sent — the operator reviews the thing
     // that runs, not a summary of it.
     expect(getByTestId('run-launcher-preview-request').textContent).toContain('run composition');
+  });
+
+  it('states, per Phase, the backend, model, effort and idle limit the Run will use', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Claude · model: backend default · effort: high · idle limit 90 min');
+    expect(settings).toContain('Codex · model: gpt-6-sol · effort: backend default · idle limit 10 min');
+  });
+
+  it('states the Run time limit after the Phases', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Run time limit 6 h');
+    expect(settings.indexOf('Run time limit')).toBeGreaterThan(settings.indexOf('Codex'));
+  });
+
+  it('never shows an authored default as an effective setting', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    // PIPELINE authors runner claude, model opus and effort high. The host resolved something else
+    // for the Run, and the effective block states that; the authored values are on the advisory line.
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).not.toContain('opus');
+    expect(settings).not.toContain('Authored defaults');
+  });
+
+  it('labels the authored defaults advisory and not applied, on their own line', () => {
+    seedLaunchEntry(PIPELINE, RUN_SETTINGS);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const advisory = getByTestId('run-launcher-preview-advisory').textContent;
+    expect(advisory).toContain('Authored defaults (advisory, not applied)');
+    expect(advisory).toContain('opus');
+    expect(advisory).toContain('high');
+  });
+
+  it('shows no advisory line for a Pipeline that authors no defaults', () => {
+    seedLaunchEntry(EMPTY_CONTRACT, undefined);
+    const { queryByTestId } = render(RunLauncher, { props: { pipeline: EMPTY_CONTRACT } });
+
+    expect(queryByTestId('run-launcher-preview-advisory')).toBeNull();
+  });
+
+  it('says the settings are resolved when the Run starts, and shows no authored value as in force, when the host sent none', () => {
+    seedLaunchEntry(PIPELINE, undefined);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Settings are resolved when the Run starts');
+    expect(settings).not.toContain('opus');
+    expect(settings).not.toContain('Claude');
+    // The authored defaults are still disclosed, as what they are.
+    expect(getByTestId('run-launcher-preview-advisory').textContent).toContain('opus');
+  });
+
+  it('does not show settings that do not line up with the Phases the form lists', () => {
+    seedLaunchEntry(PIPELINE, { ...RUN_SETTINGS, phases: [RUN_SETTINGS.phases[0]!] });
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const settings = getByTestId('run-launcher-preview-settings').textContent;
+    expect(settings).toContain('Settings are resolved when the Run starts');
+    expect(settings).not.toContain('Claude');
+  });
+
+  it('says the same when the snapshot holds no launch entry at all', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    expect(getByTestId('run-launcher-preview-settings').textContent).toContain(
+      'Settings are resolved when the Run starts'
+    );
+  });
+
+  it('puts nothing the snapshot says into markup: a hostile model renders as text', () => {
+    const hostile: LaunchRunSettings = {
+      ...RUN_SETTINGS,
+      phases: [
+        {
+          ...RUN_SETTINGS.phases[0]!,
+          model: { kind: 'value', value: '<img src=x onerror=alert(1)>' }
+        },
+        RUN_SETTINGS.phases[1]!
+      ]
+    };
+    seedLaunchEntry(PIPELINE, hostile);
+    const { container, getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(getByTestId('run-launcher-preview-settings').textContent).toContain('<img src=x');
+  });
+
+  it('leaves the Run request byte-identical whether or not the host sent run settings (D9)', async () => {
+    const requestText = async (runSettings?: LaunchRunSettings): Promise<string> => {
+      cleanup();
+      seedLaunchEntry(PIPELINE, runSettings);
+      const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+      await type(getByTestId, 'run-input-topic', 'run composition');
+      return getByTestId('run-launcher-preview-request').textContent;
+    };
+    const without = await requestText(undefined);
+    const withSettings = await requestText(RUN_SETTINGS);
+    expect(withSettings).toBe(without);
+    expect(without).not.toContain('executionDefaults');
+    expect(without).not.toContain('opus');
+  });
+});
+
+// FR-R4-F06 (FR-007; D4; tasks TA8) -- what the form says about the authority the Run will have.
+//
+// `LaunchAuthorityNotice` has its own suite, which feeds it props directly. What that suite cannot
+// show is that the LAUNCHER mounts it and hands it the right three things: the host's postures, the
+// backends of the launch entry found for THIS Pipeline, and that entry's capability notices. The
+// launcher is also what a History re-run mounts, so these cases cover that path too. Every case
+// renders the real form against a seeded snapshot and reads the notice off it.
+describe('the launcher says what authority the Run will have (FR-R4-F06 FR-007)', () => {
+  const CLAUDE_TEXT = 'Host text: Claude runs with your local user authority.';
+  const POSTURES: readonly BackendPosture[] = [
+    { kind: 'claude', containment: 'none', mechanism: 'none', grant: 'granted', notice: CLAUDE_TEXT },
+    {
+      kind: 'codex',
+      containment: 'os-enforced',
+      mechanism: 'codex-sandbox-workspace-write',
+      grant: 'not-required'
+    }
+  ];
+
+  it('shows the host notice for a Pipeline that runs on a granted uncontained backend', () => {
+    seedLaunchEntry(PIPELINE, undefined, { backends: ['claude'], postures: POSTURES });
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(getByTestId('launch-authority-notice-text-claude').textContent).toBe(CLAUDE_TEXT);
+  });
+
+  it('puts the notice above the control that starts the Run', () => {
+    seedLaunchEntry(PIPELINE, undefined, { backends: ['claude'], postures: POSTURES });
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    const notice = getByTestId('launch-authority-notice');
+    const submit = getByTestId('run-launcher-submit');
+    expect(notice.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows nothing for a Pipeline that runs only on a contained backend', () => {
+    // The postures still carry Claude's notice. A launcher that rendered every posture's notice, or
+    // read the window default in place of the entry's own backends, would show it here.
+    seedLaunchEntry(PIPELINE, undefined, { backends: ['codex'], postures: POSTURES });
+    const { getByTestId, queryByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(getByTestId('run-launcher-submit')).toBeTruthy();
+    expect(queryByTestId('launch-authority-notice')).toBeNull();
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
+  });
+
+  it('shows the entry capability notices, even where no posture notice applies', () => {
+    const notices: readonly CapabilityNotice[] = [
+      {
+        phaseName: 'speckit-plan',
+        backend: 'codex',
+        outcome: 'residual',
+        text: 'Host text: speckit-plan is bounded by tool access.'
+      }
+    ];
+    seedLaunchEntry(PIPELINE, undefined, {
+      backends: ['codex'],
+      postures: POSTURES,
+      capabilityNotices: notices
+    });
+    const { getByTestId, queryByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(getByTestId('launch-authority-capability-0').textContent).toBe(notices.at(0)?.text);
+    expect(queryByTestId('launch-authority-notice-text-claude')).toBeNull();
+  });
+
+  it('shows nothing for a Pipeline the launch projection does not offer', () => {
+    // The entry is found by id. A Pipeline the host did not project has no backends to speak of, and
+    // the form must not borrow another entry's.
+    seedLaunchEntry(EMPTY_CONTRACT, undefined, { backends: ['claude'], postures: POSTURES });
+    const { queryByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+
+    expect(queryByTestId('launch-authority-notice')).toBeNull();
   });
 });
 
@@ -461,54 +765,81 @@ describe('host rejection and the overwrite decision (T060, US8-1, FR-023)', () =
   });
 });
 
-describe('the outer bound on a submission (T060, US8-3, FR-046, SC-012)', () => {
-  it('restores the editable form with an explanation when the host never answers', async () => {
+// FR-R4-F05 (T17, T118; contract I, I5 to I8; contract O, O3, O4) — this block was "the outer bound
+// on a submission": a 30 s timer in the component that restored the form and said "Nothing was
+// queued", and ignored any answer after it. The timer and its message are gone. The wait is the
+// ledger's 5 s, resolved here by the IPC module as `not-yet-known`; the text says the outcome is
+// not yet known (the host may still queue the run), and the host's late answer replaces it once.
+describe('a submission whose wait ran out (T118; FR-024, FR-026)', () => {
+  const NOT_YET_KNOWN = 'The host has not answered yet, so the outcome is not yet known.';
+
+  it('restores the editable form with the not-yet-known text, composition unchanged', async () => {
+    launchSpy.mockResolvedValue({ outcome: 'not-yet-known' } as never);
+
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    await type(getByTestId, 'run-input-topic', 'run composition');
+    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await tick();
+    await tick();
+
+    expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(false);
+    expect(getByTestId('run-launcher-status').textContent).toContain(NOT_YET_KNOWN);
+    expect(getByTestId('run-launcher-status').textContent).not.toContain('Nothing was queued');
+    expect((getByTestId('run-input-topic') as HTMLInputElement).value).toBe('run composition');
+  });
+
+  it('starts no 30 s timer of its own', async () => {
     vi.useFakeTimers();
     try {
       launchSpy.mockImplementation(() => new Promise<LaunchPipelineResult>(() => {}));
 
       const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
-      await type(getByTestId, 'run-input-topic', 'run composition');
       await fireEvent.click(getByTestId('run-launcher-submit'));
-
-      expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(true);
-
+      const before = vi.getTimerCount();
       await vi.advanceTimersByTimeAsync(30_000);
 
-      // "Not permanently locked without an explanation" is the requirement: the
-      // form is editable again AND the operator is told why, with the
-      // composition exactly as they left it.
-      expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(false);
-      expect(getByTestId('run-launcher-status').textContent).toContain('30 seconds');
-      expect((getByTestId('run-input-topic') as HTMLInputElement).value).toBe('run composition');
+      // Nothing in the component fired: only the ledger, in the module the spy replaces, waits.
+      expect(before).toBe(0);
+      expect((getByTestId('run-launcher-submit') as HTMLButtonElement).disabled).toBe(true);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('ignores an answer that arrives after the bound has already restored the form', async () => {
-    vi.useFakeTimers();
-    try {
-      let release: ((result: LaunchPipelineResult) => void) | undefined;
-      launchSpy.mockImplementation(
-        () =>
-          new Promise<LaunchPipelineResult>((resolve) => {
-            release = resolve;
-          })
-      );
+  it('replaces the not-yet-known text with the late outcome', async () => {
+    launchSpy.mockResolvedValue({ outcome: 'not-yet-known' } as never);
 
-      const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
-      await fireEvent.click(getByTestId('run-launcher-submit'));
-      await vi.advanceTimersByTimeAsync(30_000);
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    await fireEvent.click(getByTestId('run-launcher-submit'));
+    await tick();
+    await tick();
+    expect(getByTestId('run-launcher-status').textContent).toContain(NOT_YET_KNOWN);
 
-      release!({ outcome: 'rejected-definition', reason: 'pipeline-not-found' });
-      await vi.advanceTimersByTimeAsync(0);
+    lastWaitOptions!.onLateOutcome!({ outcome: 'enqueued', requestId: 'req-late' } as never);
+    await tick();
 
-      // A verdict the operator can no longer act on must not overwrite the one
-      // they can: the timeout message stands.
-      expect(getByTestId('run-launcher-status').textContent).toContain('30 seconds');
-    } finally {
-      vi.useRealTimers();
-    }
+    const status = getByTestId('run-launcher-status').textContent;
+    expect(status).toContain('Queued as req-late.');
+    expect(status).not.toContain(NOT_YET_KNOWN);
+  });
+
+  it('aborts its wait when the component unmounts', async () => {
+    launchSpy.mockImplementation(() => new Promise<LaunchPipelineResult>(() => {}));
+
+    const { getByTestId, unmount } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    await fireEvent.click(getByTestId('run-launcher-submit'));
+    expect(lastWaitOptions!.signal!.aborted).toBe(false);
+
+    unmount();
+
+    expect(lastWaitOptions!.signal!.aborted).toBe(true);
+  });
+
+  it('keeps the baseline non-collapsed SupplementalInputs layout with inline Instructions (F36-T03, AC-11)', () => {
+    const { getByTestId } = render(RunLauncher, { props: { pipeline: PIPELINE } });
+    const supplemental = getByTestId('run-launcher-supplemental');
+
+    expect(supplemental.tagName).toBe('SECTION');
+    expect(supplemental.querySelector('[data-testid="run-supplemental-instruction"]')).not.toBeNull();
   });
 });

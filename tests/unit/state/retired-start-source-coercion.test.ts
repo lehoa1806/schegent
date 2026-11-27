@@ -20,7 +20,8 @@ import {
   type Memento
 } from '../../../src/state/workspace-state';
 import { STATE_SCHEMA_VERSION } from '../../../src/contracts/state-schema';
-import { DEFAULT_QUEUE_ID, type QueueRegistry } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import { type QueueRegistry } from '../../../src/queue/queue-registry';
 import type { QueueState } from '../../../src/queue/feature-request';
 
 class FakeMemento implements Memento {

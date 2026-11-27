@@ -49,7 +49,8 @@ vi.mock('../phase-log-ipc', () => ({
   }),
   startPhaseLogTail: vi.fn(),
   stopPhaseLogTail: vi.fn(),
-  subscribePhaseLogPush: () => () => {}
+  subscribePhaseLogBatch: () => () => {},
+  ackPhaseLogTail: vi.fn()
 }));
 
 // Late import so the mocks above bind before the store module
@@ -423,5 +424,357 @@ describe('reset() preserves isLiveMode (FR-015 persistence intent)', () => {
     const store = createPhaseLogStore();
     store.reset();
     expect(store.isLiveMode()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 203 (T043, T044, D8) — the classification is a claim about the log on
+// screen, so whoever changes what is on screen owns keeping it true.
+//
+// `handlePush` appends live entries beneath a feed the host classified before
+// the tail attached. Without the transition below, a phase classified
+// `phase-running-no-output` keeps its "nothing yet" card while its output
+// arrives underneath it — the card and the rows disagreeing on the same screen.
+// It lives in the STORE suite rather than the feed's, because the store is
+// where the state changes; the feed only renders what it is handed (risk R8).
+// ---------------------------------------------------------------------------
+
+const RUNNING_WITH_NO_OUTPUT = Object.freeze({
+  outcome: 'success',
+  manifest: Object.freeze({
+    iterations: Object.freeze([1]),
+    selectedIteration: 1,
+    entries: Object.freeze([]),
+    skippedLines: 0,
+    truncatedCount: 0,
+    verboseDiagnosticsState: Object.freeze({ kind: 'phase-running-no-output' }),
+    isInFlight: true
+  })
+});
+
+const SELECTION = Object.freeze({
+  queueId: 'q-1',
+  taskId: 'run-1',
+  pipelineId: 'standard',
+  phaseId: 'speckit-plan',
+  iterationN: 1
+});
+
+function makeEntry(seq: number, kind = 'assistant-text'): unknown {
+  return Object.freeze({
+    seq,
+    kind,
+    ts: null,
+    body: Object.freeze({ text: `line ${seq}` }),
+    bodyTruncated: null
+  });
+}
+
+/**
+ * A store already showing the "running, nothing yet" card with a tail attached,
+ * plus the captured push callback the host would drive.
+ */
+async function storeShowingRunningCard(): Promise<{
+  store: ReturnType<typeof createPhaseLogStore>;
+  push: (payload: unknown) => void;
+}> {
+  // Not this feature's subject. `develop` carries a `no-unnecessary-condition` regression here,
+  // unrecorded in `tests/lint/eslint-baseline.json`, which makes `lint:webview` red before this
+  // branch touches anything; feature 206 cannot verify green on top of it, so it is repaired here
+  // rather than worked around. Measured on a pristine `develop` worktree at `1a8cccef`: 263 against
+  // a baseline of 260, one finding here and two in `PhaseLogEmptyStates.test.ts`.
+  //
+  // A one-slot array rather than a `let … | null`: the only writes happen inside the `subscribe`
+  // closure, which TypeScript's flow analysis does not see, so it reads the guard below against the
+  // initialiser and calls `captured === null` always true. `.at(0)` is `T | undefined` by signature,
+  // so the guard is necessary by type rather than defensive against it, and the runtime check still
+  // fails loudly if no subscribe ever landed.
+  const captured: ((payload: unknown) => void)[] = [];
+  const store = createPhaseLogStore(
+    async () => RUNNING_WITH_NO_OUTPUT as never,
+    {
+      start: async () => ({ outcome: 'success', sessionId: 's-1', mechanism: 'fs.watch' }),
+      stop: async () => ({ outcome: 'success', sessionId: 's-1' }),
+      ack: () => undefined,
+      subscribe: (cb: (payload: never) => void) => {
+        captured.push(cb as (payload: unknown) => void);
+        return () => {
+          captured.length = 0;
+        };
+      }
+    } as never
+  );
+  store.setSelection({ ...SELECTION }, { origin: 'cascade' });
+  await store.reload();
+  await store.startTail({ selection: { ...SELECTION } });
+  // `.at(0)`, not `.at(-1)`: this helper drives exactly one `startTail`, so there is one
+  // subscription and first and latest are the same callback. Should a second ever land without an
+  // intervening unsubscribe, first-wins is the reading that keeps the test pinned to the
+  // subscription it arranged.
+  const push = captured.at(0);
+  if (push === undefined) {
+    throw new Error('startTail did not subscribe, so no push could be delivered');
+  }
+  return { store, push: (payload) => push(asBatch(payload as LegacyPush)) };
+}
+
+// FR-R6-F07 — the Feature 203 cases below were written against the per-entry push. Each one is
+// now delivered as the one-entry `continue` batch that carries it, numbered from 1 as the host
+// numbers them, so the cases keep their own words.
+interface LegacyPush {
+  readonly tailSessionId: string;
+  readonly entrySeq: number;
+  readonly entry: unknown;
+}
+
+function asBatch(push: LegacyPush): unknown {
+  return {
+    protocol: 1,
+    tailSessionId: push.tailSessionId,
+    batchSeq: push.entrySeq,
+    generation: 'g-1',
+    mode: 'continue',
+    toCursor: null,
+    entries: [{ at: push.entrySeq, n: 0, entry: push.entry }]
+  };
+}
+
+describe('Feature 203 T044 — a live entry retires the card that said there were none', () => {
+  it('is showing the running-no-output card with no entries before any push', async () => {
+    // The arrangement is asserted rather than assumed. Without this, a store
+    // that failed to load would satisfy the transition below by starting from
+    // the wrong state.
+    const { store } = await storeShowingRunningCard();
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+    expect(store.state.tailSessionId).toBe('s-1');
+  });
+
+  it('reclassifies to entries-present when a pushed entry is appended', async () => {
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-1', entrySeq: 1, entry: makeEntry(1) });
+    expect(store.state.entries).toHaveLength(1);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+  });
+
+  it('stays entries-present as further entries arrive', async () => {
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-1', entrySeq: 1, entry: makeEntry(1) });
+    push({ tailSessionId: 's-1', entrySeq: 2, entry: makeEntry(2) });
+    expect(store.state.entries).toHaveLength(2);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+  });
+
+  it('leaves the classification alone for a push it drops', async () => {
+    // A stale session's push appends nothing, so it must not claim entries are
+    // present either. The two have to move together or the card outlives its
+    // subject in the other direction.
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-stale', entrySeq: 1, entry: makeEntry(1) });
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+
+  it('leaves the classification alone for the tail-ended terminator', async () => {
+    // The terminator is not appended to the visible log — the LIVE badge going
+    // away is the cue — so it must not reclassify either.
+    const { store, push } = await storeShowingRunningCard();
+    push({ tailSessionId: 's-1', entrySeq: 1, entry: makeEntry(1, 'tail-ended') });
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.tailSessionId).toBeNull();
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'phase-running-no-output' });
+  });
+});
+
+// FR-R6-F07 (T021; FR-001, FR-004, FR-009, FR-011) — the store as a live-log consumer.
+//
+// The tail seam records every call in order, so "subscribe before start" and "ack 0 after the
+// start answer" are read off one log rather than inferred.
+describe('FR-R6-F07 T021 — batches, acknowledgements and the cursor', () => {
+  type Call = { readonly kind: string; readonly payload?: unknown };
+
+  interface ConsumerRig {
+    readonly store: ReturnType<typeof createPhaseLogStore>;
+    readonly calls: Call[];
+    readonly deliver: (payload: unknown) => void;
+  }
+
+  function batch(
+    batchSeq: number,
+    entries: readonly (readonly [number, number, unknown])[],
+    overrides: Record<string, unknown> = {}
+  ): unknown {
+    return {
+      protocol: 1,
+      tailSessionId: 's-1',
+      batchSeq,
+      generation: 'g-1',
+      mode: 'continue',
+      toCursor: null,
+      entries: entries.map(([at, n, entry]) => ({ at, n, entry })),
+      ...overrides
+    };
+  }
+
+  function acksOf(calls: readonly Call[]): unknown[] {
+    return calls.filter((call) => call.kind === 'ack').map((call) => call.payload);
+  }
+
+  function textsOf(store: ConsumerRig['store']): unknown[] {
+    return store.state.entries.map((entry) => entry.body['text']);
+  }
+
+  async function consumerRig(cursor: string | null = 'c-read'): Promise<ConsumerRig> {
+    const calls: Call[] = [];
+    const handlers: ((payload: unknown) => void)[] = [];
+    const manifest = { ...RUNNING_WITH_NO_OUTPUT.manifest, cursor };
+    const store = createPhaseLogStore(
+      async () => ({ outcome: 'success', manifest }) as never,
+      {
+        start: async (req: unknown) => {
+          calls.push({ kind: 'start', payload: req });
+          return {
+            outcome: 'success',
+            sessionId: 's-1',
+            mechanism: 'fs.watch',
+            snapshotCutoff: 'c-cut',
+            nextCursor: 'c-cut',
+            cursorStatus: 'accepted'
+          };
+        },
+        stop: async (req: unknown) => {
+          calls.push({ kind: 'stop', payload: req });
+          return { outcome: 'success', sessionId: 's-1' };
+        },
+        ack: (req: unknown) => {
+          calls.push({ kind: 'ack', payload: req });
+        },
+        subscribe: (handler: (payload: never) => void) => {
+          calls.push({ kind: 'subscribe' });
+          handlers.push(handler as (payload: unknown) => void);
+          return () => {
+            calls.push({ kind: 'unsubscribe' });
+            handlers.length = 0;
+          };
+        }
+      } as never
+    );
+    store.setSelection({ ...SELECTION }, { origin: 'cascade' });
+    await store.reload();
+    await store.startTail({ selection: { ...SELECTION } });
+    return {
+      store,
+      calls,
+      deliver: (payload) => {
+        const handler = handlers.at(0);
+        if (handler === undefined) throw new Error('no batch subscription is open');
+        handler(payload);
+      }
+    };
+  }
+
+  it('subscribes before it starts, starts from the read cursor and sends ack 0 after the answer', async () => {
+    const { calls } = await consumerRig('c-read');
+    expect(calls.map((call) => call.kind)).toEqual(['subscribe', 'start', 'ack']);
+    expect(calls.at(1)?.payload).toMatchObject({ fromCursor: 'c-read' });
+    expect(acksOf(calls)).toEqual([{ sessionId: 's-1', batchSeq: 0 }]);
+  });
+
+  it('starts with no cursor when the read had none', async () => {
+    const { calls } = await consumerRig(null);
+    expect(calls.at(1)?.payload).not.toHaveProperty('fromCursor');
+  });
+
+  it('applies each batch and acknowledges it by its sequence number', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)], [20, 0, makeEntry(2)]], { mode: 'resume' }));
+    deliver(batch(2, [[30, 0, makeEntry(3)]]));
+    expect(textsOf(store)).toEqual(['line 1', 'line 2', 'line 3']);
+    expect(store.state.verboseDiagnosticsState).toEqual({ kind: 'entries-present' });
+    expect(acksOf(calls).slice(1)).toEqual([
+      { sessionId: 's-1', batchSeq: 1 },
+      { sessionId: 's-1', batchSeq: 2 }
+    ]);
+  });
+
+  it('skips entries at or before the applied position when a replay resumes', async () => {
+    const { store, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)], [10, 1, makeEntry(2)]], { mode: 'resume' }));
+    deliver(batch(2, [[10, 0, makeEntry(11)], [10, 1, makeEntry(12)], [20, 0, makeEntry(3)]], { mode: 'resume' }));
+    expect(textsOf(store)).toEqual(['line 1', 'line 2', 'line 3']);
+  });
+
+  it('asks for one resync on a gap and ignores the batches after it until a resume', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(3, [[30, 0, makeEntry(3)]]));
+    deliver(batch(4, [[40, 0, makeEntry(4)]]));
+    expect(textsOf(store)).toEqual(['line 1']);
+    deliver(batch(5, [[20, 0, makeEntry(2)], [30, 0, makeEntry(3)]], { mode: 'resume' }));
+    expect(textsOf(store)).toEqual(['line 1', 'line 2', 'line 3']);
+    expect(acksOf(calls).slice(1)).toEqual([
+      { sessionId: 's-1', batchSeq: 1 },
+      { sessionId: 's-1', batchSeq: 1, resync: true },
+      { sessionId: 's-1', batchSeq: 5 }
+    ]);
+  });
+
+  it('reports a batch it has already applied as a duplicate and applies nothing', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    expect(textsOf(store)).toEqual(['line 1']);
+    expect(acksOf(calls).at(-1)).toEqual({ sessionId: 's-1', batchSeq: 1, duplicate: true });
+  });
+
+  it('replaces what it shows with a reset batch', async () => {
+    const { store, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)], [20, 0, makeEntry(2)]], { mode: 'resume' }));
+    deliver(batch(2, [[5, 0, makeEntry(7)]], { mode: 'reset', generation: 'g-2' }));
+    expect(textsOf(store)).toEqual(['line 7']);
+  });
+
+  it('shows a compatibility notice for an unknown protocol, applies nothing and acknowledges nothing', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume', protocol: 2 }));
+    expect(store.state.entries).toHaveLength(0);
+    expect(store.state.errorReason).toMatch(/version/i);
+    expect(acksOf(calls)).toEqual([{ sessionId: 's-1', batchSeq: 0 }]);
+  });
+
+  it('drops a batch for another session', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume', tailSessionId: 's-stale' }));
+    expect(store.state.entries).toHaveLength(0);
+    expect(acksOf(calls)).toHaveLength(1);
+  });
+
+  it('starts the next tail from the cursor of the last applied batch', async () => {
+    const { store, calls, deliver } = await consumerRig('c-read');
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume', toCursor: 'c-10' }));
+    deliver(batch(2, [[15, 0, makeEntry(2)]]));
+    await store.stopTail();
+    await store.startTail({ selection: { ...SELECTION } });
+    const starts = calls.filter((call) => call.kind === 'start');
+    expect(starts.at(-1)?.payload).toMatchObject({ fromCursor: 'c-10' });
+  });
+
+  it('ends the tail on a terminal batch without acknowledging it', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(2, [[Number.MAX_SAFE_INTEGER, 0, makeEntry(2, 'tail-ended')]]));
+    expect(textsOf(store)).toEqual(['line 1']);
+    expect(store.state.tailSessionId).toBeNull();
+    expect(acksOf(calls).at(-1)).toEqual({ sessionId: 's-1', batchSeq: 1 });
+  });
+
+  it('ends the tail on a terminal batch that arrives after a gap', async () => {
+    const { store, calls, deliver } = await consumerRig();
+    deliver(batch(1, [[10, 0, makeEntry(1)]], { mode: 'resume' }));
+    deliver(batch(3, [[30, 0, makeEntry(3)]]));
+    deliver(batch(4, [[Number.MAX_SAFE_INTEGER, 0, makeEntry(4, 'tail-ended')]]));
+    expect(textsOf(store)).toEqual(['line 1']);
+    expect(store.state.tailSessionId).toBeNull();
+    expect(acksOf(calls)).toHaveLength(3);
   });
 });

@@ -1,8 +1,8 @@
+import { MAX_QUEUES } from '../../../src/contracts/queue-bounds';
+import { MAX_QUEUE_NAME_LENGTH } from '../../../src/contracts/queue-bounds';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { describe, it, expect } from 'vitest';
 import {
-  DEFAULT_QUEUE_ID,
-  MAX_QUEUES,
-  MAX_QUEUE_NAME_LENGTH,
   QueueRegistryViolation,
   createQueue,
   deleteQueue,

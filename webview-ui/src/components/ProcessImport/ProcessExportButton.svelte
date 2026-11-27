@@ -6,9 +6,14 @@
   // opens its own save dialog and reports only whether a document was written
   // (FR-019).
   //
+  // The control is an item of the Phase editor's "More phase actions" menu
+  // (`role="menu"`): no wrapper, the item reads "Export…", and the reason sits
+  // inside the item, so it shows and hides with the menu.
+  //
   // A row that carries no valid definition cannot produce a document (FR-015),
-  // so the control is disabled AND says why, rather than failing after the
-  // click (FR-057).
+  // so the item is off AND says why, rather than failing after the click
+  // (FR-057). It is off through `aria-disabled`, not `disabled`, so the arrow
+  // keys still reach it and its reason can be read.
   import { exportPhaseYaml } from '../../lib/process-yaml-ipc';
 
   interface Props {
@@ -35,7 +40,10 @@
   }: Props = $props();
 
   const disabled = $derived(!resolves);
-  const reasonId = $derived(`process-export-reason-${rowKey ?? phaseId}`);
+  const safeReasonKey = $derived(
+    (rowKey ?? phaseId).replace(/\s+/g, '-')
+  );
+  const reasonId = $derived(`process-export-reason-${safeReasonKey}`);
   const title = $derived(disabled ? disabledReason : `Export ${phaseId} as a document`);
 
   function onClick(): void {
@@ -44,52 +52,37 @@
   }
 </script>
 
-<div class="export-control">
-  <button
-    type="button"
-    class="export-button"
-    data-testid="process-export-button"
-    {disabled}
-    {title}
-    aria-label={`Export ${phaseId}`}
-    aria-describedby={disabled ? reasonId : undefined}
-    onclick={onClick}
-  >Export</button>
-  {#if disabled}
-    <span class="export-reason" id={reasonId}
-      data-testid="process-export-disabled-reason">{disabledReason}</span>
-  {/if}
-</div>
+<button
+  type="button"
+  class="export-item"
+  role="menuitem"
+  data-testid="process-export-button"
+  aria-disabled={disabled}
+  {title}
+  aria-label={`Export YAML for ${phaseId}`}
+  aria-describedby={disabled ? reasonId : undefined}
+  onclick={onClick}
+><svg class="i" aria-hidden="true"><use href="#i-export"></use></svg><span class="export-word">Export YAML…</span>{#if disabled}<span class="export-why" id={reasonId}
+      data-testid="process-export-disabled-reason">{disabledReason}</span>{/if}</button>
 
 <style>
-  .export-control {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--schegent-pad);
+  /* The menu draws the item (sg-pages.css `.menu button`), off or on; the reason takes a line of its
+     own under the word. When the item is off, only its word dims: the reason keeps its own colour,
+     since it is what the operator needs to read.
+
+     A grid rather than a wrapping flex row: the menu sizes itself to its widest item, and a flex
+     row's widest size holds every item on one line, so the reason sat beside the word.
+     `:global(.menu)` outranks sg-pages' `.menu button`, which makes every item a flex row. */
+  :global(.menu) .export-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    row-gap: var(--schegent-space-0-5);
   }
-  .export-button {
-    min-height: 24px;
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    border: 1px solid transparent;
-    border-radius: var(--schegent-radius);
-    padding: 0 var(--schegent-pad);
-    font: inherit;
-    cursor: pointer;
-  }
-  .export-button:hover:not(:disabled) {
-    background: var(--schegent-button-hover);
-  }
-  .export-button:focus-visible {
-    outline: 1px solid var(--schegent-focus-border);
-    outline-offset: 1px;
-  }
-  .export-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .export-reason {
+  .export-why {
+    grid-column: 2;
+    max-width: 32ch;
+    white-space: normal;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-muted-fg);
-    font-size: 0.9em;
   }
 </style>

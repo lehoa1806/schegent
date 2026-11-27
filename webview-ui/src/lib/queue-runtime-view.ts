@@ -8,16 +8,24 @@
 // say which queue's, and a queue that owns no Run answers `null` rather than
 // borrowing the neighbour's (FR-053).
 
-import type { QueueRuntime, WorkflowSnapshot } from './snapshot-types';
+import { isTerminalWorkflowStatus } from './snapshot-types';
+import type { QueueItem, QueueRuntime, WorkflowSnapshot } from './snapshot-types';
 
 /**
  * The id the registry gives its always-present first queue. Used only when the
- * host has not projected `generalSettings` yet — the operator-settable
- * `queue.defaultQueueId` is authoritative whenever it has arrived.
+ * host has not projected `queueSettings` yet — its `defaultQueueId` is
+ * authoritative whenever it has arrived.
+ *
+ * FR-R3-145 (T1572) re-pointed the consumer below and left this comment naming
+ * `generalSettings` and an "operator-settable `queue.defaultQueueId`". Neither
+ * survives: the configuration key is gone, and the projection that governs this
+ * fallback is `queueSettings`, which is optional on the webview mirror under the
+ * usual legacy tolerance — so a host bundle predating this feature is exactly the
+ * case that lands here.
  */
 export const FALLBACK_QUEUE_ID = 'default';
 
-type SnapshotLike = Pick<WorkflowSnapshot, 'queues' | 'generalSettings'> | null | undefined;
+type SnapshotLike = Pick<WorkflowSnapshot, 'queues' | 'queueSettings'> | null | undefined;
 
 export function findQueueRuntime(
   snapshot: Pick<WorkflowSnapshot, 'queues'> | null | undefined,
@@ -26,9 +34,49 @@ export function findQueueRuntime(
   return snapshot?.queues?.find((runtime) => runtime.queueId === queueId) ?? null;
 }
 
-/** The queue a surface reads when the operator has made no explicit selection. */
+/**
+ * BUG-002 (FR-021, FR-022) — the Task a queue has in flight, found among that
+ * queue's own rows (`QueueRuntime.tasks`), or `null` when it has none: an
+ * `in-flight` row, or a `paused` one the system rate-limit pause kept bound.
+ *
+ * The host's copy, `findQueueInFlightRow` in
+ * `src/services/phase-log/phase-log-service.ts`, decides whether a tail may
+ * start, and carries the reasoning; this one decides whether the pane asks for
+ * one. The two must agree, or the pane asks for a tail the host refuses.
+ */
+export function findQueueInFlightRow<T extends Pick<QueueItem, 'status' | 'paused'>>(
+  tasks: readonly T[]
+): T | null {
+  return (
+    tasks.find(
+      (task) =>
+        task.status === 'in-flight' ||
+        (task.status === 'paused' && task.paused?.pauseSource === 'system-paused')
+    ) ?? null
+  );
+}
+
+/**
+ * Feature 195 (T028, FR-007) — the halt-on-failure variant of a queue's
+ * `startFailure`, or `null` when the queue has none or its last failed start
+ * was an admission error. A single named read, so a consumer discriminates on
+ * `kind` through this function rather than sniffing for `taskName` itself.
+ */
+export function haltedStartFailure(
+  runtime: Pick<QueueRuntime, 'startFailure'>
+): Extract<QueueRuntime['startFailure'], { kind: 'halted' }> | null {
+  return runtime.startFailure?.kind === 'halted' ? runtime.startFailure : null;
+}
+
+/**
+ * The queue a surface reads when the operator has made no explicit selection.
+ *
+ * FR-R3-145 (T1572) — from `queueSettings`, the memento projection, not from
+ * `generalSettings`. Every surface that resolves a default queue now resolves it
+ * from the same store the queue modal writes to (FR-011).
+ */
 export function defaultQueueId(snapshot: SnapshotLike): string {
-  return snapshot?.generalSettings?.queueDefaultQueueId ?? FALLBACK_QUEUE_ID;
+  return snapshot?.queueSettings?.defaultQueueId ?? FALLBACK_QUEUE_ID;
 }
 
 /**
@@ -39,6 +87,43 @@ export function defaultQueueId(snapshot: SnapshotLike): string {
  */
 export function defaultQueueRuntime(snapshot: SnapshotLike): QueueRuntime | null {
   return findQueueRuntime(snapshot, defaultQueueId(snapshot));
+}
+
+/**
+ * Whether this queue is **working** a Run right now — as distinct from whether it
+ * **owns** one, which is what `inFlightRun !== null` answers and all that it
+ * answers.
+ *
+ * Bug "there is no way to start a pending task" (2026-09-02), second finding.
+ * `QueueRuntime.inFlightRun` is documented as `null` iff the queue owns no Run
+ * (FR-053), and the projection carries a `status` precisely because the Run it
+ * describes may have ended: `RunDetailTier` reads a completed Run's `outputs`
+ * through it, and feature 103's provenance fields are read off it after the fact.
+ * So presence is ownership, never liveness, and a surface that conflates the two
+ * reports a queue as busy for as long as the record survives.
+ *
+ * The cost of the conflation was that a queue with pending rows and a Run that
+ * had failed offered **Pause** instead of **Start Queue**, and since FR-018 makes
+ * the idle-pending panel the only other dispatcher of `CMD_START_QUEUE`, a queue
+ * that was neither operator-paused nor idle-pending had no start affordance
+ * anywhere. Nothing else asks for a drain — there is no activation-time sweep —
+ * so the queue stayed wedged across window restarts.
+ *
+ * Named here rather than derived at each call site so the distinction has one
+ * spelling, and so a caller has to pick which question it is asking.
+ */
+export function isWorkingARun(runtime: QueueRuntime | null | undefined): boolean {
+  const run = runtime?.inFlightRun ?? null;
+  return run !== null && !isTerminalWorkflowStatus(run.status);
+}
+
+/**
+ * Whether this queue owns a Run record at all, ended or not — the reading
+ * `inFlightRun` actually publishes. A reset surface wants this one: a Run that
+ * failed is still a record there is something to clear.
+ */
+export function ownsRun(runtime: QueueRuntime | null | undefined): boolean {
+  return (runtime?.inFlightRun ?? null) !== null;
 }
 
 /**

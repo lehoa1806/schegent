@@ -1,4 +1,6 @@
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { PhaseCapability } from './phase-capabilities';
+import type { BackendRunnerKind } from './backend-kinds';
+import type { ResultContract } from './decision-results';
 
 /**
  * How long a Phase id may be (feature 089, FR-037).
@@ -48,6 +50,50 @@ export const PHASE_ID_MAX_LEN = 64;
  */
 export const PHASE_RETRY_CONDITION_MAX_LEN = 512;
 
+/**
+ * What a Phase does when its `retryCondition` is still truthy at the iteration
+ * cap (FR-R3-157, FR-001).
+ *
+ * Three outcomes, because two is the wrong cardinality. The cap decision used to
+ * be a boolean — halt, or advance silently — and the same incident produced one
+ * exhaustion that should have continued and one that should have failed. Neither
+ * position of a two-valued switch is right for both, so the switch was always
+ * going to be wrong half the time.
+ *
+ * - `'fail'` — halt the Run, exactly as today, with the same warning and the same
+ *   recorded cause. The default when nothing says otherwise.
+ * - `'continue'` — advance, exactly as today under `forceContinueOnRetryCap`,
+ *   with the same forced-continue warning.
+ * - `'continue-degraded'` — advance to the same successor `'continue'` would,
+ *   and record the phase and the condition that was never satisfied, so the Run
+ *   is never mistaken for a clean one.
+ *
+ * **All three are scoped to the cap, and none is a way past a `failed` or
+ * `timeout` outcome.** Those are terminal and never reach the retryCondition
+ * branch at all. What this setting exists for is the narrower case: a phase whose
+ * condition can never go falsy — one gated on a step no headless run can perform
+ * — otherwise burns every iteration and then fails the whole task, and the only
+ * ways out were to leave it failing or to record work that did not happen.
+ * Forcing past a fatal-signature match is a different decision on different
+ * evidence, and `isRequired: false` is the field that already makes it. (This
+ * paragraph moved here verbatim in substance from `controller/phase.ts`'s
+ * `PhaseDefLike`, which no longer declares the field it documented — the reason
+ * outlived the boolean.)
+ *
+ * Declared here rather than in `controller/` because this file defines the
+ * authored schema, and the schema must not import from the controller to type
+ * its own field. `config/pipeline-config.ts` re-exports the type rather than
+ * restating it, the way it already does for `PHASE_EFFORT_LEVELS`.
+ *
+ * `contracts/retry-cap-outcome.ts` is the **only** place that resolves an
+ * outcome from a definition, and `tests/lint/retry-cap-resolution-site.test.ts`
+ * pins that. Note when writing such a proof that the value `'continue-degraded'`
+ * also occurs in `services/evidence-health/evidence-health-monitor.ts` as an
+ * unrelated evidence-sink policy: search the **field name**, never the value.
+ */
+export const RETRY_CAP_OUTCOMES = ['fail', 'continue', 'continue-degraded'] as const;
+export type RetryCapOutcome = (typeof RETRY_CAP_OUTCOMES)[number];
+
 export const PHASE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type PhaseDefinitionEffort = (typeof PHASE_EFFORT_LEVELS)[number];
 
@@ -63,8 +109,165 @@ export type PhaseDefinitionEffort = (typeof PHASE_EFFORT_LEVELS)[number];
 export const PHASE_SIDE_EFFECTS = ['none', 'workspace', 'git', 'unrestricted'] as const;
 export type PhaseSideEffects = (typeof PHASE_SIDE_EFFECTS)[number];
 
+/**
+ * What an author says about the evidence this Phase owes.
+ *
+ * **It governs how the ABSENCE of an audit block is REPORTED, and nothing else.**
+ * All three values still advance the Phase identically; what differs is what the
+ * record says about a missing block:
+ *
+ *   * `'required'` — the default. A missing block is a constitution violation and
+ *     is warned about. This is the historical behaviour, unchanged.
+ *   * `'best-effort'` — recorded as an expectation not met rather than a rule
+ *     broken.
+ *   * `'none'` — this Phase produces no audit block, so its absence is not news
+ *     and no warning is written.
+ *
+ * **Why it cannot gate advancement, which is a fact about the data rather than a
+ * preference.** `config/pipeline-snapshot.ts` has always resolved omission to
+ * `'required'`, so that value is already written into every snapshot ever taken by
+ * every Phase that never declared one. Giving `'required'` teeth would
+ * retroactively tighten all of them, including runs in flight, on a decision — what
+ * advances a Phase — where a silent retroactive change is the worst possible kind.
+ * So the field relaxes from the default and never tightens.
+ *
+ * Gating advancement on declared evidence remains **open**, owed its own item and
+ * a migration for the baked-in default. Recorded rather than attempted here.
+ *
+ * *History:* until 2026-08-26 no code path read this field at all — all three
+ * values classified a Phase identically — while this comment said the axis "asks
+ * whether an audit block must be present". `tests/lint/authored-fields-have-readers.test.ts`
+ * found that and now holds both halves in place: the field cannot lose its reader,
+ * and it cannot regain a note claiming it has none.
+ */
 export const PHASE_EVIDENCE_POLICIES = ['required', 'best-effort', 'none'] as const;
 export type PhaseEvidencePolicy = (typeof PHASE_EVIDENCE_POLICIES)[number];
+
+/**
+ * FR-R3-096 — where a Phase's `evidencePolicy` came from.
+ *
+ * **Not an authored field.** It is derived at the freeze and exists because the
+ * value alone cannot answer the only question enforcement needs to ask.
+ * `pipeline-snapshot.ts` has resolved omission to `'required'` since the field
+ * existed, so `'required'` is already written into every snapshot ever taken —
+ * by every Phase that never declared one. Giving that value teeth would
+ * retroactively tighten all of them, on the most safety-critical decision the
+ * host makes, from a population that cannot be read as consent.
+ *
+ * With provenance the two are distinguishable: `'phase-definition'` means an
+ * author asked for it and enforcement applies; `'default'` means nobody said
+ * anything and behaviour is exactly what it was.
+ *
+ * **Absence reads as `'default'`, and that is the migration.** Every snapshot
+ * written before this contract carries no origin at all, so the population that
+ * already exists is un-enforced by construction rather than by a version
+ * comparison someone has to maintain. The same reading makes a caller that has
+ * not been updated — a test, an older code path — safe by omission.
+ *
+ * Modelled on `DeclaredCapabilitySet.declaredAt`, which draws the same
+ * authored-versus-defaulted line for the same reason.
+ */
+export const EVIDENCE_POLICY_ORIGINS = ['phase-definition', 'default'] as const;
+export type EvidencePolicyOrigin = (typeof EVIDENCE_POLICY_ORIGINS)[number];
+
+/**
+ * FR-R3-058 (M-07 / R-10) — what evidence may advance this Phase.
+ *
+ * A separate axis from `evidencePolicy`, which DECLARES whether an audit block is
+ * owed and is currently enforced by nothing (see above). This one is enforced:
+ * it decides who is believed when the host's own signals and the model's
+ * disagree.
+ *
+ * `'model-token'` is the default and the historical behaviour, unchanged: a clean
+ * termination token advances the Phase even when the process timed out or exited
+ * non-zero. That is a recorded decision (FR-R3-023 verified evidence *shape*,
+ * FR-R3-038 *disclosed* the self-certification) and it is right for a Phase whose
+ * product is prose.
+ *
+ * `'exit-code'` marks the Phase SENSITIVE: the process's own exit status decides,
+ * and a clean token cannot override a non-zero exit or a timeout. For a Phase
+ * that runs tests, produces artifacts, or claims a side effect, the agent whose
+ * work is being judged should not also be the author of the evidence that
+ * advances it.
+ *
+ * Omission means `'model-token'`, so every existing definition behaves exactly as
+ * before. The step FR-R3-023 and FR-R3-038 both deferred is taken only where a
+ * definition asks for it.
+ */
+export const PHASE_HOST_VERIFICATIONS = ['model-token', 'exit-code'] as const;
+export type PhaseHostVerification = (typeof PHASE_HOST_VERIFICATIONS)[number];
+
+export const NATIVE_REVIEW_KINDS = ['code', 'security'] as const;
+export type NativeReviewKind = (typeof NATIVE_REVIEW_KINDS)[number];
+
+export function isNativeReviewKind(value: unknown): value is NativeReviewKind {
+  return value === 'code' || value === 'security';
+}
+
+export function nativeReviewRetryCondition(kind: NativeReviewKind): string {
+  return `${kind}_review_findings > 0 or ${kind}_review_verified != 1`;
+}
+
+/**
+ * Every field an author may write on a Phase. **The single closed set.**
+ *
+ * Declared here rather than in `config/process-definition-validator.ts` for the
+ * reason `PHASE_ID_MAX_LEN` above records: that module pulls
+ * `runner/backend-runner-factory`, and the Builder is bundled into the webview,
+ * where a Node-only import fails the build. The validator re-exports this name,
+ * so it remains the one set every caller sees — host, exchange, and Builder alike.
+ *
+ * **Why the placement is the fix and not a tidy-up.** The Builder's raw-JSON
+ * editor could not reach the validator, so it carried a thirteen-name hand-kept
+ * copy of this set. The copy predated the containment fields, and the drift was
+ * not a refusal an operator could argue with: opening the JSON view on a Phase
+ * that declared `sideEffects` reported `field \`sideEffects\` is not
+ * author-controlled` about the document the editor had itself just serialized,
+ * and Save stayed disabled with no way forward. The comment beside `sideEffects`
+ * below already named this failure mode for the save and import paths; a third
+ * route had it too, because the set was somewhere the third route could not read.
+ */
+export const AUTHORED_PHASE_FIELDS: ReadonlySet<string> = new Set([
+  'id',
+  'phaseId',
+  'name',
+  'description',
+  'version',
+  'instruction',
+  'skill',
+  'model',
+  'effort',
+  'timeoutSeconds',
+  // FR-R3-112 — the per-phase spend override. Two fields because the bound has two
+  // denominations; see `PhaseDefinitionBase.spendBoundUsd`. Both land in the
+  // implicit third argv class: neither reaches a command line, and
+  // `argv-field-partition` asserts that claim against the adapters.
+  'spendBoundUsd',
+  'spendBoundTokens',
+  'loopable',
+  'retryCondition',
+  'isRequired',
+  'forceContinueOnRetryCap',
+  // FR-R3-157 — the three-valued replacement for the boolean above, closed with
+  // the rest for the reason the `sideEffects` comment below states: the save path
+  // and the import path must hold a definition to the same closed set. Omit this
+  // entry and a Phase carrying `onRetryCap` loads from a pipeline file and is
+  // then refused when the Builder saves it back, which reads as a validator bug.
+  'onRetryCap',
+  'runner',
+  // Feature 098 T015 — authored, not host-resolved. The save path and the import
+  // path must hold a definition to the same closed set, or a Phase would be
+  // accepted by one route and refused by the other on the same field.
+  'sideEffects',
+  'evidencePolicy',
+  // FR-R3-058 — authored, closed with the rest. A Phase accepted by the import
+  // path and refused by the save path on the same field is the defect this set
+  // exists to prevent.
+  'hostVerification',
+  'nativeReview',
+  'capabilities',
+  'resultContract'
+]);
 
 interface PhaseDefinitionBase {
   readonly phaseId: string;
@@ -81,13 +284,97 @@ interface PhaseDefinitionBase {
    */
   readonly sideEffects?: PhaseSideEffects;
   readonly evidencePolicy?: PhaseEvidencePolicy;
+  /**
+   * FR-R3-096 — was `evidencePolicy` authored, or supplied by the freeze? Written by the
+   * freeze, never authored (`validatePhaseDefinition` refuses it in a document); a catalog
+   * definition keeps omission as omission. Absent reads as `'default'`.
+   */
+  readonly evidencePolicyDeclaredAt?: EvidencePolicyOrigin;
+  /**
+   * FR-R3-117 — **omission no longer means `model-token`.** It means the resolved
+   * default: `exit-code` for a Phase whose resolved `sideEffects` is other than
+   * `'none'` or which produces an output, and `model-token` otherwise. Because
+   * `sideEffects` resolves to `'workspace'` when omitted, a Phase that declares
+   * nothing is judged on its process's exit status.
+   *
+   * Explicit `'model-token'` is the **opt-out**, and after this change it is no
+   * longer interchangeable with omission — see `hostVerificationDeclaredAt`.
+   *
+   * `src/config/phase-runner-policy.ts` owns the rule.
+   */
+  readonly hostVerification?: PhaseHostVerification;
+  /**
+   * FR-R3-117 — was `hostVerification` authored, or supplied by the resolver?
+   *
+   * The same provenance FR-R3-096 added for `evidencePolicy`, for the same reason
+   * and in a sharper direction. A Phase with `sideEffects: 'none'` resolves to a
+   * stored `'model-token'`. Without this field, re-freezing that snapshot after
+   * its `sideEffects` changed to `'workspace'` would read the resolver's own
+   * output as an author's opt-out — leaving a load-bearing Phase self-reporting
+   * on a decision **nobody made**. Set on the snapshot only; a catalog definition
+   * keeps omission as omission.
+   */
+  readonly hostVerificationDeclaredAt?: 'default' | 'phase-definition';
+  /**
+   * FR-R3-086 — what this phase's agent may do.
+   *
+   * **Omission means every capability**, which is the historical behaviour and
+   * the overwhelmingly common case: the phase spawns with the argv it spawns
+   * with today, byte for byte. Narrowing is opt-in, per phase.
+   *
+   * The set is frozen into the Run's pipeline snapshot with the rest of the
+   * plan, so what an agent may do is part of the plan the operator approved
+   * rather than a property of the machine it happens to run on — and, like every
+   * other snapshot field, it is never retargeted in flight.
+   */
+  readonly capabilities?: readonly PhaseCapability[];
   readonly timeoutSeconds?: number;
+  /**
+   * FR-R3-112 — the per-phase spend bound, in US dollars, overriding the
+   * workspace default while this phase runs.
+   *
+   * TWO FIELDS RATHER THAN ONE, because a single number cannot carry two units.
+   * `codex` and `agy` report tokens and no cost at all (FR-R3-098 left cost
+   * ABSENT there rather than derived from a rate card nobody published), so a
+   * lone `spendBound: 5` would mean five dollars on one backend and five tokens
+   * on another — a bound that pauses instantly on two of the three backends. The
+   * denomination is derived from what the backend reports; which of these two
+   * figures it consults follows from that.
+   */
+  readonly spendBoundUsd?: number;
+  /** FR-R3-112 — the same bound, for backends that report tokens and no cost. */
+  readonly spendBoundTokens?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
-  /** Advance rather than fail when `retryCondition` is truthy at the cap. */
+  /**
+   * Advance rather than fail when `retryCondition` is truthy at the cap.
+   *
+   * **Deprecated by FR-R3-157 in favour of `onRetryCap`, and still loaded.** No
+   * pipeline file needs editing, ever: `true` means `'continue'` and `false`
+   * means `'fail'`, and a Phase may carry both forms — `onRetryCap` wins.
+   *
+   * Nothing decides behaviour from this field except
+   * `contracts/retry-cap-outcome.ts`, which is the single resolution site
+   * `tests/lint/retry-cap-resolution-site.test.ts` pins. Every other occurrence
+   * is a declaration, a type check, a key in a field list, or a straight copy in
+   * a mapper or projector. Read it anywhere else and the two forms drift.
+   */
   readonly forceContinueOnRetryCap?: boolean;
+  /**
+   * FR-R3-157 — what this Phase does when `retryCondition` is still truthy at the
+   * iteration cap. Absent means the workspace default applies; absent everywhere
+   * means `'fail'`. See `RETRY_CAP_OUTCOMES`.
+   */
+  readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: BackendRunnerKind;
+  /** Run the selected backend's reviewer before the Phase's repair instructions. */
+  readonly nativeReview?: NativeReviewKind;
+  /**
+   * FR-R5-F24 (D2) — bounded typed result contract (`structured-result` or
+   * `diagnostic-result`) evaluated in a terminable worker after an attempt.
+   */
+  readonly resultContract?: ResultContract;
 }
 
 export interface InstructionPhaseDefinition extends PhaseDefinitionBase {
@@ -139,6 +426,27 @@ export interface PhaseCatalogResolution {
   /** One revision for the one layer (FR-044). Derived from the store's manifest (FR-044a). */
   readonly revision: string;
   readonly warnings: readonly PhaseCatalogWarning[];
+  /**
+   * BUG-001 (101) — the rows of the definitions that are saved and not published, for
+   * the Builder's Library and for nothing else.
+   *
+   * **A second list rather than more of `records`.** `records` is what the launch
+   * surface, the export selection, the import preflight and the definition
+   * semantics all read; an unpublished definition appearing there would become
+   * launchable and referenceable, which is exactly what 100 FR-009 and hard rule
+   * 64 forbid. Keeping it separate makes "a draft changes nothing about what runs"
+   * a property of the shape instead of a rule every consumer has to remember.
+   *
+   * Parsed and validated by the same row parser `records` uses, so a defect in a
+   * draft is reported to its author the same way — but never folded into
+   * `warnings`, which is a statement about the effective catalog and so about
+   * work the workspace can actually execute.
+   *
+   * Empty for every caller that does not pass `draftOnlyRows`. It is required
+   * rather than optional so a resolver cannot silently omit it, which is the
+   * shape of the defect it was added to fix.
+   */
+  readonly draftOnlyRecords: readonly PhaseSourceRecord[];
 }
 
 export type PhaseCatalogMutation =

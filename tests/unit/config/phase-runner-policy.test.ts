@@ -27,7 +27,7 @@ import {
   phaseRunnerPolicyError
 } from '../../../src/config/phase-runner-policy';
 import type { PhaseSideEffects } from '../../../src/contracts/process-definitions';
-import type { BackendRunnerKind } from '../../../src/runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../../src/contracts/backend-kinds';
 
 /** An id no list ever claimed, so only the declaration can drive the verdict. */
 const UNKNOWN_ID = 'fixture-commit-phase';

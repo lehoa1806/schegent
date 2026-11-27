@@ -39,20 +39,14 @@
   // when the typed payload was over budget or recursion depth was
   // exceeded; we render a small explanatory pill.
   function isSentinel(value: ToolArgumentValue): null | 'elided' | 'truncated' {
-    if (
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      (value as any).__elided === true
-    ) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+    const record = value as Readonly<Record<string, unknown>>;
+    if (Object.hasOwn(record, '__elided') && record['__elided'] === true) {
       return 'elided';
     }
-    if (
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      (value as any).__truncated === true
-    ) {
+    if (Object.hasOwn(record, '__truncated') && record['__truncated'] === true) {
       return 'truncated';
     }
     return null;
@@ -64,6 +58,9 @@
   }
 </script>
 
+<!-- Drawn as one line of the redesign's log ("Read specs/…"): the tool's name, then its arguments
+     as key and value pairs that wrap. An argument that is a block (several lines, an object, a
+     list) takes lines of its own under its key. -->
 <article
   class="tool-call-card"
   data-testid="tool-call-card"
@@ -80,7 +77,7 @@
 
   {#if result.ok}
     {#if result.args.length === 0}
-      <div class="empty">No arguments</div>
+      <div class="no-args">No arguments</div>
     {:else}
       <dl class="args-list">
         {#each result.args as arg (arg.key)}
@@ -156,98 +153,69 @@
 </article>
 
 <style>
-  .tool-call-card {
-    border: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
-    border-radius: 4px;
-    padding: 0.5rem 0.75rem;
-    background: var(--vscode-editorWidget-background, transparent);
-    margin: 0.25rem 0;
+  .tool-call-card,
+  .card-header,
+  .args-list {
     display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-  .card-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
     flex-wrap: wrap;
-  }
-  .tool-name {
-    font-weight: 600;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.9rem;
-  }
-  .pill {
-    font-size: 0.7rem;
-    padding: 0.0625rem 0.375rem;
-    border-radius: 999px;
-    font-style: italic;
-    opacity: 0.85;
-    border: 1px solid var(--schegent-border, var(--vscode-panel-border, transparent));
-  }
-  .pill-truncated {
-    background: var(--vscode-inputValidation-warningBackground, transparent);
-  }
-  .pill-fallback {
-    background: var(--vscode-inputValidation-errorBackground, transparent);
-  }
-  .pill-elided {
-    background: var(--vscode-inputValidation-infoBackground, transparent);
-  }
-  .args-list,
-  .nested-list {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.25rem 0.75rem;
-    margin: 0;
-  }
-  .args-list dt,
-  .nested-list dt {
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.8rem;
-    opacity: 0.85;
-    align-self: start;
-  }
-  .args-list dd,
-  .nested-list dd {
-    margin: 0;
-    font-size: 0.85rem;
-    word-break: break-word;
+    align-items: baseline;
+    gap: 0 var(--schegent-space-1-5);
     min-width: 0;
   }
+  .args-list {
+    flex: 1 1 0;
+    margin: 0;
+  }
+  .pill {
+    font-size: var(--schegent-text-caption);
+    font-style: italic;
+  }
+  .pill-truncated {
+    color: var(--schegent-status-warning-text);
+  }
+  .pill-fallback {
+    color: var(--schegent-error-text);
+  }
+  .pill-elided,
+  .no-args,
+  .array-more {
+    color: var(--schegent-muted-fg);
+  }
+  .arg-key {
+    color: var(--schegent-muted-fg);
+  }
+  .arg-val {
+    margin: 0 var(--schegent-space-1-5) 0 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  /* A block argument: its key ends the line, and the block fills the next. */
+  .args-list > .arg-key:has(+ .arg-val > :global(.multiline-code-block), + .arg-val > .nested-list, + .arg-val > .array-list),
+  .args-list > .arg-val:has(> :global(.multiline-code-block), > .nested-list, > .array-list) {
+    flex-basis: 100%;
+  }
   .nested-list {
-    padding: 0.375rem 0.5rem;
-    border-radius: var(--schegent-radius-sm, 4px);
-    background: var(--schegent-surface-subtle, var(--vscode-list-hoverBackground, transparent));
-    margin-top: 0.125rem;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0 var(--schegent-space-2);
+    margin: 0;
+    padding-left: var(--schegent-space-2-5);
+    border-left: 1px solid var(--schegent-border);
+  }
+  .nested-list > .arg-val {
+    margin: 0;
   }
   .array-list {
-    list-style: disc;
     margin: 0;
-    padding-left: 1.25rem;
-  }
-  .array-item {
-    font-size: 0.85rem;
+    padding-left: var(--schegent-space-4);
   }
   .array-more {
     list-style: none;
-    font-style: italic;
-    opacity: 0.7;
-    font-size: 0.75rem;
-  }
-  .empty {
-    font-style: italic;
-    opacity: 0.6;
-    font-size: 0.8rem;
-  }
-  .scalar-value {
-    font-family: var(--vscode-editor-font-family, monospace);
-    word-break: break-word;
-    overflow-wrap: anywhere;
   }
   .fallback {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    flex-basis: 100%;
+    gap: var(--schegent-space-1);
   }
 </style>

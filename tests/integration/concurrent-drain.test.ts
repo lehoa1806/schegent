@@ -20,12 +20,14 @@
 //                  queue promotes as soon as capacity frees.
 
 import { describe, it, expect } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/state/lock';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { createQueue } from '../../src/queue/queue-registry';
 import { isMutatingCommand } from '../../src/ui/sidebar/message-router';
 import { CMD_PAUSE_QUEUE, CMD_START_QUEUE } from '../../src/contracts/sidebar-ipc';
 import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
@@ -130,7 +132,9 @@ async function makeWindow(
     admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
     get liveRunCount(): number {
       return liveRuns;
-    }
+    },
+    // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session; a double holds none.
+    holdsSession: () => false
   };
 
   const autoDrain = new AutoDrainCoordinator({
@@ -142,9 +146,13 @@ async function makeWindow(
         if (!result.acquired) leaseDenials.push({ queueId, ownerId: result.ownerId });
         return result;
       },
-      release: (queueId: string) => executionLease.release(queueId)
+      release: (queueId: string) => executionLease.release(queueId),
+      claimFor: (queueId: string) => executionLease.claimFor(queueId)
     },
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    // Feature 195 (T012) — required port; no queue here carries a failed row,
+    // so which policy resolves is immaterial to what this file asserts.
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {
@@ -335,7 +343,8 @@ describe('feature 092 (T044, FR-039/FR-040, SC-004) — independent queue lifecy
     await w.queue.enqueue('task on B', { queueId: QUEUE_B });
     await w.store.updateQueue(
       (current) => ({ queue: { ...current, queueLifecycle: 'idle-pending'}, result: undefined }),
-      QUEUE_B
+      QUEUE_B,
+      unfencedCommit('test-fixture')
     );
 
     w.audits.length = 0;

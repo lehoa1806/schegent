@@ -1,11 +1,19 @@
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { SanitizedLogger } from '../lib/logger';
+import type { FeatureRequest } from '../queue/feature-request';
 import type { WorkflowRun } from '../state/workflow-run';
 import type {
   BreakpointAuditEvent,
   PhaseControlAuditEvent
 } from './phase-control-service';
-import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
+import type {
+  OptionalPhaseFailureContinuedPayload,
+  OutputTargetRefusedAtDispatchPayload,
+  RunSnapshotDeclinedPayload
+} from '../contracts/audit-events';
+import { emitTerminalOutcomeAudit } from '../services/terminal-outcome-audit';
+import type { ResumeWalkDeps } from '../services/resume-decision';
+import { errorMessage } from '../lib/errors';
 
 export type TaskLifecycleAuditEvent =
   | 'task-execution-started'
@@ -22,6 +30,27 @@ export class WorkflowLifecycleAuditor {
     private readonly writer: Pick<AuditLogWriter, 'append'> | null,
     private readonly logger: SanitizedLogger
   ) {}
+
+  /**
+   * A Workflow control ended this leaf: the event an operator's Task cancel writes, with its own
+   * reason. The row is canceled by a Pause too, because a Paused Workflow resumes with a new attempt.
+   */
+  public async emitWorkflowLeafCanceled(row: FeatureRequest, run: WorkflowRun | null): Promise<void> {
+    if (!this.writer) return;
+    const runId = run?.id ?? row.runId ?? null;
+    try {
+      await this.writer.append({
+        runId: runId ?? `task:${row.id}`,
+        phase: run?.currentPhase ?? 'queue',
+        iteration: run?.currentIteration ?? 0,
+        eventType: 'task-canceled',
+        payload: { taskId: row.id, runId, reason: 'workflow-control' },
+        outcome: 'info'
+      });
+    } catch (err) {
+      this.logger.warn(`task-canceled audit append failed: ${errorMessage(err)}`);
+    }
+  }
 
   public async appendPhaseControl(
     eventType: PhaseControlAuditEvent,
@@ -40,6 +69,22 @@ export class WorkflowLifecycleAuditor {
       });
     } catch (err) {
       this.logger.warn(`phase-control audit append failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * FR-R4-F06 (P8) — the decline the resume admission guard records. Best-effort like every
+   * append here: a failed write is logged and never changes the refusal it describes. The
+   * payload is copied, so the caller's object is never shared with the writer.
+   */
+  public async appendResumeDeclined(
+    entry: Parameters<ResumeWalkDeps['appendAudit']>[0]
+  ): Promise<void> {
+    if (!this.writer) return;
+    try {
+      await this.writer.append({ ...entry, payload: { ...entry.payload } });
+    } catch (err) {
+      this.logger.warn(`resume-declined audit append failed: ${errorMessage(err)}`);
     }
   }
 
@@ -84,6 +129,27 @@ export class WorkflowLifecycleAuditor {
     }
   }
 
+  /**
+   * The terminal record, for the controller's own route to a terminal state.
+   *
+   * `handleUnexpectedStartFailure` fails a Run that threw before or outside the drive:
+   * it persists `status: 'failed'`, finishes the queue row, records history and releases
+   * the lease — and until 2026-08-31 it emitted nothing, because FR-R3-107's one emitter
+   * was private to `RunDriver`. A run could be `failed` in the state store and still open
+   * in the durable record. `terminal-outcome-audit.ts` holds the payload and the history.
+   *
+   * It goes through that module rather than building a payload here for the reason the
+   * consolidation existed: two shapes for one event is the drift FR-R3-107 removed.
+   */
+  public async emitTaskExecutionEnded(
+    run: WorkflowRun,
+    terminalStatus: 'completed' | 'failed',
+    lastErrorSummary?: string
+  ): Promise<void> {
+    const extra = lastErrorSummary === undefined ? {} : { lastErrorSummary };
+    await emitTerminalOutcomeAudit(this, this.logger, run, terminalStatus, extra);
+  }
+
   public async emitOptionalPhaseFailureContinued(
     run: WorkflowRun,
     payload: OptionalPhaseFailureContinuedPayload
@@ -101,6 +167,57 @@ export class WorkflowLifecycleAuditor {
     } catch (err) {
       this.logger.warn(
         `optional-phase continuation audit append failed: ${(err as Error).message}`
+      );
+    }
+  }
+
+  /**
+   * FR-R3-077 (T1040) — the read-side decline, as evidence.
+   *
+   * `warn` and not `info`: a superseded record reaching a reader means a write
+   * landed in the window the commit-point check cannot cover, which is a fact
+   * about this workspace's concurrency rather than a routine event.
+   */
+  public async emitRunSnapshotDeclined(
+    run: WorkflowRun,
+    payload: RunSnapshotDeclinedPayload
+  ): Promise<void> {
+    if (!this.writer) return;
+    try {
+      await this.writer.append({
+        runId: run.id,
+        phase: run.currentPhase,
+        iteration: run.currentIteration,
+        eventType: 'run-snapshot-declined',
+        // `failure` and not `info`: the audit outcome vocabulary has three arms
+        // and no `warn`. A superseded record reaching a reader is a refusal that
+        // happened, which is what `failure` records here — the read declined.
+        outcome: 'failure',
+        payload: { ...payload }
+      });
+    } catch (err) {
+      this.logger.warn(`run-snapshot-declined audit append failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** FR-R3-079 (T1058) — the dispatch refusal, as evidence an operator can read. */
+  public async emitOutputTargetRefusedAtDispatch(
+    run: WorkflowRun,
+    payload: OutputTargetRefusedAtDispatchPayload
+  ): Promise<void> {
+    if (!this.writer) return;
+    try {
+      await this.writer.append({
+        runId: run.id,
+        phase: run.currentPhase,
+        iteration: run.currentIteration,
+        eventType: 'output-target-refused-at-dispatch',
+        outcome: 'failure',
+        payload: { ...payload }
+      });
+    } catch (err) {
+      this.logger.warn(
+        `output-target-refused audit append failed: ${(err as Error).message}`
       );
     }
   }

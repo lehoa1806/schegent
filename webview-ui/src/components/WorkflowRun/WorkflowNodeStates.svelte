@@ -29,8 +29,12 @@
 
   import QueueItemRow from '../QueueItem.svelte';
   import type {
+    ConnectedForEachNodeProjection,
     ConnectedNodeAction,
     ConnectedNodeProjection,
+    ConnectedRepeatNodeProjection,
+    ControlCandidateProjection,
+    ControlProjection,
     QueueItem
   } from '../../lib/snapshot-types';
 
@@ -38,12 +42,15 @@
     readonly nodes: readonly ConnectedNodeProjection[];
     /** The queue rows a node's latest attempt is looked up in (FR-056). */
     readonly queueItems: readonly QueueItem[];
+    readonly controlProjection?: ControlProjection;
     /** True while a submission is in flight; the host, not the view, decides legality. */
     readonly disabled?: boolean;
     readonly onAct?: (node: ConnectedNodeProjection, action: ConnectedNodeAction) => void;
+    /** Feature 265 BUG-001 (FR-009): opens the node's latest attempt Task. */
+    readonly onOpenTask?: (queueItemId: string, returnKey: string) => void;
   }
 
-  const { nodes, queueItems, disabled = false, onAct }: Props = $props();
+  const { nodes, queueItems, controlProjection, disabled = false, onAct, onOpenTask }: Props = $props();
 
   const ACTION_LABELS: Record<ConnectedNodeAction, string> = {
     start: 'Start',
@@ -54,21 +61,171 @@
     if (node.latestQueueItemId === undefined) return undefined;
     return queueItems.find((item) => item.id === node.latestQueueItemId);
   }
+
+  function candidateOf(node: ConnectedNodeProjection): ControlCandidateProjection | undefined {
+    return controlProjection?.candidates?.find((c) => c.nodeId === node.nodeId);
+  }
+
+  function repeatOf(node: ConnectedNodeProjection): ConnectedRepeatNodeProjection | undefined {
+    return node.repeatProjection ?? (controlProjection?.nodeId === node.nodeId ? controlProjection.repeatProjection : undefined);
+  }
+
+  function forEachOf(node: ConnectedNodeProjection): ConnectedForEachNodeProjection | undefined {
+    return node.forEachProjection ?? (controlProjection?.nodeId === node.nodeId ? controlProjection.forEachProjection : undefined);
+  }
 </script>
 
 <ul class="node-list" data-testid="workflow-node-states">
   {#each nodes as node (node.nodeId)}
+    {@const attempt = attemptOf(node)}
     <li class="node-row" data-testid={`workflow-node-${node.nodeId}`}>
       <div class="node-head">
-        <span class="node-id" data-testid={`workflow-node-id-${node.nodeId}`}>{node.nodeId}</span>
+        {#if attempt && onOpenTask}
+          <button
+            type="button"
+            class="node-id node-open"
+            data-testid={`workflow-node-id-${node.nodeId}`}
+            data-return-key={`node-head:${node.nodeId}`}
+            onclick={() => onOpenTask(attempt.id, `node-head:${node.nodeId}`)}
+          >
+            {node.nodeId}
+          </button>
+        {:else}
+          <span class="node-id" data-testid={`workflow-node-id-${node.nodeId}`}>{node.nodeId}</span>
+        {/if}
         <span class="node-state" data-testid={`workflow-node-state-${node.nodeId}`}>
           {node.state}
         </span>
       </div>
       <p class="node-meta" data-testid={`workflow-node-meta-${node.nodeId}`}>
-        {node.pipelineId} · {node.attemptCount}
+        {#if node.nodeKind}
+          <span class="node-kind-badge" data-testid={`workflow-node-kind-${node.nodeId}`}>{node.nodeKind}</span> ·
+        {/if}
+        {#if node.label}
+          <span class="node-label">{node.label}</span> ({node.pipelineId})
+        {:else}
+          {node.pipelineId}
+        {/if}
+        {#if node.frozenVersionId}
+          · <span class="node-version" data-testid={`workflow-node-version-${node.nodeId}`}>{node.frozenVersionId}</span>
+        {/if}
+        · {node.attemptCount}
         {node.attemptCount === 1 ? 'attempt' : 'attempts'}
+        {#if candidateOf(node)}
+          {@const cand = candidateOf(node)}
+          {#if cand}
+            · <span class="node-candidate-badge" data-testid={`workflow-node-candidate-state-${node.nodeId}`}>
+              Candidate {cand.candidateId}: {cand.eligibility} ({cand.attemptsUsed}/{cand.maxAttempts})
+            </span>
+          {/if}
+        {/if}
       </p>
+
+      {#if repeatOf(node)}
+        {@const rep = repeatOf(node)}
+        {#if rep}
+          <div class="node-repeat-panel" data-testid={`repeat-node-projection-${node.nodeId}`}>
+            <div class="repeat-row">
+              <span class="repeat-pass-counter" data-testid={`repeat-pass-counter-${node.nodeId}`}>
+                Pass {rep.iteration} of {rep.maxIterations}
+              </span>
+              ·
+              <span class="repeat-leaf-attempts" data-testid={`repeat-leaf-attempts-${node.nodeId}`}>
+                {rep.leafAttemptCount} {rep.leafAttemptCount === 1 ? 'leaf attempt' : 'leaf attempts'}
+              </span>
+              ·
+              <span class="repeat-condition-result" data-testid={`repeat-condition-result-${node.nodeId}`}>
+                Until: {rep.conditionResult}
+              </span>
+              ·
+              <span class="repeat-on-exhausted" data-testid={`repeat-on-exhausted-${node.nodeId}`}>
+                onExhausted: {rep.onExhausted}
+              </span>
+            </div>
+            {#if rep.currentChildInvocationId}
+              <div class="repeat-row" data-testid={`repeat-current-child-${node.nodeId}`}>
+                Active child: {rep.currentChildInvocationId}
+              </div>
+            {/if}
+            {#if rep.carryEnvelopeRef}
+              <div class="repeat-row" data-testid={`repeat-carry-ref-${node.nodeId}`}>
+                Carry envelope: {rep.carryEnvelopeRef}
+              </div>
+            {/if}
+            {#if rep.exhaustionReason}
+              <div class="repeat-exhaustion" data-testid={`repeat-exhaustion-reason-${node.nodeId}`}>
+                Exhaustion: {rep.exhaustionReason} ({rep.onExhausted === 'pause' ? 'Paused — resume cannot extend maxIterations' : 'Failed'})
+              </div>
+            {/if}
+            {#if rep.completedPasses.length > 0}
+              <div class="repeat-passes" data-testid={`repeat-completed-passes-${node.nodeId}`}>
+                {#each rep.completedPasses as passEntry (passEntry.iteration)}
+                  <span class="repeat-pass-chip" data-testid={`repeat-pass-chip-${node.nodeId}-${passEntry.iteration}`}>
+                    #{passEntry.iteration}: {passEntry.status}
+                  </span>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      {/if}
+
+      {#if forEachOf(node)}
+        {@const fe = forEachOf(node)}
+        {#if fe}
+          <div class="node-repeat-panel" data-testid={`foreach-node-projection-${node.nodeId}`}>
+            <div class="repeat-row">
+              <span class="repeat-pass-counter" data-testid={`foreach-item-counter-${node.nodeId}`}>
+                {fe.itemCount === 0
+                  ? '0 items (empty collection)'
+                  : `Item ${Math.min(fe.currentIndex + 1, fe.itemCount)} of ${fe.itemCount}`}
+              </span>
+              ·
+              <span class="repeat-leaf-attempts" data-testid={`foreach-leaf-attempts-${node.nodeId}`}>
+                {fe.leafAttemptCount} {fe.leafAttemptCount === 1 ? 'leaf attempt' : 'leaf attempts'}
+              </span>
+              ·
+              <span class="repeat-on-exhausted" data-testid={`foreach-on-item-error-${node.nodeId}`}>
+                onItemError: {fe.onItemError}
+              </span>
+            </div>
+            {#if fe.collectionRef}
+              <div class="repeat-row" data-testid={`foreach-collection-ref-${node.nodeId}`}>
+                Collection: {fe.collectionRef}
+              </div>
+            {/if}
+            {#if fe.resultIndexRef}
+              <div class="repeat-row" data-testid={`foreach-result-index-ref-${node.nodeId}`}>
+                Result index: {fe.resultIndexRef}
+              </div>
+            {/if}
+            {#if fe.hasErrors}
+              <div
+                class="repeat-exhaustion"
+                role="status"
+                aria-live="polite"
+                data-testid={`foreach-error-summary-${node.nodeId}`}
+              >
+                Completed with {fe.errorCount} item {fe.errorCount === 1 ? 'error' : 'errors'} (hasErrors: true)
+              </div>
+            {/if}
+            {#if fe.refusalCode}
+              <div class="repeat-exhaustion" data-testid={`foreach-refusal-code-${node.nodeId}`}>
+                Refusal: {fe.refusalCode}
+              </div>
+            {/if}
+            {#if fe.slots.length > 0}
+              <div class="repeat-passes" data-testid={`foreach-slots-${node.nodeId}`}>
+                {#each fe.slots as slot (slot.index)}
+                  <span class="repeat-pass-chip" data-testid={`foreach-slot-${node.nodeId}-${slot.index}`}>
+                    #{slot.index} ({slot.itemKey}): {slot.state}{slot.error ? ` — ${slot.error.code}: ${slot.error.message}` : ''}
+                  </span>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      {/if}
 
       {#if node.actions.length > 0}
         <div class="node-actions">
@@ -87,10 +244,13 @@
       {/if}
 
       {#if node.latestQueueItemId !== undefined}
-        {@const attempt = attemptOf(node)}
         {#if attempt}
-          <ul class="attempt-row" data-testid={`workflow-node-attempt-${node.nodeId}`}>
-            <QueueItemRow item={attempt} testIdPrefix="workflow-node-run" />
+          <ul class="attempt-row" data-testid={`workflow-node-attempt-${node.nodeId}`} data-return-key={`node:${node.nodeId}`}>
+            <QueueItemRow
+              item={attempt}
+              testIdPrefix="workflow-node-run"
+              onSelect={onOpenTask === undefined ? undefined : () => onOpenTask(attempt.id, `node:${node.nodeId}`)}
+            />
           </ul>
         {:else}
           <!-- The projection references an attempt the queue projection has not
@@ -119,7 +279,7 @@
     flex-direction: column;
     gap: 4px;
     padding: 8px;
-    border: 1px solid var(--vscode-panel-border);
+    border: 1px solid var(--schegent-border);
     border-radius: var(--schegent-radius);
   }
   .node-head {
@@ -131,6 +291,20 @@
   .node-id {
     font-weight: 600;
     word-break: break-word;
+  }
+  .node-open {
+    padding: 0;
+    background: transparent;
+    border: 0;
+    color: var(--schegent-link-fg);
+    font: inherit;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+  .node-open:hover,
+  .node-open:focus-visible {
+    text-decoration: underline;
   }
   .node-state {
     flex: none;
@@ -152,7 +326,7 @@
   .node-action {
     padding: 4px 10px;
     background: var(--sch-accent-gradient);
-    color: var(--vscode-button-foreground);
+    color: var(--schegent-button-fg);
     border: none;
     border-radius: var(--schegent-radius);
     cursor: pointer;
@@ -170,5 +344,35 @@
     margin: 0;
     font-size: 0.85em;
     opacity: 0.8;
+  }
+  .node-repeat-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    border-left: 2px solid var(--schegent-focus-border);
+    font-size: 0.85em;
+  }
+  .repeat-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .repeat-pass-counter {
+    font-weight: 600;
+  }
+  .repeat-exhaustion {
+    font-weight: 600;
+  }
+  .repeat-passes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .repeat-pass-chip {
+    padding: 1px 6px;
+    border: 1px solid var(--schegent-border);
+    border-radius: var(--schegent-radius);
+    font-size: 0.9em;
   }
 </style>

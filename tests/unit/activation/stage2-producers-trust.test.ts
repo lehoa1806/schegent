@@ -1,0 +1,543 @@
+import { describe, expect, it } from 'vitest';
+
+import { createStage2Producers } from '../../../src/activation/stage2-producers';
+import { SanitizedLogger } from '../../../src/lib/logger';
+
+/**
+ * FR-R3-136 (FR-009…FR-012, T1525e) — Phase C's acceptance, at the seam where the
+ * claim is actually decidable.
+ *
+ * The requirement reads: an untrusted activation over seeded running/retry/
+ * schedule state creates no lock file, arms no timer and spawns nothing; the
+ * grant initializes once and replays nothing twice; a second grant is a no-op.
+ *
+ * WHY HERE AND NOT AGAINST `activate()`. Every one of those acts is a call this
+ * module makes, and `createStage2Producers` takes each as a dependency — so
+ * "creates no lock file" is `lock.tryAcquire` never being called, "spawns
+ * nothing" is `backendCapabilities.scan` never being called, and "arms no timer"
+ * is `scheduledStartCoordinator.reArm` and `watchdog.reattachOnActivation` never
+ * being called. Asserting on the calls rather than on the filesystem is the
+ * stronger form: an fs assertion passes when a write happened to a directory the
+ * fixture did not look in, and it cannot distinguish "did not write" from "wrote
+ * and cleaned up". The end-to-end leg over a real untrusted window is T1527's,
+ * and it needs an Electron host; this one runs in the unit tier and fails in
+ * milliseconds when a producer act leaks back to construction time.
+ *
+ * THE SEEDED STATE IS THE `lockResult` AND THE THUNKS, not a memento. Nothing in
+ * this module inspects run state to decide whether to act — it acts, and the
+ * things it calls decide. So the fixture seeds the one branch that changes what
+ * runs (the election outcome) and counts the rest. `resumePersistedRuns` is
+ * exercised through `store.getRunMap()`, which is why the trusted-primary case
+ * asserts that it was read.
+ *
+ * NON-VACUITY IS THE TRUSTED CASE. Every untrusted assertion is "this was never
+ * called", which is exactly what a broken fixture, a renamed dependency or a
+ * `run()` that throws early also produces. The trusted case runs the same
+ * fixture through the same call and requires every one of those to have been
+ * called — so the untrusted zeros mean the gate refused, and not that the
+ * harness never worked.
+ */
+
+interface Recorder {
+  readonly calls: string[];
+  readonly lines: string[];
+  readonly deps: Parameters<typeof createStage2Producers>[0];
+  trusted: boolean;
+}
+
+function recorder(options: {
+  trusted: boolean;
+  acquired?: boolean;
+  /**
+   * FR-032 — suspends the first awaited landmark, so a primacy gain can be
+   * delivered while `run()` is still in flight. Nothing else in this fixture can
+   * produce that interleaving: every landmark resolves immediately, so the
+   * mid-activation case would otherwise be a claim no test could make.
+   */
+  holdReplay?: Promise<void>;
+}): Recorder {
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const logger = new SanitizedLogger([{ appendLine: (line: string) => lines.push(line) }]);
+  const acquired = options.acquired ?? true;
+  const note = <T>(name: string, value: T): T => {
+    calls.push(name);
+    return value;
+  };
+
+  const state = {
+    trusted: options.trusted,
+    calls,
+    lines
+  };
+
+  const deps = {
+    isWorkspaceTrusted: () => state.trusted,
+    logger,
+    store: {
+      getRunMap: () => note('store.getRunMap', {})
+    },
+    auditWriter: {
+      append: async () => {
+        note('auditWriter.append', undefined);
+      },
+      // FR-R4-F03 — the retention sweep the writer's constructor used to queue.
+      runArchiveMaintenance: async () => note('auditWriter.runArchiveMaintenance', 'ran' as const)
+    },
+    lock: {
+      tryAcquire: async () => note('lock.tryAcquire', { acquired, ownerId: 'window-a' })
+    },
+    controller: {
+      resumeExistingFromActivation: async () => {
+        note('controller.resumeExistingFromActivation', undefined);
+      },
+      resumeExisting: () => {
+        note('controller.resumeExisting', undefined);
+      },
+      scheduleAutoDrain: () => {
+        note('controller.scheduleAutoDrain', undefined);
+      }
+    },
+    watchdog: {
+      reattachOnActivation: async () => {
+        note('watchdog.reattachOnActivation', undefined);
+      }
+    },
+    scheduledStartCoordinator: {
+      reArm: async () => {
+        note('scheduledStartCoordinator.reArm', undefined);
+      }
+    },
+    replayEvidenceBacklog: async () => {
+      note('replayEvidenceBacklog', undefined);
+    },
+    runSafety: {
+      replayTerminalTransitions: async () => {
+        await options.holdReplay;
+        note('runSafety.replayTerminalTransitions', undefined);
+      },
+      sweepCheckpointRetention: async () => note('runSafety.sweepCheckpointRetention', undefined)
+    },
+    backendCapabilities: {
+      scan: async () => note('backendCapabilities.scan', undefined)
+    },
+    startMountProbe: () => {
+      note('startMountProbe', undefined);
+    },
+    refreshCatalog: async () => {
+      note('refreshCatalog', undefined);
+    },
+    // FR-R4-F04 (TA7) — the pseudonym's creation, a memento write, in the trust-scoped preamble.
+    operatorAttribution: {
+      ensureStored: async () => {
+        note('operatorAttribution.ensureStored', undefined);
+        return 'pseudonym-0123456789abcdef';
+      }
+    },
+    pauseQueuesOnStartup: async () => {
+      note('pauseQueuesOnStartup', undefined);
+    }
+  } as unknown as Parameters<typeof createStage2Producers>[0];
+
+  return {
+    calls,
+    lines,
+    deps,
+    get trusted() {
+      return state.trusted;
+    },
+    set trusted(next: boolean) {
+      state.trusted = next;
+    }
+  };
+}
+
+/**
+ * Every act this module can perform, named once. The untrusted case asserts the
+ * whole list is absent and the trusted-primary case asserts the whole list is
+ * present, so a new dependency that nobody adds here shows up as a trusted case
+ * that passes while claiming less than it should — which is why the trusted
+ * assertion is an exact set comparison rather than a membership check.
+ */
+const EVERY_ACT = Object.freeze([
+  'lock.tryAcquire',
+  'startMountProbe',
+  'runSafety.replayTerminalTransitions',
+  'pauseQueuesOnStartup',
+  'replayEvidenceBacklog',
+  'refreshCatalog',
+  'runSafety.sweepCheckpointRetention',
+  'backendCapabilities.scan',
+  'scheduledStartCoordinator.reArm',
+  'watchdog.reattachOnActivation',
+  'controller.resumeExistingFromActivation',
+  'store.getRunMap',
+  'auditWriter.runArchiveMaintenance',
+  // FR-R4-F04 (TA7) — creates the operator pseudonym; PREAMBLE, so a lost election still has one.
+  'operatorAttribution.ensureStored'
+]);
+
+/**
+ * FR-R4-F03 (R12) + BUG-001 (FR-017) — acts that run after a WON election at activation or at a
+ * trust grant, and never at a later primacy gain. Archive maintenance and crash-safe startup queue
+ * pause both run once per primary activation, never on mid-session primacy regain.
+ */
+const ELECTION_ONLY = Object.freeze([
+  'auditWriter.runArchiveMaintenance',
+  'pauseQueuesOnStartup'
+]);
+
+/** The FR-R3-070 recovery installers, gated on the election rather than on trust. */
+const PRIMACY_GATED = Object.freeze([
+  'scheduledStartCoordinator.reArm',
+  'watchdog.reattachOnActivation',
+  'controller.resumeExistingFromActivation',
+  'store.getRunMap'
+]);
+
+describe('stage 2 producers: nothing happens in an untrusted window', () => {
+  it('performs no act at all while untrusted, and says so once at info', async () => {
+    const r = recorder({ trusted: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+
+    expect(r.calls).toEqual([]);
+    expect(producers.hasRun()).toBe(false);
+    expect(r.lines.filter((line) => line.includes('workspace is not trusted'))).toHaveLength(1);
+  });
+
+  it('performs every act while trusted and primary — the control for the case above', async () => {
+    const r = recorder({ trusted: true });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    // `sweepCheckpointRetention`, `scan` and `resumePersistedRuns` are launched
+    // without being awaited, exactly as they were at their old call sites.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect([...r.calls].sort()).toEqual([...EVERY_ACT].sort());
+    expect(producers.hasRun()).toBe(true);
+  });
+
+  it('elects first, and replays before it recovers', async () => {
+    // FR-R3-136 C2 plus FR-R3-070's ordering, read off the call sequence rather
+    // than off the source text. `elect-before-recovering.test.ts` holds the same
+    // rule as a shape rule on the file; this holds it as a fact about a run, so
+    // a reordering that survives the text scan still fails here.
+    const r = recorder({ trusted: true });
+
+    await createStage2Producers(r.deps).run();
+
+    expect(r.calls[0]).toBe('lock.tryAcquire');
+    expect(r.calls.indexOf('runSafety.replayTerminalTransitions')).toBeLessThan(
+      r.calls.indexOf('replayEvidenceBacklog')
+    );
+    expect(r.calls.indexOf('replayEvidenceBacklog')).toBeLessThan(
+      r.calls.indexOf('refreshCatalog')
+    );
+    expect(r.calls.indexOf('refreshCatalog')).toBeLessThan(
+      r.calls.indexOf('scheduledStartCoordinator.reArm')
+    );
+  });
+
+  it('BUG-001 (FR-017): pauses leftover queues once at primary startup, does not auto-drain, and does not re-pause on mid-session primacy regain', async () => {
+    let onFenceLostCb: (() => void) | undefined;
+    const r = recorder({ trusted: true });
+    (r.deps as unknown as { lock: Record<string, unknown> }).lock.onFenceLost = (cb: () => void) => {
+      onFenceLostCb = cb;
+      return { dispose: () => undefined };
+    };
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+
+    expect(r.calls).not.toContain('controller.scheduleAutoDrain');
+    expect(r.calls.filter((c) => c === 'pauseQueuesOnStartup')).toHaveLength(1);
+    expect(r.calls.indexOf('lock.tryAcquire')).toBeLessThan(
+      r.calls.indexOf('pauseQueuesOnStartup')
+    );
+    expect(r.calls.indexOf('pauseQueuesOnStartup')).toBeLessThan(
+      r.calls.indexOf('scheduledStartCoordinator.reArm')
+    );
+
+    // Mid-session fence loss followed by primacy regain must NOT re-pause queues the operator enabled.
+    onFenceLostCb?.();
+    await producers.installRecovery({ acquired: true, ownerId: 'window-a' });
+    expect(r.calls.filter((c) => c === 'pauseQueuesOnStartup')).toHaveLength(1);
+    expect(r.calls).not.toContain('controller.scheduleAutoDrain');
+  });
+
+  it('BUG-001 (FR-018): persisted-run sweep filters out operator-paused queues and Runs with manualPauseAt set', async () => {
+    const r = recorder({ trusted: true });
+    const admitted: string[] = [];
+    (r.deps as unknown as { store: Record<string, unknown> }).store = {
+      getRunMap: () => {
+        r.calls.push('store.getRunMap');
+        return {
+          'q-paused': { id: 'run-1', status: 'running', manualPauseAt: null, spawnIdentity: undefined },
+          'q-manual': { id: 'run-2', status: 'running', manualPauseAt: 1_700_000_000_000, spawnIdentity: undefined }
+        };
+      },
+      getQueue: (queueId: string) => ({
+        queueLifecycle: queueId === 'q-paused' ? 'operator-paused' : 'running'
+      })
+    };
+    (r.deps as unknown as { controller: Record<string, unknown> }).controller.admitResume = async (
+      queueId: string
+    ) => {
+      admitted.push(queueId);
+      return { resumed: true, completed: Promise.resolve() };
+    };
+
+    await createStage2Producers(r.deps).run();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    expect(admitted).toEqual([]);
+  });
+
+  it('runs on the grant, from the same object that refused at activation (FR-005)', async () => {
+    // The shape of `onDidGrantWorkspaceTrust`: the producers object was built
+    // during an untrusted activation and is never rebuilt, so a captured `false`
+    // anywhere in this module would make the grant subscriber a no-op.
+    const r = recorder({ trusted: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    expect(r.calls).toEqual([]);
+
+    r.trusted = true;
+    await producers.run();
+
+    expect(r.calls).toContain('lock.tryAcquire');
+    expect(producers.hasRun()).toBe(true);
+  });
+
+  it('is a no-op on a second grant', async () => {
+    const r = recorder({ trusted: true });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    const afterFirst = r.calls.length;
+    await producers.run();
+    await producers.run();
+
+    expect(r.calls.length).toBe(afterFirst);
+    expect(r.calls.filter((c) => c === 'lock.tryAcquire')).toHaveLength(1);
+  });
+
+  it('elects once across concurrent grants', async () => {
+    // Two grants in flight at the same time. The `ran` boolean alone cannot
+    // close this — every landmark in `runOnce` is awaited, so a second call
+    // arrives while the first is suspended and `ran` is still false at the top.
+    const r = recorder({ trusted: true });
+    const producers = createStage2Producers(r.deps);
+
+    await Promise.all([producers.run(), producers.run(), producers.run()]);
+
+    expect(r.calls.filter((c) => c === 'lock.tryAcquire')).toHaveLength(1);
+    expect(r.calls.filter((c) => c === 'replayEvidenceBacklog')).toHaveLength(1);
+  });
+
+  it('installs no recovery in a trusted non-primary window, but still does its own writes', async () => {
+    // FR-R3-070 remains a separate gate from trust, and this is the case that
+    // proves the two are not accidentally the same condition: trust granted,
+    // election lost.
+    const r = recorder({ trusted: true, acquired: false });
+
+    await createStage2Producers(r.deps).run();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls, `${installer} must not run in a non-primary window`).not.toContain(installer);
+    }
+    // Its own work is not the primary's to do: the migration events this window
+    // recorded, the mount verdict for this machine, the installed-backend list.
+    expect(r.calls).toContain('replayEvidenceBacklog');
+    expect(r.calls).toContain('startMountProbe');
+    expect(r.calls).toContain('backendCapabilities.scan');
+    expect(r.lines.some((line) => line.includes('window is not primary'))).toBe(true);
+  });
+
+  // FR-032 / SC-011 (BUG-001) — the other half of the case above.
+  //
+  // The non-primary window at line 290 was, until this feature, the window's
+  // permanent condition: the election happened once and nothing asked again, so
+  // an incumbent that died without releasing left a survivor that had done its
+  // own writes and would never install a recovery producer. `installRecovery` is
+  // the late occasion for the same five installers the activation path gates, and
+  // it is deliberately shaped like the late TRUST grant beside it — same object,
+  // same latch discipline, no second preamble.
+  //
+  // FR-032's last sentence — an untrusted window installs nothing — needs no case
+  // here and could not get one: it holds by construction, because line 164's
+  // window performs no act at all, the election is an act, and a window that never
+  // elects never arms the interval a gain could arrive on.
+
+  /** Everything `run()` does regardless of the election. None of it repeats. */
+  const PREAMBLE = Object.freeze(
+    EVERY_ACT.filter((act) => !PRIMACY_GATED.includes(act) && !ELECTION_ONLY.includes(act))
+  );
+
+  const flush = async (): Promise<void> => {
+    for (let round = 0; round < 8; round += 1) await Promise.resolve();
+  };
+
+  it('installs the five recovery producers when primacy arrives later, re-running no preamble', async () => {
+    const r = recorder({ trusted: true, acquired: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    await flush();
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls, `${installer} must not run before the gain`).not.toContain(installer);
+    }
+
+    await producers.installRecovery({ acquired: true, ownerId: 'window-a' });
+    await flush();
+
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls, `${installer} must run once primacy is won`).toContain(installer);
+    }
+    for (const act of PREAMBLE) {
+      expect(
+        r.calls.filter((call) => call === act),
+        `${act} is this window's own work and was already done; a gain must not repeat it`
+      ).toHaveLength(1);
+    }
+    for (const act of ELECTION_ONLY) {
+      expect(r.calls, `${act} runs after a won election, not on a later gain`).not.toContain(act);
+    }
+  });
+
+  it('installs nothing on a gain that reports a lost election', async () => {
+    // The subscriber passes on whatever the lock handed it. A result whose
+    // `acquired` is false is not a gain, and must take the same five `else`
+    // branches activation took.
+    const r = recorder({ trusted: true, acquired: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    await producers.installRecovery({ acquired: false, ownerId: 'window-a' });
+    await flush();
+
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls, `${installer} must not run without a win`).not.toContain(installer);
+    }
+  });
+
+  it('is a no-op on a second gain', async () => {
+    // The same shape as the second-grant case above, and for the same reason: the
+    // interval keeps contesting, so a window that regains a fence it already holds
+    // must not install a second copy of every recovery producer.
+    const won = { acquired: true, ownerId: 'window-a' };
+    const r = recorder({ trusted: true, acquired: false });
+    const producers = createStage2Producers(r.deps);
+
+    await producers.run();
+    await producers.installRecovery(won);
+    await flush();
+    const afterFirst = r.calls.length;
+
+    await producers.installRecovery(won);
+    await producers.installRecovery(won);
+    await flush();
+
+    expect(r.calls.length).toBe(afterFirst);
+    expect(r.calls.filter((call) => call === 'scheduledStartCoordinator.reArm')).toHaveLength(1);
+  });
+
+  it('does not let a gain mid-activation overtake the terminal-transition replay', async () => {
+    // The sibling of the concurrent-grant case. A gain can land while `run()` is
+    // still suspended — the contest interval fires on its own clock — and the
+    // installers must still see the reconciled run map, or a resume decides
+    // against a Run whose completion was journalled and not yet projected.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const r = recorder({ trusted: true, acquired: false, holdReplay: held });
+    const producers = createStage2Producers(r.deps);
+
+    const activation = producers.run();
+    await flush();
+    // Suspended inside `replayTerminalTransitions`, past the election.
+    expect(r.calls).toContain('lock.tryAcquire');
+    expect(r.calls).toContain('startMountProbe');
+    expect(r.calls).not.toContain('runSafety.replayTerminalTransitions');
+
+    const installed = producers.installRecovery({ acquired: true, ownerId: 'window-a' });
+    await flush();
+    expect(r.calls, 'a gain must not install over an unfinished replay').not.toContain(
+      'scheduledStartCoordinator.reArm'
+    );
+
+    release();
+    await Promise.all([activation, installed]);
+    await flush();
+
+    expect(r.calls.indexOf('runSafety.replayTerminalTransitions')).toBeLessThan(
+      r.calls.indexOf('scheduledStartCoordinator.reArm')
+    );
+    expect(r.calls.filter((call) => call === 'lock.tryAcquire')).toHaveLength(1);
+    for (const installer of PRIMACY_GATED) {
+      expect(r.calls).toContain(installer);
+    }
+  });
+});
+
+// Review gap GC-01 (2026-11-12) — one failing recovery installer must not cancel the others.
+//
+// `reArm` was already isolated; the watchdog reattach, the delayed-retry resume and the persisted-run
+// sweep were not. A throw from the watchdog skipped every later installer, including the activation
+// drain, and the latch above them stayed set, so nothing asked again until a reload. These cases fail
+// one installer at a time and require the rest to run, and the failure to be logged.
+describe('stage 2 producers: a failing recovery installer does not stop the rest', () => {
+  type Slot = Record<string, unknown>;
+  type Mutable = { watchdog: Slot; controller: Slot; store: Slot };
+  const settle = async (): Promise<void> => {
+    for (let round = 0; round < 8; round += 1) await Promise.resolve();
+  };
+
+  it('still resumes and sweeps when the watchdog reattach throws', async () => {
+    const r = recorder({ trusted: true });
+    (r.deps as unknown as Mutable).watchdog.reattachOnActivation = async () => {
+      throw new Error('reattach exploded');
+    };
+
+    await createStage2Producers(r.deps).run();
+    await settle();
+
+    expect(r.calls).toContain('controller.resumeExistingFromActivation');
+    expect(r.calls).toContain('store.getRunMap');
+    expect(r.lines.some((line) => line.includes('watchdog reattach failed'))).toBe(true);
+  });
+
+  it('still sweeps when the delayed-retry resume throws', async () => {
+    const r = recorder({ trusted: true });
+    (r.deps as unknown as Mutable).controller.resumeExistingFromActivation = async () => {
+      throw new Error('resume exploded');
+    };
+
+    await createStage2Producers(r.deps).run();
+    await settle();
+
+    expect(r.calls).toContain('store.getRunMap');
+    expect(r.lines.some((line) => line.includes('delayed-retry re-arm failed'))).toBe(true);
+  });
+
+  it('logs, rather than leaks, a persisted-run sweep that rejects', async () => {
+    const r = recorder({ trusted: true });
+    (r.deps as unknown as Mutable).store.getRunMap = () => {
+      throw new Error('run map unreadable');
+    };
+
+    await createStage2Producers(r.deps).run();
+    await settle();
+
+    expect(r.calls).not.toContain('controller.scheduleAutoDrain');
+    expect(r.lines.some((line) => line.includes('persisted-run resume failed'))).toBe(true);
+  });
+});

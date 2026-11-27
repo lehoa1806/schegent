@@ -1,9 +1,13 @@
-import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queue-runtime-fixture';
+import {
+  buildQueueRuntime,
+  foldLegacyRun,
+  type LegacyRunFields
+} from '../../../lib/__tests__/queue-runtime-fixture';
 /**
  * Feature 018 — Settings UI Hover Text coverage (structural test).
  *
- * Purpose: enforce at build time that every focusable control in the
- * four Settings tabs has a description surface, and that every entry in
+ * Purpose: enforce at build time that every focusable control on the
+ * Settings page has a description surface, and that every entry in
  * the per-tab `*_DESCRIPTIONS` map is consumed by at least one mounted
  * hoverTextAnchor. Removing a `use:hoverTextAnchor={...}` from a control,
  * or adding a description-map entry without wiring it, must fail this
@@ -24,8 +28,9 @@ import { foldLegacyRun, type LegacyRunFields } from '../../../lib/__tests__/queu
  *       (popover) markers, mapped back to description keys via a per-tab
  *       `controlIdToKey` translator.
  *
- * The describe block iterates the 4-tab table so adding a new
- * settings tab is one entry, not a copy-pasted block.
+ * The describe block iterates the table below, the two tabs, the Queues
+ * section and the page header, so adding a new part of the page is one
+ * entry, not a copy-pasted block.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -34,12 +39,19 @@ import type { ComponentType } from 'svelte';
 
 import GeneralSettingsTab from '../GeneralSettingsTab.svelte';
 import FatalSignaturesTab from '../FatalSignaturesTab.svelte';
+import QueueDefaultsSection from '../QueueDefaultsSection.svelte';
+import SettingsPageHeader from '../SettingsPageHeader.svelte';
+import { SettingsPage } from '../settings-page.svelte';
 // Feature 030 (US3) — QueueSettingsTab.svelte + descriptions were
-// deleted alongside the multi-queue surfaces. Multi-queue settings
-// (concurrency cap, default queue) are no longer configurable.
+// deleted alongside the multi-queue surfaces. FR-R3-145 (T1569): those
+// settings became configurable again with Feature 092, from a dialog on
+// the Queues list. The Settings redesign brought them back to this page
+// as the Queues section, which the table below now iterates too.
 
 import { GENERAL_SETTINGS_DESCRIPTIONS } from '../GeneralSettingsTab.descriptions';
 import { FATAL_SIGNATURES_DESCRIPTIONS } from '../FatalSignaturesTab.descriptions';
+import { QUEUE_DEFAULTS_DESCRIPTIONS } from '../QueueDefaultsSection.descriptions';
+import { SETTINGS_PAGE_HEADER_DESCRIPTIONS } from '../SettingsPageHeader.descriptions';
 
 import type {
   GeneralSettings,
@@ -85,6 +97,34 @@ function buildBaseSnapshot(overrides: Partial<WorkflowSnapshot> & LegacyRunField
     availablePipelines: Object.freeze([]),
     availablePhases: Object.freeze([]),
     availableModels: Object.freeze([]),
+    // FR-R3-144 (T034, T035) — the posture projection, on every mount. The grant item
+    // renders only for a backend whose containment the platform does not enforce,
+    // so a fixture without postures would report `backend-grant` as an orphan key
+    // and would hold the control count down by two. These are the shipped
+    // classifications: `codex` carries a sandbox and has nothing to grant, `claude`
+    // and `agy` do not and can be granted.
+    backendPostures: Object.freeze([
+      Object.freeze({
+        kind: 'claude',
+        containment: 'none',
+        mechanism: 'none',
+        grant: 'not-granted',
+        refusal: "'claude' runs with no OS-enforced containment."
+      }),
+      Object.freeze({
+        kind: 'codex',
+        containment: 'os-enforced',
+        mechanism: 'codex-sandbox-workspace-write',
+        grant: 'not-required'
+      }),
+      Object.freeze({
+        kind: 'agy',
+        containment: 'none',
+        mechanism: 'none',
+        grant: 'not-granted',
+        refusal: "'agy' runs with no OS-enforced containment."
+      })
+    ]),
     ...rest
   }) as unknown as unknown as WorkflowSnapshot;
 }
@@ -99,10 +139,71 @@ function snapshotWithGeneralSettings(): WorkflowSnapshot {
   return buildBaseSnapshot({ generalSettings });
 }
 
-// Feature 030 (US3) — `snapshotWithQueues` removed alongside the deleted
-// QueueSettingsTab.svelte. The queue-related hover-text fixtures are no
-// longer needed.
+/**
+ * The Queues section draws one behaviour select per queue, so the fixture holds three queues and
+ * the per-queue id translation below is exercised by more than one row. The workspace values and
+ * the memory reading fall back to their idle projections, which is all a mount needs.
+ */
+function snapshotWithQueues(): WorkflowSnapshot {
+  return buildBaseSnapshot({
+    queues: Object.freeze([
+      buildQueueRuntime({ queueId: 'default', name: 'Default', position: 0 }),
+      buildQueueRuntime({ queueId: 'q-beta', name: 'nightly', position: 1 }),
+      buildQueueRuntime({ queueId: 'q-gamma', name: 'Review Lane', position: 2 })
+    ])
+  });
+}
 
+/**
+ * FR-R3-143 (T030) — the shipped default for `cli.environmentAllowlist` is the
+ * empty list, so the fixture above renders the list editor with no rows and no
+ * Remove buttons. `cliEnvironmentAllowlist-remove` would be reported as an
+ * orphan description key on that mount alone — not because it is unwired, but
+ * because nothing asked for a row. This is the case `alternateProps` exists
+ * for: the orphan check unions the mounts.
+ */
+function snapshotWithPopulatedAllowlist(): WorkflowSnapshot {
+  const generalSettings: GeneralSettings = {
+    ...IDLE_GENERAL_SETTINGS,
+    cliEnvironmentAllowlist: Object.freeze(['HTTPS_PROXY']) as readonly string[]
+  };
+  return buildBaseSnapshot({ generalSettings });
+}
+
+/**
+ * FR-R3-144 (T036) — the same case again, for the spend bound.
+ *
+ * The tab offers ONE per-run bound: the one denominated as the selected backend
+ * reports. The shipped default is `claude`, which reports a cost, so the mount
+ * above draws the USD control and never the token one — `spendMaxTokensPerRun`
+ * would be an orphan on that mount alone, and not because it is unwired.
+ *
+ * That the two are mutually exclusive is the behaviour FR-009 asks for, not a
+ * fixture gap: a dollar bound shown for a backend that reports no cost is a bound
+ * an operator believes they set and did not.
+ */
+function snapshotWithTokenDenominatedBackend(): WorkflowSnapshot {
+  const generalSettings: GeneralSettings = {
+    ...IDLE_GENERAL_SETTINGS,
+    backendRunner: 'codex'
+  };
+  return buildBaseSnapshot({ generalSettings });
+}
+
+/**
+ * The page header's Revert and Save are disabled until something on the page has changed, so
+ * the header mounts on a page with one part that reports a change it can save.
+ */
+function pageWithAChange(): SettingsPage {
+  const page = new SettingsPage();
+  page.register({
+    changes: () => ({ execution: 1 }),
+    canSave: () => true,
+    save: () => Promise.resolve(),
+    revert: () => undefined
+  });
+  return page;
+}
 
 // ── Per-tab table (T036 parameterization) ──────────────────────────────
 
@@ -123,6 +224,25 @@ interface TabSpec {
    */
   readonly headerOnlyKeys: readonly string[];
   /**
+   * FR-R3-143 (T053) — the number of focusable controls this tab is known to
+   * mount, as a floor.
+   *
+   * The two assertions below are both satisfiable by a tab that renders almost
+   * nothing: `focusable.length > 0` passes on one control, and the orphan check
+   * passes when no description key is orphaned — which is trivially true if the
+   * groups holding those controls stopped rendering and their keys went with
+   * them. That is not hypothetical here: `GeneralSettingsTab` falls back to
+   * `IDLE_GENERAL_SETTINGS` and renders a plausible form from it, so a broken
+   * projection does not empty the DOM, it shrinks it.
+   *
+   * A measured floor is the check neither of those makes. RAISE it when a tab
+   * gains controls — that is the "the count rises" half of FR-016, and a green
+   * run on an unchanged count would mean the collector never saw the new ones.
+   * Lowering it is how a regression gets absorbed, so a change that lowers this
+   * number should say in the same diff which controls left and why.
+   */
+  readonly minFocusableControls: number;
+  /**
    * Keys (after the prefix and dynamic-suffix translation) that this tab
    * expects to see exercised by mounting. All other keys in the map must
    * also appear here.
@@ -142,31 +262,109 @@ const TAB_SPECS: readonly TabSpec[] = [
     name: 'GeneralSettingsTab',
     component: GeneralSettingsTab as unknown as ComponentType,
     buildProps: () => ({ snapshot: snapshotWithGeneralSettings() }),
-    headerOnlyKeys: ['tab-header'],
+    alternateProps: [
+      () => ({ snapshot: snapshotWithPopulatedAllowlist() }),
+      () => ({ snapshot: snapshotWithTokenDenominatedBackend() })
+    ],
+    headerOnlyKeys: [],
+    // Measured at FR-R3-144 (T031, T034, T036) on `snapshotWithGeneralSettings()`, which
+    // leaves the allowlist empty — so this counts no per-row Remove button.
+    //
+    // Raised from 92 by the eight controls this feature adds to that mount: the
+    // backend selector and its save/reset pair, the USD spend bound and its pair,
+    // and one grant button each for the two backends the platform does not
+    // contain. The Claude auto-compaction field moved into Claude's section and
+    // is counted in both numbers.
+    //
+    // Lowered from 100 to 41 by the Settings redesign's one save model. The mount
+    // had 103 controls; 62 left: the Save and Reset of each of the 30 field rows
+    // it draws, and the tab's Save all and Reset all. The page header's Save and
+    // Revert replace them all and are counted by the `SettingsPageHeader` entry.
+    //
+    // Raised from 41 to 53 by the redesigned backend cards. Five controls left
+    // the mount: the three Ping buttons and the two grant buttons. Seventeen
+    // arrived: on each of the three cards a Details link, a "Set path…" button
+    // (no backend is found on this fixture), the actions menu's button and its
+    // "Test" and "Change path…" items, and the grant item on the two cards whose
+    // backend the platform does not contain. A menu's items are counted while
+    // the menu is closed, since they stay in the document.
+    minFocusableControls: 53,
     descriptionKeys: Object.keys(GENERAL_SETTINGS_DESCRIPTIONS),
-    controlIdToKey: (id) => (id in GENERAL_SETTINGS_DESCRIPTIONS ? id : null)
+    controlIdToKey: (id) => {
+      // FR-R3-143 (T030) — the allowlist editor's Remove buttons are per-row,
+      // so their control ids carry a row index, exactly as FatalSignaturesTab's
+      // do below. One shared id across rows would collide in the action's
+      // inline branch, which builds `id="desc-<controlId>"`.
+      if (/^cliEnvironmentAllowlist-remove-\d+$/.test(id)) {
+        return 'cliEnvironmentAllowlist-remove';
+      }
+      // Every control of a backend card carries its backend in its id, and the
+      // cards share one description per kind of control: the test (FR-R3-144's
+      // `backend-ping`), the Details link, "Set path…", the actions menu's
+      // button, "Change path…" and the grant item (T034). Per-instance for the
+      // same reason as the Remove buttons above: the action's inline branch
+      // (body ≤ 80 chars) injects `id="desc-<controlId>"`, so an id shared across
+      // cards would be a duplicate DOM id the moment a body is shortened.
+      // `backend-ping` was one id on all three cards until the redesign gave it
+      // its backend as well.
+      const card = /^backend-(ping|details|set-path|actions|change-path|grant)-[a-z]+$/.exec(id);
+      if (card !== null) return `backend-${card[1]}`;
+      return id in GENERAL_SETTINGS_DESCRIPTIONS ? id : null;
+    }
   },
   {
     name: 'FatalSignaturesTab',
     component: FatalSignaturesTab as unknown as ComponentType,
     buildProps: () => ({ snapshot: snapshotWithGeneralSettings() }),
     headerOnlyKeys: ['tab-header', 'built-in-section-header', 'operator-section-header'],
+    // Measured at FR-R3-143 (T053) on the one-operator-row fixture above.
+    //
+    // Lowered from 5 to 3 by the Settings redesign's one save model: the list's
+    // own Save and Reset left for the page header's Save and Revert.
+    minFocusableControls: 3,
     descriptionKeys: Object.keys(FATAL_SIGNATURES_DESCRIPTIONS),
     controlIdToKey: (id) => {
       // Static buttons map fatal-add → operator-add, etc.
       if (id === 'fatal-add') return 'operator-add';
-      if (id === 'fatal-save') return 'operator-save';
-      if (id === 'fatal-reset') return 'operator-reset';
       // Dynamic per-row: fatal-operator-input-<N>, fatal-operator-remove-<N>.
       if (/^fatal-operator-input-\d+$/.test(id)) return 'operator-input';
       if (/^fatal-operator-remove-\d+$/.test(id)) return 'operator-remove';
       return null;
     }
+  },
+  {
+    name: 'QueueDefaultsSection',
+    component: QueueDefaultsSection as unknown as ComponentType,
+    buildProps: () => ({ snapshot: snapshotWithQueues(), page: new SettingsPage('queues') }),
+    headerOnlyKeys: [],
+    // Runs at the same time, Default queue, and one behaviour select for each of the fixture's
+    // three queues.
+    minFocusableControls: 5,
+    descriptionKeys: Object.keys(QUEUE_DEFAULTS_DESCRIPTIONS),
+    controlIdToKey: (id) => {
+      // One select per queue, so the id carries the queue, for the reason the grant buttons
+      // above carry their backend: a shared id would be a duplicate the moment a body goes inline.
+      if (id.startsWith('queue-failure-policy-')) return 'queue-failure-policy';
+      return id in QUEUE_DEFAULTS_DESCRIPTIONS ? id : null;
+    }
+  },
+  {
+    name: 'SettingsPageHeader',
+    component: SettingsPageHeader as unknown as ComponentType,
+    buildProps: () => ({ page: pageWithAChange() }),
+    headerOnlyKeys: [],
+    // The search field, then Revert and Save: since the Settings redesign, the page's only save
+    // controls.
+    minFocusableControls: 3,
+    descriptionKeys: Object.keys(SETTINGS_PAGE_HEADER_DESCRIPTIONS),
+    controlIdToKey: (id) => (id in SETTINGS_PAGE_HEADER_DESCRIPTIONS ? id : null)
   }
   // Feature 030 (US3) — QueueSettingsTab entry removed alongside the
   // deleted component. The WakeUpTab entry was removed with the Wake-up
-  // capability. The 4-tab parameterized table is now a 2-tab table
-  // (General, FatalSignatures).
+  // capability. The 4-tab parameterized table became a 2-tab table
+  // (General, FatalSignatures), and the page header joined it when the
+  // Settings redesign moved every Save and Reset into it. The Queues
+  // section joined it when the redesign moved the queue settings back.
 ] as const;
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -186,7 +384,16 @@ const FOCUSABLE_SELECTOR =
 function describedStatus(el: Element, container: ParentNode): 'inline' | 'popover' | 'none' {
   const ariaDescribedBy = el.getAttribute('aria-describedby');
   if (ariaDescribedBy) {
-    const target = container.querySelector(`#${CSS.escape(ariaDescribedBy)}`);
+    // FR-R3-127 — `CSS` is not defined in this test environment, and this branch had
+    // never run: no control in either tab used `aria-describedby` until the privacy
+    // profile buttons did, so the helper crashed rather than reporting. A latent
+    // bug that only a new inline description could reveal.
+    //
+    // `getElementById`-by-hand rather than a polyfill: the ids here are authored
+    // constants, and escaping is only needed for ids this project does not produce.
+    const target = Array.from(container.querySelectorAll('[id]')).find(
+      (node) => node.getAttribute('id') === ariaDescribedBy
+    ) ?? null;
     if (target && target.tagName.toLowerCase() === 'p') return 'inline';
   }
   if (el.getAttribute('data-hover-text-anchored') === 'true') return 'popover';
@@ -202,6 +409,12 @@ describe.each(TAB_SPECS)('Feature 018 — hover-text coverage on $name', (spec) 
     const { container } = render(spec.component, { props: spec.buildProps() });
     const focusable = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
     expect(focusable.length, 'tab mounted no focusable controls').toBeGreaterThan(0);
+    expect(
+      focusable.length,
+      `${spec.name} mounted fewer focusable controls than it is known to have. Nothing below ` +
+        'reports a shrinking surface: the orphan check passes when a group stops rendering and ' +
+        'takes its description keys with it. See `minFocusableControls`.'
+    ).toBeGreaterThanOrEqual(spec.minFocusableControls);
 
     const uncovered: string[] = [];
     for (const el of focusable) {
@@ -281,6 +494,97 @@ describe.each(TAB_SPECS)('Feature 018 — hover-text coverage on $name', (spec) 
   });
 });
 
+// ── FR-R3-143 (T053): the controls this feature added, by name ─────────
+
+/**
+ * The count floor above says the surface did not shrink. It cannot say that the
+ * collector saw the controls FR-R3-143 added — 92 is satisfiable by 92 of
+ * anything. These name them.
+ *
+ * Named rather than counted because a delta is the weaker claim: a run that
+ * gained six controls and silently lost six others passes a delta check and
+ * fails this one. Six field rows entered `KEY_SPECS` with this item, and two
+ * components — `StringListField` and `TrustDisclosure` — render controls that
+ * do NOT go through `GeneralSettingFieldRow` and so take no anchor id from a
+ * row; those are exactly the ones that would land in `orphanKeys` if their
+ * anchors were dropped, and exactly the ones nothing else asserts by name.
+ */
+describe('FR-R3-143 — the controls this item added are collected', () => {
+  /** Anchored control ids across the empty-allowlist and populated mounts. */
+  function collectAcrossFixtures(): Set<string> {
+    const ids = new Set<string>();
+    for (const snapshot of [snapshotWithGeneralSettings(), snapshotWithPopulatedAllowlist()]) {
+      const { container } = render(GeneralSettingsTab as unknown as ComponentType, {
+        props: { snapshot }
+      });
+      container
+        .querySelectorAll<HTMLElement>('[data-hover-text-anchored="true"]')
+        .forEach((el) => {
+          const v = el.getAttribute('data-hover-text-controlid');
+          if (v) ids.add(v);
+        });
+      container.querySelectorAll<HTMLElement>('p[id^="desc-"]').forEach((p) => {
+        const id = p.getAttribute('id');
+        if (id) ids.add(id.slice('desc-'.length));
+      });
+      cleanup();
+    }
+    return ids;
+  }
+
+  /**
+   * The six keys that entered `KEY_SPECS` with this item, as
+   * `GeneralSettingFieldRow` spells their control ids.
+   *
+   * `cliEnvironmentAllowlist` is absent from this list on purpose: it is a
+   * `string-list`, so `StringListField` renders it and its Add/Remove ids do not
+   * follow the row convention. It is asserted separately below.
+   */
+  const NEW_FIELD_KEYS = [
+    'cliEnvironmentMode',
+    'cliInheritEnvironment',
+    'backendProbeTimeoutSeconds',
+    'uiConfirmationsEnable',
+    'multiRootSuppressWarning'
+  ] as const;
+
+  it('anchors every new field row', () => {
+    const seen = collectAcrossFixtures();
+    const missing = NEW_FIELD_KEYS.filter((key) => !seen.has(key));
+    expect(
+      missing,
+      'these controls entered the tab with FR-R3-143 and the collector does not see them, so ' +
+        'nothing is checking their hover text'
+    ).toEqual([]);
+  });
+
+  it('anchors the allowlist editor: entry, Add, and a per-row Remove', () => {
+    const seen = collectAcrossFixtures();
+    // The Remove id carries its row index; the populated fixture has one row.
+    expect(
+      [
+        'cliEnvironmentAllowlist',
+        'cliEnvironmentAllowlist-add',
+        'cliEnvironmentAllowlist-remove-0'
+      ].filter((id) => !seen.has(id)),
+      'StringListField does not go through GeneralSettingFieldRow, so each of its controls ' +
+        'carries its own anchor or none at all. The Remove button only exists when the list has ' +
+        'a row, which is what the populated fixture is for.'
+    ).toEqual([]);
+  });
+
+  it('anchors the trust disclosure affordance for both capabilities', () => {
+    const seen = collectAcrossFixtures();
+    expect(
+      ['trust-phases-open-settings', 'trust-retryConditions-open-settings'].filter(
+        (id) => !seen.has(id)
+      ),
+      'TrustDisclosure renders the one control on a read-only surface; if it is unanchored the ' +
+        'operator gets a button with no explanation of why the setting is not editable here'
+    ).toEqual([]);
+  });
+});
+
 // ── Feature 019 T028: runtime-log control hover-text content checks ────
 
 describe('Feature 019 — runtime-log hover-text content & anchor coverage', () => {
@@ -302,18 +606,16 @@ describe('Feature 019 — runtime-log hover-text content & anchor coverage', () 
     return ids;
   }
 
-  it('mounts hover-text anchors for runtimeLogLevel input + save + reset', () => {
+  // The rows have no Save or Reset of their own since the Settings redesign: the page header's
+  // Save and Revert, covered by the table above, write and discard them.
+  it('mounts the hover-text anchor for the runtimeLogLevel input', () => {
     const seen = collectAnchoredControlIds();
     expect(seen.has('runtimeLogLevel')).toBe(true);
-    expect(seen.has('runtimeLogLevel-save')).toBe(true);
-    expect(seen.has('runtimeLogLevel-reset')).toBe(true);
   });
 
-  it('mounts hover-text anchors for runtimeLogFilePath input + save + reset', () => {
+  it('mounts the hover-text anchor for the runtimeLogFilePath input', () => {
     const seen = collectAnchoredControlIds();
     expect(seen.has('runtimeLogFilePath')).toBe(true);
-    expect(seen.has('runtimeLogFilePath-save')).toBe(true);
-    expect(seen.has('runtimeLogFilePath-reset')).toBe(true);
   });
 
   it('runtimeLogLevel description covers default + per-emit read semantics', () => {

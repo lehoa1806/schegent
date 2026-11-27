@@ -1,495 +1,424 @@
-# Audit Events Reference
-
-The structured audit log (`<workspaceRoot>/.schegent/audit.log`) is JSONL — one event per line. Every event has at least:
-
-```jsonc
-{
-  "timestamp": "2026-05-17T12:34:56.789Z",
-  "eventType": "phase-start",
-  "schemaVersion": 3,
-  "runId": "<uuid>",
-  "pipelineId": "speckit-new-feature",
-  "phaseId": "speckit-implement",
-  "outcome": "info"
-}
-```
-
-Field details:
-
-- `timestamp` — ISO-8601 UTC.
-- `eventType` — one of the values listed below.
-- `schemaVersion` — current value is `3`; readers preserve v1/v2 rows and tolerate unknown future values (`warn-and-preserve`).
-- `outcome` — `success` | `failure` | `info`.
-- Per-event payload fields are described per event below.
-
-Logs written by an earlier release may contain event types this reference no longer lists — notably the five `wakeup-daemon-*` types plus `wakeup-workspace-roots-updated` and `wakeup-runner-invocation`, all retired with the Wake-up scheduler. The parser preserves entries whose type it does not recognize (`warn-and-preserve`), so those logs still read; nothing in the current release emits them.
-
-Every v3 payload passes through `projectAuditPayload`: strings are bounded, numbers must be finite, arrays are capped, the full payload is limited to 32 KiB, sensitive execution fields are omitted, and residual paths/endpoints or secrets fail the append.
-
-## Event categories
-
-The 58 audit event types fall into 16 categories.
-
-| Category | Count |
-|---|---|
-| [Phase lifecycle](#phase-lifecycle) | 2 |
-| [Runner](#runner) | 2 |
-| [Loop](#loop) | 1 |
-| [Workflow lifecycle](#workflow-lifecycle) | 5 |
-| [Monitor](#monitor) | 10 |
-| [Audit pipeline](#audit-pipeline) | 4 |
-| [Retry condition](#retry-condition) | 1 |
-| [Delayed retry](#delayed-retry) | 4 |
-| [Phase control](#phase-control) | 8 |
-| [Queue control](#queue-control) | 14 |
-| [Phase message](#phase-message) | 3 |
-| [Fatal signature](#fatal-signature) | 1 |
-| [Auto-compact override](#auto-compact-override) | 1 |
-| [Phase log IPC](#phase-log-ipc) | 3 |
-| [Phase breakpoint](#phase-breakpoint) | 3 |
-| [State migration](#state-migration) | 1 |
-
-## Phase lifecycle
-
-### `phase-start`
-
-Emitted by the phase runner before a phase invocation begins.
-
-Payload fields:
-- `pipelineId` — frozen on the run snapshot.
-- `phaseId` — current phase id.
-- `model` — optional. Omitted entirely when absent.
-- `effort` — optional.
-- `timeoutMs` — optional.
-- `isContinue` — mandatory boolean. `true` when the spawned argv includes `-c` for context preservation.
-
-### `phase-end`
-
-Emitted after the phase invocation terminates.
-
-Payload includes the outcome, numeric exit code, a closed termination reason,
-finite metrics, file-change counts, host-observed tool-category counts, and
-omitted-evidence counts. It never includes filenames, commands, notes, model
-errors, or fatal-signature text. When the CLI stdout includes a stream-json
-`result` row, numeric usage/cost metrics may include:
-`cliDurationMs`, `numTurns`, `totalCostUsd`, `inputTokens`,
-`outputTokens`, `cacheCreationInputTokens`, and
-`cacheReadInputTokens`.
-
-## Runner
-
-### `cli-invocation`
-
-Emitted for each CLI invocation. Carries runner, operation (`phase`, `session-compaction`, or `probe`), permission mode, continuation/session-reuse booleans, optional model/effort ids, and whether diagnostics were enabled. Executable path, argv, command text, PID, and session id are omitted.
-
-### `file-write`
-
-Emitted when the phase writes a file to the workspace. The path is **not** included — only metadata.
-
-## Loop
-
-### `loop-iteration`
-
-Emitted at the boundary of each iteration of a loopable phase (`speckit-clarify`, `speckit-analyze`, or any custom phase with `loopable: true`).
-
-## Workflow lifecycle
-
-### `pause`
-
-The run was paused. Sub-causes appear in the payload's `reason` field.
-
-### `resume`
-
-The run was resumed.
-
-### `warning`
-
-A non-fatal warning the host wants to make visible.
-
-### `error`
-
-A non-fatal error that did not terminate the run.
-
-### `cancel`
-
-The run was canceled by the operator. Mirrors the queue-control `task-canceled` event but at the controller layer.
-
-## Monitor
-
-The monitor is the per-invocation watcher that runs in parallel with each phase. It samples stdout, stderr, progress, and signals stall, rate-limit, and termination outcomes.
-
-### `monitor-invocation-started`
-
-Carries the PID of the spawned CLI process.
-
-### `monitor-stdout-line` (retired — no longer written)
-
-A sanitized stdout line from the CLI, one event per line. **Nothing writes this
-event any more.** It measured 93.2% of `audit.log` and no part of the product
-read it back, so the line content moved to
-[`.schegent/cli-transport.log`](file-layout.md#cli-transportlog) and the counts
-to `monitor-invocation-summary` below.
-
-The event type stays registered and stays parseable, permanently: rotated
-archives are full of these entries, and dropping the type would turn one archive
-read into a stream of `unknown eventType` warnings. If you are looking at a log
-written by an older release, expect to find them; if you are looking at a fresh
-one, expect not to.
-
-### `monitor-stderr-line` (retired — no longer written)
-
-A sanitized stderr line. Retired on the same terms as `monitor-stdout-line`
-above. Note that the *judgement* the host makes about a stderr line is still an
-audit event — a rate-limit indicator still produces `monitor-rate-limited` — it
-is only the transported line itself that moved.
-
-### `monitor-progress`
-
-Periodic progress sample. Used to derive the elapsed-time and PID indicators in the sidebar.
-
-### `monitor-stall`
-
-The CLI has produced no stdout for the configured stall threshold.
-
-### `monitor-rate-limited`
-
-A rate-limit indicator was detected on the CLI streams. The `cause` field discriminates between known indicator kinds.
-
-### `monitor-invocation-completed`
-
-The CLI terminated cleanly (exit code 0).
-
-### `monitor-invocation-failed`
-
-The CLI terminated with a non-zero exit code or a fatal signature match. The classification appears in the `cause`.
-
-### `monitor-invocation-canceled`
-
-The CLI was killed by the operator or a parent control flow.
-
-### `monitor-invocation-summary`
-
-End-of-invocation summary record, and with the per-line events retired this is
-the audit log's whole account of how much the CLI emitted:
-
-| Field | Meaning |
-|---|---|
-| `status` | Terminal monitor status — `completed`, `failed`, `timed_out`, `canceled` |
-| `durationMs` | Elapsed time, excluding any interval the run spent paused |
-| `exitCode`, `signal` | How the process ended |
-| `stdoutLines`, `stderrLines` | Complete lines seen on each stream |
-| `firstOutputAt` | When either stream first produced anything. The gap between this and the invocation start is the CLI's own startup cost |
-| `lastOutputAt` | The later of the two most recent stream timestamps |
-| `detectedIssues` | `rate_limited` and/or `stall`, if either fired |
-
-`firstOutputAt` and `lastOutputAt` are new alongside the retirement above: they
-are the interval over which the line counts accumulated, which the per-line
-timestamps used to be the only record of.
-
-## Audit pipeline
-
-These events are about the audit log itself.
-
-### `audit-rotated`
-
-The active `audit.log` was rotated to a timestamped archive.
-
-### `audit-retention-applied`
-
-Archive pruning ran. Payload reports how many archives were retained vs. deleted.
-
-### `audit-hydration-warning`
-
-The host attempted to parse an existing `audit.log` line and could not. The line is preserved verbatim in the file; the warning is emitted so operators can investigate.
-
-### `audit-schema-warning`
-
-The host encountered an `audit.log` entry with an unknown `schemaVersion`. The entry is preserved (warn-and-preserve discipline).
-
-### `session-retention-applied`
-
-The unredacted session-artifact retention sweep ran. The payload contains only
-aggregate counts, byte totals, policy limits, and failure counts. It never
-contains run identifiers, filenames, workspace paths, prompts, or transcript
-content. The active structured `audit.log` is outside the sweep root and is
-never pruned by this event's service.
-
-## Retry condition
-
-### `phase.retry_evaluated`
-
-A loop phase with a `retryCondition` DSL expression evaluated it. Payload:
-
-- `pipelineId`
-- `phaseId`
-- `expression` — the DSL string evaluated.
-- `metrics` — the `Record<string, number>` extracted from the audit-log block in the phase's stdout.
-- `decision` — boolean. `true` means loop; `false` means advance.
-- `missingKeys` — optional array of identifiers the expression referenced but the metrics map did not contain.
-- `evaluationError` — optional `true` when the expression failed to evaluate.
-- `errorMessage` — optional sanitized error message.
-
-The dot-style `eventType` was chosen deliberately to avoid colliding with the `phase-*` dash-style naming.
-
-## Delayed retry
-
-### `retry-scheduled`
-
-A phase failure was classified as `transient_error` or `rate_limit` and a delayed retry was scheduled. Payload carries the pre-buffer `resetsAtMs` (when known) so the retry time is derivable from logs alone.
-
-### `retry-manual`
-
-The operator manually triggered a retry via `schegent.retryActiveRun`. Cancels any pending delayed-retry timer.
-
-### `retry-recovered`
-
-A previously-failing phase recovered (clean exit on the retry). The cumulative delayed-retry count is reset.
-
-### `queue-paused`
-
-The queue was paused. The `pauseSource` discriminator distinguishes operator-initiated pauses (`'operator'`) from automatic pauses caused by exhausting the delayed-retry cap (`'cascade'`).
-
-## Phase control
-
-Eight events covering the operator-initiated phase control surface.
-
-### `phase-pause-requested`
-
-The operator clicked Pause. The persisted pause-cause and the kill of the active subprocess follow.
-
-### `phase-paused`
-
-The run is now persisted as paused.
-
-### `phase-resumed`
-
-The operator clicked Resume. The next dispatch will arm `--continue` for context preservation.
-
-### `phase-restarted`
-
-The operator chose to restart the active phase rather than resume from its mid-point.
-
-### `phase-skipped`
-
-The operator chose to skip the active phase. Advances to the next phase in the snapshot.
-
-### `phase-disabled`
-
-The operator disabled a phase via per-run overrides. The disable persists on the run; the snapshot itself is immutable.
-
-### `phase-enabled`
-
-Reverses a `phase-disabled`.
-
-### `phase-removed`
-
-A phase definition was removed from the catalog. Newly-enqueued runs will see the change; the in-flight run continues against its frozen snapshot.
-
-## Queue control
-
-Fourteen events covering the queue-level operator surface.
-
-### `queue-created`
-
-(Historical — v6 collapsed multi-queue mode. New events of this type are not emitted on current versions.)
-
-### `queue-renamed`
-
-(Historical.)
-
-### `queue-deleted`
-
-(Historical.)
-
-### `queue-resumed`
-
-The queue was resumed (mirror of the lifecycle `queue-paused` with `pauseSource`).
-
-### `queue-settings-saved`
-
-Queue-level settings were saved via the sidebar.
-
-### `task-modified`
-
-A pending task's description or phase overrides were edited.
-
-### `task-removed`
-
-A task was removed from the queue (history bucket or by bulk Clear).
-
-Payload includes:
-- `taskId`
-- `runId` (when known)
-- `sessionCleaned` — boolean. `true` iff the per-run session tree was successfully removed; `false` if the operator declined the cleanup, or if the cleanup failed.
-
-The audit log itself is never modified by task removal.
-
-### `task-reordered`
-
-A pending task was moved to a new position. Payload:
-- `queueId: 'default'` — always.
-- `taskId`
-- `fromPosition` / `toPosition` — integers.
-- `source` — `'drag'` (drag-and-drop) or `'arrow'` (up/down arrow command).
-- `outcome` — `'success'` or `'rejected'`.
-- `cause` — optional. One of `'secondary-host'`, `'task-not-pending'`, `'invalid-position'`, `'no-op'` when the outcome is `'rejected'`.
-
-### `task-moved`
-
-(Historical — replaced by `task-reordered`. Preserved for legacy logs.)
-
-### `task-canceled`
-
-An operator-initiated task cancellation. Distinct from the controller-side `cancel` lifecycle event.
-
-### `task-restarted-from-canceled`
-
-A previously-canceled task was restarted by the operator.
-
-### `task-enqueued`
-
-A new pending task was created. Payload:
-- `taskId`
-- `queueId: 'default'`
-- `via` — `'dashboard-submit'` | `'command-palette'` | `'rerun-from-history'`.
-
-### `schedule-set`
-
-(Historical — preserved for legacy logs.)
-
-### `schedule-cleared`
-
-(Historical.)
-
-### `schedule-fired`
-
-(Historical.)
-
-## Phase message
-
-The phase-message channel is a canonical sidecar file at `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/phase-message.env` used to pass small typed values between phases.
-
-### `phase-message-emitted`
-
-The phase wrote a readable phase-message sidecar. Payload carries metadata
-only: `pipelineId`, `phaseId`, `entryCount`, `byteSize`, and the optional
-`model`, `effort`, and `timeoutMs` fields when they were active for the
-phase. The sanitized key/value map is consumed by the next phase through the
-host prompt path and is not echoed into this audit event or the UI.
-
-### `phase-message-truncated`
-
-The phase-message file exceeded the whole-file byte cap. The host rejects the
-sidecar for cross-phase forwarding and emits metadata only; raw file bytes are
-left in the diagnostics directory for local inspection.
-
-### `phase-message-invalid`
-
-The phase-message sidecar could not be safely consumed. Reasons include
-`malformed-lines`, `duplicate-keys`, `missing-sidecar`, `duplicate-sidecar`,
-`path-outside-run-dir`, and `path-symlink-redirect`. Malformed content is
-rejected; the file is preserved verbatim for local inspection when it exists.
-
-## Fatal signature
-
-### `fatal-signature-matched`
-
-A fatal-signature substring matched the CLI's stdout or stderr. Payload:
-- `signature` — the matched substring.
-
-## State migration
-
-### `workflow-run-repaired`
-
-A persisted `WorkflowRun` snapshot was repaired during state initialization. Current repair payloads are structural only:
-- `pipelineId`
-- `repair`
-- `removedPhaseCount`
-- `removedBreakpointCount`
-- `remainingPhaseCount`.
-- `source` — `'built-in'` (the immutable code-resident registry) or `'operator-defined'` (an entry in `schegent.fatalSignatures`).
-- `where` — `'stdout'` | `'stderr'`.
-
-Built-in signatures win the attribution when both could match.
-
-## Auto-compact override
-
-### `auto-compact-override-applied`
-
-Emitted when `schegent.claude.autoCompactPctOverride` is set to a valid integer and the CLI invocation has the `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` env var merged. Payload: `runId`, `phaseId`, `value`.
-
-## Phase log IPC
-
-Three events recording the operator's phase-log-feed interactions.
-
-### `phase-log-read`
-
-The webview requested a phase log read. Payload carries the selection tuple `{ queueId, taskId, pipelineId, phaseId, iterationN }` plus the outcome.
-
-### `phase-log-tail-started`
-
-A live tail session was started.
-
-### `phase-log-tail-stopped`
-
-The tail session was stopped, either by the operator, by `task-leaves-in-flight`, or by a synthetic `tail-ended` push.
-
-## Phase breakpoint
-
-Three events covering the operator-set breakpoint lifecycle.
-
-### `phase-breakpoint-set`
-
-Payload: `runId`, `phaseId`, `actor` (`'operator'` | `'system'`).
-
-### `phase-breakpoint-cleared`
-
-Payload: `runId`, `phaseId`, `cause` (`'operator'` | `'consumed-by-fire'` | `'override-applied'` | `'run-ended'`).
-
-### `phase-breakpoint-fired`
-
-The runner hit the breakpoint and paused before the phase. Payload: `runId`, `phaseId`, `pipelineId`, `iterationN`.
-
-## State migration
-
-### `state-migrated`
-
-Emitted by the state store on activation after a forward migration ran. Payload is structural (counts + booleans + enum literals); the v5 → v6 single-queue coalesce is the most operator-visible case.
-
-## Workspace lifecycle
-
-### `multi-root.warning-shown`
-
-Emitted once at activation when the active workspace contains more than one folder AND `schegent.multiRoot.suppressWarning` is `false`. Records that the operator was informed of the canonical-folder rule. The audit emission strictly precedes the toast, so a notifier failure cannot drop the record.
-
-Payload is primitive-only:
-
-| Key | Type | Notes |
-|---|---|---|
-| `folderCount` | number | The total number of folders in the active workspace (always `>= 2` for this event). |
-| `canonicalFolderName` | string | The `WorkspaceFolder.name` of the first folder. **Folder name only — never `fsPath`** (the [hard rule](../../../CLAUDE.md#hard-rules-when-changing-host-code) forbids path strings in audit payloads). |
-
-The synthetic envelope uses `runId: 'workspace-activation'` and `phase: 'activation'` because the event is workspace-scoped, not run-scoped. See [The Workspace Lock → Multi-root workspaces](../concepts/workspace-lock.md#multi-root-workspaces).
-
-## Schema versioning
-
-`schemaVersion` on every audit event is currently `2`. The version bumps only when a payload field changes type or semantics; *additive* fields (new optional keys) do not bump the version.
-
-Reader discipline is **warn-and-preserve**:
-
-- Unknown `eventType` → log a warning, preserve the line in the file.
-- Unknown `schemaVersion` → log a warning, preserve the line.
-
-The audit log is therefore forward-compatible with future host versions. Old archives stay readable indefinitely.
-
-## Outcome semantics
-
-The `outcome` field on every event is one of `success`, `failure`, or `info`:
-
-- `success` — the operation completed normally (e.g., a phase invocation that returned a clean exit).
-- `failure` — the operation failed (e.g., a non-zero exit, a fatal signature match, a stall).
-- `info` — neither success nor failure; the event is informational (e.g., `pause`, `resume`, `task-enqueued`).
-
-Operators can grep for `"outcome":"failure"` to surface only the points where something went wrong.
-
-The next reference page is [File Layout](file-layout.md).
+# Audit events
+
+Schegent writes structured audit evidence as newline-delimited JSON. The active
+file is `<workspace>/.schegent/audit.log`; each line is one event. This is a
+local operational record, not a remote telemetry stream, and it is distinct
+from raw CLI transcripts and the human-oriented runtime log.
+
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/schegent-gitignore.ts -->
+
+## Event envelope
+
+Every accepted event has this top-level shape:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | UUID assigned by the writer. |
+| `timestamp` | string | ISO-8601 timestamp assigned by the writer. |
+| `runId` | string | Run attribution supplied by the emitter. System-scoped events still use the common envelope. |
+| `phase` | string | Phase identifier; operator-defined, non-empty identifiers are preserved by the reader. |
+| `iteration` | number | Phase or run iteration supplied by the emitter. |
+| `eventType` | `AuditEventType` | Literal from the canonical event registry. |
+| `payload` | object | Event-specific, projected metadata. |
+| `outcome` | `success \| failure \| info` | Result classification. |
+| `schemaVersion` | number, optional on historical input | Current writes use version `3`. |
+| `correlationId` | string, optional | Defaults to `runId` when the writer is not given one. |
+
+<!-- Source: src/audit/audit-entry.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
+
+The parser rejects malformed JSON and records missing required fields as a
+warning. It preserves a structurally valid event whose type is unknown, with a
+warning, so logs written by newer or older releases remain inspectable. It also
+preserves records with a schema version newer than the running extension and
+reports the version mismatch.
+
+<!-- Source: src/parser/audit-log-parser.ts -->
+
+## Event registry and scope
+
+`ALL_AUDIT_EVENT_TYPES` is the exhaustive code-level registry. It groups event
+literals into these families:
+
+| Family | Representative events | What it records |
+| --- | --- | --- |
+| Phase and runner | `phase-start`, `phase-end`, `cli-invocation`, `file-write` | Phase execution and backend invocation metadata. |
+| Lifecycle and monitor | `pause`, `resume`, `warning`, `error`, `monitor-invocation-summary` | Run state and bounded transport summaries. Historical per-line monitor literals remain readable even though their writers are retired. |
+| Audit and retention | `audit-rotated`, `audit-retention-applied`, `audit-schema-warning`, `session-retention-applied` | Evidence-pipeline maintenance and retention outcomes. |
+| Retry and phase control | `phase.retry_evaluated`, `retry-scheduled`, `phase-paused`, `phase-restarted`, `phase-skipped` | Automated retry decisions and operator phase actions. |
+| Queue, task, and scheduling | `queue-created`, `task-enqueued`, `task-reordered`, `schedule-set`, `scheduled-start-fired` | Queue mutations, task lifecycle, and delayed-start transitions. |
+| Phase messages, logs, and breakpoints | `phase-message-emitted`, `phase-log-read`, `phase-breakpoint-fired` | Cross-phase messages and phase-level operator tooling. |
+| State and workspace | `state-migrated`, `workspace-state-reset`, `multi-root.warning-shown`, `trust.capability-denied` | Migrations, reset transactions, workspace topology, and trust refusals. |
+| Execution and diagnostics | `task-execution-started`, `task-execution-ended`, `backend-ping`, `metrics-view-opened` | Task-level timing and explicit diagnostics/UI adoption. |
+| Catalog and exchange | `process-exchange-export`, `process-exchange-import-committed`, `definition-published`, `definition-restored` | Phase/package exchange and versioned catalog lifecycle operations. |
+| Concurrency | `runs-overlapped` | A workspace-level overlap episode when in-flight execution crosses from one run to two. |
+| Audit integrity | `audit-integrity-condition` | The audit writer's own record that the log's last line was damaged, or that a history began after a deliberate reset of the head checkpoint. Written only by the writer. |
+| Operator evidence acts | `evidence-exported`, `evidence-deleted`, `operator-pseudonym-reset` | An operator taking evidence out of the workspace (a Run export, the metadata-only audit export, a diagnostics bundle), removing one Run's evidence, or replacing their pseudonym. |
+| Backend trees and resume | `process-tree-unconfirmed`, `host-teardown-unconfirmed`, `run-resumed`, `run-resume-declined-orphan-alive` | A backend process group that survived SIGKILL, a tree shutdown could not answer for, and the decision to resume or decline a Run whose previous backend might still be alive. |
+| SQLite store backup and restore | `store-backup`, `store-restore` | Metadata-only records of operator SQLite store backup and full-authority restore attempts (`operation`, `outcome`, opaque `backupId`, optional `errorCode`, `schemaVersion`, `databaseBytes`, `restoredTableCount`, `restoredRowCount`, `verifiedExternalDependencies`; zero raw filesystem paths; System scope). |
+| Operator security and credentials | `scanner-consent-changed`, `telemetry-credential-changed` | Metadata-only records of standalone native review scanner consent/revocation (`scanner`, `action`, optional 16-hex `fingerprintDigestPrefix`, optional `removedSetting`/`clearedBinding`) and OTLP `SecretStorage` credential store/clear actions (`action`, 16-hex `secretKeyDigestPrefix`, optional `matchesConfiguredKey`). Zero raw paths, secret values, or raw key names; System scope. |
+
+<!-- Source: src/contracts/audit-events.ts -->
+
+### Backend trees, shutdown, resume and capability sets
+
+Each of these is attributed to the Run whose backend or Phase it describes, with outcome `info` unless stated, and each
+payload is closed: identifiers and a bounded classification, and no path, argument, environment value or message.
+
+- `process-tree-unconfirmed` — payload `runner`, `pid`, `escalation`. A backend process group still answered after the ladder's SIGKILL. Absence of the event means the group was confirmed gone, not that no descendant survives.
+- `host-teardown-unconfirmed` — payload `runner`, `pid`, `result`, `boundMs`. Shutdown released ownership with a tree it could not answer for. `result` is `platform-unanswerable` (Windows: `taskkill` was sent and no tree can be confirmed) or `bound-elapsed` (the ladder had not settled when the 2,750 ms teardown bound elapsed). One row per such tree, written before the leases and window primacy are released. A tree with no Run writes nothing.
+- `run-resumed` — payload `queueId`, `runId`, `liveness`. The activation sweep resumed a Run; a resume admitted by any other path writes no such row. `liveness` is the verdict that permitted it: `dead`, `unrecorded` or `unanswerable`.
+- `run-resume-declined-orphan-alive` — payload `queueId`, `runId`, `liveness`. A resume was declined, with outcome `failure`. `liveness` is `alive` (the recorded leader is still the same process) or `orphaned-group` (the leader has exited but a member of its process group still answers). Written on every declined attempt, by the activation sweep and by the admission guard every other resume path passes through.
+- `capability-applied` — payload `kind`, `granted`, `phaseIndex`, `ambientConfig`, `enforcement`, `residuals`. A Phase's declared capability set was enforced. `enforcement` is `none-withheld`, `tool-restriction` or `cli-sandbox`; `residuals` names what the restriction still leaves open (`shell-network`, `shell-workspace-write`, `shell-outside-workspace-write`, `unlisted-tools`, `sandboxed-commands-run`, `sandbox-scope-unqualified`, `mode-refuses-shell`, `mode-refuses-outside-write`), sorted, and empty when none. Outcome `success`.
+- `capability-refused` — payload `kind`, `unenforceable`, `unqualified`, `phaseIndex`. The backend cannot enforce the declared set, so the Phase did not start. `unqualified` is the subset of `unenforceable` whose flag the planner declares and no capture has confirmed the installed CLI lists. Outcome `failure`.
+- `agent-config-acknowledged` — payload `backend`, `fileCount`, `decision` (`stored | approved-once | acknowledged | denied`). Per-workspace repository agent configuration preflight decision before an uncontained Run starts (`FR-R7-04`). Closed metadata-only payload: carries no paths, hook names, setting keys, digests, values, or file contents. Outcome `failure` on `denied`, `info` otherwise.
+
+`liveness` takes five values in all (`alive`, `dead`, `unrecorded`, `unanswerable`, `orphaned-group`). Which of them
+permit a resume is stated once, in [Backend operations](../operations/backends.md#resume-after-a-restart).
+
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: src/controller/host-teardown-recorder.ts -->
+
+### Operator evidence acts
+
+Each of these is written by an owner window when the operator acts, and each payload is closed: a key the
+type does not name is rejected, so the row cannot carry a path, a file name, an actor or content.
+
+- **`evidence-exported`** has `kind` (`run-evidence`, `audit-metadata` or `diagnostics-bundle`), `outcome`
+  (`exported` or `refused`), `included` and `omitted` as counts (manifest entries and deliberate omissions,
+  rows written and skipped, or bundle items written and left out), and `refusal`, a code from a closed list,
+  on a refusal only. A dialog the operator dismisses before anything was decided records nothing.
+- **`evidence-deleted`** has `artifacts` and `retained` as counts, or `artifacts: 0` and a `refusedReason` code
+  when the deletion was refused.
+- **`operator-pseudonym-reset`** has an empty payload and system scope. It carries neither the old nor the new
+  pseudonym, so the two cannot be linked, and it is appended before the new pseudonym is stored.
+
+The `actor` field stays a string. A new row carries the operator's pseudonym, `pseudonym-` and 16 hex digits,
+random, stored in the extension's private workspace storage and never derived from the operating-system user
+name; when none can be stored it reads `unknown-operator`. Rows written before this change, and an override
+stored before it, may hold an OS username, and no audit byte or stored override is rewritten. A pseudonym is
+still **linkable metadata**: it ties together every row one editor user wrote in one workspace until it is
+reset, and a reset changes only later rows.
+
+Events are classified for the UI as `task` or `system`. The explicit
+`SYSTEM_SCOPED_EVENT_TYPES` set contains workspace, queue, scheduling,
+migration, catalog, diagnostics, and other run-independent events; all other
+known events are task-scoped. Unknown event types default to task scope. The
+exhaustive classifier test pins every current literal to one scope.
+
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: tests/unit/audit-events/event-classification.test.ts -->
+
+## Payload projection and privacy boundary
+
+The writer does not persist arbitrary emitter objects verbatim. It first runs
+the event payload through `projectAuditPayload`, then applies the shared record
+sanitizer. `projectAuditPayload` dispatches on event type, so an event-specific
+projector runs for that type alone and every other event takes the generic path
+described below. Event-specific projectors reduce sensitive evidence to bounded
+metadata: for example, `phase-end` turns file lists into created/modified/deleted
+counts, and `cli-invocation` keeps runner, operation, permission mode, model and
+effort identifiers, continuation flags, and a diagnostics flag rather than the
+spawned command.
+
+Phase evidence fields come from model-authored audit blocks. When a structured CLI stream contains no
+model text, its raw-stream fallback supplies neither file-change counts nor authored metrics, even if
+tool output contains audit markers. Missing evidence remains absent rather than becoming measured zeros.
+
+`metrics-view-opened` carries one field, `viewCorrelationId`: an ephemeral UI-session correlation
+identifier, never a backend conversation ID. Rows written before FR-R5-F14 name it `sessionId`.
+From FR-R5-F14 until feature 284 the record sanitizer redacted a `sessionId` key as a session
+cookie, so the writer refused every such append as `secret-detected` and none was written.
+
+Two classification fields are worth naming, because both are narrowed rather
+than passed through (feature 194):
+
+- **`phase-end.cause`** — a closed vocabulary of exactly two members (feature 212
+  widened it from one). `cap_exhausted` is written when a phase's `retryCondition`
+  was still truthy at its iteration cap; `pre_spawn_refusal` when the phase was
+  refused before any backend process was started, so there is no exit code, no
+  output and no result to classify. `projectPhaseEnd()` admits those two literals
+  and nothing else, so the redacted fatal-signature text the emitter puts on the
+  same field for a fatal-signature failure — which includes operator-added
+  patterns — never reaches disk; the reason survives in `terminationReason`. The
+  field is **absent** on every other failure, and that absence is what
+  distinguishes those two from a generic failure, so it is never filled in with a
+  placeholder.
+- **`phase.retry_evaluated.stalled`** — a positive integer counting consecutive
+  comparisons in which every metric the condition references held its value.
+  There is no bespoke projector for this event type; the field reaches disk
+  through the generic projection, and survives only because the name is not in
+  the omitted-key set — unlike its sibling `expression`, the operator-authored
+  condition text, which is. Absence means the rule did not apply and is never
+  a `0`. The full presence rule is published in
+  `specs/010-pipeline-resilience/contracts/audit-events.md`.
+
+Feature 242 (FR-R4-F14) added one field to a different event.
+**`task-execution-ended.failureCause`** is the closed code of why a run failed:
+one of ten members (`cap_exhausted`, `last_phase_issues_remain`,
+`incomplete_turn_unresolved`, `fatal_signature`, `phase_failed`, `phase_timeout`,
+`runner_probe_failed`, `audit_evidence_unavailable`, `start_failed`,
+`judged_metrics_unchanged`), copied from
+the failed run by the one terminal emitter. The projection admits it by identity
+against that list and drops any other value as a field, so no message, warning or
+fatal-signature text can ride it onto disk. It is **absent** on a completed run,
+and on every record written before the feature, which reads as "cause not
+recorded". A run that fails, is resumed and fails again writes one event per
+failure, each with its own code. `phase-end` is unchanged, and its two causes
+stay the two above. `AUDIT_SCHEMA_VERSION` stays 3.
+
+Feature 244 (FR-R4-F16) added one field to a third event.
+**`task-removed.completionProvenance`** is `'operator-attested'` when the removed
+row had been marked completed by the operator, and `null` otherwise: a row the
+host finished, and a failed, pending or canceled row, all read `null`. It is
+copied from the same row as `priorStatus`, so the two cannot disagree. It is
+written twice, in the payload and in the envelope's `stateTransition.newState`,
+which copies the payload, and the projection admits it by identity in each,
+judging each copy on its own value. A value outside the vocabulary is dropped as
+a field and never rewritten, and it never costs the entry: a path-like string in
+the field leaves the removal's line written without it. The field is **absent**
+on every record written before the feature, and that reads as "provenance not
+recorded", never as attested; a reader that meets any other value treats it as
+absent. Without the field a removed completed row cannot be told apart from a
+normal completion, because `priorStatus: completed` is all the line says.
+`AUDIT_SCHEMA_VERSION` stays 3, and no generated schema changes.
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-remove-queue-item.ts -->
+
+Feature 212 added two more `phase-end` fields, both narrowed the same way:
+
+- **`phase-end.attemptId`** — which attempt this terminal record closes. It is
+  the `phase-start` row's own `AuditEntry.id`, carried forward rather than minted
+  again, so a reader pairs a start with its end by identity instead of by
+  position in the file. That matters because `(runId, phase, iteration)` does not
+  identify an attempt: a retried phase produces several rows under one such
+  triple. `projectPhaseEnd()` admits the field only in the shape the writer mints
+  — a UUID — and omits anything else, so a value of another shape cannot ride the
+  field onto disk.
+- **`phase-end.resultEnvelope`** — whether the backend produced its
+  end-of-invocation result envelope, as one of exactly two literals:
+  `received`, or `absent` for an invocation that ran and produced none.
+  **An absent field means UNKNOWN and must never be read as either value.** A
+  backend that does not report the fact omits it, and so does a phase refused
+  before any process started — writing `absent` there would claim an invocation
+  that never happened. Counting terminations that produced no verdict means
+  counting `resultEnvelope: "absent"`, not counting the field's absence.
+
+FR-R6-F06 added one more, narrowed the same way:
+
+- **`phase-end.costBaseline`** — what the parser did with the CLI session's
+  baseline when it read a Claude cost into `metrics.totalCostUsd`: `subtracted`
+  (the figure is this invocation's share), `below-baseline` (the session counter
+  fell below the baseline, so it was reset and the figure is the whole
+  cumulative total), or `absent` (no baseline was known). It sits outside
+  `metrics` because `metrics` holds numbers only. Only Claude reports a cost, so
+  only Claude rows carry it. `projectPhaseEnd()` admits only those three
+  literals and omits anything else. The usage accounting store counts a cost as
+  attributed only under `subtracted`; a row with no marker reads as
+  unattributed. The counts-only export does not carry this field.
+<!-- Source: src/contracts/usage-accounting/cost-baseline.ts -->
+
+FR-R3-198 added one `phase-end` outcome, and changed what one metric counts:
+
+- **`incomplete_turn`** — the `outcome` and the `terminationReason` of a turn
+  that printed no contract block (no termination token in the trailing region, no
+  open questions, no remaining issues) when a command it started in the background was still open
+  at its last result, or when the runner ended the process after its completion
+  settle. A killed invocation — an operator's cancel, for one — never is. Its
+  `warnings` name the fact that decided, as one of two codes the warning
+  allowlist lists whole: `incomplete-turn:background-work-open` or
+  `incomplete-turn:no-contract-block`. The envelope `outcome` is `info`, by the
+  standing mapping, as for `timeout` and `rate_limit`. The dispatch then resumes
+  the CLI session at once, at most twice, and each resumed attempt writes its own
+  `phase-start`, carrying `isContinue: true`, and its own `phase-end`.
+- **`metrics.totalCostUsd`** — for claude, from this release, this invocation's
+  share of the CLI session's cumulative cost: the total at its last result, less
+  the total the runner last recorded for the same session. The CLI carries that
+  total across `--resume`, so a sum over a Run's `phase-end` rows used to count a
+  resumed session's earlier cost again. Records written before this release keep
+  the cumulative figure; nothing rewrites them.
+
+FR-R4-F12 added one `phase-start` field, optional and additive:
+
+- **`phase-start.promptIdentity`** — which prompt contract this attempt was asked
+  under, so two attempts or two Runs can be compared without keeping any prompt
+  text. It is one of exactly two shapes:
+  `{ "scope": "contract", "compositionVersion": 2, "digest": "sha256:<64 hex>" }`
+  for a prompt Schegent composed, and `{ "scope": "resume" }` for an attempt that
+  sent an operator's stored resume prompt, where no digest is recorded.
+  - **Composition version**: 2 since review gap GC-14 (2026-11-12) opened the
+    previous-phase-message and carried-issue sections with a line naming their
+    entries as data. Rows written earlier carry 1, so a digest from before that
+    change never equals one from after it, even for the same contract and task.
+  - **What the digest covers**: the output-contract text (the completion-token and
+    audit-block instructions), the composition version, and the task block as
+    rendered. For a skill Phase that is the skill *reference* and the fixed
+    wrapper around it, not the skill file the CLI loads.
+  - **What it does not cover**: the brief, the iteration and its cap, the feature
+    directory, the sidecar path, previous phase messages, carried issues, request
+    inputs, supplemental context, output targets, operator instructions, the
+    continuation note, the Phase id and every path; the CLI's own context (skill
+    files, system prompts, CLI defaults, the model's configuration); and the
+    backend's argv. `PhaseDef.promptVersion` is an unrelated frozen label and is
+    not read.
+  - **Absent means not recorded.** Every row written before this release has no
+    identity, and a row whose value is in neither shape is read the same way.
+    `readPromptIdentity` (`src/runner/prompt-identity.ts`) is the reader: it
+    returns `{ recorded: false }` for absence and `recorded: true` only for one of
+    the two shapes above. Do not read absence as `resume` or as any other value.
+  - **A digest shows equality and is not anonymization.** Anyone holding a
+    candidate instruction can compute its digest and confirm whether a row used
+    it. Nothing recovers a prompt from the value.
+  - **`AUDIT_SCHEMA_VERSION` stays 3**, and no generated schema changes. No
+    reader is edited: the line parser, the metrics service and the audit tail read
+    named fields only, and keep the field on a row they do not otherwise use.
+
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/runner/prompt-identity.ts -->
+<!-- Source: src/controller/phase-attempt-recorder.ts -->
+<!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
+<!-- Source: src/parser/stdout-parser.ts -->
+<!-- Source: src/controller/incomplete-turn-resume.ts -->
+<!-- Source: src/parser/invocation-usage.ts -->
+<!-- Source: src/runner/session-cost-ledger.ts -->
+
+Generic projected values have a maximum nesting depth of four, strings are
+bounded to 640 characters, and arrays are bounded to 100 elements. Keys that
+could carry commands, prompts, output, paths, endpoints, session identifiers,
+or similar content are omitted. Residual path- or endpoint-shaped strings,
+invalid keys, unsupported values, and non-finite numbers are refused. The
+whole projected payload is rejected if the later record sanitizer changes it,
+which indicates secret-like content reached the boundary.
+
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+
+These controls reduce accidental disclosure. Tamper-evidence is provided
+separately, by the hash chain FR-R3-112 added: each entry carries the previous
+entry's sha256 digest, and `npm run audit:verify` names the first break. Anyone
+or any process with sufficient filesystem access can still alter or delete local
+evidence — the chain makes that **evident, not impossible**, because the chain
+head sits on the same disk and an actor who can edit the log can recompute every
+later digest. What they cannot do is edit one entry and leave the rest
+consistent. There is no signature. A head checkpoint kept outside the workspace, in the
+extension's storage, lets verification report a history that is shorter than it was, or
+missing; it is a file the same OS user can edit, so it reduces undetected loss and does not
+show that a history is the original.
+<!-- Source: src/audit/audit-chain.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
+
+`audit-integrity-condition` is written only by the audit writer, never by a caller. Its payload
+carries a `condition` and a `conditionVersion`, which is `1` today. `damaged-tail` names a final line that
+was not valid JSON, by file basename, line number, byte offset, byte length and the SHA-256 of its raw
+bytes; the line itself is kept as written, and verification reads this row as the diagnosis that excuses
+it. `history-reset` is the first row of a history that begins after a deliberate reset, with the retired
+checkpoint's position and the time of retirement. Neither carries a path or row content. A reader built
+before this event existed preserves the row, and reports a diagnosed damaged line as `malformed`. A
+future `conditionVersion` or an unknown `condition` is preserved and never read as a diagnosis.
+<!-- Source: src/contracts/audit-integrity-condition.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+
+<!-- Source: src/audit/audit-log-writer.ts -->
+
+## Storage, rotation, and retention
+
+The writer serializes appends, creates `.schegent/` on demand, and makes a
+best-effort attempt to create `.schegent/.gitignore`. An existing file is kept
+while it still ignores every path, and replaced otherwise. An append that takes longer than five seconds fails and
+is reported to the sanitized runtime logger; later appends can still proceed.
+
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/schegent-gitignore.ts -->
+
+The default active-log rotation thresholds are 5 MiB or 30 days. They are
+configured by `schegent.audit.rotation.sizeMB` and
+`schegent.audit.rotation.maxAgeDays`, both resource-scoped numbers with a
+minimum of `1`. Rotated files use the `audit.log.<timestamp>-<suffix>` naming
+form. Rotation checks both paths against the workspace containment boundary
+before renaming.
+
+<!-- Source: src/config/settings-schema.ts -->
+<!-- Source: src/extension.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+
+The writer keeps at most ten recognized archives by default and gives archives
+a default maximum age of 90 days, with a hard seven-day minimum. Retention runs
+once at activation (after trust, in the window that owns the workspace) and
+after rotation. It never prunes the active
+`audit.log`, ignores unrelated siblings such as `audit.log.backup`, and treats
+pruning failures as best-effort runtime-log warnings.
+
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: tests/unit/audit/retention.test.ts -->
+
+## Reading and exporting
+
+Run `Schegent: Show Audit Log` (`schegent.showAuditLog`) to open the active
+workspace audit file. If no log exists, the extension reports that condition
+instead of creating an empty file.
+
+<!-- Source: src/commands/show-audit.ts -->
+<!-- Source: package.json -->
+
+Run `Schegent: Export Metadata-Only Audit` (`schegent.exportAuditLog`) to choose
+a JSONL destination. Export includes only valid schema-v3 records and keeps the
+envelope's identity, timestamp, event type, phase, iteration, outcome, and
+schema version. Payload export is restricted to counts, structural result
+fields, and a small set of closed-vocabulary classification strings — `metrics`,
+`fileChangeCounts`, `toolCategoryCounts`, `exitCode`, `terminationReason`,
+omitted-evidence counts, `outcome`, `cause` and `stalled` (both feature 194),
+`attemptId` and `resultEnvelope` (both feature 212), `failureCause` (feature 242),
+process-authority and stream high-water metrics (`executableTarget`,
+`containmentPosture`, `permissionMode`, `streamHighWaterBytes`,
+`streamObservedBytes`, `streamPendingHighWaterBytes`, `streamTruncated`), and
+operator security-lifecycle fields (`scanner`, `action`, `fingerprintDigestPrefix`,
+`removedSetting`, `clearedBinding`, `secretKeyDigestPrefix`, `matchesConfiguredKey`).
+Without the two feature-212 fields the
+counts-only export could answer neither question feature 212 exists to answer:
+which attempt a terminal row closes, and how many terminations produced no
+verdict.
+
+The guarded fields are value-checked by `countsOnlyAuditExport()` in
+`src/services/audit-export/counts-only-export.ts` (re-exported as
+`createCountsOnlyAuditExport()` from `src/commands/export-audit.ts`), not merely
+allowlisted, because that function parses
+whatever bytes are on disk rather than what the current writer produces — an entry a
+pre-feature-194 build wrote, or a future regression, can carry anything. The check is
+scoped by `(eventType, field)`: on `phase-end` only the literals `cap_exhausted`
+and `pre_spawn_refusal` survive (feature 212 added the second), matching the write
+path, where `projectPhaseEnd()` narrows the field to those two values and so keeps
+CLI-derived fatal-signature text out of `payload.cause`. Widening the vocabulary
+did not widen what a value may be: both members are code-resident literals matched
+by identity against exported constants, never text derived from the CLI or the
+model. Other event families
+carry their own `cause` vocabularies (`phase-breakpoint-cleared`, `task-reordered`,
+`monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses), and those are
+admitted by shape — a short lowercase token — rather than re-enumerated in the export.
+`stalled` must be a positive whole number. `attemptId` must match the UUID shape the
+writer mints, checked against the same exported pattern the projection uses rather than a
+second copy of it, `resultEnvelope` must be `received` or `absent`, `failureCause`
+must be one of the ten closed codes and only on `task-execution-ended` (on any other
+event it exports as `null`), process-authority and stream counters are restricted to
+`cli-invocation` / `monitor-invocation-summary`, and operator security fields are
+restricted to `scanner-consent-changed` / `telemetry-credential-changed` with closed
+action tokens, 16-hex digest prefixes, and booleans. **A rejected value
+exports as `null`, not as an absent field**: absence is load-bearing for these fields (a
+`phase-end` with no `cause` is a generic failure; an absent `stalled` means the stagnation
+rule did not apply; an absent `resultEnvelope` means UNKNOWN, permanently), so silently
+dropping a value the guard disbelieves would rewrite a tamper signal into a meaningful
+reading.
+
+The export deliberately omits `runId`, `correlationId`, and every payload field not on this
+allowlist.
+
+<!-- Source: src/services/audit-export/counts-only-export.ts -->
+<!-- Source: src/commands/export-audit.ts -->
+<!-- Source: tests/unit/commands/export-audit.test.ts -->
+
+The export is a privacy-reduced operational artifact, not a byte-for-byte
+backup. Preserve the original local JSONL and any rotated archives when a
+forensic investigation requires the complete structured record.
+
+<!-- Source: src/commands/export-audit.ts -->

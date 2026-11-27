@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { KEYS, WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 import { STATE_SCHEMA_VERSION } from '../../src/contracts/state-schema';
 import type { QueueState } from '../../src/queue/feature-request';
 

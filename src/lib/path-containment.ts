@@ -31,10 +31,17 @@
 // workspace layout is built to win.
 //
 // TOCTOU is inherent to check-then-act on a filesystem and this module does
-// not close it. Between the `realpath` here and the `rm` at the call site, a
-// component can be replaced. This is risk reduction — the window shrinks from
-// "the whole lifetime of the process" to "the gap between two adjacent
-// syscalls" — and the docs say so in those words.
+// not close it. Between the `realpath` here and the `rm` or `unlink` at the
+// call site, a component can be replaced. Node's `node:fs/promises` exposes
+// pathname-based `unlink` rather than descriptor-relative `openat`/`unlinkat`,
+// so callers that remove files (including artifact lifecycle deletion) pair
+// `resolveContainedLink` with a non-following regular-file `lstat`, ownership
+// fencing, and durable intent before calling `unlink` on the canonical
+// resolved path. This is risk reduction — the window shrinks from "the whole
+// lifetime of the process" to "the gap between adjacent syscalls" — and is a
+// permanent stated limit under `docs/architecture/native-binding-decision.md`
+// (reevaluate descriptor-relative removal if stable `node:fs` gains it or the
+// threat model changes).
 
 import * as nodeFs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -102,7 +109,8 @@ function refuseResolve(error: unknown): ContainmentVerdict {
  */
 function isContainedIn(candidate: string, root: string): boolean {
   const rel = path.relative(root, candidate);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  // `'..' + sep`, not a bare `'..'` prefix: an entry named `..archive` is inside the root, not above it.
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
 }
 
 /**
@@ -205,6 +213,13 @@ export async function resolveContainedTarget(
  * and the host would be unable to clean up its own directory because someone
  * put a link in it. What must be contained is the directory the entry lives
  * in, and that is resolved in full.
+ *
+ * Callers that remove regular files only (such as artifact deletion) follow
+ * this check with a non-following `lstat` verifying `kind === 'file'` before
+ * calling pathname-based `unlink(verdict.resolved)`. Because `node:fs/promises`
+ * lacks descriptor-relative `openat`/`unlinkat`, a residual TOCTOU window
+ * remains between `lstat` and `unlink` — a permanent stated limit under
+ * `docs/architecture/native-binding-decision.md`.
  */
 export async function resolveContainedLink(
   target: string,
@@ -242,4 +257,61 @@ export async function resolveContainedForWrite(
   const verdict = await resolveContainedTarget(target, roots, filesystem);
   if (verdict.outcome !== 'absent') return verdict;
   return resolveContainedLink(target, roots, filesystem);
+}
+
+/**
+ * FR-R4-F04 (FR-022, E3 step 3) — whether an export destination is inside a protected tree, by where it
+ * RESOLVES and not by how it is spelled.
+ *
+ * The earlier check was a regular expression over the path's text, so an alias produced output inside the
+ * evidence store that the text never named: a symbolic link into it, a `..` that reaches it, a case variant
+ * on a case-insensitive volume. This resolves the destination's nearest existing ancestor (the part that
+ * exists is fully resolved, symbolic links followed), re-appends the components that do not exist yet (they
+ * cannot be links, so appending them lexically is sound), and compares the result with each protected
+ * root's own resolved position. A root that does not exist yet (a workspace whose `.schegent/` has not been
+ * made) is resolved the same way, so a destination under it is `inside` before the folder exists.
+ *
+ * `inside` means the destination is in a protected root; `outside` means it is in none; `unresolvable`
+ * means an ancestor could not be read, so the answer is neither, and the caller refuses rather than
+ * guessing (a destination that cannot be proven outside the store is not written to).
+ */
+export async function classifyDestination(
+  target: string,
+  protectedRoots: readonly string[],
+  filesystem: ContainmentFs = nodeFs
+): Promise<'inside' | 'outside' | 'unresolvable'> {
+  const resolvedTarget = await resolveNearestExisting(path.resolve(target), filesystem);
+  if ('error' in resolvedTarget) return 'unresolvable';
+  for (const root of protectedRoots) {
+    if (typeof root !== 'string' || root.length === 0) continue;
+    const resolvedRoot = await resolveNearestExisting(path.resolve(root), filesystem);
+    if ('error' in resolvedRoot) return 'unresolvable';
+    if (isContainedIn(resolvedTarget.resolved, resolvedRoot.resolved)) return 'inside';
+  }
+  return 'outside';
+}
+
+/**
+ * The deepest existing ancestor of `absolute`, fully resolved, and the components below it that do not
+ * exist yet. A writer opens its output beneath the resolved anchor through the checked walk, which then
+ * refuses a link in any component it passes through, so a destination cannot be redirected after it was
+ * judged. `null` when no ancestor can be resolved.
+ */
+export async function resolveWritableAnchor(
+  absolute: string,
+  filesystem: ContainmentFs = nodeFs
+): Promise<{ readonly anchor: string; readonly tail: readonly string[] } | null> {
+  const tail: string[] = [];
+  let current = absolute;
+  for (;;) {
+    try {
+      return { anchor: await filesystem.realpath(current), tail };
+    } catch (error) {
+      if (!isMissing(error)) return null;
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      tail.unshift(path.basename(current));
+      current = parent;
+    }
+  }
 }

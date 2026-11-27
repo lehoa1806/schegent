@@ -1,0 +1,478 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: THE GATE. Every act the other
+// twenty modules handed over runs here, behind one live trust read.
+
+import * as vscode from 'vscode';
+
+import type { SchegentWorkflowController } from '../controller/workflow-controller';
+import type { SanitizedLogger } from '../lib/logger';
+import { errorMessage } from '../lib/errors';
+import { checkLiveness, createLivenessProbe } from '../services/process-liveness';
+import { resumePersistedRuns } from '../services/resume-decision';
+import { resumeUnattended } from '../services/unattended-resume';
+import type { CreditWatchdog } from '../watchdog/credit-watchdog';
+import type { ScheduledStartCoordinator } from '../services/scheduled-start-coordinator';
+import type { AuditLogWriter } from '../audit/audit-log-writer';
+import type { OperatorAttribution } from '../lib/operator-attribution';
+import type { WorkspaceLockManager } from '../state/lock';
+import type { WorkspaceStateStore } from '../state/workspace-state';
+
+/**
+ * FR-R3-136 (FR-009, FR-010, FR-011, FR-012) — everything Stage 2 *does* to the
+ * workspace, in one place, behind one trust gate.
+ *
+ * THE SPLIT IS BY ACTION, NOT BY CONSTRUCTION, and that is a decision worth
+ * naming because the plan's first sketch (D4) read the other way. Deferring the
+ * *object graph* until trust is granted is not possible and would not help:
+ * the sidebar's projection needs the audit writer, the history store and the
+ * runner registry to render "here is what this workspace contains", and refusing
+ * to build them would break the `limited` claim the manifest already ships —
+ * state, history, audit and log views keep working in an untrusted window. What
+ * must not happen is not construction. `new AuditLogWriter(...)` writes nothing
+ * (FR-R4-F03: it used to queue a retention sweep, and no longer does; archive
+ * maintenance is one of the acts below, run after the election);
+ * `new RunnerRegistry(...)` spawns nothing. The hazard is the *acts*: electing,
+ * appending, sweeping, arming, resuming. So those are what moved here, and the
+ * graph is still built eagerly above.
+ *
+ * THE ELECTION IS THE FIRST STATEMENT (FR-R3-136 C2). `store.ownership.acquire`
+ * is an exclusive-create on a generation-numbered file under `.schegent/` — a
+ * write, inside the folder whose contents are the reason trust is being withheld.
+ * An untrusted window therefore does not elect, and because FR-R3-070 already
+ * gates every recovery installer on the election result, not electing suppresses
+ * all four of them by construction rather than by four more conditions. That
+ * transitive safety is why they are HERE, together, in the order the gate reads:
+ * a landmark left behind in the composition root would be gated only by
+ * primacy, and the coupling between primacy and trust would be an accident
+ * nobody could see.
+ *
+ * THE ELECTION IS ALSO LATER IN ACTIVATION than it was, because this call sits at
+ * the end of `wireStage2` where `openWorkspaceSession` sits near its start. That
+ * was checked rather than assumed: no collaborator captures the claim. Every other
+ * primacy reader in `src/` asks `lock.hasPrimacy()` or reads the ownership record
+ * at call time, and the first sidebar projection happens when the webview mounts,
+ * which is after activation returns.
+ *
+ * IDEMPOTENT, BECAUSE THE GRANT CALLS IT AGAIN. `onDidGrantWorkspaceTrust` fires
+ * in a window that has already activated, so `run()` is the same entry point for
+ * both the trusted-at-activation case and the granted-later case — one path, run
+ * twice at most, rather than an activation path and a parallel grant path that
+ * drift. VS Code has no revoke event (spec C1), so once this has run the window
+ * stays a producer for its lifetime and a second grant is a no-op.
+ */
+export interface Stage2ProducerDeps {
+  /**
+   * Read fresh inside `run()`, never captured. The grant can land between this
+   * object being built and `run()` being called, and a captured `false` would
+   * make the grant subscriber a no-op — the failure this module exists to avoid.
+   */
+  readonly isWorkspaceTrusted: () => boolean;
+  readonly logger: SanitizedLogger;
+  readonly store: WorkspaceStateStore;
+  readonly auditWriter: AuditLogWriter;
+  readonly lock: WorkspaceLockManager;
+  readonly controller: Pick<
+    SchegentWorkflowController,
+    'resumeExistingFromActivation' | 'admitResume' | 'scheduleAutoDrain'
+  >;
+  readonly watchdog: Pick<CreditWatchdog, 'reattachOnActivation'> & {
+    readonly cancelPendingTimer?: () => void;
+  };
+  readonly scheduledStartCoordinator: Pick<ScheduledStartCoordinator, 'reArm'>;
+  /**
+   * The audit appends and the retention sweep `wireEvidence` used to perform at
+   * construction. Handed over as a thunk rather than moved into this module
+   * because they belong to the evidence surface — what changed is WHEN they run,
+   * not what they are.
+   */
+  readonly replayEvidenceBacklog: () => Promise<void>;
+  /**
+   * The two acts `run-safety-wiring.ts` used to perform at wiring time.
+   *
+   * A `Pick` and not the bundle, following `controller` and `watchdog` above:
+   * `run-safety-wiring.ts` returns eight members and this module has business
+   * with two of them.
+   *
+   * `replayTerminalTransitions` finishes a queue item, records history and writes
+   * the metrics rollup per journalled intent, so it runs BEFORE the recovery
+   * installers that read the run map it reconciles — the relative order it held
+   * in the composition root. `sweepCheckpointRetention` was fire-and-forget at
+   * its old call site and stays that way; activation has never blocked on it.
+   */
+  readonly runSafety: {
+    readonly replayTerminalTransitions: (
+      selfOwnerId?: string,
+      beforeComposableRecovery?: () => Promise<void>
+    ) => Promise<void>;
+    readonly sweepCheckpointRetention: () => Promise<unknown>;
+    readonly reconcileComposableWorkflowRuns?: () => Promise<void>;
+  };
+  /**
+   * The backend probe `live-picture-wiring.ts` used to fire at wiring time.
+   *
+   * `scan()` spawns one bounded `--help` per supported backend, so it is a
+   * producer act by the plainest reading of T1523a's criterion. Fire-and-forget
+   * here, exactly as it was at its old call site: activation has never waited on
+   * installed CLI processes, and the sidebar re-renders through the capability
+   * projector when the answer lands.
+   */
+  readonly backendCapabilities: { readonly scan: () => Promise<unknown> };
+  /**
+   * The mount probe `openWorkspaceSession` used to start at wiring time.
+   *
+   * Three writes under `.schegent/` — the directory itself, the local ignore
+   * file, and an exclusive-created probe artifact it then removes. `workspace-
+   * session.ts` carries why it is a thunk and why a grant needs it.
+   */
+  readonly startMountProbe: () => void;
+  /**
+   * Re-resolve the catalog. While untrusted `isCatalogActivationTrusted()`
+   * refuses activation (feature 099), so the session holds the empty catalog; a
+   * grant has to re-resolve it or the operator trusts the folder and still sees
+   * nothing.
+   */
+  readonly refreshCatalog: () => Promise<void>;
+  /**
+   * FR-R4-F04 (P1, TA7) — creates the operator's pseudonym when none is stored. A memento write, and
+   * nothing under `.schegent/`, so it sits in the preamble beside the other trust-scoped acts: an
+   * untrusted window only reads the attribution (`wireEvidence` installed it), and a trust grant creates
+   * it through the same `run()`.
+   */
+  readonly operatorAttribution: Pick<OperatorAttribution, 'ensureStored'>;
+  /**
+   * BUG-001 (FR-017) — crash-safe startup queue pause, invoked once per primary activation after
+   * `terminalTransitions.replay` and before composable workflow recovery and recovery installers.
+   * Optional so unit harnesses that do not exercise startup pausing keep their shape; `extension.ts`
+   * wires it unconditionally.
+   */
+  readonly pauseQueuesOnStartup?: () => Promise<void>;
+}
+
+export interface Stage2Producers {
+  /**
+   * Elect, replay, recover — or record why not. Safe to call more than once.
+   */
+  run(): Promise<void>;
+  /** Whether the producers have already run in this window. */
+  hasRun(): boolean;
+  /**
+   * FR-032 (BUG-001) — install the recovery producers a lost election skipped.
+   *
+   * The late-primacy occasion, sibling to the late-trust occasion `run()` serves.
+   * `primacy-gain-wiring.ts` calls it from `lock.onPrimacyGained`, and the
+   * `result` it passes is the one the WINNING contest produced — not the one
+   * activation recorded, which reads `acquired: false` in exactly the case this
+   * method exists for. Idempotent: a window that has already installed them
+   * returns without doing anything, and the preamble never runs a second time.
+   */
+  installRecovery(result: { acquired: boolean; ownerId: string }): Promise<void>;
+}
+
+export function createStage2Producers(deps: Stage2ProducerDeps): Stage2Producers {
+  const {
+    isWorkspaceTrusted,
+    logger,
+    store,
+    auditWriter,
+    lock,
+    controller,
+    watchdog,
+    scheduledStartCoordinator,
+    replayEvidenceBacklog,
+    runSafety,
+    backendCapabilities,
+    startMountProbe,
+    refreshCatalog,
+    operatorAttribution,
+    pauseQueuesOnStartup
+  } = deps;
+
+  let ran = false;
+  let running: Promise<void> | null = null;
+  let startupPauseApplied = false;
+  /**
+   * FR-032 (BUG-001) — THE SECOND LATCH, and the reason there are two.
+   *
+   * `ran` means "the trust-scoped preamble has run", and a window that LOSES the
+   * election runs that preamble in full — it still records its migration events,
+   * still probes the mount, still scans for backends. So `ran` is true in the
+   * one state where recovery has not been installed, and reusing it to guard a
+   * later gain would make the gain a guaranteed no-op. This latch tracks the
+   * other thing: whether the five primacy-gated installers have been installed.
+   */
+  let installedRecovery = false;
+  if ('onFenceLost' in lock && typeof lock.onFenceLost === 'function') {
+    lock.onFenceLost(() => {
+      installedRecovery = false;
+      watchdog.cancelPendingTimer?.();
+    });
+  }
+
+  const runOnce = async (): Promise<void> => {
+    if (!isWorkspaceTrusted()) {
+      // Not a warning. An untrusted window behaving correctly is not a problem
+      // to report; the operator chose this, and the sidebar already says so.
+      logger.info('stage 2 producers skipped: workspace is not trusted');
+      return;
+    }
+
+    // FR-R3-070 — elect BEFORE recovering. The recovery installers below used to
+    // run ahead of this call, so a window about to lose the election could still
+    // resume and drive a Run the primary already owned. Primacy is decided here,
+    // once; every installer is gated on the result, and a non-primary window
+    // leaves persisted deadlines addressable for the primary — the decline-and-
+    // retain shape fire() models. FR-R3-136 moved the call out of
+    // `openWorkspaceSession` so that an untrusted window never reaches it.
+    const lockResult = await lock.tryAcquire();
+    ran = true;
+
+    // FR-R4-F04 (P1) — the operator's pseudonym is created here: after the trust check, so an untrusted
+    // window never writes it, and straight after the election, which stays the first statement (FR-R3-136
+    // C2). It runs in every trusted window, winner or not, before any act that can attribute an operator.
+    // A failure is logged once and does not stop activation: attribution then answers `unknown-operator`,
+    // which every reader accepts.
+    try {
+      await operatorAttribution.ensureStored();
+    } catch {
+      logger.warn('operator pseudonym could not be created; attribution stays unknown-operator');
+    }
+
+    // The mount probe goes here and not earlier: its own header argues that it is
+    // not the first writer because the ownership path creates `.schegent/` before
+    // it runs, and `tryAcquire()` above is that path. Started, never awaited —
+    // activation has never waited for a verdict about the filesystem.
+    startMountProbe();
+
+    // Terminal-transition replay goes first among the writes, for the reason its
+    // dep note gives: everything downstream reads the run map it reconciles, and
+    // a Run whose completion was journalled but not projected must finish before
+    // anything decides whether to pause or recover it.
+    // BUG-001 (FR-017) — crash-safe startup queue pause runs once per primary
+    // activation right after `terminalTransitions.replay` and BEFORE composable
+    // workflow recovery and the recovery installers below. Not reset on fence
+    // loss so mid-session primacy regain never re-pauses operator-enabled queues.
+    let runStartupPause: (() => Promise<void>) | undefined;
+    if (lockResult.acquired) {
+      runStartupPause = async () => {
+        if (startupPauseApplied) return;
+        startupPauseApplied = true;
+        try {
+          await pauseQueuesOnStartup?.();
+        } catch (err) {
+          logger.warn(`startup queue pause failed: ${errorMessage(err)}`);
+        }
+      };
+    } else {
+      logger.info('startup queue pause skipped: window is not primary');
+    }
+
+    await runSafety.replayTerminalTransitions(lock.id, runStartupPause);
+    if (runStartupPause && !startupPauseApplied) {
+      await runStartupPause();
+    }
+
+    // The evidence backlog goes second: it forwards the migration events
+    // `store.initialize()` reported and sweeps `.schegent/sessions`, and both
+    // are this window's acts regardless of who won the election — a non-primary
+    // window still performs the migration. FR-R4-F03 (contract D, class B): the
+    // audit writer refuses a row from a window that does not own the workspace,
+    // and notices it once per event, so in that window the notice is the record
+    // of the migration and the row is not written. Only the owner's log holds it.
+    await replayEvidenceBacklog();
+
+    // Third, because the catalog the recovery installers resolve against must be
+    // the real one by the time they run.
+    try {
+      await refreshCatalog();
+    } catch (err) {
+      logger.warn(`catalog refresh after trust failed: ${(err as Error).message}`);
+    }
+
+    // FR-R4-F03 (FR-014; R12) — the audit writer's retention sweep, which its
+    // constructor used to queue before any trust check or election. It prunes
+    // archives, narrows their modes and writes cut records under `.schegent/`, so
+    // it belongs to the window that won the election, after trust: gated on the
+    // same result as the installers below, once, here, and not at a later primacy
+    // gain (the owner's rotation prune keeps retention moving after that). The
+    // writer asks its own authority again inside the step, so a gate that lies
+    // still writes nothing. A failure is logged with a code, never the error.
+    if (lockResult.acquired) {
+      try {
+        await auditWriter.runArchiveMaintenance();
+      } catch {
+        logger.warn('archive maintenance failed', { reasonCode: 'archive-maintenance-failed' });
+      }
+    } else {
+      logger.info('archive maintenance skipped: window is not primary');
+    }
+
+    // Fire-and-forget, as it was at its old call site. Not gated on primacy
+    // either, also as it was: global-storage checkpoints are this machine's, and
+    // a sweep bounded by in-flight runs is safe for a non-primary window to run.
+    void runSafety.sweepCheckpointRetention();
+
+    // Also fire-and-forget, also not primacy-gated: knowing which backends are
+    // installed is this machine's fact, and every window's UI shows it.
+    void backendCapabilities.scan();
+
+    // FR-032 (BUG-001) — the five installers below are now a call away, with the
+    // result the election above just produced. Nothing about the activation path
+    // changed: same five, same order, same gates, same verdict, one frame
+    // deeper. What changed is REACHABILITY. They have to be installable a second
+    // time, from a primacy gain this window has not won yet, and a block nested
+    // inside `runOnce` is reachable only by running the whole preamble again.
+    await installRecoveryProducers(lockResult);
+  };
+
+  /**
+   * The five FR-R3-070 recovery installers, gated on an election result.
+   *
+   * WHERE THIS IS DECLARED IS PART OF THE CONTRACT, in both directions.
+   *
+   * Outer scope, because `installRecovery` on the returned object has to reach
+   * it: a helper declared inside `runOnce` is reachable only from inside one
+   * activation, which is the opposite of what FR-032 needs.
+   *
+   * Below the election, because rule 1 of `elect-before-recovering.test.ts` is a
+   * TEXTUAL ordering over this file — every recovery landmark must appear after
+   * `const lockResult = await lock.tryAcquire()`. Hoisting these up beside the
+   * latches would turn all five red at once while changing no behaviour, which
+   * is exactly the kind of move that gate exists to catch.
+   *
+   * THE PARAMETER NAME IS ALSO PART OF IT. Rule 2 wants `lockResult.acquired`
+   * within 400 stripped chars of each landmark and `GATE_COUNT` counts that
+   * exact literal five times, so `lockResult` is a contract with the gate rather
+   * than a local preference. It shadows nothing: `runOnce`'s binding of the same
+   * name is out of scope here, and this one is whichever result the caller won.
+   */
+  const installRecoveryProducers = async (lockResult: {
+    acquired: boolean;
+    ownerId: string;
+  }): Promise<void> => {
+    if (installedRecovery) return;
+    // Latched only where a win was installed. On a refusal this assigns the
+    // `false` it already holds, so the five `else` branches below still record
+    // why they declined and a later gain still finds the latch open. Spelled as
+    // an assignment rather than `if (lockResult.acquired) { … }` because that
+    // literal is what `GATE_COUNT` counts, and a sixth occurrence of it fails
+    // the gate over a latch that is not an installer.
+    installedRecovery = lockResult.acquired;
+
+    if (lockResult.acquired) {
+      try {
+        await scheduledStartCoordinator.reArm();
+      } catch (err) {
+        logger.warn(`scheduled-start re-arm failed: ${(err as Error).message}`);
+      }
+    } else {
+      // FR-R3-070 — non-primary: no re-arm. Persisted schedules stay exactly as
+      // they are, addressable by the primary window's coordinator and watchdog.
+      logger.info('scheduled-start re-arm skipped: window is not primary');
+    }
+
+    // Review gap GC-01 — each installer is isolated like `reArm` above: a throw here used to skip
+    // every installer below it, the activation drain included, behind a latch already set.
+    if (lockResult.acquired) {
+      try {
+        await watchdog.reattachOnActivation();
+      } catch (err) {
+        logger.warn(`watchdog reattach failed: ${errorMessage(err)}`);
+      }
+    } else {
+      // FR-R3-070 — non-primary: the persisted poll deadline remains for the
+      // primary window to reattach.
+      logger.info('watchdog reattach skipped: window is not primary');
+    }
+
+    // Feature 011 FR-013 — restart handshake. If the persisted run has a
+    // pending delayed-retry deadline, re-arm the watchdog (or resume
+    // immediately if it has already elapsed).
+    if (lockResult.acquired) {
+      try {
+        await controller.resumeExistingFromActivation();
+      } catch (err) {
+        logger.warn(`delayed-retry re-arm failed: ${errorMessage(err)}`);
+      }
+    } else {
+      // FR-R3-070 — the path that used to fire setImmediate(resumeExisting)
+      // before the election was decided; the elapsed deadline stays persisted.
+      logger.info('delayed-retry re-arm skipped: window is not primary');
+    }
+
+    // FR-R3-103 — ask whether the previous host's tree is still alive before
+    // resuming. Feature 093 (T037/T039) — C-4 aggregate: a window that crashed
+    // mid-concurrency persisted several Runs, each re-armed on its own queue.
+    // Not awaited, unchanged from the composition root this moved out of: the
+    // sweep probes a possibly-dead process tree, and activation has never blocked
+    // on that answer.
+    if (lockResult.acquired) {
+      const probe = createLivenessProbe();
+      const unattended = {
+        admit: (queueId: string) => controller.admitResume(queueId),
+        store,
+        notifier: { warn: (message: string) => vscode.window.showWarningMessage(message) },
+        logger
+      };
+      void resumePersistedRuns({
+        // Filtered HERE: `resume-decision.ts` is not on the status-literal
+        // allowlist and this file is, which is the right way round — the policy
+        // module should not know the status vocabulary.
+        // BUG-001 (FR-018) — defense-in-depth: never resume Runs belonging to
+        // an operator-paused queue or already carrying a manualPauseAt stamp.
+        runs: () =>
+          Object.entries(store.getRunMap()).filter(
+            ([queueId, run]) =>
+              run.status === 'running' &&
+              (run.manualPauseAt ?? null) === null &&
+              (typeof store.getQueue !== 'function' ||
+                store.getQueue(queueId).queueLifecycle !== 'operator-paused')
+          ),
+        liveness: (identity) => checkLiveness(identity, probe),
+        appendAudit: async (entry) => {
+          await auditWriter.append({ ...entry, payload: { ...entry.payload } });
+        },
+        resume: (queueId) => void resumeUnattended(queueId, unattended),
+        notify: (message) => void vscode.window.showWarningMessage(message),
+        log: (message) => logger.info(message)
+      }).catch((err: unknown) => {
+        logger.warn(`persisted-run resume failed: ${errorMessage(err)}`);
+      });
+    } else {
+      logger.info('persisted-run resume skipped: window is not primary');
+    }
+
+    // BUG-001 (FR-017) — activation deliberately performs NO automatic drain sweep.
+    // Non-empty queues are paused on teardown (FR-015) and on crash-safe startup
+    // (FR-017); pending work begins only when the operator explicitly enables a
+    // queue via CMD_RESUME_QUEUE or schegent.resumeQueue (FR-019).
+  };
+
+  return {
+    hasRun: () => ran,
+    async run(): Promise<void> {
+      // A second grant, a concurrent grant, and a grant that lands while the
+      // first run is still awaiting all reach this. `ran` closes the first two;
+      // `running` closes the third, which is the one a boolean alone would miss
+      // because every landmark below is awaited.
+      if (ran) return;
+      if (running) return running;
+      running = runOnce().finally(() => {
+        running = null;
+      });
+      return running;
+    },
+    async installRecovery(result: { acquired: boolean; ownerId: string }): Promise<void> {
+      // AWAIT THE IN-FLIGHT RUN FIRST. The contest interval fires on its own
+      // clock, so a gain can land while `run()` is still suspended on a
+      // landmark. Installing from underneath it would let a resume read a run
+      // map `replayTerminalTransitions()` has not reconciled yet — a Run whose
+      // completion was journalled but not projected would be resumed as if it
+      // were still running, which is the ordering the preamble exists to
+      // establish. `running` is the same handle the concurrent-grant case uses.
+      if (running) await running;
+      if (result.acquired && !installedRecovery) {
+        await runSafety.reconcileComposableWorkflowRuns?.();
+      }
+      await installRecoveryProducers(result);
+    }
+  };
+}

@@ -25,7 +25,7 @@
 // host declaration here would make this file the one place the boundary leaks.
 // The host's `HISTORY_UNATTRIBUTED_QUEUE_ID` is a value and cannot be mirrored
 // without a second copy of the constant, so it stays.
-import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../../../src/state/history-entry.js';
+import { HISTORY_UNATTRIBUTED_QUEUE_ID } from '../../../src/contracts/queue-identity.js';
 import type {
   CatalogVersionRef,
   HistoryEntry,
@@ -111,7 +111,7 @@ export const VERSION_NOT_RECORDED_LABEL = 'Version not recorded';
 export const DEFINITION_NOT_RECORDED_LABEL = 'Definition not recorded';
 
 /** FR-013 — a run that was started on its own. The spec's own word for it. */
-export const ORIGIN_STANDALONE_LABEL = 'Pipeline';
+export const ORIGIN_STANDALONE_LABEL = 'Standalone';
 
 /**
  * FR-013 — origin absent, which is a third state and not a synonym for
@@ -186,10 +186,13 @@ export function provenanceLabels(row: HistoryRow, names: CatalogNames): Provenan
 
 function definitionLabel(row: HistoryRow, names: CatalogNames): string {
   if (row.definitionId === null) return DEFINITION_NOT_RECORDED_LABEL;
-  // The kind decides which map to ask, and a row with no recorded version has no
-  // kind — its id came off the live run's Pipeline, so it is one.
-  const map = row.catalogVersion?.kind === 'workflow' ? names.workflows : names.pipelines;
-  return map.get(row.definitionId) ?? row.definitionId;
+  if (row.catalogVersion?.kind === 'workflow') {
+    return names.workflows.get(row.definitionId) ?? row.definitionId;
+  }
+  if (row.catalogVersion?.kind === 'pipeline') {
+    return names.pipelines.get(row.definitionId) ?? row.definitionId;
+  }
+  return names.workflows.get(row.definitionId) ?? names.pipelines.get(row.definitionId) ?? row.definitionId;
 }
 
 function originLabel(origin: RunOriginRef | null, names: CatalogNames): string {

@@ -9,6 +9,7 @@
 // these classes.
 
 import { describe, it, expect } from 'vitest';
+import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { parseInvocation } from '../../../src/parser/stdout-parser';
 import type { ParseInputs } from '../../../src/parser/stdout-parser';
 import type { AuditEntryFields } from '../../../src/audit/audit-entry';
@@ -26,13 +27,16 @@ function baseInputs(overrides: Partial<ParseInputs> = {}): ParseInputs {
     metrics: {},
     warnings: []
   };
+  const stdout = overrides.stdout ?? '';
   return {
-    stdout: '',
+    stdout,
     stderr: '',
     exitCode: 1,
     rateLimit: { matched: false, cause: '' },
     auditEntry: audit,
     auditWarnings: [],
+    // From the same stdout, as phase-runner.ts derives it.
+    region: parseAuditLogBlock(stdout).region,
     ...overrides
   };
 }
@@ -41,7 +45,8 @@ describe('FR-001 disjoint classification (transient-error vs fatal vs rate-limit
   it('clean exit with [SCHEGENT_STATUS: DONE] is `clean` (not transient_error)', () => {
     const result = parseInvocation(
       baseInputs({
-        stdout: '[SCHEGENT_STATUS: DONE]\n',
+        // FR-R4-F12 (FR-002): the token follows a complete audit block, as the prompt asks.
+        stdout: '=== SCHEGENT AUDIT LOG ===\nphase: speckit-specify\n=== END AUDIT LOG ===\n[SCHEGENT_STATUS: DONE]\n',
         exitCode: 0
       })
     );

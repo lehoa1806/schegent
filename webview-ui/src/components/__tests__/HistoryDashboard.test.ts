@@ -7,10 +7,11 @@
 // has been recorded rather than that a filter matched nothing (FR-007).
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import HistoryDashboard from '../HistoryDashboard.svelte';
 import type { HistoryEntry, QueueRuntime, WorkflowSnapshot } from '../../lib/snapshot-types';
 import { UNATTRIBUTED_QUEUE_LABEL, VERSION_NOT_RECORDED_LABEL } from '../../lib/history-rows';
+import { statusLine } from '../../lib/status-line.svelte';
 import {
   buildInFlightRun,
   buildQueueRuntime
@@ -36,6 +37,13 @@ vi.mock('../../lib/history-evidence-ipc', () => ({
     outcome: 'no-evidence-recorded',
     runId
   }))
+}));
+
+// The rerun form's read of the full description, stubbed on the same terms and
+// answered the way `history-rerun.test.ts` defaults it: no sidecar, so the form
+// opens on the preview.
+vi.mock('../../lib/history-description-ipc', () => ({
+  resolveHistoryDescription: vi.fn(async (runId: string) => ({ outcome: 'missing', runId }))
 }));
 
 afterEach(() => cleanup());
@@ -102,11 +110,14 @@ describe('HistoryDashboard', () => {
   });
 
   it('filters by outcome and exposes the no-results state', async () => {
-    const { container, getByLabelText } = render(HistoryDashboard, {
+    const { container, getByRole } = render(HistoryDashboard, {
       props: { snapshot: snapshotWith(history) }
     });
 
-    await fireEvent.change(getByLabelText('Outcome'), { target: { value: 'failed' } });
+    // The outcome filter is a segmented control: one pressed button per outcome.
+    const outcome = within(getByRole('group', { name: 'Outcome' }));
+    await fireEvent.click(outcome.getByRole('button', { name: 'Failed' }));
+    expect(outcome.getByRole('button', { name: 'Failed' }).getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector('[data-testid="history-entry-run-1"]')).toBeNull();
     expect(container.querySelector('[data-testid="history-entry-run-2"]')).not.toBeNull();
 
@@ -186,7 +197,8 @@ describe('HistoryDashboard', () => {
     const live = container.querySelector('[data-testid="history-entry-run-live"]');
     expect(live).not.toBeNull();
     expect(live?.getAttribute('data-history-source')).toBe('in-flight');
-    expect(getByTestId('history-item-run-live-status').textContent).toContain('running');
+    // The chip says the state in words, capitalised, never as the raw status value.
+    expect(getByTestId('history-item-run-live-status').textContent.trim()).toBe('Running');
     // FR-004 — a run with no durable record has nothing to re-run from.
     expect(getByTestId('history-item-rerun-run-live').getAttribute('aria-disabled')).toBe('true');
   });
@@ -289,19 +301,24 @@ describe('HistoryDashboard', () => {
         props: { snapshot: snapshotWith(NARROWED) }
       });
 
-      await fireEvent.change(getByTestId('history-filter-status'), { target: { value: 'failed' } });
+      await fireEvent.click(getByTestId('history-filter-status-failed'));
       expect(queryByTestId('history-entry-run-ok')).toBeNull();
 
       await fireEvent.click(getByTestId('history-item-open-details-run-bad'));
       await findByTestId('history-run-detail');
-      // The detail replaces the list rather than sitting beside it: FR-008 wants
-      // one run understood in full, and a half-width column is not that.
-      expect(queryByTestId('history-entry-run-bad')).toBeNull();
+      // The detail opens in a side panel beside the list (design rule 7), so the
+      // operator never leaves History to read it (FR-008). The run stays listed
+      // and is marked as the one the panel shows.
+      expect(getByTestId('history-entry-run-bad').classList.contains('sel')).toBe(true);
+      expect(getByTestId('history-item-open-details-run-bad').getAttribute('aria-current')).toBe(
+        'true'
+      );
 
       await fireEvent.click(getByTestId('history-detail-back'));
 
-      expect((getByTestId('history-filter-status') as HTMLSelectElement).value).toBe('failed');
+      expect(getByTestId('history-filter-status-failed').getAttribute('aria-pressed')).toBe('true');
       expect(getByTestId('history-entry-run-bad')).toBeTruthy();
+      expect(getByTestId('history-entry-run-bad').classList.contains('sel')).toBe(false);
       expect(queryByTestId('history-entry-run-ok')).toBeNull();
     });
 
@@ -326,6 +343,87 @@ describe('HistoryDashboard', () => {
         (getByPlaceholderText('Search by run ID, queue, or description') as HTMLInputElement).value
       ).toBe('did not');
       expect(queryByTestId('history-entry-run-ok')).toBeNull();
+    });
+  });
+
+  // Design rule 7 — a run's detail, and the form that runs it again, open in a
+  // drawer beside the list. Focus moves to the drawer's heading so the operator
+  // lands on what opened, the status line names the run, and focus goes back to
+  // the run when the drawer closes, by its own button or by Escape.
+  describe('the run drawer', () => {
+    it('opens the detail beside the list and moves focus to its heading', async () => {
+      const { getByTestId, findByTestId } = render(HistoryDashboard, {
+        props: { snapshot: snapshotWith(history) }
+      });
+
+      const opener = getByTestId('history-item-open-details-run-2');
+      opener.focus();
+      await fireEvent.click(opener);
+
+      const drawer = await findByTestId('history-drawer');
+      expect(drawer.tagName).toBe('ASIDE');
+      expect(within(drawer).getByTestId('history-run-detail')).toBeTruthy();
+      expect(getByTestId('history-entry-run-1')).toBeTruthy();
+
+      const heading = drawer.querySelector('h2');
+      expect(heading?.textContent.trim()).toBe('Pipeline validation');
+      expect(drawer.getAttribute('aria-labelledby')).toBe(heading?.id);
+      await waitFor(() => expect(document.activeElement).toBe(heading));
+      expect(statusLine.message).toBe('Showing details for Pipeline validation.');
+    });
+
+    it('hands focus back to the run it was opened from when it closes', async () => {
+      const { getByTestId, queryByTestId, findByTestId } = render(HistoryDashboard, {
+        props: { snapshot: snapshotWith(history) }
+      });
+
+      const opener = getByTestId('history-item-open-details-run-2');
+      opener.focus();
+      await fireEvent.click(opener);
+      const drawer = await findByTestId('history-drawer');
+      await waitFor(() => expect(document.activeElement).toBe(drawer.querySelector('h2')));
+
+      await fireEvent.click(getByTestId('history-detail-back'));
+
+      expect(queryByTestId('history-drawer')).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(opener));
+    });
+
+    it('closes on Escape', async () => {
+      const { getByTestId, queryByTestId, findByTestId } = render(HistoryDashboard, {
+        props: { snapshot: snapshotWith(history) }
+      });
+
+      const opener = getByTestId('history-item-open-details-run-1');
+      opener.focus();
+      await fireEvent.click(opener);
+      const drawer = await findByTestId('history-drawer');
+      await waitFor(() => expect(document.activeElement).toBe(drawer.querySelector('h2')));
+
+      await fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+
+      expect(queryByTestId('history-drawer')).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(opener));
+    });
+
+    it('opens Run again in the same drawer and returns to the run when it closes', async () => {
+      const { getByTestId, queryByTestId, findByTestId } = render(HistoryDashboard, {
+        props: { snapshot: snapshotWith(history) }
+      });
+
+      // The action sits in the row's menu, which is closed by the time the
+      // drawer closes, so focus goes back to the run's name instead.
+      await fireEvent.click(getByTestId('history-item-rerun-run-1'));
+      const drawer = await findByTestId('history-drawer');
+      expect(within(drawer).getByTestId('history-rerun-panel')).toBeTruthy();
+      await waitFor(() => expect(document.activeElement).toBe(drawer.querySelector('h2')));
+
+      await fireEvent.click(getByTestId('history-rerun-close'));
+
+      expect(queryByTestId('history-drawer')).toBeNull();
+      await waitFor(() =>
+        expect(document.activeElement).toBe(getByTestId('history-item-open-details-run-1'))
+      );
     });
   });
 });

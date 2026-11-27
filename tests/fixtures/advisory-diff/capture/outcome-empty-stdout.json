@@ -1,0 +1,18 @@
+{
+  "declares": {
+    "description": "Empty stdout is failed, no-report",
+    "outcome": {
+      "status": "failed",
+      "reason": "no-report"
+    }
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdout": "",
+    "exitCode": 1,
+    "timedOut": false,
+    "spawnError": false,
+    "overflow": false
+  }
+}

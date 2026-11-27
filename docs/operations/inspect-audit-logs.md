@@ -1,179 +1,557 @@
-# Inspect Audit Logs
+# Inspect structured audit logs
 
-The audit log is the operator-facing source of truth for Schegent runs. It's a sanitized append-only JSONL file at `.schegent/audit.log` inside the active workspace.
+Schegent's structured audit is workspace-local JSON Lines at
+`.schegent/audit.log`. Each line is host-projected lifecycle metadata, not a
+verbatim backend transcript. Use it to reconstruct observed Task, Phase, Queue,
+monitor, catalog, trust, reset, and retention transitions without treating it
+as a record of every byte emitted by a CLI.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
 
-## File layout
+On POSIX the log, its archives and `audit.log.cuts` are `0600` inside a `0700`
+`.schegent/`. A file left wider by an earlier release is narrowed in place: the
+live log on the next append, archives by the retention sweep the owner window
+runs once after Workspace Trust is established (and by each rotation). Its
+lines and hash chain are unchanged, so `npm run audit:verify` reads it as
+before. [Who can read them](../concepts/sessions-and-logs.md#who-can-read-them)
+covers every evidence sink.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/lib/safe-open.ts -->
 
-| Path | Purpose |
-|---|---|
-| `.schegent/audit.log` | Active log file. |
-| `.schegent/audit.log.<YYYYMMDD-HHMMSS-mmm-id>` | Collision-resistant rotated archives, oldest first. |
+## Open or export the active log
 
-> Schegent also writes a separate **raw session transcript** for each workflow
-> run at `.schegent/sessions/raw-<runId>.log`. That file is **not** the audit
-> log — it is a parallel, intentionally unredacted developer-debug artefact
-> with no per-file rotation and no sanitization. Complete inactive-run groups
-> are subject to the shared session-artifact age and byte retention policy. See
-> [inspect-raw-transcripts.md](inspect-raw-transcripts.md) for details.
+Run **Schegent: Show Audit Log** from the Command Palette
+(`schegent.showAuditLog`). The command opens the active workspace's
+`.schegent/audit.log` as a preview editor while preserving focus. If the file
+does not exist or cannot be opened, Schegent reports “no audit log yet.” The
+status-bar command and the sidebar's open-audit action route to the same
+command.
+<!-- Source: package.json -->
+<!-- Source: src/commands/show-audit.ts -->
+<!-- Source: src/ui/status-bar.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-open-audit-log.ts -->
 
-Rotation triggers when the active file exceeds `schegent.audit.rotation.sizeMB` (default 5 MB) **or** `schegent.audit.rotation.maxAgeDays` (default 30 days), whichever first. Archives are pruned to the most recent `retentionMaxArchives` (10) and trimmed to `retentionMaxArchiveAgeMs` (90 days).
+For a shareable reduced view, run **Schegent: Export Metadata-Only Audit**
+(`schegent.exportAuditLog`). It reads only the active log, opens a save dialog
+starting in your home directory and suggesting `schegent-audit-v3.jsonl`, and writes
+only parsable schema-v3 rows, to a local file with mode `0600`. It refuses a
+destination that is not a local file (a remote filesystem's mode cannot be checked)
+or that resolves into `.schegent/`, whatever the spelling: a link, a `..` or a
+different case does not get around it. Each export, and each refusal, records one
+`evidence-exported` audit row with counts and no path; dismissing the dialog records
+nothing. The command is owner-only: an untrusted window, or a window that does not
+own the workspace, refuses it, because the row it records needs an owner to write it.
+<!-- Source: package.json -->
+<!-- Source: src/commands/export-audit.ts -->
 
-## Quick inspection commands
+The metadata-only export removes `runId`, `correlationId`, and all payload keys
+except `action`, `attemptId`, `cause`, `clearedBinding`, `containmentPosture`,
+`executableTarget`, `exitCode`, `failureCause`, `fileChangeCounts`,
+`fingerprintDigestPrefix`, `matchesConfiguredKey`, `metrics`,
+`omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`,
+`permissionMode`, `removedSetting`, `resultEnvelope`, `scanner`,
+`secretKeyDigestPrefix`, `stalled`, `streamHighWaterBytes`,
+`streamObservedBytes`, `streamPendingHighWaterBytes`, `streamTruncated`,
+`terminationReason`, and `toolCategoryCounts` (enforced by
+`src/services/audit-export/counts-only-export.ts`). Guarded fields are also
+value-checked on the way out, because the export reads whatever bytes are on disk
+rather than what the current writer produces. The check is scoped by event type:
+on `phase-end` only the literals `cap_exhausted` and `pre_spawn_refusal` survive
+as a `cause`, while the other families
+that carry a `cause` — `phase-breakpoint-cleared`, `task-reordered`,
+`monitor-rate-limited`, the backend-ping failures, the delayed-retry pauses — keep
+their own vocabularies, admitted by shape as a short lowercase token. `stalled`
+must be a positive whole number, `attemptId` must be the UUID shape the writer
+mints, `resultEnvelope` must be `received` or `absent`, `failureCause` must be
+one of the ten closed codes and appears only on `task-execution-ended`,
+process-authority and stream metrics are scoped to `cli-invocation` /
+`monitor-invocation-summary`, and operator security fields are scoped to
+`scanner-consent-changed` / `telemetry-credential-changed`. A rejected value
+exports as `null` rather than
+being dropped, so a field that was on disk never reads as one that was never
+recorded. It retains the audit event ID,
+timestamp, event type, phase, iteration, outcome, and schema version. Rows from
+other schema versions or with invalid envelopes are omitted.
+<!-- Source: src/services/audit-export/counts-only-export.ts -->
+<!-- Source: src/commands/export-audit.ts -->
+<!-- Source: tests/unit/commands/export-audit.test.ts -->
 
-Show all events for a single run:
+Prefer that export when sending evidence outside the workspace. The active log
+still contains run/correlation identifiers, operator-defined phase IDs, event
+types, and bounded structured metadata even though unsafe payload detail is
+excluded.
+<!-- Source: src/audit/audit-entry.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/commands/export-audit.ts -->
 
-```bash
-grep '"correlationId":"<runId>"' .schegent/audit.log
+## Locate active and rotated evidence
+
+The active path and archive shape are:
+
+```text
+.schegent/audit.log
+.schegent/audit.log.YYYYMMDD-HHMMSS-mmm-xxxxxxxx
 ```
 
-Show only failures:
+The eight-character suffix comes from a UUID. Retention also recognizes the
+legacy seconds-only `audit.log.YYYYMMDD-HHMMSS` form. Files such as
+`audit.log.backup` or `audit.log.bak` do not match the retention pattern and
+are not deleted by the audit writer.
+<!-- Source: src/audit/audit-log-writer.ts -->
 
-```bash
-jq -c 'select(.outcome == "failure")' .schegent/audit.log
-```
+Before each append, the writer rotates when the current file is at least the
+configured size threshold or at least the configured maximum age. The age is
+measured from the **oldest usable row** in the file, not from the file's modification
+time, so a row dated far in the future cannot postpone a rotation, and an existing log whose oldest row is
+already past the limit rotates at its first append after an upgrade (its rows move to an archive unchanged). A file whose rows
+carry no usable time is aged from the moment it was first observed, which is recorded
+in `.schegent/audit-generation.json` (a small owner-only record keyed by the
+generation, so a rotation starts a fresh one). The exposed settings are
+`schegent.audit.rotation.sizeMB` (default 5, minimum 1) and
+`schegent.audit.rotation.maxAgeDays` (default 30, minimum 1).
 
-Show only monitor events:
+Generations written before the transport and attribution changes of this release can
+hold stream content and may name an operating-system user. They are not rewritten.
+An export lists them in its manifest as legacy generations, and they leave only whole,
+in a normal retention cut that the chain verifier follows.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: package.json -->
+<!-- Source: src/extension.ts -->
 
-```bash
-jq -c 'select(.eventType | startswith("monitor."))' .schegent/audit.log
-```
+By default, at most ten recognized archives younger than 90 days are retained;
+the active `audit.log` is never pruned. The retention sweep runs once at
+activation, after the workspace is trusted and only in the window that owns it,
+and after a successful rotation. It is best-effort, and refuses rotation or
+deletion when filesystem containment cannot be established.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: tests/unit/audit/retention.test.ts -->
 
-Show only hydration warnings:
+Every runtime writer also attempts to create `.schegent/.gitignore` with `*` so
+the directory's contents remain local. An existing ignore file is kept while it
+has an ignore-everything line (`*`, `/*`, `**` or `/**`) and no `!` negation.
+Anything else, including a file a repository committed, is replaced with the
+canonical body and a warning is logged; a tracked file then shows as modified. This is a best-effort source-control guard, not access
+control or tamper protection.
+<!-- Source: src/audit/schegent-gitignore.ts -->
 
-```bash
-grep '"audit.hydration.warning"' .schegent/audit.log
-```
+## Read the JSONL envelope
 
-## Entry shape
-
-Every entry has:
+Current writes use audit schema version `3`. A produced entry contains:
 
 ```json
 {
-  "id": "uuid",
-  "timestamp": "2026-05-10T11:32:14.123Z",
-  "schemaVersion": 1,
-  "runId": "run-uuid",
-  "correlationId": "run-uuid",
-  "phase": "specify | clarify | plan | tasks | analyze | implement | finalize | <custom phase id> | <queue> | <monitor>",
+  "id": "<uuid>",
+  "timestamp": "<ISO-8601 timestamp>",
+  "runId": "<run identifier>",
+  "phase": "<non-empty phase identifier>",
   "iteration": 1,
-  "eventType": "<see contracts/audit-events.ts>",
-  "payload": { },
-  "outcome": "success | failure | info"
+  "eventType": "phase-end",
+  "payload": {},
+  "outcome": "success",
+  "schemaVersion": 3,
+  "correlationId": "<correlation identifier>"
 }
 ```
 
-The single source of truth for `eventType` values is [src/contracts/audit-events.ts](../../src/contracts/audit-events.ts).
+`outcome` is `success`, `failure`, or `info`. Phase identifiers are
+operator-defined and are not constrained to a built-in list. If a caller does
+not supply `correlationId`, the writer uses `runId`.
+<!-- Source: src/audit/audit-entry.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/parser/audit-log-parser.ts -->
 
-### Dynamic-pipelines payload fields (additive, since 2026-05)
+The exhaustive current and retired event-type registry is
+`src/contracts/audit-events.ts`. Retired read-only values remain in the
+registry so historical archives stay parseable; an event's presence in that
+union does not prove that current code still emits it.
+<!-- Source: src/contracts/audit-events.ts -->
+<!-- Source: tests/lint/no-transport-in-audit.test.ts -->
 
-`phase-start` and `phase-end` payloads always include the pipeline context:
+Payloads are projected by event type before append. Generic projection omits
+command, argument, prompt, output, path, endpoint, conversation/session, file,
+and workspace-root keys; bounds nesting, strings, arrays, and total payload
+bytes; and rejects non-finite values or residual path/endpoint strings.
+Specialized v3 projections reduce CLI invocations to execution metadata and
+Phase file/tool evidence to counts.
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
 
-| Field | Type | When present |
-|---|---|---|
-| `pipelineId` | `string` | Always — the id of the Pipeline the run was launched from. Every Pipeline is one you imported or authored; the extension ships none, so there is no zero-config id to expect here. |
-| `phaseId` | `string` | Always — the active phase id (matches the entry's `phase`). |
-| `model` | `string` | Only when the active `PhaseDef.model` is set. |
-| `effort` | `'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | Only when the active `PhaseDef.effort` is set. |
-| `timeoutMs` | `integer` | Only when the active `PhaseDef.timeoutSeconds` is set. |
+On a `phase-end` row, **an absent count is not a zero.** Three fields behave this
+way, and all three are omitted together:
 
-Filter by pipeline — substitute one of your own ids (`speckit-new-feature` is
-the id the shipped example document happens to use):
+- `fileChangeCounts` — the `{created, modified, deleted}` triple;
+- `omittedFileEvidenceCount` — file paths the projection dropped;
+- `omittedToolEvidenceCount` — commands the projection dropped.
+
+They are written only when the phase's audit block was actually parsed. So
+`"fileChangeCounts": {"created": 0, "modified": 0, "deleted": 0}` is a
+measurement — the block was read and listed nothing — while the fields being
+missing means the phase ended before anything could be read, which is what a
+phase killed at its absolute deadline or idle timeout, refused before spawn, or
+cancelled mid-flight looks like. Read the missing case as *unknown*, never as
+*nothing happened*: a phase can create files and then be killed.
+
+**One exception, and it is historical.** The `deleted` member of that triple was
+not forwarded by the writer until 2026-09-13. The phase runner handed the
+projection the created, modified and command lists and dropped the deleted one,
+so the projection counted an absent value as `0`. In a row written before that
+date, a `deleted: 0` is therefore **not** a measurement — it is the same
+absent-versus-zero confusion described above, occurring inside a row that is
+otherwise honest. Nothing in the row distinguishes the two cases: the schema
+version did not change, so the row's timestamp is the only discriminator. The
+`created` and `modified` members were always real. `omittedFileEvidenceCount`
+sums all three, so in those same rows it under-reports by however many paths the
+phase deleted; `omittedToolEvidenceCount` is unaffected, because the command
+list was always forwarded.
+
+`omittedToolEvidenceCount` is the one to be most careful with, because its zero
+reads as a positive claim about what the phase **ran**. A `0` there says the
+projection dropped no commands; an absent field says nobody counted, and the
+phase may have executed anything at all. When you need to know whether a
+terminated phase touched the tree, `terminationReason` tells you why the row
+exists and these three fields tell you whether the question was ever asked.
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: tests/unit/audit/audit-payload-v3.test.ts -->
+<!-- Source: tests/unit/controller/phase-runner-outcome.test.ts -->
+
+## Pair a phase start with its end
+
+Every `phase-start` row is an attempt, and every `phase-end` row carries
+`payload.attemptId` — the `phase-start` row's own `id`. Pair on that field, never
+on position in the file and never on `(runId, phase, iteration)`: a retried phase
+produces several attempts under one such triple, and interleaved runs put other
+rows between a start and its end.
 
 ```bash
-jq -c 'select(.payload.pipelineId == "speckit-new-feature")' .schegent/audit.log
+# Attempts that were opened and never closed.
+jq -r 'select(.eventType == "phase-start") | .id' .schegent/audit.log | sort > /tmp/started
+jq -r 'select(.eventType == "phase-end") | .payload.attemptId // empty' \
+  .schegent/audit.log | sort > /tmp/ended
+comm -23 /tmp/started /tmp/ended
 ```
 
-Filter all phases that used a model override:
+Output here means a phase began and the host never recorded how it ended. An
+attempt closed twice — the same `attemptId` on two `phase-end` rows — is the
+other failure worth checking for, and means the same thing in reverse: the two
+rows disagree and neither is the verdict.
 
 ```bash
-jq -c 'select(.payload.model != null)' .schegent/audit.log
+jq -r 'select(.eventType == "phase-end") | .payload.attemptId // empty' \
+  .schegent/audit.log | sort | uniq -d
 ```
 
-### Delayed-retry payload fields (additive, since feature 011)
+Rows written before feature 212 shipped carry no `attemptId` at all. They are
+excluded above rather than reported as unpaired, which is why `// empty` is
+there: an archive that predates the field would otherwise read as one long
+outage.
 
-Four event types record per-run delayed-retry transitions:
-
-| `eventType` | `outcome` | Payload fields |
-|---|---|---|
-| `retry-scheduled` | `pending` | `cause` (`transient_error` \| `rate_limit`), `delayedRetryCount`, `pendingRetryAt`, `backoffMs` |
-| `retry-manual` | `pending` | `priorDelayedRetryCount`, `priorPendingRetryCause` |
-| `retry-recovered` | `success` | `priorDelayedRetryCount` |
-| `queue-paused` | `failure` | `reason` (`retry-cap-exhausted:<runId>`), `cause`, `delayedRetryCount` |
-
-Filter all delayed-retry transitions for a single run:
+Age is not the only reason a `phase-end` row carries no `attemptId`, so do not
+read a bare one on a current build as a half-finished rollout. The controller
+appends its own cap-exhaustion row through
+`PhaseRunner.appendCapExhaustedPhaseEnd()`, called from `src/services/run-driver.ts`,
+after the runner has already closed the attempt with a terminal row of its own.
+That row states a run-level verdict rather than the end of an attempt, so it
+carries no `attemptId` by design and pairs with nothing. It is the only row in
+the file with `terminationReason` `cap-exhausted`, which is how to separate the
+expected ones from the rest:
 
 ```bash
-grep '"correlationId":"<runId>"' .schegent/audit.log \
-  | jq -c 'select(.eventType | test("retry-|queue-paused"))'
+# `phase-end` rows with no attemptId, grouped by why they exist.
+jq -r 'select(.eventType == "phase-end" and (.payload.attemptId | not))
+  | .payload.terminationReason // "(none)"' .schegent/audit.log | sort | uniq -c
 ```
 
-### Task lifecycle payload fields (additive, since feature 072)
+`cap-exhausted` counts are expected at any age. Anything else here is either a
+pre-212 archive or the gap worth chasing.
 
-Feature 072 introduces four events that frame task and phase execution:
+### Correlating all six diagnostic classes by `(runId, attemptId, reason)` (`FR-R8-03` / `03-02`)
 
-| `eventType` | Payload fields |
+Using installed metadata-only audit and runtime diagnostics alone (without enabling raw transcripts or CLI transport capture), an operator can join a single `(runId, attemptId)` across:
+
+1. **Admission / pre-spawn refusal** — `phase-end` row carrying `payload.attemptId`, `terminationReason: "pre_spawn_refusal"`, and `cause: "pre_spawn_refusal"` (or admission refusal reason in the runtime log).
+2. **Qualified child identity and permission posture** — `cli-invocation` row carrying optional `payload.attemptId` alongside `runner`, `operation`, `executableTarget`, `permissionMode`, and `containmentPosture`.
+3. **Stream high-water marks** — `monitor-invocation-summary` row carrying optional `payload.attemptId`, `streamHighWaterBytes` (peak bytes retained in `ZippedStreamBuffer`), `streamObservedBytes` (total stream bytes observed), and `streamTruncated` (`boolean`), alongside `phase-end` `metrics`.
+4. **Missing usage / unverifiable spend** — absence of cost/token metrics on `phase-end` (`metrics.totalCostUsd` omitted rather than coerced to `0`) and `strict-usd` refusal reason (`spend-unverifiable`).
+5. **Contradictory exit** — `phase-end` `verdictBasis: "exit-code"`, non-zero `exitCode`, `resultEnvelope: "received"`, and `warnings` naming `acp-contradictory-exit` / `host-verification-failed`.
+6. **Recovery decision** — runtime log / diagnostics bundle `run-status` carrying `runId`, `attemptId`, `reason` (e.g., `recovery-uncertain-effect`), and explicit operator next step (`inspect-and-resume-or-cancel`).
+
+All new fields are additive on `AUDIT_SCHEMA_VERSION = 3` and verified end-to-end in `repo/tests/integration/correlated-diagnostics-and-otlp.test.ts` (including clean, mid-chain tampered `broken-link`, and simulated mid-write power-loss torn-tail `malformed` verification on disposable logs). Remember the same-user and power-loss boundaries stated below: the hash chain makes single-row edits and unrecorded truncations evident, but does not prevent the same OS user from recomputing both the log and the external checkpoint, nor does it guarantee durability of an un-flushed final line across sudden power loss.
+<!-- Source: src/controller/phase-attempt-recorder.ts -->
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/services/run-driver.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: src/runner/zipped-stream-buffer.ts -->
+<!-- Source: tests/integration/correlated-diagnostics-and-otlp.test.ts -->
+
+## Count terminations that produced no verdict
+
+`payload.resultEnvelope` on a `phase-end` row says whether the backend produced
+its end-of-invocation result envelope. It has three readings, and the third is
+the one to get right:
+
+- `"received"` — the invocation ran and a verdict arrived.
+- `"absent"` — the invocation **ran** and no verdict arrived. This is the
+  population to count.
+- **the field is missing** — UNKNOWN. Either the backend does not report the
+  fact, or no process ever started (a phase refused before spawn, which carries
+  `"cause": "pre_spawn_refusal"`). Never read a missing field as `"absent"`:
+  doing so counts refusals as backends that ran and went silent, which is the
+  opposite diagnosis.
+
+```bash
+# Ran, produced no verdict.
+jq -c 'select(.eventType == "phase-end" and .payload.resultEnvelope == "absent")' \
+  .schegent/audit.log
+
+# The three readings, as a census.
+jq -r 'select(.eventType == "phase-end")
+       | .payload.resultEnvelope // "unknown"' .schegent/audit.log |
+  sort | uniq -c | sort -nr
+```
+
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/audit/audit-payload.ts -->
+<!-- Source: tests/unit/controller/phase-runner-backend-posture.test.ts -->
+
+The full entry then passes through the shared sanitizer. If sanitization would
+change the projected payload, the writer rejects the append as
+`secret-detected` instead of persisting redacted payload evidence. Live
+subscribers receive the same sanitized entry, including when the durable write
+itself fails.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: tests/unit/audit/sanitize-listener.test.ts -->
+<!-- Source: tests/unit/audit/audit-log-writer.test.ts -->
+
+## Count how failed rows were resolved
+
+The audit log says that a run failed and, later, that a row was removed. It does not say which of
+the operator's exits a failed row took. "Schegent: Report Failed-Row Exits" in the Command Palette
+counts how each failed row was resolved, by failure cause, and states what it could not see. It is
+read-only: it works in an untrusted window, takes no lock, and two windows may run it at once.
+
+- **What it reads.** The queue state once, at a cutoff taken when you run the command, and every
+  audit segment present under `.schegent/`: the cut record, the archives and the live log. It reads
+  no failure record, session transcript, row title or error text, so none of them can reach the
+  report.
+- **The report** opens as an unsaved Markdown document with six sections:
+  - **Identity**: the cutoff, the extension version, the first removal that recorded provenance
+    (or "none seen"), and each queue's stored failure policy beside the workspace default;
+  - **Coverage**: what was read: segments read, unreadable segments, cut records met, unparseable
+    lines, backwards timestamps, collapsed duplicates, records after the cutoff, identifiers not
+    shown, and files beside the log that were never read;
+  - **Totals**: every cause by every outcome, zeros included, with a line that reconciles the
+    episode count with the failed terminal records read;
+  - **Unknowns**: the unknown outcomes, counted by reason;
+  - **Episodes**: newest first, at most 200 rows, with a line for the rest;
+  - **Limits**: what the report cannot see.
+- **Episodes.** An episode is one failed terminal record. A run that fails, is resumed and fails
+  again has two, and a removal ends only one of them. The same failed record written twice with no
+  start between is one episode and one collapsed duplicate.
+- **The ten dispositions**, one per episode:
+  - `resumed`: the same run started again;
+  - `restarted-fresh`: the task started again under another run;
+  - `attested-removed`: removed after the operator marked it completed;
+  - `removed-failed`: removed while still failed;
+  - `removed-other`: removed in another state, such as pending after a retry;
+  - `queue-deleted`: its queue was deleted;
+  - `queue-cleared`: its queue was cleared, by Clear Queue or Clear All;
+  - `attested-kept`: marked completed by the operator and still in the queue;
+  - `still-failed`: still failed at the cutoff; the report counts the later tasks its queue started
+    and says the audit log cannot say why;
+  - `retry-requested`: pending again at the cutoff, as after Retry.
+- **The six unknown reasons**, never folded into a disposition:
+  - `provenance-not-recorded`: removed as completed, and the removal line has no
+    `completionProvenance` (written before that field existed, or its value was refused);
+  - `completed-without-attestation`: removed as completed and recorded as not attested;
+  - `row-absent`: no later event and no row at the cutoff;
+  - `snapshot-mismatch`: the row at the cutoff does not match the failed run;
+  - `history-gap`: a cut record, an unreadable segment or an unparseable line may hide what
+    happened;
+  - `queue-unresolved`: the task id was met in more than one queue, or a move could not be followed.
+- **What it cannot see.** A queue can run past a failed row under the `continue` policy, and a change
+  of a queue's failure policy is not audited, so the report cannot tell why a queue ran on; it shows
+  the policies as they stood at the cutoff. Clear Failed and Clear Done remove rows without any audit
+  entry, so a row they removed reads `row-absent`; Clear Queue and Clear All are counted as
+  `queue-cleared`, and deleting a queue as `queue-deleted`, and neither records provenance. The
+  report reads metadata only: it cannot see why an operator chose an exit.
+- **It writes nothing.** The report opens unsaved. To keep a dated copy, save it under the
+  workspace `docs/`.
+<!-- Source: src/commands/report-failed-row-exits.ts -->
+<!-- Source: src/services/failed-row-census/failed-row-census.ts -->
+<!-- Source: src/services/failed-row-census/census-report.ts -->
+
+## Query the active file
+
+Validate that every non-empty line is JSON:
+
+```bash
+jq -c . .schegent/audit.log > /dev/null
+```
+
+Select one run or explicitly threaded correlation identifier:
+
+```bash
+jq -c --arg run '<run-id>' \
+  'select(.runId == $run or .correlationId == $run)' \
+  .schegent/audit.log
+```
+
+Show failures, Phase endings, or monitor events:
+
+```bash
+jq -c 'select(.outcome == "failure")' .schegent/audit.log
+jq -c 'select(.eventType == "phase-end")' .schegent/audit.log
+jq -c 'select(.eventType | startswith("monitor-"))' .schegent/audit.log
+```
+
+Count the event types present in the file:
+
+```bash
+jq -r '.eventType' .schegent/audit.log | sort | uniq -c | sort -nr
+```
+
+These filters follow the current envelope and hyphenated monitor event names.
+Do not use historic `monitor.*` or `audit.hydration.warning` spellings as if
+they were current event types.
+<!-- Source: src/audit/audit-entry.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
+
+The Show and Export commands inspect only the active file. When the relevant
+run predates a rotation, apply the same `jq` filter to the recognized
+`audit.log.<stamp>` archives as well. The history audit-pointer resolver scans
+recognized archives followed by the active log, streams rather than loading
+the whole corpus, and limits a resolved run to a bounded entry count.
+<!-- Source: src/commands/show-audit.ts -->
+<!-- Source: src/commands/export-audit.ts -->
+<!-- Source: src/services/history/audit-pointer-resolver.ts -->
+
+## Handle compatibility and malformed rows
+
+`parseAuditLogLineDetailed` preserves a valid envelope when its `eventType` is
+unknown and returns a warning. It also preserves a row whose persisted schema
+version exceeds the runtime while warning about the version. This lets older
+code retain forward evidence instead of silently deleting an unfamiliar event.
+<!-- Source: src/parser/audit-log-parser.ts -->
+<!-- Source: tests/unit/parser/audit-log-parser-monitor.test.ts -->
+
+Malformed JSON, non-object values, and rows missing a required envelope field
+produce no parsed entry. The sidebar cold-start reader drops such rows, emits at
+most one sanitized warning per read, and does not modify the file. Metrics and
+history readers count parse warnings while continuing over surrounding valid
+rows.
+<!-- Source: src/parser/audit-log-parser.ts -->
+<!-- Source: src/ui/sidebar/audit-tail-coldstart.ts -->
+<!-- Source: tests/unit/ui/sidebar/audit-tail-coldstart.test.ts -->
+<!-- Source: src/metrics/metrics-service.ts -->
+<!-- Source: src/services/history/audit-pointer-resolver.ts -->
+
+When an unknown type appears, record the literal, schema version, extension
+version, file name, and neighboring event IDs before changing anything. An
+unknown type may be forward-compatible evidence or a historical read-only
+event; it is not, by itself, permission to edit or delete the row.
+<!-- Source: src/parser/audit-log-parser.ts -->
+<!-- Source: src/contracts/audit-events.ts -->
+
+## Verify the chain and check for loss
+
+Run **Schegent: Verify Audit Chain** (`schegent.verifyAuditChain`) in any window,
+trusted or not. It walks the hash chain across the archives and the cut file,
+then reads the history against the head checkpoint that Schegent keeps in the
+extension's per-user storage, outside `.schegent/`. The chain detects an edit, a reorder or an
+unrecorded removal. It does not prevent the same OS user from rewriting the log, recomputing the
+chain and replacing the checkpoint ([what the chain does and does not cover](../security/threat-model.md#t3--audit-log-tampering-or-non-append-writes)).
+The result is one message:
+
+- **The chain**: how many chained entries and recorded prunes, whether it began
+  at `genesis` or by linking to the last legacy row, how many leading legacy
+  entries it does not cover, and each **diagnosed damage** by file, line, length
+  and a 12-character digest prefix. A diagnosed damage is a final line that was
+  not valid JSON and was kept exactly as found, with a row after it naming it;
+  it is recorded, not repaired, and it does not fail the audit sink. Without that
+  row the same line is reported as `malformed`, as before.
+- **The loss check**, exactly one of seven states:
+
+| State | What it says |
 |---|---|
-| `task-execution-started` | `runId`, `taskId`, `description`, `pipelineId`, `isResume` |
-| `task-execution-ended` | `runId`, `terminalStatus` (`completed` \| `failed`), `phasesTotal`, `phasesCompleted`, `phasesSkipped` |
-| `task-execution-paused` | `runId`, `pauseCause` |
-| `phase-jumped` | `runId`, `reason` (`operator-jump`), `skippedPhaseId`, `nextPhaseId` |
+| new workspace | No audit history and no checkpoint: nothing has been recorded yet. |
+| consistent | History reaches the checkpointed entry. Only entries after it could be missing undetected. |
+| adopted | As consistent, and loss detection began on a stated date: earlier history was not checked for loss. |
+| shorter | History is shorter than the checkpoint, with the expected and found counts, or no longer contains the checkpointed entry. Fails the audit sink (`history-shorter`). |
+| missing | The checkpoint expects history and no audit file is present. Fails the audit sink (`history-missing`). |
+| no checkpoint for this location | History is present but no checkpoint exists for this folder's location: it predates loss detection, or the folder was moved. The next recorded event in the owner window starts one. |
+| not performed | The checkpoint is unreadable, unreachable or from a newer release, or the chain is not intact. This never says the history is complete. |
 
-Filter all task lifecycle boundaries for a single run:
+The command writes no file. A checkpoint can only be started by the owner
+window's first append, never by verification.
 
-```bash
-grep '"correlationId":"<runId>"' .schegent/audit.log \
-  | jq -c 'select(.eventType | test("task-execution-|phase-jumped"))'
-```
+The loss check reads `.schegent/audit.log.cuts` as written. A checkpointed
+entry at or below the pruned total counts as pruned, so `consistent` does not
+rule out removal by someone who also added a cut record to that file
+(threat-model T3, the cut-record limit).
 
-The extended `fatal-signature-matched` event (also additive in 011)
-now carries `payload.source: 'built-in' | 'operator-defined'` so an
-operator-defined registry hit can be triaged separately from a
-vendor message hit.
+If a `shorter` or `missing` finding was deliberate, for example you moved the
+audit files away, run **Schegent: Reset Audit History Checkpoint**
+(`schegent.resetAuditCheckpoint`) in the owner window. It refuses while any
+`audit.log*` file is present under `.schegent/`, so move the history out first:
+the command never deletes or moves evidence. After a confirmed reset the next
+recorded event starts a new history that begins with a reset record.
 
-See [delayed-retry-and-manual-override.md](delayed-retry-and-manual-override.md)
-for the state machine these events describe.
+One history fails the chain walk for a reason a reset does not touch. An older release pruned the
+boundary between legacy rows and the first chained row and recorded the prune in a version 1 cut
+record. That record names a legacy row's digest that no retained byte produces, so the first link
+cannot be checked, and the walk does not accept it on trust. It reports `broken-link` at that cut,
+with the detail "a cut written before this release removed the start of the chain, so its first link
+cannot be checked", and in the extension the break also reports the audit sink as failing. This
+release writes version 2 cut records, which the walk accounts for, so that detail names a cut an
+older release wrote. The extension does not repair it. To leave it, move the history out yourself:
+every `audit.log*` file under `.schegent/`, the cut file `audit.log.cuts` included. If the loss
+check then reports `missing`, run **Schegent: Reset Audit History Checkpoint** in the owner window.
+The next recorded event starts a new history.
 
-## Sanitization
+`npm run audit:verify` runs the same walk from a shell and prints the same
+transition, pruned-legacy and diagnosed-damage lines. It cannot read the
+checkpoint, so it always ends with `loss check: not performed`, and when no audit
+file is present it says it cannot tell a new workspace from missing history.
+<!-- Source: src/commands/verify-audit-chain.ts -->
+<!-- Source: src/commands/reset-audit-checkpoint.ts -->
+<!-- Source: src/audit/audit-checkpoint.ts -->
+<!-- Source: src/audit/audit-chain.ts -->
+<!-- Source: scripts/verify-audit-chain.ts -->
 
-Every entry is passed through `logger.sanitizeRecord()` **once** before disk write. The same sanitized payload is delivered to listeners. There is no code path where listeners see the raw fields.
+## Diagnose missing durable evidence
 
-If you suspect a leak (a token-shaped string appears in `.schegent/audit.log`):
+Appends are serialized. Each filesystem append has a five-second timeout; a
+failed append rejects to its caller, reports structured evidence as
+unavailable through the evidence-health path, and does not poison later
+appends: the next row links to the last row that landed, and the audit sink is
+healthy again once an append lands (a broken link or a loss finding is not
+cleared by that). Rotation and retention failures are warning-only so the writer can
+continue using the active file where safe.
+<!-- Source: src/audit/audit-log-writer.ts -->
 
-1. Verify the redaction set in [src/lib/logger.ts](../../src/lib/logger.ts) covers the pattern.
-2. Run `npm run test -- audit/sanitization` to verify the regression suite still passes.
-3. Report it privately — see the [security policy](../../.github/SECURITY.md). A redaction gap is a vulnerability; do not file a public issue with the sample.
+If expected rows are absent:
 
-## Hydration warnings
+1. Check the active file and recognized archives before concluding the event
+   was never written.
+2. Inspect the sanitized Schegent runtime log for `audit append failed;
+   structured evidence is unavailable`, append timeout, rotation, retention,
+   gitignore, or containment-refusal warnings.
+3. Check filesystem writability and available space without moving or deleting
+   the evidence corpus.
+4. Use the run ID and event metadata from runtime/UI evidence to bound the gap.
+5. Preserve the files before attempting recovery.
 
-The audit parser emits `audit.hydration.warning` for entries with:
+The writer's failure warning includes event ID, event type, run ID, and an
+available errno, but deliberately excludes payload and path bytes.
+<!-- Source: src/audit/audit-log-writer.ts -->
 
-- A `schemaVersion` higher than the current runtime's `AUDIT_SCHEMA_VERSION`.
-- An `eventType` not in the `KNOWN_AUDIT_EVENT_TYPE_SET`.
-
-Both cases **preserve** the entry rather than dropping it. The warning surfaces in the live activity feed and lets operators detect when the workspace was last touched by a newer Schegent build.
-
-If you see a warning:
-
-1. Note the entry's `schemaVersion` and `eventType`.
-2. If `schemaVersion` is higher than `AUDIT_SCHEMA_VERSION`, your runtime is older — upgrade the extension.
-3. If `eventType` is unrecognized, the entry was emitted by code paths that don't exist in this runtime; it's safe to ignore unless it correlates with operational anomalies.
-
-## Correlation IDs
-
-Every entry carries `correlationId`, which defaults to `runId` if not explicitly threaded. This makes greppable run reconstruction trivial:
-
-```bash
-grep '"correlationId":"<id>"' .schegent/audit.log | jq -c .
-```
-
-Use this when reconstructing a stuck run; see [debug-stuck-runs.md](debug-stuck-runs.md).
-
-## Schemas
-
-| Constant | Value | Source |
-|---|---|---|
-| `AUDIT_SCHEMA_VERSION` | `1` | [src/contracts/audit-events.ts](../../src/contracts/audit-events.ts) |
-| `STATE_SCHEMA_VERSION` | `2` | [src/contracts/state-schema.ts](../../src/contracts/state-schema.ts) — bumped in feature 011 to add `delayedRetryCount`, `pendingRetryAt`, `pendingRetryCause` to `WorkflowRun`. Forward-migrator at [src/state/workflow-run-migrator.ts](../../src/state/workflow-run-migrator.ts). |
-
-Schema versions are monotonic integers. Bumping either constant is a breaking change requiring a migration story.
+Audit files are plain local JSONL with rotation and retention. Each row carries
+the digest of the previous row, so an edit or an unrecorded removal is evident,
+and a checkpoint outside the workspace lets verification report removed history.
+There is no signature or immutable storage, and the same OS user can edit both
+stores. Treat the files as useful host-observed evidence, not proof that a local
+operator or process could not alter them after writing.
+<!-- Source: src/audit/audit-log-writer.ts -->

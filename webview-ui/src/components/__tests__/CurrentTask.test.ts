@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { readFileSync } from 'node:fs';
@@ -53,6 +53,13 @@ function buildMonitor(overrides: Partial<CliMonitorState> = {}): CliMonitorState
     detectedIssues: Object.freeze([]),
     msSinceLastStdout: 2_000,
     msSinceLastStderr: null,
+    // Feature 211 — seeded here rather than left to `overrides`, so the call
+    // sites that predate the bound keep saying what they always meant: no
+    // deadline was armed, and nothing has approached one.
+    maxDurationMs: null,
+    deadlineApproaching: false,
+    // FR-R3-208 — a Run that is not holding, which is what every earlier case meant.
+    held: false,
     ...overrides
   });
 }
@@ -96,7 +103,8 @@ const ALL_FRESHNESS_STATES: ReadonlyArray<FreshnessState> = [
   'slowing',
   'stalled',
   'paused',
-  'idle'
+  'idle',
+  'holding'
 ];
 
 describe('CurrentTask', () => {
@@ -135,6 +143,22 @@ describe('CurrentTask', () => {
     const fresh = container.querySelector('[data-testid="sidebar-freshness"]');
     expect(fresh!.textContent).toContain('stalled');
     expect(fresh!.textContent).toContain('45s');
+  });
+
+  // FR-R3-208 (T1894): a held Run reads holding, with its seconds when it has them.
+  it('label reads holding with the staleSeconds suffix, and bare without it (CT1)', () => {
+    applySnap(
+      buildSnapshot({ liveActivity: buildLiveActivity({ freshness: 'holding', staleSeconds: 45 }) })
+    );
+    const withSeconds = render(CurrentTask).container.querySelector('[data-testid="sidebar-freshness"]');
+    expect(withSeconds!.textContent.trim()).toBe('holding, 45s');
+    cleanup();
+
+    applySnap(
+      buildSnapshot({ liveActivity: buildLiveActivity({ freshness: 'holding', staleSeconds: null }) })
+    );
+    const bare = render(CurrentTask).container.querySelector('[data-testid="sidebar-freshness"]');
+    expect(bare!.textContent.trim()).toBe('holding');
   });
 
   it('label has no suffix for live', () => {
@@ -249,5 +273,66 @@ describe('CurrentTask', () => {
     const { container } = render(CurrentTask);
     const row = container.querySelector('[data-testid="sidebar-monitor-row"]');
     expect(row!.textContent).toContain('stalled');
+  });
+
+  /**
+   * Feature 211 (T020) — the bound on the line that already carries the status.
+   *
+   * The row said how long the child had been quiet and never how long it had
+   * been running against the cap that would kill it, so an operator watching a
+   * six-hour phase had no way to see it approaching one. The no-bound case must
+   * render byte-for-byte as it does today: a permanent "of --" is furniture, and
+   * an unbounded invocation showing the setting's default would assert a limit it
+   * does not have (FR-018).
+   */
+  describe('monitor row invocation bound (Feature 211)', () => {
+    const STARTED_AT = '2026-05-10T00:00:00.000Z';
+    const SIX_HOURS_MS = 21_600_000;
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function atElapsed(ms: number): void {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(Date.parse(STARTED_AT) + ms));
+    }
+
+    it('renders elapsed against the bound when one is in force', () => {
+      atElapsed(23 * 60_000);
+      applySnap(
+        buildSnapshot({
+          monitor: buildMonitor({
+            status: 'running',
+            startedAt: STARTED_AT,
+            msSinceLastStdout: 2_000,
+            maxDurationMs: SIX_HOURS_MS
+          })
+        })
+      );
+      const { container } = render(CurrentTask);
+      const row = container.querySelector('[data-testid="sidebar-monitor-row"]');
+      expect(row!.textContent).toContain('running');
+      expect(row!.textContent).toContain('stdout 2s');
+      expect(row!.textContent).toContain('23m 0s of 6h 0m');
+    });
+
+    it('renders exactly as it does today when no bound is in force', () => {
+      atElapsed(23 * 60_000);
+      applySnap(
+        buildSnapshot({
+          monitor: buildMonitor({
+            status: 'running',
+            startedAt: STARTED_AT,
+            msSinceLastStdout: 2_000,
+            maxDurationMs: null
+          })
+        })
+      );
+      const { container } = render(CurrentTask);
+      const row = container.querySelector('[data-testid="sidebar-monitor-row"]');
+      expect(row!.textContent).toBe('running / stdout 2s');
+      expect(row!.textContent).not.toContain('of');
+    });
   });
 });

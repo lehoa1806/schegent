@@ -21,8 +21,8 @@
  * adds. Callers override what they mean to vary and inherit the rest.
  */
 
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import {
-  DEFAULT_QUEUE_ID,
   type QueueRegistry,
   type QueueRegistryEntry,
   type QueueSchedule

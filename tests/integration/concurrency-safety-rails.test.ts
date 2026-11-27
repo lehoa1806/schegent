@@ -21,11 +21,13 @@
 // text; sharing one persisted field would make dismissing either dismiss both.
 
 import { describe, it, expect } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { ExecutionLeaseManager } from '../../src/state/execution-lease';
 import { AutoDrainCoordinator } from '../../src/services/auto-drain-coordinator';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { createQueue } from '../../src/queue/queue-registry';
 import type { Clock, Scheduler } from '../../src/state/lock';
 import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
 import type { FeatureRequest } from '../../src/queue/feature-request';
@@ -180,7 +182,8 @@ describe('feature 092 (T046, FR-037, SC-009) — the shared-working-tree notice'
         queue: { ...current, migrationNotice: 'pending' as const },
         result: undefined
       }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
 
     const created = await queue.createQueue('Docs');
@@ -201,7 +204,8 @@ describe('feature 092 (T046, FR-037, SC-009) — the shared-working-tree notice'
         queue: { ...current, migrationNotice: 'dismissed' as const },
         result: undefined
       }),
-      DEFAULT_QUEUE_ID
+      DEFAULT_QUEUE_ID,
+      unfencedCommit('test-fixture')
     );
     expect(store.getQueue(DEFAULT_QUEUE_ID).migrationNotice).toBe('dismissed');
     expect(store.getConcurrencyNotice()).toBe('dismissed');
@@ -296,7 +300,9 @@ async function makeOverlapHarness(cap: number, extraQueues: readonly string[]): 
     admitResume: async () => ({ resumed: false, completed: Promise.resolve() }),
     get liveRunCount(): number {
       return liveRuns;
-    }
+    },
+    // FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session; a double holds none.
+    holdsSession: () => false
   };
 
   const autoDrain = new AutoDrainCoordinator({
@@ -304,10 +310,14 @@ async function makeOverlapHarness(cap: number, extraQueues: readonly string[]): 
     queue,
     executionLease: {
       tryAcquire: (queueId: string) => executionLease.tryAcquire(queueId),
-      release: (queueId: string) => executionLease.release(queueId)
+      release: (queueId: string) => executionLease.release(queueId),
+      claimFor: (queueId: string) => executionLease.claimFor(queueId)
     },
     controller: controller as unknown as SchegentWorkflowController,
-    auditWriter
+    auditWriter,
+    // Feature 195 (T012) — required port; no queue here carries a failed row,
+    // so which policy resolves is immaterial to what this file asserts.
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   return {

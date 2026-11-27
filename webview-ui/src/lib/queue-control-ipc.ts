@@ -13,13 +13,20 @@
 // tidiness instinct is a diff with no requirement behind it.
 
 import {
+  CMD_CLEAR_COMPLETED,
+  CMD_CLEAR_QUEUE,
   CMD_DELETE_QUEUE,
   CMD_MOVE_TASK,
-  CMD_SAVE_QUEUE_SETTINGS
+  CMD_SAVE_QUEUE_SETTINGS,
+  CMD_SET_QUEUE_FAILURE_POLICY,
+  type CommandType
 } from './messages';
-import { snapshotStore } from './snapshot-store.svelte';
+import type { QueueFailurePolicy } from './generated/queue-failure-policy';
+import { refusalTextFrom } from './boundary-refusal-text';
+import { sendIntent, type IntentWaitOptions } from './intent-ledger';
 import type { AckResult } from './snapshot-store.svelte';
 import { useConfirm } from './use-confirm';
+import type { ActionCopyContext } from './action-copy';
 import { postCommand } from './vscode-api';
 
 const ACK_TIMEOUT_MS = 5000;
@@ -74,12 +81,22 @@ export type DeleteQueueOutcome =
 export async function confirmAndDeleteQueue(
   queueId: string,
   queueName: string,
-  originatingElement: HTMLElement | null = null
+  originatingElement: HTMLElement | null = null,
+  wait: IntentWaitOptions<DeleteQueueOutcome> = {}
 ): Promise<DeleteQueueOutcome> {
-  const probe = await correlated<DeleteQueueProbeResult>(
-    () => postCommand(CMD_DELETE_QUEUE, { queueId }).correlationId,
+  const probe = await correlated<DeleteQueueProbeResult, { queueId: string }>(
+    CMD_DELETE_QUEUE,
+    { queueId },
+    (correlationId, payload) => {
+      postCommand(CMD_DELETE_QUEUE, payload, { correlationId });
+    },
     readProbeAck,
-    { status: 'rejected', reason: 'timeout' }
+    { status: 'rejected', reason: 'timeout' },
+    // A late probe answer changes nothing: a refusal is shown, and an impact (the confirmation
+    // the operator was never asked) clears the not-yet-known text. Asking now would surprise.
+    mapWait(wait, (late: DeleteQueueProbeResult): DeleteQueueOutcome =>
+      late.status === 'rejected' ? { status: 'refused', reason: late.reason } : { status: 'declined' }
+    )
   );
   if (probe.status === 'rejected') {
     return { status: 'refused', reason: probe.reason };
@@ -97,14 +114,19 @@ export async function confirmAndDeleteQueue(
     return { status: 'declined' };
   }
 
-  const deleted = await correlated<QueueControlResult>(
-    () => postCommand(CMD_DELETE_QUEUE, { queueId, confirmed: true }).correlationId,
+  // The confirmed and the unconfirmed sends are different payloads, so they are different
+  // intents: the probe's identity is never reused for the delete (FR-021).
+  const deleted = await correlated<QueueControlResult, { queueId: string; confirmed: true }>(
+    CMD_DELETE_QUEUE,
+    { queueId, confirmed: true },
+    (correlationId, payload) => {
+      postCommand(CMD_DELETE_QUEUE, payload, { correlationId });
+    },
     toQueueControlResult,
-    { status: 'rejected', reason: 'timeout' }
+    { status: 'rejected', reason: 'timeout' },
+    mapWait(wait, toDeleteOutcome)
   );
-  return deleted.status === 'accepted'
-    ? { status: 'deleted' }
-    : { status: 'refused', reason: deleted.reason };
+  return toDeleteOutcome(deleted);
 }
 
 function readProbeAck(ack: AckResult): DeleteQueueProbeResult {
@@ -127,11 +149,16 @@ function readProbeAck(ack: AckResult): DeleteQueueProbeResult {
  */
 export function saveQueueSettings(
   globalConcurrencyCap: number,
-  defaultQueueId: string
+  defaultQueueId: string,
+  wait?: IntentWaitOptions<QueueControlResult>
 ): Promise<QueueControlResult> {
   return correlatedRequest(
-    () =>
-      postCommand(CMD_SAVE_QUEUE_SETTINGS, { globalConcurrencyCap, defaultQueueId }).correlationId
+    CMD_SAVE_QUEUE_SETTINGS,
+    { globalConcurrencyCap, defaultQueueId },
+    (correlationId, payload) => {
+      postCommand(CMD_SAVE_QUEUE_SETTINGS, payload, { correlationId });
+    },
+    wait
   );
 }
 
@@ -141,8 +168,114 @@ export function saveQueueSettings(
  * parameter no caller can fill meaningfully is a shape waiting to be guessed at.
  * Adding it later is additive.
  */
-export function moveTask(taskId: string, targetQueueId: string): Promise<QueueControlResult> {
-  return correlatedRequest(() => postCommand(CMD_MOVE_TASK, { taskId, targetQueueId }).correlationId);
+export function moveTask(
+  taskId: string,
+  targetQueueId: string,
+  wait?: IntentWaitOptions<QueueControlResult>
+): Promise<QueueControlResult> {
+  return correlatedRequest(CMD_MOVE_TASK, { taskId, targetQueueId }, (correlationId, payload) => {
+    postCommand(CMD_MOVE_TASK, payload, { correlationId });
+  }, wait);
+}
+
+/**
+ * Feature 195 (T040, FR-018, FR-019) — this queue's own halt-on-failure
+ * answer, or `null` to follow the workspace default. A three-way outcome
+ * rather than `QueueControlResult`'s two: the host distinguishes a committed
+ * write from a redundant one (`no-op`, when the queue already read the way
+ * the operator asked), and collapsing that into `refused` would tell the
+ * operator their unchanged request was declined.
+ */
+export type SetQueueFailurePolicyOutcome =
+  | { readonly status: 'accepted' }
+  | { readonly status: 'no-op'; readonly reason: string }
+  | { readonly status: 'refused'; readonly reason: string };
+
+function toSetQueueFailurePolicyOutcome(ack: AckResult): SetQueueFailurePolicyOutcome {
+  if (ack.status === 'accepted') return { status: 'accepted' };
+  const reason = ack.reason ?? 'rejected';
+  return ack.outcome === 'no-op' ? { status: 'no-op', reason } : { status: 'refused', reason };
+}
+
+export function setQueueFailurePolicy(
+  queueId: string,
+  policy: QueueFailurePolicy | null,
+  wait?: IntentWaitOptions<SetQueueFailurePolicyOutcome>
+): Promise<SetQueueFailurePolicyOutcome> {
+  return correlated<SetQueueFailurePolicyOutcome, { queueId: string; policy: QueueFailurePolicy | null }>(
+    CMD_SET_QUEUE_FAILURE_POLICY,
+    { queueId, policy },
+    (correlationId, payload) => {
+      postCommand(CMD_SET_QUEUE_FAILURE_POLICY, payload, { correlationId });
+    },
+    toSetQueueFailurePolicyOutcome,
+    { status: 'refused', reason: 'timeout' },
+    wait
+  );
+}
+
+export type ClearQueueOutcome =
+  | { readonly status: 'cleared' }
+  | { readonly status: 'declined' }
+  | { readonly status: 'refused'; readonly reason: string };
+
+// Code-review finding (iteration 4, FR-R3-150/FR-011) — `CMD_CLEAR_QUEUE` and
+// `CMD_CLEAR_COMPLETED` are outside the feature-092 five this module's header
+// enumerates, but `QueueDetailTier.svelte`'s `onClean`/`onClearDone` posted
+// them fire-and-forget after their own separate `useConfirm(...)` call, so
+// the `unknown-queue-id` refusal this feature adds (a queue deleted from
+// another window between opening the confirmation and confirming it) reached
+// no listener: `applyAck()` just clears the pending flag and drops the ack.
+// `cmd-clear-queue.ts`'s own comment says the sidebar IPC boundary — here —
+// is where FR-011 expects the refusal to surface; nothing did.
+//
+// The confirm call moves in here rather than staying at the call site,
+// mirroring `confirmAndDeleteQueue` above and for the same reason:
+// `destructive-actions.lint.test.ts` walks the *enclosing brace block* of a
+// destructive command's `postCommand` call for a `useConfirm(` sibling, so a
+// post correlated in this module needs its own gate in this module — a gate
+// upstream in the caller is invisible to that scan, exactly the shape the
+// comment on `confirmAndDeleteQueue` above already explains for delete.
+export async function clearQueue(
+  queueId: string,
+  context: ActionCopyContext['queue.clean-all'],
+  originatingElement: HTMLElement | null = null,
+  wait: IntentWaitOptions<ClearQueueOutcome> = {}
+): Promise<ClearQueueOutcome> {
+  const confirmed = await useConfirm('queue.clean-all', { originatingElement, context });
+  if (!confirmed) return { status: 'declined' };
+  const result = await correlatedRequest(CMD_CLEAR_QUEUE, { queueId }, (correlationId, payload) => {
+    postCommand(CMD_CLEAR_QUEUE, payload, { correlationId });
+  }, mapWait(wait, toClearOutcome));
+  return toClearOutcome(result);
+}
+
+// Code-review finding (iteration 4, FR-R3-150/FR-011) — see `clearQueue`
+// above; the same gap and the same fix, for Clear Done.
+export async function clearCompleted(
+  queueId: string,
+  context: ActionCopyContext['queue.clear-done'],
+  originatingElement: HTMLElement | null = null,
+  wait: IntentWaitOptions<ClearQueueOutcome> = {}
+): Promise<ClearQueueOutcome> {
+  const confirmed = await useConfirm('queue.clear-done', { originatingElement, context });
+  if (!confirmed) return { status: 'declined' };
+  const result = await correlatedRequest(CMD_CLEAR_COMPLETED, { queueId }, (correlationId, payload) => {
+    postCommand(CMD_CLEAR_COMPLETED, payload, { correlationId });
+  }, mapWait(wait, toClearOutcome));
+  return toClearOutcome(result);
+}
+
+function toClearOutcome(result: QueueControlResult): ClearQueueOutcome {
+  return result.status === 'accepted'
+    ? { status: 'cleared' }
+    : { status: 'refused', reason: result.reason };
+}
+
+function toDeleteOutcome(result: QueueControlResult): DeleteQueueOutcome {
+  return result.status === 'accepted'
+    ? { status: 'deleted' }
+    : { status: 'refused', reason: result.reason };
 }
 
 // FR-013 — one refusal vocabulary for all four control groups, so a reason the
@@ -172,6 +305,8 @@ export function moveTask(taskId: string, targetQueueId: string): Promise<QueueCo
 //     FR-013); kept dormant rather than deleted in case a caller returns.
 //   - `QueueManager.saveQueueSettings` — the settings refusals
 //   - `commands/constants.ts` and each `cmd-*.ts` guard — transport refusals
+//   - `commands/clear-queue.ts` (`runClearQueue`) — the two orchestrator
+//     refusals the queue-scoped Clean All relays through `cmd-clear-queue.ts`
 // `timeout` and `unexpected-accept` are the two this module synthesises itself.
 //
 // `invalid-queue-name` is deliberately absent: it belongs to create and rename,
@@ -187,6 +322,15 @@ const REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
     'The default queue cannot be deleted. Make another queue the default first.',
   'queue-has-in-flight-task':
     'This queue has a Task in flight. Wait for it to finish, or cancel it first.',
+  // FR-R4-F01 (spec 239, US3, FR-013) — a queue whose Run is still live. Each names the state
+  // the Run is in and the one control that clears it, because deleting the queue would leave
+  // that Run with nothing to own it. `QueueManager.queueDeletionImpact` emits all three.
+  'queue-has-running-run':
+    "This queue's Run is still running. Cancel the Run first, then delete the queue.",
+  'queue-has-retry-pending-run':
+    "This queue's Run is waiting to retry. Cancel the Run first, then delete the queue.",
+  'queue-has-paused-run':
+    "This queue's Run is paused (at a breakpoint, at its spend limit, or by you). Cancel the Run first, then delete the queue.",
   'unknown-queue-id': 'That queue no longer exists.',
   // Move
   'task-bound-to-connected-run': 'This Task belongs to a connected run and moves with it.',
@@ -204,16 +348,43 @@ const REFUSAL_TEXT: Readonly<Record<string, string>> = Object.freeze({
   // Settings
   'invalid-concurrency-cap': 'That value is outside the range this setting accepts.',
   'config-write-failed': 'The setting could not be saved. Try again.',
+  // Feature 195 (T035) — `CMD_SET_QUEUE_FAILURE_POLICY`'s payload validator
+  // (`validateSetQueueFailurePolicy`, `contracts/validators/queue-management.ts`).
+  'invalid-failure-policy': 'That is not a recognized failure policy.',
+  // Clean All orchestration (`runClearQueue`). Both reach the operator through
+  // `cmd-clear-queue.ts`, which relays the orchestrator's `reason` verbatim —
+  // without these two entries they render as "The host refused: not-primary",
+  // which is the exact fall-through defect the header above records.
+  'not-primary': 'This window is not the primary one, so it cannot change the queue.',
+  'persistence-error': 'The queue could not be cleared — workspace state could not be written.',
+  // Shared outcome vocabulary — `command-outcome.ts` and `handler-helpers.ts`,
+  // reachable here since `cmd-clear-queue.ts` relays through `execAndAck`
+  // (code-review finding, iteration 5). Same three the lifecycle table carries,
+  // worded for a queue rather than a Run: the trust gate's `undefined`, a
+  // dispatch that threw, and a result shape no reading covers. Without them the
+  // first would render as "The host refused: workspace-not-trusted".
+  'workspace-not-trusted': 'The workspace is not trusted, so this control is unavailable.',
+  // FR-R4-F05 (O2) — said "cleared" when only Clean All reached this code. A dispatch
+  // that threw now answers every queue command with it, so the sentence names a change.
+  'command-dispatch-failed': 'The queue could not be changed. Check the log and try again.',
+  'command-result-unrecognized':
+    'The host answered in a way this view could not read, and nothing was changed.',
   // Transport
   'secondary-window-readonly': 'This window is not the primary one, so it cannot change the queue.',
   unsupported: 'This host build does not support that operation.',
   'operation-rejected': 'The host refused the operation.',
-  timeout: 'The host did not answer. Try again.',
+  // FR-R4-F05 (O3) — a timeout is "not yet known", not a failure and not a request to try again:
+  // the host may still run the command, and a second click would be a second action.
+  timeout:
+    'The host has not answered yet. The change may still happen; this view will update when it does.',
   'unexpected-accept': 'The host answered unexpectedly and the queue was left unchanged.'
 });
 
+// FR-R4-F05 (O1) — this family's own sentence when it has one, the shared boundary text
+// otherwise. The fallback used to be `The host refused: ${reason}`, which echoed whatever
+// the host sent.
 export function refusalText(reason: string): string {
-  return REFUSAL_TEXT[reason] ?? `The host refused: ${reason}`;
+  return refusalTextFrom(REFUSAL_TEXT, reason);
 }
 
 function isQueueDeletionImpact(value: unknown): value is QueueDeletionImpact {
@@ -233,50 +404,61 @@ function toQueueControlResult(ack: AckResult): QueueControlResult {
     : { status: 'rejected', reason: ack.reason ?? 'rejected' };
 }
 
-function correlatedRequest(post: () => string): Promise<QueueControlResult> {
-  return correlated<QueueControlResult>(post, toQueueControlResult, {
-    status: 'rejected',
-    reason: 'timeout'
-  });
+function correlatedRequest<P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
+  wait: IntentWaitOptions<QueueControlResult> = {}
+): Promise<QueueControlResult> {
+  return correlated<QueueControlResult, P>(
+    type,
+    payload,
+    post,
+    toQueueControlResult,
+    { status: 'rejected', reason: 'timeout' },
+    wait
+  );
+}
+
+/** A caller's wait for an outcome type, carried to a helper that resolves another type. */
+function mapWait<From, To>(
+  wait: IntentWaitOptions<To>,
+  map: (late: From) => To
+): IntentWaitOptions<From> {
+  const { onLateOutcome } = wait;
+  return {
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(onLateOutcome === undefined ? {} : { onLateOutcome: (late: From) => onLateOutcome(map(late)) })
+  };
 }
 
 /**
- * The correlated-request scaffolding, parameterised by what an ack means. Every
- * caller resolves exactly once: `settled` guards the ack path, the timeout path,
- * and a late ack arriving after the timeout.
+ * The correlated-request scaffolding, parameterised by what an ack means. FR-R4-F05 (I4): it
+ * sends through the intent ledger, so an identical retry of an unresolved action reuses its
+ * identity and its payload and the host applies it once. Every caller resolves exactly once; a
+ * wait that outlives `ACK_TIMEOUT_MS` resolves `onTimeout`, and an abort or a disposed ledger
+ * resolves it too (no caller renders that one). Each `postCommand` stays at its call site,
+ * passed in as `post`, so a destructive post stays inside its `useConfirm` block.
  */
-function correlated<T>(post: () => string, fromAck: (ack: AckResult) => T, onTimeout: T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let unsubscribe: (() => void) | null = null;
-
-    const finalise = (result: T): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (unsubscribe !== null) {
-        try {
-          unsubscribe();
-        } catch {
-          // one-shot listener errors must not leak
-        }
-        unsubscribe = null;
-      }
-      resolve(result);
-    };
-
-    const correlationId = post();
-    snapshotStore.markPending(correlationId);
-    unsubscribe = snapshotStore.onceAck(correlationId, (ack) => {
-      finalise(fromAck(ack));
-    });
-
-    timer = setTimeout(() => {
-      finalise(onTimeout);
-    }, ACK_TIMEOUT_MS);
-  });
+function correlated<T, P>(
+  type: CommandType,
+  payload: P,
+  post: (correlationId: string, payload: P) => void,
+  fromAck: (ack: AckResult) => T,
+  onTimeout: T,
+  wait: IntentWaitOptions<T> = {}
+): Promise<T> {
+  // FR-R4-F05 (I6, I8, FR-024) — a caller that shows the timeout text passes its lifetime
+  // signal and a late-outcome callback, which gets the host's answer through `fromAck`.
+  const { onLateOutcome } = wait;
+  return sendIntent({
+    type,
+    payload,
+    post,
+    timeoutMs: ACK_TIMEOUT_MS,
+    ...(wait.signal === undefined ? {} : { signal: wait.signal }),
+    ...(onLateOutcome === undefined
+      ? {}
+      : { onLateOutcome: (ack: AckResult) => onLateOutcome(fromAck(ack)) })
+  }).then((result) => (result.kind === 'ack' ? fromAck(result.ack) : onTimeout));
 }

@@ -1,11 +1,31 @@
+import type { DeclaredCapabilitySet } from '../contracts/phase-capabilities';
+import type { AcpPromptBlock } from '../contracts/acp-runtime';
 import type { Phase } from '../controller/phase';
 import type { Effort } from '../config/pipeline-config';
+import type { NativeReviewInvocation } from './native-review-launch';
 
 export interface VerboseDiagnosticTarget {
   readonly directory: string;
   readonly debugFile: string;
   readonly streamFile: string;
   readonly verboseLogFile: string;
+  /**
+   * FR-R3-053 — the trusted root and the segments beneath it, so the writer can
+   * OPEN through a symlink-refusing walk instead of `mkdir -p` on a composed
+   * absolute path.
+   *
+   * `composeVerboseDiagnosticPath` already validated every segment and proved the
+   * result does not escape lexically. That is not the same as opening it safely:
+   * `mkdir` with `recursive` follows a symlink at any component, so a link placed
+   * where the diagnostics directory belongs redirects the write — and these
+   * diagnostics are deliberately unredacted.
+   *
+   * Required, not optional. An optional pair would let the writer keep a
+   * permissive fallback, which is the gate-omitted-by-omission shape this round
+   * has removed repeatedly.
+   */
+  readonly workspaceRoot: string;
+  readonly segments: readonly string[];
 }
 
 /**
@@ -21,6 +41,8 @@ export interface InvocationOutputSink {
 }
 
 export interface InvocationRequest {
+  /** Host-only executable identity carried from admission to the child-process boundary. */
+  readonly executableFileStamp?: string;
   phase: Phase;
   iteration: number;
   /**
@@ -35,8 +57,47 @@ export interface InvocationRequest {
    * attributing them to whichever Run happened to start most recently.
    */
   runId?: string;
+  /**
+   * Feature 093 BUG-001 (T101) — this spawn is a host-internal HELPER on the
+   * Run's behalf, not the Run's phase invocation.
+   *
+   * One setter today: the pre-phase session compaction in
+   * `src/controller/session-compactor.ts`. It carries the phase's `runId` above
+   * and must keep carrying it (T057: a stalling compaction that belongs to no
+   * Run is a stall nobody can name), so `runId` alone cannot tell the monitor
+   * which of a Run's subprocesses is the one the phase is waiting on — and the
+   * monitor ended the Run on the first exit it saw under that id, which was this
+   * one, six hours before the phase's.
+   *
+   * Carried for exactly one thing, like `runId`: it is stamped onto the
+   * `started` sidecar event so the monitor can tell the two apart on arrival.
+   * `onStart` fires before the phase's own spawn, so the monitor cannot be told
+   * the phase invocation's identity in advance; recognition is the only option
+   * open to it. It does NOT influence argv, env, timeouts, or any spawn
+   * decision. Optional, and absent means "the phase's own invocation", because
+   * that is what every construction site but one is.
+   */
+  helperInvocation?: boolean;
+  /**
+   * FR-R8-01 (01-09) — optional pre-spawn and post-spawn control-ledger
+   * checkpoint hooks for workflow-owned Phase attempts (`onBeforeSpawn` runs
+   * for main and helper invocations; `onAfterSpawn` runs for main invocations
+   * with a valid child PID).
+   */
+  onBeforeSpawn?: (ctx?: { readonly helperInvocation?: boolean }) => Promise<void> | void;
+  onAfterSpawn?: (pid: number | undefined) => Promise<void> | void;
   prompt: string;
+  review?: NativeReviewInvocation;
   timeoutMs: number;
+  /**
+   * FR-R3-075 — the absolute wall-clock bound on the whole invocation, armed
+   * at spawn and never reset. Distinct from `timeoutMs`, which is the IDLE
+   * window a chatty child resets on every chunk; this is what bounds the child
+   * that emits one byte inside every idle window forever. Optional so contract
+   * harnesses and older construction sites compile unchanged; absent or 0
+   * means no wall-clock bound (the idle window still applies).
+   */
+  maxDurationMs?: number;
   cliPath: string;
   cwd: string;
   env?: Record<string, string>;
@@ -139,6 +200,25 @@ export interface InvocationRequest {
    * values do not trigger the `--resume` append.
    */
   resumeSessionId?: string;
+  /**
+   * FR-R3-209 — the Run's persisted `total_cost_usd` for the session `resumeSessionId` names.
+   * Present only beside `resumeSessionId`, and used only to fill an empty ledger slot for that
+   * session, so the first invocation after a host restart records only its own cost.
+   */
+  resumeSessionCostUsd?: number;
+  /**
+   * FR-R3-086 — the capability set this phase declared, frozen with the plan.
+   *
+   * OPTIONAL on the interface, for the same backwards-compatibility reason
+   * `resumeSessionId` is: every existing construction site keeps working
+   * unchanged. Absent means `DEFAULT_CAPABILITY_SET`, which
+   * `planCapabilityEnforcement` turns into the argv that backend spawns with
+   * today, byte for byte — so a phase that declares nothing changes nothing.
+   *
+   * The adapters do not interpret it. They pass it to the plan and use the argv
+   * the plan returns, so there is one translation site rather than three.
+   */
+  capabilities?: DeclaredCapabilitySet;
   /*
    * Feature 107 (FR-020) — `completionMarker?: string` stood here.
    *
@@ -169,9 +249,49 @@ export interface InvocationRequest {
    * harnesses and fixtures get.
    */
   effectiveFatalSignatures?: ReadonlyArray<EffectiveSignature>;
+  /** FR-R6-F13 / F02 — host attempt identifier bound to the ACP turn. */
+  attemptId?: string;
+  /** FR-R6-F13 / F15 — structured ACP prompt blocks (text, embedded resources, resource links). */
+  acpPromptBlocks?: readonly AcpPromptBlock[];
+  /** FR-R6-F13 (FR-021) — whether `resumeSessionId` originated from an ACP profile vs legacy CLI. */
+  resumeSessionOrigin?: 'acp' | 'legacy-cli';
+  /** FR-R6-F13 (FR-021) — true only for pre-cutover in-flight legacy attempts during bounded drain. */
+  legacyDrain?: boolean;
+  /** FR-R6-F09 / F15 — explicit accepted upstream artifact paths authorized for read-only access. */
+  authorizedUpstreamInputPaths?: readonly string[];
+  /** FR-R6-F09 / F15 — explicit declared output paths authorized for write access. */
+  authorizedOutputPaths?: readonly string[];
+  /** FR-R6-F15 (SR-B2 #1) — host-frozen phase handoff ID requiring fail-closed dispatch verification. */
+  readonly phaseHandoffId?: string;
+  /** FR-R6-F15 (SR-B2 #1) — host-frozen delivery representation digest bound to `phaseHandoffId`. */
+  readonly phaseHandoffRepresentationDigest?: string;
+}
+
+/**
+ * Feature 211 — the wall-clock bound a runner will actually arm for this
+ * request, or `null` when it will arm none.
+ *
+ * One oracle for a predicate that had been written out at each arming site.
+ * The monitor now receives this bound on the `started` event and warns at
+ * `APPROACH_THRESHOLD_FRACTION` of it, so "is a deadline in force, and what is
+ * it" has to have one answer: a runner that armed a timer while reporting
+ * `null` warns about nothing, and one that reported a bound it never armed
+ * warns about a kill that will not come. Both runners call this for the value
+ * they report AND for the guard on the timer they arm, which is what makes the
+ * two agree structurally rather than by inspection.
+ *
+ * `undefined` and `0` both mean no bound — see `maxDurationMs` above. Negative
+ * values are excluded for the same reason `> 0` always guarded this: a past
+ * deadline is not a deadline.
+ */
+export function armedMaxDurationMs(request: InvocationRequest): number | null {
+  const bound = request.maxDurationMs;
+  return bound !== undefined && bound > 0 ? bound : null;
 }
 
 import type { ZippedStreamBuffer } from './zipped-stream-buffer';
+import type { SpawnAdmissionDecision } from '../contracts/containment-qualification';
+import type { AcpTerminalReconciliation } from '../services/acp-runtime/terminal-reconciliation';
 import type {
   EffectiveSignature,
   FatalClassification
@@ -184,6 +304,15 @@ export interface RawInvocationOutput {
   killed: boolean;
   timedOut: boolean;
   /**
+   * FR-R3-075 — `true` iff the absolute wall-clock deadline (`maxDurationMs`)
+   * terminated the invocation. Distinct from `timedOut`, which is the idle
+   * stall a chatty child can reset forever: an operator reading a stopped
+   * phase needs to know whether it went quiet or ran long. When both windows
+   * elapse in one tick the deadline wins and `timedOut` is cleared, so
+   * evidence records exactly one reason. Absent is equivalent to `false`.
+   */
+  deadlineExceeded?: boolean;
+  /**
    * Feature 030 BUG-002 — `true` iff the runner observed the invocation's
    * terminal `{"type":"result"}` stream-json line and then grace-terminated the
    * process because it had produced its terminal result but did not exit within
@@ -195,10 +324,138 @@ export interface RawInvocationOutput {
    * failure. `killed` stays `false` on this path so the controller does
    * not treat it as an operator cancellation. `undefined` from a
    * non-runner fixture is equivalent to `false`.
+   *
+   * WHO READS IT, AND WHY THAT SENTENCE IS HERE (FR-009, BUG-001).
+   * `hostExitStatusIsAttributable()` in `src/controller/phase-runner.ts` is the
+   * consumer of the classification the paragraph above promises, and
+   * `specs/145-host-verifiable-gates/contracts/host-verification.md` is the
+   * contract that requires it. For the whole life of that feature there was no
+   * consumer: the field was produced here, documented here, and read nowhere in
+   * `src/controller/`, so "classified by its parsed outcome" held on paper while
+   * FR-R3-058's `exit-code` basis failed such an invocation on the SIGTERM this
+   * path triggers — `128 + 15` from the grace-terminate below, read as the host's
+   * verdict. Two contracts contradicted each other in silence and the arm order
+   * decided. `tests/lint/completed-awaiting-exit-has-a-reader.test.ts` now fails
+   * if the field loses its last reader.
+   *
+   * The exit status this path yields is therefore NOT host evidence. It is
+   * Schegent's own, and anything judging a phase on provenance must exclude it.
    */
   completedAwaitingExit?: boolean;
+  /**
+   * Feature 212 (FR-005, FR-006) — did this invocation ever produce the
+   * backend's end-of-invocation result envelope?
+   *
+   * A LATCH, not a state: set once when the envelope is first seen and never
+   * cleared. That is the distinction from `completedAwaitingExit` above, which
+   * answers a different question — "was the envelope the LAST thing seen, and
+   * has the process still not exited?" — and is therefore `false` on every one
+   * that exited normally, envelope and all. Reading that field as an answer to
+   * this one would mark every successful phase in the system envelope-less.
+   *
+   * Three-state by omission, and the omission is meaningful (FR-014). A backend
+   * that does not report the fact leaves this ABSENT, and absent means UNKNOWN:
+   * no reader may take it as either `true` or `false`. `false` is a claim — the
+   * invocation ran and no envelope ever arrived — and only a backend that
+   * watched for one may make it.
+   */
+  sawTerminalResult?: boolean;
+  /**
+   * FR-R3-198 (T1876) & BUG-001 (FR-005a) — did this invocation's last accepted
+   * terminal result arrive while backgrounded or async-delegated work was open?
+   *
+   * `true` iff it did:
+   * - In `ClaudeCliRunner`, iff the last accepted `result` began a hold of the
+   *   settle window (`BackgroundTaskTracker`). Each accepted result decides it
+   *   again, so a woken turn that ends with nothing open leaves it `false`; a
+   *   result the CLI writes after the settle's SIGTERM is its shutdown and
+   *   leaves it as it was.
+   * - In `AcpBackedRunner`, iff `outcome.kind === 'completed'` (with
+   *   `stopReason !== 'refusal'`) settled while `AcpOpenWorkTracker.hasOpenWork`
+   *   held (`src/runner/acp-open-work-tracker.ts`).
+   *
+   * Absent from direct legacy non-claude CLI runners, fixtures, or ACP turns
+   * with no open background work; absent reads as `false`. That is the
+   * difference from `sawTerminalResult`, whose absence means unknown.
+   */
+  backgroundWorkOpenAtResult?: boolean;
+  /**
+   * FR-R3-198 BUG-001 (FR-006) — `true` iff `AcpBackedRunner` observed an ACP
+   * `session/prompt` complete (`outcome.kind === 'completed'`) with
+   * `outcome.stopReason !== 'refusal'` (`end_turn`, `max_tokens`, or
+   * `max_turn_requests`).
+   *
+   * Over ACP, `session/prompt` settles per conversational turn (`exitCode: 0`,
+   * `hostValidationRequired: true`) rather than waiting for backgrounded tasks
+   * or subagents inside a persistent process. Kept separate from
+   * `completedAwaitingExit` so `hostExitStatusIsAttributable()` in
+   * `src/controller/phase-runner.ts` continues to identify runner-authored
+   * `SIGTERM` exits exclusively. Absent from direct CLI runners, fixtures,
+   * cancelled/failed ACP prompts, and `stopReason === 'refusal'`; absent reads
+   * as `false`.
+   */
+  acpTurnSettled?: boolean;
+  /**
+   * FR-R3-198 (FR-011) — the cumulative `total_cost_usd` this runner last
+   * recorded for this invocation's CLI session, before this invocation.
+   *
+   * The CLI's cost is a cumulative total that carries across `--resume`, so the
+   * usage extractor subtracts this to record the invocation's own share. Absent
+   * for a session new to this host process, and from a runner that reports no
+   * cost (codex, agy); absent means the whole cumulative counts, as before.
+   */
+  sessionCostBaselineUsd?: number;
+  /**
+   * FR-R3-209 — the ledger's cumulative figure for the reported session once this invocation is
+   * recorded, which is the baseline the session's next invocation takes. Absent when the ledger
+   * holds none, and from a runner with no ledger (codex, agy). The controller persists it beside
+   * the session id.
+   */
+  cliSessionCostUsd?: number;
+  /**
+   * FR-R3-047 (H-04) — `true` iff writing the prompt to the child's stdin
+   * FAILED. Absent is equivalent to `false`, so a non-runner fixture that omits
+   * it reads as a healthy delivery.
+   *
+   * The condition is one-directional on purpose. Set, it proves the backend
+   * answered a truncated prompt. Unset, it only means the write reported no
+   * error — a prompt small enough to fit the OS pipe buffer is accepted even by
+   * a child that reads nothing, so this is never evidence that the backend
+   * consumed the prompt.
+   *
+   * Distinct from every neighbour here. `timedOut` is a run that produced
+   * nothing for too long; `killed` is a run someone ended; a non-zero
+   * `exitCode` is a run the backend itself failed. This is a run the backend
+   * never fully heard: whatever it emitted is an answer to a *truncated*
+   * prompt, which is why the phase runner treats it as outranking even a clean
+   * termination token. A backend that certifies success on half a prompt is
+   * certifying the wrong work.
+   *
+   * Decided by the write-completion callback, never by `stdin.bytesWritten` —
+   * that counter reaches the full prompt length even when the write fails,
+   * because it counts bytes handed to the stream rather than bytes the peer
+   * accepted.
+   */
+  stdinDeliveryFailed?: boolean;
+  /**
+   * The errno behind `stdinDeliveryFailed` (for example `EPIPE`). An error code
+   * only: the prompt is operator content and may contain anything, so no part
+   * of it is ever carried here or anywhere else on this result.
+   */
+  stdinErrorCode?: string;
   durationMs: number;
   diagnosticWarnings?: ReadonlyArray<string>;
+  /**
+   * Feature 020 BUG-002 (FR-002a) — `true` iff this invocation wrote at least
+   * one chunk of the CLI's stdout to the verbose-diagnostics `stream.jsonl`.
+   * `cli-invocation`'s `diagnosticsEnabled` records it. A target that was built
+   * but never written to is not a capture: that is how an agy Run came to
+   * record `true` with nothing on disk.
+   *
+   * Set only when `true`. Absent reads as `false`: a request with no target, a
+   * capture that failed, and a runner or fixture that does not tee.
+   */
+  diagnosticsCaptured?: boolean;
   /**
    * Feature 068 — the assembled CLI command (cliPath + argv) that the
    * runner spawned. Its **content is never persisted**. Audit schema v3
@@ -243,4 +500,10 @@ export interface RawInvocationOutput {
    * code-resident floor.
    */
   streamFatalMatch?: FatalClassification;
+  /** FR-R8-02 (02-02): authoritative spawn-admission identity/posture decision for metadata-only audit. */
+  admissionDecision?: SpawnAdmissionDecision;
+  /** FR-R8-02 (02-04): reconciled ACP/bridge terminal outcome preventing contradictory/absent-terminal advance. */
+  terminalReconciliation?: AcpTerminalReconciliation;
+  /** FR-R8-02 (02-03): high-water pending output bytes observed across host stream backpressure/tee. */
+  streamPendingHighWaterBytes?: number;
 }

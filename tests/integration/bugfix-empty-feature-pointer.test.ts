@@ -47,7 +47,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -152,7 +152,7 @@ async function buildHarness(opts: HarnessOpts): Promise<{
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: opts.workspaceRoot }, logger);
   const { runner, invocations } = makeFailFirstReportRunner();
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);
@@ -231,7 +231,7 @@ describe('Feature 026 T020a — speckit-bugfix fails fast on empty feature point
     expect(starts[0].payload.phaseId).toBe('bugfix-report');
     expect(ends.length).toBe(1);
     expect(ends[0].phase).toBe('bugfix-report');
-    expect(ends[0].payload).not.toHaveProperty('phaseId');
+    expect(ends[0].payload).not.toHaveProperty('phaseId'); // 2026-09-06 coincidental: a phase-end payload, not phase.retry_evaluated; the phase is on the envelope, asserted above
     expect(ends[0].outcome === 'success' || ends[0].outcome === 'clean').toBe(false);
 
     // None of the downstream phases emitted phase-start before failure.

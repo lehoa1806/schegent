@@ -38,6 +38,7 @@ import type { PipelineCatalog, PipelineDef } from '../../src/config/pipeline-con
 import type { SchegentWorkflowController } from '../../src/controller/workflow-controller';
 import type { SanitizedLogger } from '../../src/lib/logger';
 import type { AuditLogWriter } from '../../src/audit/audit-log-writer';
+import { removeTempRoot } from '../temp-root-cleanup';
 
 export class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -121,6 +122,8 @@ export interface FakeController {
    * so every admission stays live and the count is the admission count.
    */
   liveRunCount: number;
+  /** FR-R4-F02 (TA4) — drain step 4 asks whether the queue already holds a session. */
+  holdsSession: () => boolean;
   /**
    * Feature 093 (T049a) — the drain calls `admitNew`, which resolves once the
    * Task is in flight and returns the promise of the Run's execution. Assertions
@@ -136,6 +139,7 @@ export function makeController(initial?: { running?: boolean; catalog?: Pipeline
   const c: FakeController = {
     running: initial?.running ?? false,
     liveRunCount: 0,
+    holdsSession: () => false,
     admitNew: vi.fn(),
     admitResume: vi.fn(),
     getCatalog: () => initial?.catalog ?? null
@@ -231,7 +235,7 @@ export interface Harness {
   readonly autoDrain: AutoDrainCoordinator;
   readonly workspaceRoot: string;
   readonly ownerId: string;
-  cleanup: () => void;
+  cleanup: () => Promise<void>;
 }
 
 export async function makeHarness(opts: {
@@ -239,6 +243,12 @@ export async function makeHarness(opts: {
   initialNow?: number;
   catalog?: PipelineCatalog;
   withScaffolding?: boolean;
+  /**
+   * FR-R3-070 — lets a test model a competing window holding the workspace
+   * lock. Wired through to the coordinator's foreign-lock probe; undefined
+   * keeps the pre-existing single-window behaviour.
+   */
+  isForeignLockHeld?: () => boolean;
 } = {}): Promise<Harness> {
   const ownerId = opts.ownerId ?? 'self-window';
   const memento = new FakeMemento();
@@ -263,7 +273,8 @@ export async function makeHarness(opts: {
     store,
     queue,
     executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
 
   const coordinator = new ScheduledStartCoordinator({
@@ -296,10 +307,14 @@ export async function makeHarness(opts: {
     },
     now: () => clock.now(),
     setTimer: fakeTimer.setTimer,
-    clearTimer: fakeTimer.clearTimer
+    clearTimer: fakeTimer.clearTimer,
+    ...(opts.isForeignLockHeld ? { isForeignLockHeld: opts.isForeignLockHeld } : {})
   });
 
   const service = new GuardedRunService({
+    // FR-R3-136 (FR-008) — this suite exercises a trusted workspace; the
+    // untrusted rows live in the trust-specific describe block.
+    isWorkspaceTrusted: () => true,
     lock,
     queue,
     controller: controller as unknown as SchegentWorkflowController,
@@ -336,13 +351,12 @@ export async function makeHarness(opts: {
     autoDrain,
     workspaceRoot,
     ownerId,
-    cleanup() {
+    async cleanup() {
       try {
-        fs.rmSync(workspaceRoot, { recursive: true, force: true });
-      } catch {
-        // ignore
+        await removeTempRoot(workspaceRoot);
+      } finally {
+        coordinator.dispose();
       }
-      coordinator.dispose();
     }
   };
 }

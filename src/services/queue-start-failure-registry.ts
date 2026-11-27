@@ -1,0 +1,148 @@
+// Feature 187 (T002, US1/US2) — FR-001..FR-004, FR-008.
+//
+// What a failed admission leaves behind. `AutoDrainCoordinator` refuses a drain
+// at seven ordered steps; six of them are waits that a later trigger re-asks,
+// and step 7 — the `admitNew`/`admitResume` call — is the one that can *throw*.
+// No Run started, so no Run will terminate, and a terminal Run's registry-wide
+// sweep is what re-asks every other refusal. Until this module existed, that
+// throw's only trace was a log line.
+//
+// **In memory, and deliberately.** The drain is edge-triggered and activation
+// sweeps every unheld queue on the next window start, so a persisted report
+// would outlive the attempt it describes and be shown beside a newer attempt's
+// result. A window's reports die with the window; the next window's first sweep
+// produces its own.
+//
+// Keyed by **queue id**, not run id: the whole point is that no Run exists to
+// key by. That is also why this is not `ProjectorBookkeepingRegistry` with
+// another field — that registry keys by run id because an audit entry names its
+// Run, and the two keyings are not interchangeable here.
+//
+// **NOT PRUNED, and that is a decision rather than an omission.** A queue
+// deleted while carrying a report leaves an entry no reader can reach, because
+// the projection only asks about queues that still exist. The bound is one small
+// frozen object per queue id this window has ever *failed to start*, which for
+// any real workspace is a handful, and all of it is released when the window
+// ends. A `retainOnly(liveQueueIds)` sweep would be scaffolding for a leak that
+// does not exist at this scale.
+
+/**
+ * One queue's most recent failed start attempt. Frozen; latest wins.
+ *
+ * Feature 195 (T014, FR-001, FR-002, FR-007) — widened to a discriminated
+ * union. `kind: 'admission'` is this module's original (and only) shape,
+ * renamed rather than left implicit so a `switch` on `kind` is exhaustive;
+ * `kind: 'halted'` is the new report a halt-on-failure gate leaves, naming
+ * the failed task rather than an admission call and its error.
+ *
+ * Registry semantics are unchanged by the widening: one entry per queue,
+ * later replaces earlier, a successful start clears (`clear`).
+ *
+ * BUG-004 — `kind: 'stranded-run'` is the third, on the same terms: a Run holds
+ * the queue's one Run slot and no Task row anywhere addresses it, so no control
+ * can end it and the queue never drains again. It belongs in THIS registry, and
+ * not merely in the log, for the reason stated at the top of this file: every
+ * other reading of step 3 leaves a Run something later ends, and a terminal Run
+ * re-asks the refusal. This one leaves a Run nothing can end. Which occupant
+ * qualifies is decided at the single site that reads it — the drain's step 3 —
+ * and never re-derived from this record.
+ */
+export type QueueStartFailure =
+  | {
+      readonly kind: 'admission';
+      /** Which of the two admissions actually ran — they fail for unrelated reasons. */
+      readonly admission: 'admitNew' | 'admitResume';
+      /** Epoch millis, stamped by this registry's clock rather than by its caller. */
+      readonly at: number;
+      /**
+       * The error's message, raw. Sanitizing happens at the projection seam,
+       * where the sanitizer lives (`projectStartFailure`), so nothing here has
+       * to know whether its reader is an operator surface or a test.
+       */
+      readonly message: string;
+    }
+  | {
+      readonly kind: 'halted';
+      /** The failed row's own id — never carried anywhere else (FR-003). */
+      readonly taskId: string;
+      /**
+       * The failed row's operator-authored name, raw. Sanitized at the same
+       * projection seam as `message` above, for the same reason.
+       */
+      readonly taskName: string;
+      readonly at: number;
+    }
+  | {
+      readonly kind: 'stranded-run';
+      /**
+       * The holding Run's own id, and the phase it stopped in. Both are
+       * host-generated — a run id and a phase id — so neither is operator-authored
+       * content and neither is a path. They still pass through the projection seam
+       * unchanged rather than around it, because "which strings may skip the
+       * sanitizer" is a decision that belongs in one function
+       * (`projectStartFailure`), not in each producer.
+       */
+      readonly runId: string;
+      readonly phase: string;
+      readonly at: number;
+    };
+
+export class QueueStartFailureRegistry {
+  private readonly byQueue = new Map<string, QueueStartFailure>();
+
+  /**
+   * The clock is injected because this registry — not the coordinator — owns the
+   * timestamp. The coordinator reports *what* happened; the record says *when*.
+   * Giving the drain a clock to pass would widen a module that has none.
+   */
+  constructor(private readonly now: () => number) {}
+
+  /**
+   * Records the failure, replacing any earlier one on the same queue. A history
+   * would be a second and worse log; the log keeps the sequence (FR-011), and
+   * what a surface needs is the answer to "did the last attempt fail".
+   */
+  recordFailure(
+    queueId: string,
+    failure:
+      | { readonly kind: 'admission'; readonly admission: 'admitNew' | 'admitResume'; readonly message: string }
+      | { readonly kind: 'halted'; readonly taskId: string; readonly taskName: string }
+      | { readonly kind: 'stranded-run'; readonly runId: string; readonly phase: string }
+  ): void {
+    // One clock read for the whole call, and the fields written out per kind
+    // rather than spread from the argument: a spread would carry whatever a
+    // caller happened to pass, and this registry's records reach the wire.
+    const at = this.now();
+    if (failure.kind === 'admission') {
+      this.byQueue.set(
+        queueId,
+        Object.freeze({ kind: 'admission', admission: failure.admission, at, message: failure.message })
+      );
+      return;
+    }
+    if (failure.kind === 'halted') {
+      this.byQueue.set(
+        queueId,
+        Object.freeze({ kind: 'halted', taskId: failure.taskId, taskName: failure.taskName, at })
+      );
+      return;
+    }
+    this.byQueue.set(
+      queueId,
+      Object.freeze({ kind: 'stranded-run', runId: failure.runId, phase: failure.phase, at })
+    );
+  }
+
+  /**
+   * Drops the report a later success supersedes. Idempotent: clearing a queue
+   * that never failed is the ordinary case, since every successful start clears.
+   */
+  clear(queueId: string): void {
+    this.byQueue.delete(queueId);
+  }
+
+  /** The queue's outstanding report, or `null` when its last attempt did not fail. */
+  get(queueId: string): QueueStartFailure | null {
+    return this.byQueue.get(queueId) ?? null;
+  }
+}

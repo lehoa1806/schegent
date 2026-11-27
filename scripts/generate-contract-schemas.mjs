@@ -3,6 +3,37 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import {
+  ALL_IPC_COMMANDS,
+  HOST_MESSAGES,
+  HOST_MESSAGE_DEFINITIONS,
+  IPC_COMMAND_FAMILIES,
+  SHARED_IPC_DEFS,
+  SIDEBAR_IPC_SCHEMA_VERSION as sidebarIpcSchemaVersion
+} from './contracts/ipc-descriptors/index.mjs';
+import {
+  HOST_SNAPSHOT_IMPORTS,
+  SHARED_SNAPSHOT_DEFS,
+  SNAPSHOT_DECLARATIONS,
+  SNAPSHOT_SCHEMA_VERSION,
+  WEBVIEW_LEAF_ALIASES,
+  WEBVIEW_LOCAL_IMPORTS
+} from './contracts/snapshot-descriptors.mjs';
+import {
+  emitHostIpcTypes,
+  emitHostSnapshotTypes,
+  emitTypeExpr
+} from './contracts/emit-types.mjs';
+import { emitFamilyValidatorModule } from './contracts/emit-validators.mjs';
+import { buildSidebarIpcJsonSchema } from './contracts/emit-json-schema.mjs';
+import { emitWebviewSnapshotMirror } from './contracts/emit-webview-mirror.mjs';
+import {
+  emitWebviewBackendDescriptors,
+  emitWebviewBackendKinds,
+  extractBackendDescriptorTable,
+  validateBackendManifestParity,
+  validateSettingsSchemaParity
+} from './contracts/emit-backend-descriptors.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK_ONLY = process.argv.includes('--check');
@@ -234,7 +265,8 @@ function settingsPropertyFromPackage(key, property) {
     maximum: property.maximum ?? null,
     pattern: property.pattern ?? null,
     itemType: property.items?.type ?? null,
-    itemPattern: property.items?.pattern ?? null
+    itemPattern: property.items?.pattern ?? null,
+    itemEnum: property.items?.enum ?? null
   };
 }
 
@@ -370,47 +402,55 @@ function projectFatalSignatures(sourcePath) {
 }
 
 /**
- * Refuse to write TypeScript that does not parse.
- *
- * `contracts:check` verifies that a generated file matches what the generator
- * would emit today. It cannot verify that what the generator emits is *valid*,
- * because deterministic corruption matches itself. This is where that is caught,
- * at the point of generation, rather than several targets later in a typecheck
- * that names a file the author was told never to edit.
+ * Check that the generated JSON still contains the expected schema or inventory.
+ * A deterministic generator can produce a valid but empty JSON object.
  */
-/**
- * Refuse to write a schema with nothing in it.
- *
- * `assertParses` covers the two TypeScript emissions; the JSON artifacts are
- * `JSON.stringify` output and are valid JSON by construction, which is a weaker
- * guarantee than it looks. The failure this catches is the same class:
- * `contracts:check` compares a file to a regeneration of itself, so a generator
- * that deterministically emits `{}` — an extractor that stopped matching, a
- * renamed source symbol — produces a stable empty schema, and stable output is
- * what the check calls correct.
- *
- * Every schema here declares `properties` and `required` today; a family
- * manifest declares `families`. Emitting one of those empty is not a smaller
- * contract, it is a contract that stopped being derived.
- */
-function assertSubstantive(relativePath, content) {
+function assertSubstantive(relativePath, content, requiredKeys) {
   const parsed = JSON.parse(content);
-  const emptyOf = (key) => {
+  const degenerate = requiredKeys.filter((key) => {
     const value = parsed[key];
-    if (value === undefined) return false;
-    return (Array.isArray(value) ? value.length : Object.keys(value).length) === 0;
-  };
-  const degenerate = ['properties', 'required', 'families'].filter(emptyOf);
+    return value === null || typeof value !== 'object' || Object.keys(value).length === 0;
+  });
   if (degenerate.length > 0) {
     throw new Error(
-      `refusing to write ${relativePath}: ${degenerate.join(' and ')} came out empty. ` +
-        `This is a generator defect, not a source defect — contracts:check cannot catch it, ` +
-        `because a deterministically empty schema matches a regeneration of itself.`
+      `refusing to write ${relativePath}: generated ${degenerate.join(', ')} missing or empty`
     );
   }
   return content;
 }
 
+function assertLocalSchemaReferences(relativePath, schema) {
+  const inspect = (node, location) => {
+    if (node === null || typeof node !== 'object') return;
+    if (typeof node.$ref === 'string' && node.$ref.startsWith('#/')) {
+      const tokens = node.$ref.slice(2).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+      const target = tokens.reduce(
+        (current, token) => current !== null && typeof current === 'object' && Object.hasOwn(current, token)
+          ? current[token]
+          : undefined,
+        schema
+      );
+      if (typeof target !== 'boolean' && (target === null || typeof target !== 'object' || Array.isArray(target))) {
+        throw new Error(`refusing to write ${relativePath}: unresolved schema reference ${node.$ref} at ${location}`);
+      }
+    }
+    for (const keyword of ['$defs', 'properties']) {
+      for (const [key, child] of Object.entries(node[keyword] ?? {})) {
+        inspect(child, `${location}/${keyword}/${key}`);
+      }
+    }
+    for (const keyword of ['allOf', 'anyOf', 'oneOf']) {
+      (node[keyword] ?? []).forEach((child, index) => inspect(child, `${location}/${keyword}/${index}`));
+    }
+    for (const keyword of ['additionalProperties', 'items', 'not', 'propertyNames']) {
+      inspect(node[keyword], `${location}/${keyword}`);
+    }
+  };
+  inspect(schema, '#');
+  return schema;
+}
+
+/** Refuse to write TypeScript that does not parse. */
 function assertParses(relativePath, content) {
   const parsed = ts.createSourceFile(relativePath, content, ts.ScriptTarget.Latest, true);
   const diagnostics = parsed.parseDiagnostics ?? [];
@@ -427,19 +467,20 @@ function assertParses(relativePath, content) {
   return content;
 }
 
-function writeOrCheck(relativePath, content) {
+function writeOrCheck(relativePath, content, sourceDescriptor) {
   const absolutePath = repoPath(relativePath);
+  const sourceNote = sourceDescriptor ? ` (source: ${sourceDescriptor})` : '';
   if (CHECK_ONLY) {
     let existing = '';
     try {
       existing = fs.readFileSync(absolutePath, 'utf8');
     } catch (err) {
       if (err.code === 'ENOENT') {
-        return [`missing generated file: ${relativePath}`];
+        return [`missing generated file: ${relativePath}${sourceNote}`];
       }
       throw err;
     }
-    return existing === content ? [] : [`stale generated file: ${relativePath}`];
+    return existing === content ? [] : [`stale generated file: ${relativePath}${sourceNote}`];
   }
   fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
   fs.writeFileSync(absolutePath, content, 'utf8');
@@ -450,12 +491,18 @@ const sidebar = new SourceExtractor('src/contracts/sidebar-ipc.ts');
 const audit = new SourceExtractor('src/contracts/audit-events.ts');
 const state = new SourceExtractor('src/state/workflow-run.ts');
 const stateSchema = new SourceExtractor('src/contracts/state-schema.ts');
+const decisionResults = new SourceExtractor('src/contracts/decision-results.ts');
+const workflowControls = new SourceExtractor('src/contracts/workflow-controls.ts');
+const recoveryEnvelope = new SourceExtractor('src/contracts/recovery-envelope.ts');
+const backendAvailability = new SourceExtractor('src/contracts/backend-availability.ts');
 const queueSnapshot = new SourceExtractor('src/contracts/queue-snapshot.ts');
 const featureRequest = new SourceExtractor('src/queue/feature-request.ts');
 const runner = new SourceExtractor('src/runner/invocation-result.ts');
-const snapshot = new SourceExtractor('src/ui/sidebar/snapshot.ts');
 
 const packageJson = JSON.parse(readText('package.json'));
+const backendDescriptorData = extractBackendDescriptorTable(REPO_ROOT);
+validateBackendManifestParity({ ...backendDescriptorData, packageJson });
+validateSettingsSchemaParity(REPO_ROOT, { ...backendDescriptorData, packageJson });
 const settingsProperties = packageJson.contributes.configuration.properties;
 const settings = Object.keys(settingsProperties)
   .sort()
@@ -463,25 +510,75 @@ const settings = Object.keys(settingsProperties)
 
 const commandTypes = sidebar.stringArray('COMMAND_TYPES');
 const hostMessageTypes = sidebar.stringArray('HOST_MESSAGE_TYPES');
+const sidebarIpcSchemaPath = 'src/contracts/generated/schemas/sidebar-ipc.schema.json';
+const ipcDescriptorSources = [
+  'scripts/contracts/ipc-descriptors/index.mjs',
+  'scripts/contracts/ipc-descriptors/host-messages.mjs',
+  ...IPC_COMMAND_FAMILIES.map(({ sourcePath }) => sourcePath)
+];
+function assertDescriptorCoverage(label, types, descriptors) {
+  const registered = new Set(descriptors.map(({ type }) => type));
+  const missing = types.filter((type) => !registered.has(type));
+  const extra = [...registered].filter((type) => !types.includes(type));
+  const duplicateCount = descriptors.length - registered.size + types.length - new Set(types).size;
+  if (missing.length > 0 || extra.length > 0 || duplicateCount > 0) {
+    throw new Error(
+      `IPC ${label} descriptor mismatch: missing=[${missing.join(', ')}], ` +
+      `extra=[${extra.join(', ')}], duplicates=${duplicateCount}`
+    );
+  }
+}
+assertDescriptorCoverage('command', commandTypes, ALL_IPC_COMMANDS);
+assertDescriptorCoverage('host message', hostMessageTypes, HOST_MESSAGES);
+const workflowSnapshotDecl = SNAPSHOT_DECLARATIONS.find((decl) => decl.name === 'WorkflowSnapshot');
+if (!workflowSnapshotDecl) {
+  throw new Error('scripts/contracts/snapshot-descriptors.mjs: missing WorkflowSnapshot descriptor');
+}
+const workflowSnapshotFields = Object.entries(workflowSnapshotDecl.schema.fields).map(([name, field]) => {
+  const baseType = emitTypeExpr(field.schema, { mode: 'host', indent: '' }).replace(/\s+/g, ' ').trim();
+  const fullType = field.nullable ? `${baseType} | null` : baseType;
+  return { name, optional: Boolean(field.optional), type: fullType };
+});
 const auditEventTypes = audit.stringArray('ALL_AUDIT_EVENT_TYPES');
 const queueStatuses = queueSnapshot.stringArray('QUEUE_STATUS');
 const featureRequestStatuses = featureRequest.stringUnion('FeatureRequestStatus');
 const workflowRunStatuses = state.stringUnion('WorkflowRunStatus');
 const manualPauseCauses = state.stringUnion('ManualPauseCause');
 const delayedRetryCauses = state.stringUnion('DelayedRetryCause');
+const attemptOutcomeStatuses = decisionResults.stringArray('ATTEMPT_OUTCOME_STATUSES');
+const attemptOutcomeReasons = decisionResults.stringArray('ATTEMPT_OUTCOME_REASONS');
+const attemptOutcomeRecoveries = decisionResults.stringArray('ATTEMPT_OUTCOME_RECOVERIES');
+const workflowControlKinds = workflowControls.stringArray('WORKFLOW_CONTROL_KINDS');
+const candidateAvailabilityPolicies = workflowControls.stringArray('CANDIDATE_AVAILABILITY_POLICIES');
+const candidateBudgetModes = workflowControls.stringArray('CANDIDATE_BUDGET_MODES');
+const repeatOnExhaustedPolicies = workflowControls.stringArray('REPEAT_ON_EXHAUSTED_POLICIES');
+const forEachOnItemErrorPolicies = workflowControls.stringArray('FOR_EACH_ON_ITEM_ERROR_POLICIES');
+const recoveryWorkspaceCoverages = recoveryEnvelope.stringArray('RECOVERY_WORKSPACE_COVERAGE_VALUES');
+const recoveryWorkspaceAttributions = recoveryEnvelope.stringArray('RECOVERY_WORKSPACE_ATTRIBUTION_VALUES');
+const recoveryEffectCertainties = recoveryEnvelope.stringArray('RECOVERY_EFFECT_CERTAINTY_VALUES');
+const quotaIdentityKinds = backendAvailability.stringArray('QUOTA_IDENTITY_KINDS');
+const quotaStatusCheckSupports = backendAvailability.stringArray('QUOTA_STATUS_CHECK_SUPPORTS');
+const quotaObservationStatuses = backendAvailability.stringArray('QUOTA_OBSERVATION_STATUSES');
+const quotaObservationSources = backendAvailability.stringArray('QUOTA_OBSERVATION_SOURCES');
 
 const schemas = {
-  'src/contracts/generated/schemas/sidebar-ipc.schema.json': makeSchema(
-    'sidebar-ipc',
-    'Schegent Sidebar IPC Contract',
-    ['src/contracts/sidebar-ipc.ts'],
-    {
-      schemaVersion: { type: 'integer', const: sidebar.numberConst('SCHEMA_VERSION') },
-      commandTypes: enumProperty(commandTypes),
-      hostMessageTypes: enumProperty(hostMessageTypes),
-      workflowSnapshotFields: interfaceProperty(snapshot.interfaceProperties('WorkflowSnapshot'))
-    }
-  ),
+  'src/contracts/generated/schemas/sidebar-ipc.schema.json': buildSidebarIpcJsonSchema({
+    generatedSchemaVersion: GENERATED_SCHEMA_VERSION,
+    ipcSchemaVersion: sidebarIpcSchemaVersion,
+    snapshotSchemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    commandTypes,
+    hostMessageTypes,
+    workflowSnapshotFields,
+    commands: ALL_IPC_COMMANDS,
+    hostMessages: HOST_MESSAGES,
+    sharedDefs: { ...SHARED_IPC_DEFS, ...SHARED_SNAPSHOT_DEFS },
+    snapshotDeclarations: SNAPSHOT_DECLARATIONS,
+    sourceFiles: [
+      'src/contracts/sidebar-ipc.ts',
+      'scripts/contracts/ipc-descriptors/index.mjs',
+      'scripts/contracts/snapshot-descriptors.mjs'
+    ]
+  }),
   'src/contracts/generated/schemas/audit-events.schema.json': makeSchema(
     'audit-events',
     'Schegent Audit Event Contract',
@@ -505,7 +602,7 @@ const schemas = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['key', 'type', 'default', 'scope', 'enum', 'minimum', 'maximum', 'pattern', 'itemType', 'itemPattern'],
+          required: ['key', 'type', 'default', 'scope', 'enum', 'minimum', 'maximum', 'pattern', 'itemType', 'itemPattern', 'itemEnum'],
           properties: {
             key: { type: 'string' },
             type: { type: 'string' },
@@ -516,7 +613,8 @@ const schemas = {
             maximum: { anyOf: [{ type: 'number' }, { type: 'null' }] },
             pattern: { anyOf: [{ type: 'string' }, { type: 'null' }] },
             itemType: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-            itemPattern: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+            itemPattern: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            itemEnum: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'null' }] }
           }
         },
         default: settings
@@ -537,22 +635,38 @@ const schemas = {
   'src/contracts/generated/schemas/state.schema.json': makeSchema(
     'state',
     'Schegent Workflow State Contract',
-    ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts'],
+    ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts', 'src/contracts/workflow-controls.ts', 'src/contracts/recovery-envelope.ts'],
     {
       stateSchemaVersion: { type: 'integer', const: stateSchema.numberConst('STATE_SCHEMA_VERSION') },
       workflowRunStatuses: enumProperty(workflowRunStatuses),
       manualPauseCauses: enumProperty(manualPauseCauses),
       delayedRetryCauses: enumProperty(delayedRetryCauses),
-      workflowRunFields: interfaceProperty(state.interfaceProperties('WorkflowRun'))
+      workflowRunFields: interfaceProperty(state.interfaceProperties('WorkflowRun')),
+      attemptOutcomeStatuses: enumProperty(attemptOutcomeStatuses),
+      attemptOutcomeReasons: enumProperty(attemptOutcomeReasons),
+      attemptOutcomeRecoveries: enumProperty(attemptOutcomeRecoveries),
+      workflowControlKinds: enumProperty(workflowControlKinds),
+      candidateAvailabilityPolicies: enumProperty(candidateAvailabilityPolicies),
+      candidateBudgetModes: enumProperty(candidateBudgetModes),
+      repeatOnExhaustedPolicies: enumProperty(repeatOnExhaustedPolicies),
+      forEachOnItemErrorPolicies: enumProperty(forEachOnItemErrorPolicies),
+      recoveryWorkspaceCoverages: enumProperty(recoveryWorkspaceCoverages),
+      recoveryWorkspaceAttributions: enumProperty(recoveryWorkspaceAttributions),
+      recoveryEffectCertainties: enumProperty(recoveryEffectCertainties)
     }
   ),
   'src/contracts/generated/schemas/backend-runner.schema.json': makeSchema(
     'backend-runner',
     'Schegent Backend Runner Contract',
-    ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts'],
+    ['src/contracts/backend-kinds.ts', 'src/contracts/backend-descriptors.ts', 'src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
     {
+      supportedBackends: enumProperty(backendDescriptorData.supportedBackends),
       invocationRequestFields: interfaceProperty(runner.interfaceProperties('InvocationRequest')),
-      rawInvocationOutputFields: interfaceProperty(runner.interfaceProperties('RawInvocationOutput'))
+      rawInvocationOutputFields: interfaceProperty(runner.interfaceProperties('RawInvocationOutput')),
+      quotaIdentityKinds: enumProperty(quotaIdentityKinds),
+      quotaStatusCheckSupports: enumProperty(quotaStatusCheckSupports),
+      quotaObservationStatuses: enumProperty(quotaObservationStatuses),
+      quotaObservationSources: enumProperty(quotaObservationSources)
     }
   )
 };
@@ -589,7 +703,7 @@ const contractFamilies = [
     family: 'workflow-state',
     status: 'generated',
     description: 'Workflow run status, pause causes, retry causes, and state schema version.',
-    sourceFiles: ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts'],
+    sourceFiles: ['src/contracts/state-schema.ts', 'src/state/workflow-run.ts', 'src/contracts/decision-results.ts', 'src/contracts/workflow-controls.ts', 'src/contracts/recovery-envelope.ts'],
     schemaFiles: ['src/contracts/generated/schemas/state.schema.json'],
     typescriptBinding: 'src/contracts/generated/boundary-contracts.ts',
     reviewPolicy: 'Regenerate with every persisted workflow state shape change.'
@@ -607,7 +721,7 @@ const contractFamilies = [
     family: 'backend-runner',
     status: 'generated',
     description: 'Backend runner request and raw invocation result field names.',
-    sourceFiles: ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts'],
+    sourceFiles: ['src/contracts/backend-runner.ts', 'src/runner/invocation-result.ts', 'src/contracts/backend-availability.ts'],
     schemaFiles: ['src/contracts/generated/schemas/backend-runner.schema.json'],
     typescriptBinding: 'src/contracts/generated/boundary-contracts.ts',
     reviewPolicy: 'Regenerate with every runner request/result boundary change.'
@@ -646,12 +760,17 @@ const generated = new Map([
         generatedBy: 'scripts/generate-contract-schemas.mjs',
         generatedSchemaVersion: GENERATED_SCHEMA_VERSION,
         families: contractFamilies
-      })
+      }),
+      ['families']
     )
   ],
   ...Object.entries(schemas).map(([relativePath, schema]) => [
     relativePath,
-    assertSubstantive(relativePath, json(schema))
+    assertSubstantive(
+      relativePath,
+      json(assertLocalSchemaReferences(relativePath, schema)),
+      relativePath === sidebarIpcSchemaPath ? ['properties', 'required', '$defs'] : ['properties', 'required']
+    )
   ]),
   [
     'webview-ui/src/lib/retry-condition.ts',
@@ -666,12 +785,115 @@ const generated = new Map([
       'webview-ui/src/lib/fatal-signature-registry.ts',
       projectFatalSignatures('src/lib/fatal-signature-registry.ts')
     )
+  ],
+  [
+    // Feature 193 (T038, FR-001/FR-009) — the canonical `ActionKey` tuple.
+    // Same relationship as `retry-condition.ts` above: a genuine full-file
+    // mirror, since the source has no imports of its own to drag in.
+    'webview-ui/src/lib/generated/action-keys.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/action-keys.ts',
+      mirrorWholeFile('src/contracts/action-keys.ts')
+    )
+  ],
+  [
+    // Feature 195 (T006, FR-001) — the queue failure-policy vocabulary. Same
+    // relationship as `action-keys.ts` above: a genuine full-file mirror,
+    // since the source is deliberately import-free (see that file's header).
+    'webview-ui/src/lib/generated/queue-failure-policy.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/queue-failure-policy.ts',
+      mirrorWholeFile('src/contracts/queue-failure-policy.ts')
+    )
+  ],
+  [
+    'src/contracts/generated/sidebar-ipc-types.ts',
+    assertParses(
+      'src/contracts/generated/sidebar-ipc-types.ts',
+      emitHostIpcTypes({
+        schemaVersion: sidebarIpcSchemaVersion,
+        commands: ALL_IPC_COMMANDS,
+        hostMessages: HOST_MESSAGES,
+        hostMessageDefinitions: HOST_MESSAGE_DEFINITIONS,
+        sourcePath: 'scripts/contracts/ipc-descriptors/index.mjs'
+      })
+    )
+  ],
+  ...IPC_COMMAND_FAMILIES.map((family) => [
+    family.outputPath,
+    assertParses(
+      family.outputPath,
+      emitFamilyValidatorModule({
+        family: family.family,
+        sourcePath: family.sourcePath,
+        headerNotes: family.headerNotes,
+        commands: family.commands
+      })
+    )
+  ]),
+  [
+    'src/contracts/generated/snapshot-types.ts',
+    assertParses(
+      'src/contracts/generated/snapshot-types.ts',
+      emitHostSnapshotTypes({
+        snapshotSchemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        hostImports: HOST_SNAPSHOT_IMPORTS,
+        declarations: SNAPSHOT_DECLARATIONS,
+        sourcePath: 'scripts/contracts/snapshot-descriptors.mjs'
+      })
+    )
+  ],
+  [
+    'webview-ui/src/lib/generated/snapshot-mirror.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/snapshot-mirror.ts',
+      emitWebviewSnapshotMirror({
+        snapshotSchemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        webviewLocalImports: WEBVIEW_LOCAL_IMPORTS,
+        webviewLeafAliases: WEBVIEW_LEAF_ALIASES,
+        declarations: SNAPSHOT_DECLARATIONS,
+        sourcePath: 'scripts/contracts/snapshot-descriptors.mjs'
+      })
+    )
+  ],
+  [
+    'webview-ui/src/lib/generated/backend-kinds.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/backend-kinds.ts',
+      emitWebviewBackendKinds(backendDescriptorData)
+    )
+  ],
+  [
+    'webview-ui/src/lib/generated/backend-descriptors.ts',
+    assertParses(
+      'webview-ui/src/lib/generated/backend-descriptors.ts',
+      emitWebviewBackendDescriptors(backendDescriptorData)
+    )
   ]
+]);
+
+const artifactSources = new Map([
+  ['src/contracts/generated/sidebar-ipc-types.ts', ipcDescriptorSources.join(', ')],
+  ['src/contracts/generated/snapshot-types.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
+  ['webview-ui/src/lib/generated/snapshot-mirror.ts', 'scripts/contracts/snapshot-descriptors.mjs'],
+  [
+    'webview-ui/src/lib/generated/backend-kinds.ts',
+    'src/contracts/backend-kinds.ts, src/contracts/backend-descriptors.ts'
+  ],
+  [
+    'webview-ui/src/lib/generated/backend-descriptors.ts',
+    'src/contracts/backend-kinds.ts, src/contracts/backend-descriptors.ts'
+  ],
+  [
+    sidebarIpcSchemaPath,
+    [...ipcDescriptorSources, 'scripts/contracts/snapshot-descriptors.mjs'].join(', ')
+  ],
+  ...IPC_COMMAND_FAMILIES.map((family) => [family.outputPath, family.sourcePath])
 ]);
 
 const failures = [];
 for (const [relativePath, content] of generated) {
-  failures.push(...writeOrCheck(relativePath, content));
+  failures.push(...writeOrCheck(relativePath, content, artifactSources.get(relativePath)));
 }
 
 if (failures.length > 0) {

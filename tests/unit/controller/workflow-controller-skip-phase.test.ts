@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
@@ -13,7 +14,7 @@ import type { WorkflowRun, WorkflowRunStatus } from '../../../src/state/workflow
 // header for why the ids are the real Spec Kit ones.
 import { SPECKIT_ALL_PHASE_DEFS } from '../../fixtures/speckit-catalog-fixture';
 import type { Memento } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -83,7 +84,7 @@ beforeEach(async () => {
   store = new WorkspaceStateStore(memento);
   await store.initialize();
   queue = new QueueManager(store);
-  phaseRunner = { run: vi.fn() } as unknown as PhaseRunner;
+  phaseRunner = { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   auditWriter = { append: vi.fn(async () => {}) };
   
   controller = new SchegentWorkflowController(
@@ -118,14 +119,17 @@ beforeEach(async () => {
   (controller as any).resumeExisting = vi.fn(async () => {});
 });
 
+// The Run id every case seeds and, since FR-R4-F20, names in its Skip.
+const RUN_ID = 'run-skip-1';
+
 async function seedRun(
   overrides: Partial<WorkflowRun> = {}
 ): Promise<{ feature: { id: string }; run: WorkflowRun }> {
   const feature = await queue.enqueue('skip feature');
-  await queue.markInFlight(feature.id, 'run-skip-1');
+  await queue.markInFlight(feature.id, RUN_ID);
   const now = Date.now();
   const run: WorkflowRun = {
-    id: 'run-skip-1',
+    id: RUN_ID,
     featureId: feature.id,
     featureDir: 'specs/001-existing',
     status: 'running' as WorkflowRunStatus,
@@ -159,14 +163,14 @@ async function seedRun(
     resumeTargetPhaseId: null,
     ...overrides
   };
-  await store.setRun(DEFAULT_QUEUE_ID, run);
+  await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
   return { feature, run };
 }
 
 describe('SchegentWorkflowController.skipPhase on active phase', () => {
   it('cancels the active phase and advances to next', async () => {
     await seedRun();
-    const result = await controller.skipPhase('speckit-clarify');
+    const result = await controller.skipPhase(RUN_ID, 'speckit-clarify');
     expect(result).toEqual({ ok: true });
     
     // Check that the queue's driver was told to abort the overridden phase
@@ -178,7 +182,7 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
 
   it('phase-jumped audit event emitted with correct payload ({ reason: operator-jump, skippedPhaseId, nextPhaseId })', async () => {
     await seedRun();
-    const result = await controller.skipPhase('speckit-clarify');
+    const result = await controller.skipPhase(RUN_ID, 'speckit-clarify');
     expect(result).toEqual({ ok: true });
     
     // verify audit event
@@ -193,7 +197,7 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
   it('skip on terminal phase (last in pipeline) correctly ends the run', async () => {
     // finalize is the last phase
     await seedRun({ currentPhase: 'finalize' });
-    const result = await controller.skipPhase('finalize');
+    const result = await controller.skipPhase(RUN_ID, 'finalize');
     expect(result).toEqual({ ok: true });
     
     expect(activeDriver.noteActivePhaseOverrideAbort).toHaveBeenCalledWith('run-skip-1', 'finalize');
@@ -201,14 +205,14 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
   });
 
   it('skip when no active phase returns error result', async () => {
-    const result = await controller.skipPhase('speckit-clarify');
+    const result = await controller.skipPhase(RUN_ID, 'speckit-clarify');
     // "run-not-in-flight" because seedRun was not called
     expect(result).toEqual({ ok: false, reason: 'no-run-in-flight' });
   });
 
   it('skip when phase is paused resumes the phase to evaluate override', async () => {
     await seedRun({ status: 'paused', manualPauseAt: Date.now(), manualPauseCause: 'operator-paused' });
-    const result = await controller.skipPhase('speckit-clarify');
+    const result = await controller.skipPhase(RUN_ID, 'speckit-clarify');
     expect(result).toEqual({ ok: true });
     
     // The paused run is resumed and dispatch is scheduled so the override is
@@ -222,16 +226,18 @@ describe('SchegentWorkflowController.skipPhase on active phase', () => {
     expect((controller as any).resumeExisting).toHaveBeenCalled();
   });
   
-  it('skip when phase is failed wakes up the pipeline', async () => {
+  // FR-R4-F20 (T4.1) — replaces "skip when phase is failed wakes up the pipeline", which asserted the
+  // revive: a failed Run went back to `running` and the pipeline was resumed. A failed Run's Skip is
+  // refused `run-failed` instead, on a real store, and the Run is the record it was.
+  it('skip when the run is failed is refused run-failed and changes nothing', async () => {
     await seedRun({ status: 'failed', lastError: { code: 'Error', message: 'Boom', phase: null, iteration: null, at: Date.now() } });
-    const result = await controller.skipPhase('speckit-clarify');
-    expect(result).toEqual({ ok: true });
-    
-    const run = store.getRun(DEFAULT_QUEUE_ID)!;
-    expect(run.status).toBe('running');
-    expect(run.lastError).toBeNull();
-    // pipeline woke up via resumeExisting
+    const before = structuredClone(store.getRun(DEFAULT_QUEUE_ID)!);
+    const result = await controller.skipPhase(RUN_ID, 'speckit-clarify');
+    expect(result).toEqual({ ok: false, reason: 'run-failed' });
+
+    expect(store.getRun(DEFAULT_QUEUE_ID)).toEqual(before);
+    // the pipeline was not woken
     await new Promise(resolve => setImmediate(resolve));
-    expect((controller as any).resumeExisting).toHaveBeenCalled();
+    expect((controller as any).resumeExisting).not.toHaveBeenCalled();
   });
 });

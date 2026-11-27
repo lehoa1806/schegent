@@ -27,40 +27,42 @@
 //   It does not fail open. An unknown Pipeline or a missing Phase is refused,
 //   never substituted (FR-033 of feature 087, carried forward here).
 
-import * as fs from 'fs/promises';
 import type { PhaseDef, PipelineCatalog } from '../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/empty-catalog-guidance';
-import type { RunRequestFieldError } from '../../contracts/run-request';
-import type { FrozenRunPlan, RunRequest } from '../../contracts/run-request';
+import type {
+  FrozenPhaseHandoffDelivery,
+  FrozenRunPlan,
+  FrozenSupplementalInput,
+  FrozenWorkflowClosure,
+  RunRequest,
+  RunRequestFieldError,
+  SupplementalInput
+} from '../../contracts/run-request';
 import type { RunOutputRecord } from '../../contracts/run-results';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
+import type { ExecutionFence } from '../../contracts/control-ledger';
+import { errorMessage } from '../../lib/errors';
+import {
+  serializeRecoveryEnvelope,
+  validateRecoveryEnvelope,
+  type RecoveryEnvelope
+} from '../../contracts/recovery-envelope';
+import { resolveCandidatePhaseDefinition } from '../../config/pipeline-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
-import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';
-import type { OutputTargetProbe } from '../run-request/output-target-validator';
+import { runRequestProbes } from '../run-request/run-request-probes';
 import type { EffectivePipelineSource } from '../run-request/run-request-validator';
 import { validateRunRequest } from '../run-request/run-request-validator';
-import type { GuardedScheduleRequest, GuardedScheduleResult } from '../guarded-run-service';
+import type {
+  GuardedRunService,
+  GuardedScheduleRequest,
+  GuardedScheduleResult
+} from '../guarded-run-service';
+import { synthesizePhasePipelineSnapshot } from './connected-run-factory';
 
 /** How much of a queue guard's own refusal text is echoed back to the caller. */
 const DETAIL_MAX = 120;
-
-/**
- * The filesystem half of the output gate. `lstat` rather than `stat` on purpose:
- * a dangling symlink still occupies the target, and writing through it is still
- * an overwrite the operator has not confirmed.
- */
-const OUTPUT_PROBE: OutputTargetProbe = {
-  exists: async (absolutePath) => {
-    try {
-      await fs.lstat(absolutePath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-};
 
 /**
  * Why a start was refused before any field was checked, in the vocabulary both
@@ -87,13 +89,32 @@ export type NodeRunStartRejection =
   // literal is a second thing to keep in step.
   | CatalogEmptyReason;
 
+export interface NodeAttemptOccurrenceRef {
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly parentInvocationId: string | null;
+  readonly nodePath: string;
+  readonly attemptId: string;
+  readonly attemptIndex: number;
+}
+
 export type NodeRunStartResult =
-  | { readonly outcome: 'enqueued'; readonly queueItemId: string; readonly plan: FrozenRunPlan }
+  | {
+      readonly outcome: 'enqueued';
+      readonly queueItemId: string;
+      readonly plan: FrozenRunPlan;
+      readonly occurrence?: NodeAttemptOccurrenceRef;
+    }
   | { readonly outcome: 'rejected-definition'; readonly reason: NodeRunStartRejection }
   | { readonly outcome: 'rejected-validation'; readonly errors: readonly RunRequestFieldError[] }
   | {
       readonly outcome: 'rejected-queue';
       readonly reason: 'queue-refused';
+      readonly detail?: string;
+    }
+  | {
+      readonly outcome: 'rejected-foreign-lock';
+      readonly reason: 'foreign-lock';
       readonly detail?: string;
     };
 
@@ -105,6 +126,7 @@ export type NodeRunStartResult =
 export interface NodeRunStartDeps {
   readonly guardedRun?: {
     scheduleOrEnqueue(request: GuardedScheduleRequest): Promise<GuardedScheduleResult>;
+    admitComposableWorkflowLaunchAtomically?: GuardedRunService['admitComposableWorkflowLaunchAtomically'];
   };
   readonly getCatalog?: () => PipelineCatalog;
   /**
@@ -123,6 +145,12 @@ export interface NodeRunStartDeps {
   readonly resolveCatalogVersion?: (pipelineId: string) => CatalogVersionRef | undefined;
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly readPriorRunOutputs?: (runId: string) => readonly RunOutputRecord[] | null;
+  readonly recordControlSpawnIntent?: (input: {
+    readonly ledgerRunId: string;
+    readonly attemptId: string;
+    readonly fence: ExecutionFence;
+    readonly hasSideEffects?: boolean;
+  }) => Promise<{ readonly ok: boolean; readonly message?: string }>;
   readonly logger: Pick<SanitizedLogger, 'warn' | 'sanitize'>;
 }
 
@@ -155,6 +183,29 @@ export interface NodeRunStartInput {
    * complete by construction, Phases included.
    */
   readonly frozenPipeline?: WorkflowRunPipeline;
+  readonly occurrence?: NodeAttemptOccurrenceRef;
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
+  /** The next node of a Workflow already on this queue; see `GuardedScheduleRequest`. */
+  readonly continuesWorkflow?: true;
+}
+
+export interface PhaseNodeRunStartInput {
+  readonly frozenClosure: FrozenWorkflowClosure;
+  readonly phaseId: string;
+  readonly workflowId?: string | undefined;
+  readonly candidateId?: string | undefined;
+  readonly recoveryEnvelope?: RecoveryEnvelope | unknown | undefined;
+  readonly allowUncertainEffects?: boolean | undefined;
+  readonly request: RunRequest;
+  readonly workspaceRoot: string | null;
+  readonly description?: string;
+  readonly queueId?: string;
+  readonly occurrence: NodeAttemptOccurrenceRef;
+  readonly ledgerRunId?: string;
+  readonly fence?: ExecutionFence;
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
+  /** The next node of a Workflow already on this queue; see `GuardedScheduleRequest`. */
+  readonly continuesWorkflow?: true;
 }
 
 /**
@@ -330,13 +381,12 @@ export async function startPipelineRun(
     pipeline: resolved.source,
     workspaceRoot: input.workspaceRoot,
     now: Date.now(),
-    localInputs: { checkFile: checkLocalFile, checkFolder: checkLocalFolder },
-    outputProbe: OUTPUT_PROBE,
-    priorOutputs: { outputsFor: (runId) => deps.readPriorRunOutputs?.(runId) ?? null },
+    ...runRequestProbes(deps.readPriorRunOutputs),
     // Carried, not re-resolved (FR-021). Gate 1 resolved it from the same read
     // that produced the body; asking again here would be a second oracle that
     // could answer for a different body than the one about to be frozen.
-    ...(resolved.catalogVersion === undefined ? {} : { catalogVersion: resolved.catalogVersion })
+    ...(resolved.catalogVersion === undefined ? {} : { catalogVersion: resolved.catalogVersion }),
+    ...(input.phaseHandoff === undefined ? {} : { phaseHandoff: input.phaseHandoff })
   });
   if (!validated.ok) {
     // Forwarded verbatim. Every `message` is one of a closed set of fixed
@@ -359,6 +409,8 @@ export async function startPipelineRun(
       via: 'webview',
       pipelineId: plan.pipeline.id,
       ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+      ...(input.continuesWorkflow === true ? { continuesWorkflow: true } : {}),
+      ...(input.occurrence !== undefined ? { workflowOccurrence: input.occurrence } : {}),
       runPlan: plan
     });
   } catch (err) {
@@ -367,15 +419,28 @@ export async function startPipelineRun(
     // unexpected failure below is a refusal the caller can render rather than an
     // unhandled rejection the operator sees as a hang.
     deps.logger.warn(
-      `node-run-starter: enqueue failed: ${deps.logger.sanitize(
-        (err as Error).message ?? 'unknown error'
-      )}`
+      `node-run-starter: enqueue failed: ${deps.logger.sanitize(errorMessage(err))}`
     );
     return { outcome: 'rejected-queue', reason: 'queue-refused', detail: 'enqueue-failed' };
   }
 
   if (result.outcome === 'enqueued' && result.queueItemId !== undefined) {
-    return { outcome: 'enqueued', queueItemId: result.queueItemId, plan };
+    return {
+      outcome: 'enqueued',
+      queueItemId: result.queueItemId,
+      plan,
+      ...(input.occurrence !== undefined ? { occurrence: input.occurrence } : {})
+    };
+  }
+
+  if (result.outcome === 'rejected-foreign-lock') {
+    return {
+      outcome: 'rejected-foreign-lock',
+      reason: 'foreign-lock',
+      ...(result.reason !== undefined
+        ? { detail: deps.logger.sanitize(result.reason).slice(0, DETAIL_MAX) }
+        : {})
+    };
   }
 
   // Every other guarded outcome is one refusal family: the next action is to
@@ -389,4 +454,193 @@ export async function startPipelineRun(
       ? { detail: deps.logger.sanitize(result.reason).slice(0, DETAIL_MAX) }
       : {})
   };
+}
+
+/**
+ * Convert `FrozenSupplementalInput[]` back to transient `SupplementalInput[]`
+ * when constructing a `RunRequest` for a `Phase` node attempt.
+ */
+export function toSupplementalInputs(
+  frozen: readonly FrozenSupplementalInput[] | undefined
+): readonly SupplementalInput[] {
+  if (frozen === undefined || frozen.length === 0) return [];
+  return frozen.map((item): SupplementalInput => {
+    switch (item.kind) {
+      case 'local-file':
+        return { kind: 'local-file', path: item.value };
+      case 'local-folder':
+        return { kind: 'local-folder', path: item.value };
+      case 'url':
+        return { kind: 'url', url: item.value };
+      case 'text':
+        return { kind: 'text', text: item.value };
+      case 'instruction':
+        return { kind: 'instruction', text: item.value };
+      case 'prior-output':
+        return {
+          kind: 'prior-output',
+          reference: item.reference ?? { sourceRunId: '', outputName: item.value }
+        };
+    }
+  });
+}
+
+/**
+ * FR-R5-F02 — start a `phase` node from a `FrozenWorkflowClosure` with
+ * occurrence identity metadata (`rootRunId`, `invocationId`, `parentInvocationId`,
+ * `nodePath`, `attemptId`, `attemptIndex`).
+ */
+function lookupRecord<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+export async function startPhaseNodeRun(
+  deps: NodeRunStartDeps,
+  input: PhaseNodeRunStartInput
+): Promise<NodeRunStartResult> {
+  let phase = lookupRecord(input.frozenClosure.phasesById, input.phaseId);
+  if (input.workflowId !== undefined && input.candidateId !== undefined) {
+    const resolvedCandidate = resolveCandidatePhaseDefinition(
+      input.frozenClosure,
+      input.workflowId,
+      input.candidateId
+    );
+    if (resolvedCandidate === undefined || resolvedCandidate.phaseId !== input.phaseId) {
+      return { outcome: 'rejected-definition', reason: 'pipeline-not-found' };
+    }
+    phase = resolvedCandidate.phase;
+  }
+  if (phase === undefined) {
+    return { outcome: 'rejected-definition', reason: 'pipeline-not-found' };
+  }
+
+  let recoverySupplemental: SupplementalInput | undefined;
+  if (input.recoveryEnvelope !== undefined) {
+    const validatedHandover = validateRecoveryEnvelope(input.recoveryEnvelope);
+    if (!validatedHandover.ok) {
+      const tooLarge = validatedHandover.diagnostics.some(
+        (diag) => diag.code === 'recovery-context-too-large'
+      );
+      if (tooLarge) {
+        return {
+          outcome: 'rejected-queue',
+          reason: 'queue-refused',
+          detail: 'recovery-context-too-large'
+        };
+      }
+      return {
+        outcome: 'rejected-validation',
+        errors: validatedHandover.diagnostics.map((diag) => ({
+          field: diag.field,
+          code: 'type-mismatch' as const,
+          message: diag.message
+        }))
+      };
+    }
+
+    if (
+      validatedHandover.value.effects.certainty !== 'safe' &&
+      input.allowUncertainEffects !== true
+    ) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: `uncertain-effects:${validatedHandover.value.effects.certainty}`
+      };
+    }
+
+    const serializedHandover = serializeRecoveryEnvelope(validatedHandover.value);
+    if (!serializedHandover.ok) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: serializedHandover.code
+      };
+    }
+    recoverySupplemental = {
+      kind: 'text',
+      text: serializedHandover.serialized
+    };
+  }
+
+  const catalogVersion =
+    input.frozenClosure.catalogVersionsById !== undefined
+      ? lookupRecord(input.frozenClosure.catalogVersionsById, phase.phaseId)
+      : undefined;
+  const basePipeline = synthesizePhasePipelineSnapshot(
+    phase,
+    deps.defaultRunnerKind,
+    catalogVersion
+  );
+  const frozenPipeline: WorkflowRunPipeline =
+    input.request.inputs.length === 0 && input.request.outputs.length === 0
+      ? basePipeline
+      : Object.freeze({
+          ...basePipeline,
+          ...(input.request.inputs.length > 0
+            ? {
+                inputs: Object.freeze(
+                  input.request.inputs.map((inp) =>
+                    Object.freeze({
+                      portId: inp.portId,
+                      label: inp.portId,
+                      type: inp.type,
+                      required: false
+                    })
+                  )
+                )
+              }
+            : {}),
+          ...(input.request.outputs.length > 0
+            ? {
+                outputs: Object.freeze(
+                  input.request.outputs.map((out) =>
+                    Object.freeze({
+                      portId: out.portId,
+                      label: out.portId,
+                      type: 'file' as const
+                    })
+                  )
+                )
+              }
+            : {})
+        });
+  if (
+    input.ledgerRunId !== undefined &&
+    input.fence !== undefined &&
+    deps.recordControlSpawnIntent !== undefined
+  ) {
+    const intent = await deps.recordControlSpawnIntent({
+      ledgerRunId: input.ledgerRunId,
+      attemptId: input.occurrence.attemptId,
+      fence: input.fence,
+      hasSideEffects: phase.sideEffects !== 'none'
+    });
+    if (!intent.ok) {
+      return {
+        outcome: 'rejected-queue',
+        reason: 'queue-refused',
+        detail: intent.message ?? 'stale-execution-fence'
+      };
+    }
+  }
+  const mergedSupplemental: readonly SupplementalInput[] =
+    recoverySupplemental !== undefined
+      ? [...input.request.supplemental, recoverySupplemental]
+      : input.request.supplemental;
+
+  return startPipelineRun(deps, {
+    request: {
+      ...input.request,
+      pipelineId: phase.phaseId,
+      supplemental: mergedSupplemental
+    },
+    workspaceRoot: input.workspaceRoot,
+    ...(input.description !== undefined ? { description: input.description } : {}),
+    ...(input.queueId !== undefined ? { queueId: input.queueId } : {}),
+    ...(input.continuesWorkflow === true ? { continuesWorkflow: true } : {}),
+    ...(input.phaseHandoff !== undefined ? { phaseHandoff: input.phaseHandoff } : {}),
+    frozenPipeline,
+    occurrence: input.occurrence
+  });
 }

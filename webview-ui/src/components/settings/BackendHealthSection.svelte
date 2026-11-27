@@ -1,137 +1,165 @@
 <script lang="ts">
-  import { pingBackend } from '../../lib/backend-ping-ipc';
-  import type {
-    BackendPingState,
-    BackendRunnerKind,
-    WorkflowSnapshot
+  // FR-R3-144 (T025, T026, T028) — the list of backend sections.
+  //
+  // WHAT CHANGED AND WHY. This component drew a row per runner from a local
+  // `RUNNERS` array, paired against the tab's `BACKEND_FIELDS` by INDEX
+  // (`{@const spec = BACKEND_FIELDS[i]}`). The pairing was correct only because
+  // the two arrays were written in the same order and nothing compared them: a
+  // spec inserted at the front would have drawn Claude's path under Codex's check
+  // button with every test still green. It also carried five `any`-typed props,
+  // so nothing about the shapes flowing through it was checked at all.
+  //
+  // Both are gone. The backends come from `SUPPORTED_BACKENDS` — the platform's
+  // own enumeration, so a backend added there gets a section without an edit here
+  // — and each one's data is looked up by KEY in a `Record` the tab declares.
+  // Every prop is typed against the real type.
+  //
+  // The per-backend rendering lives in `general/BackendSection.svelte`; this file
+  // owns the heading, the shared probe state and nothing else.
+  import {
+    SUPPORTED_BACKENDS,
+    type BackendMap
+  } from '../../lib/generated/backend-descriptors';
+  import {
+    IDLE_GENERAL_SETTINGS,
+    type BackendPingState,
+    type BackendPosture,
+    type GeneralSettings,
+    type PortableWorkflowDefinition,
+    type WorkflowSnapshot
   } from '../../lib/snapshot-types';
-  import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
-  import { GENERAL_SETTINGS_DESCRIPTIONS } from './GeneralSettingsTab.descriptions';
-  import GeneralSettingFieldRow from './general/GeneralSettingFieldRow.svelte';
+  import BreakAtJoins from '../BreakAtJoins.svelte';
+  import BackendSection from './general/BackendSection.svelte';
+  import type {
+    BackendSection as BackendSectionSpec,
+    Draft,
+    ScalarKey,
+    StatusByKey
+  } from './general/field-types';
+  import { settingsSearch } from './settings-search.svelte';
+
+  /** The list's heading. The page's search also finds every backend's settings by it. */
+  const HEADING = 'Installed backends';
 
   interface Props {
     snapshot: WorkflowSnapshot;
-    BACKEND_FIELDS: readonly any[];
-    draft: any;
-    statusByKey: any;
-    fieldChanged: (key: any) => boolean;
-    fieldScopeLabel: (key: any) => string;
-    pipelines: any;
-    saveOne: (spec: any) => void;
-    resetField: (key: any) => void;
-    onAutoCompactInput: (ev: Event) => void;
+    /**
+     * Every backend's section data, keyed by backend.
+     *
+     * A `Record` rather than an array: a fourth `BackendRunnerKind` member makes
+     * the tab's declaration a compile error until that backend has a section,
+     * where an array would compile and silently render three of four.
+     */
+    backends: BackendMap<BackendSectionSpec>;
+    draft: Draft;
+    statusByKey: StatusByKey;
+    fieldChanged: (key: ScalarKey) => boolean;
+    fieldScopeLabel: (key: ScalarKey) => string;
+    workflows: readonly PortableWorkflowDefinition[];
   }
   let {
     snapshot,
-    BACKEND_FIELDS,
+    backends,
     draft = $bindable(),
     statusByKey,
     fieldChanged,
     fieldScopeLabel,
-    pipelines,
-    saveOne,
-    resetField,
-    onAutoCompactInput
+    workflows
   }: Props = $props();
 
-  const RUNNERS: readonly BackendRunnerKind[] = ['claude', 'codex', 'agy'];
-  const LABELS: Record<BackendRunnerKind, string> = {
-    claude: 'Claude',
-    codex: 'Codex',
-    agy: 'Agy'
-  };
-  const state = $derived<BackendPingState>(
-    snapshot.backendPingState ?? { status: 'idle' }
-  );
+  const ping = $derived<BackendPingState>(snapshot.backendPingState ?? { status: 'idle' });
   const availableBackends = $derived(snapshot.availableBackends ?? []);
-  const busy = $derived(state.status === 'running');
+  const busy = $derived(ping.status === 'running');
+  // Absent when the host predates the projection; each section renders no posture
+  // block in that case rather than inventing one. See `BackendSection`'s prop doc.
+  const postures = $derived<readonly BackendPosture[]>(snapshot.backendPostures ?? []);
+  // FR-004 — the host's sentences about entries in the list of backends allowed to run
+  // unsandboxed that name no backend. Absent when the host predates the field.
+  const grantProblems = $derived<readonly string[]>(snapshot.backendGrantProblems ?? []);
+  // The settings as saved, which the host's scan and a backend's last test read. The draft holds
+  // what a save will write; each card shows the saved path beside what was found at it.
+  const saved = $derived<GeneralSettings>(snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS);
 
-  function description(runner: BackendRunnerKind): string {
-    if (state.status === 'idle' || state.runner !== runner) return '';
-    if (state.status === 'running') return `Checking ${LABELS[runner]}…`;
-    if (state.status === 'success') return `Healthy · ${state.latencyMs} ms`;
-    const exit = state.exitCode === undefined ? '' : ` · exit ${state.exitCode}`;
-    return `Unavailable · ${state.cause}${exit}`;
+  /** The saved value of a backend's path setting, or `''` when none is saved. */
+  function savedPath(key: ScalarKey): string {
+    const value: unknown = saved[key];
+    return typeof value === 'string' ? value : '';
   }
+
+  const { group: searchGroup } = settingsSearch();
 </script>
 
-<section class="backend-health" aria-labelledby="backend-health-heading">
-  <div>
-    <h3 id="backend-health-heading">Backend Health</h3>
-    <p id="backend-health-description">Run a bounded, output-free availability check for a configured CLI.</p>
-  </div>
-  <div class="backend-list">
-    {#each RUNNERS as runner, i}
-      {@const spec = BACKEND_FIELDS[i]}
-      <div class="backend-row-wrapper" data-testid={`backend-health-${runner}`}>
-        <div class="identity">
-          <strong>{LABELS[runner]}</strong>
-          <span class:available={availableBackends.includes(runner)}>
-            {availableBackends.includes(runner) ? 'Discovered' : 'Unavailable'}
-          </span>
-          {#if description(runner)}
-            <small role="status" aria-live="polite">{description(runner)}</small>
-          {/if}
-        </div>
-        <GeneralSettingFieldRow
-          {spec}
-          bind:draft
-          status={statusByKey[spec.key]}
-          changed={fieldChanged(spec.key)}
-          scopeLabel={fieldScopeLabel(spec.key)}
-          {pipelines}
-          onSave={() => saveOne(spec)}
-          onReset={() => resetField(spec.key)}
-          {onAutoCompactInput}
-        >
-          {#snippet actionsAppend()}
-            <button
-              type="button"
-              class="ping-btn"
-              disabled={busy}
-              aria-label={`Ping ${LABELS[runner]} backend`}
-              data-testid={`ping-backend-${runner}`}
-              onclick={() => pingBackend(runner)}
-              use:hoverTextAnchor={{
-                controlId: 'backend-ping',
-                description: GENERAL_SETTINGS_DESCRIPTIONS['backend-ping']
-              }}
-            >{state.status === 'running' && state.runner === runner ? 'Pinging…' : 'Ping'}</button>
-          {/snippet}
-        </GeneralSettingFieldRow>
-      </div>
+<!--
+  The redesign's "Installed backends" section: a heading, then one card per backend. The heading
+  takes the mockup's words and keeps its id, which a launch notice's "Review in Settings" scrolls
+  to. The mockup draws no line under the heading, so there is none.
+-->
+<section
+  class="section backend-health"
+  aria-labelledby="backend-health-heading"
+  use:searchGroup={() => [HEADING]}
+>
+  <h3 id="backend-health-heading">{HEADING}</h3>
+  {#if grantProblems.length > 0}
+    <!--
+      FR-004, T023 — spec 183 makes this tab the first surface to show an entry that grants
+      nothing. An entry that names a backend is said on that backend's card; one that names none
+      belongs to no card, so it is said here, before all of them. The lead line describes the list
+      in words, because the webview never names the setting's key (rule 3 of T024's lint). The
+      host's sentences follow as text, never as markup (T046), keyed by place, since two entries
+      holding the same typo bring the same sentence twice.
+    -->
+    <div class="grant-problems" data-testid="backend-grant-problems" role="status">
+      <p>
+        The list of backends you allow to run unsandboxed, in your user settings, has
+        {grantProblems.length === 1 ? 'an entry that names' : 'entries that name'} no backend:
+      </p>
+      <ul>
+        {#each grantProblems as problem, index (index)}
+          <li><BreakAtJoins text={problem} /></li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
+  <div class="grid backend-list">
+    {#each SUPPORTED_BACKENDS as kind (kind)}
+      <BackendSection
+        {kind}
+        section={backends[kind]}
+        posture={postures.find((row) => row.kind === kind)}
+        savedPath={savedPath(backends[kind].path.key)}
+        discovered={availableBackends.includes(kind)}
+        inUse={draft.backendRunner === kind}
+        {ping}
+        {busy}
+        bind:draft
+        {statusByKey}
+        {workflows}
+        {fieldChanged}
+        {fieldScopeLabel}
+      />
     {/each}
   </div>
 </section>
 
 <style>
-  .backend-health {
-    display: grid;
-    gap: 10px;
-    padding: 14px 0 0;
-    border-top: 1px solid var(--schegent-divider);
-    background: transparent;
+  /* In the warning colour of a card's own grant line, with the cards' gap below it. The host's
+     sentences can quote a long key, a word wider than a narrow panel's line, which
+     `BreakAtJoins` lets break before one of its dots. An entry the host quotes back with no dot
+     or slash in it breaks where the line ends, so the page never scrolls sideways
+     (WCAG 1.4.10). */
+  .grant-problems {
+    margin: 0 0 var(--schegent-space-3);
+    font-size: var(--schegent-text-secondary);
+    line-height: 1.45;
+    color: var(--schegent-status-warning-text);
+    overflow-wrap: anywhere;
   }
-  h3 { margin: 0; font-size: 1em; }
-  p { margin: 3px 0 0; color: var(--schegent-muted-fg); font-size: 0.85em; }
-  .backend-list { display: grid; gap: 0; margin-top: 4px; }
-  .backend-row-wrapper {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+  .grant-problems p {
+    margin: 0;
   }
-  .identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding-top: 10px; }
-  .identity span { color: var(--vscode-notificationsWarningIcon-foreground); font-size: 0.8em; }
-  .identity span.available { color: var(--vscode-testing-iconPassed); }
-  small { flex-basis: 100%; color: var(--schegent-muted-fg); }
-  .ping-btn {
-    padding: 4px 12px;
-    border: 0;
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-button-bg);
-    color: var(--schegent-button-fg);
-    cursor: pointer;
+  .grant-problems ul {
+    margin: var(--schegent-space-1) 0 0;
+    padding-left: var(--schegent-space-4);
   }
-  .ping-btn:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .ping-btn:disabled { cursor: not-allowed; opacity: 0.55; }
 </style>

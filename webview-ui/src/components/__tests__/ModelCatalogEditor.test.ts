@@ -27,35 +27,125 @@ beforeEach(() => exportSpy.mockReset());
 afterEach(() => cleanup());
 
 describe('ModelCatalogEditor accessibility', () => {
-  it('gives new and existing model inputs explicit accessible names', () => {
-    const { container } = render(ModelCatalogEditor, { props: baseProps });
+  it('gives new and existing model inputs explicit accessible names', async () => {
+    const { container, getByRole, getByLabelText } = render(ModelCatalogEditor, { props: baseProps });
+
+    // Builder redesign: the new-model input sits behind its section's "Add model" button, and
+    // Remove is an icon button. The names under test are unchanged.
+    await fireEvent.click(getByRole('button', { name: 'Add model' }));
 
     const inputs = Array.from(container.querySelectorAll('input'));
     expect(inputs).toHaveLength(2);
     expect(inputs[0]?.getAttribute('aria-label')).toBe('New claude model name');
     expect(inputs[1]?.getAttribute('aria-label')).toBe('claude model 1');
-    expect(container.querySelector('.btn-destructive')?.getAttribute('aria-label'))
-      .toBe('Remove claude model claude-sonnet');
+    expect(getByLabelText('Remove claude model claude-sonnet').tagName).toBe('BUTTON');
   });
 });
 
-describe('ModelCatalogEditor export (feature 096 T017)', () => {
-  it('asks the host to export the Model Catalog, with no resourceId or location', async () => {
-    const { getByText } = render(ModelCatalogEditor, { props: baseProps });
+describe('ModelCatalogEditor export, dirty state, and revert (feature 096 T017 / feature 326)', () => {
+  it('exposes Export YAML… inside the toolbar ⋯ menu with #i-export and zero direct Export buttons', async () => {
+    const { container, getByTestId, queryByRole } = render(ModelCatalogEditor, { props: baseProps });
 
-    await fireEvent.click(getByText('Export Model Catalog'));
+    expect(queryByRole('button', { name: /Export/ })).toBeNull();
+    const item = getByTestId('models-export');
+    expect(item.getAttribute('role')).toBe('menuitem');
+    expect(item.textContent.trim()).toBe('Export YAML…');
+    expect(item.querySelector('use')?.getAttribute('href')).toBe('#i-export');
 
+    await fireEvent.click(item);
     expect(exportSpy).toHaveBeenCalledTimes(1);
     expect(exportSpy).toHaveBeenCalledWith();
+    expect(container.querySelector('[data-testid="models-menu"]')).not.toBeNull();
   });
 
-  it('does not call export when Save All Models is clicked', async () => {
-    const { getByText } = render(ModelCatalogEditor, { props: baseProps });
+  it('disables Save and Revert unsaved changes when clean and hides the Unsaved changes chip', async () => {
+    const onsave = vi.fn();
+    const onrevert = vi.fn();
+    const { getByTestId, queryByTestId } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: false, onsave, onrevert }
+    });
 
-    await fireEvent.click(getByText('Save All Models'));
+    expect(queryByTestId('models-unsaved')).toBeNull();
+    const save = getByTestId('models-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    const revert = getByTestId('models-revert');
+    expect(revert.getAttribute('aria-disabled')).toBe('true');
 
-    expect(baseProps.onsave).toHaveBeenCalledTimes(1);
+    await fireEvent.click(save);
+    await fireEvent.click(revert);
+    expect(onsave).not.toHaveBeenCalled();
+    expect(onrevert).not.toHaveBeenCalled();
+  });
+
+  it('shows Unsaved changes and enables Save without calling export when dirty', async () => {
+    const onsave = vi.fn();
+    const { getByTestId } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: true, onsave }
+    });
+
+    expect(getByTestId('models-unsaved').textContent.trim()).toBe('Unsaved changes');
+    const save = getByTestId('models-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    await fireEvent.click(save);
+
+    expect(onsave).toHaveBeenCalledTimes(1);
     expect(exportSpy).not.toHaveBeenCalled();
+  });
+
+  it('disables Save while a save is in flight and shows Saving…', () => {
+    const { getByTestId } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: true, savePending: true }
+    });
+    const save = getByTestId('models-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(save.textContent.trim()).toBe('Saving…');
+  });
+
+  it('calls onrevert and clears any open add-model draft on Revert unsaved changes', async () => {
+    const onrevert = vi.fn();
+    const onnewmodelinput = vi.fn();
+    const { getByRole, getByTestId, queryByLabelText } = render(ModelCatalogEditor, {
+      props: { ...baseProps, dirty: true, onrevert, onnewmodelinput }
+    });
+
+    await fireEvent.click(getByRole('button', { name: 'Add model' }));
+    expect(queryByLabelText('New claude model name')).not.toBeNull();
+
+    await fireEvent.click(getByTestId('models-revert'));
+    expect(onrevert).toHaveBeenCalledTimes(1);
+    expect(onnewmodelinput).toHaveBeenCalledWith('claude', '');
+    expect(queryByLabelText('New claude model name')).toBeNull();
+  });
+
+  it('disables Detect, Add model, model inputs, Remove, and Revert in secondary windows (!canSave) and during savePending', async () => {
+    for (const overrides of [{ canSave: false }, { savePending: true }]) {
+      const ondetect = vi.fn();
+      const onremove = vi.fn();
+      const onrevert = vi.fn();
+      const { getByRole, getByLabelText, getByTestId, unmount } = render(ModelCatalogEditor, {
+        props: { ...baseProps, dirty: true, ondetect, onremove, onrevert, ...overrides }
+      });
+
+      const detect = getByRole('button', { name: 'Detect claude models' }) as HTMLButtonElement;
+      const addToggle = getByRole('button', { name: 'Add model' }) as HTMLButtonElement;
+      const input = getByLabelText('claude model 1') as HTMLInputElement;
+      const remove = getByRole('button', { name: 'Remove claude model claude-sonnet' }) as HTMLButtonElement;
+      const revert = getByTestId('models-revert');
+
+      expect(detect.disabled).toBe(true);
+      expect(addToggle.disabled).toBe(true);
+      expect(input.disabled).toBe(true);
+      expect(remove.disabled).toBe(true);
+      expect(revert.getAttribute('aria-disabled')).toBe('true');
+
+      await fireEvent.click(detect);
+      await fireEvent.click(remove);
+      await fireEvent.click(revert);
+      expect(ondetect).not.toHaveBeenCalled();
+      expect(onremove).not.toHaveBeenCalled();
+      expect(onrevert).not.toHaveBeenCalled();
+      unmount();
+    }
   });
 });
 
@@ -71,23 +161,20 @@ describe('ModelCatalogEditor regression — per-backend grouping and removal (fe
   };
 
   it('groups models under 2+ backends independently, with no cross-backend leakage', () => {
-    const { container } = render(ModelCatalogEditor, { props: twoBackendProps });
+    const { getAllByRole, getByRole } = render(ModelCatalogEditor, { props: twoBackendProps });
 
-    const sections = Array.from(container.querySelectorAll('.backend-section'));
-    expect(sections).toHaveLength(2);
+    expect(getAllByRole('region')).toHaveLength(2);
 
     const valuesIn = (section: Element) =>
       Array.from(section.querySelectorAll('.model-list-item input')).map(
         (input) => (input as HTMLInputElement).value
       );
 
-    // `text-transform: capitalize` is a display style — `textContent` still
-    // carries the raw (lowercase) backend key from `availableModels`.
-    const claudeSection = sections.find((section) => section.textContent?.includes('claude Models'));
-    const codexSection = sections.find((section) => section.textContent?.includes('codex Models'));
-
-    expect(claudeSection && valuesIn(claudeSection)).toEqual(['claude-model-a', 'claude-model-b']);
-    expect(codexSection && valuesIn(codexSection)).toEqual(['codex-model-a']);
+    // Builder redesign: each backend's section is a region named by its heading, which holds the
+    // backend key alone, so the sections are found by name rather than by their text. `text-transform:
+    // capitalize` is a display style — the name is still the raw (lowercase) key.
+    expect(valuesIn(getByRole('region', { name: 'claude' }))).toEqual(['claude-model-a', 'claude-model-b']);
+    expect(valuesIn(getByRole('region', { name: 'codex' }))).toEqual(['codex-model-a']);
   });
 
   it('removing a model reports its own backend and index, never the other backend', async () => {
@@ -103,9 +190,9 @@ describe('ModelCatalogEditor regression — per-backend grouping and removal (fe
   });
 
   it('a removal reflected in props updates only its own backend, leaving the other intact for the next save/export', () => {
-    const { container, rerender } = render(ModelCatalogEditor, { props: twoBackendProps });
+    const { getByRole, rerender } = render(ModelCatalogEditor, { props: twoBackendProps });
 
-    // The component holds no state of its own — the parent applies the
+    // The component holds no catalog state of its own — the parent applies the
     // removal and passes down the new `models`, exactly as `onremove`'s
     // (backend, index) pair would drive it.
     void rerender({
@@ -113,31 +200,33 @@ describe('ModelCatalogEditor regression — per-backend grouping and removal (fe
       models: { claude: ['claude-model-b'], codex: ['codex-model-a'] }
     });
 
-    const sections = Array.from(container.querySelectorAll('.backend-section'));
     const valuesIn = (section: Element) =>
       Array.from(section.querySelectorAll('.model-list-item input')).map(
         (input) => (input as HTMLInputElement).value
       );
-    const claudeSection = sections.find((section) => section.textContent?.includes('claude Models'));
-    const codexSection = sections.find((section) => section.textContent?.includes('codex Models'));
 
-    expect(claudeSection && valuesIn(claudeSection)).toEqual(['claude-model-b']);
-    expect(codexSection && valuesIn(codexSection)).toEqual(['codex-model-a']);
+    // Builder redesign: sections are found by their region name, as in the test above.
+    expect(valuesIn(getByRole('region', { name: 'claude' }))).toEqual(['claude-model-b']);
+    expect(valuesIn(getByRole('region', { name: 'codex' }))).toEqual(['codex-model-a']);
   });
 });
 
 // Feature 096 T029 — FR-005 changes pre-096 behavior: a duplicate add used to
 // silently no-op. `onadd` is this component's only path to a catalog
-// mutation (and from there to the parent's Save All Models write), so
+// mutation (and from there to the parent's Save write), so
 // proving it was never called proves neither happened.
+//
+// Builder redesign: the add form opens from its section's "Add model" button,
+// and its submit button reads "Add".
 describe('ModelCatalogEditor duplicate-add guard (feature 096 T029, FR-005)', () => {
   it('surfaces a message and does not call onadd when the id already exists for the backend', async () => {
     const onadd = vi.fn();
-    const { getByText } = render(ModelCatalogEditor, {
+    const { getByRole, getByText } = render(ModelCatalogEditor, {
       props: { ...baseProps, newModelInput: { claude: 'claude-sonnet' }, onadd }
     });
 
-    await fireEvent.click(getByText('Add Model'));
+    await fireEvent.click(getByRole('button', { name: 'Add model' }));
+    await fireEvent.click(getByRole('button', { name: 'Add' }));
 
     expect(onadd).not.toHaveBeenCalled();
     expect(getByText(/already exists/i)).toBeTruthy();
@@ -145,11 +234,12 @@ describe('ModelCatalogEditor duplicate-add guard (feature 096 T029, FR-005)', ()
 
   it('does not block adding a new, non-duplicate id', async () => {
     const onadd = vi.fn();
-    const { getByText, queryByText } = render(ModelCatalogEditor, {
+    const { getByRole, queryByText } = render(ModelCatalogEditor, {
       props: { ...baseProps, newModelInput: { claude: 'claude-new-model' }, onadd }
     });
 
-    await fireEvent.click(getByText('Add Model'));
+    await fireEvent.click(getByRole('button', { name: 'Add model' }));
+    await fireEvent.click(getByRole('button', { name: 'Add' }));
 
     expect(onadd).toHaveBeenCalledTimes(1);
     expect(onadd).toHaveBeenCalledWith('claude');
@@ -163,24 +253,24 @@ describe('ModelCatalogEditor duplicate-add guard (feature 096 T029, FR-005)', ()
 // sections the operator types into. Sections are the union of what is
 // configured and what was detected.
 describe('ModelCatalogEditor sections survive an empty detected list', () => {
+  // Builder redesign: each section's heading is an h2 holding the backend key alone; it read
+  // "<key> Models" in an h3 before.
   it('renders a section for a backend that has configured models but no detected ones', () => {
-    const { container } = render(ModelCatalogEditor, {
+    const { getAllByRole } = render(ModelCatalogEditor, {
       props: {
         ...baseProps,
         availableModels: { claude: [], codex: [], agy: ['gemini-3.7-flash-high'] },
-        models: { claude: ['claude-opus-5'], codex: [], agy: [] },
+        models: { claude: ['claude-opus-5-5'], codex: [], agy: [] },
         newModelInput: { claude: '', codex: '', agy: '' }
       }
     });
 
-    const headings = Array.from(container.querySelectorAll('.backend-section h3')).map(
-      (heading) => heading.textContent
-    );
-    expect(headings).toEqual(['claude Models', 'codex Models', 'agy Models']);
+    const headings = getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent);
+    expect(headings).toEqual(['claude', 'codex', 'agy']);
   });
 
   it('still renders a section for a backend present only in the detected list', () => {
-    const { container } = render(ModelCatalogEditor, {
+    const { getAllByRole } = render(ModelCatalogEditor, {
       props: {
         ...baseProps,
         availableModels: { agy: ['gemini-3.7-flash-high'] },
@@ -189,10 +279,8 @@ describe('ModelCatalogEditor sections survive an empty detected list', () => {
       }
     });
 
-    const headings = Array.from(container.querySelectorAll('.backend-section h3')).map(
-      (heading) => heading.textContent
-    );
-    expect(headings).toEqual(['claude Models', 'agy Models']);
+    const headings = getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent);
+    expect(headings).toEqual(['claude', 'agy']);
   });
 });
 
@@ -200,7 +288,7 @@ describe('ModelCatalogEditor detect control', () => {
   const detectProps = {
     ...baseProps,
     availableModels: { claude: [], agy: ['gemini-3.7-flash-high'] },
-    models: { claude: ['claude-opus-5'], agy: [] },
+    models: { claude: ['claude-opus-5-5'], agy: [] },
     newModelInput: { claude: '', agy: '' }
   };
 
@@ -280,8 +368,119 @@ describe('ModelCatalogEditor stays out of the lifecycle (US1, T038, FR-041)', ()
     // before US3 onward touch the other three tabs. It is not a claim about the
     // markup's contents — it is a tripwire, and a diff here means a change
     // reached the one tab the feature said it would not.
+    //
+    // The Builder redesign re-recorded it on purpose: the tab now draws each
+    // backend as a section with a table, after the design mockup.
     const { container } = render(ModelCatalogEditor, { props: baseProps });
 
     expect(container.innerHTML).toMatchSnapshot();
+  });
+});
+
+// ── Builder redesign: the Models tab's sections, tables and add form ─────────
+
+describe('ModelCatalogEditor sections and add form (Builder redesign)', () => {
+  const sectionProps = {
+    ...baseProps,
+    availableModels: { claude: ['claude-sonnet'], codex: ['codex-mini'], agy: [] },
+    models: { claude: ['claude-sonnet', 'claude-typed'], codex: [], agy: [] },
+    newModelInput: { claude: '', codex: '', agy: '' }
+  };
+
+  it('says where each id came from and how many each backend has', () => {
+    const { getByRole } = render(ModelCatalogEditor, { props: sectionProps });
+
+    const claude = getByRole('region', { name: 'claude' });
+    const sources = Array.from(claude.querySelectorAll('tbody tr')).map(
+      (row) => row.querySelector('td:nth-child(2)')?.textContent
+    );
+    expect(sources).toEqual(['Detected', 'Added by you']);
+    expect(claude.querySelector('.mhead')?.textContent).toContain('2 models');
+  });
+
+  it('draws a backend with no ids as an empty card, not an empty table', () => {
+    const { getByRole } = render(ModelCatalogEditor, { props: sectionProps });
+
+    const codex = getByRole('region', { name: 'codex' });
+    expect(codex.querySelector('table')).toBeNull();
+    expect(codex.querySelector('.empty strong')?.textContent).toBe('No codex models yet');
+    expect(codex.querySelector('.mhead')?.textContent).toContain('no models');
+  });
+
+  it('keeps a row, and the focus in its id, while the id is edited', async () => {
+    const { getByLabelText, rerender } = render(ModelCatalogEditor, { props: sectionProps });
+    const id = getByLabelText('claude model 1');
+    id.focus();
+
+    // The parent writes every keystroke back into `models` (PipelineBuilder's
+    // `withModelReplaced`), so the id changes while the operator is typing it.
+    await rerender({
+      ...sectionProps,
+      models: { claude: ['claude-sonnetx', 'claude-typed'], codex: [], agy: [] }
+    });
+
+    expect(getByLabelText('claude model 1')).toBe(id);
+    expect(document.activeElement).toBe(id);
+  });
+
+  it('opens one add form at a time and focuses its input', async () => {
+    const onnewmodelinput = vi.fn();
+    const { getByRole, getByLabelText, queryByLabelText } = render(ModelCatalogEditor, {
+      props: { ...sectionProps, onnewmodelinput }
+    });
+
+    const claudeAdd = getByRole('region', { name: 'claude' }).querySelector('[aria-expanded]');
+    const codexAdd = getByRole('region', { name: 'codex' }).querySelector('[aria-expanded]');
+    if (!(claudeAdd instanceof HTMLButtonElement) || !(codexAdd instanceof HTMLButtonElement)) {
+      throw new Error('each section should have an Add model button');
+    }
+
+    await fireEvent.click(claudeAdd);
+    expect(claudeAdd.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(getByLabelText('New claude model name'));
+
+    await fireEvent.click(codexAdd);
+    expect(queryByLabelText('New claude model name')).toBeNull();
+    expect(claudeAdd.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(getByLabelText('New codex model name'));
+    // The closed form's draft goes with it.
+    expect(onnewmodelinput).toHaveBeenCalledWith('claude', '');
+  });
+
+  it('closes on Cancel or Escape, drops the draft and returns focus to its button', async () => {
+    const onnewmodelinput = vi.fn();
+    const { getByRole, getByLabelText, queryByLabelText } = render(ModelCatalogEditor, {
+      props: { ...sectionProps, onnewmodelinput }
+    });
+    const claudeAdd = getByRole('region', { name: 'claude' }).querySelector('[aria-expanded]');
+    if (!(claudeAdd instanceof HTMLButtonElement)) throw new Error('claude should have an Add model button');
+
+    await fireEvent.click(claudeAdd);
+    await fireEvent.click(getByRole('button', { name: 'Cancel' }));
+    expect(queryByLabelText('New claude model name')).toBeNull();
+    expect(document.activeElement).toBe(claudeAdd);
+    expect(onnewmodelinput).toHaveBeenCalledTimes(1);
+    expect(onnewmodelinput).toHaveBeenCalledWith('claude', '');
+
+    await fireEvent.click(claudeAdd);
+    await fireEvent.keyDown(getByLabelText('New claude model name'), { key: 'Escape' });
+    expect(queryByLabelText('New claude model name')).toBeNull();
+    expect(document.activeElement).toBe(claudeAdd);
+    expect(onnewmodelinput).toHaveBeenCalledTimes(2);
+  });
+
+  it('ties the duplicate message to the input it is about', async () => {
+    const { getByRole, getByLabelText } = render(ModelCatalogEditor, {
+      props: { ...sectionProps, newModelInput: { claude: 'claude-typed', codex: '', agy: '' } }
+    });
+
+    await fireEvent.click(getByRole('region', { name: 'claude' }).querySelector('[aria-expanded]') as HTMLButtonElement);
+    await fireEvent.click(getByRole('button', { name: 'Add' }));
+
+    const input = getByLabelText('New claude model name');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    const message = getByRole('alert');
+    expect(input.getAttribute('aria-describedby')).toBe(message.id);
+    expect(message.textContent).toBe('"claude-typed" already exists for claude.');
   });
 });

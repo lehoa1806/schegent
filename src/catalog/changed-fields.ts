@@ -19,59 +19,11 @@
 
 import { canonicalJson } from './canonical-json';
 
-/**
- * A top-level field that differs and has no entry-level story to tell.
- *
- * Deliberately carries nothing but its name (FR-008). The old and new values are
- * not projected: they are the definition body, and the projection contract holds
- * that no body crosses the boundary.
- */
-export interface ChangedScalarField {
-  readonly field: string;
-  readonly change: 'differs';
-}
+// FR-R3-132 (T1502) — moved to `src/contracts/snapshot-vocabulary.ts` so the webview
+// imports them instead of restating them. Re-exported unchanged.
+import type { ChangedScalarField, ChangedCollectionField, ChangedField, ChangedFieldSummary } from '../contracts/snapshot-vocabulary';
 
-/**
- * One of the four ordered collections, with its entries accounted for.
- *
- * All three lists empty is a real and meaningful result: it says an entry changed
- * in place, keeping its identity while its content moved. There is no fourth
- * `modified` bucket, so this is how that case reads, and it is never wrong —
- * the field is only present at all because something in it differs.
- */
-export interface ChangedCollectionField {
-  readonly field: string;
-  readonly change: 'collection';
-  /** Entry identities the draft has and the active version does not. */
-  readonly added: readonly string[];
-  /** Entry identities the active version has and the draft does not. */
-  readonly removed: readonly string[];
-  /**
-   * Entries in both whose position **among the shared entries** moved.
-   *
-   * Relative order, not absolute index. An insertion at the front shifts every
-   * absolute index behind it, and reporting all of those as reorderings buries
-   * the one change that matters under its own consequences (FR-008). An entry
-   * already named in `added` or `removed` is excluded — with a repeated entry
-   * both can otherwise be true of the same name at once.
-   */
-  readonly reordered: readonly string[];
-}
-
-export type ChangedField = ChangedScalarField | ChangedCollectionField;
-
-/**
- * What a publish would change (FR-008, FR-009).
- *
- * `no-prior-version` is its own arm rather than "everything was added" because
- * those are different facts: the second tells an operator publishing for the
- * first time that their entire definition changed, which is true and tells them
- * nothing they can act on.
- */
-export type ChangedFieldSummary =
-  | { readonly kind: 'no-prior-version' }
-  | { readonly kind: 'unchanged' }
-  | { readonly kind: 'changed'; readonly fields: readonly ChangedField[] };
+export type { ChangedScalarField, ChangedCollectionField, ChangedField, ChangedFieldSummary };
 
 /**
  * The four collections whose entries are accounted for individually.
@@ -136,6 +88,15 @@ function definedFieldNames(
 }
 
 /**
+ * How a return is named: by its mark, never by a step.
+ *
+ * Not an identifier, on purpose. `return` is a valid step id, and an arm that enters
+ * that step is not a return. No step or port id can hold a parenthesis, so the two
+ * never share a key.
+ */
+const RETURN_KEY = '(return)';
+
+/**
  * One end of a connection, or `null` when the entry does not spell one.
  *
  * `null` rather than a best effort: `String(undefined)` names a malformed endpoint
@@ -143,30 +104,35 @@ function definedFieldNames(
  * key. The multiset tagging treats a shared key as a repeat, so an addition and a
  * removal of two unrelated broken entries would cancel and the collection would
  * report nothing changed.
+ *
+ * A target marked `kind: 'return'` is a return whatever else it carries. The host
+ * reads a return from the mark alone and ignores the node and port the endpoint may
+ * still name, so keying on them would report a change to a leftover name as one arm
+ * removed and another added. Only a target can return: the host refuses the mark on
+ * a source and looks for a return at a target alone, so a source that carries it is
+ * keyed by its node like any other.
  */
-function endpointKey(value: unknown): string | null {
+function endpointKey(value: unknown, side: 'from' | 'to'): string | null {
   if (!isRecord(value)) return null;
-  const { nodeId, portId } = value;
-  if (typeof nodeId !== 'string' || typeof portId !== 'string') return null;
-  return `${nodeId}.${portId}`;
+  const { nodeId, portId, kind } = value;
+  if (side === 'to' && kind === 'return') return RETURN_KEY;
+  if (typeof nodeId !== 'string') return null;
+  return typeof portId === 'string' ? `${nodeId}.${portId}` : nodeId;
 }
 
-/**
- * A binding's identity: what it binds, not where it sits.
- *
- * Bindings address a Phase *position* rather than a bare id because `phaseIds` may
- * repeat (082 research R3), so the index is part of the identity and not a
- * substitute for one. The list position is not: reordering the bindings must read
- * as a reordering, which it cannot if position is what names them.
- */
 function bindingKey(entry: Readonly<Record<string, unknown>>): string {
-  const { kind, phaseIndex } = entry;
-  // Both halves of the identity, or neither. A binding missing its index or its
-  // key is malformed, and `String(undefined)` would name every such binding the
-  // same thing — see `endpointKey` for what a shared key does to the accounting.
-  const port = kind === 'input' ? entry.inputKey : kind === 'output' ? entry.outputKey : undefined;
+  const { kind, phaseIndex, nodeId } = entry;
+  const port =
+    kind === 'input'
+      ? (entry.inputKey ?? entry.portId)
+      : kind === 'output'
+        ? (entry.outputKey ?? entry.portId)
+        : undefined;
   if (typeof phaseIndex === 'number' && typeof port === 'string') {
     return `${String(kind)}:${phaseIndex}.${port}`;
+  }
+  if (typeof nodeId === 'string' && typeof port === 'string') {
+    return `${String(kind)}:${nodeId}.${port}`;
   }
   return canonicalText(entry) ?? UNREPRESENTABLE;
 }
@@ -185,8 +151,8 @@ function entryKey(field: string, entry: unknown): string {
   if (field === 'bindings') return bindingKey(entry);
   if (field === 'nodes' && typeof entry.nodeId === 'string') return entry.nodeId;
   if (field === 'connections') {
-    const from = endpointKey(entry.from);
-    const to = endpointKey(entry.to);
+    const from = endpointKey(entry.from, 'from');
+    const to = endpointKey(entry.to, 'to');
     if (from !== null && to !== null) return `${from}->${to}`;
   }
   return canonicalText(entry) ?? UNREPRESENTABLE;

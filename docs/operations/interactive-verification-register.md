@@ -1,0 +1,169 @@
+# Interactive verification owed: what two specs are still waiting on
+
+**Opened**: 2026-09-06 (`FR-R3-170`, T1733) · **Updated**: 2026-11-23 (`FR-R7-17`, Features 310 & 311 clean-profile dev-host & AT journeys tracked; `FR-R7-14`, 14-17: small-window overflow automated check stabilized; clean-profile AT journey tracked); 2026-11-18 (the webview redesign port, the open-states row's automated evidence); 2026-11-06 (`FR-R5-F18`, T18.4/T18.5; `FR-R5-F20`, the round 5 journeys) ·
+**Subjects**: `specs/020-phase-level-logs`, `specs/067-live-mode-rework`, `specs/068-enhance-system-log`, `specs/310-historical-reporting-exports`, `specs/311-change-review-visibility` ·
+**Gates**: `repo/tests/lint/spec-traceability-governance.test.ts` requires each `Verification Pending` subject to link
+here; `repo/tests/lint/dated-review-records.test.ts` reads the date below.
+
+<!-- interactive-verification-review-date: 2026-12-06 -->
+
+Two specs have said `Verification Pending` since they shipped. Both are built, both have automated
+coverage of the stable path, and both are waiting on the same thing: an operator sitting in front of
+a VS Code dev host, doing something by hand, and reporting what they saw. Until this record existed,
+that wait had no owner and no end — the status word was the whole of the claim, and nothing asked it
+to say more.
+
+This is not a deferral. Nothing is blocked and nothing is unstarted. It is a debt with a date on it.
+
+## Who owes this
+
+**The repository operator.** Not a role with a rota behind it — this project has one regular
+maintainer, and naming a committee would be the more comfortable fiction. The same person carries
+the platform decline in
+[the platform observation record](platform-observation-record.md) and the VoiceOver matrix in
+[the accessibility AT matrix](../release/accessibility-at-matrix.md), for the same reason: these are
+observations, and observations need somebody with a machine.
+
+## What is owed
+
+### `067-live-mode-rework` — T033 and T034
+
+**T033, interactive Live Mode transitions.** In a real dev host, walk a multi-phase pipeline and
+confirm three behaviours: phase transitions auto-follow; a manual click decisively disables
+auto-follow; the Live button re-engages it. The stable production-artifact path is already automated
+by `repo/tests/integration/release-ui-qualification.host.test.ts`. What is owed is the interactive
+half — whether a human clicking during a live run gets the behaviour the spec describes.
+
+**T034, persistence across a webview reload.** Confirm Live Mode OFF survives a reload as OFF and ON
+survives as ON. Store reconstruction is automated and the real-host bundle test pins
+`getState`/`setState` alongside the Live Mode markers. What is owed is the reload matrix as a person
+actually performs it.
+
+**T036 is not owed and is not counted here.** It is a deliberate won't-do: re-pointing the active
+plan back to `067` would create pointer churn against a later workstream. It is unticked because it
+was declined, not because it is waiting. A register that swept it in with the other two would be
+claiming a debt that nobody incurred.
+
+### `068-enhance-system-log` — T036
+
+Walk the manual smoke steps in the spec's quickstart §3 inside a dev host and verify four things:
+structured cells are visible (US1); the CLI command block is visible with redacted markers (US2);
+close → reopen makes entries reappear, and `chmod 000` degrades gracefully rather than crashing
+(US3); success and error entries are visually distinguishable (US4). Deviations go in that
+quickstart's DoD checklist. As with `067`, the shipped-bundle path for both System subtabs is
+automated; the interactive persistence and error-display matrix is not.
+
+### `020-phase-level-logs` — Phase 9 SC-011 live check (`FR-R5-F18` T18.4 / T18.5)
+
+All 86 implementation and automated test tasks in `specs/020-phase-level-logs/tasks.md` are ticked,
+and both multi-queue host tailing and multi-iteration (`[3, 2, 1]`) webview live-tail recovery are
+covered by automated Vitest suites. What remains owed is the interactive Phase 9 `SC-011` live
+check in a VS Code dev host:
+
+1. With `schegent.logging.verbose` enabled, run a disposable phase on a queue other than `default`
+   using the `agy` backend and open that queue/task/phase in the Phase Log feed.
+2. Record the `agy` CLI version and invocation arguments, capture a sanitized `stream.jsonl`
+   excerpt to confirm or revise the `event: step_update` / `init` / `result` mapping in
+   `specs/020-phase-level-logs/data-model.md` (which remains explicitly labelled `unconfirmed until
+   the SC-011 live check passes`), and verify `.schegent/audit.log` contains `phase-log-read` with
+   `outcome: success` and `entryCount > 0` followed by `phase-log-tail-started`.
+
+### Round 5 journeys owed a person (`FR-R5-F20`, 2026-11-06)
+
+These six journeys come out of round 5. Each row links the scenario that already owns it. The
+scenario is not restated here, and no second acceptance list is written. None of the six was
+observed when this section was written: that cycle ran with no person at a real editor and no
+screen reader. Each row therefore reads **not observed**. The owner is the repository operator
+named above, recorded as `maintainer`.
+
+The procedure is the same for every row. Build the integrated revision, then run the linked
+scenario by hand in a VS Code dev host. Record the date, the editor version, the operating system
+and the observer, together with what was seen, in the owning spec's quickstart or measurements
+file. Then replace **not observed** in the row with a link to that record.
+
+| Journey | Owning scenario | Observation | Owner | What a person would do |
+|---|---|---|---|---|
+| Acknowledgement latency under load | [spec 269](../../../specs/269-builder-command-lifecycle/spec.md), User Story 2, scenarios 1 and 2 (queue creation waits for the host's acknowledgement, bounded at 5 seconds); filing [F10](../../../docs/features/round_5/DONE_10_FR-R5-F10_builder_persistence_and_command_feedback.md) | **not observed** | maintainer | With phases running on other queues, submit `New queue` and time the acknowledgement against the 5-second bound. |
+| Multi-window recovery | [spec 267](../../../specs/267-workflow-dispatch-recovery/spec.md), User Story 3, its Independent Test (a second window on the same workspace); filing [F08](../../../docs/features/round_5/DONE_08_FR-R5-F08_workflow_dispatch_and_recovery_integrity.md) | **not observed** | maintainer | Perform that Independent Test in two real editor windows open on one workspace. |
+| Dashboard hide/restore | [spec 269](../../../specs/269-builder-command-lifecycle/spec.md), User Story 1 (drafts, tab, selection and undo history survive a hidden panel); filing [F10](../../../docs/features/round_5/DONE_10_FR-R5-F10_builder_persistence_and_command_feedback.md) | **not observed** | maintainer | Edit a Phase and a Workflow draft, switch away from the Dashboard panel, return, and compare. |
+| Current phase-log journey | The `020-phase-level-logs` section above; filing [F18](../../../docs/features/round_5/DONE_18_FR-R5-F18_phase_log_live_tail_and_qualification.md) | **not observed** | maintainer | Steps 1 and 2 of that section. |
+| Clean-install Workflow launch, import and export | [spec 267 quickstart](../../../specs/267-workflow-dispatch-recovery/quickstart.md), which runs `tests/integration/round5-clean-install-journey.test.ts` (the automated host path); filing [F07](../../../docs/features/round_5/DONE_07_FR-R5-F07_pipeline_removal_and_workflow_delivery.md), task T07 | **not observed** in a real editor | maintainer | Install the packaged VSIX into a clean editor profile, then launch one Workflow, import one and export one. |
+| Representative open menu, dialog and keyboard states | No F08 to F19 scenario owns it. Automated evidence only: the opened Workflow-picker state in `tests/a11y/a11y-scan.spec.ts` (`FR-R5-F20`), which reports automated findings, not conformance; `tests/a11y/workflow-run-overflow.a11y.spec.ts` (`FR-R7-14`, `14-17`), stabilized with observable focus, overflow readiness, and animation-frame scroll settling at `1000 × 600` and `1440 × 960` (10/10 isolated runs + full `npm run a11y`), which verifies automated scroll reachability, not screen-reader conformance; and browser tests in `tests/visual/webview.visual.spec.ts` that open a backend card's menu on a 320px panel, keep the focus on the Settings page's Save and Revert as a press turns them off, and find the open Workflow list after its switcher on screen as in the tab order, which check layout and focus, not conformance | **not observed** | maintainer | Follow the procedure in [the accessibility AT matrix](../release/accessibility-at-matrix.md) with the keyboard and a screen reader, opening the Workflow picker and one dialog. |
+| Clean-profile screen-reader AT journey (launch, pause, recovery, evidence deletion) | `FR-R7-14` (`14-17`) and [the accessibility AT matrix](../release/accessibility-at-matrix.md) (`#the-procedure`). Automated evidence (`tests/a11y/`) verifies WCAG 2.1 AA axe rules and keyboard overflow scrolling only; it cannot observe VoiceOver announcements or screen-reader task completion | **not observed** | maintainer | On a clean editor profile with keyboard and VoiceOver only, complete **launch, pause, recovery, and evidence deletion** per [the accessibility AT matrix](../release/accessibility-at-matrix.md) and record platform, AT, version, task outcomes, and any remaining blockers in both records. |
+| Feature 310 (Historical Reports) — clean-profile dev-host & AT journey | [spec 310](../../../specs/310-historical-reporting-exports/spec.md) (`NFR-007`, WCAG 2.2 AA target), [historical-reporting.md](historical-reporting.md), filing [F11](../../../docs/features/round_6/DONE_11_FR-R6-F11_historical_reporting_exports.md), and [the accessibility AT matrix](../release/accessibility-at-matrix.md) (`#the-procedure`, tasks 10–12). Automated evidence (`tests/a11y/a11y-scan.spec.ts` and `Round6ReportingAndVisibility.test.ts`) checks WCAG 2.1 AA axe rules, keyboard focus restoration, and desktop target sizes only; human clean-profile dev-host and VoiceOver observation is owed | **not observed** | maintainer | On a clean editor profile at the current VS Code floor on local `darwin/arm64` with keyboard and VoiceOver only, execute tasks 10–12 of [the accessibility AT matrix](../release/accessibility-at-matrix.md): switch to the Reports tab (`metrics-mode-reports`), select view/filters and run a report, inspect a root drill-down and confirm focus restores on close, read the `outside-managed-retention` external-file disclosure, and confirm/cancel two-step saved-report deletion. **Closes when**: dated operator results (date, editor version, OS, AT version, task outcomes, and any filed blockers) are recorded in both this register and [the accessibility AT matrix](../release/accessibility-at-matrix.md), replacing **not observed** with a link to that record. |
+| Feature 311 (Execution Visibility & Change Review) — clean-profile dev-host & AT journey | [spec 311](../../../specs/311-change-review-visibility/spec.md) (`NFR-004`, WCAG 2.2 AA target), [change-review.md](change-review.md), filing [F12](../../../docs/features/round_6/DONE_12_FR-R6-F12_change_review_execution_visibility.md), and [the accessibility AT matrix](../release/accessibility-at-matrix.md) (`#the-procedure`, tasks 13–15). Automated evidence (`tests/a11y/a11y-scan.spec.ts`, `tests/integration/change-review-native.host.test.ts` on `VS Code 1.107.0` local `darwin/arm64`, and `Round6ReportingAndVisibility.test.ts`) checks automated host/UI paths and WCAG 2.1 AA axe rules only; human clean-profile dev-host and VoiceOver observation is owed | **not observed** | maintainer | On a clean editor profile at the current VS Code floor on local `darwin/arm64` with keyboard and VoiceOver only, execute tasks 13–15 of [the accessibility AT matrix](../release/accessibility-at-matrix.md): expand `ExecutionVisibilityPanel` in active and historical run drill-downs, verify distinct non-numeric availability and recovery readings, open/refresh/close Change Review (both native `vscode.changes` and disclosed `vscode.diff` fallback), scroll `.cr-files` via keyboard alone, and review/approve a waiting-approval phase handoff revision. **Closes when**: dated operator results (date, editor version, OS, AT version, native and fallback outcomes, task outcomes, and any filed blockers) are recorded in both this register and [the accessibility AT matrix](../release/accessibility-at-matrix.md), replacing **not observed** with a link to that record. |
+
+### Review 2026-11-23
+
+Feature 328 (`FR-R7-14`, finding `14-17`) stabilized the automated `1000 × 600` small-window keyboard overflow check (`tests/a11y/workflow-run-overflow.a11y.spec.ts`) by replacing the fixed 60 ms settling timeout with observable focus, overflow readiness, and animation-frame scroll-settle verification (passing 10/10 isolated runs and full `npm run a11y`), and added the clean-profile human screen-reader AT journey (launch, pause, recovery, evidence deletion) above. Feature 331 (`FR-R7-17`, items `R7-17-01` and `R7-17-03`) expanded `tests/a11y/a11y-scan.spec.ts` to cover Historical Reports (`metrics-mode-reports`), System Runtime Health (`TelemetryRuntimeHealthPanel`), and Active/History `ExecutionVisibilityPanel` + `ChangeReviewPanel` states across all shipped themes, and added the Feature 310 (Historical Reports) and Feature 311 (Execution Visibility & Change Review) clean-profile dev-host + AT journeys above as **`not observed`** (owed on the `VS Code 1.107.0` floor on local `darwin/arm64` alongside `14-17`).
+
+- **Still owed**: every human-observed journey listed on this page, including the clean-profile keyboard + screen-reader AT journeys for `14-17`, Feature 310 (Historical Reports), and Feature 311 (Execution Visibility & Change Review). Automated a11y passes do not discharge human observation.
+- **The date stands at 2026-12-06.** Nothing listed here was observed by a human in a real editor, so the review does not renew the date.
+
+### Review 2026-11-06
+
+Feature 282 (`FR-R5-F21`) re-read this register ahead of its date.
+
+- **Evidence checked**: every commit since the date was written on 2026-09-06 (`82bb92a8`) to this
+  page: three in this repository. `8043a716` and `ae4ae439` add owed entries (020's Phase 9 live
+  check and the round 5 journeys above). In the planning workspace, the two commits to
+  `specs/067-live-mode-rework` and `specs/068-enhance-system-log` close a bug report and write this
+  register's spec artifacts. Neither ticks 067's T033 or T034, or 068's T036.
+- **Still owed**: every journey this page lists: 067's T033 and T034, 068's T036, 020's Phase 9
+  live check and the six round 5 journeys, each observed by a person in a VS Code dev host. None was
+  observed. The owner is the repository operator named above.
+- **The date stands at 2026-12-06.** Nothing listed here was observed, so the review cannot renew
+  the date.
+
+## What would close this
+
+Any of these, per subject, and the subject moves to `Complete`:
+
+1. **The walkthrough is performed and recorded.** The evidence goes in the spec's own quickstart DoD
+   checklist, dated, and the spec's `## Evidence owed` section is replaced by the result.
+2. **The interactive behaviour becomes automatable.** If a harness appears that can drive a real
+   webview through a phase transition and a reload — VS Code's own extension test runner reaching
+   further than it does today, for instance — then the owed observation stops being an observation
+   and becomes a test, and this record's subject list shrinks by one.
+3. **The behaviour is withdrawn.** If a subject's capability is removed from the product, the debt
+   goes with it. That is what happened to `014-wake-up`, which sat at `Verification Pending` for 25
+   days after its capability was deleted on 2026-08-12 — see the withdrawal note in that spec. It is
+   the case this register is built to make visible rather than repeat.
+
+When the last subject leaves, this record is retired rather than left standing empty. An empty
+register that still fails a build on a date is ceremony.
+
+## What this record cannot see
+
+The gate watches the **date**, and the presence of three fields in two specs. Naming what it cannot
+watch matters more than the coverage does:
+
+- **Whether anybody actually looked.** No gate can observe an operator opening a dev host. A spec
+  can claim its evidence was gathered and the claim would pass every check in this repository. The
+  date is the only mechanism that makes anyone re-read the claim.
+- **Whether `## Evidence owed` says anything useful.** The gate asserts the section exists and is
+  not empty. It cannot judge whether the observation described is specific enough to be performed.
+  That is the honest limit of a text check, and pretending otherwise would be the overclaim this
+  round has spent its time removing.
+- **Whether the automated coverage that already exists is sufficient.** Both subjects assert that
+  the stable path is automated and only the interactive half is owed. That judgement was made by the
+  authors of those specs; nothing here re-derives it.
+- **Whether a dev host still reproduces the conditions.** VS Code changes. A walkthrough performed
+  today against an API that shifts next quarter proves less than its date suggests. Re-reading is
+  what catches that, which is what the date is for.
+
+**This record is reviewed on or before 2026-12-06**, and
+`repo/tests/lint/dated-review-records.test.ts` fails from that day until someone re-reads it.
+
+Three months, not the six that the event-triggered declines in this repository carry. The horizon
+differs because the thing being waited on differs: a decline like
+[the platform observation record](platform-observation-record.md) waits on the world to change —
+a Windows machine appearing, a contributor filing a report — and six months is a reasonable interval
+to re-ask a question nobody can force. This waits on work that is already possible and simply has
+not been done. A debt that can be discharged any afternoon should be looked at sooner than a posture
+that depends on events outside the project.
+
+The standing decline of the Windows verification route, and of Linux verification beyond the local
+unit-tier leg (`FR-R3-115`), is a separate and still-current posture, dated in its own record. This register does not discharge it, restate it, or
+depend on it. Both can be true: some platforms are not verified at all, and some behaviours on the
+verified platform are still owed a human.

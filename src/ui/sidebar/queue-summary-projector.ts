@@ -11,7 +11,8 @@
 // This projection is UI-only and never persisted.
 
 import type { FeatureRequest } from '../../queue/feature-request';
-import { DEFAULT_QUEUE_ID, type ProjectedQueueRegistry } from '../../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../contracts/queue-identity';
+import { type ProjectedQueueRegistry } from '../../queue/queue-registry';
 import type { QueueSummary } from './snapshot';
 
 export function projectQueues(
@@ -51,7 +52,12 @@ export function projectQueues(
         schedule: projectSchedule(entry),
         taskCount: rows.filter(
           (request) => request.status === 'pending' || request.status === 'in-flight'
-        ).length
+        ).length,
+        // Feature 195 (T039, FR-014) — projected from `ProjectedQueueRegistryEntry`
+        // exactly as `state` and `pauseSource` above are: one derivation site
+        // (`projectQueueRegistry`), never a second copy of the rule here.
+        failurePolicy: entry.failurePolicy,
+        failurePolicyOverride: entry.failurePolicyOverride
       };
     });
 }

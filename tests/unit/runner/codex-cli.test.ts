@@ -1,8 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { Readable, Writable } from 'stream';
 import type { ChildProcess, SpawnOptions } from 'child_process';
 import { CodexCliRunner, type SpawnFn } from '../../../src/runner/codex-cli';
+import { composeVerboseDiagnosticPath } from '../../../src/audit/verbose-diagnostic-path';
+import type { VerboseDiagnosticTarget } from '../../../src/runner/invocation-result';
 
 interface FakeChild extends EventEmitter {
   stdin: Writable;
@@ -51,7 +56,7 @@ describe('CodexCliRunner.invoke', () => {
       seen.command = command;
       seen.args = args;
       seen.options = options;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -79,7 +84,7 @@ describe('CodexCliRunner.invoke', () => {
       const seen: { options: SpawnOptions } = { options: {} };
       const spawnFn: SpawnFn = (_command, _args, options) => {
         seen.options = options;
-        setImmediate(() => child.emit('exit', 0, null));
+        setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
         return child as unknown as ChildProcess;
       };
       const runner = new CodexCliRunner(spawnFn);
@@ -110,7 +115,7 @@ describe('CodexCliRunner.invoke', () => {
     let observedArgs: ReadonlyArray<string> = [];
     const spawnFn: SpawnFn = (_cmd, args) => {
       observedArgs = args;
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -176,6 +181,7 @@ describe('CodexCliRunner.invoke', () => {
       setImmediate(() => {
         child.stdout.emit('data', 'hello');
         child.emit('exit', 0, null);
+        child.emit('close', 0, null);
       });
       return child as unknown as ChildProcess;
     };
@@ -192,24 +198,36 @@ describe('CodexCliRunner.invoke', () => {
   });
 
   it('flags timedOut and terminates the child when the timeout fires', async () => {
-    const child = makeFakeChild();
-    const spawnFn: SpawnFn = () => {
-      // After the timeout terminates the child, simulate the resulting
-      // signalled exit so the invoke() promise can settle.
-      setTimeout(() => child.emit('exit', null, 'SIGTERM'), 100);
-      return child as unknown as ChildProcess;
-    };
-    const runner = new CodexCliRunner(spawnFn);
-    const result = await runner.invoke({
-      phase: 'speckit-implement',
-      iteration: 1,
-      prompt: 'hangs',
-      timeoutMs: 50,
-      cliPath: 'codex',
-      cwd: '/repo'
-    });
-    expect(result.timedOut).toBe(true);
-    expect(child.kill).toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      const child = makeFakeChild();
+      child.kill = vi.fn((_sig?: NodeJS.Signals | number) => {
+        child.killed = true;
+        // Once the timeout terminates the child, simulate the resulting signalled exit
+        // immediately on a microtask so invoke() settles deterministically.
+        queueMicrotask(() => {
+          child.emit('exit', null, 'SIGTERM');
+          child.emit('close', null, 'SIGTERM');
+        });
+        return true;
+      });
+      const spawnFn: SpawnFn = () => child as unknown as ChildProcess;
+      const runner = new CodexCliRunner(spawnFn);
+      const resultPromise = runner.invoke({
+        phase: 'speckit-implement',
+        iteration: 1,
+        prompt: 'hangs',
+        timeoutMs: 50,
+        cliPath: 'codex',
+        cwd: '/repo'
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      const result = await resultPromise;
+      expect(result.timedOut).toBe(true);
+      expect(child.kill).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('observes the cancellation signal and reports killed=true', async () => {
@@ -225,6 +243,7 @@ describe('CodexCliRunner.invoke', () => {
       setImmediate(() => {
         for (const cb of abortListeners) cb();
         child.emit('exit', null, 'SIGTERM');
+        child.emit('close', null, 'SIGTERM');
       });
       return child as unknown as ChildProcess;
     };
@@ -248,7 +267,7 @@ describe('CodexCliRunner.invoke', () => {
   it('detaches the abort listener once the child exits', async () => {
     const child = makeFakeChild();
     const spawnFn: SpawnFn = () => {
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -282,7 +301,7 @@ describe('CodexCliRunner.invoke', () => {
       // defensively that shell is not true on the path we observe.
       expect(options.shell).toBe(false);
       const child = makeFakeChild();
-      setImmediate(() => child.emit('exit', 0, null));
+      setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(evilSpawn);
@@ -303,7 +322,7 @@ describe('CodexCliRunner.invoke', () => {
     const child = makeFakeChild();
     const exits: Array<() => void> = [];
     const spawnFn: SpawnFn = () => {
-      exits.push(() => child.emit('exit', 0, null));
+      exits.push(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
       return child as unknown as ChildProcess;
     };
     const runner = new CodexCliRunner(spawnFn);
@@ -363,7 +382,9 @@ describe('CodexCliRunner concurrent invocations (Feature 093 T046a)', () => {
     expect(second.kill).toHaveBeenCalledWith('SIGTERM');
 
     first.emit('exit', null, 'SIGTERM');
+    first.emit('close', null, 'SIGTERM');
     second.emit('exit', null, 'SIGTERM');
+    second.emit('close', null, 'SIGTERM');
     await Promise.all([firstDone, secondDone]);
     expect(runner.hasActiveProcess).toBe(false);
   });
@@ -378,6 +399,7 @@ describe('CodexCliRunner concurrent invocations (Feature 093 T046a)', () => {
 
     first.exitCode = 0;
     first.emit('exit', 0, null);
+    first.emit('close', 0, null);
     await firstDone;
 
     expect(runner.hasActiveProcess).toBe(true);
@@ -386,7 +408,99 @@ describe('CodexCliRunner concurrent invocations (Feature 093 T046a)', () => {
     expect(second.kill).toHaveBeenCalledWith('SIGTERM');
 
     second.emit('exit', null, 'SIGTERM');
+    second.emit('close', null, 'SIGTERM');
     await secondDone;
     expect(runner.hasActiveProcess).toBe(false);
+  });
+});
+
+// Feature 020 BUG-002 (T080, FR-002a) — the Phase Log reads an iteration's
+// `stream.jsonl`, and only the claude adapter wrote one. Codex shares agy's
+// lifecycle runner, so it gets the same tee, and the same claims: the CLI's
+// stdout copied unaltered, owner-only modes, and nothing written without a
+// target. A real directory, because the claims are what the filesystem holds.
+describe('BUG-002 — codex tees its stdout into stream.jsonl (FR-002a)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  const OWNER_ONLY_DIR = 0o700;
+  const OWNER_ONLY_FILE = 0o600;
+  // A line, one multi-byte character split across two chunks, and a last line
+  // with no newline. Built from bytes, so no escape sequence sits in this source.
+  const STDOUT_CHUNKS: readonly Buffer[] = [
+    Buffer.from('{"type":"thread.started"}\n', 'utf8'),
+    Buffer.concat([Buffer.from('{"text":"a', 'utf8'), Buffer.from([0xe2])]),
+    Buffer.concat([Buffer.from([0x80, 0x94]), Buffer.from('b"}\n', 'utf8')]),
+    Buffer.from('{"type":"turn.completed"', 'utf8')
+  ];
+  let root = '';
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'schegent-codex-tee-')));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const diagnosticsTarget = (): VerboseDiagnosticTarget => composeVerboseDiagnosticPath({
+    workspaceRoot: root,
+    runId: 'run-x',
+    pipelineId: 'standard',
+    phaseId: 'speckit-plan',
+    iterationN: 1
+  });
+
+  function emittingSpawn(child: FakeChild): SpawnFn {
+    return () => {
+      setImmediate(() => {
+        for (const chunk of STDOUT_CHUNKS) child.stdout.push(chunk);
+        child.stderr.push('progress\n');
+        child.emit('exit', 0, null);
+        child.emit('close', 0, null);
+      });
+      return child as unknown as ChildProcess;
+    };
+  }
+
+  function invokeWith(verboseDiagnostics?: VerboseDiagnosticTarget) {
+    const runner = new CodexCliRunner(emittingSpawn(makeFakeChild()));
+    return runner.invoke({
+      phase: 'speckit-plan',
+      iteration: 1,
+      prompt: 'p',
+      timeoutMs: 5_000,
+      cliPath: 'codex',
+      cwd: root,
+      ...(verboseDiagnostics === undefined ? {} : { verboseDiagnostics })
+    });
+  }
+
+  it('copies every stdout byte into stream.jsonl, unaltered and without stderr', async () => {
+    const target = diagnosticsTarget();
+    await invokeWith(target);
+    expect(readFileSync(target.streamFile)).toEqual(Buffer.concat(STDOUT_CHUNKS));
+  });
+
+  posixOnly('creates each directory it writes 0700 and the file 0600', async () => {
+    const target = diagnosticsTarget();
+    await invokeWith(target);
+    const modeOf = (p: string): number => statSync(p).mode & 0o777;
+    let dir = target.workspaceRoot;
+    for (const segment of target.segments) {
+      dir = join(dir, segment);
+      expect(modeOf(dir), segment).toBe(OWNER_ONLY_DIR);
+    }
+    expect(modeOf(target.streamFile)).toBe(OWNER_ONLY_FILE);
+  });
+
+  it('writes nothing when the request carries no verbose-diagnostics target', async () => {
+    await invokeWith();
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  // T084 — what `cli-invocation` records as `diagnosticsEnabled`.
+  it('reports diagnosticsCaptured once stdout reached stream.jsonl, and not without a target', async () => {
+    expect((await invokeWith()).diagnosticsCaptured).toBeUndefined();
+    expect((await invokeWith(diagnosticsTarget())).diagnosticsCaptured).toBe(true);
   });
 });

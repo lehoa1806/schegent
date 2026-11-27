@@ -10,9 +10,9 @@
 
 import type { AuditEntry, AuditEventType, AuditOutcome } from '../../audit/audit-entry';
 import { classifyAuditEvent } from '../../contracts/audit-events';
-import type { Phase } from '../../controller/phase';
 import { truncateLabel } from './queue-projector';
-import type { AuditCategory, AuditTailEntry, PhaseName } from './snapshot';
+import { phaseNameOrNull } from './phase-projector';
+import type { AuditCategory, AuditTailEntry } from './snapshot';
 
 export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
   const taskId = extractTaskId(entry.payload);
@@ -22,7 +22,7 @@ export function projectAuditEntry(entry: AuditEntry): AuditTailEntry {
   return Object.freeze({
     id: entry.id,
     timestamp: entry.timestamp,
-    phase: phaseForTail(entry.phase),
+    phase: phaseNameOrNull(entry.phase),
     category: categorize(entry.eventType, entry.outcome),
     summary: summarize(entry),
     runId: entry.runId,
@@ -53,8 +53,8 @@ function extractPhaseId(entry: AuditEntry): string | undefined {
   if (typeof payloadPhaseId === 'string' && payloadPhaseId.length > 0) return payloadPhaseId;
   const payloadPhase = entry.payload.phase;
   if (typeof payloadPhase === 'string' && payloadPhase.length > 0) return payloadPhase;
-  if (typeof entry.phase === 'string' && entry.phase.length > 0 && entry.phase !== 'done') {
-    return entry.phase;
+  if (typeof entry.phase === 'string') {
+    return phaseNameOrNull(entry.phase) ?? undefined;
   }
   return undefined;
 }
@@ -65,14 +65,16 @@ function normalizeOutcome(outcome: AuditOutcome): 'success' | 'error' | 'pending
   return undefined;
 }
 
-function phaseForTail(phase: Phase): PhaseName | null {
-  if (phase === 'done') return null;
-  return phase as PhaseName;
-}
 
 function categorize(eventType: AuditEventType, outcome: AuditOutcome): AuditCategory {
   if (eventType === 'error' || outcome === 'failure') return 'error';
   if (eventType === 'warning') return 'warning';
+  // Feature 211 — mapped explicitly rather than inherited. The approach record
+  // carries `outcome: 'info'` because it is not a failure, and `'info'` does not
+  // categorize on its own: without this line it reaches the `'system'` default
+  // below and renders as housekeeping, which is the one thing the notice before
+  // a wall-clock kill must not look like.
+  if (eventType === 'monitor-deadline-approaching') return 'warning';
   if (eventType === 'cli-invocation') return 'cli-invocation';
   if (eventType === 'file-write') return 'file-write';
   if (eventType === 'phase-start' || eventType === 'phase-end' || eventType === 'loop-iteration') {

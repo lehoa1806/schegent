@@ -95,6 +95,9 @@ function fullPlan(): ExecutionEnvelope {
  * deliberately, in this list, in the same diff.
  */
 const LEGACY_KEYS = [
+  // FR-R4-F02 (spec 240, T017) — a new Run carries the credit-pause default `null`, written
+  // explicitly like the retry pair beside it.
+  'creditPause',
   'currentIteration',
   'currentPhase',
   'defaultRunnerKind',

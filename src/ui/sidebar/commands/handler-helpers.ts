@@ -1,4 +1,13 @@
 import { createStateTransitionAuditEnvelope } from '../../../lib/audit-event-envelope';
+import { errorMessage } from '../../../lib/errors';
+import {
+  ackFieldsFor,
+  failed,
+  fromMutationResult,
+  normalizeCommandResult,
+  UNRECOGNIZED_RESULT_REASON,
+  type CommandOutcome
+} from '../../../contracts/command-outcome';
 import { CMD_ACK } from '../messages';
 import type {
   CommandAckMessage,
@@ -28,6 +37,16 @@ export async function ack(
         : result !== undefined
           ? { ...base, result }
           : base;
+  await postAck(ctx, msg);
+}
+
+/**
+ * The one place an ACK reaches the transport. A post that throws is logged and
+ * dropped: the webview's correlation times out, which is what it already does
+ * for a host that has gone away, and re-throwing here would turn a delivery
+ * failure into a handler failure the router would try to ACK in turn.
+ */
+async function postAck(ctx: HandlerContext, msg: CommandAckMessage): Promise<void> {
   try {
     await ctx.postAck(msg);
   } catch (err) {
@@ -45,15 +64,113 @@ export async function exec(
   await Promise.resolve(ctx.deps.executeCommand(commandId, ...args));
 }
 
+/**
+ * FR-R3-154 (T1646) — `exec` for a command whose answer the route must report.
+ *
+ * `exec` above discards the resolved value, which was the mechanical reason
+ * five routes could only ACK `accepted`: the value was gone by the time the
+ * handler resumed. This one reads it, through the one function that decides
+ * what each possible shape means (`normalizeCommandResult`), including the two
+ * that carry no value — `undefined` from the Workspace Trust gate, and a throw.
+ *
+ * The catch is a SECOND conversion point, and deliberately distinct from the
+ * one T1645 put inside each command. That one converts a failure of the
+ * mutation; this one converts a failure of the dispatch — an id VS Code cannot
+ * resolve, or a command whose own conversion did not hold. Both end as a code:
+ * the sanitized message goes to the log, never into the ACK, because `reason`
+ * crosses to the webview and a message from this layer carries paths.
+ */
+export async function execForOutcome(
+  ctx: HandlerContext,
+  commandId: string,
+  ...args: unknown[]
+): Promise<CommandOutcome> {
+  try {
+    const value = await Promise.resolve(
+      ctx.deps.executeCommand<unknown>(commandId, ...args)
+    );
+    const outcome = normalizeCommandResult(value);
+    if (outcome.outcome === 'failed' && outcome.reason === UNRECOGNIZED_RESULT_REASON) {
+      ctx.deps.logger.warn(
+        `sidebar router: ${commandId} returned an unrecognized result shape`
+      );
+    }
+    return outcome;
+  } catch (err) {
+    const message = ctx.deps.logger.sanitize(errorMessage(err));
+    ctx.deps.logger.warn(`sidebar router: ${commandId} dispatch failed: ${message}`);
+    return failed(DISPATCH_FAILED_REASON);
+  }
+}
+
+/** The ACK reason for a dispatch that threw rather than answering. */
+export const DISPATCH_FAILED_REASON = 'command-dispatch-failed';
+
+/**
+ * FR-R3-154 (T1646) — post the ACK an outcome describes, correlation id
+ * included (it comes from `ctx`, so a route cannot answer another route's
+ * command). Notification is not this function's business: the registered
+ * command owns the operator copy, and a toast here would be a second, unsourced
+ * telling of the same refusal.
+ */
+export async function ackCommandOutcome(
+  ctx: HandlerContext,
+  outcome: CommandOutcome
+): Promise<void> {
+  const fields = ackFieldsFor(outcome);
+  await postAck(ctx, {
+    type: CMD_ACK,
+    correlationId: ctx.correlationId,
+    status: fields.status,
+    outcome: fields.outcome,
+    ...(fields.reason !== undefined ? { reason: fields.reason } : {})
+  });
+}
+
+/**
+ * FR-R3-154 (T1646) — execute a command and ACK exactly what it answered. The
+ * five lifecycle routes are one line each because there is nothing else for
+ * them to decide.
+ */
+export async function execAndAck(
+  ctx: HandlerContext,
+  commandId: string,
+  ...args: unknown[]
+): Promise<void> {
+  await ackCommandOutcome(ctx, await execForOutcome(ctx, commandId, ...args));
+}
+
+/**
+ * FR-R3-163 (feature 202) — ACK a result the caller already holds, through the
+ * same converter every other route uses.
+ *
+ * The hand-written mapping this replaces produced the same `status` and the same
+ * `reason` for all three inputs — `fromMutationResult` falls back to
+ * `UNEXPLAINED_REJECTION_REASON`, which is the literal `'operation-rejected'`
+ * that used to sit here (`command-outcome.ts:79`). So this deletes a duplicate
+ * of a constant rather than changing a value, and no caller needs an edit. What
+ * they gain is the `outcome` field, which this helper alone among the ack paths
+ * did not set — additive and optional by the contract in
+ * `src/contracts/sidebar-ipc/host-messages.ts` (FR-011, FR-012, FR-013, F41).
+ *
+ * FOURTEEN callers, not seventeen. Seventeen routes called this helper at the
+ * diff base and all seventeen gain the field; three of them — `cmd-cancel`,
+ * `cmd-retry-queue-item`, `cmd-restart-canceled-task` — were moved onto
+ * `execAndAck` by this same feature, so fourteen reach the field through here
+ * and three reach it through the dispatching path. Both figures are correct for
+ * different populations, and writing either one without its population is
+ * finding F49 (`specs/202-cancel-ack-outcomes/research.md` Part 3b).
+ *
+ * Reachable outcomes are `accepted` and `refused` ONLY. `no-op` and `failed` are
+ * unreachable through this path because of the argument's shape: every `!ok`
+ * becomes `refused`, and a result in hand cannot have failed to dispatch
+ * (FR-032).
+ */
 export async function ackGenericResult(
   ctx: HandlerContext,
   result: { ok: boolean; reason?: string }
 ): Promise<void> {
-  await ack(
-    ctx,
-    result.ok ? 'accepted' : 'rejected',
-    result.ok ? undefined : result.reason ?? 'operation-rejected'
-  );
+  await ackCommandOutcome(ctx, fromMutationResult(result));
 }
 
 export async function ackMutationResult(
@@ -209,7 +326,18 @@ export async function appendPhaseLogAudit(
   }
   try {
     await ctx.deps.audit.append({
-      runId: selection.taskId,
+      // The `task:` marker `appendPhaseAudit` uses sixty lines above, for the same reason.
+      // This wrote the bare task id, and an unmarked task id in the `runId` field is
+      // indistinguishable from a run id — so every phase-log event appeared to be filed
+      // against a run that had never existed. The read itself was always correct:
+      // `phase-log-service.ts` resolves taskId -> runId before loading the manifest. Only
+      // the record was wrong, and it is the record an operator reads when reconstructing
+      // what the UI was looking at.
+      //
+      // The marker rather than the resolved run id, because the response carries no run id
+      // and threading one through the IPC contract is a larger change than a wrong label
+      // warrants. `taskId` is in the payload either way.
+      runId: `task:${selection.taskId}`,
       phase: selection.phaseId,
       iteration: typeof iterationResolved === 'number' ? iterationResolved : 0,
       eventType,

@@ -16,8 +16,16 @@
 // execution path reads, rather than a record the factory harvested one field
 // from. `FrozenRunPlan` is retained as an alias of it, not as a sibling type.
 
+import type { AcpPromptBlock } from './acp-runtime';
 import type { CatalogVersionRef } from './catalog-version';
 import type { PipelineInputPortType, PipelineOutputPortType } from './pipeline-definitions';
+import type { PhaseDefinition } from './process-definitions';
+import type {
+  CandidateBlockBudget,
+  ResolvedCandidateBlockControl,
+  ResolvedWorkflowNodeControl
+} from './workflow-controls';
+import type { WorkflowDefinition } from './workflow-definitions';
 import type { WorkflowRunPipeline } from '../state/workflow-run';
 
 // -- Tier 1: transient ------------------------------------------------------
@@ -84,6 +92,21 @@ export interface RunOutputTargetRequest {
  */
 export interface RunRequest {
   readonly pipelineId: string;
+  readonly workflowId?: string;
+  readonly entryNodeId?: string;
+  readonly inputs: readonly RunInputValue[];
+  readonly supplemental: readonly SupplementalInput[];
+  readonly outputs: readonly RunOutputTargetRequest[];
+  readonly instructions?: string;
+}
+
+/**
+ * FR-R5-F02 — Workflow-addressed request shape when `pipelineId` is omitted by the caller.
+ */
+export interface WorkflowRunRequest {
+  readonly workflowId: string;
+  readonly entryNodeId?: string;
+  readonly pipelineId?: string;
   readonly inputs: readonly RunInputValue[];
   readonly supplemental: readonly SupplementalInput[];
   readonly outputs: readonly RunOutputTargetRequest[];
@@ -114,7 +137,27 @@ export const RUN_REQUEST_ERROR_CODES = [
   'unknown-output-port',
   'prior-run-not-found',
   'prior-output-not-found',
-  'no-workspace-root'
+  'no-workspace-root',
+  // FR-R3-057 (M-03 / R-11) — resource budgets. Before these, only `portId`,
+  // `pipelineId` and `instructions` were bounded at all; everything carrying
+  // volume amplified freely into memory, state, stdin, tokens and cost.
+  'input-value-too-large',
+  'supplemental-value-too-large',
+  'output-target-too-long',
+  'inputs-count-exceeded',
+  'supplemental-count-exceeded',
+  'outputs-count-exceeded',
+  'request-bytes-exceeded',
+  // FR-R5-F02 — composable Workflow launch and runtime validation codes.
+  'invalid-entry-node',
+  'workflow-closure-invalid',
+  'collection-selection-violation',
+  'missing-required-output',
+  'no-eligible-transition',
+  'unhandled-node-failure',
+  // FR-R5-F25 — workflow control validation and runtime refusal codes.
+  'unsupported-control-version',
+  'unsupported-control-execution'
 ] as const;
 
 export type RunRequestErrorCode = (typeof RUN_REQUEST_ERROR_CODES)[number];
@@ -154,6 +197,40 @@ export interface FrozenOutputRequest {
   readonly overwriteConfirmed: boolean;
 }
 
+export interface ResolvedPortValue {
+  readonly portId: string;
+  readonly type: PipelineInputPortType | PipelineOutputPortType;
+  readonly value: string;
+  readonly items?: readonly string[];
+}
+
+export interface FrozenWorkflowClosureMetrics {
+  readonly maxDepth: number;
+  readonly definitionCount: number;
+  readonly expandedNodeCount: number;
+  readonly maxControlDepth?: number;
+}
+
+/**
+ * FR-R5-F02 / FR-R5-F25 — the immutable transitive closure of a composable Workflow run.
+ * Contains all reachable Workflow and Phase definitions, their SHA-256 content
+ * digests, optional catalog version provenance, frozen control defaults and root budget,
+ * and bounded closure metrics (`maxDepth <= 8`, `definitionCount <= 64`,
+ * `expandedNodeCount <= 256`, `maxControlDepth <= 2`).
+ */
+export interface FrozenWorkflowClosure {
+  readonly rootWorkflowId: string;
+  readonly entryNodeId: string;
+  readonly workflowsById: Readonly<Record<string, WorkflowDefinition>>;
+  readonly phasesById: Readonly<Record<string, PhaseDefinition>>;
+  readonly definitionDigestsById: Readonly<Record<string, string>>;
+  readonly catalogVersionsById?: Readonly<Record<string, CatalogVersionRef>>;
+  readonly closureMetrics: FrozenWorkflowClosureMetrics;
+  readonly rootBudget?: CandidateBlockBudget;
+  readonly controlDefaultsByWorkflowId?: Readonly<Record<string, ResolvedCandidateBlockControl>>;
+  readonly nodeControlDefaultsByNodeKey?: Readonly<Record<string, ResolvedWorkflowNodeControl>>;
+}
+
 /**
  * What validation produces, the enqueue path consumes, and the execution path
  * executes — one value for all three (FR-R3-001, T256).
@@ -179,8 +256,22 @@ export interface FrozenOutputRequest {
  * in-flight envelope behaves exactly as the in-flight `pipeline` snapshot
  * already does under a catalog or task-row edit.
  */
+export interface FrozenPhaseHandoffDelivery {
+  readonly handoffId: string | null;
+  readonly revision: number | null;
+  readonly attemptId: string;
+  readonly representationDigest: string | null;
+  readonly acpPromptBlocks?: readonly AcpPromptBlock[];
+  readonly authorizedUpstreamInputPaths?: readonly string[];
+  readonly authorizedOutputPaths?: readonly string[];
+  readonly sessionReusePermitted?: boolean;
+}
+
 export interface ExecutionEnvelope {
   readonly pipeline: WorkflowRunPipeline;
+  readonly workflowId?: string;
+  readonly entryNodeId?: string;
+  readonly frozenClosure?: FrozenWorkflowClosure;
   readonly inputs: readonly FrozenInputBinding[];
   readonly supplemental: readonly FrozenSupplementalInput[];
   readonly outputs: readonly FrozenOutputRequest[];
@@ -200,6 +291,11 @@ export interface ExecutionEnvelope {
    * — a version invented for either would be a version the system never resolved.
    */
   readonly catalogVersion?: CatalogVersionRef;
+  /**
+   * FR-R6-F15 (F15-B) — host-frozen phase handoff delivery blocks, attempt identity,
+   * and ACP authority paths stamped at validation/dispatch time.
+   */
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
 }
 
 /**

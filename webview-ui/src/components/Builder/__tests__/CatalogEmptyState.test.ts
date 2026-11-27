@@ -22,17 +22,17 @@ vi.mock('../../../lib/snapshot-store.svelte', () => ({
 }));
 
 const COMPONENT = resolve(__dirname, '../CatalogEmptyState.svelte');
-const RUNS_SURFACE = resolve(__dirname, '../../RunsSurface.svelte');
-// Feature 102 (T045) — the Runs half of SC-008 moved down a level. `RunsSurface`
+const RUNS_SURFACE = resolve(__dirname, '../../QueueTaskComposer.svelte');
+// Feature 102 (T045) — the Runs half of SC-008 moved down a level. `QueueTaskComposer`
 // rendered the guidance when Runs had one empty state; it now has two per section
 // and each section states its own, so the import lives with the renderer.
 const RUNS_SECTION = resolve(__dirname, '../../Runs/LaunchableSection.svelte');
 
 afterEach(() => cleanup());
 
-function renderEmpty(opts: { kind?: 'phase' | 'pipeline' | 'workflow'; count?: number } = {}) {
+function renderEmpty(opts: { kind?: 'phase' | 'workflow'; count?: number } = {}) {
   return render(CatalogEmptyState, {
-    props: { kind: opts.kind ?? 'pipeline', count: opts.count ?? 0 }
+    props: { kind: opts.kind ?? 'workflow', count: opts.count ?? 0 }
   });
 }
 
@@ -43,12 +43,12 @@ function text(container: HTMLElement, testid: string): string {
 describe('CatalogEmptyState — the words are the shared ones (US6, T062, FR-032)', () => {
   it('renders the shared headline verbatim', () => {
     const { container } = renderEmpty();
-    expect(text(container, 'catalog-empty-headline-pipeline')).toBe(EMPTY_CATALOG_GUIDANCE.headline);
+    expect(text(container, 'catalog-empty-headline-workflow')).toBe(EMPTY_CATALOG_GUIDANCE.headline);
   });
 
   it('renders the shared body verbatim', () => {
     const { container } = renderEmpty();
-    expect(text(container, 'catalog-empty-body-pipeline')).toBe(EMPTY_CATALOG_GUIDANCE.body);
+    expect(text(container, 'catalog-empty-body-workflow')).toBe(EMPTY_CATALOG_GUIDANCE.body);
   });
 
   it('imports the constant rather than restating it', () => {
@@ -85,17 +85,17 @@ describe('CatalogEmptyState — the words are the shared ones (US6, T062, FR-032
     expect(source).not.toContain('count === 0');
   });
 
-  it('names the tab in its handle so three tabs do not share one', () => {
+  it('names the tab in its handle so the tabs do not share one', () => {
     const { container } = renderEmpty({ kind: 'workflow' });
     expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-phase"]')).toBeNull();
   });
 });
 
 describe('CatalogEmptyState — it goes away once there is something (US6, T062, FR-033)', () => {
   it('renders nothing at all for a catalog with one definition', () => {
     const { container } = renderEmpty({ count: 1 });
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).toBeNull();
     expect(container.textContent?.trim()).toBe('');
   });
 
@@ -112,19 +112,39 @@ describe('CatalogEmptyState — it goes away once there is something (US6, T062,
   });
 });
 
-describe('CatalogEmptyState — the remedy is reachable (US6, T064)', () => {
-  it('offers the import action beside the guidance', () => {
-    // "Import a process document to get started" beside no way to import one is
-    // an instruction, not a front door. On the Pipelines and Workflows tabs this
-    // is the only import entry that exists.
-    const { container } = renderEmpty();
-    expect(container.querySelector('[data-testid="process-import-preflight"]')).not.toBeNull();
+describe('CatalogEmptyState — the remedy is reachable (US6, T064 / Feature 326)', () => {
+  it('offers the secondary Import… button delegating to the Builder modal instead of embedding a preflight band', () => {
+    const onimport = vi.fn();
+    const { container } = render(CatalogEmptyState, {
+      props: { kind: 'workflow' as const, count: 0, onimport }
+    });
+    expect(container.querySelector('[data-testid="process-import-preflight"]')).toBeNull();
+    const btn = container.querySelector<HTMLButtonElement>(
+      '[data-testid="catalog-empty-import-workflow"]'
+    );
+    expect(btn).not.toBeNull();
+    expect(btn?.className).toContain('btn-secondary');
+    expect(btn?.textContent.trim()).toBe('Import…');
+    expect(btn?.querySelector('use')?.getAttribute('href')).toBe('#i-import');
+    btn?.click();
+    expect(onimport).toHaveBeenCalledTimes(1);
+    expect(onimport).toHaveBeenCalledWith(btn);
   });
 
-  it('passes the tab\'s reason through when an import cannot start', () => {
+  it('passes the disabled reason through when an import cannot start', () => {
     const { container } = render(CatalogEmptyState, {
-      props: { kind: 'pipeline' as const, count: 0, disabledReason: 'A save is in flight.' }
+      props: {
+        kind: 'workflow' as const,
+        count: 0,
+        disabledReason: 'Only the primary window can import.'
+      }
     });
-    expect(text(container, 'process-import-unavailable')).toBe('A save is in flight.');
+    const btn = container.querySelector<HTMLButtonElement>(
+      '[data-testid="catalog-empty-import-workflow"]'
+    );
+    expect(btn?.disabled).toBe(true);
+    expect(text(container, 'catalog-empty-import-unavailable-workflow')).toBe(
+      'Only the primary window can import.'
+    );
   });
 });

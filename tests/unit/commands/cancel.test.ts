@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { runCancel } from '../../../src/commands/cancel';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
+import { CANCEL_FAILED_TOAST, runCancel } from '../../../src/commands/cancel';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
@@ -7,7 +8,7 @@ import type { SchegentWorkflowController } from '../../../src/controller/workflo
 import type { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -104,12 +105,35 @@ describe('runCancel — palette path (no taskId)', () => {
   it('cancels the in-flight run and routes through the controller', async () => {
     const feature = await queue.enqueue('feature description');
     await queue.markInFlight(feature.id, 'run-1');
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ featureId: feature.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ featureId: feature.id }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 
     expect(result.ok).toBe(true);
     expect(controller.cancelActive).toHaveBeenCalledOnce();
+    expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('canceled');
+  });
+
+  // FR-R4-F01 (FR-008) — the driver `cancelActive` aborts writes its own `canceled`
+  // transition, and it can land before this command's update reaches the chain. The
+  // update is then refused as a race; that is the cancel having happened, not a failure.
+  it('still succeeds when the aborted driver commits its own cancel first', async () => {
+    const feature = await queue.enqueue('feature description');
+    await queue.markInFlight(feature.id, 'run-1');
+    const run = makeRun({ featureId: feature.id });
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    vi.mocked(controller.cancelActive).mockImplementation(() => {
+      void store.setRun(
+        DEFAULT_QUEUE_ID,
+        { ...run, status: 'canceled', lastTransitionAt: run.lastTransitionAt + 1 },
+        unfencedCommit('test-fixture')
+      );
+    });
+
+    const result = await runCancel({ controller, store, queue, audit, notifier, logger });
+
+    expect(result.ok).toBe(true);
+    expect(notifier.error).not.toHaveBeenCalled();
     expect(store.getRun(DEFAULT_QUEUE_ID)!.status).toBe('canceled');
   });
 
@@ -123,7 +147,7 @@ describe('runCancel — palette path (no taskId)', () => {
   });
 
   it('refuses when the persisted run is not running', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ status: 'completed' }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ status: 'completed' }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({ controller, store, queue, audit, notifier, logger });
 
@@ -200,7 +224,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
   it('cancels the matching in-flight task and routes through the controller', async () => {
     const feature = await queue.enqueue('in-flight task');
     await queue.markInFlight(feature.id, 'run-1');
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-1', featureId: feature.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-1', featureId: feature.id }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({
       controller,
@@ -234,7 +258,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     // the row identity instead.
     const featureA = await queue.enqueue('queue-A task');
     await queue.markInFlight(featureA.id, 'run-A');
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-A', featureId: featureA.id }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-A', featureId: featureA.id }), unfencedCommit('test-fixture'));
 
     const featureB = await queue.enqueue('queue-B task');
     // Simulate a second in-flight FeatureRequest (cap=2). Bypass capacity
@@ -286,7 +310,7 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
     const featureSwapped = await queue.enqueue('swapped task');
     await queue.markInFlight(featureSwapped.id, 'run-old');
     // Singular run projection still references the prior (now-completed) run.
-    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-old', featureId: 'stale-feature-id', status: 'completed' }));
+    await store.setRun(DEFAULT_QUEUE_ID, makeRun({ id: 'run-old', featureId: 'stale-feature-id', status: 'completed' }), unfencedCommit('test-fixture'));
 
     const result = await runCancel({
       controller,
@@ -313,5 +337,137 @@ describe('runCancel — sidebar path (taskId) — BUG-001', () => {
         })
       })
     );
+  });
+});
+
+// FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — the generic arm.
+//
+// It used to toast `Schegent: cancel failed — ${message}` and log the bare message, so a
+// path in an exception reached the operator's screen. The toast is fixed text now and the
+// detail goes to the log through `describeFailure`. The refusals that return a code
+// (`not-found`, `illegal-state`) are not failures and add no toast of their own.
+describe('runCancel — the unexpected-failure arm (FR-R4-F05)', () => {
+  const PATH = '/synthetic/home/user-252/secret.txt';
+
+  /** Every string the notifier received, so a test can search for free text. */
+  const everyToast = (): string =>
+    JSON.stringify([
+      vi.mocked(notifier.info).mock.calls,
+      vi.mocked(notifier.warn).mock.calls,
+      vi.mocked(notifier.error).mock.calls
+    ]);
+
+  it('toasts the fixed text and logs the detail when an Error carries a path (by task id)', async () => {
+    const feature = await queue.enqueue('pending task');
+    audit.append.mockRejectedValueOnce(new Error(`audit write failed at ${PATH}`));
+    const errorLog = vi.spyOn(logger, 'error');
+
+    const result = await runCancel({
+      controller,
+      store,
+      queue,
+      audit,
+      notifier,
+      logger,
+      taskId: feature.id
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'unexpected-error' });
+    expect(notifier.error).toHaveBeenCalledTimes(1);
+    expect(notifier.error).toHaveBeenCalledWith(CANCEL_FAILED_TOAST);
+    expect(everyToast()).not.toContain('user-252');
+    expect(errorLog).toHaveBeenCalledWith(
+      'cancel: unexpected failure',
+      expect.objectContaining({ error: expect.stringContaining('user-252') })
+    );
+  });
+
+  it('answers the same on the palette path, where the controller throws', async () => {
+    const feature = await queue.enqueue('feature description');
+    await queue.markInFlight(feature.id, 'run-1');
+    await store.setRun(
+      DEFAULT_QUEUE_ID,
+      makeRun({ featureId: feature.id }),
+      unfencedCommit('test-fixture')
+    );
+    vi.mocked(controller.cancelActive).mockImplementation(() => {
+      throw new Error(`abort failed at ${PATH}`);
+    });
+    const errorLog = vi.spyOn(logger, 'error');
+
+    const result = await runCancel({ controller, store, queue, audit, notifier, logger });
+
+    expect(result).toEqual({ ok: false, reason: 'unexpected-error' });
+    expect(notifier.error).toHaveBeenCalledWith(CANCEL_FAILED_TOAST);
+    expect(everyToast()).not.toContain('user-252');
+    expect(errorLog).toHaveBeenCalledWith(
+      'cancel: unexpected failure',
+      expect.objectContaining({ error: expect.stringContaining('user-252') })
+    );
+  });
+
+  it('toasts the fixed text for a thrown null and logs a bounded description of it', async () => {
+    const feature = await queue.enqueue('pending task');
+    audit.append.mockRejectedValueOnce(null);
+    const errorLog = vi.spyOn(logger, 'error');
+
+    const result = await runCancel({
+      controller,
+      store,
+      queue,
+      audit,
+      notifier,
+      logger,
+      taskId: feature.id
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'unexpected-error' });
+    expect(notifier.error).toHaveBeenCalledWith(CANCEL_FAILED_TOAST);
+    expect(errorLog).toHaveBeenCalledWith(
+      'cancel: unexpected failure',
+      expect.objectContaining({ error: 'null thrown' })
+    );
+  });
+
+  it('keeps a thrown string out of the toast too', async () => {
+    const feature = await queue.enqueue('pending task');
+    audit.append.mockRejectedValueOnce(`plain string thrown at ${PATH}`);
+
+    await runCancel({ controller, store, queue, audit, notifier, logger, taskId: feature.id });
+
+    expect(notifier.error).toHaveBeenCalledWith(CANCEL_FAILED_TOAST);
+    expect(everyToast()).not.toContain('user-252');
+  });
+
+  it('words the toast without an exception, a path or a code', () => {
+    expect(CANCEL_FAILED_TOAST).toBe('Schegent: cancel failed. See the Schegent log for details.');
+  });
+
+  it('keeps not-found and illegal-state as codes, with no failure toast', async () => {
+    const terminal = await queue.enqueue('terminal task');
+    await queue.finish(terminal.id, 'canceled');
+
+    const missing = await runCancel({
+      controller,
+      store,
+      queue,
+      audit,
+      notifier,
+      logger,
+      taskId: 'does-not-exist'
+    });
+    const illegal = await runCancel({
+      controller,
+      store,
+      queue,
+      audit,
+      notifier,
+      logger,
+      taskId: terminal.id
+    });
+
+    expect(missing).toEqual({ ok: false, reason: 'not-found' });
+    expect(illegal).toEqual({ ok: false, reason: 'illegal-state' });
+    expect(notifier.error).not.toHaveBeenCalled();
   });
 });

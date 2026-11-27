@@ -1,13 +1,25 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// One store read at the boundary: `CatalogSession.open` awaits a snapshot and
+// every resolver below it is synchronous. `refresh()` is another read. The write
+// that triggers a refresh is the operator's, through a `MUTATING_COMMAND_TYPES`
+// save that the router's trust gate refuses while untrusted.
+
 // Catalog loading for activation. Extracted from `extension.ts` so the resolved
 // Phase/Pipeline/Workflow catalog and the loader diagnostics have a focused owner
 // alongside the other Stage-2 wiring modules.
 
 import type { ResolvedPipelineCatalog } from '../config/pipeline-catalog';
 import type { PipelineCatalog } from '../config/pipeline-config';
-import { loadCatalog, type CatalogConfigReader } from '../config/pipeline-config-loader';
+import { coerceModels, loadCatalog, type CatalogConfigReader } from '../config/pipeline-config-loader';
 import type { ResolvedPhaseCatalog } from '../config/process-catalog';
 import { resolveWorkflowCatalog } from '../config/workflow-catalog';
-import { emptyCatalogSnapshot, snapshotOfRead, storedIds, storedRows } from '../catalog';
+import {
+  emptyCatalogSnapshot,
+  snapshotOfRead,
+  storedDraftOnlyRows,
+  storedIds,
+  storedRows
+} from '../catalog';
 import type { CatalogStore } from '../catalog/catalog-store';
 import type { Digest } from '../catalog/ports';
 import type {
@@ -32,6 +44,11 @@ export interface LoadedCatalog {
    * the two drift after a store write.
    */
   readonly workflowCatalog: WorkflowCatalogResolution;
+  /**
+   * Feature 285 (FR-005, D1) — the default Workflow ID the settings resolve to against the
+   * effective Workflows, or `''`. Carried from the same load so it cannot outlive a reload.
+   */
+  readonly defaultWorkflowId: string;
   /**
    * Feature 099 (T493a, FR-027) — the store's integrity findings, carried
    * alongside the resolution rather than thrown or logged and dropped.
@@ -95,9 +112,16 @@ export function loadAndReportCatalog(
   }
 
   const { catalog, phaseCatalog, pipelineCatalog } = result;
+  // BUG-001 (101) — `draftOnlyRows` from the same snapshot as `rows`, matching what
+  // `loadCatalog` above did for the other two kinds. The graph is still validated
+  // against the **effective** Pipeline catalog, so a draft Workflow naming a draft
+  // Pipeline reports it as unknown rather than resolving against something the
+  // workspace does not run.
   const workflowCatalog = resolveWorkflowCatalog({
     rows: storedRows(snapshot, 'workflow'),
+    draftOnlyRows: storedDraftOnlyRows(snapshot, 'workflow'),
     revision: snapshot.revisions.workflow,
+    phaseCatalog,
     pipelineCatalog
   });
   return {
@@ -105,6 +129,7 @@ export function loadAndReportCatalog(
     phaseCatalog,
     pipelineCatalog,
     workflowCatalog,
+    defaultWorkflowId: result.defaultWorkflowId,
     faults: snapshot.faults,
     collectable: snapshot.collectable
   };
@@ -114,7 +139,7 @@ export function loadAndReportCatalog(
 export interface CatalogSessionPorts {
   /** `null` in an untrusted workspace, where no catalog activates at all (FR-051). */
   readonly store: CatalogStore | null;
-  /** The two settings that stayed: `schegent.models` and `schegent.defaultPipelineId`. */
+  /** The settings that stayed: `schegent.models` and the default Workflow keys (Feature 285). */
   readonly reader: CatalogConfigReader | undefined;
   readonly digest: Digest;
   readonly logger: Pick<SanitizedLogger, 'debug'>;
@@ -164,6 +189,10 @@ export class CatalogSession {
     return this.loaded.catalog;
   }
 
+  get workspaceModels(): PipelineCatalog['models'] {
+    return coerceModels(this.ports.reader?.getModels('workspace'));
+  }
+
   get phaseCatalog(): ResolvedPhaseCatalog {
     return this.loaded.phaseCatalog;
   }
@@ -174,6 +203,11 @@ export class CatalogSession {
 
   get workflowCatalog(): WorkflowCatalogResolution {
     return this.loaded.workflowCatalog;
+  }
+
+  /** Feature 285 (FR-005) — the resolved default Workflow ID, or `''` where none is set. */
+  get defaultWorkflowId(): string {
+    return this.loaded.defaultWorkflowId;
   }
 
   /**
@@ -223,9 +257,10 @@ export class CatalogSession {
    * that kind, and it is what a save echoes back (FR-044).
    */
   storedLayer(kind: CatalogKind): StoredLayer {
+    const revision = this.snapshot.revisions[kind];
     return {
       rows: storedRows(this.snapshot, kind),
-      revision: this.snapshot.revisions[kind],
+      revision,
       // Feature 100 (T512, FR-043) — the ids travel with the rows because they
       // must describe the SAME read. `rows` is the active bodies and `ids` is
       // every entry at every state, so the two differ by exactly the draft-only

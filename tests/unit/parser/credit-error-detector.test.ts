@@ -1,8 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   RATE_LIMIT_MATCHERS,
-  detectCreditError,
-  detectStatusOk
+  detectCreditError
 } from '../../../src/parser/credit-error-detector';
 
 describe('detectCreditError', () => {
@@ -130,9 +131,18 @@ describe('detectCreditError', () => {
   // `rate_limit_event` envelope and the `out_of_credits` overage
   // reason. `out_of_credits` wins over `rate_limit_event` so the
   // hard-cap signal routes through the past-timestamp safety guard.
+  //
+  // FR-R4-F02 (T037a, maintainer decision (b), 2026-10-28): FR-012 counts a
+  // stdout event only as a record whose own `type` is `rate_limit_event` and
+  // whose `rate_limit_info.status` is `rejected`. Each event below that is
+  // meant to match carries that status; a status-less event and a bare
+  // substring no longer match. Rows #10 and #12 were not among the failures
+  // and keep their inputs, which are no longer records; the genuine-record
+  // cases for both are in credit-error-detector-records.test.ts.
   describe('stdout trailing-window scan (Feature 066 US2)', () => {
-    it('matches a generic rate_limit_event substring with cause rate-limit (row #7)', () => {
-      const stdout = '{"type":"rate_limit_event","subtype":"unified"}';
+    it('matches a generic rejected rate_limit_event record with cause rate-limit (row #7)', () => {
+      const stdout =
+        '{"type":"rate_limit_event","subtype":"unified","rate_limit_info":{"status":"rejected"}}';
       const result = detectCreditError(stdout, '', 1);
       expect(result.matched).toBe(true);
       expect(result.cause).toBe('rate-limit');
@@ -140,17 +150,18 @@ describe('detectCreditError', () => {
 
     it('matches a rate_limit_event payload carrying out_of_credits with cause out-of-credits (row #8)', () => {
       const stdout =
-        '{"type":"rate_limit_event","rate_limit_info":{"overageDisabledReason":"out_of_credits"}}';
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","overageDisabledReason":"out_of_credits"}}';
       const result = detectCreditError(stdout, '', 1);
       expect(result.matched).toBe(true);
       expect(result.cause).toBe('out-of-credits');
     });
 
-    it('matches a bare out_of_credits substring with cause out-of-credits (row #9)', () => {
+    it('does NOT match a bare out_of_credits substring (row #9, reversed by FR-012)', () => {
+      // A substring is not a record: only `rate_limit_info.status === "rejected"` blocks.
       const stdout = '...out_of_credits...';
       const result = detectCreditError(stdout, '', 1);
-      expect(result.matched).toBe(true);
-      expect(result.cause).toBe('out-of-credits');
+      expect(result.matched).toBe(false);
+      expect(result.cause).toBe('');
     });
 
     it('stderr wins over stdout when both match — preserves FR-007 byte-for-byte (row #10)', () => {
@@ -163,11 +174,18 @@ describe('detectCreditError', () => {
       expect(result.cause).toBe('rate-limit');
     });
 
-    it('finds the signal inside the trailing 20-line window (row #11)', () => {
-      const stdout = `${'a\n'.repeat(100)}rate_limit_event`;
-      const result = detectCreditError(stdout, '', 1);
-      expect(result.matched).toBe(true);
-      expect(result.cause).toBe('rate-limit');
+    it('finds a rejected record inside the trailing 20-line window, and not the bare event name (row #11)', () => {
+      // The signal is a record. The bare event name that stood on the last
+      // line before FR-012 is not one, so the second half expects no match.
+      const record =
+        '{"type":"rate_limit_event","subtype":"unified","rate_limit_info":{"status":"rejected"}}';
+      const found = detectCreditError(`${'a\n'.repeat(100)}${record}`, '', 1);
+      expect(found.matched).toBe(true);
+      expect(found.cause).toBe('rate-limit');
+
+      const bare = detectCreditError(`${'a\n'.repeat(100)}rate_limit_event`, '', 1);
+      expect(bare.matched).toBe(false);
+      expect(bare.cause).toBe('');
     });
 
     it('does NOT match a signal outside the trailing window (row #12)', () => {
@@ -183,7 +201,7 @@ describe('detectCreditError', () => {
       // Both substrings present on the same line; the more specific
       // hard-cap signal must win.
       const stdout =
-        '{"type":"rate_limit_event","rate_limit_info":{"overageDisabledReason":"out_of_credits"}}';
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","overageDisabledReason":"out_of_credits"}}';
       const result = detectCreditError(stdout, '', 1);
       expect(result.cause).toBe('out-of-credits');
     });
@@ -193,9 +211,9 @@ describe('detectCreditError', () => {
       // detector reports the most recent emission so the cause matches
       // the current CLI state, not stale history.
       const stdout = [
-        '{"type":"rate_limit_event","rate_limit_info":{"overageDisabledReason":"out_of_credits"}}',
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","overageDisabledReason":"out_of_credits"}}',
         '{"type":"assistant","message":{}}',
-        '{"type":"rate_limit_event","subtype":"unified"}'
+        '{"type":"rate_limit_event","subtype":"unified","rate_limit_info":{"status":"rejected"}}'
       ].join('\n');
       const result = detectCreditError(stdout, '', 1);
       expect(result.matched).toBe(true);
@@ -204,9 +222,9 @@ describe('detectCreditError', () => {
 
     it('newer out_of_credits wins over older plain rate_limit_event (most-recent-line rule)', () => {
       const stdout = [
-        '{"type":"rate_limit_event","subtype":"unified"}',
+        '{"type":"rate_limit_event","subtype":"unified","rate_limit_info":{"status":"rejected"}}',
         '{"type":"assistant","message":{}}',
-        '{"type":"rate_limit_event","rate_limit_info":{"overageDisabledReason":"out_of_credits"}}'
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","overageDisabledReason":"out_of_credits"}}'
       ].join('\n');
       const result = detectCreditError(stdout, '', 1);
       expect(result.matched).toBe(true);
@@ -273,11 +291,15 @@ describe('detectCreditError', () => {
     });
 
     it('scans within an order of magnitude of a 200-byte input on a 1MB stdout buffer (SC-005)', () => {
-      // Build a 1MB stdout buffer with the signal in the last line.
+      // Build a 1MB stdout buffer with the signal in the last line. The
+      // signal is a rejected record (FR-012); the bare text that stood here
+      // before is asserted below not to match.
+      const record =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","overageDisabledReason":"out_of_credits"}}';
       const padLine = 'a'.repeat(99) + '\n';
       const padding = padLine.repeat(Math.ceil(1_000_000 / padLine.length));
-      const stdout = padding + 'out_of_credits';
-      const small = 'out_of_credits';
+      const stdout = padding + record;
+      const small = record;
 
       const t0 = performance.now();
       const smallResult = detectCreditError(small, '', 1);
@@ -287,6 +309,9 @@ describe('detectCreditError', () => {
 
       expect(smallResult.cause).toBe('out-of-credits');
       expect(largeResult.cause).toBe('out-of-credits');
+      // The bare text is not a record, on a small buffer and on a large one.
+      expect(detectCreditError('out_of_credits', '', 1).matched).toBe(false);
+      expect(detectCreditError(`${padding}out_of_credits`, '', 1).matched).toBe(false);
 
       // Soft bound: the large-input call should finish well within an
       // order of magnitude of the small-input call PLUS a generous
@@ -299,26 +324,84 @@ describe('detectCreditError', () => {
       expect(smallMs).toBeLessThan(50);
     });
   });
-});
 
-describe('detectStatusOk', () => {
-  it('returns true when status reports credits available', () => {
-    expect(detectStatusOk('Your credits are available')).toBe(true);
-  });
+  // FR-R3-197 (T1874) — the CLI writes `rate_limit_info.status` as `allowed`,
+  // `allowed_warning` or `rejected`. Only `rejected` is a block. The fixture
+  // is the event observed in run 777491f8, ids elided; it carries
+  // `"overageStatus":"rejected"` beside `"status":"allowed"`.
+  describe('allowed rate_limit_event status (FR-R3-197, T1874)', () => {
+    const observed = readFileSync(
+      resolve(__dirname, '../../fixtures/rate-limit/rate-limit-allowed-observed.txt'),
+      'utf8'
+    ).trim();
 
-  it('returns true when status reports system OK', () => {
-    expect(detectStatusOk('Status: ok')).toBe(true);
-  });
+    it('U1 — the observed allowed event on exit 143 is not a rate limit', () => {
+      const result = detectCreditError(observed, '', 143);
+      expect(result).toEqual({ matched: false, cause: '' });
+    });
 
-  it('returns true when quota has reset', () => {
-    expect(detectStatusOk('quota has been reset')).toBe(true);
-  });
+    it('U2 — the same event with status rejected is a rate limit', () => {
+      const rejected = observed.replace('"status":"allowed"', '"status":"rejected"');
+      expect(rejected).not.toBe(observed);
+      const result = detectCreditError(rejected, '', 143);
+      expect(result.matched).toBe(true);
+      expect(result.cause).toBe('rate-limit');
+    });
 
-  it('returns false for an error response', () => {
-    expect(detectStatusOk('error: subscription expired')).toBe(false);
-  });
+    it('U3 — an allowed event that names out_of_credits is not out-of-credits (D2)', () => {
+      const spent = observed.replace('org_level_disabled', 'out_of_credits');
+      expect(spent).not.toBe(observed);
+      const result = detectCreditError(spent, '', 1);
+      expect(result.matched).toBe(false);
+    });
 
-  it('returns false for empty output', () => {
-    expect(detectStatusOk('')).toBe(false);
+    it('U4 — an allowed_warning event that names out_of_credits is not out-of-credits (D2)', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","overageDisabledReason":"out_of_credits"}}';
+      const result = detectCreditError(stdout, '', 1);
+      expect(result.matched).toBe(false);
+    });
+
+    it('U5 — an allow event (one space) that names out_of_credits is not out-of-credits (D2)', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status": "allow","overageDisabledReason":"out_of_credits"}}';
+      const result = detectCreditError(stdout, '', 1);
+      expect(result.matched).toBe(false);
+    });
+
+    it('U6 — an earlier rejected event is still found beneath a later allowed event', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1716000000}}\n' + observed;
+      const result = detectCreditError(stdout, '', 1);
+      expect(result.matched).toBe(true);
+      expect(result.cause).toBe('rate-limit');
+    });
+
+    it('U7 — an allowed event written with one space after the colon is not a rate limit', () => {
+      const spaced = observed.replace('"status":"allowed"', '"status": "allowed"');
+      expect(spaced).not.toBe(observed);
+      const result = detectCreditError(spaced, '', 1);
+      expect(result.matched).toBe(false);
+    });
+
+    it('U8 — a rejected event carrying overageStatus allowed is still a rate limit', () => {
+      const stdout =
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","overageStatus":"allowed"}}';
+      const result = detectCreditError(stdout, '', 1);
+      expect(result.matched).toBe(true);
+      expect(result.cause).toBe('rate-limit');
+    });
+
+    it('U9 — an allowed_warning event on a non-zero exit is not a rate limit', () => {
+      const stdout = '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"}}';
+      const result = detectCreditError(stdout, '', 1);
+      expect(result.matched).toBe(false);
+    });
+
+    it('U10 — a stderr rate-limit phrase beside an allowed event still wins', () => {
+      const result = detectCreditError(observed, 'rate limit exceeded', 1);
+      expect(result.matched).toBe(true);
+      expect(result.cause).toBe('rate-limit');
+    });
   });
 });

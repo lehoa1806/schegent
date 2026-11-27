@@ -1,4 +1,6 @@
+import { waitForCondition } from '../../../wait-for-condition';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { unfencedCommit } from '../../../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -10,7 +12,7 @@ import { STALENESS_THRESHOLD_MS } from '../../../../src/state/lock';
 import type { WorkflowRun, WorkspaceLock } from '../../../../src/state/workflow-run';
 import type { QueueState, FeatureRequest } from '../../../../src/queue/feature-request';
 import type { WorkflowSnapshot } from '../../../../src/ui/sidebar/snapshot';
-import { DEFAULT_QUEUE_ID } from '../../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../../src/contracts/queue-identity';
 import { resolvePhaseCatalog } from '../../../../src/config/process-catalog';
 import { runOf, runtimeOf, statusOf } from './queue-runtime-read.helpers';
 import { SPECKIT_RUN_PIPELINE } from '../../../fixtures/speckit-catalog-fixture';
@@ -208,7 +210,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
   });
 
   it('reflects run state into status, activeFeature, and active phase tile', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -227,8 +229,12 @@ describe('StateProjector.getCurrentSnapshot', () => {
     p.start();
     expect(p.getCurrentSnapshot().isPrimary).toBe(false);
     await store.setLock(sampleLock('this-window'));
-    // wait for debounce
-    await new Promise((r) => setTimeout(r, 130));
+    // FR-R3-114 row 3 — was `setTimeout(r, 130)`, a 30% margin over the 100 ms debounce against
+    // an unbounded scheduler delay. Now bounded by a deadline and satisfied the moment the
+    // projection reflects the lock.
+    await waitForCondition(() => p.getCurrentSnapshot().isPrimary, {
+      label: 'the projection reflects this window holding the lock'
+    });
     expect(p.getCurrentSnapshot().isPrimary).toBe(true);
     p.dispose();
   });
@@ -266,13 +272,20 @@ describe('StateProjector.getCurrentSnapshot', () => {
   });
 
   it('projects queue registry and derived queue pause causes', async () => {
-    // Feature 030 (US3, T046) — single-queue mode. The original test
-    // exercised a two-queue projection via `createQueue('Secondary')`,
-    // which is now blocked by MAX_QUEUES=1. With the single unified
-    // queue, the registry shape is fixed at one default entry; the
-    // queue-paused derivation still applies and surfaces in the
-    // projected `pauseCause` on pending requests when the default
-    // queue is manually paused.
+    // Feature 030 (US3, T046) narrowed this test: the original exercised a
+    // two-queue projection via `createQueue('Secondary')`, and the collapse to
+    // one queue left no second queue to create.
+    //
+    // FR-R3-145 (T1569) corrected what stood here, which said that call "is now
+    // blocked by MAX_QUEUES=1" and that the registry shape "is fixed at one
+    // default entry". Feature 092 restored `MAX_QUEUES` to 20 — see
+    // `src/contracts/queue-bounds.ts` — so neither is true; a second queue is
+    // creatable and the registry is not fixed at one. The test stays at one
+    // queue because one is all this assertion needs: what it exercises is the
+    // queue-paused derivation surfacing in the projected `pauseCause` on
+    // pending requests, and a second queue would add nothing to that. The
+    // multi-queue projection is covered by
+    // `tests/integration/per-queue-snapshot-isolation.test.ts`.
     //
     // FR-R3-011 — the pause is now set on the queue record. `setQueuePaused`
     // wrote it onto the registry entry, which no longer holds one; the
@@ -303,7 +316,9 @@ describe('StateProjector.getCurrentSnapshot', () => {
       ],
       manualPauseAt: 1_700_000_000_001,
       manualPauseCause: 'operator-paused'
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
     await ownRun();
 
     const p = makeProjector();
@@ -321,7 +336,7 @@ describe('StateProjector.getCurrentSnapshot', () => {
 
   it('projects phase-message metadata without message values', async () => {
     vi.useFakeTimers();
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector({ debounceMs: 100 });
     p.start();
@@ -338,7 +353,9 @@ describe('StateProjector.getCurrentSnapshot', () => {
         phaseId: 'speckit-plan',
         entryCount: 2,
         byteSize: 48,
-        secret: 'should-not-project'
+        // Not named `secret`: the audit writer now refuses a string under a key that names a secret
+        // (FR-R4-F10), and this field only probes that the projector drops what it does not know.
+        messageValue: 'should-not-project'
       },
       outcome: 'info'
     });
@@ -569,7 +586,7 @@ describe('StateProjector.subscribe', () => {
       outcome: 'info'
     });
     await vi.advanceTimersByTimeAsync(50);
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
     await ownRun();
     await vi.advanceTimersByTimeAsync(110);
 
@@ -678,7 +695,7 @@ describe('StateProjector multi-window snapshot equivalence (SC-005)', () => {
     const nowA = deterministicNow();
     const nowB = deterministicNow();
 
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
 
     const projA = makeWindowProjector({ monoClock, nowFn: nowA });
     const projB = makeWindowProjector({ monoClock, nowFn: nowB });
@@ -716,7 +733,7 @@ describe('StateProjector multi-window snapshot equivalence (SC-005)', () => {
     await vi.advanceTimersByTimeAsync(120);
 
     monoClock.value = 7_500;
-    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), currentPhase: 'speckit-tasks' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), currentPhase: 'speckit-tasks' }, unfencedCommit('test-fixture'));
     await vi.advanceTimersByTimeAsync(120);
 
     monoClock.value = 12_000;
@@ -772,9 +789,11 @@ describe('StateProjector monitor projection (T023)', () => {
     startedAt: string; lastStdoutAt: string | null; lastStderrAt: string | null;
     lastProgressAt: string | null; stdoutLines: number; stderrLines: number;
     firstOutputAt: string | null; lastOutputAt: string | null;
-    exitCode: number | null; signal: string | null;
+    exitCode: number | null; signal: string | null; declinedChunks: number;
     detectedIssues: ReadonlyArray<'rate_limited' | 'stall'>;
     msSinceLastStdout: number | null; msSinceLastStderr: number | null;
+    maxDurationMs: number | null; deadlineApproaching: boolean;
+    held: boolean;
   }> = {}) {
     return {
       runId: overrides.runId ?? 'r1',
@@ -792,9 +811,17 @@ describe('StateProjector monitor projection (T023)', () => {
       lastOutputAt: overrides.lastOutputAt ?? null,
       exitCode: overrides.exitCode ?? null,
       signal: overrides.signal ?? null,
+      // Feature 093 BUG-001 (T102a) — zero for a Run nothing was declined for.
+      declinedChunks: overrides.declinedChunks ?? 0,
       detectedIssues: overrides.detectedIssues ?? ([] as ReadonlyArray<'rate_limited' | 'stall'>),
       msSinceLastStdout: overrides.msSinceLastStdout ?? null,
-      msSinceLastStderr: overrides.msSinceLastStderr ?? null
+      msSinceLastStderr: overrides.msSinceLastStderr ?? null,
+      // Feature 211 — an invocation the runner armed no deadline for is the
+      // default here, because that is what every pre-211 call site meant.
+      maxDurationMs: overrides.maxDurationMs ?? null,
+      // FR-R3-208 — a Run that is not holding, which is what every earlier call site meant.
+      held: overrides.held ?? false,
+      deadlineApproaching: overrides.deadlineApproaching ?? false
     };
   }
 
@@ -823,6 +850,60 @@ describe('StateProjector monitor projection (T023)', () => {
     p.dispose();
   });
 
+  /**
+   * Feature 211 (T018) — the bound travels to the webview beside `startedAt`.
+   *
+   * `startedAt` alone says when an invocation began, which is the numerator of a
+   * question an operator cannot finish: how close is this to the cap that will
+   * kill it. The denominator is the bound, and it was never projected.
+   */
+  it('projects the invocation bound beside startedAt when one is in force', async () => {
+    const monitor = makeFakeMonitor({
+      initial: buildMonitorState({ status: 'running', maxDurationMs: 21_600_000 })
+    });
+    const p = new StateProjector({
+      store, audit, ownerId: 'this-window', debounceMs: 100, monitor
+    });
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.monitor!.startedAt).toBe('2026-05-10T12:00:00.000Z');
+    expect(snap.monitor!.maxDurationMs).toBe(21_600_000);
+    expect(snap.monitor!.deadlineApproaching).toBe(false);
+    p.dispose();
+  });
+
+  it('projects null for an invocation with no bound, not the settings default', async () => {
+    // The default is 21600 s, and substituting it here would render a countdown
+    // to a deadline that will never fire — an unbounded invocation reported as
+    // six hours from termination (FR-009).
+    const monitor = makeFakeMonitor({
+      initial: buildMonitorState({ status: 'running', maxDurationMs: null })
+    });
+    const p = new StateProjector({
+      store, audit, ownerId: 'this-window', debounceMs: 100, monitor
+    });
+    p.start();
+    const snap = p.getCurrentSnapshot();
+    expect(snap.monitor!.maxDurationMs).toBeNull();
+    p.dispose();
+  });
+
+  it('projects deadlineApproaching once the invocation has crossed its threshold', async () => {
+    const monitor = makeFakeMonitor({
+      initial: buildMonitorState({
+        status: 'running',
+        maxDurationMs: 21_600_000,
+        deadlineApproaching: true
+      })
+    });
+    const p = new StateProjector({
+      store, audit, ownerId: 'this-window', debounceMs: 100, monitor
+    });
+    p.start();
+    expect(p.getCurrentSnapshot().monitor!.deadlineApproaching).toBe(true);
+    p.dispose();
+  });
+
   it('terminal monitor states render snapshot.monitor === null', async () => {
     const monitor = makeFakeMonitor({
       initial: buildMonitorState({ status: 'completed' })
@@ -839,16 +920,16 @@ describe('StateProjector monitor projection (T023)', () => {
   it('forwards workflow paused/resumed transitions to the monitor exactly once', async () => {
     vi.useFakeTimers();
     const monitor = makeFakeMonitor({ initial: buildMonitorState({ status: 'running' }) });
-    await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+    await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
     const p = new StateProjector({
       store, audit, ownerId: 'this-window', debounceMs: 100, monitor
     });
     p.start();
     await vi.advanceTimersByTimeAsync(120);
-    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), status: 'paused' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), status: 'paused' }, unfencedCommit('test-fixture'));
     await vi.advanceTimersByTimeAsync(120);
     expect(monitor.pausedCalls).toBe(1);
-    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), status: 'running' });
+    await store.setRun(DEFAULT_QUEUE_ID, { ...sampleRun(), status: 'running' }, unfencedCommit('test-fixture'));
     await vi.advanceTimersByTimeAsync(120);
     expect(monitor.resumedCalls).toBe(1);
     p.dispose();
@@ -1035,7 +1116,9 @@ describe('StateProjector extended QueueItem projection (T035)', () => {
       manualPauseCause: null,
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
-    });
+    },
+      unfencedCommit('test-fixture')
+    );
     const inFlight: FeatureRequest = {
       id: 'q-active',
       description: 'busy',
@@ -1129,7 +1212,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: pipelinePhases
       }
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1148,7 +1231,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: [makePhaseDef('speckit-specify'), makePhaseDef('speckit-plan'), makePhaseDef('finalize')]
       }
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1173,7 +1256,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: [makePhaseDef('speckit-specify'), makePhaseDef('finalize')]
       }
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1202,7 +1285,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: standardPhases
       }
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1233,7 +1316,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: pipelinePhases
       }
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1258,7 +1341,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
   it('projects no tiles for a run carrying no pipeline snapshot (T055)', async () => {
     const noPipelineRun: WorkflowRun = { ...sampleRun(), pipeline: undefined };
     expect(noPipelineRun.pipeline).toBeUndefined();
-    await store.setRun(DEFAULT_QUEUE_ID, noPipelineRun);
+    await store.setRun(DEFAULT_QUEUE_ID, noPipelineRun, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1277,7 +1360,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: [makePhaseDef('speckit-specify'), makePhaseDef('security-audit'), makePhaseDef('finalize')]
       }
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();
@@ -1311,7 +1394,7 @@ describe('StateProjector dynamic pipelines (T046, T050, US3)', () => {
         phases: [makePhaseDef('speckit-specify'), makePhaseDef('security-audit'), makePhaseDef('finalize')]
       }
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await ownRun();
     const p = makeProjector();
     p.start();

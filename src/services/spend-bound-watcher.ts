@@ -1,0 +1,516 @@
+// FR-R3-112 (FR-119..FR-123) — the bound, wired to the pause it produces.
+//
+// WHY IT OBSERVES THE AUDIT LOG RATHER THAN SITTING IN THE DRIVE LOOP. The usage a
+// bound must read is written to exactly one place: the `phase-end` audit entry, by
+// `phase-runner.ts`, once per invocation, for all three backends. Reading it there
+// makes the figure the bound acts on the SAME figure an operator reads and
+// `npm run audit:verify` chains — a private accumulator could pause a run for spend
+// the evidence does not show, or miss spend it does.
+//
+// WHY IT WRITES THE PAUSE PAIR AND NOTHING ELSE. `manualPauseAt` + `manualPauseCause`
+// IS the operator-resumable pause: `PhaseControlService.pauseActivePhase` writes
+// exactly that pair, `PhaseSequencer.decideAfterPhase` returns `pause-manual` when it
+// sees the timestamp on the persisted snapshot, and `RunDriver` then performs the
+// transition, the queue pause, the audit event and the status-bar update. This is that
+// seam, used the way the operator's own control uses it — not a second pause
+// mechanism. `RunDriver` needs no change, and the resume path already works because
+// the cause joins a closed union the migrator and the projector both already read.
+//
+// WHAT IT DELIBERATELY DOES NOT DO. It does not cancel the child. The operator's pause
+// does, because an operator asking for a pause wants the current turn to stop; a spend
+// bound is observed at the boundary of a turn that has ALREADY completed and been paid
+// for, and killing the next-to-nothing in flight would trade a recorded turn for a
+// destroyed one. **The bound pauses; it never destroys** — no terminal transition, no
+// cancel, no discarded work.
+//
+// TIMING, STATED HONESTLY. The stamp is written while the phase's own `phase-end`
+// append is in flight, and the driver reads the persisted snapshot a few awaits later.
+// In the ordinary case the pause takes effect at the boundary that recorded the
+// crossing. If the store write lands after that read, it takes effect at the NEXT
+// boundary, so one more phase runs after the one that crossed — never more than that,
+// and never a pause in the middle of a phase. The operator docs state the same bound
+// (docs/operations/autonomy-bounds-disclosure.md). That is the same bound the design gives anyway: spend cannot be observed
+// mid-turn, because no backend reports it until the turn ends.
+import type { AuditEntry } from '../audit/audit-entry';
+import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
+import { spendDenominationOf } from '../contracts/backend-spend-denomination';
+import type { SanitizedLogger } from '../lib/logger';
+import { isOperableRunStatus, type WorkflowRun } from '../state/workflow-run';
+import type { ReplayRun, SpendReplay } from './spend-bound-replay';
+import {
+  accumulateSpend,
+  effectiveSpendBound,
+  evaluateSpend,
+  NO_SPEND_OBSERVED,
+  spendPauseMessage,
+  type SpendBoundConfig,
+  type SpendDenomination,
+  type RunSpendTotal
+} from './spend-bound';
+
+export interface SpendBoundWatcherDeps {
+  /** The workspace bound, re-read per evaluation so a settings change takes effect now. */
+  readonly config: () => SpendBoundConfig;
+  /** Resolve the run this entry belongs to, with the queue that owns it. */
+  readonly findRunById: (
+    runId: string
+  ) => { readonly queueId: string; readonly run: WorkflowRun } | null;
+  /** Persist the pause pair under the caller's execution fence. */
+  readonly pause: (queueId: string, run: WorkflowRun) => Promise<void>;
+  /** Operator-visible notice naming the bound and the measured spend. */
+  readonly notify: (message: string) => void;
+  readonly logger: SanitizedLogger;
+  readonly now: () => number;
+}
+
+export interface SpendBoundWatcher {
+  /** Subscribe this to `AuditLogWriter.subscribe`. */
+  readonly onAuditEntry: (entry: AuditEntry) => void;
+  /**
+   * Rebuild the tally from the restart replay and mark each Run complete or incomplete by the
+   * replay's verdict; called once, by the wiring. Never rejects.
+   */
+  readonly seedFrom: (replay: Promise<SpendReplay>) => Promise<void>;
+  /** Observed spend for a run, for the disclosure and for tests. */
+  readonly observedFor: (runId: string) => RunSpendTotal;
+  /**
+   * Clear a resumed run's pause and notice latches while keeping its accumulated spend and counted
+   * row ids intact, so the next `phase-end` evaluates cumulative spend against the active bound.
+   */
+  readonly onRunResumed: (runId: string) => void;
+  /**
+   * Drop a run's tally, its paused flag and its notice keys. The wiring calls it when a Run reaches
+   * `completed` or `canceled`. A `failed` Run keeps its tally, because Retry, Restart and Resume
+   * can put it back into motion.
+   */
+  readonly forget: (runId: string) => void;
+  /**
+   * Whether the bound in `denomination` can be trusted for this run right now (contract E1 G3):
+   * `not-trustworthy` while the figure in that denomination has never been observed or the total is
+   * only a lower bound.
+   */
+  readonly trustFor: (runId: string, denomination: SpendDenomination) => 'enforced' | 'not-trustworthy';
+}
+
+/**
+ * Runs whose tallies are retained.
+ *
+ * Bounded, because a host outlives many runs and an unbounded map keyed by run id
+ * is a leak that grows with use. Eviction takes a run that is terminal or no longer in the store
+ * first, oldest-first among those, and only when every tracked run is still live does it take the
+ * oldest of them (FR-R4-F02, contract S2 G9): a run that loses its tally is measured from that
+ * point on, which understates spend rather than fabricating it. A restart no longer empties a
+ * live run's tally: the seed rebuilds it from `readSpendReplay` (`spend-bound-replay.ts`), a replay
+ * of the live audit log and then its archives, newest first, inside one byte budget. A run the
+ * replay cannot bound comes back marked incomplete, with the reason (FR-R3-209, FR-R4-F02).
+ */
+const MAX_TRACKED_RUNS = 64;
+const MAX_POSTURE_WARNED_RUNS = 256;
+
+export interface RunStartPostureWarning {
+  readonly message: string;
+  readonly unboundedBackends: readonly BackendRunnerKind[];
+  readonly unpinnedPhaseCount: number;
+  readonly totalPhaseCount: number;
+}
+
+/**
+ * Evaluate whether a starting Run lacks a spend bound for any of its backends and/or
+ * leaves models unpinned on phases. Returns `null` when every phase has both an
+ * effective spend bound (workspace or per-phase) and a pinned model.
+ */
+export function describeRunStartPostureWarning(
+  run: Pick<WorkflowRun, 'defaultRunnerKind' | 'pipeline'>,
+  workspaceSpend: SpendBoundConfig
+): RunStartPostureWarning | null {
+  const phases = run.pipeline?.phases ?? [];
+  const unboundedSet = new Set<BackendRunnerKind>();
+  let unpinnedPhaseCount = 0;
+
+  if (phases.length === 0) {
+    const backend = effectiveRunnerKindForPhase(undefined, run.defaultRunnerKind);
+    const denomination = spendDenominationOf(backend);
+    const bound = effectiveSpendBound(workspaceSpend, undefined);
+    const limit = denomination === 'usd' ? bound.limitUsd : bound.limitTokens;
+    if (limit === null) unboundedSet.add(backend);
+  } else {
+    for (const phase of phases) {
+      const backend = effectiveRunnerKindForPhase(phase, run.defaultRunnerKind);
+      const denomination = spendDenominationOf(backend);
+      const bound = effectiveSpendBound(workspaceSpend, phase);
+      const limit = denomination === 'usd' ? bound.limitUsd : bound.limitTokens;
+      if (limit === null) unboundedSet.add(backend);
+      if (typeof phase.model !== 'string' || phase.model.trim().length === 0) {
+        unpinnedPhaseCount += 1;
+      }
+    }
+  }
+
+  const unboundedBackends = [...unboundedSet].sort();
+  const hasUnpinnedModel = phases.length === 0 || unpinnedPhaseCount > 0;
+  if (unboundedBackends.length === 0 && !hasUnpinnedModel) return null;
+
+  const parts: string[] = [];
+  if (unboundedBackends.length > 0) {
+    parts.push(
+      `no spend bound configured for ${unboundedBackends.join(', ')} ` +
+        '(set schegent.spend.maxUsdPerRun / schegent.spend.maxTokensPerRun or per-phase spendBound*)'
+    );
+  }
+  if (hasUnpinnedModel) {
+    parts.push(
+      phases.length > 0
+        ? `no model pinned on ${unpinnedPhaseCount}/${phases.length} phase(s) (backend CLI default model may drift)`
+        : 'no model pinned (backend CLI default model may drift)'
+    );
+  }
+  return {
+    message: `run posture: ${parts.join('; ')}`,
+    unboundedBackends,
+    unpinnedPhaseCount,
+    totalPhaseCount: phases.length
+  };
+}
+
+/**
+ * The separator of a notice key. A run id never contains it, so `${runId}${SEP}${denomination}`
+ * cannot collide with another run's key, and `forget(runId)` can drop a run's keys by prefix.
+ * Written as an escape; the file is scanned for a raw control character.
+ */
+const NOTICE_KEY_SEPARATOR = '\u0000';
+
+const UNIT_LABEL: Readonly<Record<SpendDenomination, string>> = {
+  usd: 'USD',
+  tokens: 'tokens'
+};
+
+export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBoundWatcher {
+  const observed = new Map<string, RunSpendTotal>();
+  /** Runs already paused for spend, so one crossing produces one pause. */
+  const paused = new Set<string>();
+  /**
+   * While a seed is pending, the ids of the `phase-end` rows the live handler folds, so the seed
+   * does not fold them again. Null when no seed is pending.
+   */
+  let liveDuringSeed: Set<string> | null = null;
+  /**
+   * The ids the seed folded, each consumed by its live notice. The audit writer notifies after
+   * the write and the file's close settle, so a row the seed read can be notified after the seed
+   * finished. Bounded by the window, and no timer empties it, because a timer at wiring time is a
+   * producer act (FR-R3-136).
+   */
+  const seeded = new Set<string>();
+  /**
+   * `(runId, denomination)` keys already reported. In memory only, so a reload may report a run
+   * once more (SC-011), and it lives as long as the watcher: once per run per denomination per
+   * host session (FR-030).
+   */
+  const notified = new Set<string>();
+  /**
+   * Live runs whose tally was dropped to stay under `MAX_TRACKED_RUNS`. Their next row re-creates
+   * the tally as `incomplete('evicted')` (contract S2 G9), because what was dropped is not coming
+   * back. That row removes the entry (`baseTotal`); otherwise `forget` clears it with the run's
+   * other state, when the run reaches `completed` or `canceled`.
+   */
+  const evicted = new Set<string>();
+  /** Runs for which the run-start unset spend-bound / unpinned-model posture warning was emitted. */
+  const postureWarned = new Set<string>();
+
+  const rememberPostureWarned = (runId: string): void => {
+    postureWarned.delete(runId);
+    postureWarned.add(runId);
+    if (postureWarned.size > MAX_POSTURE_WARNED_RUNS) {
+      const oldest = postureWarned.values().next().value;
+      if (oldest !== undefined) postureWarned.delete(oldest);
+    }
+  };
+
+  const clearNotified = (runId: string): void => {
+    const prefix = `${runId}${NOTICE_KEY_SEPARATOR}`;
+    for (const key of [...notified]) {
+      if (key.startsWith(prefix)) notified.delete(key);
+    }
+  };
+
+  const onRunResumed = (runId: string): void => {
+    if (runId === '') return;
+    paused.delete(runId);
+    clearNotified(runId);
+  };
+
+  const forget = (runId: string): void => {
+    observed.delete(runId);
+    paused.delete(runId);
+    evicted.delete(runId);
+    postureWarned.delete(runId);
+    clearNotified(runId);
+  };
+
+  /**
+   * A run whose tally nothing will add to again: gone from the store, or `completed` or
+   * `canceled`, the same line `forget` draws. A `failed` run is NOT finished: Retry, Restart and
+   * Resume can put it back into motion, so dropping its tally loses spend that run will be
+   * measured against (feature 284, closing FR-R5-F22 OD-1). Eviction, the live rows and the
+   * restart seed all use this one predicate.
+   */
+  const isFinished = (runId: string): boolean => {
+    const found = deps.findRunById(runId);
+    return found === null || !isOperableRunStatus(found.run.status);
+  };
+
+  /** The tracked run to drop: the oldest finished one, else the oldest of all. */
+  const evictionVictim = (): string | null => {
+    let oldest: string | null = null;
+    for (const runId of observed.keys()) {
+      if (oldest === null) oldest = runId;
+      if (isFinished(runId)) return runId;
+    }
+    return oldest;
+  };
+
+  const remember = (runId: string, spend: RunSpendTotal): void => {
+    observed.set(runId, spend);
+    if (observed.size <= MAX_TRACKED_RUNS) return;
+    while (observed.size > MAX_TRACKED_RUNS) {
+      const victim = evictionVictim();
+      if (victim === null) break;
+      const live = !isFinished(victim);
+      forget(victim);
+      if (live) evicted.add(victim);
+    }
+    // An evicted mark whose run has left the store is answered by nothing, and a failed run that
+    // is never resumed can leave that way. Pruned on each eviction, so the set stays bounded.
+    for (const runId of [...evicted]) {
+      if (deps.findRunById(runId) === null) evicted.delete(runId);
+    }
+  };
+
+  /**
+   * FR-R4-F02 (contract S3 G10) — tell the operator, once per `(run, denomination)`, that this
+   * run's spend cannot be measured or confirmed. One notice naming the unit and the reason class
+   * and no amount, and one log line with a reason code, a denomination and a reason: never a line
+   * per row, which is what this replaces.
+   */
+  const reportOnce = (
+    runId: string,
+    verdict: Extract<ReturnType<typeof evaluateSpend>, { kind: 'unmeasurable' | 'incomplete' }>
+  ): void => {
+    const key = `${runId}${NOTICE_KEY_SEPARATOR}${verdict.denomination}`;
+    if (notified.has(key)) return;
+    notified.add(key);
+    const unit = UNIT_LABEL[verdict.denomination];
+    deps.notify(
+      verdict.kind === 'unmeasurable'
+        ? `Schegent cannot measure this run's spend in ${unit}: the usage is not reported by this backend, so its spend bound is not being enforced.`
+        : `Schegent cannot confirm this run's spend in ${unit}: the history is incomplete, so the total shown is a lower bound.`
+    );
+    deps.logger.warn('spend bound: cannot measure', {
+      reasonCode: verdict.kind === 'unmeasurable' ? 'spend-unmeasurable' : 'spend-incomplete',
+      denomination: verdict.denomination,
+      reason: verdict.reason
+    });
+  };
+
+  /** Where a row's fold starts: the run's tally, or nothing, or what an eviction left of it. */
+  const baseTotal = (runId: string): RunSpendTotal => {
+    const known = observed.get(runId);
+    if (known !== undefined) return known;
+    if (!evicted.delete(runId)) return NO_SPEND_OBSERVED;
+    return { ...NO_SPEND_OBSERVED, completeness: { kind: 'incomplete', reason: 'evicted' } };
+  };
+
+  const liveBackendByAttempt = new Map<string, string>();
+  const liveBackendByKey = new Map<string, string>();
+  const MAX_LIVE_INVOCATION_BACKENDS = 256;
+  const rememberLiveBackend = (map: Map<string, string>, key: string, runner: string): void => {
+    map.delete(key);
+    map.set(key, runner);
+    if (map.size > MAX_LIVE_INVOCATION_BACKENDS) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) map.delete(oldest);
+    }
+  };
+
+  const onAuditEntry = (entry: AuditEntry): void => {
+    if (entry.eventType === 'task-execution-started') {
+      const runId = entry.runId;
+      if (runId !== '' && !postureWarned.has(runId)) {
+        const found = deps.findRunById(runId);
+        if (found !== null) {
+          rememberPostureWarned(runId);
+          const warning = describeRunStartPostureWarning(found.run, deps.config());
+          if (warning !== null) {
+            deps.logger.warn(warning.message, {
+              runId,
+              reasonCode: 'run-posture-defaults',
+              unboundedBackends: warning.unboundedBackends,
+              unpinnedPhaseCount: warning.unpinnedPhaseCount,
+              totalPhaseCount: warning.totalPhaseCount
+            });
+          }
+        }
+      }
+      return;
+    }
+    if (entry.eventType === 'phase-resumed' || entry.eventType === 'phase-restarted') {
+      onRunResumed(entry.runId);
+      return;
+    }
+    if (entry.eventType === 'cli-invocation') {
+      const runner = entry.payload.runner;
+      const operation = entry.payload.operation;
+      if (
+        entry.runId !== '' &&
+        typeof runner === 'string' &&
+        runner.length > 0 &&
+        (operation === undefined || operation === 'phase')
+      ) {
+        const attemptId = entry.payload.attemptId;
+        if (typeof attemptId === 'string' && attemptId.length > 0) {
+          rememberLiveBackend(liveBackendByAttempt, attemptId, runner);
+        }
+        rememberLiveBackend(
+          liveBackendByKey,
+          `${entry.runId}\u0000${entry.phase}\u0000${entry.iteration}`,
+          runner
+        );
+      }
+      return;
+    }
+    if (entry.eventType !== 'phase-end') return;
+    // `AuditEntry.runId` is typed as a string, so the only unusable value it can hold is the
+    // empty one — a run-less entry, which no bound applies to.
+    const runId = entry.runId;
+    if (runId === '') return;
+    if (seeded.delete(entry.id)) return;
+    liveDuringSeed?.add(entry.id);
+
+    const found = deps.findRunById(runId);
+    const endedPhase = found?.run.pipeline?.phases.find((phase) => phase.id === entry.phase);
+    const attemptId = entry.payload.attemptId;
+    const correlatedBackend =
+      (typeof attemptId === 'string' ? liveBackendByAttempt.get(attemptId) : undefined) ??
+      liveBackendByKey.get(`${runId}\u0000${entry.phase}\u0000${entry.iteration}`);
+    const backend =
+      correlatedBackend ??
+      (found !== null
+        ? effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind)
+        : undefined);
+
+    const spend = accumulateSpend(baseTotal(runId), entry.payload, entry.id, { backend });
+    remember(runId, spend);
+    if (paused.has(runId)) return;
+
+    if (found === null) return;
+    // Already pausing for some other reason: an operator pause, a breakpoint, a
+    // delayed retry. Stamping over it would replace the cause the resume path reads
+    // with this one, and the run would resume by the wrong door.
+    if (found.run.manualPauseAt !== null) return;
+
+    // The phase whose `phase-end` this is, not the one the Run reads now: the Run may already have
+    // advanced to a phase on another backend, and the figures belong to the one that just ended.
+    const denomination = spendDenominationOf(
+      effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind)
+    );
+    const verdict = evaluateSpend(spend, effectiveSpendBound(deps.config(), endedPhase), denomination);
+    if (verdict.kind === 'unmeasurable' || verdict.kind === 'incomplete') {
+      reportOnce(runId, verdict);
+      return;
+    }
+    if (verdict.kind !== 'exceeded') return;
+
+    paused.add(runId);
+    const message = spendPauseMessage(verdict);
+    void deps
+      .pause(found.queueId, {
+        ...found.run,
+        manualPauseAt: deps.now(),
+        manualPauseCause: 'spend-bound-reached'
+      })
+      .then(() => {
+        deps.notify(message);
+      })
+      .catch((err: unknown) => {
+        // The tally stands and the run keeps going. A failed pause write must not
+        // also lose the reason it was attempted, so the retry is the next
+        // `phase-end`: clearing the flag is what makes that retry happen.
+        paused.delete(runId);
+        deps.logger.warn(
+          `spend bound: pause write failed, run continues: ${err instanceof Error ? err.message : 'unknown'}`,
+          { reasonCode: 'spend-pause-write-failed' }
+        );
+      });
+  };
+
+  const seedFrom = async (replay: Promise<SpendReplay>): Promise<void> => {
+    liveDuringSeed = new Set();
+    let read: SpendReplay;
+    try {
+      read = await replay;
+    } catch {
+      // The reader never rejects; this is for a caller's promise. No replay is the unseeded state.
+      read = { rows: [], completeness: new Map() };
+    }
+    const foldedLive = liveDuringSeed;
+    liveDuringSeed = null;
+
+    for (const entry of read.rows) {
+      if (entry.eventType !== 'phase-end' || entry.runId === '' || foldedLive.has(entry.id)) {
+        continue;
+      }
+      if (isFinished(entry.runId)) continue;
+      const found = deps.findRunById(entry.runId);
+      if (found === null) continue;
+
+      const endedPhase = found.run.pipeline?.phases.find((phase) => phase.id === entry.phase);
+      const backend =
+        read.backendByRowId?.get(entry.id) ??
+        effectiveRunnerKindForPhase(endedPhase, found.run.defaultRunnerKind);
+      remember(
+        entry.runId,
+        accumulateSpend(baseTotal(entry.runId), entry.payload, entry.id, { backend })
+      );
+      seeded.add(entry.id);
+      if (found.run.manualPauseCause === 'spend-bound-reached') paused.add(entry.runId);
+    }
+
+    // A Run's completeness is the replay's verdict (contract S4 G16). A complete verdict is the
+    // default and needs no entry; an incomplete one is recorded even for a Run with no rows, so
+    // the live rows that follow are added to a total that already says it is a lower bound. A Run
+    // the replay never covered is not in the map and is not created.
+    for (const [runId, completeness] of read.completeness) {
+      if (completeness.kind === 'complete') continue;
+      if (isFinished(runId)) continue;
+      remember(runId, { ...baseTotal(runId), completeness });
+    }
+  };
+
+  return {
+    onAuditEntry,
+    seedFrom,
+    observedFor: (runId) => observed.get(runId) ?? NO_SPEND_OBSERVED,
+    onRunResumed,
+    forget,
+    trustFor: (runId, denomination) => {
+      const total = observed.get(runId) ?? NO_SPEND_OBSERVED;
+      const figure = denomination === 'usd' ? total.costUsd : total.totalTokens;
+      const missingDenomination =
+        denomination === 'usd' ? total.missingUsdRows === true : total.missingTokenRows === true;
+      return figure === undefined || total.completeness.kind === 'incomplete' || missingDenomination
+        ? 'not-trustworthy'
+        : 'enforced';
+    }
+  };
+}
+
+/**
+ * The Runs the restart seed replays: every Run that can still be put back into motion, which
+ * includes a `failed` one (feature 284, closing FR-R5-F22 OD-1). A `completed` or `canceled` Run's
+ * tally is never read again, so it is not rebuilt.
+ */
+export function spendSeedTargets(runs: readonly WorkflowRun[]): ReplayRun[] {
+  return runs
+    .filter((run) => isOperableRunStatus(run.status))
+    .map((run) => ({ runId: run.id, startedAt: run.startedAt }));
+}

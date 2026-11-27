@@ -1,0 +1,18 @@
+{
+  "declares": {
+    "description": "Output that is not JSON is failed, report-unparseable",
+    "outcome": {
+      "status": "failed",
+      "reason": "report-unparseable"
+    }
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdout": "this is not json",
+    "exitCode": 1,
+    "timedOut": false,
+    "spawnError": false,
+    "overflow": false
+  }
+}

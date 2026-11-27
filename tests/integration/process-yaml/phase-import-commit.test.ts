@@ -234,7 +234,6 @@ async function commit(store: FakeCatalogStore, command: PublishPackageCommand): 
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: { append: async () => undefined },
       logger: {
         info: vi.fn(),

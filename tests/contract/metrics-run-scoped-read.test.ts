@@ -28,7 +28,7 @@ import { join } from 'node:path';
 import type { AuditEntry } from '../../src/audit/audit-entry';
 import { readMetrics } from '../../src/metrics/metrics-service';
 import { MetricsRollupWriter } from '../../src/metrics/metrics-rollup-writer';
-import { validateInboundMessage } from '../../src/contracts/runtime-validators';
+import { isValidReadMetricsResponse, validateInboundMessage } from '../../src/contracts/runtime-validators';
 import {
   CMD_READ_METRICS,
   isCmdReadMetrics,
@@ -297,5 +297,50 @@ describe('the run-scoped request at the boundary (T092)', () => {
     expect(isCmdReadMetrics(command({ runIds: ['run-01'] }))).toBe(true);
     expect(isCmdReadMetrics(command({ runIds: 'run-01' }))).toBe(false);
     expect(isCmdReadMetrics(command({ runIds: [42] }))).toBe(false);
+  });
+});
+
+// FR-R4-F14 (spec 242, FR-007, FR-018) — a failed run's cause rides its rollup record to the webview. The
+// path is the real one: the writer appends the record, `readMetrics()` projects the run-scoped summary, and
+// the response the webview would receive is held to the inbound validator.
+describe('a failed run\'s cause on the run-scoped read (FR-R4-F14, FR-007)', () => {
+  async function recordFailedRun(runId: string, failureCause?: 'cap_exhausted'): Promise<void> {
+    const writer = new MetricsRollupWriter({ workspaceRoot, logger: silentLogger() });
+    const outcome = await writer.append({
+      runId,
+      terminalStatus: 'failed',
+      startedAt: new Date(BASE_MS).toISOString(),
+      endedAt: new Date(BASE_MS + 60_000).toISOString(),
+      durationMs: 60_000,
+      phasesTotal: PHASES_PER_RUN,
+      phasesCompleted: 1,
+      phasesSkipped: 0,
+      backendInvocations: 1,
+      ...(failureCause === undefined ? {} : { failureCause })
+    });
+    expect(outcome).toEqual({ outcome: 'appended' });
+  }
+
+  it('carries the cause on the summary, and the response still passes the validator', async () => {
+    await seedCorpus();
+    await recordFailedRun('run-failed', 'cap_exhausted');
+
+    const response = await readMetrics(workspaceRoot, { runIds: ['run-failed'] }, silentLogger());
+
+    expect(response.runSummaries).toEqual([
+      expect.objectContaining({ runId: 'run-failed', terminalStatus: 'failed', failureCause: 'cap_exhausted' })
+    ]);
+    expect(isValidReadMetricsResponse(response)).toBe(true);
+  });
+
+  it('sends no failureCause key for a failed run that recorded none', async () => {
+    await seedCorpus();
+    await recordFailedRun('run-failed-legacy');
+
+    const response = await readMetrics(workspaceRoot, { runIds: ['run-failed-legacy'] }, silentLogger());
+
+    expect(response.runSummaries).toHaveLength(1);
+    expect(response.runSummaries?.[0]).not.toHaveProperty('failureCause');
+    expect(isValidReadMetricsResponse(response)).toBe(true);
   });
 });

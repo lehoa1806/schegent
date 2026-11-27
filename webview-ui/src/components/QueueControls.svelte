@@ -1,10 +1,21 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { postCommand } from '../lib/vscode-api';
+  import { correlatedLifecycle, lifecycleMessage, lifecycleWait } from '../lib/lifecycle-control-ipc';
   import { CMD_START_QUEUE } from '../lib/messages';
-  import type { QueueLifecycle } from '../lib/snapshot-types';
+  import type { QueueItem, QueueLifecycle } from '../lib/snapshot-types';
+  import QueueItemActions from './QueueItemActions.svelte';
+  import SgMenu from './sg/SgMenu.svelte';
 
   interface Props {
     isPrimary: boolean;
+    /**
+     * The queue these controls act on. Named on the Start dispatch, because a
+     * `CMD_START_QUEUE` with no `queueId` is read by the host as the default
+     * queue — so an unnamed Start started a queue the operator was not looking
+     * at (hard rule 56).
+     */
+    queueId: string;
     /** True when the queue is paused (manually or cascaded). */
     paused: boolean;
     /** Number of pending tasks in the queue. */
@@ -21,24 +32,46 @@
      * callers that have not yet been threaded with the lifecycle.
      */
     queueLifecycle?: QueueLifecycle | null;
+    /**
+     * Feature 195 (T031, FR-009) — the row this queue's halt names, or
+     * `null` when the queue is not halted. Required-and-nullable like
+     * `QueueRuntime.startFailure` itself (FR-007): always present, so this
+     * component gains no existence guard and the caller cannot silently
+     * omit it. Rendered here, in the queue header, so "the halt has a
+     * stated way out" (FR-009) reads from the same surface that reports
+     * the halt (`QueueStartFailureNotice`) rather than only from the row
+     * list. Retry and remove are dispatched through `QueueItemActions`,
+     * unmodified — this header adds no IPC call of its own.
+     */
+    haltedTask: QueueItem | null;
     onResume: (event: MouseEvent) => void;
     onPause: (event: MouseEvent) => void;
     onClearDone: (event: MouseEvent) => void;
     onClean: (event: MouseEvent) => void;
+    /**
+     * Where the header's other actions go. It is called with the two clear
+     * actions as menu items, so a page header that keeps a single "More queue
+     * actions" menu places them among its own items. Without it, these
+     * controls draw that menu themselves.
+     */
+    actions?: Snippet<[Snippet]>;
   }
 
   const {
     isPrimary,
+    queueId,
     paused,
     pendingCount,
     hasInFlight,
     clearDoneDisabled,
     cleanDisabled,
     queueLifecycle = null,
+    haltedTask,
     onResume,
     onPause,
     onClearDone,
-    onClean
+    onClean,
+    actions
   }: Props = $props();
 
   // BUG-003 / FR-012a — tri-state derivation for the contextual button.
@@ -79,10 +112,24 @@
 
   const actionDisabled = $derived(!isPrimary || action === 'idle');
 
-  function onAction(event: MouseEvent): void {
+  // FR-R3-154 (T1646) — what the host answered about the last Start, as one
+  // sentence, or `null` when it committed. Pause and Resume are the parent's
+  // callbacks, not this component's posts, so they are not reported here.
+  let startMessage = $state<string | null>(null);
+  // FR-R4-F05 (O4, FR-024, FR-026) — a late answer replaces the interim text; unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  const wait = lifecycleWait(lifetime.signal, (message) => (startMessage = message));
+
+  async function onAction(event: MouseEvent): Promise<void> {
     if (actionDisabled) return;
     if (action === 'start') {
-      postCommand(CMD_START_QUEUE);
+      startMessage = null;
+      startMessage = lifecycleMessage(
+        await correlatedLifecycle(CMD_START_QUEUE, { queueId }, (correlationId, payload) => {
+          postCommand(CMD_START_QUEUE, payload as never, { correlationId });
+        }, wait)
+      );
     } else if (action === 'pause') {
       onPause(event);
     } else if (action === 'resume') {
@@ -91,67 +138,97 @@
   }
 </script>
 
+<!-- The redesign's names for Clear Done and Clean All. Each asks before acting,
+     which the trailing ellipsis says; Clean All is last and red because it is
+     the destructive one. -->
+{#snippet clearItems()}
+  <button
+    type="button"
+    role="menuitem"
+    data-testid="dashboard-queue-clear-done"
+    onclick={onClearDone}
+    aria-disabled={clearDoneDisabled || !isPrimary}
+    title="Clear completed tasks from Recent"
+  >Clear completed tasks…</button>
+  <hr />
+  <button
+    type="button"
+    role="menuitem"
+    class="danger"
+    data-testid="dashboard-queue-clean"
+    data-action="clean-all"
+    onclick={onClean}
+    aria-disabled={cleanDisabled || !isPrimary}
+    title="Clear all tasks, in-flight work, pause state, active run, and watchdog backoff"
+  >Clear everything…</button>
+{/snippet}
+
 <div class="queue-controls">
+  <!-- A secondary button, as the redesign draws Pause: the page's one primary
+       action is adding a task. -->
   {#if action !== 'idle'}
     <button
       type="button"
-      class="btn"
-      class:btn-start={action === 'start'}
-      class:btn-primary={action === 'resume'}
-      class:btn-secondary={action === 'pause'}
+      class="btn btn-secondary"
       data-testid="dashboard-queue-action"
       onclick={onAction}
       disabled={actionDisabled}
       title={actionTitle}
-    >{actionLabel}</button>
+    ><svg class="i" aria-hidden="true"><use href={action === 'pause' ? '#i-pause' : '#i-play'}></use></svg>{actionLabel}</button>
   {/if}
-  <button
-    type="button"
-    class="btn btn-secondary"
-    data-testid="dashboard-queue-clear-done"
-    onclick={onClearDone}
-    disabled={clearDoneDisabled || !isPrimary}
-    title="Clear completed tasks from Recent"
-  >Clear Done</button>
-  <button
-    type="button"
-    class="btn btn-destructive"
-    data-testid="dashboard-queue-clean"
-    data-action="clean-all"
-    onclick={onClean}
-    disabled={cleanDisabled || !isPrimary}
-    title="Clear all tasks, in-flight work, pause state, active run, and watchdog backoff"
-  >Clean All</button>
+  {#if actions}
+    {@render actions(clearItems)}
+  {:else}
+    <SgMenu label="More queue actions">{@render clearItems()}</SgMenu>
+  {/if}
+  {#if startMessage !== null}
+    <p class="start-message" role="alert" data-testid="dashboard-queue-start-message">{startMessage}</p>
+  {/if}
+  {#if haltedTask !== null}
+    <!-- Feature 195 (T031, FR-007, FR-008, FR-009) — the header states the
+         same fact and the same name `QueueStartFailureNotice` already
+         reports, with retry and remove reachable here too (contract §3). -->
+    <div class="halted-actions" data-testid="dashboard-queue-halted-actions">
+      <span class="halted-actions-label">
+        Halted: <strong>{haltedTask.label}</strong> failed
+      </span>
+      <QueueItemActions item={haltedTask} {isPrimary} />
+    </div>
+  {/if}
 </div>
 
 <style>
+  /* The right-hand side of the page header: the buttons keep to the right edge,
+     and a sentence about them wraps onto its own line beneath them. */
   .queue-controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--schegent-space-1-5);
   }
 
-  .btn {
-    min-height: var(--schegent-control-height-compact);
-    padding: 3px 8px;
-    border-radius: var(--schegent-radius-sm);
-    font-size: var(--schegent-text-caption);
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition:
-      background-color var(--schegent-duration-fast) var(--schegent-ease-out),
-      border-color var(--schegent-duration-fast) var(--schegent-ease-out),
-      color var(--schegent-duration-fast) var(--schegent-ease-out),
-      opacity var(--schegent-duration-fast) var(--schegent-ease-out);
+  /* Takes the whole row: the controls wrap, so an inline sentence would reflow
+     the button it is reporting on. In error text, as a refused action reads. */
+  .start-message {
+    flex-basis: 100%;
+    margin: 0;
+    text-align: right;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
   }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn:active:not(:disabled) { opacity: 0.8; }
-  .btn-start { background: var(--schegent-color-completed); color: var(--vscode-button-foreground); }
-  .btn-start:hover:not(:disabled) { background: color-mix(in srgb, var(--schegent-color-completed) 86%, black); }
-  .btn-primary { background: var(--schegent-color-active); color: var(--vscode-button-foreground); }
-  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .btn-secondary { background: var(--schegent-button-secondary-bg); color: var(--schegent-button-secondary-fg); }
-  .btn-destructive { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-color-error); }
-  .btn-destructive:hover:not(:disabled) { background: var(--schegent-color-error); color: var(--vscode-button-foreground); }
+
+  /* Takes the whole row for the same reason `.start-message` does — the
+     controls wrap, so an inline sentence would reflow the button row. */
+  .halted-actions {
+    flex-basis: 100%;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: var(--schegent-space-1-5);
+  }
+  .halted-actions-label {
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-error-text);
+  }
 </style>

@@ -40,8 +40,7 @@ function makeQueueOps(): NonNullable<RouterDeps['queueOps']> {
     retry: async () => ({ ok: true }),
     moveUp: async () => ({ ok: true }),
     moveDown: async () => ({ ok: true }),
-    clearCompleted: async () => ({ removed: 0 }),
-    clearFailed: async () => ({ removed: 0 }),
+    clearCompleted: async () => ({ ok: true, removed: 0 }),
     setQueuePausedState: async () => ({ ok: true, queueId: 'default' })
   };
 }
@@ -55,7 +54,6 @@ function makeRouter(opts: { isPrimary?: () => boolean } = {}): {
   const logger = new SanitizedLogger([sink]);
   const deps: RouterDeps = {
     executeCommand: (async () => undefined) as RouterDeps['executeCommand'],
-    queueRemover: { remove: async () => true },
     queueOps: makeQueueOps(),
     isPrimary: opts.isPrimary ?? (() => true),
     isTrusted: () => true,

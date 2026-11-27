@@ -1,12 +1,40 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import type { MonitorSidecarEvent, MonitorSidecarHook } from '../contracts/backend-runner';
+import type {
+  MonitorSidecarEvent,
+  MonitorSidecarHook,
+  TreeAttribution, TreeTeardownOutcome, RunnerLabel } from '../contracts/backend-runner';
+import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
+import { combineStreamScans, IncrementalFatalScanner } from '../lib/incremental-fatal-scanner';
 import type { SanitizedLogger } from '../lib/logger';
 import { waitForChildCompletion } from './child-completion';
+import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
 import type { InvocationOutputSink, InvocationRequest, RawInvocationOutput } from './invocation-result';
+import { armedMaxDurationMs } from './invocation-result';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
+import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from './process-tree';
+import { nextInvocationId } from './invocation-identity';
+import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
+import { assertExecutableUnchanged, isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
+import { TeardownLedger } from './teardown-ledger';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
-const SIGKILL_DELAY_MS = 2_000;
+function cancelledInvocationOutput(command: string, startedAtMs: number): RawInvocationOutput {
+  const stdoutBuffer = new ZippedStreamBuffer();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.finalize();
+  stderrBuffer.finalize();
+  return {
+    stdoutBuffer,
+    stderrBuffer,
+    exitCode: null,
+    killed: true,
+    timedOut: false,
+    durationMs: Math.max(0, Date.now() - startedAtMs),
+    command
+  };
+}
+
 export type ProcessSpawnFn = (
   command: string,
   args: ReadonlyArray<string>,
@@ -22,23 +50,63 @@ export class ProcessLifecycleRunner {
    * workspace lifetime, so concurrent Runs on the same kind share this
    * instance. A single `ChildProcess | null` slot made the second spawn
    * overwrite the first's handle and the first exit clear the slot for both,
-   * which left `cancelAll()` at deactivation orphaning every child but one and
+   * which left the deactivation teardown orphaning every child but one and
    * `hasActiveProcess` reporting `false` while a subprocess was still alive.
    *
-   * Keyed by a per-runner invocation token rather than by run id: an
-   * invocation need not name a Run (contract harnesses do not), so a run-keyed
-   * map would collide anonymous invocations onto one entry and reintroduce the
-   * same clobber. The token also makes the exit-path delete exact — an
-   * invocation removes its own entry and no other.
+   * Keyed by an invocation identity rather than by run id: an invocation need
+   * not name a Run (contract harnesses do not), so a run-keyed map would collide
+   * anonymous invocations onto one entry and reintroduce the same clobber. The
+   * identity also makes the exit-path delete exact — an invocation removes its
+   * own entry and no other.
+   *
+   * Feature 093 BUG-001 (T100) — that key is now the string `nextInvocationId()`
+   * mints, which is the same value the sidecar events carry. It was a private
+   * per-instance counter, which is unique enough for a map this runner owns and
+   * not unique enough to cross the contract; minting a second token beside it
+   * would leave one invocation with two identities that can drift.
    */
-  private readonly active = new Map<number, ChildProcess>();
-  private nextInvocationToken = 1;
+  /**
+   * FR-R3-083 — the run id travels WITH the child.
+   *
+   * `cancelActive()` iterates this map and had no run id to offer, so a
+   * `tree-unconfirmed` report from that path could not be attributed. Carrying the
+   * id here rather than threading it through `terminate`'s callers is what makes
+   * deactivation-time cancellation — one of the paths FR-R3-054 was written for —
+   * produce an attributable record instead of an anonymous one.
+   */
+  private readonly active = new Map<
+    string,
+    TreeAttribution & { readonly child: ChildProcess }
+  >();
+
+  /**
+   * FR-R3-083 — children whose surviving group has already been REPORTED.
+   *
+   * Not "children already being terminated". An earlier version guarded the whole
+   * ladder, which meant a later, genuinely different trigger (idle expiry, then the
+   * absolute deadline) could no longer re-signal a tree the first pass failed to
+   * reach -- and `signalProcessTree` swallows a failed group signal by design, so a
+   * first pass failing silently is the ordinary case, not an exotic one.
+   *
+   * What must not happen twice is the audit ENTRY: two overlapping cancel paths on
+   * one hung child would otherwise record two surviving groups where there was one.
+   * A WeakSet so a reaped child is collectable.
+   */
+  private readonly reportedTrees = new WeakSet<ChildProcess>();
+
+  /** FR-R4-F06 (S2) -- the ladders started and not yet reported, so shutdown can wait for them. */
+  private readonly teardowns = new TeardownLedger();
+
+  /** Set by `close()` at host teardown; no spawn follows it. */
+  private closed = false;
+  private isClosed(): boolean { return this.closed; }
 
   constructor(
     private readonly spawnFn: ProcessSpawnFn = spawn as unknown as ProcessSpawnFn,
     private readonly monitorHook: MonitorSidecarHook | null,
     private readonly logger: SanitizedLogger,
-    private readonly label: string
+    private readonly label: RunnerLabel,
+    private readonly evidenceHealth?: EvidenceHealthReporter
   ) {}
 
   public get hasActiveProcess(): boolean { return this.active.size > 0; }
@@ -49,22 +117,105 @@ export class ProcessLifecycleRunner {
     env: NodeJS.ProcessEnv;
     commandDisplay: string;
     outputSink?: InvocationOutputSink;
+    /**
+     * What this backend's stdin expects, when that is not the prompt itself.
+     *
+     * Agy reads a prompt from stdin ONLY under `--input-format stream-json`, as
+     * one NDJSON message per line, so its adapter wraps the prompt in the
+     * envelope the CLI documents. Named separately from `request.prompt`
+     * because the request still carries the operator's text unchanged --
+     * rewriting the prompt on the request to smuggle a transport shape through
+     * would make every reader above this layer see a payload the operator never
+     * wrote.
+     *
+     * Still ONE write site (FR-R3-047 / H-04): this only changes the bytes, not
+     * who writes them.
+     */
+    stdinPayload?: string;
   }): Promise<RawInvocationOutput> {
     const start = Date.now();
     const { request, outputSink } = input;
-    const child = this.spawnFn(request.cliPath, input.args, {
-      stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env
+    if (!this.closed && request.cancellationSignal?.aborted === true) {
+      return cancelledInvocationOutput(input.commandDisplay, start);
+    }
+    // Feature 020 BUG-002 (FR-002a) — the Phase Log reads an iteration's
+    // `stream.jsonl`, and only the claude adapter wrote one. With a target, the
+    // CLI's stdout is teed into it, unaltered, through the writer that adapter
+    // uses. Built per invocation from the request, never held on this runner.
+    const tee = request.verboseDiagnostics
+      ? {
+          target: request.verboseDiagnostics,
+          writer: new VerboseDiagnosticWriter(this.logger, this.evidenceHealth)
+        }
+      : null;
+    if (tee) await tee.writer.prepare(tee.target);
+    const isAborted = (): boolean => request.cancellationSignal?.aborted === true;
+    // After the last await, so a `close()` that lands while `prepare()` runs
+    // still refuses this spawn (feature-228 security review, S1).
+    if (this.closed) throw new SpawnRefusedAfterCloseError(this.label);
+    if (isAborted()) {
+      return cancelledInvocationOutput(input.commandDisplay, start);
+    }
+    // Review gap GC-24 & FR-R7-16 (16-16): resolve against the child's exact env on real spawns,
+    // and refuse explicit relative/drive-relative paths even under injected test doubles.
+    const resolvedCommand =
+      this.spawnFn === (spawn as unknown as ProcessSpawnFn) || isInvalidExecutablePath(request.cliPath)
+        ? spawnCommandFor(request.cliPath, input.env)
+        : request.cliPath;
+    if (request.onBeforeSpawn !== undefined) {
+      await request.onBeforeSpawn({ helperInvocation: request.helperInvocation === true });
+    }
+    if (this.isClosed()) throw new SpawnRefusedAfterCloseError(this.label);
+    if (isAborted()) {
+      return cancelledInvocationOutput(input.commandDisplay, start);
+    }
+    assertExecutableUnchanged(resolvedCommand, request.executableFileStamp);
+    const child = this.spawnFn(resolvedCommand, input.args, {
+      stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
+      // FR-R3-054 (H-05) — its own process group, so the ladder below can reach
+      // descendants. Without this a CLI that forks a helper survived cancel and
+      // kept mutating the workspace after a terminal state was recorded.
+      ...processTreeSpawnOptions()
     });
-    const invocationToken = this.nextInvocationToken++;
-    this.active.set(invocationToken, child);
+    trackGroupAtExit(child); // FR-R4-F06 (P2) -- the ownership anchor for a leader reaped before its ladder
+    const invocationId = nextInvocationId(this.label);
+    const attribution: TreeAttribution = {
+      runId: request.runId ?? null,
+      phase: request.phase,
+      iteration: request.iteration
+    };
     // Feature 093 (T046a) — `finally`, not a trailing statement. A single slot
     // self-healed on a throw because the next spawn overwrote it; a map entry
     // would leak, and a leaked entry makes `hasActiveProcess` permanently true.
     try {
-      this.emit({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
-      try { child.stdin?.write(request.prompt); child.stdin?.end(); } catch { /* exit surfaces */ }
+      this.active.set(invocationId, { child, ...attribution });
+      this.emit({
+        kind: 'started', runId: request.runId ?? null, invocationId,
+        helperInvocation: request.helperInvocation === true,
+        maxDurationMs: armedMaxDurationMs(request), pid: child.pid ?? null
+      });
+      // FR-R3-047 — attach-then-write through the shared helper. The previous
+      // shape was a synchronous try/catch around the write, which cannot see the
+      // asynchronous 'error' event; with no listener anywhere, EPIPE reached the
+      // extension host as an uncaught exception and killed it.
+      //
+      // Started, NOT awaited here. The helper attaches its `'error'` listener
+      // synchronously before returning, so protection is in place immediately —
+      // but awaiting at this point would delay every listener below by a turn of
+      // the event loop, and a child that exits inside that window emits `'exit'`
+      // before anything is listening, leaving the invocation waiting forever.
+      // Observed as a hung suite. The answer is consumed where it is needed,
+      // beside the completion result.
+      const deliveryPromise = writePromptToStdin(child, input.stdinPayload ?? request.prompt);
       const stdoutBuffer = new ZippedStreamBuffer();
       const stderrBuffer = new ZippedStreamBuffer();
+      const scanFatal = request.effectiveFatalSignatures !== undefined;
+      const stdoutScanner = scanFatal
+        ? new IncrementalFatalScanner('stdout', request.effectiveFatalSignatures)
+        : null;
+      const stderrScanner = scanFatal
+        ? new IncrementalFatalScanner('stderr', request.effectiveFatalSignatures)
+        : null;
       child.stdout?.setEncoding('utf8');
       child.stderr?.setEncoding('utf8');
       let timedOut = false;
@@ -74,68 +225,228 @@ export class ProcessLifecycleRunner {
       const reset = (): void => {
         clearTimeout(timer);
         if (!idleTimerActive) return;
-        timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
+        timer = setTimeout(() => { timedOut = true; this.terminate(child, attribution); }, request.timeoutMs);
       };
-      timer = setTimeout(() => { timedOut = true; this.terminate(child); }, request.timeoutMs);
+      timer = setTimeout(() => { timedOut = true; this.terminate(child, attribution); }, request.timeoutMs);
+      // FR-R3-075 — the absolute wall-clock deadline: armed once at spawn,
+      // NEVER reset, and deliberately outside the backpressure suspension below
+      // — a blocked sink pauses the idle clock, not the wall. The idle timer
+      // detects a stalled child; this bounds the invocation as a whole, so a
+      // child emitting one byte inside every idle window still terminates.
+      let deadlineExceeded = false;
+      // Read through an accessor: the flag is assigned only inside the
+      // timer's closure, so top-level flow keeps the literal-false
+      // narrowing and the lint's type-driven condition check would call
+      // every read below unnecessary. A function entry resets narrowing.
+      const deadlineFired = (): boolean => deadlineExceeded;
+      // Feature 211 — the same oracle the `started` event reported above, so
+      // the bound the monitor warns against is the bound this timer arms.
+      const deadlineBoundMs = armedMaxDurationMs(request);
+      const deadlineTimer =
+        deadlineBoundMs !== null
+          ? setTimeout(() => { deadlineExceeded = true; this.terminate(child, attribution); }, deadlineBoundMs)
+          : null;
       const backpressure = new OutputSinkBackpressure(outputSink, () => clearTimeout(timer), reset);
+      // FR-002a — chained, never side by side: each append opens and closes the
+      // file, so two in flight could land out of order. A failed link does not
+      // stop the next one; the writer folds every failure into its warnings.
+      let teeChain: Promise<void> = Promise.resolve();
       child.stdout?.on('data', (chunk: string) => {
-        stdoutBuffer.append(chunk); backpressure.write('stdout', child.stdout!, chunk);
-        if (!backpressure.isBlocked) reset(); this.emit({ kind: 'stdout-chunk', runId: request.runId ?? null, chunk });
+        stdoutBuffer.append(chunk); stdoutScanner?.append(chunk); backpressure.write('stdout', child.stdout!, chunk);
+        if (tee) {
+          const append = (): Promise<void> => tee.writer.teeStream(tee.target, chunk);
+          teeChain = teeChain.then(append, append);
+        }
+        if (!backpressure.isBlocked) reset();
+        this.emit({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
       });
       child.stderr?.on('data', (chunk: string) => {
-        stderrBuffer.append(chunk); backpressure.write('stderr', child.stderr!, chunk);
-        if (!backpressure.isBlocked) reset(); this.emit({ kind: 'stderr-chunk', runId: request.runId ?? null, chunk });
+        stderrBuffer.append(chunk); stderrScanner?.append(chunk); backpressure.write('stderr', child.stderr!, chunk);
+        if (!backpressure.isBlocked) reset();
+        this.emit({ kind: 'stderr-chunk', runId: request.runId ?? null, invocationId, chunk });
       });
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
-        onAbort = () => { killed = true; this.terminate(child); };
-        if (request.cancellationSignal.aborted) onAbort();
+        onAbort = () => { killed = true; this.terminate(child, attribution); };
+        if (isAborted()) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
-      const completion = await waitForChildCompletion(child, outputSink !== undefined);
-      if (completion.signal && completion.exitCode === null) killed = true;
-      if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`);
-      if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      // FR-R3-047 (M-01) — attach completion listeners synchronously BEFORE awaiting
+      // `onAfterSpawn` so fast exits and async ENOENT/EACCES `'error'` events are never lost.
+      const completionPromise = waitForChildCompletion(child);
+      if (request.helperInvocation !== true && request.onAfterSpawn !== undefined && child.pid !== undefined) {
+        try {
+          await request.onAfterSpawn(child.pid);
+        } catch (err) {
+          idleTimerActive = false; clearTimeout(timer);
+          if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+          if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+          killed = true;
+          this.terminate(child, attribution);
+          const abortedComp = await completionPromise.catch(() => null);
+          this.emit({
+            kind: 'exited', runId: request.runId ?? null, invocationId,
+            exitCode: abortedComp?.exitCode ?? null,
+            signal: abortedComp?.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null,
+            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+            ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+            streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+            streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+            streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
+          });
+          throw err;
+        }
+      }
+      const completion = await completionPromise;
+      // Disarm the idle timer BEFORE reading the delivery result. The child has
+      // completed, so from here the timer can only mislabel: a delivery result
+      // that settles slowly used to be awaited inside the still-armed window,
+      // and an expiry landing in that gap flips `timedOut` on a run that had
+      // already exited cleanly.
       idleTimerActive = false; clearTimeout(timer);
+      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      // FR-R3-075 — exactly one termination reason: when both windows elapsed
+      // in the same tick the deadline wins, because "ran long" is the fact the
+      // operator can act on and "went quiet" is subsumed by it.
+      if (deadlineFired()) timedOut = false;
+      // Detached here too, and for the same reason: the bounded delivery read
+      // below is a NEW await after the child has already completed, and an abort
+      // landing inside it would flip `killed` on an invocation that had
+      // finished. Before this await existed there was no such window.
+      if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      // FR-R3-047 — a child that never started (ENOENT on `cliPath`) breaks the
+      // stdin pipe as well, so the write fails EPIPE with nothing on the far
+      // end. That is not a delivery defect: reporting it as one would name the
+      // wrong cause for the commonest misconfiguration there is, and the
+      // condition outranks every other arm of the phase-runner chain. The read
+      // is skipped entirely in that case: `processError` already decides the
+      // classification, so the up-to-2s grace would be paid for a result
+      // discarded by construction.
+      const delivery = completion.processError === true
+        ? { delivered: true as const }
+        : await awaitStdinDelivery(deliveryPromise);
+      const stdinDeliveryFailed = !delivery.delivered;
+      if (stdinDeliveryFailed) {
+        this.logger.warn(`${this.label}: prompt delivery failed (${delivery.errorCode ?? 'unknown'})`, { ...attribution });
+      }
+      // FR-002a — every append settles before the result reports the writer's
+      // warnings. Here, once the timers are disarmed and the abort listener is
+      // detached, so this wait can neither time out nor cancel a finished child.
+      if (tee) await Promise.allSettled([teeChain]);
+      // Feature 020 BUG-002 (FR-002a) — what `diagnosticsEnabled` records.
+      const diagnosticsCaptured = tee !== null && tee.writer.result().streamCaptured;
+      const diagnosticWarnings = [
+        ...(tee ? tee.writer.result().warnings : []),
+        ...(stdinDeliveryFailed ? ['stdin-delivery-failed'] : [])
+      ];
+      if (completion.signal && completion.exitCode === null) killed = true;
+      if (completion.stdioCloseTimedOut) this.logger.warn(`${this.label}: stdio close grace expired`, { ...attribution });
       const signal = completion.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emit({
-        kind: 'exited', runId: request.runId ?? null,
-        exitCode: completion.exitCode, signal, killed, timedOut
+        kind: 'exited', runId: request.runId ?? null, invocationId,
+        exitCode: completion.exitCode, signal, killed, timedOut,
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+        ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+        streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+        streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+        streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
       });
       stdoutBuffer.finalize(); stderrBuffer.finalize();
+      stdoutScanner?.finalize(); stderrScanner?.finalize();
       return { stdoutBuffer, stderrBuffer, exitCode: completion.exitCode, killed, timedOut,
-        durationMs: Date.now() - start, command: input.commandDisplay };
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+        durationMs: Date.now() - start, command: input.commandDisplay,
+        // FR-R3-047 — see the note in claude-cli.ts: the allowlisted code rides
+        // `diagnosticWarnings` so a truncated prompt is recorded even on a
+        // non-clean invocation, where the phase-runner arm deliberately does not
+        // fire. Without it the cause would live only in the transient log. The
+        // tee's warnings come first, in the order the claude adapter uses.
+        ...(stdinDeliveryFailed
+          ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
+          : {}),
+        ...(diagnosticWarnings.length > 0 ? { diagnosticWarnings } : {}),
+        ...(diagnosticsCaptured ? { diagnosticsCaptured: true } : {}),
+        ...(stdoutScanner && stderrScanner
+          ? { streamFatalMatch: combineStreamScans(stdoutScanner, stderrScanner) }
+          : {}) };
     } finally {
-      this.active.delete(invocationToken);
+      this.active.delete(invocationId);
     }
   }
 
   /**
    * Terminate every live subprocess this runner owns, reporting whether there
    * was any. Feature 093 (T046a): the sole production caller is
-   * `BackendRunnerRegistry.cancelAll()` at extension deactivation, which must
-   * reach all of a shared runner's children rather than whichever one happened
-   * to spawn last. Deliberately takes no run id — per-Run cancellation already
-   * runs through each session's own `AbortController` and `cancellationSignal`,
-   * so a run-addressed overload here would have no caller.
+   * `BackendRunnerRegistry.closeAndTearDown()` at extension deactivation, which
+   * must reach all of a shared runner's children rather than whichever one
+   * happened to spawn last. Deliberately takes no run id — per-Run cancellation
+   * already runs through each session's own `AbortController` and
+   * `cancellationSignal`, so a run-addressed overload here would have no caller.
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
-    for (const child of this.active.values()) this.terminate(child);
+    for (const entry of this.active.values()) {
+      // Named fields, NEVER the map entry. The entry also holds the live
+      // `ChildProcess`, and `terminate` spreads its attribution into a sidecar
+      // event — so passing the entry puts a non-serialisable handle carrying
+      // `spawnargs` (the full argv) into a contract whose safety argument is that
+      // it has nowhere to put a secret. A spread bypasses excess-property checks,
+      // so the type system does not catch it.
+      this.terminate(entry.child, {
+        runId: entry.runId,
+        phase: entry.phase,
+        iteration: entry.iteration
+      });
+    }
     return true;
+  }
+
+  /**
+   * Refuse every later spawn. The feature-228 security review, S1: a child
+   * `cancelActive()` stopped can read as an unfinished turn, and the resume of
+   * that turn must not start a CLI after the teardown that stopped it. A child
+   * already spawned is `cancelActive()`'s to stop, not this.
+   */
+  public close(): void {
+    this.closed = true;
   }
 
   private emit(event: MonitorSidecarEvent): void {
     try { this.monitorHook?.(event); } catch { /* sidecar is observational */ }
   }
 
-  private terminate(child: ChildProcess): void {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    try { child.kill('SIGTERM'); } catch { return; }
-    setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        try { child.kill('SIGKILL'); } catch { /* already exited */ }
-      }
-    }, SIGKILL_DELAY_MS).unref?.();
+  /**
+   * FR-R3-054 (H-05) — the same escalation ladder, applied to the TREE.
+   *
+   * `child.exitCode`/`signalCode` describe the direct child only, so they are
+   * still the right trigger for escalating, but they are no longer the whole
+   * question: `processTreeIsGone` is what decides whether the phase can finalize
+   * honestly. Where the tree cannot be proven gone within the grace window, the
+   * caller is told so rather than the terminal state quietly claiming otherwise.
+   */
+  private terminate(child: ChildProcess, attribution: TreeAttribution): void {
+    // The ladder owns the decision, including whether there is anything left to
+    // signal at all. See `childIsReaped` in `process-tree.ts` for that rule and why
+    // it is the whole of it.
+    const ladder = escalateAndReportTree({
+      child,
+      attribution,
+      runner: this.label,
+      warn: (message) => this.logger.warn(`${this.label}: ${message}`, { ...attribution }),
+      emit: (event) => this.emit(event),
+      // FR-R3-083 — the guard is on the REPORT, not on the ladder. Suppressing a
+      // second ladder means a tree the first pass failed to reach (a group signal
+      // that failed is swallowed by design) is never signalled again by a later,
+      // genuinely different trigger.
+      alreadyReported: () => this.reportedTrees.has(child),
+      markReported: () => void this.reportedTrees.add(child)
+    });
+    // FR-R4-F06 (S2) -- kept, not voided: shutdown awaits it through `settleTeardowns()`.
+    this.teardowns.track(child, { attribution, runner: this.label, pid: child.pid ?? null }, ladder);
+  }
+
+  /** FR-R4-F06 (S1) -- the outcomes of every ladder started and not yet reported. Never rejects. */
+  public settleTeardowns(deadline?: Promise<void>): Promise<readonly TreeTeardownOutcome[]> {
+    return this.teardowns.settle(deadline);
   }
 }

@@ -1,10 +1,22 @@
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import { resolveSoleRun } from '../controller/sole-run-resolver';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { isRunRaceRefusal, type WorkspaceStateStore } from '../state/workspace-state';
+import { canceledRunPatch, LIVE_RUN_STATUSES } from '../state/workflow-run';
 import type { QueueManager } from '../queue/queue-manager';
+import { decideTaskTransition } from '../queue/task-transition-decision';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
+
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when a
+ * cancel fails for a reason the command has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. The coded refusals (`not-found`, `illegal-state`, `no-active-run`,
+ * `ambiguous-run-target`) return their codes and add no failure toast of their own.
+ */
+export const CANCEL_FAILED_TOAST = 'Schegent: cancel failed. See the Schegent log for details.';
 
 export type CancelResult = { ok: true } | { ok: false; reason: string };
 
@@ -58,9 +70,10 @@ export async function runCancel(ctx: {
     }
     return await cancelActiveRun(ctx);
   } catch (err) {
-    const message = (err as Error).message ?? 'unknown error';
-    ctx.notifier.error(`Schegent: cancel failed — ${message}`);
-    ctx.logger.error(message);
+    ctx.notifier.error(CANCEL_FAILED_TOAST);
+    ctx.logger.error('cancel: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
     return { ok: false, reason: 'unexpected-error' };
   }
 }
@@ -74,7 +87,33 @@ async function cancelByTaskId(
     ctx.notifier.info('Schegent: cancel target not found.');
     return { ok: false, reason: 'not-found' };
   }
-  if (feature.status !== 'in-flight' && feature.status !== 'pending') {
+  // FR-R3-161 (FR-004, SC-001) — 2026-09-04. This guard read
+  // `feature.status !== 'in-flight' && feature.status !== 'pending'` and
+  // decided the cancellation edge on its own authority. It agreed with the
+  // closed table exactly, which is precisely what made it worth removing: a
+  // second site that reaches the same verdict by its own rule is how the two
+  // come to disagree, and the disagreement is silent, because each side is
+  // individually correct and they differ only on a status that reaches both.
+  // FR-004 counts such a site even when it is right today. Consulting the
+  // classifier and acting on its answer is not a second decision, however many
+  // places do it; deciding without consulting it is, even once.
+  //
+  // Ownership holds by construction: the row was resolved by identity above,
+  // and `queueIdForTask` below reads the queue off that same row, so there is
+  // no addressed queue for it to mismatch (research F9, F18 — the same
+  // argument that retires the `queue-mismatch` reason).
+  //
+  // The refusal keeps this route's own reason. `CancelResult.reason` is the
+  // command's vocabulary, not the classifier's, and nothing operator-visible
+  // changes here — the paused refusal stays as silent as it was, and is
+  // reported in this feature's closure record rather than fixed.
+  const admission = decideTaskTransition({
+    operation: 'finish',
+    currentStatus: feature.status,
+    targetStatus: 'canceled',
+    queueAlreadyHasDifferentInFlight: false
+  });
+  if (!admission.eligible) {
     return { ok: false, reason: 'illegal-state' };
   }
 
@@ -94,6 +133,21 @@ async function cancelByTaskId(
     // Feature 093 (T042) — addressed: cancel this Task's queue, not every Run
     // the window is driving.
     ctx.controller.cancelActive(queueId);
+    await markCanceled(ctx.store, queueId, activeRun.id);
+    const finished = await ctx.queue.finish(feature.id, 'canceled');
+    // FR-R3-153 — `finish` refuses a transition outside the closed table by
+    // returning `{ ok: false, reason }` rather than throwing, so the queue
+    // row can fail to update with no exception raised. Report that instead
+    // of the blanket success notification below.
+    if (finished.ok === false) {
+      ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+      ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+      return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+    }
+    // FR-R7-18 (`N01`, FR-001) — append `task-canceled` only after this call
+    // claims the single terminal transition in `queue.finish`, eliminating
+    // stray audit rows when a concurrent cancel loses a race to another
+    // terminal transition or deletion.
     await ctx.audit.append({
       runId: activeRun.id,
       phase: activeRun.currentPhase,
@@ -102,12 +156,6 @@ async function cancelByTaskId(
       payload: { taskId: feature.id, runId: activeRun.id, reason: 'user-cancel' },
       outcome: 'info'
     });
-    await ctx.store.setRun(queueId, {
-      ...activeRun,
-      status: 'canceled',
-      lastTransitionAt: Date.now()
-    });
-    await ctx.queue.finish(feature.id, 'canceled');
     // Feature 093 (T068b, FR-028) — cancelling one Task does not end the
     // window's primacy. See the header note.
     ctx.notifier.info('Schegent: task canceled.');
@@ -116,6 +164,16 @@ async function cancelByTaskId(
 
   // Pending OR in-flight without a matching active run. The controller
   // is not signaled — we only finalize the FeatureRequest row.
+  const finished = await ctx.queue.finish(feature.id, 'canceled');
+  // FR-R3-153 — see the `runMatches` branch above: a refusal is a returned
+  // value now, not a throw, and must not be reported as a success.
+  if (finished.ok === false) {
+    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+  }
+  // FR-R7-18 (`N01`, FR-001) — emit only after `queue.finish` claims the
+  // single terminal transition.
   await ctx.audit.append({
     runId: feature.runId ?? `task:${feature.id}`,
     phase: 'queue',
@@ -128,7 +186,6 @@ async function cancelByTaskId(
     },
     outcome: 'info'
   });
-  await ctx.queue.finish(feature.id, 'canceled');
   ctx.notifier.info('Schegent: task canceled.');
   return { ok: true };
 }
@@ -151,9 +208,33 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
       : 'no-active-run' };
   }
   const { queueId, run } = target;
+  const hadQueueRow = ctx.queue.findById(run.featureId) !== null;
   // Feature 093 (T042) — `resolveControlTarget` already named the queue; cancel
   // that one.
   ctx.controller.cancelActive(queueId);
+  const claimedRun = await markCanceled(ctx.store, queueId, run.id);
+  const finished = await ctx.queue.finish(run.featureId, 'canceled');
+  // FR-R3-153 — see `cancelByTaskId` above: a refusal is a returned value
+  // now, not a throw, and must not be reported as a success.
+  if (finished.ok === false) {
+    // FR-R7-18 (`N01`, FR-001) — when no queue row owned the transition and
+    // this call itself claimed the terminal Run transition via `markCanceled`,
+    // record that single transition; when a queue row owned the transition and
+    // `finish` refused (lost race), emit zero stray audit entries.
+    if (!hadQueueRow && claimedRun) {
+      await ctx.audit.append({
+        runId: run.id,
+        phase: run.currentPhase,
+        iteration: run.currentIteration,
+        eventType: 'task-canceled',
+        payload: { taskId: run.featureId, runId: run.id, reason: 'user-cancel' },
+        outcome: 'info'
+      });
+    }
+    ctx.logger.error(`cancel: queue.finish refused: ${finished.reason ?? 'unknown'}`);
+    ctx.notifier.error('Schegent: cancel failed — the task could not be finalized.');
+    return { ok: false, reason: finished.reason ?? 'unexpected-error' };
+  }
   await ctx.audit.append({
     runId: run.id,
     phase: run.currentPhase,
@@ -162,11 +243,43 @@ async function cancelActiveRun(ctx: Parameters<typeof runCancel>[0]): Promise<Ca
     payload: { taskId: run.featureId, runId: run.id, reason: 'user-cancel' },
     outcome: 'info'
   });
-  await ctx.store.setRun(queueId, { ...run, status: 'canceled', lastTransitionAt: Date.now() });
-  await ctx.queue.finish(run.featureId, 'canceled');
   // Feature 093 (T068b, FR-028) — same as the by-id path: the window keeps
   // primacy. Here it matters even when the resolver found a sole *running* Run,
   // because a paused sibling is still this window's work.
   ctx.notifier.info('Schegent: workflow canceled.');
   return { ok: true };
+}
+
+/**
+ * FR-R4-F01 (FR-008) — cancel is a patch of the Run as it is inside the
+ * `KEYS.run` chain: the status and the stamp, and both pause/retry pairs cleared,
+ * so a pause or a retry countdown that landed after the caller's read cannot
+ * survive on a canceled Run as the one-sided state `validateRunInvariants` forbids.
+ * A Run that has already ended, or been replaced, refuses the update instead of
+ * being overwritten as canceled. That refusal is not a failed cancel: the driver
+ * `cancelActive` just aborted writes its own `canceled` transition, and it can
+ * reach the chain first. Returns `true` iff this call committed the terminal
+ * transition on the Run record.
+ */
+async function markCanceled(
+  store: WorkspaceStateStore,
+  queueId: string,
+  runId: string
+): Promise<boolean> {
+  try {
+    await store.updateRun(
+      queueId,
+      {
+        runId,
+        allowedStatuses: LIVE_RUN_STATUSES,
+        label: 'cancel',
+        patch: () => canceledRunPatch(Date.now())
+      },
+      store.runCommitClaim(queueId)
+    );
+    return true;
+  } catch (error) {
+    if (!isRunRaceRefusal(error)) throw error;
+    return false;
+  }
 }

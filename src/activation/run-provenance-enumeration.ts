@@ -1,3 +1,6 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Pure reducers over a queue snapshot. No I/O, no timers, no processes.
+
 // Feature 102 (T049, US6 — FR-033) — which runs are live, answered where the
 // queue and the run map are.
 //

@@ -1,4 +1,8 @@
 import type {
+  PhaseDefinition,
+  PhaseSourceRecord
+} from '../contracts/process-definitions';
+import type {
   PipelineDefinition,
   PipelineSourceRecord
 } from '../contracts/pipeline-definitions';
@@ -11,6 +15,7 @@ import type {
   WorkflowSourceStatus
 } from '../contracts/workflow-definitions';
 import { PIPELINE_ID_PATTERN } from './pipeline-definition-validator';
+import { DRAFT_KEY_PREFIX } from './process-catalog';
 import { validateWorkflowGraph } from './workflow-graph-validator';
 import {
   WORKFLOW_ID_MAX_LEN,
@@ -25,11 +30,6 @@ export const WORKFLOW_NODE_SOFT_CAP = 20;
 
 const SYNTHETIC_WORKFLOW_ID_PREFIX = '?invalid-';
 
-/**
- * The stable per-row identity. A row that cannot supply one keeps its slot under a synthetic id so
- * it stays visible for repair without ever resolving (FR-002, FR-031). `id` is the authored key
- * (§9); `workflowId` is accepted and normalized.
- */
 export function workflowSourceIdentity(row: unknown, index: number): string {
   if (row && typeof row === 'object' && !Array.isArray(row)) {
     const value = row as Record<string, unknown>;
@@ -51,42 +51,47 @@ interface MutableSourceRecord {
   status: WorkflowSourceStatus;
   definition: WorkflowDefinition | null;
   readonly display: Readonly<Record<string, unknown>>;
+  readonly nodePhaseIds: readonly string[];
+  readonly nodeWorkflowIds: readonly string[];
   readonly nodePipelineIds: readonly string[];
   errors: WorkflowFieldError[];
 }
 
-/**
- * The Pipelines a stored row names, read from the raw row rather than from the
- * parsed definition so an `invalid` record keeps its references (FR-041,
- * FR-031). Deliberately independent of every other defect the row may carry: a
- * node that spells a well-formed identifier contributes one, and nothing else
- * about the row can take it away.
- *
- * Trimming and the pattern test match `readIdentifier` in the definition
- * validator, so a row that resolves cleanly yields exactly its definition's node
- * Pipelines and the two readings can never disagree.
- */
-function readNodePipelineIds(row: unknown): readonly string[] {
+function readNodeIdField(
+  row: unknown,
+  fieldName: 'phaseId' | 'workflowId' | 'pipelineId'
+): readonly string[] {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return [];
   const nodes = (row as Record<string, unknown>).nodes;
   if (!Array.isArray(nodes)) return [];
-  const pipelineIds = new Set<string>();
+  const ids = new Set<string>();
   for (const node of nodes) {
     if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
-    const raw = (node as Record<string, unknown>).pipelineId;
+    const raw = (node as Record<string, unknown>)[fieldName];
     if (typeof raw !== 'string') continue;
-    const pipelineId = raw.trim();
-    if (PIPELINE_ID_PATTERN.test(pipelineId)) pipelineIds.add(pipelineId);
+    const id = raw.trim();
+    if (PIPELINE_ID_PATTERN.test(id)) ids.add(id);
   }
-  return [...pipelineIds];
+  return [...ids];
 }
 
-/**
- * The resolved Pipeline catalog this resolution is read against. `PipelineCatalogResolution` is
- * structurally assignable, so the caller passes it whole rather than unpacking it: the effective
- * list decides `unknown-pipeline`, and the records decide `pipeline-invalid`'s transitive cause
- * (FR-016, FR-017).
- */
+export function readNodePhaseIds(row: unknown): readonly string[] {
+  return readNodeIdField(row, 'phaseId');
+}
+
+export function readNodeWorkflowIds(row: unknown): readonly string[] {
+  return readNodeIdField(row, 'workflowId');
+}
+
+export function readNodePipelineIds(row: unknown): readonly string[] {
+  return readNodeIdField(row, 'pipelineId');
+}
+
+export interface WorkflowPhaseContext {
+  readonly effective: readonly PhaseDefinition[];
+  readonly records: readonly PhaseSourceRecord[];
+}
+
 export interface WorkflowPipelineContext {
   readonly effective: readonly PipelineDefinition[];
   readonly records: readonly PipelineSourceRecord[];
@@ -96,19 +101,24 @@ function bounded(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max);
 }
 
-/**
- * Pipelines that exist in the catalog but do not resolve, mapped to the first defect message so
- * `pipeline-invalid` can name the transitive cause. An id that also resolves somewhere is
- * omitted: a broken shadowed copy is not drift for a Workflow that reads the effective one.
- *
- * Exported so the write path builds this map the same way resolution does — a row the write
- * accepts must be a row the next reload resolves. Its original caller was
- * `cmd-save-workflows.ts`; feature 100 moved the property to the publish path, where
- * `src/config/definition-semantics.ts` reaches the same resolver rather than re-deriving it.
- */
-export function invalidPipelineCauses(
-  pipelineCatalog: WorkflowPipelineContext
+export function invalidPhaseCauses(
+  phaseCatalog: WorkflowPhaseContext | undefined
 ): ReadonlyMap<string, string> {
+  if (!phaseCatalog) return new Map();
+  const resolvable = new Set(phaseCatalog.effective.map((phase) => phase.phaseId));
+  const causes = new Map<string, string>();
+  for (const record of phaseCatalog.records) {
+    if (record.status !== 'invalid' || resolvable.has(record.phaseId)) continue;
+    if (causes.has(record.phaseId)) continue;
+    causes.set(record.phaseId, record.errors.at(0)?.message ?? 'Phase definition is invalid');
+  }
+  return causes;
+}
+
+export function invalidPipelineCauses(
+  pipelineCatalog: WorkflowPipelineContext | undefined
+): ReadonlyMap<string, string> {
+  if (!pipelineCatalog) return new Map();
   const resolvable = new Set(pipelineCatalog.effective.map((pipeline) => pipeline.pipelineId));
   const causes = new Map<string, string>();
   for (const record of pipelineCatalog.records) {
@@ -119,37 +129,115 @@ export function invalidPipelineCauses(
   return causes;
 }
 
-/**
- * Parse the stored rows into source records.
- *
- * Feature 099 (T489, FR-042) — formerly `parseLayer`, called three times. See
- * `parseRows` in `process-catalog.ts` for why `key` drops its scope segment and
- * why a clean row now starts `effective` rather than `shadowed`.
- */
-function parseRows(
-  rows: readonly unknown[],
-  pipelineCatalog: WorkflowPipelineContext,
-  invalidPipelines: ReadonlyMap<string, string>
-): MutableSourceRecord[] {
+const EMPTY_PIPELINE_CATALOG: WorkflowPipelineContext = Object.freeze({
+  effective: Object.freeze([]),
+  records: Object.freeze([])
+});
+
+function parseShapeRows(rows: readonly unknown[]): MutableSourceRecord[] {
   return rows.map((row, index) => {
-    const result = validateWorkflowDefinition(row);
+    // Stored rows may predate FR-R5-F08, so this read opts in to the legacy Pipeline fields that
+    // the validator refuses by default (feature 285 FR-011).
+    const result = validateWorkflowDefinition(row, { allowLegacyPipelineId: true });
     const workflowId = workflowSourceIdentity(row, index);
-    const errors = [...result.errors];
-    let definition = result.definition;
-    if (definition !== null) {
-      errors.push(...validateWorkflowGraph(definition, pipelineCatalog.effective, invalidPipelines));
-      if (errors.length > 0) definition = null;
-    }
     return {
       key: `${workflowId}::${index}`,
       workflowId,
-      status: errors.length === 0 ? 'effective' : 'invalid',
-      definition,
+      status: result.errors.length === 0 ? 'effective' : 'invalid',
+      definition: result.definition,
       display: result.display,
+      nodePhaseIds: readNodePhaseIds(row),
+      nodeWorkflowIds: readNodeWorkflowIds(row),
       nodePipelineIds: readNodePipelineIds(row),
-      errors
+      errors: [...result.errors]
     };
   });
+}
+
+function validateGraphAcrossRecords(
+  records: MutableSourceRecord[],
+  phaseCatalog: WorkflowPhaseContext | undefined,
+  invalidPhases: ReadonlyMap<string, string>,
+  pipelineCatalog: WorkflowPipelineContext,
+  invalidPipelines: ReadonlyMap<string, string>,
+  baseEffectiveWorkflows?: readonly WorkflowDefinition[],
+  baseInvalidWorkflows?: ReadonlyMap<string, string>
+): void {
+  // Multi-pass fixed-point resolution so a parent Workflow referencing an invalid child Workflow
+  // also transitions to invalid and names the child's defect (hard rule 38).
+  let changed = true;
+  let pass = 0;
+  while (changed && pass < records.length + 1) {
+    changed = false;
+    pass += 1;
+
+    const effectiveWorkflows: WorkflowDefinition[] = [
+      ...(baseEffectiveWorkflows ?? [])
+    ];
+    const seenEffective = new Set(effectiveWorkflows.map((w) => w.workflowId));
+    for (const rec of records) {
+      if (
+        rec.status === 'effective' &&
+        rec.definition !== null &&
+        !seenEffective.has(rec.workflowId)
+      ) {
+        effectiveWorkflows.push(rec.definition);
+        seenEffective.add(rec.workflowId);
+      }
+    }
+
+    const invalidWorkflows = new Map<string, string>(baseInvalidWorkflows ?? []);
+    for (const rec of records) {
+      if (rec.status === 'invalid' && !seenEffective.has(rec.workflowId)) {
+        if (!invalidWorkflows.has(rec.workflowId)) {
+          invalidWorkflows.set(
+            rec.workflowId,
+            rec.errors.at(0)?.message ?? 'Workflow definition is invalid'
+          );
+        }
+      }
+    }
+
+    for (const rec of records) {
+      if (rec.status !== 'effective' || rec.definition === null) continue;
+      const graphErrors = validateWorkflowGraph(
+        rec.definition,
+        pipelineCatalog.effective,
+        invalidPipelines,
+        {
+          effectivePhases: phaseCatalog?.effective,
+          invalidPhases,
+          effectiveWorkflows,
+          invalidWorkflows
+        }
+      );
+      if (graphErrors.length > 0) {
+        rec.errors.push(...graphErrors);
+        rec.status = 'invalid';
+        rec.definition = null;
+        changed = true;
+      }
+    }
+  }
+}
+
+function freezeRecords(
+  records: readonly MutableSourceRecord[],
+  keyPrefix: string
+): WorkflowSourceRecord[] {
+  return records.map((record) =>
+    Object.freeze({
+      key: `${keyPrefix}${record.key}`,
+      workflowId: record.workflowId,
+      status: record.status,
+      definition: record.definition,
+      display: record.display,
+      nodePhaseIds: Object.freeze([...record.nodePhaseIds]),
+      nodeWorkflowIds: Object.freeze([...record.nodeWorkflowIds]),
+      nodePipelineIds: Object.freeze([...record.nodePipelineIds]),
+      errors: Object.freeze([...record.errors])
+    })
+  );
 }
 
 function duplicateError(workflowId: string): WorkflowFieldError {
@@ -179,15 +267,6 @@ function invalidateDuplicates(records: MutableSourceRecord[]): void {
   }
 }
 
-/**
- * Both thresholds are code-fixed and advisory (FR-032): they are never read from a setting or from
- * an authored row, and a breach never refuses a save. The catalog cap counts stored rows because it
- * is about how much the operator is carrying; the node cap counts effective definitions because an
- * invalid row's size is not what the operator is working in.
- *
- * Feature 099 (T489, FR-042) — the cap was per scope and reported the scope's name. There is one
- * layer, so the code loses its `-scope` suffix along with the enumeration.
- */
 function softCapWarnings(
   rows: readonly unknown[],
   effective: readonly WorkflowDefinition[]
@@ -213,32 +292,26 @@ function softCapWarnings(
   return warnings;
 }
 
-/**
- * Resolves the one Workflow layer in the fixed order of data-model.md §10: parse, reject duplicate
- * ids, then graph-validate against the **effective** Pipeline catalog. Graph validation runs during
- * parsing rather than after selection so an unresolved row carries its own defects for repair
- * instead of appearing clean.
- *
- * Feature 099 (T489, FR-042) — `rows` is the stored catalog and `revision` is the store's manifest
- * revision (FR-044a). The precedence walk over `['workspace', 'user', 'built-in']` is gone: a clean
- * row is effective by existing.
- *
- * **Feature 100 (FR-R3-016) T505 — the effective catalog is the set of ACTIVE versions** (FR-007).
- * "A clean row is effective by existing" still holds; what changed is which definitions produce a
- * row. `storedRows` reads the active body only, so a Workflow held as an unpublished draft never
- * reaches this function, and neither does a draft Pipeline the graph validator would otherwise
- * resolve a node against. Publication is the single event that admits a body to the effective
- * catalog (FR-008, FR-009).
- */
 export function resolveWorkflowCatalog(input: {
   readonly rows: readonly unknown[] | undefined;
   readonly revision: string;
-  readonly pipelineCatalog: WorkflowPipelineContext;
+  readonly phaseCatalog?: WorkflowPhaseContext;
+  readonly pipelineCatalog?: WorkflowPipelineContext;
+  readonly draftOnlyRows?: readonly unknown[];
 }): WorkflowCatalogResolution {
-  const invalidPipelines = invalidPipelineCauses(input.pipelineCatalog);
+  const pipelineCatalog = input.pipelineCatalog ?? EMPTY_PIPELINE_CATALOG;
+  const invalidPhases = invalidPhaseCauses(input.phaseCatalog);
+  const invalidPipelines = invalidPipelineCauses(pipelineCatalog);
   const rows = input.rows ?? [];
-  const records = parseRows(rows, input.pipelineCatalog, invalidPipelines);
+  const records = parseShapeRows(rows);
   invalidateDuplicates(records);
+  validateGraphAcrossRecords(
+    records,
+    input.phaseCatalog,
+    invalidPhases,
+    pipelineCatalog,
+    invalidPipelines
+  );
 
   const effective: WorkflowDefinition[] = [];
   for (const record of records) {
@@ -247,22 +320,69 @@ export function resolveWorkflowCatalog(input: {
     effective.push(record.definition);
   }
 
-  const frozenRecords: WorkflowSourceRecord[] = records.map((record) =>
-    Object.freeze({
-      key: record.key,
-      workflowId: record.workflowId,
-      status: record.status,
-      definition: record.definition,
-      display: record.display,
-      nodePipelineIds: Object.freeze([...record.nodePipelineIds]),
-      errors: Object.freeze([...record.errors])
-    })
-  );
+  const invalidActiveWorkflows = new Map<string, string>();
+  const effectiveIds = new Set(effective.map((w) => w.workflowId));
+  for (const record of records) {
+    if (record.status === 'invalid' && !effectiveIds.has(record.workflowId)) {
+      if (!invalidActiveWorkflows.has(record.workflowId)) {
+        invalidActiveWorkflows.set(
+          record.workflowId,
+          record.errors.at(0)?.message ?? 'Workflow definition is invalid'
+        );
+      }
+    }
+  }
+
+  const frozenRecords = freezeRecords(records, '');
 
   return Object.freeze({
     records: Object.freeze(frozenRecords),
     effective: Object.freeze(effective),
     revision: input.revision,
-    warnings: Object.freeze(softCapWarnings(rows, effective))
+    warnings: Object.freeze(softCapWarnings(rows, effective)),
+    draftOnlyRecords: resolveDraftOnlyRecords(
+      input.draftOnlyRows,
+      input.phaseCatalog,
+      invalidPhases,
+      pipelineCatalog,
+      invalidPipelines,
+      effective,
+      invalidActiveWorkflows
+    )
   });
+}
+
+function resolveDraftOnlyRecords(
+  rows: readonly unknown[] | undefined,
+  phaseCatalog: WorkflowPhaseContext | undefined,
+  invalidPhases: ReadonlyMap<string, string>,
+  pipelineCatalog: WorkflowPipelineContext,
+  invalidPipelines: ReadonlyMap<string, string>,
+  effectiveWorkflows: readonly WorkflowDefinition[],
+  invalidActiveWorkflows: ReadonlyMap<string, string>
+): readonly WorkflowSourceRecord[] {
+  if (rows === undefined || rows.length === 0) return Object.freeze([]);
+  const records = parseShapeRows(rows);
+  invalidateDuplicates(records);
+  // Drafts resolve against ACTIVE effective Phases and ACTIVE effective Workflows only, never drafts.
+  for (const rec of records) {
+    if (rec.status !== 'effective' || rec.definition === null) continue;
+    const graphErrors = validateWorkflowGraph(
+      rec.definition,
+      pipelineCatalog.effective,
+      invalidPipelines,
+      {
+        effectivePhases: phaseCatalog?.effective,
+        invalidPhases,
+        effectiveWorkflows,
+        invalidWorkflows: invalidActiveWorkflows
+      }
+    );
+    if (graphErrors.length > 0) {
+      rec.errors.push(...graphErrors);
+      rec.status = 'invalid';
+      rec.definition = null;
+    }
+  }
+  return Object.freeze(freezeRecords(records, DRAFT_KEY_PREFIX));
 }

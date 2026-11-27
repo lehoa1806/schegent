@@ -1,320 +1,118 @@
 # Data retention and deletion
 
-Schegent writes to eleven places. Three of them are unredacted, one of them is
-outside your workspace, and one of them has no bound at all. This page is the
-single answer to *how long does each of these last, what makes it go away, and
-can I get it back* — asked once per store, in one table, followed by the
-procedures for removing each on purpose.
+Schegent uses independent retention rules for independent artifact classes. Deleting or pruning one class does not imply that the others are removed.
 
-It is the companion to [File Layout](../reference/file-layout.md), which says
-what each file *is* and where it lives. Nothing here repeats that; where a store
-needs describing rather than bounding, this page links there and moves on.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
 
-## Every store, at a glance
+## Retention matrix
 
-Sizes are as shipped. Where a bound is a setting, the setting name is given and
-you can change it; where it is a code-resident constant, it is marked as such
-and changing it is a code change.
-
-| Store | Location | Bound | What triggers removal | Recoverable |
-|---|---|---|---|---|
-| [Audit log](#audit-log-and-its-archives) | `.schegent/audit.log` | 5 MB or 30 days, then rotated (`schegent.audit.rotation.sizeMB`, `schegent.audit.rotation.maxAgeDays`) | Size or age reached on append | Rotated, not deleted — the content moves to an archive |
-| [Audit archives](#audit-log-and-its-archives) | `.schegent/audit.log.<stamp>` | newest 10, and 90 days (code-resident; the age bound will not go below 7 days) | The rotation that creates archive 11, or a sweep past the age bound | **No** |
-| [Runtime log](#runtime-log) | `.schegent/syslog` (or `schegent.logging.runtimeLogFilePath`) | 5 MiB × 3 generations (`schegent.logging.runtimeLogMaxBytes`, `schegent.logging.runtimeLogMaxGenerations`) | Size reached on write; the oldest generation is dropped | **No** |
-| [CLI transport capture](#cli-transport-capture) | `.schegent/cli-transport.log` | 5 MiB × 3 generations (code-resident) | Size reached on write | **No** |
-| [Raw transcripts](#session-artifacts-transcripts-and-diagnostics) | `.schegent/sessions/raw-<runId>.log` | 30 days and 512 MiB across all runs (`schegent.logging.sessionRetentionMaxAgeDays`, `schegent.logging.sessionRetentionMaxBytes`) | Activation sweep, a settings change, or task deletion | **No** |
-| [Verbose diagnostics](#session-artifacts-transcripts-and-diagnostics) | `.schegent/sessions/<runId>/diagnostics/…` | same policy, same budget | same | **No** |
-| [Phase message sidecars](#session-artifacts-transcripts-and-diagnostics) | `.schegent/sessions/<runId>/diagnostics/…/phase-message.env` | same policy, same budget | same | **No** |
-| [Metrics rollup](#metrics-rollup) | `.schegent/metrics-rollup.jsonl` | **none, by design** | Nothing. Manual `rm` only | **No** — and it is the all-time totals |
-| [Ownership registry](#ownership-registry) | `.schegent/ownership/*.json` | current generation only | Superseded by the next generation | Irrelevant — disposable by construction |
-| [Recovery checkpoints](#recovery-checkpoints) | `<globalStorageUri>/checkpoints/<runId>/` — **outside the workspace** | 20 artifacts per run; 14 days and 256 MiB across runs, floor of the 10 newest runs (code-resident) | The next checkpoint in that run, or the activation sweep | **No** |
-| [Run history](#run-history-and-workspace-state) | VS Code `workspaceState` | newest 50 entries **per queue** | The 51st entry for that queue | **No** |
-| [Workspace state](#run-history-and-workspace-state) | VS Code `workspaceState` | none — it is current state, not a log | `Schegent: Reset Workspace State` | **No** |
-
-Three of those are unredacted and worth naming again: raw transcripts, verbose
-diagnostics, and checkpoint `.patch` files. `audit.log` and `syslog` pass through
-the redaction set; the other three are verbatim captures, and the reason they
-exist is that the redaction set sometimes masks the string you need. Treat them
-as you would the working tree they came from.
-
-## What each bound actually does
-
-### Audit log and its archives
-
-Two policies, and they are not the same policy.
-
-**Rotation** is a setting. When `.schegent/audit.log` reaches
-`schegent.audit.rotation.sizeMB` (5) or `schegent.audit.rotation.maxAgeDays`
-(30), the next append renames it to `.schegent/audit.log.<stamp>` and starts a
-fresh file. Nothing is lost at this step — the content moved.
-
-**Archive retention** is code-resident and is where content is lost: the newest
-10 archives are kept, and an archive older than 90 days is removed whichever
-side of that count it falls on. A configured age below 7 days is raised to 7,
-because an audit trail that can be configured down to nothing is not an audit
-trail.
-
-Rotation and retention both run on the append path, so a workspace nobody has
-opened in a year has not swept anything. Opening it does.
-
-Task deletion and phase deletion never touch this file. Erasing `audit.log` is
-not how anything in Schegent removes a record; if you erase it by hand you have
-removed the evidence for every task in the workspace, not one. See
-[Inspect audit logs](inspect-audit-logs.md).
-
-### Runtime log
-
-Generational, not archival: `syslog`, `syslog.1`, `syslog.2`. When the live file
-passes `schegent.logging.runtimeLogMaxBytes` (5 MiB) each generation shifts down
-one and the last is dropped. `schegent.logging.runtimeLogMaxGenerations` (3)
-accepts `0`, which means the live file is truncated with nothing kept behind it.
-
-The path is redirectable with `schegent.logging.runtimeLogFilePath`, and a
-redirected log rotates in its new location under the same bounds. See
-[Runtime log](runtime-log.md).
-
-### CLI transport capture
-
-`.schegent/cli-transport.log` at 5 MiB × 3 generations, and both numbers are
-code-resident constants rather than settings. It is a debugging capture of what
-crossed the CLI boundary; the ceiling is 20 MiB and it is reached by volume, not
-by time. Removing it costs nothing an operator relies on —
-`rm -f .schegent/cli-transport.log*` is a supported thing to do at any moment.
-
-### Session artifacts: transcripts and diagnostics
-
-One policy covers the raw transcript, the diagnostics tree, and the phase-message
-sidecars for a run, because they are one run's evidence and pruning half of it
-would leave a set nobody can read. Two bounds, both settings:
-
-- `schegent.logging.sessionRetentionMaxAgeDays` — 30
-- `schegent.logging.sessionRetentionMaxBytes` — 536870912 (512 MiB), across every
-  run in the workspace
-
-The unit of removal is a **complete run group**, never an individual file. A run
-that is still in flight is protected and is not a candidate however large or old
-its artifacts are, so the byte bound can be exceeded by live work; it is enforced
-against what is finished.
-
-The sweep runs at activation, and again when either setting changes. It is also
-the reason a workspace that has been closed for two months prunes on open rather
-than on the calendar.
-
-Task deletion removes one run's group immediately, ahead of the policy, when you
-choose "remove session tree" in the removal dialog. That path and the retention
-sweep both refuse a target they cannot prove is inside `.schegent/sessions/`, and
-a refusal skips one group rather than abandoning the sweep.
-
-Whether a raw transcript is written at all is
-`schegent.logging.rawTranscriptMode` (`errors-only` by default); whether a
-diagnostics tree is written is `schegent.logging.verbose` (off). Neither setting
-removes what has already been written.
-
-### Metrics rollup
-
-`.schegent/metrics-rollup.jsonl` is the one store with **no retention policy at
-all**, and that is deliberate. It holds all-time cumulative totals derived from
-runs whose audit evidence has since rotated away, so a bound on it would silently
-change the meaning of a number the dashboard presents as a lifetime figure.
-
-It is append-only, one line per terminal run, and it grows without limit. In
-practice that limit is remote — a line is a few hundred bytes and it takes one
-run to write.
-
-Deleting it resets the all-time totals to zero. The runs it summarised cannot be
-recomputed once their audit evidence has rotated, so this is the least
-recoverable deletion on this page even though the file is the smallest. See
-[Metrics coverage and the rollup](metrics.md#deleting-it).
-
-### Ownership registry
-
-`.schegent/ownership/*.json` holds window-primacy records, one file per
-generation, and records below the current generation are pruned as a matter of
-course. There is nothing here to retain: the directory is disposable, deleting it
-with no window open costs nothing, and deleting it with a window open makes that
-window re-acquire at its next heartbeat. See
-[Workspace lock](../concepts/workspace-lock.md).
-
-### Recovery checkpoints
-
-The only store outside your workspace. `<globalStorageUri>/checkpoints/<runId>/`
-holds a `git diff --binary HEAD` per Git-capable phase, and the same directory
-accumulates work from **every workspace this extension has ever opened** — so
-`rm -rf .schegent/` does not reach it, `.gitignore` does not cover it, and the
-session sweep does not visit it.
-
-Two independent budgets, neither aware of the other:
-
-| Bound | Value | Scope |
+| Artifact | Default bound | Protected data |
 |---|---|---|
-| Artifacts per run | newest 20 | Inside one run directory; declines count against it |
-| Age | 14 days | Across run directories; the directory goes whole |
-| Total size | 256 MiB | Across run directories, oldest first until it fits |
-| Recent-run floor | newest 10 directories | Held back from the **size** bound only |
+| Active structured audit log | rotates at 5 MiB or 30 days | current `audit.log` |
+| Rotated audit archives | 10 archives and 90 days, with a 7-day minimum age policy | none beyond the configured archive rules |
+| Raw transcripts and verbose diagnostic trees | 30 days and 512 MiB across complete inactive Runs | artifacts for active/protected Run IDs |
+| Recovery checkpoints | 14 days and 256 MiB | ten most recent Run directories are protected from the size bound, but not the age bound |
+| Run transport (and the legacy shared transport) | 5 MiB per Run, 20 MiB across the workspace, the session age; legacy files expire whole at that age | an active Run's file is not aged or removed to meet the total |
+| History descriptions | coupled to retained history entries; one no history row refers to is removed once it is 24 hours old, at most 200 per activation, in the window that owns the workspace | removed best-effort when the owning history row is evicted |
+| Failure records | 30 days (the session age setting) and the newest 200 per workspace | none |
 
-All four are code-resident constants, not settings. The bounds are age and
-volume, never lifecycle: a run completing does not delete its checkpoints,
-because a finished run's patch is exactly what you want when that run turns out
-to have gone badly.
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: package.json -->
+<!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
+<!-- Source: src/monitor/cli-transport-sink.ts -->
+<!-- Source: src/services/history/history-description-store.ts -->
+<!-- Source: src/services/failure-record/failure-record-retention.ts -->
 
-Nothing warns before a reap and there is no undo. **If you need a patch to
-outlive these bounds, copy it out of the store.**
-[Recovery checkpoints](recovery-checkpoints.md) has the full policy and the
-by-hand `git apply` procedure.
+The full inventory of every store, with its location, bounds, what sweeps it and what Delete and Export do with it, is generated from the constants that enforce it in [what Schegent keeps on this machine](evidence-retention-disclosure.md); this page does not repeat those bounds beyond the matrix above.
 
-### Run history and workspace state
+## What Delete Run Evidence removes and keeps
 
-Neither is a file. Both live in VS Code's `workspaceState`, which is a per-workspace
-key-value store inside VS Code's own database — not something you can read with
-an editor.
+`Schegent: Delete Run Evidence` removes, for one Run only: its session directory (its transport file included), its raw transcripts, its verbose diagnostics, its failure records and its private recovery checkpoint. It keeps the shared audit log, the runtime log, the metrics rollup, Run history (so the Run stays listed) and the Run's history description, the SQLite application store (`<globalStorageUri>/sqlite/<scope>/schegent-state.db`), SQLite backup files and manifests, externalized artifacts and handoffs, any spooled metadata-only telemetry batches, any shared legacy transport file until it ages out, and third-party backend CLI / remote provider stores; the notice lists every kept store and, for the legacy file, when it ages out. It refuses while the Run is active (including when an active `.pending/raw-<runId>.log` staging file exists), and for a Run with no evidence in this workspace. It reports what it could not remove rather than failing.
 
-**History** is capped at the newest 50 entries **per queue**, not per workspace.
-A workspace with several queues therefore holds more than 50 entries in total,
-and one busy queue cannot evict another's history. The 51st entry for a queue
-drops that queue's oldest.
+## Copy ownership, retention, recovery, and deletion boundary (`FR-R8-03` / `03-01`)
 
-**Workspace state** is not a log and has no retention: it is the current queue,
-the live runs, the leases, the pause records, the pending retries, and your saved
-confirmation choices. It changes as work proceeds and is removed only by
-`Schegent: Reset Workspace State`, which clears every key except the schema
-version and the reset marker.
+Before running sensitive work, review where copies of prompts, output, diffs, and metadata live, who owns each copy, what survives `Schegent: Delete Run Evidence`, and who is responsible for cleaning up surviving copies:
 
-Reset touches **no file on disk** — the audit log, its archives, every session
-tree, the rollup, and the checkpoint store all survive it byte for byte, and the
-reset itself is recorded as one `workspace-state-reset` audit entry. See
-[Reset safely](reset-safely.md), which covers the preconditions and what happens
-if the host dies part-way through one.
+| Copy / Store | Owner | Typical Contents & Mode | Retention / Cleanup | Survives `Delete Run Evidence`? | Deletion Responsibility |
+|---|---|---|---|---|---|
+| `.schegent/sessions/.pending/raw-<runId>.log` (during active `errors-only` / `diagnostic` Runs) | Schegent host | Unredacted staged prompt + stdout/stderr (`0600` inside `0700`); promoted on failure/pause/cancel or unlinked on normal completion | Removed on normal Run completion; abandoned orphans pruned by retention sweep | Refuses deletion while active (`active-writer`) | Wait for Run end or cancel first; then `Delete Run Evidence` |
+| `<temp>/schegent-raw-spool-<pid>-<suffix>/` and `<temp>/schegent-transport-<key>/<runId>.log` (during active `errors-only` / `always` invocations) | Schegent host | Unredacted per-invocation stdout/stderr spool and temporary redacted `errors-only` transport staging (`0700`/`0600`) | Unlinked at invocation/run end; dead-PID spools scavenged on next capture | No (transient per invocation/run) | Automatic; operator may inspect OS temp after hard host crash |
+| `.schegent/sessions/raw-<runId>.log`, `<runId>/transport.log`, verbose diagnostics, `.schegent/failure-records/*`, `globalStorage/checkpoints/<runId>/` | Schegent host | Per-run raw transcripts (unredacted), redacted transport, verbose diagnostics, sanitized failure summaries, unredacted binary Git diff checkpoints (`0600`/`0700`) | Session age/byte bounds (`30d` / `512 MiB`, `20 MiB` transport, `200` failure records) and checkpoint bounds (`14d` / `256 MiB`) | **No — removed** | `Schegent: Delete Run Evidence` |
+| `.schegent/audit.log*`, runtime log, `metrics-rollup.jsonl`, `.schegent/history/<runId>.txt` | Schegent host | Metadata-only hash-chained audit rows (`0600`), redacted runtime log, cumulative totals, Run history descriptions | Audit rotation/archive policy (`5 MiB` / `30d`, `10` archives / `90d`); runtime log rotation; history coupled to history rows | **Yes — disclosed** | Operator manual archive/removal outside `Delete Run Evidence` |
+| `<globalStorageUri>/sqlite/<scope>/schegent-state.db` (`-wal`/`-shm`) and `backups/` | Schegent host | Authoritative structured state (Runs, Queue, catalogs, usage accounting, handoffs, lanes, reports) and manual SQLite backups (`0600`/`0700`) | Retained until workspace reset / pruning / manual backup deletion; backups never expire automatically | **Yes — disclosed** | Operator manual backup deletion or Workspace Reset |
+| Externalized artifacts, materialized handoffs, and exported reports outside `.schegent/` | Operator / Schegent host | Files written to operator-chosen export paths or workspace paths | Outside managed session retention (`outside-managed-retention`) | **Yes — disclosed** | Operator manual deletion |
+| `<storageRoot>/telemetry-spool/` (only when OTLP export is enabled) | Schegent host | Metadata-only OTLP JSON metric batches (`0700`/`0600`, `32 MiB` cap, `24 h` expiry; zero prompt/output/credential bytes) | Replayed on recovery, expired at `24 h`, or dropped on disable/destination change | **Yes — disclosed** | Disable OTLP export or wait for replay/expiry |
+| Backend CLI local stores (e.g. `<home>/.claude/`, `<home>/.codex/`, `<home>/.gemini/antigravity/`) and remote LLM provider retention | Backend CLI vendor / LLM provider | Unredacted prompts, responses, transcripts, and provider-side account retention/training policies | Controlled solely by the external CLI binary and the operator's provider account/plan | **Yes — disclosed** | **Operator + provider account controls**; Schegent cannot inspect, verify, or erase vendor CLI stores or remote provider retention (account-specific unknowns remain outside Schegent's visibility) |
 
-## Removing things on purpose
+**Automated drill evidence (`2026-11-24`, `repo/tests/integration/sensitive-run-retention-deletion-drill.test.ts`):** Verified with recognizable synthetic prompt, stdout, stderr, and secret markers across `ephemeral`, `diagnostic` (`errors-only`), and `forensic` (`always`) profiles through `completed`, `paused`, `failed`, and dead-PID interrupted-cleanup paths — confirming zero disallowed markers in `ephemeral`, `0700`/`0600` POSIX permissions, temporary `.pending/` staging and completion unlink in `diagnostic`, automatic dead-PID temp-spool scavenging in `forensic`, `active-writer` refusal on live `.pending/`, complete per-run removal via `deleteRunEvidence`, and explicit disclosure of all nine surviving store classes (`audit-log`, `runtime-log`, `metrics-rollup`, `run-history`, `sqlite-store`, `sqlite-backups`, `external-artifacts-and-handoffs`, `telemetry-spool`, `provider-cli-stores`).
 
-Nothing below is undone by a subsequent Schegent action. Read
-[What is irreversible](#what-is-irreversible) first.
+<!-- Source: src/contracts/privacy-profiles.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+<!-- Source: src/services/evidence-delete.ts -->
+<!-- Source: tests/integration/sensitive-run-retention-deletion-drill.test.ts -->
 
-### Inside the workspace
+## When retention runs
 
-Everything Schegent writes in your workspace is under `.schegent/`, so the
-coarsest removal is one directory:
+Retention runs when the host starts, after a Run ends, when a retention setting changes, and now on a timer: once an hour, an idle window that owns the workspace and is trusted removes what has expired and is inactive (the session groups and the transport files), skipping every Run still executing. A pass that removes nothing writes no audit row. A window that does not own the workspace, or is untrusted, runs no pass. The timing is separate from each age bound: an age says when evidence becomes eligible, and these triggers say when it is looked at.
 
-```sh
-rm -rf <workspace>/.schegent/
-```
+The session age setting covers raw transcripts, verbose diagnostic trees, failure records and the CLI transport (a Run's transport records older than it are removed, and so is a legacy shared transport file whose newest record is older than it); the session byte setting covers the first two only. Neither deletes structured audit entries, recovery checkpoints in extension `globalStorage`, runtime logs, or history descriptions.
 
-That removes the audit log and every archive, the runtime log, the CLI capture,
-every session tree, the metrics rollup, and the ownership registry. It does not
-remove workspace state, and it does not remove checkpoints.
+<!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
+<!-- Source: src/services/failure-record/failure-record-retention.ts -->
 
-Finer-grained removals:
+## Failure records
 
-```sh
-# Rotated audit archives only; the live log stays.
-rm -f <workspace>/.schegent/audit.log.*
+A Run that fails leaves one small file that says what the agent reported as still open when it failed. Remove does not delete it.
 
-# Captured CLI output; rotation already caps this at 20 MiB.
-rm -f <workspace>/.schegent/cli-transport.log*
+1. **Where.** `.schegent/failure-records/`, beside `.schegent/sessions/` and outside the session tree that Remove clears. `.schegent/.gitignore` keeps it out of commits.
+2. **Name.** `<stamp>_<suffix>_<runId>_<taskId>.json`, for example `20261028T143005123Z_0a1b2c3d_3f2504e0-4f89-11d3-9a0c-0305e82c3301_9b2e5f10-1c2d-4e3f-8a4b-5c6d7e8f9a0b.json`: the failure time in UTC, 8 hex characters that keep two failures in the same millisecond apart, the Run id and the task id. A Run that fails, is resumed and fails again has one file per failure. To find the records of a row you have removed, list the directory by the Run id or by the task id:
 
-# Runtime log and its generations.
-rm -f <workspace>/.schegent/syslog*
+   ```sh
+   ls .schegent/failure-records | grep -F '<runId>'
+   ls .schegent/failure-records | grep -F '<taskId>'
+   ```
 
-# Unredacted diagnostics only; raw transcripts stay.
-rm -rf <workspace>/.schegent/sessions/*/diagnostics/
+3. **Contains.** The failure cause, the phase context when a phase produced output (phase, iteration, iteration cap, and the count of unchanged comparisons when it is known), whether the phase reported open issues, up to 20 issue summaries of at most 240 characters each with secrets redacted and absolute paths replaced, up to 16 metrics from the audit block, and how many issues and metrics were left out.
+4. **Excludes.** Transcripts, the task's description, absolute paths and the workspace root.
+5. **Bounds.** 32 KiB per record.
+6. **Retention.** The session age setting, `schegent.logging.sessionRetentionMaxAgeDays`, and a cap of the newest 200 records per workspace. The same sweep that prunes session artifacts removes them: on activation, after a Run ends, and when the setting changes. The byte setting does not apply to them.
+7. **Remove keeps them.** Remove deletes a row's session directory and raw transcript, and leaves its records. A Run's Delete Evidence removes that Run's records, and refuses while the Run is active. A Run's evidence export includes them.
+8. **Tags are the agent's claims.** A summary may carry a label such as `regression` or `needs-approval`, which the agent chose. Schegent does not check a label and nothing it does depends on one. A record is diagnostic text for you to read, kept apart from the audit log, which holds no record text.
+9. **Deleting by hand.** Delete the files. Nothing else references them. "Show last error" then says the diagnostics were removed by retention, or are unavailable.
 
-# One run's evidence, transcript and diagnostics together.
-rm -rf <workspace>/.schegent/sessions/<runId>/ \
-       <workspace>/.schegent/sessions/raw-<runId>.log
+<!-- Source: src/services/failure-record/failure-record-store.ts -->
+<!-- Source: src/services/failure-record/failure-record-retention.ts -->
+<!-- Source: src/services/failure-record/record-text.ts -->
+<!-- Source: src/services/failure-record/record-builder.ts -->
+<!-- Source: src/contracts/failure-record.ts -->
+<!-- Source: src/services/evidence-export.ts -->
+<!-- Source: src/services/evidence-delete.ts -->
+<!-- Source: src/controller/task-deletion.ts -->
+<!-- Source: package.json -->
 
-# All-time metrics totals. Read the warning below first.
-rm -f <workspace>/.schegent/metrics-rollup.jsonl
-```
+## Safe operator procedure
 
-Prefer the task-removal dialog's "remove session tree" over the last per-run
-command when the task is still in the queue: it proves containment before it
-removes, and it records what it did.
+1. Stop or cancel active Runs before manually removing evidence. Active session artifacts are deliberately protected from the normal sweep.
+2. Use the Settings UI to reduce `schegent.logging.sessionRetentionMaxAgeDays` or `schegent.logging.sessionRetentionMaxBytes` when the intent is to prune inactive session artifacts; the sweep runs on activation, after terminal Runs, and when those settings change.
+3. Treat `globalStorage/checkpoints` separately. Checkpoints may contain unredacted binary Git diffs and are managed by their fixed retention service rather than workspace settings.
+4. Treat `.schegent/audit.log` as evidence, not a cleanup proxy for the whole `.schegent` directory. Host code rotates and prunes archives. Local processes can still modify or delete the log — the hash chain (`src/audit/audit-chain.ts`) makes that **evident, not impossible**: each entry carries the previous entry's digest, so `npm run audit:verify` names the first break, and a retention prune records a cut point rather than silently orphaning the chain. An actor who can edit the log can recompute every later digest; what they cannot do is edit one entry and leave the rest consistent.
+5. If you manually delete a history description, its history row can remain but byte-identical rerun input becomes unavailable.
+6. Deleting `.schegent/failure-records/`, or one Run's files in it, removes only failure diagnostics. "Show last error" then says they were removed by retention or are unavailable; the Run, its row and the audit log are unaffected.
 
-### Outside the workspace
+<!-- Source: src/extension.ts -->
+<!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
+<!-- Source: src/services/run-checkpoint-service.ts -->
+<!-- Source: src/services/run-checkpoint-retention.ts -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/services/history/history-description-store.ts -->
+<!-- Source: src/services/failure-record/failure-record-store.ts -->
 
-The checkpoint store is under VS Code's global storage for this extension. The
-directory differs per platform and per install:
+Schegent has no single “delete all retained data” command. `schegent.clearAll` clears Queue state and cancels active work; it is not documented in its implementation as an evidence eraser. Workspace Reset is a separate staged state operation and should not be inferred to remove extension-private checkpoints outside the workspace.
 
-```text
-macOS    ~/Library/Application Support/Code/User/globalStorage/<publisher>.<name>/checkpoints/
-Linux    ~/.config/Code/User/globalStorage/<publisher>.<name>/checkpoints/
-Windows  %APPDATA%\Code\User\globalStorage\<publisher>.<name>\checkpoints\
-```
-
-Substitute VS Code Insiders, VSCodium, or a portable install's own user-data
-directory as appropriate. To remove one run's checkpoints, or the store entirely:
-
-```sh
-rm -rf '<globalStorage>/checkpoints/<runId>/'
-rm -rf '<globalStorage>/checkpoints/'
-```
-
-Removing the store while a run is in flight is safe in the sense that nothing
-crashes — the next Git-capable phase recreates what it needs — but it is
-fail-closed, so a store the host cannot write to blocks that phase rather than
-skipping it.
-
-Releases up to and including the Wake-up scheduler's withdrawal also left a
-`wakeup/` subdirectory there. Nothing reads or writes it now; delete it if you
-want the space back.
-
-### Workspace state
-
-Use the command, not the filesystem:
-
-```text
-Command Palette → Schegent: Reset Workspace State
-```
-
-It cancels any running phase first and refuses outright — clearing nothing — if a
-CLI subprocess has not exited within 10 seconds. Editing VS Code's state database
-by hand is not a supported path and can leave a record the schema loader refuses.
-
-### Removing everything
-
-In order, because the last step is the one that needs the extension working:
-
-```sh
-rm -rf <workspace>/.schegent/
-rm -rf '<globalStorage>/checkpoints/'
-```
-
-then `Schegent: Reset Workspace State`, then check
-[Scheduled entries left by earlier releases](../reference/file-layout.md#scheduled-entries-left-by-earlier-releases)
-if you have run a release that created one.
-
-## What is irreversible
-
-Every deletion on this page is irreversible in the ordinary sense — there is no
-undo, no trash, and no in-product restore for any store. Three are worth calling
-out because their cost is larger than the file:
-
-**The metrics rollup.** Deleting it zeroes the all-time totals. Those totals
-cover runs whose audit evidence has already rotated away, so they cannot be
-recomputed from anything that remains. The dashboard will present the new,
-smaller numbers as lifetime figures without any indication that history was lost.
-
-**Audit archives.** The audit log is the record of what Schegent did. An archive
-removed by hand — or aged out at 90 days — takes with it the only account of the
-runs it covered. Rotation is safe; removing `audit.log.*` is not the same
-operation.
-
-**Checkpoint patches.** A `.patch` is the only copy of an uncommitted working
-tree at a moment that has since passed. Once the age or size bound reaps its run
-directory, the file is gone and the runtime log records how many directories a
-sweep removed, not which. Copy anything you might want before it ages out.
-
-Two things are *not* irreversible and are often mistaken for it. Audit
-**rotation** moves content rather than removing it. And workspace-state reset
-removes coordination state, not evidence — every file on this page survives it,
-so a reset is recoverable in the sense that you can see what happened before it
-from the audit log.
-
-## Where to look next
-
-- [File Layout](../reference/file-layout.md) — what each file is and what it contains
-- [Reset safely](reset-safely.md) — the reset command's preconditions and failure modes
-- [Recovery checkpoints](recovery-checkpoints.md) — the checkpoint store's full policy
-- [Metrics coverage and the rollup](metrics.md) — why the rollup has no bound
-- [Inspect audit logs](inspect-audit-logs.md) — reading what the audit log kept
-- [Settings](../reference/settings.md) — every retention setting named on this page
+<!-- Source: src/commands/clear-all.ts -->
+<!-- Source: src/commands/reset.ts -->
+<!-- Source: src/services/run-checkpoint-service.ts -->

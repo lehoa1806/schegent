@@ -4,6 +4,7 @@
 // `src/lib/runtime-log/` without reaching into individual files.
 //
 // Module layout (per specs/019-runtime-debug-log/contracts/runtime-log-service.md):
+//   - held-append-handles.ts  — HeldAppendHandles (the sink's descriptors and their release)
 //   - runtime-log-level.ts    — RuntimeLogLevel + severity helpers
 //   - runtime-log-path.ts     — resolveRuntimeLogPath
 //   - runtime-log-settings.ts — createRuntimeLogAccessor (no caching)

@@ -6,7 +6,10 @@
   "x-generatedSchemaVersion": 1,
   "x-generatedFrom": [
     "src/contracts/state-schema.ts",
-    "src/state/workflow-run.ts"
+    "src/state/workflow-run.ts",
+    "src/contracts/decision-results.ts",
+    "src/contracts/workflow-controls.ts",
+    "src/contracts/recovery-envelope.ts"
   ],
   "type": "object",
   "additionalProperties": false,
@@ -15,12 +18,23 @@
     "workflowRunStatuses",
     "manualPauseCauses",
     "delayedRetryCauses",
-    "workflowRunFields"
+    "workflowRunFields",
+    "attemptOutcomeStatuses",
+    "attemptOutcomeReasons",
+    "attemptOutcomeRecoveries",
+    "workflowControlKinds",
+    "candidateAvailabilityPolicies",
+    "candidateBudgetModes",
+    "repeatOnExhaustedPolicies",
+    "forEachOnItemErrorPolicies",
+    "recoveryWorkspaceCoverages",
+    "recoveryWorkspaceAttributions",
+    "recoveryEffectCertainties"
   ],
   "properties": {
     "stateSchemaVersion": {
       "type": "integer",
-      "const": 13
+      "const": 15
     },
     "workflowRunStatuses": {
       "type": "array",
@@ -44,7 +58,8 @@
           "operator-paused",
           "queue-paused-mid-run",
           "breakpoint-paused",
-          "verify-paused"
+          "verify-paused",
+          "spend-bound-reached"
         ]
       },
       "uniqueItems": true
@@ -83,6 +98,16 @@
         }
       },
       "default": [
+        {
+          "name": "writtenAtFence",
+          "optional": true,
+          "type": "number"
+        },
+        {
+          "name": "spawnIdentity",
+          "optional": true,
+          "type": "SpawnIdentity"
+        },
         {
           "name": "id",
           "optional": false,
@@ -134,9 +159,19 @@
           "type": "PhaseResult[]"
         },
         {
+          "name": "degradedPhases",
+          "optional": true,
+          "type": "readonly DegradedPhaseEntry[]"
+        },
+        {
           "name": "lastError",
           "optional": false,
           "type": "SanitizedError | null"
+        },
+        {
+          "name": "failureCause",
+          "optional": true,
+          "type": "FailureCause"
         },
         {
           "name": "rawTranscriptMode",
@@ -166,7 +201,7 @@
         {
           "name": "defaultRunnerKind",
           "optional": true,
-          "type": "import('../runner/backend-runner-factory').BackendRunnerKind"
+          "type": "import('../contracts/backend-kinds').BackendRunnerKind"
         },
         {
           "name": "delayedRetryCount",
@@ -182,6 +217,11 @@
           "name": "pendingRetryCause",
           "optional": false,
           "type": "DelayedRetryCause | null"
+        },
+        {
+          "name": "creditPause",
+          "optional": true,
+          "type": "CreditPause | null"
         },
         {
           "name": "phaseOverrides",
@@ -216,7 +256,12 @@
         {
           "name": "lastCliSessionRunnerKind",
           "optional": true,
-          "type": "import('../runner/backend-runner-factory').BackendRunnerKind"
+          "type": "import('../contracts/backend-kinds').BackendRunnerKind"
+        },
+        {
+          "name": "lastCliSessionCostUsd",
+          "optional": true,
+          "type": "number | undefined"
         },
         {
           "name": "lastRetryDecision",
@@ -242,8 +287,166 @@
           "name": "runOutputs",
           "optional": true,
           "type": "readonly RunOutputRecord[]"
+        },
+        {
+          "name": "laneId",
+          "optional": true,
+          "type": "string"
+        },
+        {
+          "name": "laneRootRef",
+          "optional": true,
+          "type": "string"
         }
       ]
+    },
+    "attemptOutcomeStatuses": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "done",
+          "incomplete",
+          "failed",
+          "temporarily-unavailable",
+          "invalid-result"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "attemptOutcomeReasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "work-remaining",
+          "credits",
+          "rate-limit",
+          "authentication",
+          "top-up-required",
+          "incompatible-backend",
+          "process-failure",
+          "startup-failure",
+          "missing-evidence",
+          "malformed-evidence",
+          "unattributed-evidence",
+          "conflicting-evidence",
+          "operator-timeout",
+          "evidence-too-large",
+          "unresolved-condition"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "attemptOutcomeRecoveries": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "none",
+          "retry-current",
+          "reselect",
+          "retire",
+          "candidate-intervention",
+          "block-intervention"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "workflowControlKinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "candidate-block",
+          "repeat",
+          "for-each"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "candidateAvailabilityPolicies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "first-ready",
+          "wait-for-selected",
+          "stop-on-unavailability"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "candidateBudgetModes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "count-only",
+          "strict-usd"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "repeatOnExhaustedPolicies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "pause",
+          "fail"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "forEachOnItemErrorPolicies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "stop",
+          "continue"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "recoveryWorkspaceCoverages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "complete",
+          "partial",
+          "unavailable"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "recoveryWorkspaceAttributions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "attempt",
+          "preexisting",
+          "concurrent",
+          "unknown"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "recoveryEffectCertainties": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "safe",
+          "uncertain",
+          "unknown"
+        ]
+      },
+      "uniqueItems": true
     }
   }
 }

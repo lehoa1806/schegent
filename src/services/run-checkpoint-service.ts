@@ -3,8 +3,35 @@ import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SanitizedLogger } from '../lib/logger';
+import { readBoundedRange } from '../lib/bounded-read';
+import { NarrowingReporter } from '../lib/evidence-narrowing';
+import { resolveDiffBase } from '../lib/git-diff-base';
+import { withHostGitConfig } from '../lib/host-git-config';
+import { spawnCommandFor } from '../lib/spawn-command';
 import { resolveContainedLink } from '../lib/path-containment';
+import {
+  RECOVERY_ENVELOPE_SUFFIX,
+  RUN_CHECKPOINT_DIRECTORY,
+  recoveryEnvelopeFileName,
+  safeRunSegment
+} from './run-checkpoint-paths';
 import type { WorkflowRun } from '../state/workflow-run';
+import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
+import {
+  MAX_RECOVERY_ENVELOPE_BYTES,
+  serializeRecoveryEnvelope,
+  validateRecoveryEnvelope,
+  type RecoveryEnvelope,
+  type RecoveryEnvelopeSerializeResult,
+  type RecoveryEnvelopeValidationResult
+} from '../contracts/recovery-envelope';
+import {
+  buildRecoveryEnvelope,
+  captureWorkspaceObservation,
+  type BuildRecoveryEnvelopeOptions,
+  type CaptureWorkspaceObservationOptions,
+  type WorkspaceObservationSnapshot
+} from './workflow-execution/recovery-envelope-builder';
 import {
   joinDiffSections,
   splitDiffSections,
@@ -25,6 +52,16 @@ const runExecFile = promisify(execFile);
 const PER_RUN_LIMIT = 20;
 /** Markers name the paths an operator has to deal with; they do not list a tree. */
 const MAX_REPORTED_PATHS = 50;
+/** `git diff` is bounded here; a tree whose diff is larger blocks the Phase with a typed reason. */
+const DIFF_MAX_BUFFER_BYTES = 20 * 1024 * 1024;
+/** `git status --porcelain` is bounded here, for the same reason on its own stream. */
+const STATUS_MAX_BUFFER_BYTES = 1024 * 1024;
+/** Node's `execFile` code when a stream outgrows `maxBuffer`. */
+const MAX_BUFFER_EXCEEDED = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+/** How many same-millisecond captures one Run and Phase can have before the write gives up. */
+const MAX_PREFIX_COLLISIONS = 1_000;
+/** Porcelain v1 prefix of an untracked, non-ignored entry. */
+const UNTRACKED_PREFIX = '?? ';
 
 /**
  * Feature 093 (T053, FR-022a) — the reason every checkpoint above one in-flight
@@ -60,19 +97,153 @@ export type CheckpointAttributionMode =
   /** Several in flight: only the sections this Run declared. */
   | 'scoped';
 
+/**
+ * FR-R4-F01 (FR-028, contract K2) — why a snapshot could not be taken. Closed, so an operator
+ * reading `lastError` can tell a tree that is too large from a git that would not run.
+ */
+export type CheckpointUnavailableReason =
+  /** `git diff` output outgrew its 20 MiB buffer. */
+  | 'diff-size-limit'
+  /** `git status` output outgrew its 1 MiB buffer. */
+  | 'status-size-limit'
+  /** Any other fault reading the tree. */
+  | 'capture-failed'
+  /** The run directory, the patch or the manifest could not be written. */
+  | 'artifact-write-failed';
+
+/**
+ * A checkpoint that cannot be taken. The Git-capable Phase stays blocked: this is a failed
+ * snapshot, not a decline. The message keeps the `checkpoint-unavailable` prefix that callers
+ * and the runbook already match on, and adds the reason; it carries no path.
+ */
+export class CheckpointUnavailableError extends Error {
+  constructor(public readonly reason: CheckpointUnavailableReason) {
+    super(`checkpoint-unavailable: ${reason}`);
+    this.name = 'CheckpointUnavailableError';
+  }
+}
+
+/** What a checkpoint's patch can restore, as the manifest says it (data-model §5). */
+export type CheckpointCompleteness = 'complete' | 'incomplete' | 'unknown';
+
+/**
+ * FR-R4-F01 (FR-032) — read a manifest's completeness. A record written before the field existed
+ * has none, and reads `unknown`: never `complete`, because nothing recorded that it was.
+ */
+export function readCheckpointCompleteness(manifest: unknown): CheckpointCompleteness {
+  if (typeof manifest !== 'object' || manifest === null) return 'unknown';
+  const value = (manifest as { completeness?: unknown }).completeness;
+  return value === 'complete' || value === 'incomplete' ? value : 'unknown';
+}
+
 interface CheckpointCapture {
   readonly diff: string;
   readonly sections: readonly DiffSection[];
   readonly status: string;
   readonly baseCommit: string;
+  /** Untracked, non-ignored entries from the porcelain status, directories with a trailing `/`. */
+  readonly untracked: readonly string[];
 }
 
 type CheckpointDecision =
-  | { readonly kind: 'write'; readonly mode: CheckpointAttributionMode; readonly body: string; readonly paths: readonly string[] }
+  | {
+      readonly kind: 'write';
+      readonly mode: CheckpointAttributionMode;
+      readonly body: string;
+      readonly paths: readonly string[];
+      /** Paths this Run declared writing, or `null` when the whole tree is this Run's (sole-run). */
+      readonly declared: ReadonlySet<string> | null;
+    }
   | { readonly kind: 'decline'; readonly reason: CheckpointDeclineReason; readonly detail: Record<string, unknown> };
+
+const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
+  a: '\x07',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '"': '"',
+  '\\': '\\'
+};
+const QUOTED_PATH_TOKEN = /\\([0-7]{3}|[abfnrtv"\\])|([^\\]+)/g;
+
+/** A capture group of a match; an alternation leaves the group it did not take `undefined`. */
+const captured = (match: RegExpMatchArray, group: number): string | undefined => match[group];
+
+/**
+ * Porcelain v1 quotes a path holding a space, a control character, a quote, a backslash or a
+ * non-ASCII byte as a C string. Octal escapes are UTF-8 bytes, so they are decoded together.
+ */
+function unquoteGitPath(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const chunks: Buffer[] = [];
+  for (const token of raw.slice(1, -1).matchAll(QUOTED_PATH_TOKEN)) {
+    const escape = captured(token, 1);
+    const literal = captured(token, 2);
+    if (literal !== undefined) chunks.push(Buffer.from(literal, 'utf8'));
+    else if (escape !== undefined && /^[0-7]{3}$/.test(escape)) chunks.push(Buffer.from([parseInt(escape, 8)]));
+    else if (escape !== undefined) chunks.push(Buffer.from(SIMPLE_ESCAPES[escape] ?? '', 'utf8'));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function untrackedEntries(status: string): readonly string[] {
+  return status
+    .split('\n')
+    .filter((line) => line.startsWith(UNTRACKED_PREFIX))
+    .map((line) => unquoteGitPath(line.slice(UNTRACKED_PREFIX.length)));
+}
+
+/**
+ * Whether an untracked entry is one this Run declared, by the declared paths alone (hard rule
+ * 53: nothing here touches the filesystem). A collapsed directory (`dir/`) is this Run's when a
+ * declared path sits under it, and a file is this Run's when it is, or sits under, a declared path.
+ */
+function isDeclaredEntry(entry: string, declared: ReadonlySet<string>): boolean {
+  for (const path of declared) {
+    if (entry.endsWith('/') ? path.startsWith(entry) : path === entry || entry.startsWith(`${path}/`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export interface CheckpointCompletenessFields {
+  readonly completeness: 'complete' | 'incomplete';
+  readonly excludedUntracked: readonly string[];
+  readonly excludedUntrackedCount: number;
+  readonly unattributedUntrackedCount?: number;
+}
+
+/**
+ * FR-R4-F01 (FR-027, FR-032, data-model §5) — the part of the tree the patch cannot hold.
+ *
+ * `complete` only when no untracked, non-ignored entry exists. In the scoped modes the listing
+ * names this Run's declared entries only and counts the rest, so a sibling's path is never
+ * written into this Run's record.
+ */
+export function describeCheckpointCompleteness(
+  untracked: readonly string[],
+  declared: ReadonlySet<string> | null
+): CheckpointCompletenessFields {
+  const own = declared === null ? untracked : untracked.filter((entry) => isDeclaredEntry(entry, declared));
+  const base = {
+    completeness: untracked.length === 0 ? ('complete' as const) : ('incomplete' as const),
+    excludedUntracked: own.slice(0, MAX_REPORTED_PATHS),
+    excludedUntrackedCount: own.length
+  };
+  return declared === null ? base : { ...base, unattributedUntrackedCount: untracked.length - own.length };
+}
+
+type ArtifactWrite = 'written' | 'exists' | 'refused';
 
 /** Private recovery checkpoints captured immediately before Git-capable phases. */
 export class RunCheckpointService {
+  /** Feature 217 (FR-003, data-model.md §2) — says once, path-free, what narrowing found. */
+  private readonly narrowing = new NarrowingReporter('checkpoint:', (message) => this.logger.warn(message));
+
   /**
    * @param countInFlightRuns Feature 093 (T053, FR-022a) — how many Runs could
    *   currently hold uncommitted work in the shared worktree. Required rather
@@ -84,43 +255,59 @@ export class RunCheckpointService {
    *   of what the tree held before any of them started. Also required, and for
    *   the same reason: a service without one could only fall back to guessing,
    *   and the fallback would be invisible.
+   * @param isRecoveryEnvelopeProtected FR-R6-F08 (FR-017, research R10) — asked, with the
+   *   Run's and the handover's path segments, before `prune` removes an evicted
+   *   `.recovery.json`. Optional, and fail-safe when absent: with no predicate the
+   *   envelope is kept, because a recovery handoff may still need it. A predicate
+   *   that throws is treated as protected, and the prune still completes.
    */
   constructor(
     private readonly root: string,
     private readonly workspaceRoot: string,
     private readonly logger: SanitizedLogger,
     private readonly countInFlightRuns: () => number,
-    private readonly ledger: RunMutationLedger
+    private readonly ledger: RunMutationLedger,
+    private readonly isRecoveryEnvelopeProtected?: (runId: string, handoverId: string) => boolean,
+    private readonly resolveRunExecutionRoot?: (run: WorkflowRun) => Promise<string>
   ) {}
 
   public async checkpoint(run: WorkflowRun, phaseId: string): Promise<void> {
-    const safeRun = run.id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const safePhase = phaseId.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const runRoot = path.join(this.root, 'checkpoints', safeRun);
+    const safeRun = safeRunSegment(run.id);
+    const safePhase = safeRunSegment(phaseId);
+    const runRoot = path.join(this.root, RUN_CHECKPOINT_DIRECTORY, safeRun);
     const inFlight = this.countInFlightRuns();
 
     let capture: CheckpointCapture;
     try {
-      await this.ensureRunRoot(runRoot);
-      capture = await this.capture();
+      await this.ensureRunRoot(safeRun);
+    } catch {
+      throw this.blocked('artifact-write-failed');
+    }
+    try {
+      const effectiveRoot = (await this.resolveRunExecutionRoot?.(run)) ?? this.workspaceRoot;
+      capture = await this.capture(effectiveRoot);
     } catch (error) {
       // A tree that cannot be read is a snapshot failure, not a decline, and the
       // two must stay different outcomes: this blocks the Git-capable phase.
-      this.logger.warn(`checkpoint failed; Git-capable phase blocked: ${(error as Error).message}`);
-      throw new Error('checkpoint-unavailable');
+      throw this.blocked(error instanceof CheckpointUnavailableError ? error.reason : 'capture-failed');
     }
 
     const decision = this.decide(run, inFlight, capture);
     if (decision.kind === 'decline') {
-      await this.recordDeclined(runRoot, run, phaseId, safePhase, inFlight, decision);
+      await this.recordDeclined(runRoot, safeRun, run, phaseId, safePhase, inFlight, decision);
       return;
     }
 
     try {
-      const prefix = `${Date.now()}-${safePhase}`;
-      await fs.writeFile(path.join(runRoot, `${prefix}.patch`), decision.body, { mode: 0o600 });
-      await fs.writeFile(
-        path.join(runRoot, `${prefix}.json`),
+      // FR-R4-F01 (FR-030, K3) — the patch claims its prefix by exclusive create, so two captures
+      // in one millisecond take `-1`, `-2` rather than overwriting each other. The manifest uses
+      // the prefix the patch won. FR-R3-053 — both artifacts through the walk, the patch first:
+      // if it is refused there is no point writing a manifest that points at nothing.
+      const prefix = await this.claimPatch(safeRun, `${Date.now()}-${safePhase}`, decision.body);
+      if (prefix === null) return;
+      await this.writeCheckpointArtifact(
+        safeRun,
+        `${prefix}.json`,
         JSON.stringify(
           {
             runId: run.id,
@@ -136,18 +323,45 @@ export class RunCheckpointService {
               mode: decision.mode,
               inFlightRuns: inFlight,
               paths: decision.paths.slice(0, MAX_REPORTED_PATHS)
-            }
+            },
+            // FR-R4-F01 (FR-027) — what the patch above cannot hold.
+            ...describeCheckpointCompleteness(capture.untracked, decision.declared)
           },
           null,
           2
         ),
-        { mode: 0o600 }
+        'overwrite'
       );
-      await this.prune(runRoot);
-    } catch (error) {
-      this.logger.warn(`checkpoint failed; Git-capable phase blocked: ${(error as Error).message}`);
-      throw new Error('checkpoint-unavailable');
+    } catch {
+      throw this.blocked('artifact-write-failed');
     }
+    // FR-R7-16 (16-11, FR-011) — retention runs best-effort outside the snapshot write boundary
+    // so a prune I/O failure never turns an already-finished checkpoint into a phase block.
+    try {
+      await this.prune(runRoot);
+    } catch {
+      this.logger.warn('checkpoint prune failed after checkpoint completed');
+    }
+  }
+
+  /** Log the reason alone (no path, no raw error) and return the typed error to throw. */
+  private blocked(reason: CheckpointUnavailableReason): CheckpointUnavailableError {
+    this.logger.warn(`checkpoint failed; Git-capable phase blocked: ${reason}`);
+    return new CheckpointUnavailableError(reason);
+  }
+
+  /**
+   * Write the patch under the lowest free prefix: `base`, then `base-1`, `base-2`. Returns the
+   * prefix it won, or `null` when the write was refused (already logged by the writer).
+   */
+  private async claimPatch(safeRun: string, base: string, body: string): Promise<string | null> {
+    for (let attempt = 0; attempt <= MAX_PREFIX_COLLISIONS; attempt += 1) {
+      const prefix = attempt === 0 ? base : `${base}-${attempt}`;
+      const written = await this.writeCheckpointArtifact(safeRun, `${prefix}.patch`, body, 'exclusive');
+      if (written === 'written') return prefix;
+      if (written === 'refused') return null;
+    }
+    throw new CheckpointUnavailableError('artifact-write-failed');
   }
 
   /**
@@ -164,10 +378,10 @@ export class RunCheckpointService {
     inFlight: number,
     capture: CheckpointCapture
   ): CheckpointDecision {
-    // One Run in flight: the tree's uncommitted content is that Run's, and the
-    // whole-tree diff is written exactly as it is today.
-    if (inFlight <= 1) {
-      return { kind: 'write', mode: 'sole-run', body: capture.diff, paths: [] };
+    // One Run in flight, or an isolated execution lane whose worktree diff is exclusively its own
+    // (`run-isolation-decision.md` §8b Q1): write the whole-tree diff directly before the ledger.
+    if (run.laneId !== undefined || inFlight <= 1) {
+      return { kind: 'write', mode: 'sole-run', body: capture.diff, paths: [], declared: null };
     }
 
     this.ledger.syncLiveness();
@@ -227,7 +441,8 @@ export class RunCheckpointService {
         kind: 'write',
         mode: 'no-sibling-work-present',
         body: capture.diff,
-        paths: present.map((section) => section.path)
+        paths: present.map((section) => section.path),
+        declared: evidence.paths
       };
     }
 
@@ -248,28 +463,147 @@ export class RunCheckpointService {
       kind: 'write',
       mode: 'scoped',
       body: joinDiffSections(mine),
-      paths: mine.map((section) => section.path)
+      paths: mine.map((section) => section.path),
+      declared: evidence.paths
     };
   }
 
-  private async capture(): Promise<CheckpointCapture> {
-    const [{ stdout: diff }, { stdout: status }, { stdout: head }] = await Promise.all([
-      runExecFile('git', ['diff', '--binary', '--no-ext-diff', 'HEAD'], {
-        cwd: this.workspaceRoot,
-        maxBuffer: 20 * 1024 * 1024
-      }),
-      runExecFile('git', ['status', '--porcelain=v1'], {
-        cwd: this.workspaceRoot,
-        maxBuffer: 1024 * 1024
-      }),
-      runExecFile('git', ['rev-parse', 'HEAD'], { cwd: this.workspaceRoot, maxBuffer: 1024 })
+  /**
+   * Read the tree against the base a diff can be taken from.
+   *
+   * The base is resolved first rather than alongside, because the diff needs it:
+   * `HEAD` is not a usable ref in a workspace whose first commit has not been
+   * made, and `resolveDiffBase` answers with the empty tree there. That is the
+   * one shape of failure this method deliberately does *not* propagate — an
+   * unborn HEAD is a readable tree with no commit behind it, and it used to
+   * reach the caller's `catch` as `checkpoint-unavailable`, blocking the first
+   * Git-capable phase in every fresh workspace. Every other fault still throws.
+   */
+  private async capture(effectiveRoot: string = this.workspaceRoot): Promise<CheckpointCapture> {
+    const base = await resolveDiffBase(effectiveRoot);
+    const [diff, status] = await Promise.all([
+      this.runGit(['diff', '--binary', '--no-ext-diff', '--no-textconv', base.ref], DIFF_MAX_BUFFER_BYTES, 'diff-size-limit', effectiveRoot),
+      // `--untracked-files=normal` is explicit so a user's `status.showUntrackedFiles=no` cannot
+      // turn "an untracked file exists" into a `complete` record.
+      this.runGit(
+        ['status', '--porcelain=v1', '--untracked-files=normal'],
+        STATUS_MAX_BUFFER_BYTES,
+        'status-size-limit',
+        effectiveRoot
+      )
     ]);
-    return { diff, sections: splitDiffSections(diff), status, baseCommit: head.trim() };
+    return {
+      diff,
+      sections: splitDiffSections(diff),
+      status,
+      baseCommit: base.ref,
+      untracked: untrackedEntries(status)
+    };
   }
 
-  private async ensureRunRoot(runRoot: string): Promise<void> {
-    await fs.mkdir(runRoot, { recursive: true, mode: 0o700 });
-    await fs.chmod(runRoot, 0o700);
+  /**
+   * One bounded git call. A stream that outgrows its buffer is a typed reason of its own: the
+   * operator's fix (shrink the tree) is unlike the fix for a git that would not run.
+   */
+  private async runGit(
+    args: readonly string[],
+    maxBuffer: number,
+    overflow: CheckpointUnavailableReason,
+    cwd: string = this.workspaceRoot
+  ): Promise<string> {
+    try {
+      const { stdout } = await runExecFile(spawnCommandFor('git'), withHostGitConfig(args), { cwd, maxBuffer });
+      return stdout;
+    } catch (error) {
+      if ((error as { code?: unknown }).code === MAX_BUFFER_EXCEEDED) {
+        throw new CheckpointUnavailableError(overflow);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * FR-R3-053 — the pre-flight, through the walk.
+   *
+   * Kept as a pre-flight rather than folded into the artifact writes: it runs
+   * before `capture()` so a directory that cannot be created blocks the
+   * Git-capable phase as `checkpoint-unavailable`, which is deliberately a
+   * different outcome from a decline. Doing it only at write time would turn that
+   * into a silent missing checkpoint after the work had already run.
+   *
+   * Throws on refusal, because the caller's `catch` is what maps it to
+   * `checkpoint-unavailable`.
+   */
+  /**
+   * FR-R3-053 — `this.root` is the trust anchor, and creating it is deliberately
+   * outside the walk's remit.
+   *
+   * In production `this.root` is `context.globalStorageUri.fsPath` — VS Code's
+   * per-extension global storage, which is **not under the workspace** and is a
+   * directory the extension is expected to create. `openWithinRoot` bounds paths
+   * beneath a root it trusts; it never creates that root, because the root is the
+   * one path it does not verify. Those two facts fit together here: the anchor is
+   * extension-owned storage outside the workspace, and everything beneath it —
+   * `checkpoints/<runId>/…`, where an unredacted binary Git diff lands — goes
+   * through the checked walk.
+   *
+   * An earlier attempt walked from `workspaceRoot` instead, on the assumption that
+   * the root sat under it. It does not, and every checkpoint was refused. Recorded
+   * because the assumption looks reasonable and is wrong.
+   */
+  private async ensureRunRoot(safeRun: string): Promise<void> {
+    await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
+    const ready = await ensureDirWithinRoot(this.root, [RUN_CHECKPOINT_DIRECTORY, safeRun], 0o700);
+    if (ready.outcome === 'refused') {
+      throw new Error(`checkpoint run root refused: ${ready.reason} (${ready.errno})`);
+    }
+  }
+
+  /**
+   * FR-R3-053 (H-02) — write one checkpoint artifact through the safe walk.
+   *
+   * A checkpoint patch can contain an **unredacted binary Git diff** — the threat
+   * model says so — so a symlink at any component of
+   * `<root>/checkpoints/<runId>/` redirects that content out of the workspace.
+   * `mkdir -p` followed by `writeFile` on a composed path followed neither
+   * component nor leaf safely.
+   *
+   * `createDirs` builds `checkpoints/<runId>` as part of the walk, which is what
+   * `ensureRunRoot` was doing with `mkdir -p`; the chain is created with the same
+   * 0o700 it had.
+   *
+   * Returns whether it wrote, so a caller reports a refusal rather than assuming
+   * the artifact exists.
+   */
+  private async writeCheckpointArtifact(
+    safeRun: string,
+    leaf: string,
+    body: string,
+    mode: 'overwrite' | 'exclusive'
+  ): Promise<ArtifactWrite> {
+    const opened = await openWithinRoot(this.root, [RUN_CHECKPOINT_DIRECTORY, safeRun, leaf], {
+      flags: mode === 'exclusive' ? 'wx' : 'w',
+      createDirs: true,
+      dirMode: 0o700,
+      fileMode: 0o600
+    });
+    if (opened.outcome === 'refused') {
+      // EEXIST from an exclusive create is the expected outcome of a same-millisecond capture,
+      // not a refusal: the caller takes the next suffix.
+      if (mode === 'exclusive' && opened.errno === 'EEXIST') return 'exists';
+      this.logger.warn(
+        `checkpoint artifact refused: ${opened.reason} (${opened.errno}); ` +
+          'checkpoint not written'
+      );
+      return 'refused';
+    }
+    this.narrowing.report(opened.narrowing);
+    try {
+      await opened.handle.write(body, null, 'utf8');
+      return 'written';
+    } finally {
+      await opened.handle.close().catch(() => undefined);
+    }
   }
 
   /**
@@ -296,6 +630,9 @@ export class RunCheckpointService {
    */
   private async recordDeclined(
     runRoot: string,
+    // FR-R3-053 — the safe run SEGMENT, not only the composed `runRoot`. The walk
+    // needs the segment; `runRoot` stays for `prune`, which is path-based.
+    safeRun: string,
     run: WorkflowRun,
     phaseId: string,
     safePhase: string,
@@ -306,9 +643,12 @@ export class RunCheckpointService {
       `checkpoint declined: ${decision.reason} runId=${run.id} phaseId=${phaseId} inFlightRuns=${inFlightRuns}`
     );
     try {
-      await this.ensureRunRoot(runRoot);
-      await fs.writeFile(
-        path.join(runRoot, `${Date.now()}-${safePhase}.declined.json`),
+      // FR-R3-053 — the declined manifest through the same walk. It carries no
+      // patch body, but it lands in the same directory, and a redirect that can
+      // place a file there can place any file there.
+      await this.writeCheckpointArtifact(
+        safeRun,
+        `${Date.now()}-${safePhase}.declined.json`,
         JSON.stringify(
           {
             runId: run.id,
@@ -322,14 +662,19 @@ export class RunCheckpointService {
           null,
           2
         ),
-        { mode: 0o600 }
+        'overwrite'
       );
       // Markers are pruned on the same per-Run budget as snapshots — a Run that
       // spends its whole life beside a sibling writes one per Git-capable phase
       // and would otherwise be the one path here that grows without a bound.
-      await this.prune(runRoot);
     } catch (error) {
       this.logger.warn(`checkpoint decline marker failed: ${(error as Error).message}`);
+      return;
+    }
+    try {
+      await this.prune(runRoot);
+    } catch {
+      this.logger.warn('checkpoint prune failed after checkpoint completed');
     }
   }
 
@@ -350,13 +695,242 @@ export class RunCheckpointService {
    */
   private async prune(runRoot: string): Promise<void> {
     const files = (await fs.readdir(runRoot)).sort();
-    const prefixes = [...new Set(files.map((name) => name.replace(/\.(patch|json)$/, '')))];
-    for (const prefix of prefixes.slice(0, Math.max(0, prefixes.length - PER_RUN_LIMIT))) {
-      await Promise.all([
-        this.removeIfContained(path.join(runRoot, `${prefix}.patch`)),
-        this.removeIfContained(path.join(runRoot, `${prefix}.json`))
-      ]);
+    const fileSet = new Set(files);
+    // FR-R7-16 (16-11, FR-011) — partition checkpoint prefixes (`.patch`/`.json`/`.declined.json`)
+    // from `.recovery.json` envelope prefixes so retained envelopes (e.g. `hand-*`) never displace
+    // newly written `17...-<phase>` checkpoints, absent files are never unlinked, and unowned
+    // envelopes past `PER_RUN_LIMIT` are still reaped across repeated prunes.
+    const checkpointPrefixSet = new Set<string>();
+    const envelopePrefixSet = new Set<string>();
+    for (const name of files) {
+      if (name.endsWith(RECOVERY_ENVELOPE_SUFFIX)) {
+        envelopePrefixSet.add(name.slice(0, -RECOVERY_ENVELOPE_SUFFIX.length));
+      } else if (name.endsWith('.declined.json')) {
+        checkpointPrefixSet.add(name.slice(0, -'.declined.json'.length));
+      } else if (name.endsWith('.patch')) {
+        checkpointPrefixSet.add(name.slice(0, -'.patch'.length));
+      } else if (name.endsWith('.json')) {
+        checkpointPrefixSet.add(name.slice(0, -'.json'.length));
+      }
     }
+    const checkpointPrefixes = [...checkpointPrefixSet].sort();
+    for (const prefix of checkpointPrefixes.slice(0, Math.max(0, checkpointPrefixes.length - PER_RUN_LIMIT))) {
+      const removals: Promise<void>[] = [];
+      for (const suffix of ['.patch', '.json', '.declined.json'] as const) {
+        const fileName = `${prefix}${suffix}`;
+        if (fileSet.has(fileName)) {
+          removals.push(this.removeIfContained(path.join(runRoot, fileName)));
+        }
+      }
+      await Promise.all(removals);
+    }
+    const envelopePrefixes = [...envelopePrefixSet].sort();
+    for (const prefix of envelopePrefixes.slice(0, Math.max(0, envelopePrefixes.length - PER_RUN_LIMIT))) {
+      const fileName = `${prefix}${RECOVERY_ENVELOPE_SUFFIX}`;
+      if (fileSet.has(fileName)) {
+        await this.removeEnvelopeUnlessProtected(runRoot, prefix);
+      }
+    }
+  }
+
+  /**
+   * FR-R6-F08 (R10) — an evicted envelope goes only when a wired predicate says it is unprotected.
+   * A predicate that throws counts as protected: the envelope is kept and the prune goes on.
+   */
+  private async removeEnvelopeUnlessProtected(runRoot: string, prefix: string): Promise<void> {
+    const predicate = this.isRecoveryEnvelopeProtected;
+    if (predicate === undefined) return;
+    let isProtected: boolean;
+    try {
+      isProtected = predicate(path.basename(runRoot), prefix);
+    } catch {
+      this.logger.warn('checkpoint prune kept recovery envelope: protection check failed');
+      return;
+    }
+    if (isProtected) return;
+    await this.removeIfContained(path.join(runRoot, `${prefix}${RECOVERY_ENVELOPE_SUFFIX}`));
+  }
+
+  /**
+   * Captures and records the pre-attempt workspace snapshot before a candidate attempt starts (`SPEC-05` / `D5`).
+   * Never executes destructive Git commands (`reset`, `checkout`, `restore`, `clean`, `stash`).
+   */
+  public async captureBeforeCandidateAttempt(
+    runId: string,
+    attemptId: string,
+    options?: Omit<CaptureWorkspaceObservationOptions, 'workspaceRoot'>
+  ): Promise<WorkspaceObservationSnapshot> {
+    const baseline = this.ledger.baselinePaths();
+    const mergedDirty = new Set<string>(baseline);
+    if (options?.explicitDirtyPaths !== undefined) {
+      for (const dirty of options.explicitDirtyPaths) {
+        mergedDirty.add(dirty);
+      }
+    }
+    const snapshot = await captureWorkspaceObservation({
+      ...options,
+      workspaceRoot: this.workspaceRoot,
+      explicitDirtyPaths: mergedDirty
+    });
+    this.ledger.recordCandidateBeforeSnapshot(`${runId}:${attemptId}`, snapshot);
+    return snapshot;
+  }
+
+  /**
+   * Persists a validated, redacted, `16,384`-byte bounded `RecoveryEnvelope` under owner-only
+   * checkpoint storage (`<root>/checkpoints/<safeRun>/<safeSegment(handoverId)>.recovery.json`).
+   */
+  public async writeRecoveryEnvelope(
+    runId: string,
+    handoverId: string,
+    handover: RecoveryEnvelope
+  ): Promise<RecoveryEnvelopeSerializeResult> {
+    const serialized = serializeRecoveryEnvelope(handover);
+    if (!serialized.ok) {
+      return serialized;
+    }
+    const safeRun = safeRunSegment(runId);
+    const runRoot = path.join(this.root, RUN_CHECKPOINT_DIRECTORY, safeRun);
+    await this.ensureRunRoot(safeRun);
+    const leaf = recoveryEnvelopeFileName(handoverId);
+    const written = await this.writeCheckpointArtifact(
+      safeRun,
+      leaf,
+      serialized.serialized,
+      'overwrite'
+    );
+    if (written === 'refused') {
+      throw this.blocked('artifact-write-failed');
+    }
+    await this.prune(runRoot).catch(() => undefined);
+    return serialized;
+  }
+
+  /**
+   * Reads and validates a persisted `.recovery.json` handover artifact under containment.
+   * Returns `null` if the artifact does not exist.
+   */
+  public async readRecoveryEnvelope(
+    runId: string,
+    handoverId: string
+  ): Promise<RecoveryEnvelopeValidationResult | null> {
+    const safeRun = safeRunSegment(runId);
+    const leaf = recoveryEnvelopeFileName(handoverId);
+    let opened;
+    try {
+      opened = await openWithinRoot(this.root, [RUN_CHECKPOINT_DIRECTORY, safeRun, leaf], {
+        flags: 'r'
+      });
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        return null;
+      }
+      throw err;
+    }
+    if (opened.outcome === 'refused') {
+      if (opened.errno === 'ENOENT') {
+        return null;
+      }
+      return {
+        ok: false,
+        diagnostics: [
+          {
+            code: 'invalid-recovery-envelope-field',
+            field: 'recoveryEnvelope',
+            message: `Recovery envelope read refused: ${opened.reason}`
+          }
+        ]
+      };
+    }
+    try {
+      const stat = await opened.handle.stat();
+      if (!stat.isFile() || stat.size > MAX_RECOVERY_ENVELOPE_BYTES) {
+        return {
+          ok: false,
+          diagnostics: [
+            {
+              code: 'recovery-context-too-large',
+              field: 'recoveryEnvelope',
+              message: `Persisted recovery envelope exceeds ${MAX_RECOVERY_ENVELOPE_BYTES} UTF-8 bytes.`
+            }
+          ]
+        };
+      }
+      const range = await readBoundedRange(opened.handle, 0, stat.size);
+      const parsed: unknown = JSON.parse(range.bytes.toString('utf8'));
+      return validateRecoveryEnvelope(parsed);
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        diagnostics: [
+          {
+            code: 'invalid-recovery-envelope-field',
+            field: 'recoveryEnvelope',
+            message: `Failed to parse recovery envelope JSON: ${(err as Error).message}`
+          }
+        ]
+      };
+    } finally {
+      await opened.handle.close().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Captures the post-attempt workspace observation, combines it with the pre-attempt observation
+   * and sibling mutation ledger, builds the bounded `RecoveryEnvelope`, and persists `.recovery.json`.
+   */
+  public async captureAndPersistCandidateHandover(
+    runId: string,
+    handoverId: string,
+    options: Omit<BuildRecoveryEnvelopeOptions, 'beforeObservation' | 'afterObservation'> & {
+      readonly beforeObservation?: WorkspaceObservationSnapshot | undefined;
+      readonly afterObservation?: WorkspaceObservationSnapshot | undefined;
+      readonly captureOptions?: Omit<CaptureWorkspaceObservationOptions, 'workspaceRoot'> | undefined;
+    }
+  ): Promise<RecoveryEnvelopeSerializeResult> {
+    const attemptKey =
+      options.previousAttemptId !== undefined ? `${runId}:${options.previousAttemptId}` : undefined;
+    const beforeObservation =
+      options.beforeObservation ??
+      (attemptKey !== undefined ? this.ledger.getCandidateBeforeSnapshot(attemptKey) : undefined);
+
+    const afterObservation =
+      options.afterObservation ??
+      (await captureWorkspaceObservation({
+        ...options.captureOptions,
+        workspaceRoot: this.workspaceRoot,
+        explicitDirtyPaths: this.ledger.baselinePaths()
+      }));
+
+    this.ledger.syncLiveness();
+    const siblingPaths = this.ledger.pathsAttributedToOthers(runId);
+    const mergedConcurrent = new Set<string>(siblingPaths);
+    if (options.concurrentPaths !== undefined) {
+      for (const item of options.concurrentPaths) {
+        mergedConcurrent.add(item);
+      }
+    }
+
+    const built = buildRecoveryEnvelope({
+      invocationId: options.invocationId,
+      previousAttemptId: options.previousAttemptId,
+      previousOutcome: options.previousOutcome,
+      upstreamArtifactRefs: options.upstreamArtifactRefs,
+      partialArtifactRefs: options.partialArtifactRefs,
+      beforeObservation,
+      afterObservation,
+      concurrentPaths: mergedConcurrent,
+      sideEffects: options.sideEffects,
+      hasAttributableTeardown: options.hasAttributableTeardown,
+      verifiedReconciliation: options.verifiedReconciliation,
+      effectEvidenceRefs: options.effectEvidenceRefs
+    });
+
+    if (!built.ok) {
+      return built;
+    }
+
+    return this.writeRecoveryEnvelope(runId, handoverId, built.handover);
   }
 
   private async removeIfContained(victim: string): Promise<void> {

@@ -164,13 +164,37 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
     // and the right resolution is to keep it on the history record instead.
     expect(declaredFields('src/queue/feature-request.ts', 'FeatureRequest')).toEqual([
       'completedAt',
+      // FR-026 — added by feature 195 (T065), and the field FR-050 has the most
+      // reason to be suspicious of, because it exists to be *read* later. The
+      // widening is still not History's: the marker says the operator asserted
+      // this task's outcome rather than the host observing it, and the record it
+      // qualifies is the task's own `status`, so a copy on the history record
+      // would be a second representation of a fact this row already holds — the
+      // shape `QueueState.paused` is a monument to. History may read it; that is
+      // exactly what FR-050 permits and what it forbids adding for.
+      'completionProvenance',
       'createdAt',
+      // FR-R3-157 — added by feature 199, and additive for the same structural
+      // reason `phaseProgress` below is: the mark says a Phase was carried past
+      // an unsatisfied condition, and the Run that knows it is disposed the
+      // moment the next task starts. A mark that lived only on the Run would
+      // answer correctly until the moment an operator had reason to ask. This
+      // entry records the widening; the set stays exact, so anything ELSE
+      // appearing here still fails, which is what FR-050 guards.
+      'degradedPhases',
       'description',
       'enqueuedAt',
       'id',
       'lastError',
       'pauseCause',
       'pausedReason',
+      // FR-R3-158 — added by feature 198, not by a History surface. The pair a
+      // task settled has to outlive the Run that knew it (Runs are held one per
+      // queue, so the next task to start disposes it), which puts it on the task
+      // record by necessity rather than convenience. The pin stays exhaustive:
+      // this entry records a deliberate widening, and anything else appearing
+      // here still fails, which is what FR-050 is guarding.
+      'phaseProgress',
       'pipelineId',
       'position',
       'queueId',
@@ -183,7 +207,11 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
       'runPlan',
       'startedAt',
       'status',
-      'updatedAt'
+      'updatedAt',
+      // FR-R5-F08 — added by feature 267, not by a History surface. The occurrence identity
+      // makes a Workflow's Phase dispatch idempotent: a re-dispatch of the same attempt finds
+      // the queue item it already made. History neither reads nor writes it.
+      'workflowOccurrence'
     ]);
   });
 
@@ -204,13 +232,23 @@ describe('the queue model is unchanged by this feature (T083, FR-050)', () => {
 // ---------------------------------------------------------------------------
 
 describe('the audit writer is unchanged by this feature (T083, FR-050)', () => {
-  it('the event-type vocabulary did not grow', () => {
-    // Pinned by count. This feature reads the audit corpus — that is what the
-    // evidence panel does — and reading may not add a word to the vocabulary.
-    expect(ALL_AUDIT_EVENT_TYPES).toHaveLength(103);
-  });
-
   it('added no event type for the History surface', () => {
+    // FR-R3-067 — the global `expect(ALL_AUDIT_EVENT_TYPES).toHaveLength(N)` that
+    // used to stand here is GONE, and its removal is the point rather than a
+    // tidy-up.
+    //
+    // It used a GLOBAL count to prove a LOCAL negative. Every additive event
+    // anywhere in the contract landed on this test, in a file about a different
+    // feature entirely: FR-R3-064 moved it 103 -> 104 for `backend-posture-admitted`,
+    // which has nothing to do with History. A number re-blessed without being read
+    // is worse than no number, and this one had begun collecting re-blessings.
+    //
+    // The assertion below is what the count was standing in for, and it cannot go
+    // stale: it names the SHAPE it forbids — any event type mentioning history —
+    // rather than a cardinality of everything. FR-050's claim is that this feature
+    // READS the audit corpus and does not add to it, and that is exactly what an
+    // event-name filter tests.
+    //
     // The two that mention history predate this feature and are about repairing
     // and re-attributing stored records, not about a surface reading them.
     expect(ALL_AUDIT_EVENT_TYPES.filter((type) => /histor/i.test(type)).sort()).toEqual([

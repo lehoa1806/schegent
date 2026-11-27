@@ -26,6 +26,7 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContinueWorkflowPayload, ContinueWorkflowResult } from '../../../lib/messages';
 import type {
+  ConnectedInvocationProjection,
   ConnectedNodeProjection,
   ConnectedRunProjection,
   PipelineDefinition,
@@ -33,8 +34,10 @@ import type {
 } from '../../../lib/snapshot-types';
 
 const continueSpy = vi.fn<(payload: ContinueWorkflowPayload) => Promise<ContinueWorkflowResult>>();
+const controlSpy = vi.fn<(...args: readonly unknown[]) => Promise<ContinueWorkflowResult>>();
 vi.mock('../../../lib/workflow-run-ipc', () => ({
-  continueWorkflow: (payload: ContinueWorkflowPayload) => continueSpy(payload)
+  continueWorkflow: (payload: ContinueWorkflowPayload) => continueSpy(payload),
+  controlWorkflowRun: (...args: readonly unknown[]) => controlSpy(...args)
 }));
 
 // The overwrite decision inside the reused output section goes through the
@@ -93,7 +96,8 @@ const QUEUE_ITEM: QueueItem = {
   lastErrorSummary: null,
   pausedReason: null,
   currentPhase: 'speckit-plan',
-  position: 0
+  position: 0,
+  phaseProgress: null
 };
 
 const STARTED: ContinueWorkflowResult = {
@@ -127,6 +131,8 @@ function submitted(): ContinueWorkflowPayload {
 beforeEach(() => {
   continueSpy.mockReset();
   continueSpy.mockResolvedValue(STARTED);
+  controlSpy.mockReset();
+  controlSpy.mockResolvedValue(STARTED);
   confirmSpy.mockReset();
   confirmSpy.mockResolvedValue(true);
 });
@@ -382,5 +388,277 @@ describe('WorkflowRun — operator text is text (FR-059)', () => {
     expect(getByTestId('workflow-run-title').textContent).toBe(hostile);
     expect(getByTestId(`workflow-node-id-${hostile}`).textContent).toBe(hostile);
     expect(container.querySelector('b')).toBeNull();
+  });
+});
+
+describe('WorkflowRun — hierarchical invocation tree and controls (FR-R5-F06)', () => {
+  function inv(
+    overrides: Partial<ConnectedInvocationProjection> & Pick<ConnectedInvocationProjection, 'invocationId'>
+  ): ConnectedInvocationProjection {
+    return {
+      parentInvocationId: null,
+      workflowId: 'research-workflow',
+      depth: 0,
+      nodePath: 'research-workflow',
+      status: 'in-flight',
+      currentNodeId: null,
+      activeAttemptId: null,
+      activeAttemptIndex: null,
+      waitingReason: null,
+      pauseCause: null,
+      failureReason: null,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      allowedActions: [],
+      attempts: [],
+      outputPortIds: [],
+      ...overrides
+    };
+  }
+
+  it('renders distinct invocationId and nodePath across repeated child Workflow occurrences and supports expand/collapse', async () => {
+    const { getByTestId, queryByTestId } = mount(
+      run({
+        queueId: 'queue-bound-1',
+        status: 'in-flight',
+        rootInvocationId: 'inv-root',
+        activeInvocationId: 'inv-child-2',
+        recoveryDisposition: {
+          status: 'clean-handoff',
+          reason: 'Recovered cleanly after restart.',
+          targetInvocationId: 'inv-child-2'
+        },
+        invocations: [
+          inv({
+            invocationId: 'inv-root',
+            workflowName: 'Research Workflow',
+            frozenVersionId: 'v3',
+            currentNodeId: 'call-2',
+            allowedActions: ['pause', 'cancel'],
+            outputPortIds: ['final-summary']
+          }),
+          inv({
+            invocationId: 'inv-child-1',
+            parentInvocationId: 'inv-root',
+            workflowId: 'sub-review',
+            workflowName: 'Sub Review',
+            frozenVersionId: 'v1',
+            depth: 1,
+            nodePath: 'research-workflow/call-1/sub-review',
+            status: 'completed',
+            attempts: [
+              {
+                attemptId: 'att-1',
+                attemptIndex: 1,
+                nodeId: 'review-step',
+                nodeKind: 'phase',
+                status: 'completed',
+                startedAt: 1000,
+                endedAt: 2000
+              }
+            ],
+            outputPortIds: ['verdict']
+          }),
+          inv({
+            invocationId: 'inv-child-2',
+            parentInvocationId: 'inv-root',
+            workflowId: 'sub-review',
+            workflowName: 'Sub Review',
+            frozenVersionId: 'v1',
+            depth: 1,
+            nodePath: 'research-workflow/call-2/sub-review',
+            status: 'paused',
+            currentNodeId: 'review-step',
+            pauseCause: 'operator-pause',
+            waitingReason: 'Paused by operator.',
+            allowedActions: ['resume', 'cancel']
+          })
+        ]
+      })
+    );
+
+    expect(getByTestId('workflow-run-queue').textContent).toContain('queue-bound-1');
+    expect(getByTestId('workflow-run-overall-status').textContent).toBe('in-flight');
+    expect(getByTestId('workflow-run-recovery-disposition').textContent).toContain(
+      'clean-handoff'
+    );
+    expect(getByTestId('workflow-invocation-tree')).toBeTruthy();
+    expect(getByTestId('workflow-invocation-id-inv-child-1').textContent).toBe('inv-child-1');
+    expect(getByTestId('workflow-invocation-path-inv-child-1').textContent).toBe(
+      'research-workflow/call-1/sub-review'
+    );
+    expect(getByTestId('workflow-invocation-id-inv-child-2').textContent).toBe('inv-child-2');
+    expect(getByTestId('workflow-invocation-path-inv-child-2').textContent).toBe(
+      'research-workflow/call-2/sub-review'
+    );
+    expect(getByTestId('workflow-invocation-diagnostic-inv-child-2').textContent).toContain(
+      'operator-pause'
+    );
+
+    // Toggle collapse on inv-child-1
+    expect(getByTestId('workflow-invocation-attempt-att-1')).toBeTruthy();
+    await fireEvent.click(getByTestId('workflow-invocation-toggle-inv-child-1'));
+    expect(queryByTestId('workflow-invocation-attempt-att-1')).toBeNull();
+  });
+
+  it('dispatches invocation-scoped control commands with expectedRevision and target invocationId', async () => {
+    const { getByTestId } = mount(
+      run({
+        revision: 14,
+        rootInvocationId: 'inv-root',
+        invocations: [
+          inv({
+            invocationId: 'inv-root',
+            currentNodeId: 'node-a',
+            allowedActions: ['pause', 'cancel']
+          })
+        ]
+      })
+    );
+
+    await fireEvent.click(getByTestId('workflow-invocation-action-inv-root-pause'));
+    await tick();
+    await tick();
+
+    expect(continueSpy).toHaveBeenCalledTimes(1);
+    expect(continueSpy.mock.calls[0]?.[0]).toMatchObject({
+      connectedRunId: 'connected-run-1',
+      expectedRevision: 14,
+      invocationId: 'inv-root',
+      operation: 'pause'
+    });
+  });
+
+  it('renders pause explanation and guidance when an invocation is paused for recovery-uncertain-effect (FR-R5-F08)', () => {
+    const { getByTestId } = mount(
+      run({
+        revision: 15,
+        rootInvocationId: 'inv-root',
+        invocations: [
+          inv({
+            invocationId: 'inv-root',
+            status: 'paused',
+            currentNodeId: 'node-a',
+            pauseCause: 'recovery-uncertain-effect',
+            pauseExplanation:
+              'Paused during restart recovery because an interrupted Phase attempt had unconfirmed completion evidence.',
+            pauseGuidance:
+              'Inspect workspace outputs, then choose Resume (reconciles evidence before re-dispatching), Retry Phase, or Cancel.',
+            allowedActions: ['resume', 'retry-phase', 'cancel']
+          })
+        ]
+      })
+    );
+
+    const guidanceEl = getByTestId('workflow-invocation-pause-guidance-inv-root');
+    expect(guidanceEl.textContent).toContain('Paused during restart recovery');
+    expect(guidanceEl.textContent).toContain('Inspect workspace outputs');
+  });
+});
+
+// Feature 265 BUG-001 (FR-009) — every node and attempt that names a Task the
+// queue holds opens that Task, by pointer and by keyboard. A control is offered
+// only where it can land: no attempt, a `workflow` attempt (it names a child
+// invocation, not a Task), or a Task the queue no longer holds gets none.
+describe('WorkflowRun — member Tasks open from the topology (Feature 265 BUG-001)', () => {
+  const MEMBER: QueueItem = { ...QUEUE_ITEM, id: 'member-a1', status: 'completed', currentPhase: null };
+
+  function memberRun(): ConnectedRunProjection {
+    return run({
+      nodes: [
+        node({ nodeId: 'node-a', state: 'completed', actions: [], attemptCount: 1, latestQueueItemId: MEMBER.id }),
+        node({ nodeId: 'node-b', state: 'unvisited', actions: [], attemptCount: 0 })
+      ],
+      invocations: [
+        {
+          invocationId: 'inv-root',
+          parentInvocationId: null,
+          workflowId: 'research-workflow',
+          depth: 0,
+          nodePath: 'research-workflow',
+          status: 'in-flight',
+          currentNodeId: 'node-a',
+          activeAttemptId: null,
+          activeAttemptIndex: null,
+          allowedActions: [],
+          waitingReason: null,
+          pauseCause: null,
+          failureReason: null,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          outputPortIds: [],
+          attempts: [
+            { attemptId: 'att-held', attemptIndex: 1, nodeId: 'node-a', nodeKind: 'phase', status: 'completed', startedAt: 1, endedAt: 2, queueItemId: MEMBER.id },
+            { attemptId: 'att-child', attemptIndex: 1, nodeId: 'node-c', nodeKind: 'workflow', status: 'in-flight', startedAt: 3, childInvocationId: 'inv-child' },
+            { attemptId: 'att-gone', attemptIndex: 2, nodeId: 'node-a', nodeKind: 'phase', status: 'failed', startedAt: 4, queueItemId: 'member-gone' }
+          ]
+        }
+      ]
+    });
+  }
+
+  function mountMembers(props: Record<string, unknown> = {}) {
+    const onOpenTask = vi.fn<(queueItemId: string, returnKey: string) => void>();
+    const view = mount(memberRun(), { queueItems: [MEMBER], onOpenTask, ...props });
+    return { ...view, onOpenTask };
+  }
+
+  it('opens the latest attempt Task from its node row', async () => {
+    const { getByTestId, onOpenTask } = mountMembers();
+    await fireEvent.click(getByTestId(`workflow-node-run-label-${MEMBER.id}`));
+    expect(onOpenTask).toHaveBeenCalledWith(MEMBER.id, 'node:node-a');
+  });
+
+  it('opens the latest attempt Task directly from its step header button (BUG-002)', async () => {
+    const { getByTestId, onOpenTask } = mountMembers();
+    const headBtn = getByTestId('workflow-node-id-node-a');
+    expect(headBtn.tagName).toBe('BUTTON');
+    expect(headBtn.getAttribute('type')).toBe('button');
+    await fireEvent.click(headBtn);
+    expect(onOpenTask).toHaveBeenCalledWith(MEMBER.id, 'node-head:node-a');
+  });
+
+  it('opens an attempt Task from its attempt row, through a real button', async () => {
+    const { getByTestId, onOpenTask } = mountMembers();
+    const open = getByTestId('workflow-invocation-attempt-open-att-held');
+    expect(open.tagName).toBe('BUTTON');
+    expect(open.getAttribute('type')).toBe('button');
+    await fireEvent.click(open);
+    expect(onOpenTask).toHaveBeenCalledWith(MEMBER.id, 'attempt:att-held');
+  });
+
+  it('offers no control for a node with no attempt, a workflow attempt, or a Task the queue does not hold', () => {
+    const { getByTestId, queryByTestId } = mountMembers();
+    expect(getByTestId('workflow-node-node-b').querySelector('button')).toBeNull();
+    expect(queryByTestId('workflow-invocation-attempt-open-att-child')).toBeNull();
+    expect(queryByTestId('workflow-invocation-attempt-open-att-gone')).toBeNull();
+    expect(getByTestId('workflow-invocation-attempt-att-child').textContent).toContain('node-c');
+    expect(getByTestId('workflow-invocation-attempt-att-gone').textContent).toContain('failed');
+  });
+
+  it('offers no open control at all when no opener is wired', () => {
+    const { queryByTestId } = mount(memberRun(), { queueItems: [MEMBER] });
+    expect(queryByTestId('workflow-invocation-attempt-open-att-held')).toBeNull();
+    expect(queryByTestId('workflow-node-id-node-a')?.tagName).not.toBe('BUTTON');
+    expect(queryByTestId(`workflow-node-run-label-${MEMBER.id}`)?.tagName).not.toBe('BUTTON');
+  });
+
+  it('returns focus to the attempt row that opened the Task', async () => {
+    const { getByTestId } = mountMembers({ returnFocusKey: 'attempt:att-held' });
+    await tick();
+    expect(document.activeElement).toBe(getByTestId('workflow-invocation-attempt-open-att-held'));
+  });
+
+  it('returns focus to the node row that opened the Task', async () => {
+    const { getByTestId } = mountMembers({ returnFocusKey: 'node:node-a' });
+    await tick();
+    expect(getByTestId('workflow-node-attempt-node-a').contains(document.activeElement)).toBe(true);
+    expect(document.activeElement?.tagName).toBe('BUTTON');
+  });
+
+  it('returns focus to the step header button when opened from the step header (BUG-002)', async () => {
+    const { getByTestId } = mountMembers({ returnFocusKey: 'node-head:node-a' });
+    await tick();
+    expect(document.activeElement).toBe(getByTestId('workflow-node-id-node-a'));
   });
 });

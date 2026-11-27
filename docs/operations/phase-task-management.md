@@ -1,280 +1,126 @@
-# Phase And Task Management
+# Manage Phases and Tasks
 
-Feature 017 extends the dashboard with phase controls, named queues, queue
-scheduling, and pending-task editing. These controls are sidebar/dashboard IPC
-operations; no new VS Code command palette commands are required for queue
-CRUD, scheduling, task edit/move/reorder, or phase skip/disable/enable.
+Phase controls act on the active Run of a named Queue. Task edits act on a named Task, and the host derives its Queue where necessary. In the sidebar wire contract, every live phase control carries `queueId`; the host refuses an ambiguous target instead of guessing which concurrent Run the operator meant. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/workflow-controller.ts -->
 
-## Phase Controls
+All commands in this runbook mutate workspace state. The sidebar router therefore requires the current window to hold workspace primacy; a secondary window receives a rejected acknowledgement and cannot perform the write. <!-- Source: src/contracts/sidebar-command-metadata.ts --> <!-- Source: src/ui/sidebar/commands/primacy-gate.ts -->
 
-- **Pause Phase** requests a cooperative pause. The active Claude invocation
-  finishes its current iteration, then the run persists
-  `manualPauseCause = 'operator-paused'` and the matching task becomes paused
-  with `pauseCause = 'phase-paused'`.
-- **Resume Phase** clears operator pause state and also short-circuits a
-  pending delayed retry when one exists.
-- **Restart Phase** resets the current phase iteration to 1, clears the
-  current phase override, and keeps diagnostics/audit history intact.
-- **Skip / Disable / Enable** write per-run phase overrides only. The frozen
-  pipeline snapshot is never mutated, so settings reloads affect future runs
-  only. Skipping an **active** phase cancels the runner immediately and advances
-  to the next step. Skipping a **paused** phase automatically resumes the
-  pipeline so the skip can take effect.
-- **Delete Phase** removes a phase from the selected task after confirmation.
-  The host persists `PhaseOverride.action = 'removed'` on that run only,
-  hides the phase from the progression snapshot, and skips it at future
-  execution boundaries. Active phase deletion requests a safe abort/advance
-  boundary rather than erasing already-written diagnostics.
+Every Phase-control operation below is decided by one shared, host-side classifier before anything is written — a Run, Task, override, audit event, or drain/resume trigger. The classifier is consulted first regardless of caller (sidebar command, a stale or replayed IPC message); UI narrowing is defense in depth, not the only guard. A refused request returns a structured reason drawn from a closed vocabulary (for example `run-terminal`, `phase-not-active`, `phase-already-started`, `phase-not-future`, `no-disabled-override`) rather than free text. <!-- Source: src/controller/phase-control-decision.ts -->
 
-Deleting a phase never deletes `.schegent/audit.log`, raw transcripts, or
-verbose diagnostic files. A successful deletion emits `phase-removed` with the
-task id, phase id, run id, and prior phase state when known. Stale task ids,
-unknown phase ids, and already-removed phases are rejected and surfaced as
-non-destructive dashboard feedback.
+## Active phase controls
 
-## Queues
+| Intent | Sidebar command and payload | Effect |
+|---|---|---|
+| Retry a pending retry now | `CMD_RETRY_PHASE_NOW { queueId }` | Cancels the pending retry delay and resumes that Queue's existing Run when the Run is eligible. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/manual-retry-override.ts --> |
+| Pause the active phase | `CMD_PAUSE_PHASE { queueId }` | Persists an operator pause, cancels active work or a retry timer, and cascades paused state to the Queue. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> |
+| Resume the active phase | `CMD_RESUME_PHASE { queueId, prompt? }` | Clears manual and pending-retry pause fields, optionally records a prompt, and schedules continuation. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> |
+| Restart the active phase | `CMD_RESTART_PHASE { queueId, phaseId }` | Restarts the current phase, resets its iteration and delayed-retry state, and clears an override on that current phase. The wire contract requires `phaseId`, while the registered command routes the Queue to the active-phase operation. Refused with `run-terminal` when the Run has already reached `completed` or `canceled` — a Run record existing is not by itself permission. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/ui/sidebar/commands/cmd-restart-phase.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> |
 
-The dashboard queue manager can create, rename, pause, resume, and delete
-named queues. The default queue cannot be deleted. A queue with an in-flight
-task cannot be deleted.
+Pause is accepted only for a running Run or a Run in a retry countdown, and a duplicate manual pause is refused. Resume requires a manual pause or pending retry. Restart requires a Run that is not `completed` or `canceled`, targeting the Run's current active phase (`failed` is not terminal for this purpose — Retry, Restart and Resume exist largely for failed Runs). Skip is the exception: it is refused `run-failed` on a failed Run (FR-R4-F20). Restarting a **canceled Task** through `CMD_RESTART_CANCELED_TASK` (below) is a distinct, Task-level fresh-Run operation and does not by itself make a terminal Run's active phase restartable. The command acknowledgement reports a rejection when these state preconditions are not met. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> <!-- Source: src/ui/sidebar/commands/handler-helpers.ts -->
 
-Queue lifecycle states (feature 065): `idle` (no pending tasks or
-no-start-mode appends), `idle-pending` (first pending task has a
-`scheduledStartAt` — countdown visible), `running` (a task is in-flight),
-`paused` (operator pause), `manually-paused` (cascade pause from
-feature 028). See the **Scheduling** section below for the
-enqueue/start separation chooser and the audit events the System tab
-filter chips surface.
+That last sentence is worth reading twice, because until feature 193 (`FR-R3-154`) it was not true of Pause, Resume, Restart, or Retry-now. Those four routes — and Start Queue — dispatched the host command and then acknowledged `accepted` regardless of what it answered, so an operator following this runbook saw a success for a refusal the classifier had already decided. The refusal reason existed; nothing carried it back. Each route now acknowledges the host's own answer, and the acknowledgement distinguishes four outcomes: `accepted`, `refused` (a precondition said no), `no-op` (nothing to do, which is not an error), and `failed` (the mutation or its dispatch broke). Skip does too, since FR-R4-F20. A `failed` acknowledgement carries a code and never an error message, because the reason crosses to the webview and a message from that layer can carry a workspace path; the sanitized message goes to the extension log instead. An untrusted workspace is reported as `refused` with `workspace-not-trusted`, which is the case the old reading got most wrong — the trust gate warns and returns `undefined` without entering the handler at all, so `await exec(...)` resolved and the route acknowledged a mutation that was never attempted. A registered command answering a shape no reading covers is reported as `failed` with `command-result-unrecognized` rather than assumed successful: an unrecognized result is a wiring defect, and a false `failed` is recoverable where a false `accepted` is not. When troubleshooting a control that "did nothing", the acknowledgement is now the first place to look rather than the audit log. <!-- Source: src/ui/sidebar/commands/handler-helpers.ts --> <!-- Source: src/contracts/command-outcome.ts --> <!-- Source: tests/unit/ui/sidebar/mutation-ack-truth.test.ts -->
 
-When deleting a queue, the confirmation modal defaults to **Cancel tasks**.
-Choosing **Move tasks** requires a target queue and moves pending tasks
-atomically; if the target would exceed the pending-task cap, the operation is
-rejected and no tasks move.
+## Override one phase
 
-Queue settings live under:
+| Intent | Sidebar command and payload | Effect |
+|---|---|---|
+| Skip | `CMD_SKIP_PHASE { queueId, runId, phaseId }` | Stores a `skipped` override for the current active phase of the Run the operator confirmed (`runId`), then aborts a running phase or resumes a paused one so execution can move past it. Refused with `run-failed` on a failed Run, for any of its phases — use Retry, Mark completed or Remove instead; with `run-terminal` on a completed or canceled Run; with `phase-not-active` when `phaseId` does not name the Run's current phase; and with `no-run-in-flight` when the Queue's Run is not the one named. A request without `runId` is refused at the boundary and never reaches a handler. The refusal is shown beside the control, as for Pause, Resume and Restart. If the Run fails after the override was written (the confirmation race), the Skip is still reported accepted, and the override takes effect when Retry resumes the Run. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/contracts/generated/validators/phase-control.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> <!-- Source: webview-ui/src/lib/lifecycle-control-ipc.ts --> |
+| Disable | `CMD_DISABLE_PHASE { queueId, phaseId }` | Stores a `disabled` override for a Phase that has not yet started. Refused with `phase-already-started` when the target is the current phase or already appears in the Run's completed-phase ledger. In the sidebar, this targets whichever Phase tile the operator selected, independent of the current active phase. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> |
+| Enable | `CMD_ENABLE_PHASE { queueId, phaseId }` | Clears an existing `disabled` override, and is offered only for a Phase the Run **has not yet reached**. Refused with `no-disabled-override` when the phase carries no override, or a non-`disabled` one, and with `phase-not-future` when the phase already started despite a stale `disabled` entry — carrying *an* override is no longer sufficient by itself. The sidebar now **withholds** the control for a Phase that was reached and bypassed (a `disabled` Phase the runner ran past, which the projector reports as not-future) instead of offering it and letting the host refuse; the two answers are pinned against each other row by row. Also targets the operator's selected tile in the sidebar. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts --> <!-- Source: src/ui/sidebar/phase-projector.ts --> <!-- Source: webview-ui/src/lib/phase-control-eligibility.ts --> |
+| Remove from a Task's Run | `CMD_REMOVE_TASK_PHASE { taskId, phaseId, confirmed: true }` | Stores a `removed` override. Removing an active running phase cancels its active invocation. Unlike Disable/Enable this remains available for any visible Phase state — completed, active, skipped, failed, disabled, or future — and, in the sidebar, always targets the operator's selected tile (Feature 022 FR-008–FR-013). Refusals name their own cause: see *What a refused removal means* below. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/workflow-controller.ts --> |
 
-- `schegent.queue.globalConcurrencyCap` — integer in `1..20`, default `1`
-  (feature 092; formerly pinned to `1..1` by feature 056 Track 4). Since
-  feature 093 it bounds how many runs may execute at the same time; each
-  queue still runs one Task at a time, so the ceiling is reached by that
-  many different queues.
-- `schegent.queue.defaultQueueId` — id of an existing queue.
+Skip, disable, enable, and remove validate the phase against the immutable Pipeline snapshot stored on the Run — that snapshot is never retargeted to a newer catalog definition as a side effect of any of these operations. Applying skip or disable also clears a breakpoint on the same phase. Phase overrides update the recorded planned total in the same state write so progress continues to use the effective plan. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/controller/phase-control-decision.ts -->
 
-The host validates both settings transactionally. The webview helper
-`save-queue-settings.ts` is the only webview call site for saving queue
-settings.
+These operations change only the active Run snapshot. They do not edit or publish the Phase or Pipeline definition in the catalog. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/state/workflow-run.ts -->
 
-## Tasks
+### Which controls each Phase tile reaches
 
-Pending tasks can be edited, moved to another queue, or explicitly reordered.
-All tasks, regardless of status, can be removed after confirmation. Confirmed
-removal deletes the visible queue row for pending, in-flight, paused, failed,
-canceled, and completed tasks; stale ids are rejected and no unrelated rows
-are mutated. Pending positions are compacted after remove, move, or reorder so
-reloads preserve the same visible order.
+Every state a Phase tile can be projected into, and what an operator can still do from it. No projected state is a dead end: the two rows the runner has not yet reached are the two that carry an override control, and every other row is history or the live Phase, where immutability is the intended answer. Remove is available from all seven.
 
-Removing an in-flight task routes through the workflow controller: the active
-run is canceled, the workspace lock is released, and the next snapshot drops
-the active row. Removing a terminal task is queue cleanup only. Every
-successful removal emits `task-removed` with `taskId`, `queueId`,
-`priorStatus`, and `runId` when available; it does not erase historical audit
-or transcript files.
+| Projected state | How the tile got there | Reached by the runner? | Override controls offered |
+|---|---|:--:|---|
+| `not-started` | never touched by any projector pass | no | **Disable**, Remove |
+| `disabled` | a future Phase carrying a `disabled` override | no | **Enable**, Remove |
+| `disabled` | reached, bypassed in execution, override still set | yes | Remove only — the Phase already ran past; Enable is withheld |
+| `skipped` | reached and skipped in execution, no `disabled` override | yes | Remove only |
+| `skipped` | the current Phase of a canceled Run | yes | Remove only |
+| `completed` | a non-skip result, or the current Phase of a completed Run | yes | Remove only |
+| `active` | the current Phase of a running, paused or failed Run | yes | Skip (running or paused Run only; refused `run-failed` on a failed Run), Pause/Resume/Restart, Remove |
 
-Task deletion confirmation copy is status-aware:
+<!-- Source: src/ui/sidebar/phase-projector.ts --> <!-- Source: src/controller/phase-control-decision.ts --> <!-- Source: webview-ui/src/lib/phase-control-eligibility.ts -->
 
-- Pending and paused copy explains the task will not run unless re-added.
-- In-flight copy explains active work will be stopped at a safe boundary.
-- Failed, canceled, and completed copy explains the visible row is removed
-  while history/diagnostics remain.
+### What Disable and Enable tell the operator
 
-Task pause labels are deliberately distinct:
+Disable and Enable used to post a command and walk away: a refusal cleared the button's pending state and
+showed nothing, so a refused control looked as if it had worked. They now travel the same acknowledgement
+path as Pause, Resume, Restart and Skip (FR-R5-F19, T19.3), and the control that was invoked shows one
+sentence for the outcome:
 
-- **Queue paused** means the task is blocked by its queue state.
-- **Paused (operator)** means the active phase was paused by the operator
-  (feature 028 — previously rendered as "Phase paused").
-- **Paused (breakpoint)** means a future-phase breakpoint fired and the
-  pipeline halted before invoking the marked phase (feature 028).
-- **Task paused** is reserved for task-level pause state.
+| Outcome | Sentence the control shows |
+|---|---|
+| Accepted | Nothing; any earlier sentence on the control is cleared. |
+| `run-terminal` | This Run has already finished, so its Phases can no longer be changed. |
+| `phase-already-started` (Disable) | That Phase has already started, so it can no longer be disabled. |
+| `no-disabled-override` (Enable) | That Phase is not disabled, so there is nothing to enable. |
+| `phase-not-future` (Enable) | That Phase has already started, so it can no longer be enabled. |
+| `workspace-not-trusted`, `untrusted-workspace` | The workspace is not trusted, so this control is unavailable. |
+| `secondary-window-readonly` | This window is not the primary one, so it cannot change the Run. |
+| No answer within the wait | The host has not answered yet. The change may still happen; this view will update when it does. |
 
-Queue resume clears only queue-sourced `queue-paused-mid-run` run causes and
-does not resume an operator-paused phase.
+A wait that ran out is not a failure and not an invitation to click again: the host may still run the
+command. If its answer arrives later it replaces the interim sentence on the same control, and it is dropped
+when the selection has moved to another phase, so one control never shows another control's outcome. A
+repeat click while the first is unanswered sends nothing, and a click after a timeout reuses the identity
+the first send had. Disable and Enable use the one acknowledgement ledger the other controls use; there is
+no second one.
 
-## Advanced phase pausing (feature 028)
+<!-- Source: webview-ui/src/lib/phase-selection-control.ts --> <!-- Source: webview-ui/src/lib/lifecycle-control-ipc.ts --> <!-- Source: webview-ui/src/lib/phase-control.ts -->
 
-Feature 028 adds two complementary pause behaviors on top of the per-run
-phase controls.
+### What a refused removal means
 
-### Active-phase pause cascades to the queue
+`CMD_REMOVE_TASK_PHASE` names the condition it actually observed, so a refusal identifies which fact to go and check:
 
-When the operator pauses the active phase (FR-001), the host:
+| Reason | What it means |
+|---|---|
+| `unknown-task-id` | the id names no Task at all — no queue row exists for it |
+| `no-run-in-flight` | the Task is real and its Queue holds no Run |
+| `no-active-run-for-task` | the Task is real, but the Run in flight on its Queue is a different one |
+| `unknown-phase-id` | the Run does not carry that Phase |
+| `phase-already-removed` | the Phase already carries a `removed` override |
 
-1. Persists `WorkflowRun.manualPauseCause = 'operator-paused'`.
-2. Calls `QueueManager.cascadedPause()` on the run's queue, setting
-   `QueueRegistryEntry.state = 'manually-paused'` and
-   `pauseSource = 'cascade'`.
-3. Emits the standard `phase-paused` event plus a `queue-paused` event with
-   `source: 'cascade'`.
+The checks run in that order, so an operator who fails two at once knows which reason to expect: **is the id known** (answered at the controller, against the queue's request rows) → **is there a Run at all** → **is the Run in flight this Task's** → **does the Run carry the Phase** → **is it already removed**. Ordering the existence check first is what keeps a real, queued, waiting Task from being told it does not exist. <!-- Source: src/controller/workflow-controller.ts --> <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/queue/queue-manager.ts -->
 
-Resuming the phase calls `QueueManager.cascadedResume()`. The cascade-resume
-is a strict no-op when the queue's `pauseSource` is `'operator'` — so an
-operator-initiated queue pause survives a phase resume (FR-004).
+## Edit queued Tasks
 
-This means: while the active phase is paused, no other task in the same
-queue auto-starts.
+| Intent | Sidebar command and payload | Preconditions and result |
+|---|---|---|
+| Change description | `CMD_MODIFY_TASK { taskId, description }` | Updates the matching Task and emits `task-modified` after success. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/ui/sidebar/commands/cmd-modify-task.ts --> |
+| Reorder | `CMD_REORDER_TASK { taskId, newPosition }` | Moves the Task within the unified queue order and emits a canonical `task-reordered` decision. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/ui/sidebar/commands/cmd-reorder-task.ts --> |
+| Restart a canceled Task | `CMD_RESTART_CANCELED_TASK { taskId }` | Changes a matching canceled Task back to pending; other states are refused. <!-- Source: src/contracts/sidebar-ipc/run-controls.ts --> <!-- Source: src/ui/sidebar/commands/cmd-restart-canceled-task.ts --> |
+| Cancel a Task | `CMD_CANCEL { taskId }` | Ends the addressed Task as `canceled`. Legal from `pending` and from `in-flight`, refused from every other status — see the matrix below. An in-flight Task whose Queue holds a matching running Run also has that Run canceled and its lease released; a pending Task, or an in-flight one with no matching Run, only finalizes the queue row. Emits `task-canceled`. Omitting `taskId` cancels the window's active Run instead of a named Task. <!-- Source: src/contracts/sidebar-ipc.ts --> <!-- Source: src/commands/cancel.ts --> |
 
-### Future-phase breakpoints
+### Which cancellations are legal
 
-Operators can right-click any **pending** phase tile and choose
-**Pause when reached** to arm a one-shot breakpoint on that phase. The host:
+One table decides this, for every route: the Task transition classifier's `finish → canceled` column. The operator's command consults it rather than carrying its own copy, so what the sidebar refuses and what the queue refuses cannot drift apart. <!-- Source: src/queue/task-transition-decision.ts --> <!-- Source: src/commands/cancel.ts -->
 
-1. Validates the request (phase exists, not active, not completed, has no
-   skip/disable/remove override, no breakpoint already armed) — failures
-   surface as non-destructive dashboard feedback.
-2. Appends a `PhaseBreakpoint` entry to `WorkflowRun.phaseBreakpoints`.
-3. Emits `phase-breakpoint-set`.
+| Task status | Cancel | Result |
+|---|:---:|---|
+| `pending` | yes | finalized without starting; no Run is involved |
+| `in-flight` | yes | a matching running Run is canceled first, then the row is finalized |
+| `paused` | no | refused; resume or leave it, a paused Task is not cancellable in place |
+| `completed` | no | refused; already terminal |
+| `canceled` | no | refused; already terminal |
+| `failed` | no | refused; already terminal |
 
-When the pipeline reaches the marked phase, the phase runner reads the
-no-cache `PhaseBreakpointAccessor` and halts BEFORE spawning the CLI for
-that phase. The host:
+A refused cancellation reports `illegal-state` to the caller and is **otherwise silent** — no notification and no audit entry. An unknown `taskId` is different: it reports `not-found` and does notify. <!-- Source: src/commands/cancel.ts -->
 
-1. Emits `phase-breakpoint-fired { runId, pipelineId, phaseId, iterationN }`.
-2. Filters the consumed entry and emits
-   `phase-breakpoint-cleared { cause: 'consumed-by-fire' }`.
-3. Sets `manualPauseCause = 'breakpoint-paused'` and
-   `resumeTargetPhaseId = <phaseId>`.
-4. Cascade-pauses the queue.
-5. Releases the workspace lock.
+Cancel's own acknowledgement reaches exactly three of the four outcomes named under **Control the active phase**: `accepted`, `refused`, and `failed`. `no-op` is not among them, and that is a property of the answer shape rather than of disuse — the registered command answers `{ok, reason}`, and the converter that reads that shape maps every `!ok` to `refused`, so no answer it can give becomes `no-op`. The four-outcome paragraph above is still correct about the routes it describes: Start Queue returns a `CommandOutcome` directly instead of `{ok, reason}`, and genuinely does report `no-op`. The three cancel does reach divide along the table above — `accepted` for a `pending` or `in-flight` Task; `refused` carrying the classifier's own reason for the other four statuses, and `workspace-not-trusted` when the trust gate stops the command before the handler runs at all; `failed` only when the dispatch throws (`command-dispatch-failed`) or answers a shape no reading covers (`command-result-unrecognized`), both of which are wiring defects rather than states an operator can reach. So do not read the missing `no-op` as a cancel that quietly did nothing: a cancel that did nothing is a `refused` carrying the reason why. <!-- Source: src/ui/sidebar/commands/cmd-cancel.ts --> <!-- Source: src/ui/sidebar/commands/handler-helpers.ts --> <!-- Source: src/contracts/command-outcome.ts --> <!-- Source: src/ui/sidebar/commands/cmd-start-queue.ts --> <!-- Source: tests/unit/ui/sidebar/commands/cmd-cancel.test.ts -->
 
-The task-level pause badge renders "Paused (breakpoint)" and the phase tile
-renders a distinct **breakpoint-fired** indicator. **Resume** invokes the
-marked phase via the runner; subsequent phases proceed normally and the
-queue cascade-resumes.
+Use the Queue and Run identifiers from the latest sidebar snapshot. A stale `taskId`, a Queue without an active Run, or a phase absent from that Run's snapshot is rejected — each with its own reason, and without redirecting the mutation to another Queue. For removals, *What a refused removal means* under **Override one phase** says which reason answers which condition. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/queue/queue-manager.ts -->
 
-Operators can also cancel an armed breakpoint via **Cancel scheduled pause**
-on the same phase tile — the host emits
-`phase-breakpoint-cleared { cause: 'operator' }`.
+### Run status transitions and atomic admission
 
-Two other paths also clear breakpoints:
+Run status transitions follow the same single-decision-site discipline as Task transitions above: one compile-time exhaustive table (`RUN_STATUS_TRANSITIONS`) and pure decision function (`decideRunTransition`) govern every `(from, to, actor)` transition across the five Run statuses (`running`, `paused`, `failed`, `completed`, `canceled`) and four actor classes (`driver`, `operator`, `watchdog`, `recovery`), and new-Run admission commits the Run record and the Task's `in-flight` mark in one SQLite transaction. See [Run Status Transitions and Atomic Admission](run-status-transitions.md) for the full 5×5 matrix, actor rules, typed error hierarchy, and crash-atomicity guarantees. <!-- Source: src/state/run-transition-decision.ts --> <!-- Source: src/state/run-invariant-error.ts --> <!-- Source: src/state/workspace-state.ts -->
 
-- Applying a `skipped` / `disabled` / `removed` override on a phase that has
-  a breakpoint auto-clears it with cause `'override-applied'`.
-- Run termination (`completed` / `failed` / `cancelled`) clears all
-  remaining breakpoints with cause `'run-ended'`.
+## Audit the result
 
-### Audit events to grep when reconstructing breakpoint history
-
-All five are additive (no `AUDIT_SCHEMA_VERSION` bump) and route through
-the existing single-sanitization point in `audit-log-writer.ts`:
-
-- `phase-breakpoint-set` — `{ runId, pipelineId, phaseId, actor, timestamp }`
-- `phase-breakpoint-cleared` — `{ runId, pipelineId, phaseId, cause, timestamp }`
-  where `cause ∈ { 'operator', 'consumed-by-fire', 'override-applied', 'run-ended' }`
-- `phase-breakpoint-fired` — `{ runId, pipelineId, phaseId, iterationN, timestamp }`
-- `queue-paused` — now carries `source: 'operator' | 'cascade'`
-- `queue-resumed` — now carries `source: 'operator' | 'cascade'`
-
-See [specs/028-advanced-phase-pausing/quickstart.md](../../../specs/028-advanced-phase-pausing/quickstart.md)
-for the three end-to-end walkthroughs (US1 cascade pause, US2 future-phase
-breakpoint, US3 visual distinction).
-
-## Scheduling
-
-Each queue supports one one-shot schedule. Accepted expressions:
-
-- `in <N>m`
-- `in <N>h`
-- `at HH:MM`
-
-The schedule watchdog runs on the primary VS Code host only. When a schedule
-fires, the watchdog clears it, emits audit metadata, unpauses the queue, and
-asks the controller to drain queued work. If the host fires more than 60
-seconds after the target, it records delayed-trigger diagnostics.
-
-### Enqueue/Start separation (feature 065)
-
-Feature 065 introduces an explicit **start-mode chooser** on every enqueue
-into an empty (`idle`) queue and adds a per-task `scheduledStartAt`. The
-chooser offers three options:
-
-- **Start now** — the queue transitions to `running` immediately. Audit
-  emits the existing `task-enqueued` plus `phase-start`.
-- **Start in… / Start at…** — the queue moves to `idle-pending` and the
-  task is persisted with `scheduledStartAt`. An inline countdown ticks
-  one-second cadence when expanded and one-minute cadence when collapsed.
-  Cancel / change / convert-to-now affordances render alongside the
-  countdown.
-- **Just add (no start)** — the queue remains `idle` and the task is
-  persisted with no schedule. The operator must press **Start** later.
-
-While the queue is `running` or `paused`, the chooser does NOT appear:
-new enqueues are silent appends to the pending queue (feature-030
-sequential semantics). The `idle-pending` lifecycle is unique to feature
-065 and only applies when the first-pending task has a `scheduledStartAt`.
-
-When the scheduled fire time passes, the `ScheduledStartCoordinator`
-flips the queue from `idle-pending` to `running`, transitions the head
-pending task to in-flight, and the status-bar transient surfaces for
-3–5 seconds on fire (per Q15 / FR-017a). If the host fires more than
-60 seconds after target, the same delayed-trigger diagnostic from the
-per-queue scheduler is emitted.
-
-The v6 → v7 state migration adds `queueLifecycle`, `scheduledStartAt`,
-`scheduledStartSource`, and the one-time `migrationNotice` banner flag
-to every existing queue. Pending tasks are preserved byte-for-byte
-(SC-005). The dashboard renders a dismissable migration notice on the
-next activation; dismissal flows through the new (read-side)
-`CMD_DISMISS_MIGRATION_NOTICE` IPC — intentionally **not** a member of
-`MUTATING_COMMANDS`.
-
-### Audit events to grep in the System tab
-
-> **Feature 068 (2026-05-23)** — the System tab now restores its tail on
-> workspace reload by reading `.schegent/audit.log` at snapshot bootstrap
-> (cold-start replay, last `AUDIT_TAIL_MAX = 50` entries). Each row also
-> shows structured per-entry metadata (taskId, phaseId, absolute
-> timestamp, outcome badge) and renders the spawned CLI command in a
-> monospace block for `cli-invocation` events. No new event types are
-> introduced — existing audit grep guidance below still applies.
-
-All eight are additive (no `AUDIT_SCHEMA_VERSION` bump) and route through
-the existing single-sanitization point in `audit-log-writer.ts`. Each
-carries the consistent core payload `{ queueId, eventType, occurredAt,
-transitionReason }` per FR-023a:
-
-- `scheduled-start-armed` — emitted when a task transitions queue to
-  `idle-pending` with `scheduledStartAt`.
-- `scheduled-start-fired` — emitted when the coordinator promotes
-  `idle-pending` → `running` at fire time.
-- `scheduled-start-cancelled` — emitted when the operator cancels the
-  schedule (queue returns to `idle`, task may stay pending or be deleted
-  depending on path).
-- `scheduled-start-rescheduled` — emitted when the operator changes the
-  scheduled time on an `idle-pending` queue.
-- `idle-pending-enqueued` — emitted when a task is appended to a queue
-  already in `idle-pending` (operator chose append vs. promote).
-- `idle-pending-promoted` — emitted when an `idle-pending` queue
-  transitions to `running` via operator action (convert-to-now or
-  explicit Start).
-- `automation-enqueue-no-start-mode` — emitted when a programmatic
-  enqueue path supplies no `startIntent`; feature-030 sequential
-  semantics apply and the task lands in `pending` without a schedule.
-- `migration-default-applied` — emitted once per queue on the v6 → v7
-  upgrade boundary, attributing the lifecycle default with
-  `scheduledStartSource: 'migration-default'`.
-
-The chooser, countdown, indicator, and System tab filter chips are
-operator-visible surfaces and do not require feature flags. The chooser
-respects `schegent.queue.globalConcurrencyCap`: a `Start now` that would
-exceed the workspace ceiling surfaces a non-modal "queue state changed
-elsewhere" notice and falls back to silent append. Under feature 092 that
-happens when the *ceiling* is reached, not on the second queue — with the
-default of `3`, two other queues can be running and the third still starts.
-
-## Phase Messages
-
-A phase may write a flat `key=value` sidecar named `phase-message.env` to the
-host-provided diagnostic path and list that path in the existing audit
-`files_created` or `files_modified` fields. The next phase receives only the
-immediately preceding sanitized message. Missing sidecars are normal; oversized
-or invalid sidecars produce metadata-only audit events and do not expose values
-in the UI.
+Successful phase controls append phase-control events such as `phase-paused`, `phase-resumed`, `phase-restarted`, `phase-skipped`, `phase-disabled`, `phase-enabled`, or `phase-removed`. Successful task description and reorder operations append their queue audit events. Treat the command acknowledgement as the immediate result and the audit record as the durable operator-attributed evidence. <!-- Source: src/controller/phase-control-service.ts --> <!-- Source: src/ui/sidebar/commands/cmd-remove-task-phase.ts --> <!-- Source: src/ui/sidebar/commands/cmd-modify-task.ts --> <!-- Source: src/ui/sidebar/commands/cmd-reorder-task.ts -->

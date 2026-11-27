@@ -1,0 +1,964 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "schegent"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.2.0"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "schegent.telemetry-export",
+            "version": "1",
+            "attributes": [
+              {
+                "key": "schegent.export.mapping_revision",
+                "value": {
+                  "stringValue": "1"
+                }
+              },
+              {
+                "key": "schegent.export.source_schema",
+                "value": {
+                  "stringValue": "1"
+                }
+              }
+            ]
+          },
+          "schemaUrl": "https://opentelemetry.io/schemas/1.37.0",
+          "metrics": [
+            {
+              "name": "gen_ai.client.operation.duration",
+              "unit": "s",
+              "histogram": {
+                "aggregationTemporality": 1,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "error.type",
+                        "value": {
+                          "stringValue": "failed"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "invoke_agent"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "openai"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-small"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "codex"
+                        }
+                      },
+                      {
+                        "key": "schegent.operation.outcome",
+                        "value": {
+                          "stringValue": "failed"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "count": "1",
+                    "sum": 0.25,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.01,
+                      0.02,
+                      0.04,
+                      0.08,
+                      0.16,
+                      0.32,
+                      0.64,
+                      1.28,
+                      2.56,
+                      5.12,
+                      10.24,
+                      20.48,
+                      40.96,
+                      81.92
+                    ],
+                    "min": 0.25,
+                    "max": 0.25
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "invoke_agent"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.operation.outcome",
+                        "value": {
+                          "stringValue": "succeeded"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "count": "1",
+                    "sum": 1.5,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      0.01,
+                      0.02,
+                      0.04,
+                      0.08,
+                      0.16,
+                      0.32,
+                      0.64,
+                      1.28,
+                      2.56,
+                      5.12,
+                      10.24,
+                      20.48,
+                      40.96,
+                      81.92
+                    ],
+                    "min": 1.5,
+                    "max": 1.5
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.token.usage",
+              "unit": "{token}",
+              "histogram": {
+                "aggregationTemporality": 1,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "invoke_agent"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "known"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "provider-reported"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "count": "1",
+                    "sum": 512,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      1,
+                      4,
+                      16,
+                      64,
+                      256,
+                      1024,
+                      4096,
+                      16384,
+                      65536,
+                      262144,
+                      1048576,
+                      4194304,
+                      16777216,
+                      67108864
+                    ],
+                    "min": 512,
+                    "max": 512
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "invoke_agent"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "known"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "provider-reported"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "count": "1",
+                    "sum": 1024,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      1,
+                      4,
+                      16,
+                      64,
+                      256,
+                      1024,
+                      4096,
+                      16384,
+                      65536,
+                      262144,
+                      1048576,
+                      4194304,
+                      16777216,
+                      67108864
+                    ],
+                    "min": 1024,
+                    "max": 1024
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "invoke_agent"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "openai"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-small"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "codex"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "known"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "estimated"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "count": "1",
+                    "sum": 2000,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      1,
+                      4,
+                      16,
+                      64,
+                      256,
+                      1024,
+                      4096,
+                      16384,
+                      65536,
+                      262144,
+                      1048576,
+                      4194304,
+                      16777216,
+                      67108864
+                    ],
+                    "min": 2000,
+                    "max": 2000
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "invoke_agent"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "openai"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-small"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "codex"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "partial"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "provider-reported"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "count": "1",
+                    "sum": 750,
+                    "bucketCounts": [
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "1",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      1,
+                      4,
+                      16,
+                      64,
+                      256,
+                      1024,
+                      4096,
+                      16384,
+                      65536,
+                      262144,
+                      1048576,
+                      4194304,
+                      16777216,
+                      67108864
+                    ],
+                    "min": 750,
+                    "max": 750
+                  }
+                ]
+              }
+            },
+            {
+              "name": "schegent.export.coverage",
+              "unit": "{outcome}",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "schegent.export.outcome",
+                        "value": {
+                          "stringValue": "correction"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "2"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "schegent.export.outcome",
+                        "value": {
+                          "stringValue": "correction-unquantified"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "1"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "schegent.export.outcome",
+                        "value": {
+                          "stringValue": "exported"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "10"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "schegent.export.outcome",
+                        "value": {
+                          "stringValue": "missing"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "2"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "schegent.export.outcome",
+                        "value": {
+                          "stringValue": "unmapped"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "2"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "schegent.usage.cache_tokens",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.cache_kind",
+                        "value": {
+                          "stringValue": "creation"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.cache_relation",
+                        "value": {
+                          "stringValue": "disjoint"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "known"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "provider-reported"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "40"
+                  },
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.cache_kind",
+                        "value": {
+                          "stringValue": "read"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.cache_relation",
+                        "value": {
+                          "stringValue": "subset-of-input"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "known"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "provider-reported"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "300"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "schegent.usage.cost",
+              "unit": "EUR",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "openai"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-small"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "codex"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "known"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "estimated"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asDouble": 0.0034
+                  }
+                ]
+              }
+            },
+            {
+              "name": "schegent.usage.cost",
+              "unit": "USD",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.completeness",
+                        "value": {
+                          "stringValue": "known"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.provenance",
+                        "value": {
+                          "stringValue": "derived"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asDouble": 0.0125
+                  }
+                ]
+              }
+            },
+            {
+              "name": "schegent.usage.cost_adjustment",
+              "unit": "USD",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": false,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.measure",
+                        "value": {
+                          "stringValue": "cost"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asDouble": 0.0005
+                  }
+                ]
+              }
+            },
+            {
+              "name": "schegent.usage.token_adjustment",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": 1,
+                "isMonotonic": false,
+                "dataPoints": [
+                  {
+                    "attributes": [
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "anthropic"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "model-large"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "model-large-20260101"
+                        }
+                      },
+                      {
+                        "key": "schegent.backend",
+                        "value": {
+                          "stringValue": "claude"
+                        }
+                      },
+                      {
+                        "key": "schegent.usage.measure",
+                        "value": {
+                          "stringValue": "output_tokens"
+                        }
+                      }
+                    ],
+                    "startTimeUnixNano": "1762840800000000000",
+                    "timeUnixNano": "1762840800000000000",
+                    "asInt": "-24"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

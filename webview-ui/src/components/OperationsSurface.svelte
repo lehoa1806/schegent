@@ -2,13 +2,8 @@
   // Feature 092 (T112, T113, T115, FR-058..FR-062, FR-065) — the `operations`
   // route's owner, and the only thing that holds a `DashboardLocation`.
   //
-  // `App.svelte` still routes to exactly one component here; which of the three
-  // tiers that component shows is a location, and the location lives in this
-  // file. Keeping it here rather than in `App.svelte` is what lets
-  // `DashboardRoute` stay the seven flat siblings it has always been (FR-061):
-  // the tiers are sub-locations beneath `operations`, not nav peers of Settings,
-  // and `runs` remains a peer of tier 1 rather than becoming a fourth tier
-  // (FR-063).
+  // `App.svelte` routes here for Queues. Queue detail owns task composition,
+  // and task detail owns execution monitoring; neither needs a navigation peer.
   //
   // Two things are owned here and nowhere else:
   //
@@ -128,7 +123,7 @@
       case 'queue-detail':
         return `queue-detail:${value.queueId}`;
       case 'run-detail':
-        return `run-detail:${value.queueId}:${value.runId}`;
+        return `run-detail:${value.queueId}:${value.runId}:${value.parentRunId ?? ''}`;
     }
   }
 
@@ -144,30 +139,52 @@
     if (scroller !== undefined) scroller.scrollTop = offsets.get(key) ?? 0;
   });
 
+  // Feature 265 BUG-001 (FR-009): the topology row a member Task was opened
+  // from, so Back to the run puts focus where the operator left it.
+  let memberReturnKey: string | null = null;
+  let returnFocusKey = $state<string | null>(null);
+
   function openQueue(queueId: string): void {
+    returnFocusKey = null;
     selectedQueueId = queueId;
     location = queueDetailLocation(queueId);
   }
 
-  function openRun(runId: string): void {
-    if (resolved.location.route !== 'queue-detail') return;
-    selectedRunId = runId;
-    location = runDetailLocation(resolved.location.queueId, runId);
+  /**
+   * Opens a Run from Queue Detail, or a member Task from a Workflow run's
+   * topology (BUG-001). The member route keeps Queue Detail's selection on the
+   * run, so walking back marks the run's row, not a Task it collapses.
+   */
+  function openRun(runId: string, returnKey?: string): void {
+    const current = resolved.location;
+    returnFocusKey = null;
+    if (current.route === 'queue-detail') {
+      selectedRunId = runId;
+      location = runDetailLocation(current.queueId, runId);
+      return;
+    }
+    if (current.route !== 'run-detail' || current.parentRunId !== undefined) return;
+    memberReturnKey = returnKey ?? null;
+    location = runDetailLocation(current.queueId, runId, current.runId);
   }
 
   function goBack(): void {
-    location = parentLocation(resolved.location);
+    const current = resolved.location;
+    returnFocusKey = current.route === 'run-detail' && current.parentRunId !== undefined ? memberReturnKey : null;
+    location = parentLocation(current);
   }
 </script>
 
+<!-- `.page` is the redesign's scrolling page: its padding and overflow, so a tier draws no frame of
+     its own and every tier sits at the same edges. -->
 <div
-  class="operations-surface"
+  class="operations-surface page"
   data-testid="operations-scroll"
   bind:this={scroller}
   onscroll={rememberOffset}
 >
   {#if resolved.notice !== null}
-    <p class="fallback-notice" data-testid="operations-fallback-notice" role="status">
+    <p class="fallback-notice attn warn" data-testid="operations-fallback-notice" role="status">
       {resolved.notice}
     </p>
   {/if}
@@ -200,16 +217,24 @@
   {:else}
     {@const queueId = resolved.location.queueId}
     {@const runId = resolved.location.runId}
+    {@const parentRunId = resolved.location.parentRunId}
     {#await loadRunDetailTier()}
       <p class="tier-loading" data-testid="operations-tier-loading" role="status">Opening…</p>
     {:then RunDetailTier}
-      <RunDetailTier
-        {snapshot}
-        {queueId}
-        {runId}
-        isPrimary={snapshot.isPrimary}
-        onBack={goBack}
-      />
+      <!-- Keyed so a run and its member Task never share a tier instance: each
+           opens on its own Log tab and focus (BUG-001). -->
+      {#key locationKey(resolved.location)}
+        <RunDetailTier
+          {snapshot}
+          {queueId}
+          {runId}
+          {parentRunId}
+          isPrimary={snapshot.isPrimary}
+          onBack={goBack}
+          onOpenTask={openRun}
+          {returnFocusKey}
+        />
+      {/key}
     {:catch}
       <p class="tier-error" data-testid="operations-tier-error" role="alert">
         That view could not be loaded. Reload the dashboard to try again.
@@ -221,29 +246,38 @@
 <style>
   .operations-surface {
     display: flex;
+    flex: 1;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
     height: 100%;
     overflow-y: auto;
   }
 
   .fallback-notice {
-    margin: 0;
-    padding: 8px 20px;
-    font-size: 12px;
-    color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-descriptionForeground));
-    background: var(--vscode-editorWidget-background);
+    margin-top: 0;
+  }
+
+  /* While queue detail splits into its page and the add-task drawer, the split is the page:
+     each half scrolls on its own and the drawer runs to the edges, as the redesign draws it,
+     so the surface stops padding and scrolling. */
+  .operations-surface:has(> :global(.page-split)) {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .operations-surface:has(> :global(.page-split)) > .fallback-notice {
+    margin: var(--schegent-space-4) var(--schegent-space-4-5) 0;
   }
 
   .tier-loading,
   .tier-error {
     margin: 0;
-    padding: 16px 20px;
-    font-size: 12px;
-    color: var(--vscode-descriptionForeground);
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-muted-fg);
   }
 
   .tier-error {
-    color: var(--vscode-errorForeground);
+    color: var(--schegent-status-error-text);
   }
 </style>

@@ -75,7 +75,7 @@ const PROOF = /[Cc]ontain/;
  * reason. This list should stay short; an entry is a recorded decision, and a
  * long one would mean the rule had stopped describing the codebase.
  */
-const ALLOWLIST: readonly { readonly file: string; readonly call: string; readonly why: string }[] =
+const ALLOWLIST: readonly { readonly file: string; readonly call: string; why: string }[] =
   [
     {
       file: 'src/audit/raw-transcript-writer.ts',
@@ -84,6 +84,14 @@ const ALLOWLIST: readonly { readonly file: string; readonly call: string; readon
         'FileHandle.truncate names no path. The handle was opened through the ' +
         'guarded write path, so containment is already proven and re-proving ' +
         'it here would check a different thing than the one being truncated.'
+    },
+    {
+      file: 'src/services/phase-context/handoff-materializer.ts',
+      call: 'openedDest.handle.truncate(',
+      why:
+        'FR-R6-F15: FileHandle.truncate names no path. `openedDest.handle` was opened immediately ' +
+        'above through `openWithinRoot(input.targetRoot, destSegments, ...)` and is truncated to 0 ' +
+        'on copy failure so unverified partial bytes are never left on disk.'
     }
   ];
 
@@ -250,16 +258,30 @@ describe('FR-R3-005 — destructive filesystem calls route through the containme
   });
 
   it('roots the ownership adapter in the directory the registry writes to', () => {
-    // `createDiskOwnershipFs` proves its renames and removes against the root
-    // it was handed. Handing it one and the registry another would guard a tree
-    // nothing is written to, which reads as a working guard.
-    const source = stripComments(read('src/extension.ts'));
+    // `createDiskOwnershipFs` composes its paths from the store directory it
+    // was handed. Handing it one and the registry another would guard a tree
+    // nothing is written to, which reads as a working guard. FR-R3-069 split
+    // the TRUST role out of that argument — judgments anchor at the workspace
+    // root — so the pinned shape is now the two-role object, and the no-drift
+    // property is the same back-reference it always was: the adapter's store
+    // directory and the registry's directory are one identifier read twice,
+    // with `workspaceRoot` named as the separate trusted anchor.
+    // FR-R3-119 — the ownership wiring moved with the leases into
+    // `src/activation/workspace-session.ts`. The back-reference property this
+    // asserts is unchanged; only the file holding the call is different.
+    // Feature 217 (FR-003) — the adapter may take the logger it reports
+    // narrowing through as a second argument. It names no directory, so the
+    // back-reference is still the only directory the shape admits.
+    const source = stripComments(read('src/activation/workspace-session.ts'));
     const call = /useOwnershipStorage\s*\(([\s\S]*?)\)\s*;/.exec(source);
     expect(call, 'the useOwnershipStorage call must be readable').not.toBeNull();
     expect(
-      /createDiskOwnershipFs\s*\(\s*(\w+)\s*\)\s*,\s*\1\s*$/.test(call![1]!.trim()),
-      'createDiskOwnershipFs must be rooted at the same directory passed to ' +
-        'useOwnershipStorage; a different root guards a tree nothing writes to'
+      /createDiskOwnershipFs\s*\(\s*\{\s*workspaceRoot,\s*(\w+)\s*\}\s*(?:,\s*\w+\s*)?\)\s*,\s*\1\s*$/.test(
+        call![1]!.trim()
+      ),
+      'createDiskOwnershipFs must take { workspaceRoot, <dir> } with the same <dir> ' +
+        'passed to useOwnershipStorage; a different store dir guards a tree nothing ' +
+        'writes to, and a missing workspaceRoot re-anchors trust at the store'
     ).toBe(true);
   });
 });

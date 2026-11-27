@@ -30,8 +30,8 @@ describe('stripAnsi (Feature 068 T015 / US2)', () => {
   });
 
   it('preserves plain text without any ANSI codes', () => {
-    expect(stripAnsi('claude --print --model claude-opus-4-7 ...')).toBe(
-      'claude --print --model claude-opus-4-7 ...'
+    expect(stripAnsi('claude --print --model claude-opus-5-5 ...')).toBe(
+      'claude --print --model claude-opus-5-5 ...'
     );
   });
 

@@ -1,0 +1,345 @@
+{
+  "schemaVersion": 1,
+  "tiers": [
+    "gates",
+    "edit",
+    "push",
+    "release"
+  ],
+  "steps": [
+    {
+      "name": "test:gates",
+      "command": "vitest run tests/lint tests/parity tests/contract",
+      "firstTier": "gates",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "gates"
+    },
+    {
+      "name": "build:webview",
+      "command": "node scripts/check-webview-install.mjs && npm --prefix webview-ui run build",
+      "firstTier": "edit",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "build"
+    },
+    {
+      "name": "build:host",
+      "command": "node esbuild.config.mjs",
+      "firstTier": "edit",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "build"
+    },
+    {
+      "name": "typecheck",
+      "command": "tsc --noEmit",
+      "firstTier": "edit",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "typecheck"
+    },
+    {
+      "name": "typecheck:webview",
+      "command": "npm --prefix webview-ui run typecheck",
+      "firstTier": "edit",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "typecheck"
+    },
+    {
+      "name": "typecheck:tests",
+      "command": "tsc -p tsconfig.tests.json --noEmit",
+      "firstTier": "edit",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "typecheck"
+    },
+    {
+      "name": "test:host",
+      "command": "vitest run",
+      "firstTier": "edit",
+      "requiresWebviewBuild": true,
+      "requiresHostBuild": true,
+      "category": "test"
+    },
+    {
+      "name": "test:webview",
+      "command": "npm --prefix webview-ui run test",
+      "firstTier": "edit",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "test"
+    },
+    {
+      "name": "lint",
+      "command": "node scripts/lint.mjs host",
+      "firstTier": "push",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "lint"
+    },
+    {
+      "name": "lint:webview",
+      "command": "node scripts/lint.mjs webview",
+      "firstTier": "push",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "lint"
+    },
+    {
+      "name": "contracts:check",
+      "command": "node scripts/generate-contract-schemas.mjs --check",
+      "firstTier": "push",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "repo-check"
+    },
+    {
+      "name": "docs:check",
+      "command": "node scripts/check-docs.mjs && node scripts/check-doc-links.mjs && node scripts/check-gate-coverage-parity.mjs && node scripts/generate-verification-scripts.mjs --check",
+      "firstTier": "push",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "repo-check"
+    },
+    {
+      "name": "security:secrets",
+      "command": "node scripts/scan-secrets.mjs",
+      "firstTier": "push",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "repo-check"
+    },
+    {
+      "name": "security:actions",
+      "command": "node scripts/check-workflow-pins.mjs",
+      "firstTier": "push",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "repo-check"
+    },
+    {
+      "name": "license:check",
+      "command": "node scripts/check-licenses.mjs",
+      "firstTier": "push",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "repo-check"
+    },
+    {
+      "name": "test:coverage",
+      "command": "vitest run --coverage",
+      "firstTier": "release",
+      "requiresWebviewBuild": true,
+      "requiresHostBuild": true,
+      "category": "coverage"
+    },
+    {
+      "name": "coverage:headroom",
+      "command": "node scripts/check-coverage-headroom.mjs host",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "coverage"
+    },
+    {
+      "name": "test:webview:coverage",
+      "command": "npm --prefix webview-ui run test:coverage",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "coverage"
+    },
+    {
+      "name": "test:evals",
+      "command": "vitest run --config vitest.evals.config.ts --reporter=verbose",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "test"
+    },
+    {
+      "name": "test:visual",
+      "command": "node scripts/check-playwright-browser.mjs && npm run build:webview && playwright test --config playwright.config.ts",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "browser"
+    },
+    {
+      "name": "a11y",
+      "command": "node scripts/check-playwright-browser.mjs && npm run build:webview && playwright test --config playwright.a11y.config.ts",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "browser"
+    },
+    {
+      "name": "test:perf",
+      "command": "vitest run --config vitest.perf.config.ts",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": true,
+      "category": "test"
+    },
+    {
+      "name": "test:e2e",
+      "command": "vitest run --config vitest.e2e.config.ts",
+      "firstTier": "release",
+      "requiresWebviewBuild": true,
+      "requiresHostBuild": true,
+      "category": "test"
+    },
+    {
+      "name": "build",
+      "command": "npm run build:webview && npm run build:host",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "build"
+    },
+    {
+      "name": "package:smoke",
+      "command": "node scripts/package-vsix-smoke.mjs",
+      "firstTier": "release",
+      "requiresWebviewBuild": true,
+      "requiresHostBuild": true,
+      "category": "package"
+    },
+    {
+      "name": "test:integration",
+      "command": "npm run build && npm run test:integration:compile && node ./out/tests/integration/runTest.js",
+      "firstTier": "release",
+      "requiresWebviewBuild": true,
+      "requiresHostBuild": true,
+      "category": "integration"
+    },
+    {
+      "name": "verify:linux",
+      "command": "sh scripts/linux-leg.sh",
+      "firstTier": "release",
+      "requiresWebviewBuild": false,
+      "requiresHostBuild": false,
+      "category": "platform",
+      "precondition": "Requires a running Docker (or OrbStack) daemon and clean scripts/linux-leg harness against HEAD (GC-18)."
+    }
+  ],
+  "aggregates": {
+    "verify:edit": {
+      "kind": "tier",
+      "tier": "edit",
+      "extends": "test:gates",
+      "extraSteps": [
+        "build:webview",
+        "build:host",
+        "typecheck",
+        "typecheck:webview",
+        "typecheck:tests",
+        "test:host",
+        "test:webview"
+      ]
+    },
+    "verify:push": {
+      "kind": "tier",
+      "tier": "push",
+      "extends": "verify:edit",
+      "extraSteps": [
+        "lint",
+        "lint:webview",
+        "contracts:check",
+        "docs:check",
+        "security:secrets",
+        "security:actions",
+        "license:check"
+      ]
+    },
+    "verify:release": {
+      "kind": "tier",
+      "tier": "release",
+      "extends": "verify:push",
+      "extraSteps": [
+        "build:webview",
+        "build:host",
+        "test:coverage",
+        "coverage:headroom",
+        "test:webview:coverage",
+        "test:evals",
+        "test:visual",
+        "a11y",
+        "test:perf",
+        "test:e2e",
+        "build",
+        "package:smoke",
+        "test:integration",
+        "verify:linux"
+      ]
+    },
+    "verify:all": {
+      "kind": "composite",
+      "steps": [
+        "build:webview",
+        "build:host",
+        "contracts:check",
+        "docs:check",
+        "security:secrets",
+        "security:actions",
+        "license:check",
+        "typecheck",
+        "typecheck:webview",
+        "typecheck:tests",
+        "lint",
+        "lint:webview",
+        "test:host",
+        "test:webview:coverage"
+      ]
+    },
+    "ci:fast": {
+      "kind": "composite",
+      "steps": [
+        "typecheck:tests",
+        "lint",
+        "verify:all",
+        "test:evals",
+        "test:visual",
+        "test:perf",
+        "build:host",
+        "package:smoke"
+      ]
+    },
+    "ci": {
+      "kind": "composite",
+      "steps": [
+        "typecheck",
+        "typecheck:webview",
+        "typecheck:tests",
+        "lint",
+        "lint:webview",
+        "build:webview",
+        "build:host",
+        "test:coverage",
+        "coverage:headroom",
+        "test:webview:coverage",
+        "test:evals",
+        "test:visual",
+        "a11y",
+        "test:perf",
+        "test:e2e",
+        "build",
+        "package:smoke",
+        "test:integration"
+      ]
+    },
+    "gate": {
+      "kind": "composite",
+      "steps": [
+        "contracts:check",
+        "docs:check",
+        "security:secrets",
+        "security:actions",
+        "license:check",
+        "ci"
+      ]
+    }
+  }
+}

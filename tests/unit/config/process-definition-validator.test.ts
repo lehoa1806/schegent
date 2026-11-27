@@ -1,5 +1,24 @@
-import { describe, expect, it } from 'vitest';
-import { PHASE_RETRY_CONDITION_MAX_LEN } from '../../../src/contracts/process-definitions';
+import { describe, expect, it, vi } from 'vitest';
+
+// Feature 254 (S-T5, FR-005) — counts the per-member lookups the capability bound must avoid. It
+// delegates, so every other test in this file sees the real predicate.
+const { capabilitySpy } = vi.hoisted(() => ({ capabilitySpy: vi.fn() }));
+vi.mock('../../../src/contracts/phase-capabilities', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/contracts/phase-capabilities')>();
+  return {
+    ...actual,
+    isPhaseCapability: (value: unknown) => {
+      capabilitySpy(value);
+      return actual.isPhaseCapability(value);
+    }
+  };
+});
+
+import { ALL_PHASE_CAPABILITIES } from '../../../src/contracts/phase-capabilities';
+import {
+  PHASE_RETRY_CONDITION_MAX_LEN,
+  RETRY_CAP_OUTCOMES
+} from '../../../src/contracts/process-definitions';
 import { validatePhaseDefinition } from '../../../src/config/process-definition-validator';
 
 const valid = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -101,6 +120,57 @@ describe('validatePhaseDefinition', () => {
     );
   });
 
+  // --- FR-R3-157 — the three-valued `onRetryCap` (contract V1, V2) ---
+
+  describe('onRetryCap', () => {
+    it.each(RETRY_CAP_OUTCOMES)('accepts %s and carries it onto the definition', (outcome) => {
+      const result = validatePhaseDefinition(valid({ onRetryCap: outcome }));
+      expect(result.errors).toEqual([]);
+      expect(result.definition?.onRetryCap).toBe(outcome);
+    });
+
+    it('refuses a value outside the registry, naming the field and the accepted set (V1)', () => {
+      // The message lists the values because the author is editing a file by
+      // hand and the closed set is the whole content of the diagnosis: "invalid
+      // onRetryCap" tells them the line and nothing about the fix. Asserted
+      // against `RETRY_CAP_OUTCOMES` rather than a literal, so adding a fourth
+      // outcome cannot leave the operator reading a stale list of three.
+      const errors = validatePhaseDefinition(valid({ onRetryCap: 'continue-ish' })).errors;
+      expect(errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'onRetryCap', code: 'invalid-enum' })
+        ])
+      );
+      const message = errors.find((error) => error.field === 'onRetryCap')?.message ?? '';
+      for (const outcome of RETRY_CAP_OUTCOMES) {
+        expect(message, `message must name ${outcome}`).toContain(outcome);
+      }
+    });
+
+    it('refuses a non-string, which is the shape a YAML `on:` key can produce', () => {
+      expect(validatePhaseDefinition(valid({ onRetryCap: true })).errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'onRetryCap', code: 'invalid-enum' })
+        ])
+      );
+    });
+
+    it('accepts a phase carrying BOTH forms, including contradictory ones (V2)', () => {
+      // Not a validation error, deliberately. `onRetryCap` supersedes the boolean
+      // rather than conflicting with it — `resolveRetryCapOutcome` gives the
+      // stated outcome precedence — and refusing the pair would break the one
+      // guarantee this feature makes loudest: every pipeline file already on
+      // disk keeps loading. An author adding `onRetryCap` to a phase that has
+      // the boolean must not have to remove the boolean in the same edit.
+      const result = validatePhaseDefinition(
+        valid({ onRetryCap: 'fail', forceContinueOnRetryCap: true })
+      );
+      expect(result.errors).toEqual([]);
+      expect(result.definition?.onRetryCap).toBe('fail');
+      expect(result.definition?.forceContinueOnRetryCap).toBe(true);
+    });
+  });
+
   it('normalizes legacy versions when requested', () => {
     const legacy = valid();
     delete legacy.version;
@@ -147,5 +217,73 @@ describe('validatePhaseDefinition', () => {
     ).errors.filter((e) => e.field === 'retryCondition');
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe('invalid-expression');
+  });
+});
+
+// Feature 254 (S-T5, contract S7, data-model §3; FR-005, SC-002) — the capability list is bounded
+// before any per-member work, with the same code, field and message as the YAML reader
+// (tests/unit/process-yaml/phase-yaml-mapper.test.ts). A list of more than four members always holds an
+// unknown member or a repeat, so the count refusal narrows nothing that was accepted.
+describe('Phase capabilities are bounded before per-member work (S-T5, FR-005)', () => {
+  const TOO_MANY_MESSAGE = 'Phase capabilities list at most 4 members';
+
+  const capabilityErrors = (capabilities: unknown) =>
+    validatePhaseDefinition(valid({ capabilities })).errors.filter(
+      (error) => error.field === 'capabilities'
+    );
+
+  it('accepts the empty set with no capability error', () => {
+    expect(capabilityErrors([])).toEqual([]);
+  });
+
+  it('accepts the four distinct known members', () => {
+    expect(capabilityErrors([...ALL_PHASE_CAPABILITIES])).toEqual([]);
+  });
+
+  it('refuses five members with one repeat as too-many-members, with the stated message', () => {
+    const errors = capabilityErrors([...ALL_PHASE_CAPABILITIES, ALL_PHASE_CAPABILITIES[0]]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      field: 'capabilities',
+      code: 'too-many-members',
+      message: TOO_MANY_MESSAGE
+    });
+  });
+
+  const tenThousand = Array.from({ length: 10_000 }, () => ALL_PHASE_CAPABILITIES[0]);
+
+  it('refuses 10,000 members as too-many-members', () => {
+    const errors = capabilityErrors(tenThousand);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ field: 'capabilities', code: 'too-many-members' });
+  });
+
+  it('refuses 10,000 members without looking up a single member', () => {
+    capabilitySpy.mockClear();
+    capabilityErrors(tenThousand);
+    expect(capabilitySpy).toHaveBeenCalledTimes(0);
+  });
+
+  it('still looks members up within the bound (control: the spy sees a four-member list)', () => {
+    capabilitySpy.mockClear();
+    capabilityErrors([...ALL_PHASE_CAPABILITIES]);
+    expect(capabilitySpy.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('keeps invalid-enum for four members with one unknown', () => {
+    const errors = capabilityErrors([...ALL_PHASE_CAPABILITIES.slice(0, 3), 'teleport']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'invalid-enum' });
+  });
+
+  it('keeps duplicate-member for four known members with one repeated', () => {
+    const errors = capabilityErrors([
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[0],
+      ALL_PHASE_CAPABILITIES[1],
+      ALL_PHASE_CAPABILITIES[2]
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'duplicate-member' });
   });
 });

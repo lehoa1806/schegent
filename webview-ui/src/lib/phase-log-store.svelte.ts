@@ -1,6 +1,7 @@
 // Feature 020 — phase-log selection + entries store (Svelte 5 $state
-// runes). NOT persisted across dashboard re-mount; all fields default
-// to null/empty on construction. Tail-session lifecycle and
+// runes). Entries are NOT persisted across dashboard re-mount; all fields
+// default to null/empty on construction. Live Mode (Feature 067) and the
+// applied live-log cursor (FR-R6-F07, `live-log-resume.ts`) are. Tail-session lifecycle and
 // auto-attach land in US2 (T051/T056); this module currently exposes
 // only the read surface (load a manifest, cascade selectors, iteration
 // stepper).
@@ -25,15 +26,28 @@ import type {
   VerboseDiagnosticsBanner
 } from '../../../src/services/phase-log/types';
 import {
+  ackPhaseLogTail,
   readPhaseLog,
   startPhaseLogTail,
+  type WithRefusalText,
   stopPhaseLogTail,
-  subscribePhaseLogPush,
-  type PhaseLogEntryPushPayload,
+  subscribePhaseLogBatch,
   type StartPhaseLogTailRequest,
   type StopPhaseLogTailRequest
 } from './phase-log-ipc';
+import type { AckPhaseLogTailRequest } from './messages';
+import {
+  FRESH_CONSUMER_STATE,
+  LIVE_LOG_INCOMPATIBLE_TEXT,
+  applyLiveLogBatch,
+  type LiveLogBatchInput,
+  type LiveLogBatchVerdict
+} from './live-log-consumer';
 import { getWebviewState, setWebviewState } from './vscode-api';
+import { readLiveLogResume, resumeCursorFor, writeLiveLogResume } from './live-log-resume';
+import { PHASE_LOG_WINDOW_MAX_ENTRIES, appendToWindow } from './phase-log-window';
+import { OUTCOME_NOT_YET_KNOWN_TEXT } from './boundary-refusal-text';
+import type { IntentWaitOptions } from './intent-ledger';
 
 export type PhaseLogSelectionDraft = {
   readonly queueId: string | null;
@@ -116,7 +130,9 @@ export interface PhaseLogStore {
   // listener. Both are idempotent: a duplicate start replaces the
   // prior session (the host's cap-of-1 invariant matches), and stop
   // is a no-op when no session is active.
-  startTail(req: StartPhaseLogTailRequest): Promise<PhaseLogTailStartResult>;
+  startTail(
+    req: StartPhaseLogTailRequest
+  ): Promise<WithRefusalText<PhaseLogTailStartResult>>;
   stopTail(): Promise<PhaseLogTailStopResult | null>;
   // Feature 020 T056 — atomic "Jump to current phase" cascade.
   // Reads `snapshot.queue.inFlight` and, if present, sets all five
@@ -179,6 +195,18 @@ const IDLE_FRAGMENT = Object.freeze({
   errorReason: null as string | null
 });
 
+/**
+ * BUG-002 (FR-028a) — what the pane says when the host refuses a selection as
+ * `unknown-tuple`. Neither of `readPhaseLog`'s ack paths gives that reason
+ * refusal text, since it is the phase-log module's own reason and not a gate
+ * refusal, so without this sentence the read fallback showed the bare code. The
+ * audit row keeps the code (FR-029). It names only what the pane lets an operator
+ * choose, a Task and a Phase: the selection's pipeline id comes from the Task, and
+ * the Pipeline kind is retired.
+ */
+const UNKNOWN_TUPLE_TEXT =
+  'This selection does not match a Task or Phase the host knows. Choose again.';
+
 // Feature 067 — module-level snapshot of the last observed in-flight
 // identity tuple. Used by `applyInFlightIdentityChange` to short-circuit
 // on identity-stable snapshots (heartbeat updates that change only
@@ -194,6 +222,26 @@ let lastObservedInFlightIdentity: string | null = null;
  */
 export function __resetLiveModeForTests(): void {
   lastObservedInFlightIdentity = null;
+}
+
+/**
+ * FR-R5-F18 (T18.2) — classify whether a failed `startTail` result is a
+ * transient start race (`not-in-flight` or `internal-error` without a router
+ * gate refusal sentence) that may be retried once on a subsequent snapshot, vs
+ * a permanent refusal (`unknown-tuple`, `permission-denied`, or workspace trust
+ * refusal) that must not auto-retry on duplicate snapshots.
+ */
+export function isTransientTailFailure(
+  res: WithRefusalText<PhaseLogTailStartResult>
+): boolean {
+  if (res.outcome === 'success') return false;
+  if (
+    res.refusalText !== undefined &&
+    res.refusalText !== OUTCOME_NOT_YET_KNOWN_TEXT
+  ) {
+    return false;
+  }
+  return res.reason === 'not-in-flight' || res.reason === 'internal-error';
 }
 
 /**
@@ -228,9 +276,10 @@ function readInitialLiveMode(): boolean {
 }
 
 export function createPhaseLogStore(
-  read: (req: {
-    readonly selection: PhaseLogSelection;
-  }) => Promise<PhaseLogReadResult> = readPhaseLog,
+  read: (
+    req: { readonly selection: PhaseLogSelection },
+    wait?: IntentWaitOptions<WithRefusalText<PhaseLogReadResult>>
+  ) => Promise<WithRefusalText<PhaseLogReadResult>> = readPhaseLog,
   // T051 — tail IPC seam. Defaults wire to the real IPC helpers; tests
   // overwrite via vi.mock on the underlying module. Keeping the
   // constructor surface stable so existing call sites
@@ -243,12 +292,14 @@ export function createPhaseLogStore(
       req: StopPhaseLogTailRequest
     ) => Promise<PhaseLogTailStopResult>;
     readonly subscribe: (
-      cb: (payload: PhaseLogEntryPushPayload) => void
+      cb: (payload: LiveLogBatchInput) => void
     ) => () => void;
+    readonly ack: (req: AckPhaseLogTailRequest) => void;
   } = {
     start: startPhaseLogTail,
     stop: stopPhaseLogTail,
-    subscribe: subscribePhaseLogPush
+    subscribe: subscribePhaseLogBatch,
+    ack: ackPhaseLogTail
   }
 ): PhaseLogStore {
   // Box the state in a stable container so closures (notably
@@ -274,33 +325,71 @@ export function createPhaseLogStore(
   // the current token; on resolution it only applies if the token is
   // still the latest.
   let loadToken = 0;
+  let tailToken = 0;
+  let pendingStopSessionId: string | null = null;
+  function rememberTailForStop(): void {
+    const cur = getState().tailSessionId;
+    if (cur !== null) pendingStopSessionId = cur;
+  }
   // T051 — push-listener handle. The subscription owns its own
   // lifecycle: dispose on `stopTail()`, dispose on a duplicate
   // `startTail()`, dispose on `reset()`.
   let pushUnsubscribe: (() => void) | null = null;
+  // FR-R6-F07 (FR-001, FR-004) — the consumer's sequence state for the
+  // current session, and the cursor the next start resumes from: the read's,
+  // then each applied batch's. A new read or a reset of the entries clears both.
+  let consumer = FRESH_CONSUMER_STATE;
+  let resumeCursor: string | null = null;
+  // FR-R6-F07 (FR-005) — what a previous view of this webview applied. A start
+  // uses it only for the same selection, and only when there is no newer cursor.
+  const persistedResume = readLiveLogResume();
+  let tailSelection: PhaseLogSelection | null = null;
 
-  function handlePush(payload: PhaseLogEntryPushPayload): void {
+  function handleBatch(payload: LiveLogBatchInput): void {
     // Defense against late delivery after navigate-away (T044
-    // contract): drop pushes whose session does not match the
-    // currently-active tail. The host's registry tears down the
-    // previous session before allocating a new one, but the message
-    // bus is not guaranteed to be quiesced — a stale envelope can
-    // still arrive in flight.
+    // contract): drop batches whose session does not match the
+    // currently-active tail. The message bus is not guaranteed to be
+    // quiesced — a stale envelope can still arrive in flight.
     const cur = getState();
     if (cur.tailSessionId === null) return;
     if (payload.tailSessionId !== cur.tailSessionId) return;
-    if (payload.entry.kind === 'tail-ended') {
-      // Synthetic terminator — clears the LIVE indicator. The entry
-      // itself is NOT appended to the visible log because it carries
-      // no body the user cares about; the disappearance of the LIVE
-      // badge is the observable cue.
-      teardownPush();
-      setState({ ...cur, tailSessionId: null });
+    const verdict = applyLiveLogBatch(consumer, payload);
+    if (verdict.kind === 'incompatible') {
+      // FR-R6-F07 (FR-011) — apply nothing and acknowledge nothing.
+      setState({ ...cur, errorReason: LIVE_LOG_INCOMPATIBLE_TEXT });
       return;
     }
+    consumer = verdict.state;
+    if (verdict.kind === 'apply') showBatch(cur, verdict, payload.generation);
+    if (verdict.ack !== null) tail.ack({ sessionId: payload.tailSessionId, ...verdict.ack });
+  }
+
+  function showBatch(
+    cur: PhaseLogStoreState,
+    verdict: Extract<LiveLogBatchVerdict, { kind: 'apply' }>,
+    generation: string
+  ): void {
+    if (verdict.cursor !== null) {
+      resumeCursor = verdict.cursor;
+      if (tailSelection !== null) {
+        writeLiveLogResume({ selection: tailSelection, cursor: verdict.cursor, generation });
+      }
+    }
+    let entries = verdict.replace ? [] : cur.entries;
+    for (const entry of verdict.entries) {
+      // FR-R4-F08 (L3) — windowed: the newest 499 entries plus one marker counting the rest.
+      entries = appendToWindow(entries, entry, PHASE_LOG_WINDOW_MAX_ENTRIES);
+    }
+    // Feature 203 (T043, D8) — the classification describes the log on screen,
+    // so appending to that log has to move it too; a batch that appends nothing
+    // leaves it alone. A terminal `tail-ended` entry is not shown: the LIVE
+    // badge going away is the cue.
+    if (verdict.ended) teardownPush();
     setState({
       ...cur,
-      entries: Object.freeze([...cur.entries, payload.entry])
+      entries,
+      ...(verdict.entries.length > 0 ? { verboseDiagnosticsState: { kind: 'entries-present' } } : {}),
+      ...(verdict.ended ? { tailSessionId: null } : {})
     });
   }
 
@@ -323,6 +412,11 @@ export function createPhaseLogStore(
   }
 
   function resetEntries(): void {
+    tailToken++;
+    rememberTailForStop();
+    teardownPush();
+    resumeCursor = null;
+    consumer = FRESH_CONSUMER_STATE;
     const cur = getState();
     setState({
       ...cur,
@@ -350,16 +444,31 @@ export function createPhaseLogStore(
     }
     const token = ++loadToken;
     setState({ ...getState(), loading: true, errorReason: null });
-    const result = await read({
-      selection: {
-        queueId: sel.queueId,
-        taskId: sel.taskId,
-        pipelineId: sel.pipelineId,
-        phaseId: sel.phaseId,
-        iterationN: sel.iterationN
-      }
-    });
+    // FR-R4-F05 (I6, FR-024) — a late answer to THIS read replaces the not-yet-known text through
+    // the same path; a newer read or a `reset()` makes it stale, as it does an on-time answer.
+    const result = await read(
+      {
+        selection: {
+          queueId: sel.queueId,
+          taskId: sel.taskId,
+          pipelineId: sel.pipelineId,
+          phaseId: sel.phaseId,
+          iterationN: sel.iterationN
+        }
+      },
+      { onLateOutcome: (late) => applyRead(token, sel, late) }
+    );
+    applyRead(token, sel, result);
+  }
+
+  function applyRead(
+    token: number,
+    sel: PhaseLogSelectionDraft,
+    result: WithRefusalText<PhaseLogReadResult>
+  ): void {
     if (token !== loadToken) return; // stale
+    resumeCursor = result.outcome === 'success' ? (result.manifest.cursor ?? null) : null;
+    consumer = FRESH_CONSUMER_STATE;
     if (result.outcome === 'success') {
       const manifest = result.manifest;
       const before = getState();
@@ -391,7 +500,11 @@ export function createPhaseLogStore(
         isInFlight: false,
         skippedLines: 0,
         truncatedCount: 0,
-        errorReason: result.reason
+        // FR-R4-F05 (O1, O7) — a refusal is shown as its sentence, not as `internal-error`.
+        // BUG-002 (FR-028a) — and `unknown-tuple`, which has no refusal text, as its own.
+        errorReason:
+          result.refusalText ??
+          (result.reason === 'unknown-tuple' ? UNKNOWN_TUPLE_TEXT : result.reason)
       });
     }
   }
@@ -428,6 +541,8 @@ export function createPhaseLogStore(
       return ref.current;
     },
     setSelection(selection, options) {
+      tailToken++;
+      rememberTailForStop();
       maybeFlipLiveModeOff(options);
       setState({
         ...getState(),
@@ -469,6 +584,8 @@ export function createPhaseLogStore(
       resetEntries();
     },
     setPhase(phaseId, options) {
+      tailToken++;
+      teardownPush();
       maybeFlipLiveModeOff(options);
       // Cascade-clear: pick a phase → wipe iter (latest-by-default
       // wins on next reload).
@@ -476,6 +593,8 @@ export function createPhaseLogStore(
       void loadIfComplete();
     },
     setIteration(iterationN, options) {
+      tailToken++;
+      teardownPush();
       maybeFlipLiveModeOff(options);
       patchSelection({ iterationN });
       void loadIfComplete();
@@ -513,6 +632,8 @@ export function createPhaseLogStore(
     },
     reset() {
       loadToken++;
+      tailToken++;
+      pendingStopSessionId = null;
       teardownPush();
       // Preserve `isLiveMode` across `reset()` — the operator's intent
       // is independent of the in-memory cache; resetting the cache MUST
@@ -523,26 +644,54 @@ export function createPhaseLogStore(
       }));
     },
     async startTail(req) {
-      // Cap-of-1 mirror: tear down any existing subscription before
-      // starting a new one. The host enforces the same invariant at
-      // the registry; doing it here too keeps the LIVE indicator
-      // accurate even if a stale push arrives between requests.
+      // Cap-of-1 mirror + FR-R5-F18 (T18.2) request-token supersession:
+      // tear down any existing subscription before starting a new one and
+      // ignore late responses if the selection moved or stopTail/reset ran.
+      const token = ++tailToken;
+      pendingStopSessionId = null;
       teardownPush();
       const prior = getState().tailSessionId;
       if (prior !== null) {
-        // Drop the prior session id eagerly so any in-flight push
-        // for it is dropped by `handlePush`.
         setState({ ...getState(), tailSessionId: null });
       }
-      const result = await tail.start(req);
-      if (result.outcome === 'success') {
-        setState({ ...getState(), tailSessionId: result.sessionId });
-        pushUnsubscribe = tail.subscribe(handlePush);
+      // FR-R6-F07 (FR-009) — subscribe before the start, so no batch can
+      // land between the answer and the listener; the host posts nothing
+      // until ack 0 in any case. Batches before `tailSessionId` is set are
+      // dropped by the session filter.
+      // The sequence restarts; the applied position stays, so a resume from a
+      // cursor behind the shown entries adds none of them twice (a `reset`
+      // batch still clears it).
+      consumer = { ...FRESH_CONSUMER_STATE, position: consumer.position };
+      pushUnsubscribe = tail.subscribe(handleBatch);
+      const fromCursor =
+        req.fromCursor ?? resumeCursor ?? resumeCursorFor(persistedResume, req.selection) ?? undefined;
+      let result: WithRefusalText<PhaseLogTailStartResult>;
+      try {
+        result = await tail.start(fromCursor === undefined ? req : { ...req, fromCursor });
+      } catch {
+        if (token === tailToken) teardownPush();
+        return { outcome: 'failure', reason: 'internal-error' };
       }
+      if (token !== tailToken) {
+        if (result.outcome === 'success') {
+          void tail.stop({ sessionId: result.sessionId }).catch(() => {});
+        }
+        return result;
+      }
+      if (result.outcome !== 'success') {
+        teardownPush();
+        return result;
+      }
+      const { queueId, taskId, pipelineId, phaseId, iterationN } = req.selection;
+      tailSelection = { queueId, taskId, pipelineId, phaseId, iterationN };
+      setState({ ...getState(), tailSessionId: result.sessionId });
+      tail.ack({ sessionId: result.sessionId, batchSeq: 0 });
       return result;
     },
     async stopTail() {
-      const sessionId = getState().tailSessionId;
+      tailToken++;
+      const sessionId = getState().tailSessionId ?? pendingStopSessionId;
+      pendingStopSessionId = null;
       teardownPush();
       if (sessionId === null) return null;
       // Clear locally first so a late `tail-ended` push for this
@@ -552,6 +701,8 @@ export function createPhaseLogStore(
       return tail.stop({ sessionId });
     },
     async jumpToCurrent(snapshot, options) {
+      tailToken++;
+      rememberTailForStop();
       const setLiveModeOn = options?.setLiveModeOn ?? true;
       // Feature 067 — call `setLiveMode(true)` BEFORE the early-return
       // path so the no-inFlight case still sets intent ON for the next
@@ -601,6 +752,8 @@ export function createPhaseLogStore(
         tailSessionId: null
       });
       teardownPush();
+      resumeCursor = null;
+      consumer = FRESH_CONSUMER_STATE;
       await loadIfComplete();
       return next;
     }

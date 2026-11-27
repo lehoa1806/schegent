@@ -13,6 +13,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ConfirmDialog from '../ConfirmDialog.svelte';
+import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
 import { SUPPRESSION_CHECKBOX_LABEL, type Severity } from '../../lib/action-copy';
 
 afterEach(() => cleanup());
@@ -281,10 +282,99 @@ describe('ConfirmDialog', () => {
     opener.remove();
   });
 
+  it('returns focus to the menu button when the action came from a menu that has since closed', async () => {
+    // A menu hides as soon as one of its items is chosen, and a hidden item cannot take focus,
+    // so the place the operator came from is the button that opens the menu.
+    const wrap = document.createElement('span');
+    const opener = document.createElement('button');
+    opener.setAttribute('aria-haspopup', 'menu');
+    const menu = document.createElement('div');
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+    const item = document.createElement('button');
+    item.setAttribute('role', 'menuitem');
+    menu.append(item);
+    wrap.append(opener, menu);
+    document.body.appendChild(wrap);
+
+    const { unmount } = renderDialog(makeRequest({ originatingElement: item }));
+    await tick();
+    unmount();
+    await tick();
+
+    expect(document.activeElement).toBe(opener);
+    wrap.remove();
+  });
+
+  it('defers focus return past teardown so a hoverTextAnchor opener mounts its popover without throwing', async () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'Actions';
+    document.body.appendChild(opener);
+    const handle = hoverTextAnchor(opener, {
+      controlId: 'confirm-dialog-return-anchor',
+      description: {
+        body: 'Long popover description exceeding the eighty character inline threshold so focusing opens a portal.'
+      }
+    });
+
+    const { unmount } = renderDialog(makeRequest({ originatingElement: opener }));
+    await tick();
+    expect(() => unmount()).not.toThrow();
+    await tick();
+    expect(document.activeElement).toBe(opener);
+    expect(document.getElementById('hover-text-confirm-dialog-return-anchor')).not.toBeNull();
+
+    handle.destroy();
+    opener.remove();
+  });
+
   it('safely no-ops the focus-restoration when originatingElement is null', async () => {
     const { unmount } = renderDialog(makeRequest({ originatingElement: null }));
     await tick();
     expect(() => unmount()).not.toThrow();
+  });
+
+  it('does not focus a detached originatingElement when it is removed before teardown microtask runs', async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    const focusSpy = vi.spyOn(opener, 'focus');
+
+    const { unmount } = renderDialog(makeRequest({ originatingElement: opener }));
+    await tick();
+    unmount();
+    opener.remove();
+    await tick();
+
+    expect(focusSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not steal focus if another live control or replacement modal took focus before teardown microtask runs', async () => {
+    const opener = document.createElement('button');
+    const other = document.createElement('button');
+    document.body.append(opener, other);
+
+    const first = renderDialog(makeRequest({ originatingElement: opener }));
+    await tick();
+    first.unmount();
+    other.focus();
+    await tick();
+    expect(document.activeElement).toBe(other);
+
+    const modal = document.createElement('div');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    document.body.appendChild(modal);
+    other.blur();
+
+    const second = renderDialog(makeRequest({ originatingElement: opener }));
+    await tick();
+    second.unmount();
+    await tick();
+    expect(document.activeElement).not.toBe(opener);
+
+    modal.remove();
+    other.remove();
+    opener.remove();
   });
 
   it('non-Tab and non-Escape keys are ignored', async () => {
@@ -323,5 +413,83 @@ describe('ConfirmDialog', () => {
     const pRule = pRuleMatch![1];
     expect(pRule).toMatch(/word-break:\s*break-word/);
     expect(pRule).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+
+  it('inherits shared .sg .btn classes for Cancel and Confirm with zero bespoke button CSS', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const svelteSource = readFileSync(join(here, '..', 'ConfirmDialog.svelte'), 'utf8');
+    const styleBlock = svelteSource.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    expect(styleBlock).not.toMatch(/(?:^|\n)\s*(?:button|\.btn-)/);
+
+    const destructive = renderDialog(makeRequest({ severity: 'destructive' }));
+    expect(destructive.container.querySelector('.confirm-backdrop')?.classList.contains('sg')).toBe(
+      true
+    );
+    const cancel = destructive.getByTestId('confirm-dialog-cancel');
+    expect(cancel.classList.contains('btn')).toBe(true);
+    expect(cancel.classList.contains('btn-secondary')).toBe(true);
+    const destructiveConfirm = destructive.getByTestId('confirm-dialog-confirm');
+    expect(destructiveConfirm.classList.contains('btn')).toBe(true);
+    expect(destructiveConfirm.classList.contains('btn-danger')).toBe(true);
+    expect(destructiveConfirm.classList.contains('btn-primary')).toBe(false);
+    cleanup();
+
+    for (const severity of ['info', 'caution'] as const) {
+      const view = renderDialog(makeRequest({ severity }));
+      const confirm = view.getByTestId('confirm-dialog-confirm');
+      expect(confirm.classList.contains('btn')).toBe(true);
+      expect(confirm.classList.contains('btn-primary')).toBe(true);
+      expect(confirm.classList.contains('btn-danger')).toBe(false);
+      cleanup();
+    }
+  });
+
+  it('inserts <wbr> before dot and slash joins while keeping textContent verbatim (W03, FR-003)', () => {
+    const bodyText =
+      'Reset schegent.queue.maxConcurrentRuns and docs/architecture/run-isolation.md?';
+    const { getByTestId } = renderDialog(makeRequest({ body: bodyText }));
+    const body = getByTestId('confirm-dialog-body');
+
+    expect(body.textContent).toBe(bodyText);
+    expect(body.querySelectorAll('wbr')).toHaveLength(5);
+    const runs: string[] = [''];
+    for (const node of Array.from(body.childNodes)) {
+      if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'WBR') {
+        runs.push('');
+      } else if (node.nodeType === Node.TEXT_NODE) {
+        runs[runs.length - 1] += node.textContent ?? '';
+      }
+    }
+    expect(runs).toEqual([
+      'Reset schegent',
+      '.queue',
+      '.maxConcurrentRuns and docs',
+      '/architecture',
+      '/run-isolation',
+      '.md?'
+    ]);
+  });
+
+  it('does not split decimals or ellipses with <wbr> (W03, FR-003)', () => {
+    const bodyText = 'Wait 1.5 seconds before retrying...';
+    const { getByTestId } = renderDialog(makeRequest({ body: bodyText }));
+    const body = getByTestId('confirm-dialog-body');
+
+    expect(body.textContent).toBe(bodyText);
+    expect(body.querySelectorAll('wbr')).toHaveLength(0);
+  });
+
+  it('renders a long unbroken token verbatim inside confirm-dialog-body wired to aria-describedby (W03, FR-003)', () => {
+    const longToken = 'unbrokentokenwithoutanydotsorslashesorwhitespace1234567890abcdef';
+    const bodyText = `Confirm action for ${longToken} now.`;
+    const { getByTestId } = renderDialog(makeRequest({ body: bodyText }));
+    const dialog = getByTestId('confirm-dialog');
+    const body = getByTestId('confirm-dialog-body');
+
+    expect(body.textContent).toBe(bodyText);
+    expect(body.querySelectorAll('wbr')).toHaveLength(0);
+    const describedBy = dialog.getAttribute('aria-describedby');
+    expect(describedBy).toBe(body.id);
+    expect(document.getElementById(describedBy!)?.textContent).toBe(bodyText);
   });
 });

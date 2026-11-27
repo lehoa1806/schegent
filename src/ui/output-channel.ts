@@ -1,4 +1,4 @@
-import type { SanitizedLogger } from '../lib/logger';
+import type { LogSink, SanitizedLogger } from '../lib/logger';
 
 export interface OutputChannelLike {
   appendLine(line: string): void;
@@ -9,11 +9,13 @@ export interface OutputChannelLike {
 export class SchegentOutputChannel {
   private readonly channel: OutputChannelLike;
   private readonly logger: SanitizedLogger;
+  private readonly sink: LogSink;
 
   constructor(channel: OutputChannelLike, logger: SanitizedLogger) {
     this.channel = channel;
     this.logger = logger;
-    logger.addSink({ appendLine: (l) => channel.appendLine(l) });
+    this.sink = { appendLine: (l) => channel.appendLine(l) };
+    logger.addSink(this.sink);
   }
 
   public log(message: string): void {
@@ -25,6 +27,8 @@ export class SchegentOutputChannel {
   }
 
   public dispose(): void {
+    // The logger outlives every Stage 2 wiring that builds one of these.
+    this.logger.removeSink(this.sink);
     this.channel.dispose();
   }
 }

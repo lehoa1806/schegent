@@ -33,7 +33,7 @@ import type { Notifier } from '../../../src/ui/notifications';
 import type { Memento } from '../../../src/state/workspace-state';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { HistoryEntry } from '../../../src/state/history-entry';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -120,7 +120,7 @@ beforeEach(async () => {
     callOrder.push(`run:${req.phase}`);
     return makeOutput();
   });
-  phaseRunner = { run: runSpy } as unknown as PhaseRunner;
+  phaseRunner = { run: runSpy, evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   const historyAppend = vi.fn();
   historyAppend.mockImplementation(async () => {
     callOrder.push('history.append');

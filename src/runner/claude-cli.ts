@@ -1,19 +1,15 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { extractCliSessionId } from "../parser/session-id-extractor";
-
-import type {
-  InvocationOutputSink,
-  InvocationRequest,
-  RawInvocationOutput
-} from './invocation-result';
-import type {
-  BackendRunner,
-  MonitorSidecarEvent,
-  MonitorSidecarHook
-} from '../contracts/backend-runner';
+import { armedMaxDurationMs, type InvocationOutputSink, type InvocationRequest, type RawInvocationOutput } from './invocation-result';
+import { createDiagnosticWriteChain } from './diagnostic-write-chain';
+import type { BackendRunner, MonitorSidecarEvent, MonitorSidecarHook, TreeAttribution, TreeTeardownOutcome } from '../contracts/backend-runner';
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
+import { assertExecutableUnchanged, isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
+import { planCapabilityEnforcement } from '../services/capability-enforcement-plan';
+import { CapabilityNotEnforceableError } from '../services/capability-refusal';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import {
   IncrementalFatalScanner,
@@ -21,9 +17,19 @@ import {
 } from '../lib/incremental-fatal-scanner';
 import { OutputSinkBackpressure } from './output-sink-backpressure';
 import { waitForChildCompletion } from './child-completion';
-
-const SIGKILL_DELAY_MS = 2_000;
-// Feature 030 BUG-002 — after the invocation's terminal stream-json result line
+import { awaitStdinDelivery, writePromptToStdin } from './child-stdin';
+import { LineFramer, DEFAULT_MAX_LINE_UNITS } from '../lib/line-framer';
+import {
+  BACKGROUND_HOLD_CEILING_MS,
+  BackgroundTaskTracker,
+  isBackgroundBookkeepingEvent
+} from './background-task-tracker';
+import { SessionCostLedger } from './session-cost-ledger';
+import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from './process-tree';
+import { nextInvocationId } from './invocation-identity';
+import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
+import { TeardownLedger } from './teardown-ledger';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 // (`{"type":"result"}`) appears in stdout, the runner waits at most this long
 // for the process to exit on its own before grace-terminating it. Short enough
 // that a lingering process does not stall the queue; long enough for a
@@ -118,6 +124,11 @@ function isSessionInitLine(line: string): boolean {
 // suppresses every result it produces for the whole replay window.
 const MAX_SUPPRESSED_RESULTS = 1;
 
+// FR-R3-198 — the lines the CLI writes about its background tasks are not the
+// turn resuming, so they leave the marker set. Were they activity, the
+// `task_updated` and `background_tasks_changed` lines behind a task's last
+// notification would clear it again, and the settle could never arm once a
+// hold ends. A woken turn opens with `init`, which still clears it.
 function isStreamJsonEventLine(line: string): boolean {
   try {
     const parsed = JSON.parse(line) as unknown;
@@ -125,10 +136,27 @@ function isStreamJsonEventLine(line: string): boolean {
     const record = parsed as Record<string, unknown>;
     return 'type' in record &&
       record.kind !== 'task-notification' &&
-      record.subtype !== 'task-notification';
+      record.subtype !== 'task-notification' &&
+      !isBackgroundBookkeepingEvent(record);
   } catch {
     return false;
   }
+}
+
+// FR-R3-198 (FR-011, K2) — the session's cumulative cost on an accepted result
+// line, read off the parsed field. A missing, negative or non-finite value is
+// none, as `extractInvocationUsageMetrics` reads it.
+function resultCostUsd(line: string): number | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  if (!('total_cost_usd' in parsed)) return undefined;
+  const cost = parsed.total_cost_usd;
+  return typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost : undefined;
 }
 
 export type SpawnFn = (
@@ -158,7 +186,35 @@ function safeSpawn(
       'claude-cli: shell:true is forbidden — would expose prompt body to shell interpretation'
     );
   }
-  return spawnFn(command, args, { ...options, shell: false });
+  // FR-R3-054 (H-05) — its own process group, so the terminate ladder can reach
+  // descendants rather than only the direct child.
+  // Review gap GC-24 & FR-R7-16 (16-16): resolve against the child's exact env on real spawns,
+  // and refuse explicit relative/drive-relative paths even under injected test doubles.
+  const resolvedCommand =
+    spawnFn === (spawn as unknown as SpawnFn) || isInvalidExecutablePath(command)
+      ? spawnCommandFor(command, options.env ?? process.env)
+      : command;
+  return spawnFn(resolvedCommand, args, {
+    ...options,
+    shell: false,
+    ...processTreeSpawnOptions()
+  });
+}
+
+function cancelledInvocationOutput(command: string, startedAtMs: number): RawInvocationOutput {
+  const stdoutBuffer = new ZippedStreamBuffer();
+  const stderrBuffer = new ZippedStreamBuffer();
+  stdoutBuffer.finalize();
+  stderrBuffer.finalize();
+  return {
+    stdoutBuffer,
+    stderrBuffer,
+    exitCode: null,
+    killed: true,
+    timedOut: false,
+    durationMs: Math.max(0, Date.now() - startedAtMs),
+    command
+  };
 }
 
 /**
@@ -170,6 +226,77 @@ function safeSpawn(
  * stream; truncation is silent. Timeout and cancellation both terminate
  * the subprocess via `terminate()`.
  */
+/**
+ * FR-R3-031 / FR-R3-032 — the permission posture, as an unconditional module-scope
+ * literal so that "unconditional" is CHECKABLE by reading this file.
+ *
+ * `tests/lint/backend-permission-posture.test.ts` parses this declaration. That
+ * is not incidental: the disclosure those items shipped is only trustworthy while
+ * the argv is legible where the spawn happens, and four gates read this source
+ * text rather than the runtime argv for exactly that reason.
+ *
+ * FR-R3-086 narrows it per phase through `capabilityArgs`, and
+ * `tests/lint/capability-argv-parity.test.ts` asserts this literal equals
+ * `unboundedArgs(kind)` so the plan and the adapter cannot disagree about what
+ * "unbounded" means.
+ */
+const UNBOUNDED_PERMISSION_ARGS = ['--dangerously-skip-permissions'];
+
+/**
+ * FR-R3-086 — the argv this backend spawns with, under the phase's declared
+ * capability set.
+ *
+ * WHY THE DEFAULT LITERAL STAYS IN THIS FILE. Four gates read each adapter's
+ * SOURCE TEXT to prove the permission posture — `backend-permission-posture`,
+ * `backend-containment-policy`, and the two documentation-parity gates — because
+ * a posture proven from source cannot be quietly changed by a table somewhere
+ * else. Moving the flag into a shared module made all four go red, and they were
+ * right to: the FR-R3-031/032 disclosure is only trustworthy while the argv is
+ * legible where the spawn happens.
+ *
+ * So `unbounded` is passed in as a literal from the call site below, and this
+ * returns it unchanged whenever the phase declared nothing — which is every
+ * phase today. The plan is consulted ONLY to narrow. `capability-argv-parity`
+ * asserts the literal each adapter passes equals `unboundedArgs(kind)`, so the
+ * two cannot drift.
+ *
+ * A refusal is thrown rather than returned because there is no invocation to
+ * return: the phase must not start.
+ */
+function capabilityArgs(
+  kind: BackendRunnerKind,
+  request: InvocationRequest,
+  unbounded: readonly string[]
+): readonly string[] {
+  if (request.capabilities === undefined || request.capabilities.declaredAt === 'default') {
+    return unbounded;
+  }
+  const plan = planCapabilityEnforcement(kind, request.capabilities);
+  if (plan.outcome === 'refused') {
+    throw new CapabilityNotEnforceableError(plan.kind, plan.unenforceable, plan.unqualified);
+  }
+  return plan.args;
+}
+
+const FRESH_SESSION_BASELINE_USD = 0; // FR-R6-F06: a session the CLI just created has cost nothing.
+
+/** The flag whose argument is the session a resumed invocation continues. */
+const RESUME_FLAG = '--resume';
+/** What the spawn log prints in place of that session id. */
+const LOGGED_SESSION_ID = '<id>';
+
+/**
+ * The command line as the spawn log prints it, with the argument after
+ * `--resume` written as `<id>` (feature-228 security review, S3). The CLI is
+ * still spawned with the id; only the log line changes.
+ */
+function loggedCommand(cliPath: string, args: readonly string[]): string {
+  const shown = args.map((arg, index) =>
+    index > 0 && args[index - 1] === RESUME_FLAG ? LOGGED_SESSION_ID : arg
+  );
+  return [cliPath, ...shown].join(' ');
+}
+
 export class ClaudeCliRunner implements BackendRunner {
   private readonly spawnFn: SpawnFn;
   private readonly monitorHook: MonitorSidecarHook | null;
@@ -183,24 +310,67 @@ export class ClaudeCliRunner implements BackendRunner {
    * which left `cancelActive()` at deactivation orphaning every child but one
    * and `hasActiveProcess` reporting `false` while a subprocess was alive.
    *
-   * Keyed by a per-runner invocation token rather than by run id: an
-   * invocation need not name a Run (contract harnesses do not), so a run-keyed
-   * map would collide anonymous invocations onto one entry and reintroduce the
-   * same clobber. The token also makes the exit-path delete exact — an
-   * invocation removes its own entry and no other.
+   * Keyed by an invocation identity rather than by run id: an invocation need
+   * not name a Run (contract harnesses do not), so a run-keyed map would collide
+   * anonymous invocations onto one entry and reintroduce the same clobber. The
+   * identity also makes the exit-path delete exact — an invocation removes its
+   * own entry and no other.
+   *
+   * Feature 093 BUG-001 (T100) — that key is now the string
+   * `nextInvocationId()` mints, which is the same value the sidecar events carry.
+   * It was a private per-instance counter, which is unique enough for a map this
+   * runner owns and not unique enough to cross the contract; minting a second
+   * token beside it would leave one invocation with two identities that can
+   * drift.
    */
-  private readonly active = new Map<number, ChildProcess>();
-  private nextInvocationToken = 1;
+  /**
+   * FR-R3-083 — the run id travels WITH the child, so `cancelActive()` (which
+   * iterates this map and had no run id to offer) can still attribute a
+   * `tree-unconfirmed` report. Deactivation-time cancellation is one of the paths
+   * FR-R3-054 was written for, and an anonymous record there would be the least
+   * useful one.
+   */
+  private readonly active = new Map<
+    string,
+    TreeAttribution & { readonly child: ChildProcess }
+  >();
+
+  /**
+   * FR-R3-083 — children whose surviving group has already been REPORTED.
+   *
+   * Not "children already being terminated". An earlier version guarded the whole
+   * ladder, which meant a later, genuinely different trigger (idle expiry, then the
+   * absolute deadline) could no longer re-signal a tree the first pass failed to
+   * reach -- and `signalProcessTree` swallows a failed group signal by design, so a
+   * first pass failing silently is the ordinary case, not an exotic one.
+   *
+   * What must not happen twice is the audit ENTRY: two overlapping cancel paths on
+   * one hung child would otherwise record two surviving groups where there was one.
+   * A WeakSet so a reaped child is collectable.
+   */
+  private readonly reportedTrees = new WeakSet<ChildProcess>();
+
+  /** FR-R4-F06 (S2) -- the ladders started and not yet reported, so shutdown can wait for them. */
+  private readonly teardowns = new TeardownLedger();
+
+  /**
+   * FR-R3-198 (FR-011, K1) — the cumulative cost each CLI session last reported
+   * here. The registry caches this runner for the workspace lifetime, so the
+   * ledger spans every Run on this backend kind in this host process.
+   */
+  private readonly sessionCosts = new SessionCostLedger();
+
+  /** Set by `close()` at host teardown; no spawn follows it. */
+  private closed = false;
+  private isClosed(): boolean { return this.closed; }
 
   constructor(
     spawnFn: SpawnFn = spawn as unknown as SpawnFn,
     monitorHook: MonitorSidecarHook | null = null,
     _options: { probeTransport?: boolean } = {},
-    private readonly _logger: SanitizedLogger = new SanitizedLogger()
-  ) {
-    this.spawnFn = spawnFn;
-    this.monitorHook = monitorHook;
-  }
+    private readonly _logger: SanitizedLogger = new SanitizedLogger(),
+    private readonly _evidenceHealth?: EvidenceHealthReporter
+  ) { this.spawnFn = spawnFn; this.monitorHook = monitorHook; }
 
   public get hasActiveProcess(): boolean {
     return this.active.size > 0;
@@ -211,6 +381,9 @@ export class ClaudeCliRunner implements BackendRunner {
     outputSink?: InvocationOutputSink
   ): Promise<RawInvocationOutput> {
     const start = Date.now();
+    if (!this.closed && request.cancellationSignal?.aborted === true) {
+      return cancelledInvocationOutput(request.cliPath, start);
+    }
 
     // Feature 032 — session-continuation hint. When `resumeSessionId`
     // is set, the runner uses `--resume <id>` for deterministic session
@@ -228,15 +401,19 @@ export class ClaudeCliRunner implements BackendRunner {
     let continuePrefix: string[];
     const shouldResume = request.isContinue === true || request.sessionReuse === true;
     if (shouldResume && typeof request.resumeSessionId === 'string') {
-      continuePrefix = ['--resume', request.resumeSessionId];
+      continuePrefix = [RESUME_FLAG, request.resumeSessionId];
     } else if (request.isContinue === true) {
       continuePrefix = ['-c'];
     } else {
       continuePrefix = [];
     }
 
+    // FR-R3-086 — the argv comes from the capability plan, not from a literal
+    // here. A phase that declares nothing gets `DEFAULT_CAPABILITY_SET`, which
+    // the plan turns into `['--dangerously-skip-permissions']` — byte-identical
+    // to what stood here — so nothing about an existing run changes shape.
     const baseArgs = [
-      '--dangerously-skip-permissions',
+      ...capabilityArgs('claude', request, UNBOUNDED_PERMISSION_ARGS),
       ...continuePrefix,
       '-p'
     ];
@@ -266,8 +443,16 @@ export class ClaudeCliRunner implements BackendRunner {
     let diagnosticWriter: VerboseDiagnosticWriter | null = null;
     if (verboseTarget) {
       args.push('--debug-file', verboseTarget.debugFile);
-      diagnosticWriter = new VerboseDiagnosticWriter(new SanitizedLogger());
+      diagnosticWriter = new VerboseDiagnosticWriter(new SanitizedLogger(), this._evidenceHealth);
       await diagnosticWriter.prepare(verboseTarget);
+    }
+
+    const isAborted = (): boolean => request.cancellationSignal?.aborted === true;
+    // After the last await, so a `close()` that lands while `prepare()` runs
+    // still refuses this spawn (feature-228 security review, S1).
+    if (this.closed) throw new SpawnRefusedAfterCloseError('claude-cli');
+    if (isAborted()) {
+      return cancelledInvocationOutput([request.cliPath, ...args].join(' '), start);
     }
 
     // Feature 068 — capture the assembled command (cliPath + argv). Audit
@@ -283,30 +468,53 @@ export class ClaudeCliRunner implements BackendRunner {
     // A single slot self-healed on a throw because the next spawn overwrote it;
     // a map entry would leak, and a leaked entry makes `hasActiveProcess`
     // permanently true.
-    const invocationToken = this.nextInvocationToken++;
+    const invocationId = nextInvocationId('claude-cli');
+    const attribution: TreeAttribution = {
+      runId: request.runId ?? null,
+      phase: request.phase,
+      iteration: request.iteration
+    };
     try {
+      if (request.onBeforeSpawn !== undefined) {
+        await request.onBeforeSpawn({ helperInvocation: request.helperInvocation === true });
+      }
+      if (this.isClosed()) throw new SpawnRefusedAfterCloseError('claude-cli');
+      if (isAborted()) {
+        return cancelledInvocationOutput(command, start);
+      }
+      assertExecutableUnchanged(request.cliPath, request.executableFileStamp);
       const child = safeSpawn(this.spawnFn, request.cliPath, args, {
         stdio,
         shell: false,
         cwd: request.cwd,
         env: buildSpawnEnv(request)
       });
-      this._logger.info(`[ClaudeCliRunner] Spawned CLI: ${command}, PID=${child.pid}`);
-      this.active.set(invocationToken, child);
-      this.emitHook({ kind: 'started', runId: request.runId ?? null, pid: child.pid ?? null });
+      trackGroupAtExit(child); // FR-R4-F06 (P2) -- the ownership anchor for a leader reaped before its ladder
+      this._logger.info(
+        `[ClaudeCliRunner] Spawned CLI: ${loggedCommand(request.cliPath, args)}, PID=${child.pid}`, { ...attribution }
+      );
+      this.active.set(invocationId, { child, ...attribution });
+      this.emitHook({
+        kind: 'started',
+        runId: request.runId ?? null,
+        invocationId,
+        helperInvocation: request.helperInvocation === true,
+        maxDurationMs: armedMaxDurationMs(request),
+        pid: child.pid ?? null
+      });
 
-      if (child.stdin) {
-        try {
-          this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`);
-          child.stdin.write(request.prompt);
-          this._logger.info(`[ClaudeCliRunner] Ending CLI stdin`);
-          child.stdin.end();
-        } catch (err) {
-          this._logger.info(`[ClaudeCliRunner] Stdin write failed: ${(err as Error).message}`);
-          // stdin already closed; the CLI will fail and that surfaces via
-          // the existing exit-code / classification path.
-        }
-      }
+      // FR-R3-047 — attach-then-write through the shared helper. The previous
+      // shape caught synchronously around the write, and the comment claiming the
+      // failure "surfaces via the existing exit-code / classification path" was
+      // the defect in one sentence: an asynchronous 'error' with no listener is an
+      // uncaught exception, fatal to the extension host rather than to this
+      // invocation. Only the errno is logged; the prompt is operator content.
+      // Started, not awaited: see the note in process-lifecycle-runner.ts. The
+      // `'error'` listener is attached synchronously inside the helper, so the
+      // host is protected from this point on; awaiting here would delay the
+      // stream and lifecycle listeners below and lose a fast child's `'exit'`.
+      this._logger.info(`[ClaudeCliRunner] Writing to CLI stdin`, { ...attribution });
+      const deliveryPromise = writePromptToStdin(child, request.prompt);
 
       const stdoutBuffer = new ZippedStreamBuffer();
       const stderrBuffer = new ZippedStreamBuffer();
@@ -335,8 +543,17 @@ export class ClaudeCliRunner implements BackendRunner {
       // reports `completedAwaitingExit` (NOT `timedOut`) so the captured result
       // is classified on its merits rather than discarded as a timeout failure.
       let sawCompletionMarker = false;
+      // Feature 212 (FR-005) — the same detection, latched. `sawCompletionMarker`
+      // is deliberately CLEARED by any later stream-json event, because the
+      // settle window above needs "is the envelope still the last thing we saw".
+      // Envelope presence is a different question and needs the opposite rule:
+      // once seen, always seen. A suppressed history replay does not count, so
+      // this is set in the same branch that accepts the marker rather than at the
+      // detection itself.
+      let sawTerminalResult = false;
       let completedAwaitingExit = false;
-      let stdoutLineBuffer = '';
+      const stdoutFramer = new LineFramer();
+      let reportedFramingLoss = false;
       const invocationStartedAt = Date.now();
       // BUG-004 (FR-029) — replay suppression is now decided from the stream,
       // not the clock. `sawCurrentTurnBoundary` latches on this invocation's
@@ -344,6 +561,20 @@ export class ClaudeCliRunner implements BackendRunner {
       // fallback may discard when that envelope never arrives.
       let sawCurrentTurnBoundary = false;
       let suppressedResults = 0;
+      // FR-R3-198 — a result is not the end of the turn while a command it
+      // started in the background still runs: the CLI waits for the command and
+      // then wakes the model with a new turn in this process. A hold keeps the
+      // settle from arming until the last backgrounded task closes, or until
+      // `BACKGROUND_HOLD_CEILING_MS` after the result that began it. It only
+      // lengthens the window: the idle window and the deadline still apply.
+      const backgroundTasks = new BackgroundTaskTracker();
+      // When the active hold began, or `null` with no hold.
+      let holdStartedAt: number | null = null;
+      let holdCeiling: NodeJS.Timeout | undefined;
+      let backgroundWorkOpenAtResult = false;
+      // FR-R3-198 (K2) — the cumulative cost the last accepted result reported.
+      let lastResultCostUsd: number | undefined;
+      const settleArmed = (): boolean => sawCompletionMarker && holdStartedAt === null;
 
       // Idle timeout: the timer fires only when no stdout/stderr chunk has
       // arrived for the active window. Each data event resets it. Before the
@@ -361,26 +592,55 @@ export class ClaudeCliRunner implements BackendRunner {
         // only — no prompt, transcript, session id, or workspace path — and
         // routed through SanitizedLogger so SECRET_PATTERNS stays the single
         // redaction source.
+        // FR-R3-198 (H7) — `settleArmed()`, not the bare marker: an expiry
+        // during a hold is the idle window's, and is labelled so.
         this._logger.info(
           '[ClaudeCliRunner] invocation window expired ' +
-            `window=${sawCompletionMarker ? 'settle' : 'idle'} ` +
-            `windowMs=${sawCompletionMarker ? COMPLETION_SETTLE_MS : request.timeoutMs} ` +
+            `window=${settleArmed() ? 'settle' : 'idle'} ` +
+            `windowMs=${settleArmed() ? COMPLETION_SETTLE_MS : request.timeoutMs} ` +
             `resumed=${shouldResume} ` +
             `elapsedMs=${Date.now() - invocationStartedAt} ` +
-            `phase=${request.phase} iteration=${request.iteration}`
+            `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
         );
-        if (sawCompletionMarker) completedAwaitingExit = true;
+        if (settleArmed()) completedAwaitingExit = true;
         else timedOut = true;
-        this.terminate(child);
+        this.terminate(child, attribution);
       };
       let timer: NodeJS.Timeout = setTimeout(onIdleExpiry, request.timeoutMs);
       let idleTimerActive = true;
+      // FR-R3-075 — the absolute wall-clock deadline: armed once at spawn,
+      // NEVER reset, and outside the backpressure suspension — a blocked sink
+      // pauses the idle clock, not the wall. The idle window above detects a
+      // stalled CLI; this bounds the invocation as a whole, so a chatty child
+      // emitting a byte inside every idle window still terminates.
+      let deadlineExceeded = false;
+      // Read through an accessor: the flag is assigned only inside the
+      // timer's closure, so top-level flow keeps the literal-false
+      // narrowing and the lint's type-driven condition check would call
+      // every read below unnecessary. A function entry resets narrowing.
+      const deadlineFired = (): boolean => deadlineExceeded;
+      // Feature 211 — the same oracle the `started` event reported above, so
+      // the bound the monitor warns against is the bound this timer arms.
+      const deadlineBoundMs = armedMaxDurationMs(request);
+      const deadlineTimer =
+        deadlineBoundMs !== null
+          ? setTimeout(() => {
+              this._logger.info(
+                '[ClaudeCliRunner] invocation deadline exceeded ' +
+                  `maxDurationMs=${deadlineBoundMs} ` +
+                  `elapsedMs=${Date.now() - invocationStartedAt} ` +
+                  `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
+              );
+              deadlineExceeded = true;
+              this.terminate(child, attribution);
+            }, deadlineBoundMs)
+          : null;
       const resetIdleTimer = (): void => {
         clearTimeout(timer);
         if (!idleTimerActive) return;
         timer = setTimeout(
           onIdleExpiry,
-          sawCompletionMarker ? COMPLETION_SETTLE_MS : request.timeoutMs
+          settleArmed() ? COMPLETION_SETTLE_MS : request.timeoutMs
         );
       };
       const outputBackpressure = new OutputSinkBackpressure(
@@ -388,8 +648,88 @@ export class ClaudeCliRunner implements BackendRunner {
         () => clearTimeout(timer),
         resetIdleTimer
       );
+      // FR-R3-198 (H5, H10) — the end of a hold re-arms the window, which is
+      // now the settle. A blocked sink keeps the idle clock suspended, as for
+      // a chunk.
+      const endHold = (reason: 'closed' | 'ceiling'): void => {
+        if (holdStartedAt === null) return;
+        clearTimeout(holdCeiling);
+        this._logger.info(
+          '[ClaudeCliRunner] background hold ended ' +
+            `reason=${reason} heldMs=${Date.now() - holdStartedAt} ` +
+            `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
+        );
+        holdStartedAt = null;
+        this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: false });
+        if (!outputBackpressure.isBlocked) resetIdleTimer();
+      };
+      // FR-R3-198 (H4, H6, H10) — a result accepted with a task open begins a
+      // hold. One accepted during a hold begins a new one, whose ceiling counts
+      // from it; the hold it replaces ended by neither reason, so it logs no
+      // `ended` line.
+      const beginHold = (): void => {
+        clearTimeout(holdCeiling);
+        holdStartedAt = Date.now();
+        holdCeiling = setTimeout(() => endHold('ceiling'), BACKGROUND_HOLD_CEILING_MS);
+        this._logger.info(
+          '[ClaudeCliRunner] background hold began ' +
+            `openTasks=${backgroundTasks.openCount} ` +
+            `untracked=${backgroundTasks.untracked} ` +
+            `ceilingMs=${BACKGROUND_HOLD_CEILING_MS} ` +
+            `resumed=${shouldResume} ` +
+            `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
+        );
+        this.emitHook({ kind: 'background-hold', runId: request.runId ?? null, invocationId, held: true });
+      };
 
-      const diagnosticWrites: Promise<void>[] = [];
+      const diagnosticWrites = createDiagnosticWriteChain();
+      // FR-R4-F06 (F2) -- one stdout line, judged the same way whether the framer cut it at a newline or
+      // the stream ended on it. Declared before the listeners so both call the one body.
+      const handleStdoutLine = (line: string): void => {
+        // FR-R3-198 — the tracker reads the line first, so a hold whose
+        // last task closes on it ends before the line is judged.
+        backgroundTasks.observe(line);
+        if (holdStartedAt !== null && !backgroundTasks.hasOpenWork) endHold('closed');
+        if (isSessionInitLine(line)) sawCurrentTurnBoundary = true;
+        if (isTerminalResultLine(line)) {
+          const replayingHistory =
+            shouldResume &&
+            !sawCurrentTurnBoundary &&
+            suppressedResults < MAX_SUPPRESSED_RESULTS &&
+            Date.now() - invocationStartedAt < RESUME_HISTORY_REPLAY_MS;
+          if (replayingHistory) {
+            suppressedResults += 1;
+            // FR-029 diagnosability. A suppression used to be legible only
+            // as its consequence — a 90-minute idle expiry — so it is
+            // logged where it happens. Fixed fields only: no prompt,
+            // transcript, session id, or workspace path, and routed
+            // through SanitizedLogger so SECRET_PATTERNS stays the single
+            // redaction source.
+            this._logger.info(
+              '[ClaudeCliRunner] suppressed terminal result ' +
+                'rule=pre-init-fallback-bound ' +
+                `resumed=${shouldResume} ` +
+                `elapsedMs=${Date.now() - invocationStartedAt} ` +
+                `windowMs=${RESUME_HISTORY_REPLAY_MS} ` +
+                `suppressedResults=${suppressedResults}/${MAX_SUPPRESSED_RESULTS} ` +
+                `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
+            );
+          } else {
+            sawCompletionMarker = true;
+            sawTerminalResult = true;
+            // FR-R3-198 (H6, H9) — every accepted result decides again,
+            // except one the CLI writes after the settle's SIGTERM, which
+            // is its shutdown, not a turn (research R2: `num_turns=0`).
+            if (!completedAwaitingExit) {
+              backgroundWorkOpenAtResult = backgroundTasks.hasOpenWork;
+              if (backgroundWorkOpenAtResult) beginHold();
+            }
+            lastResultCostUsd = resultCostUsd(line) ?? lastResultCostUsd;
+          }
+        } else if (isStreamJsonEventLine(line)) {
+          sawCompletionMarker = false;
+        }
+      };
       child.stdout?.on('data', (chunk: string) => {
         stdoutBuffer.append(chunk);
         stdoutScanner?.append(chunk);
@@ -398,64 +738,43 @@ export class ClaudeCliRunner implements BackendRunner {
         // A parsed terminal result starts the short settle window. Resumed
         // startup history is ignored even when it contains non-result events
         // before the replayed result; fresh invocations accept fast results.
-        for (const char of chunk) {
-          if (char === '\n') {
-            // FR-029 — the boundary is checked before the result on the same
-            // chunk is judged, so an `init` and the turn's own result arriving
-            // together resolve as live. This is the whole of BUG-004: the
-            // wall-clock guard could only decide *when* to suppress, never
-            // *what*, so it discarded a resumed invocation's genuine result as
-            // readily as a replayed one and disabled FR-025's grace-terminate
-            // for the window's full duration.
-            if (isSessionInitLine(stdoutLineBuffer)) sawCurrentTurnBoundary = true;
-            if (isTerminalResultLine(stdoutLineBuffer)) {
-              const replayingHistory =
-                shouldResume &&
-                !sawCurrentTurnBoundary &&
-                suppressedResults < MAX_SUPPRESSED_RESULTS &&
-                Date.now() - invocationStartedAt < RESUME_HISTORY_REPLAY_MS;
-              if (replayingHistory) {
-                suppressedResults += 1;
-                // FR-029 diagnosability. A suppression used to be legible only
-                // as its consequence — a 90-minute idle expiry — so it is
-                // logged where it happens. Fixed fields only: no prompt,
-                // transcript, session id, or workspace path, and routed
-                // through SanitizedLogger so SECRET_PATTERNS stays the single
-                // redaction source.
-                this._logger.info(
-                  '[ClaudeCliRunner] suppressed terminal result ' +
-                    'rule=pre-init-fallback-bound ' +
-                    `resumed=${shouldResume} ` +
-                    `elapsedMs=${Date.now() - invocationStartedAt} ` +
-                    `windowMs=${RESUME_HISTORY_REPLAY_MS} ` +
-                    `suppressedResults=${suppressedResults}/${MAX_SUPPRESSED_RESULTS} ` +
-                    `phase=${request.phase} iteration=${request.iteration}`
-                );
-              } else {
-                sawCompletionMarker = true;
-              }
-            } else if (isStreamJsonEventLine(stdoutLineBuffer)) {
-              sawCompletionMarker = false;
-            }
-            stdoutLineBuffer = '';
-          } else {
-            stdoutLineBuffer += char;
-          }
+        // FR-R3-052 (H-03) — the same bounded framer the monitor uses. This
+        // was `stdoutLineBuffer += char`, reset only on a newline, so a stream
+        // that never emitted one retained every byte the CLI produced for the
+        // life of the invocation. The judgements below are unchanged: each
+        // `line` is exactly what the character loop would have accumulated.
+        const framed = stdoutFramer.append(chunk);
+        if (framed.truncatedLines > 0 && !reportedFramingLoss) {
+          reportedFramingLoss = true;
+          // No silent caps. Fixed fields only, per this logger's discipline.
+          this._logger.warn(
+            '[ClaudeCliRunner] stdout line exceeded the framing bound ' +
+              `limitUnits=${DEFAULT_MAX_LINE_UNITS} ` +
+              `truncatedLines=${stdoutFramer.totals.truncatedLines} ` +
+              `droppedUnits=${stdoutFramer.totals.droppedUnits} ` +
+              `phase=${request.phase} iteration=${request.iteration}`, { ...attribution }
+          );
         }
+        for (const line of framed.lines) handleStdoutLine(line);
         if (!outputBackpressure.isBlocked) resetIdleTimer();
-        this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, chunk });
+        this.emitHook({ kind: 'stdout-chunk', runId: request.runId ?? null, invocationId, chunk });
         if (diagnosticWriter && verboseTarget) {
-          diagnosticWrites.push(diagnosticWriter.teeStream(verboseTarget, chunk));
+          diagnosticWrites.enqueue(() => diagnosticWriter.teeStream(verboseTarget, chunk));
         }
+      });
+      // The CLI's last line may have no newline. Without this the framer's remainder was never judged,
+      // so a final `result` line left `sawTerminalResult` false.
+      child.stdout?.on('end', () => {
+        for (const line of stdoutFramer.flush().lines) handleStdoutLine(line);
       });
       child.stderr?.on('data', (chunk: string) => {
         stderrBuffer.append(chunk);
         stderrScanner?.append(chunk);
         outputBackpressure.write('stderr', child.stderr!, chunk);
         if (!outputBackpressure.isBlocked) resetIdleTimer();
-        this.emitHook({ kind: 'stderr-chunk', runId: request.runId ?? null, chunk });
+        this.emitHook({ kind: 'stderr-chunk', runId: request.runId ?? null, invocationId, chunk });
         if (diagnosticWriter && verboseTarget) {
-          diagnosticWrites.push(diagnosticWriter.teeVerbose(verboseTarget, chunk));
+          diagnosticWrites.enqueue(() => diagnosticWriter.teeVerbose(verboseTarget, chunk));
         }
       });
 
@@ -467,49 +786,137 @@ export class ClaudeCliRunner implements BackendRunner {
       let onAbort: (() => void) | null = null;
       if (request.cancellationSignal) {
         onAbort = () => {
-          this._logger.info(`[ClaudeCliRunner] onAbort fired! (cancellationSignal)`);
+          this._logger.info(`[ClaudeCliRunner] onAbort fired! (cancellationSignal)`, { ...attribution });
           killed = true;
-          this.terminate(child);
+          this.terminate(child, attribution);
         };
-        if (request.cancellationSignal.aborted) onAbort();
+        if (isAborted()) onAbort();
         else request.cancellationSignal.addEventListener('abort', onAbort);
       }
 
-      const completion = await waitForChildCompletion(child, outputSink !== undefined);
+      // FR-R3-047 (M-01) — attach completion listeners synchronously BEFORE awaiting
+      // `onAfterSpawn` so fast exits and async spawn `'error'` events are never lost.
+      const completionPromise = waitForChildCompletion(child);
+      if (request.helperInvocation !== true && request.onAfterSpawn !== undefined && child.pid !== undefined) {
+        try {
+          await request.onAfterSpawn(child.pid);
+        } catch (err) {
+          idleTimerActive = false;
+          clearTimeout(timer);
+          if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+          clearTimeout(holdCeiling);
+          if (onAbort) request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+          killed = true;
+          this.terminate(child, attribution);
+          const abortedComp = await completionPromise.catch(() => null);
+          this.emitHook({
+            kind: 'exited', runId: request.runId ?? null, invocationId,
+            exitCode: abortedComp?.exitCode ?? null,
+            signal: abortedComp?.signal ?? (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null,
+            killed, timedOut, ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+            ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+            streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+            streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+            streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
+          });
+          throw err;
+        }
+      }
+      const completion = await completionPromise;
+      // Disarm the idle timer BEFORE reading the delivery result. The child has
+      // completed, so from here the timer can only mislabel: a delivery result
+      // that settles slowly used to be awaited inside the still-armed window,
+      // and an expiry landing in that gap flips `timedOut` /
+      // `completedAwaitingExit` on a run that had already exited.
+      idleTimerActive = false;
+      clearTimeout(timer);
+      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      for (const line of stdoutFramer.flush().lines) handleStdoutLine(line); // FR-R5-F11: flush if stdioCloseTimedOut skipped 'end'
+      // FR-R3-198 (H11) — so a ceiling cannot fire, and log, after completion.
+      clearTimeout(holdCeiling);
+      // FR-R3-075 — exactly one termination reason: the deadline wins over the
+      // idle stall when both elapsed in the same tick. `completedAwaitingExit`
+      // is left alone — it is a classification hint, not a termination reason,
+      // and a result the CLI completed before the deadline killed the lingering
+      // process is still classified on its merits.
+      if (deadlineFired()) timedOut = false;
+      // Detach the cancellation listener here too, and for the same reason: the
+      // bounded delivery read below is a NEW await after the child has already
+      // completed, and an abort landing inside it would flip `killed` on an
+      // invocation that had finished — reported on the result and on the
+      // `exited` sidecar event. Before this await existed there was no such
+      // window; closing it keeps that.
+      if (onAbort !== null) {
+        request.cancellationSignal?.removeEventListener?.('abort', onAbort);
+      }
+      // FR-R3-047 — a child that never started (ENOENT on `cliPath`) breaks the
+      // stdin pipe as well: the write fails EPIPE with nothing on the far end.
+      // That is not a delivery defect, and reporting it as one would name the
+      // wrong cause for the commonest misconfiguration there is — while the
+      // condition outranks every other arm of the phase-runner chain. The
+      // child's `'error'` is observed before the write's fate is known, so this
+      // is decided rather than raced. The read is skipped entirely in that case:
+      // `processError` already decides the classification, so the up-to-2s grace
+      // would be paid for a result discarded by construction.
+      const delivery = completion.processError === true
+        ? { delivered: true as const }
+        : await awaitStdinDelivery(deliveryPromise);
+      const stdinDeliveryFailed = !delivery.delivered;
+      if (stdinDeliveryFailed) {
+        this._logger.warn(
+          `[ClaudeCliRunner] Prompt delivery failed: ${delivery.errorCode ?? 'unknown'}`, { ...attribution }
+        );
+      }
       const exitCode = completion.exitCode;
-      // Feature 030 BUG-002 — a grace-terminate after the completion marker
-      // is NOT an operator cancellation, so do not flag it `killed` even
-      // though it exits via our SIGTERM with a null code.
+      // Feature 030 BUG-002 — a grace-terminate after the completion marker is
+      // NOT an operator cancellation, so its signal death is not `killed`. The
+      // CLI exits 143 on SIGTERM; in practice that death is the ladder's SIGKILL.
       if (completion.signal && exitCode === null && !completedAwaitingExit) {
         killed = true;
       }
       if (completion.stdioCloseTimedOut) {
         this._logger.warn(
-          '[ClaudeCliRunner] stdout/stderr close grace expired after process exit; local pipes closed'
+          '[ClaudeCliRunner] stdout/stderr close grace expired after process exit; local pipes closed', { ...attribution }
         );
       }
 
-      if (onAbort !== null) {
-        request.cancellationSignal?.removeEventListener?.('abort', onAbort);
-      }
-      idleTimerActive = false;
-      clearTimeout(timer);
       const exitSignal = completion.signal ??
         (child as { signalCode?: NodeJS.Signals | null }).signalCode ?? null;
       this.emitHook({
         kind: 'exited',
         runId: request.runId ?? null,
+        invocationId,
         exitCode,
         signal: exitSignal,
         killed,
-        timedOut
+        timedOut,
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
+        ...(request.attemptId !== undefined ? { attemptId: request.attemptId } : {}),
+        streamHighWaterBytes: stdoutBuffer.highWaterRetainedBytes + stderrBuffer.highWaterRetainedBytes,
+        streamObservedBytes: stdoutBuffer.totalBytes + stderrBuffer.totalBytes,
+        streamTruncated: stdoutBuffer.truncated || stderrBuffer.truncated
       });
 
       let diagnosticWarnings: ReadonlyArray<string> | undefined;
+      // Feature 020 BUG-002 (FR-002a) — what `diagnosticsEnabled` records.
+      let diagnosticsCaptured = false;
       if (diagnosticWriter) {
-        await Promise.allSettled(diagnosticWrites);
+        await diagnosticWrites.drain();
         const result = diagnosticWriter.result();
         diagnosticWarnings = result.warnings.length > 0 ? result.warnings : undefined;
+        diagnosticsCaptured = result.streamCaptured;
+      }
+      // FR-R3-047 — a truncated prompt is recorded even when it does not decide
+      // the outcome. Narrowing the phase-runner arm to a clean parse was right,
+      // but it left a delivery failure on a NON-clean invocation living only in
+      // the transient runtime log — and a cause that exists only there is the
+      // exact shape that made a real 2026-08-16 failure undiagnosable from the
+      // audit alone. This code is allowlisted in RECORDABLE_PHASE_END_WARNINGS,
+      // so it is recorded rather than counted and dropped. It rides
+      // `diagnosticWarnings`, which already reaches the audit payload, so the
+      // evidence gap closes without touching the decision chain at all.
+      if (stdinDeliveryFailed) {
+        diagnosticWarnings = [...(diagnosticWarnings ?? []), 'stdin-delivery-failed'];
       }
 
       // Session ID capture — extract the CLI session ID from stream-json
@@ -522,6 +929,32 @@ export class ClaudeCliRunner implements BackendRunner {
       stdoutScanner?.finalize();
       stderrScanner?.finalize();
       const cliSessionId = extractCliSessionId(stdoutBuffer.decompressStream()) ?? undefined;
+      // FR-R3-209 — after a restart the ledger is empty, and the Run's persisted figure fills it,
+      // only for the session this request resumed. A figure the ledger already holds wins.
+      if (
+        cliSessionId !== undefined &&
+        cliSessionId === request.resumeSessionId &&
+        request.resumeSessionCostUsd !== undefined
+      ) {
+        this.sessionCosts.recordIfAbsent(cliSessionId, request.resumeSessionCostUsd);
+      }
+      // FR-R3-198 (K2) — report what the session had cost before this
+      // invocation, then keep its cumulative total for the next. A helper
+      // invocation (compaction) keeps nothing, so its cost lands in the next
+      // phase's figure (K5). The id is a key only, and is never logged.
+      // FR-R6-F06 (R3): with no `--resume` and no `-c` the session is new, so its baseline is 0.
+      const sessionCostBaselineUsd =
+        (cliSessionId === undefined ? undefined : this.sessionCosts.get(cliSessionId)) ??
+        (continuePrefix.length === 0 ? FRESH_SESSION_BASELINE_USD : undefined);
+      if (
+        cliSessionId !== undefined &&
+        lastResultCostUsd !== undefined &&
+        request.helperInvocation !== true
+      ) {
+        this.sessionCosts.record(cliSessionId, lastResultCostUsd);
+      }
+      const cliSessionCostUsd =
+        cliSessionId === undefined ? undefined : this.sessionCosts.get(cliSessionId);
 
       return {
         stdoutBuffer,
@@ -529,17 +962,30 @@ export class ClaudeCliRunner implements BackendRunner {
         exitCode,
         killed,
         timedOut,
+        ...(deadlineFired() ? { deadlineExceeded: true } : {}),
         completedAwaitingExit,
+        // Feature 212 — always reported by THIS backend, so `false` here is a
+        // measurement rather than a silence. Other runners omit it and read as
+        // unknown; see the field's docblock.
+        sawTerminalResult,
+        // FR-R3-198 (H9) — always reported by this backend, `false` included.
+        backgroundWorkOpenAtResult,
         durationMs: Date.now() - start,
         diagnosticWarnings,
+        ...(diagnosticsCaptured ? { diagnosticsCaptured: true } : {}),
         command,
         cliSessionId,
+        ...(sessionCostBaselineUsd !== undefined ? { sessionCostBaselineUsd } : {}),
+        ...(cliSessionCostUsd !== undefined ? { cliSessionCostUsd } : {}),
+        ...(stdinDeliveryFailed
+          ? { stdinDeliveryFailed: true, stdinErrorCode: delivery.errorCode }
+          : {}),
         ...(stdoutScanner && stderrScanner
           ? { streamFatalMatch: combineStreamScans(stdoutScanner, stderrScanner) }
           : {})
       };
     } finally {
-      this.active.delete(invocationToken);
+      this.active.delete(invocationId);
     }
   }
 
@@ -555,41 +1001,61 @@ export class ClaudeCliRunner implements BackendRunner {
   /**
    * Terminate every live subprocess this runner owns, reporting whether there
    * was any. Feature 093 (T046a): the sole production caller is
-   * `BackendRunnerRegistry.cancelAll()` at extension deactivation, which must
-   * reach all of a shared runner's children rather than whichever one happened
-   * to spawn last. Deliberately takes no run id — per-Run cancellation already
-   * runs through each session's own `AbortController` and `cancellationSignal`,
-   * so a run-addressed overload here would have no caller.
+   * `BackendRunnerRegistry.closeAndTearDown()` at extension deactivation, which
+   * must reach all of a shared runner's children rather than whichever one
+   * happened to spawn last. Deliberately takes no run id — per-Run cancellation
+   * already runs through each session's own `AbortController` and
+   * `cancellationSignal`, so a run-addressed overload here would have no caller.
    */
   public cancelActive(): boolean {
     if (this.active.size === 0) return false;
     this._logger.info(`[ClaudeCliRunner] cancelActive called for ${this.active.size} subprocess(es)`);
-    for (const child of this.active.values()) {
-      this.terminate(child);
+    for (const entry of this.active.values()) {
+      this.terminate(entry.child, {
+        runId: entry.runId,
+        phase: entry.phase,
+        iteration: entry.iteration
+      });
     }
     return true;
   }
 
-  private terminate(child: ChildProcess): void {
-    this._logger.info(`[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`);
-    if (child.exitCode === null && child.signalCode === null) {
-      try {
-        this._logger.info(`[ClaudeCliRunner] sending SIGTERM`);
-        child.kill('SIGTERM');
-      } catch (err) {
-        this._logger.info(`[ClaudeCliRunner] SIGTERM failed: ${(err as Error).message}`);
-      }
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) {
-          try {
-            this._logger.info(`[ClaudeCliRunner] sending SIGKILL`);
-            child.kill('SIGKILL');
-          } catch (err) {
-            this._logger.info(`[ClaudeCliRunner] SIGKILL failed: ${(err as Error).message}`);
-          }
-        }
-      }, SIGKILL_DELAY_MS).unref?.();
-    }
+  /**
+   * Refuse every later spawn. The feature-228 security review, S1: a child
+   * `cancelActive()` stopped can read as an unfinished turn, and the resume of
+   * that turn must not start a CLI after the teardown that stopped it. A child
+   * already spawned is `cancelActive()`'s to stop, not this.
+   */
+  public close(): void {
+    this.closed = true;
+  }
+
+  private terminate(child: ChildProcess, attribution: TreeAttribution): void {
+    this._logger.info(
+      `[ClaudeCliRunner] terminate called! exitCode=${child.exitCode}, signalCode=${child.signalCode}`, { ...attribution }
+    );
+    // The ladder owns the decision, including whether there is anything left to
+    // signal at all. See `childIsReaped` in `process-tree.ts` for that rule and why
+    // it is the whole of it.
+    const ladder = escalateAndReportTree({
+      child,
+      attribution,
+      runner: 'claude-cli',
+      info: (message) => this._logger.info(`[ClaudeCliRunner] ${message}`, { ...attribution }),
+      warn: (message) => this._logger.warn(`[ClaudeCliRunner] ${message}`, { ...attribution }),
+      emit: (event) => this.emitHook(event),
+      // FR-R3-083 — the guard is on the REPORT, not on the ladder. See the note in
+      // `escalateAndReportTree`.
+      alreadyReported: () => this.reportedTrees.has(child),
+      markReported: () => void this.reportedTrees.add(child)
+    });
+    // FR-R4-F06 (S2) -- kept, not voided: shutdown awaits it through `settleTeardowns()`.
+    this.teardowns.track(child, { attribution, runner: 'claude-cli', pid: child.pid ?? null }, ladder);
+  }
+
+  /** FR-R4-F06 (S1) -- the outcomes of every ladder started and not yet reported. Never rejects. */
+  public settleTeardowns(deadline?: Promise<void>): Promise<readonly TreeTeardownOutcome[]> {
+    return this.teardowns.settle(deadline);
   }
 
 }

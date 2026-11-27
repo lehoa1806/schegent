@@ -86,7 +86,7 @@ const MAXIMAL_PHASE = Object.freeze({
   description: 'DESCRIPTION-TOKEN-ZZ2',
   version: 5,
   instruction: 'INSTRUCTION-TOKEN-ZZ3 and a planted sk-secret-value-ZZ8',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   effort: 'high',
   timeoutSeconds: 900,
   loopable: true,
@@ -354,7 +354,6 @@ async function commit(command: PublishPackageCommand, store: FakeCatalogStore): 
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: {
         append: async (entry: AuditEntry) => {
           audits.push(entry);

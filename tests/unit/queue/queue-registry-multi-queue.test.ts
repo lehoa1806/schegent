@@ -15,10 +15,10 @@
 // replacing it with a membership check would let a reorder or a delete quietly
 // remove the queue every un-addressed enqueue falls back to.
 
+import { MAX_QUEUES } from '../../../src/contracts/queue-bounds';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { describe, it, expect } from 'vitest';
 import {
-  DEFAULT_QUEUE_ID,
-  MAX_QUEUES,
   QueueRegistryViolation,
   makeDefaultRegistry,
   projectQueueRegistry,

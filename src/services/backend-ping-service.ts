@@ -1,5 +1,5 @@
 import type { AuditEventType } from '../contracts/audit-events';
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import type {
   BackendCapabilityService,
   BackendProbeFailureCause
@@ -53,8 +53,15 @@ interface BackendPingAuditWriter {
   }): Promise<unknown>;
 }
 
+/** The snapshot's generation until the capability service's first scan publishes. */
+const NO_SCAN_PUBLISHED = 0;
+
+/** The one line a failed rescan logs; the error itself is never written. */
+const RESCAN_FAILED = 'backend-ping: rescan failed';
+
 export interface BackendPingServiceDeps {
-  readonly capabilities: Pick<BackendCapabilityService, 'probe'>;
+  /** `probe` runs the ping; `getSnapshot` and `scan` refresh a list the ping contradicts. */
+  readonly capabilities: Pick<BackendCapabilityService, 'probe' | 'getSnapshot' | 'scan'>;
   readonly readTimeoutSeconds: () => number;
   readonly audit: BackendPingAuditWriter;
   readonly logger: { warn(message: string): void };
@@ -126,6 +133,7 @@ export class BackendPingService {
           });
       this.publish(completed);
       await this.appendAudit(completed, correlationId, true);
+      this.rescanIfContradicted(runner, probe.available);
       return { accepted: true, state: completed };
     } catch {
       const completedAt = this.now();
@@ -143,6 +151,32 @@ export class BackendPingService {
       return { accepted: true, state: failure };
     } finally {
       this.inFlight = false;
+    }
+  }
+
+  /**
+   * Starts a scan when this ping contradicts the last scan's list: it found a backend the scan did
+   * not list, or did not find one the scan listed. The host scans when the window is trusted and
+   * again when a backend's path or the probe timeout changes, so a CLI installed or removed since
+   * kept the tag the last scan gave it, beside the opposite result, until the window reloaded.
+   *
+   * The list still comes only from a scan, which probes every backend again, so a ping that fails
+   * once and passes on the next probe leaves it as it was. Nothing starts before the first scan
+   * has published, since the list is then a placeholder the scan in flight replaces, and a ping
+   * that agrees costs its one probe, as before. The scan needs no gate of its own: a ping reaches
+   * this service only through the router's trust check, the gate the host's other scans pass. It
+   * is not awaited, so the ping's result stands whatever the scan does.
+   */
+  private rescanIfContradicted(runner: BackendRunnerKind, available: boolean): void {
+    try {
+      const scanned = this.deps.capabilities.getSnapshot();
+      if (scanned.generation === NO_SCAN_PUBLISHED) return;
+      if (scanned.availableBackends.includes(runner) === available) return;
+      void this.deps.capabilities.scan().catch(() => {
+        this.deps.logger.warn(RESCAN_FAILED);
+      });
+    } catch {
+      this.deps.logger.warn(RESCAN_FAILED);
     }
   }
 

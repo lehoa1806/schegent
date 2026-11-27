@@ -29,44 +29,42 @@ export default defineConfig({
       exclude: ['src/**/*.test.ts', 'src/**/__tests__/**'],
       // What the provider counts, recorded where a reader of the numbers
       // will find it:
-      //   * 189 source files are instrumented — 107 `.svelte` and 82
+      //   * 189 source files are instrumented — 104 `.svelte` and 85
       //     non-test `.ts` — so un-imported components are counted at 0%
       //     rather than omitted. No shipping `.svelte` path is excluded;
       //     excluding the component majority would make the percentage a
       //     statement about the `lib/` helpers only, over roughly half the
       //     statements.
+      //
+      //     Taken from the coverage run below, not from a `find`: the two are
+      //     different questions that produce similar-looking numbers. The
+      //     previous triple read 189 / 107 / 82 and was already wrong before
+      //     FR-R3-140 touched it — that feature deleted ten `.svelte` files,
+      //     which cannot take 107 to 104. The total landing on 189 again is a
+      //     coincidence and means something different now.
       //   * Under v8, `lines` and `statements` are the same measure, which
       //     is why those two percentages are identical (as they are in the
       //     host config).
-      //   * Nine files measure 0% today, 461 statements between them. FR-R3-044
-      //     classified all nine, and the number reads as a testing gap when it
-      //     is almost entirely a dead-code inventory:
+      //   * The dead-code inventory that used to sit here is gone, because the
+      //     code is. FR-R3-140 deleted the six Svelte components it enumerated
+      //     — 407 of what were then 461 zero-coverage statements — after
+      //     measuring each unreachable from both bundle entry points. The
+      //     reachability gate no longer excuses them; its allowlist is empty and
+      //     an entry now needs an owner and an expiry date. See
+      //     ../docs/architecture/webview-dead-surface-removal.md.
       //
-      //       - SIX Svelte components, 407 of the 461 statements, are already
-      //         recorded as knowingly unreachable by
-      //         `tests/lint/svelte-surface-reachability.test.ts`, each with its
-      //         reason — HoverText.svelte (179, superseded by the
-      //         hover-text-anchor directive and HoverTextPortal),
-      //         ControlPanel.svelte (104), QueueList.svelte (41, superseded by
-      //         QueuesTier), PhaseTracker.svelte (36, superseded by
-      //         RunDetailTier's phase list), LiveActivityHeader.svelte (33) and
-      //         StatusHeader.svelte (14). None has an importer outside tests.
-      //       - TWO are bootstrap entry points, 27 statements: `src/main.ts` and
-      //         `src/dashboard/main.ts`. What they do is mount the app, and a
-      //         unit test that mounts the mounter asserts nothing the visual and
-      //         integration suites do not already cover better.
-      //       - ONE was live, untested library code: `lib/copy-text.ts`, 27
-      //         statements, now covered by `lib/__tests__/copy-text.test.ts`
-      //         including the branch its own header calls out — reporting a
-      //         success it did not have.
-      //
-      //     They stay inside the measured set. Excluding them would raise the
-      //     percentage and lose the inventory, and the inventory is the useful
-      //     part: it says 407 statements of this webview are dead rather than
-      //     untested. Two further files report 0% with no executable statements
-      //     at all — `PipelineBuilderEditors/types.ts` and
-      //     `activity-feed/types.ts` — which is v8 describing type-only modules,
-      //     not a gap.
+      //     What still measures 0% is small and classified. TWO bootstrap entry
+      //     points, 27 statements: `src/main.ts` and `src/dashboard/main.ts`.
+      //     What they do is mount the app, and a unit test that mounts the
+      //     mounter asserts nothing the visual and integration suites do not
+      //     already cover better. They are not a dead-code inventory and must
+      //     not be governed as one — asking whether an entry point has an
+      //     importer is the wrong question, which is why FR-R3-140 retired the
+      //     gate that would have been repointed at them rather than inventing a
+      //     claim for it to hold. Two further files report 0% with no executable
+      //     statements at all — `PipelineBuilderEditors/types.ts` and
+      //     `activity-feed/types.ts` — which is v8 describing type-only
+      //     modules, not a gap.
       //
       // Floors are `floor(measured) − 5` per metric, ratcheted by
       // `scripts/check-coverage-headroom.mjs`, which runs after every coverage
@@ -77,20 +75,61 @@ export default defineConfig({
       // floor remains possible and remains deliberate — an edit in a diff, which
       // is where a decision to accept less coverage belongs.
       //
-      // Measured against
-      // taken 2026-08-22 on darwin, branch
-      // 110-coverage-and-budget-gate-completeness: 84.97% statements
-      // (12466/14671) / 79.60% branches (4747/5963) / 81.06% functions
-      // (865/1067) / 84.97% lines. Five points of headroom is room for a
-      // legitimate
-      // refactor; pinning a floor to what the tree happens to measure today
-      // makes the next one red for nothing. Full run recorded in
+      // Measured 2026-09-03 on darwin, branch 193-mutation-ack-key-parity,
+      // after FR-R3-154's ACK-reading tests landed:
+      // 89.13% statements (14809/16615) / 80.67% branches (5429/6730) /
+      // 82.87% functions (953/1150) / 89.13% lines.
+      //
+      // All four floors are re-derived from that one run. The denominators are
+      // not the 2026-08-29 ones — 15,232 statements became 16,615 as features
+      // 189-193 added source, so a floor carried over from that run would be
+      // pinned to a tree that no longer exists. Statements and lines rose
+      // 87.75 → 89.13, branches 79.46 → 80.67, functions 81.42 → 82.87. No
+      // floor may be inferred from another: only statements and lines had
+      // fallen past the one-point tolerance, and branches and functions are
+      // raised here from their own measured values rather than from that pair.
+      //
+      // The prior 2026-08-29 measurement (branch 204-delete-unreachable-webview,
+      // after FR-R3-140's deletion) read 87.75 / 79.46 / 81.42 / 87.75 against
+      // floors of 82 / 74 / 76 / 82.
+      //
+      // Five points of headroom is room for a legitimate refactor; pinning a
+      // floor to what the tree happens to measure today makes the next one red
+      // for nothing. Full run recorded in
       // ../docs/development/coverage-measurements.md.
+      //
+      // Raised on feature 252 (trusted commands and acknowledgements), whose
+      // intent-ledger tests measured 91.38% statements / 84.11% functions /
+      // 91.38% lines; branches were not flagged and stay at 75.
+      //
+      // Functions raised 79 → 81 on FR-R6-F05 (artifact lifecycle), whose
+      // storage-details IPC tests measured 91.91% statements / 79.43% branches /
+      // 86.07% functions / 91.91% lines; only functions was flagged.
+      //
+      // Functions raised 81 → 83 on the webview redesign port, whose tests
+      // measured 91.85% statements / 81.08% branches / 88.12% functions /
+      // 91.85% lines at its tip; only functions was flagged. FR-R7-15 W13
+      // (2026-11-23) traced the historical 0.09-point MetricsDashboard
+      // fluctuation to an unawaited lazy-route import racing cleanup in
+      // App.nav.test.ts, stabilized it, and verified 0.00 pp function
+      // variance across 5 isolated runs (89.11% / 1,579 of 1,772 functions;
+      // floors 86/75/83/86 stay within the 1-point headroom tolerance).
+      //
+      // Statements and lines raised 86 → 88 on FR-R7-17 (feature hardening
+      // 310–314), whose HistoricalReportsPanel and ChangeReviewPanel tests
+      // measured 93.05% statements / 93.05% lines (branches and functions
+      // stayed within the 1-point headroom tolerance).
+      //
+      // Functions raised 83 → 85 on Principal Review F4/F7 remediation
+      // (2026-11-26), whose ExecutionVisibilityPanelEditSummary and
+      // reporting-ipc-export-timeout tests measured 93.32% statements /
+      // 81.55% branches / 90.20% functions / 93.32% lines; only functions
+      // crossed the 1-point headroom tolerance.
       thresholds: {
-        statements: 79,
-        branches: 74,
-        functions: 76,
-        lines: 79
+        statements: 88,
+        branches: 75,
+        functions: 85,
+        lines: 88
       }
     }
   }

@@ -80,7 +80,7 @@ const EVERY_PORTABLE_FIELD = Object.freeze({
   description: 'Carries every portable field.',
   instruction: 'Do the whole thing, carefully.',
   runner: 'claude',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   effort: 'high',
   timeoutSeconds: 1200,
   loopable: true,
@@ -213,7 +213,6 @@ async function commit(
       refreshCatalog: async () => undefined,
       readConfig: () => undefined,
       executeCommand: vi.fn(),
-      queueRemover: { remove: vi.fn() },
       audit: { append: async () => undefined },
       logger: logger()
     },

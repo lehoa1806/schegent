@@ -12,13 +12,18 @@
 //   - webview-ui/src/lib/save-general-settings.ts (the shared helper)
 //   - webview-ui/src/lib/__tests__/save-general-settings.test.ts (its test)
 //
-// Anything else fails this test. Documentation references in
-// snapshot-types.ts comments are also tolerated since the symbol is
-// only mentioned in JSDoc, not posted.
+// Anything else fails this test.
+//
+// FR-R3-132 (T1502) — `webview-ui/src/lib/snapshot-types.ts` was allowlisted for a
+// JSDoc mention of the command. The de-duplication deleted 66 declarations from
+// that file, the mention went with them, and `allowlist-entries-still-apply.test.ts`
+// caught the entry excusing something that no longer happens. Removed rather than
+// left: a standing permission whose reason has expired pre-excuses the next
+// violation written there.
 
 import { describe, it, expect } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { matchingRelativePaths } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -29,8 +34,6 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/save-general-settings.ts',
   // The helper's unit test.
   'webview-ui/src/lib/__tests__/save-general-settings.test.ts',
-  // Comment-only doc references in snapshot-types.ts.
-  'webview-ui/src/lib/snapshot-types.ts',
   // Black-box test that asserts the helper still posts CMD_SAVE_GENERAL_SETTINGS
   // for the autocompact field. Verifies the wire-format contract end-to-end.
   'webview-ui/src/components/settings/__tests__/GeneralSettingsTab.autocompact.test.ts',
@@ -39,38 +42,24 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/components/settings/__tests__/runtime-log-controls.test.ts'
 ]);
 
-function listMatchingFiles(): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, "CMD_SAVE_GENERAL_SETTINGS", { fixed: true }).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
-      return [];
-    }
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) => abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs);
-}
+
+const matchRel = (pattern: string): readonly string[] =>
+  matchingRelativePaths(REPO_ROOT, SCAN_ROOT, pattern, { fixed: true });
 
 describe('Feature 012 T052 — no inline CMD_SAVE_GENERAL_SETTINGS references', () => {
   it('only the allowlisted files reference CMD_SAVE_GENERAL_SETTINGS', () => {
-    const matched = listMatchingFiles();
+    const matched = matchRel('CMD_SAVE_GENERAL_SETTINGS');
     const offenders = matched.filter((rel) => !ALLOWED_FILES.has(rel));
     expect(offenders, `Offending files referencing CMD_SAVE_GENERAL_SETTINGS:\n${offenders.join('\n')}`).toEqual([]);
   });
 
   it('the shared helper file exists and is in the allowlist', () => {
-    const matched = listMatchingFiles();
+    const matched = matchRel('CMD_SAVE_GENERAL_SETTINGS');
     expect(matched).toContain('webview-ui/src/lib/save-general-settings.ts');
   });
 
   it('no component file under webview-ui/src/components references the constant', () => {
-    const matched = listMatchingFiles();
+    const matched = matchRel('CMD_SAVE_GENERAL_SETTINGS');
     const componentOffenders = matched.filter((rel) =>
       rel.startsWith('webview-ui/src/components/') && !rel.includes('__tests__')
     );

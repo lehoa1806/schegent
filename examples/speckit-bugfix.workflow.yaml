@@ -1,0 +1,79 @@
+apiVersion: schegent/v1
+kind: Workflow
+metadata:
+  id: speckit-bugfix
+  name: Spec-kit Bugfix
+  version: 1
+spec:
+  startNodeIds:
+    - bugfix-report
+  nodes:
+    - nodeId: bugfix-report
+      kind: phase
+      phaseId: bugfix-report
+    - nodeId: bugfix-patch
+      kind: phase
+      phaseId: bugfix-patch
+    - nodeId: bugfix-verify-pre
+      kind: phase
+      phaseId: bugfix-verify-pre
+    - nodeId: bugfix-implement
+      kind: phase
+      phaseId: bugfix-implement
+    - nodeId: bugfix-verify-post
+      kind: phase
+      phaseId: bugfix-verify-post
+  connections:
+    - from:
+        nodeId: bugfix-report
+      to:
+        nodeId: bugfix-patch
+    - from:
+        nodeId: bugfix-patch
+      to:
+        nodeId: bugfix-verify-pre
+    - from:
+        nodeId: bugfix-verify-pre
+      to:
+        nodeId: bugfix-implement
+    - from:
+        nodeId: bugfix-implement
+      to:
+        nodeId: bugfix-verify-post
+included:
+  phases:
+    - metadata:
+        phaseId: bugfix-report
+        name: Spec-kit Bugfix Report
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-report
+        hostVerification: exit-code
+    - metadata:
+        phaseId: bugfix-patch
+        name: Spec-kit Bugfix Patch
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-patch
+        hostVerification: exit-code
+    - metadata:
+        phaseId: bugfix-verify-pre
+        name: Spec-kit Bugfix Verify (pre)
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-verify
+        hostVerification: exit-code
+    - metadata:
+        phaseId: bugfix-implement
+        name: Spec-kit Implement (bugfix)
+        version: 1
+      spec:
+        instruction: /speckit-implement
+        hostVerification: exit-code
+    - metadata:
+        phaseId: bugfix-verify-post
+        name: Spec-kit Bugfix Verify (post)
+        version: 1
+      spec:
+        instruction: /speckit-bugfix-verify
+        hostVerification: exit-code

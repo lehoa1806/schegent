@@ -1,0 +1,236 @@
+/* The Workflows tab's canvas and inspector. Loaded beside `pipeline-builder.css`
+   from PipelineBuilder.svelte, and scoped under `.pb` exactly as that file is, so
+   the two cannot collide with anything outside the Builder. The shell and the
+   "Add steps" palette are the redesign's own (sg-builder.css `.shell`, `.palette`).
+
+   The canvas is drawn with the redesign's parts too: the dotted `.canvas-wrap`,
+   the `.node` card, the `.elabel` chip, the `+`, the `.ntool` toolbar, the
+   `.preview` line and the `.lane-note`. The redesign places them at coordinates
+   over an SVG of edges. This canvas lays them out in flow instead, so the rules
+   below put each part back in flow (`position: relative`, no `translate`) and draw
+   the edges in CSS: an edge is a box whose `::before` is the line and whose
+   `::after` is the arrowhead, with the chip and the `+` sitting on the line.
+
+   A fork is a grid of equal columns with no column gap, so the bar can stop at
+   the centre of the first and last arm, half a column in from each end.
+   `--wf-arms` carries the arm count, the one value CSS cannot derive for itself.
+
+   Every colour is a theme token, so the Builder follows the operator's theme. */
+
+/* The Workflow picker's empty line (WorkflowFlowTopBar). */
+.pb .wf-picker-empty { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); font-style: italic; padding: 4px; }
+
+/* A descriptor pill, shared by the canvas banner, the Candidate Block editor and the inspector. */
+.pb .wf-badge { border-radius: 999px; padding: 1px 8px; font-size: var(--schegent-text-caption); background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); }
+
+/* Canvas. The edge geometry is the redesign's: a plain edge spans 46px with its
+   `+` halfway down, and a labelled one 88px with the chip's centre at 42% and the
+   `+` at 80%. Its stroke is 1.4px, 2.2px when selected. */
+.pb .wf-canvas {
+  --wf-stroke: 1.4px;
+  --wf-stroke-selected: 2.2px;
+  --wf-edge-plain: 46px;
+  --wf-edge-labelled: 88px;
+  --wf-fork-stem: 12px;
+  padding: var(--schegent-space-6) var(--schegent-space-5);
+}
+/* At least as wide as its widest subtree, so a fork wider than the pane scrolls
+   the canvas instead of spilling past its left edge. */
+.pb .wf-lanes { display: flex; flex-direction: column; align-items: center; gap: var(--schegent-space-6); min-width: max-content; }
+.pb .wf-lane { display: flex; flex-direction: column; align-items: center; gap: var(--schegent-space-5); }
+.pb .canvas-wrap .wf-lane-note { position: static; max-width: 52ch; }
+.pb .wf-subtree { display: flex; flex-direction: column; align-items: center; }
+
+/* The Candidate Block banner sits above the lanes. It is not part of the
+   redesign, which has no Candidate Block, so it takes the card's surface. */
+.pb .wf-candidate-block-banner { display: flex; flex-direction: column; gap: var(--schegent-space-2); width: fit-content; max-width: 100%; margin: 0 auto var(--schegent-space-5); padding: var(--schegent-space-2) var(--schegent-space-3); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-surface); }
+.pb .wf-candidate-block-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--schegent-space-1-5); }
+.pb .wf-candidate-block-collapsed { margin: 0; font-size: var(--schegent-text-secondary); color: var(--schegent-muted-fg); }
+
+/* Node card. The `.node` box holds one button and the controls beside it
+   (WorkflowFlowNode), so the box keeps the border and the ring and the button
+   takes the padding. The focus ring moves to the box: it has to surround the
+   preview line too, which sits outside the button. */
+.pb .canvas-wrap .wf-card.node { position: relative; padding: 0; gap: 0; cursor: default; }
+.pb .wf-card-hit { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: var(--schegent-space-2) var(--schegent-space-2-5); border: 0; border-radius: inherit; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.pb .wf-card-hit:focus-visible { outline: none; }
+.pb .canvas-wrap .wf-card:has(> .wf-card-hit:focus-visible) { outline: 2px solid var(--schegent-focus-border); outline-offset: 2px; }
+.pb .k-pipeline { background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); }
+.pb .wf-card .badge.wf-badge-id { font-family: var(--schegent-mono-font); }
+/* A candidate or retry badge can be longer than the card is wide, so it wraps
+   instead of overflowing the fixed badge height. */
+.pb .wf-card .badge.wf-badge-long { height: auto; min-height: 18px; padding-block: 1px; }
+
+/* The selected card's toolbar, beside its top-right corner as in the redesign, one level above
+   the cards and edges. */
+.pb .canvas-wrap .wf-ntool { top: 0; left: calc(100% + var(--schegent-space-2)); z-index: 1; }
+/* The redesign draws no fork side by side, and a fork's arms stand 16px apart, so beside a card
+   with an arm to its right the toolbar would cover that arm's card. There it stands over the
+   card's top-right corner, in the lower part of the arm above: clear of the line and its `+`,
+   which run down the arm's centre, and of a labelled arm's chip, which ends 40px above the card. */
+.pb .wf-branches.is-fork > .wf-branch:not(:last-child) .wf-ntool { top: auto; bottom: calc(100% + var(--schegent-space-1)); left: auto; right: 0; }
+/* On a phone its three 44px touch buttons stand in a column, so beside a card the
+   toolbar stays inside the canvas instead of reaching past its edge. */
+@media (pointer: coarse) and (max-width: 560px) {
+  .pb .canvas-wrap .wf-ntool { flex-direction: column; }
+}
+/* A touch toolbar fills the arm above a card, so in a fork it stands beside the card in a column
+   at any width, where the arms stand wider apart to hold it (Forks, below). */
+@media (pointer: coarse) {
+  .pb .wf-branches.is-fork > .wf-branch:not(:last-child) .wf-ntool { flex-direction: column; top: 0; bottom: auto; left: calc(100% + var(--schegent-space-2)); right: auto; }
+}
+.pb .wf-flip { rotate: 180deg; }
+
+/* A child Workflow's preview line, inset to the identifier's column. */
+.pb .wf-card > .preview { margin: calc(var(--schegent-space-1) * -1) var(--schegent-space-2-5) var(--schegent-space-2) calc(var(--schegent-space-2-5) + var(--schegent-space-6)); }
+.pb .wf-preview-links { display: flex; flex-wrap: wrap; gap: var(--schegent-space-2-5); }
+.pb .wf-preview-body { margin-top: var(--schegent-space-1-5); }
+.pb .wf-preview-note { margin: 0; }
+.pb .wf-preview-note.is-defect { color: var(--schegent-status-error-text); }
+.pb .wf-preview-steps { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.pb .wf-preview-step { display: flex; align-items: center; gap: var(--schegent-space-1); min-width: 0; padding-left: calc(var(--wf-depth, 0) * var(--schegent-space-3)); }
+.pb .wf-preview-step svg.i { flex: 0 0 auto; width: 12px; height: 12px; }
+.pb .wf-preview-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--schegent-fg); }
+/* The redesign's preview lists names only, so the name keeps its width and the id takes what is left. */
+.pb .wf-preview-id { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--schegent-mono-font); }
+
+/* Edges */
+.pb .wf-edge { --wf-line: var(--schegent-muted-fg); --wf-line-width: var(--wf-stroke); position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: var(--wf-edge-plain); padding: 13px 0; }
+.pb .wf-edge::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: var(--wf-line-width); translate: -50% 0; background: var(--wf-line); }
+/* The arrowhead paints over a plain arm's button, so a click on it falls through. */
+.pb .wf-edge::after { content: ''; position: absolute; bottom: 0; left: 50%; width: 9px; height: 6px; translate: -50% 0; background: var(--wf-line); clip-path: polygon(0 0, 100% 0, 50% 100%); pointer-events: none; }
+.pb .wf-edge.is-labelled { justify-content: flex-start; gap: 12px; min-height: var(--wf-edge-labelled); padding: 26px 0 8px; }
+.pb .wf-edge.is-invalid { --wf-line: var(--schegent-color-error); }
+.pb .wf-edge.is-sel { --wf-line: var(--schegent-focus-border); --wf-line-width: var(--wf-stroke-selected); }
+/* An arm into a card drawn elsewhere is dashed, as the redesign dashes a loop. */
+.pb .wf-branch:has(> .wf-jump) > .wf-edge::before { background: repeating-linear-gradient(to bottom, var(--wf-line) 0 5px, transparent 5px 9px); }
+
+/* The chip and the `+` stand on the line in flow; `relative` paints them over it. */
+.pb .canvas-wrap .elabel, .pb .canvas-wrap .plus { position: relative; flex: 0 0 auto; translate: none; }
+.pb .canvas-wrap .elabel:hover { border-color: var(--schegent-muted-fg); }
+.pb .canvas-wrap .elabel[data-invalid='true'] { border-color: var(--schegent-color-error); }
+.pb .wf-arm-issue { display: inline-flex; align-items: center; gap: 3px; color: var(--schegent-status-error-text); }
+/* A plain arm has no chip, so its button is the line itself, widened to a target. */
+.pb .wf-edge-hit { position: absolute; top: 0; bottom: 0; left: 50%; width: 24px; translate: -50% 0; padding: 0; border: 0; border-radius: var(--schegent-radius-sm); background: transparent; cursor: pointer; }
+.pb .wf-edge:not(.is-sel):has(> .wf-edge-hit:hover) { --wf-line: var(--schegent-fg); }
+/* A touch `+` grows to 44px (theme.css), so a plain arm keeps 24px of line above
+   and below it to tap. */
+@media (pointer: coarse) {
+  .pb .wf-edge:has(> .wf-edge-hit) { padding-block: 24px; }
+}
+
+/* Forks. The stem leaves the card, the bar spans the arms, and each arm's own
+   edge runs from the bar to its card. */
+.pb .wf-branches { display: flex; flex-direction: column; align-items: center; }
+.pb .wf-branches.is-fork { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; align-items: start; padding-top: var(--wf-fork-stem); }
+.pb .wf-branches.is-fork::before { content: ''; position: absolute; top: var(--wf-fork-stem); left: calc(50% / var(--wf-arms, 2)); right: calc(50% / var(--wf-arms, 2)); height: var(--wf-stroke); translate: 0 -50%; background: var(--schegent-muted-fg); }
+.pb .wf-branches.is-fork::after { content: ''; position: absolute; top: 0; left: 50%; width: var(--wf-stroke); height: var(--wf-fork-stem); translate: -50% 0; background: var(--schegent-muted-fg); }
+.pb .wf-branch { display: flex; flex-direction: column; align-items: center; }
+.pb .wf-branches.is-fork > .wf-branch { padding: 0 var(--schegent-space-2); }
+/* A touch toolbar beside a card in a column reaches 57px past it (the selected card's toolbar,
+   above), so on a touch screen a fork's arms stand 64px apart. */
+@media (pointer: coarse) {
+  .pb .wf-branches.is-fork > .wf-branch { padding-inline: var(--schegent-space-6); }
+}
+
+/* Where a branch completes, and where an arm continues at a card drawn elsewhere. */
+.pb .wf-end { display: inline-flex; align-items: center; height: 22px; padding: 0 var(--schegent-space-2-5); border: 1px solid var(--schegent-border); border-radius: 11px; background: var(--schegent-surface-subtle); color: var(--schegent-muted-fg); font-size: var(--schegent-text-caption); }
+.pb .wf-jump { display: inline-flex; align-items: center; gap: var(--schegent-space-1); height: 22px; padding: 0 var(--schegent-space-2); border: 1px dashed var(--schegent-muted-fg); border-radius: 11px; background: var(--schegent-bg); color: var(--schegent-muted-fg); font-size: var(--schegent-text-caption); white-space: nowrap; }
+.pb .wf-jump svg.i { flex: 0 0 auto; width: 12px; height: 12px; }
+
+/* Inspector. The pane is the redesign's `.inspector` (sg-builder.css), which also
+   narrows it below 1101px. Each mode (the Workflow, a step, a branch) fills it
+   with a head that stays put over a body that scrolls. */
+.pb .wf-ins-mode { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* The body is the containing block of the visually hidden text in it (the Handoff
+   legend), so that text scrolls with the body. On the shell it would sit below the
+   pane and leave the shell room to scroll, and a screen reader's or a script's
+   scrollIntoView would then shift the whole Builder up. */
+.pb .wf-ins-mode > .ins-body { position: relative; }
+/* A step's or a branch's head leads with the way back to the Workflow, on the
+   title's line as in the redesign's settings head. The glyph keeps the head's edge. */
+.pb .wf-ins-head-back { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: var(--schegent-space-0-5); }
+.pb .wf-ins-head-back > .icon-btn { grid-area: 1 / 1; margin-left: calc(var(--schegent-space-1-5) * -1); }
+.pb .wf-ins-head-back > :not(.icon-btn) { grid-column: 2; }
+
+/* The redesign's spacing, where it departs from a paragraph's own margins. */
+.pb .ins-body .wf-ins-line { margin: 0; }
+.pb .wf-runs-note { margin: var(--schegent-space-1) 0 var(--schegent-space-3); }
+.pb .wf-ins-action { margin: var(--schegent-space-3) 0 0; }
+.pb .wf-check { display: flex; align-items: center; gap: var(--schegent-space-2); margin-bottom: var(--schegent-space-3); }
+/* An unconditional branch's "Always taken." reads with the condition's check above
+   it, not with Fallback below it. */
+.pb .wf-check:has(+ .wf-ins-line) { margin-bottom: var(--schegent-space-1); }
+.pb .ins-body .wf-check + .wf-ins-line { margin-bottom: var(--schegent-space-3); }
+.pb .wf-unbound-required { color: var(--schegent-status-error-text); }
+.pb .inspector .radio:has(input:disabled) { opacity: 0.5; cursor: default; }
+
+/* The redesign's Status is one key and value list. Here State, Steps and Used by are
+   the inspector's own rows and Created, Modified and Active version the lifecycle
+   panel's, so the block is a two-column grid and both lists are subgrids of it: one
+   key column for every fact, as on a Phase's Summary. The panel takes the list's row
+   gap as its top margin. The state reads at the list's size, not as the older badge. */
+.pb .wf-ins-status { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--schegent-space-3); }
+.pb .wf-ins-status > *, .pb .wf-ins-status > .definition-lifecycle-panel > * { grid-column: 1 / -1; }
+.pb .wf-ins-status > .kv, .pb .wf-ins-status > .definition-lifecycle-panel, .pb .wf-ins-status > .definition-lifecycle-panel > .kv { grid-template-columns: subgrid; }
+.pb .wf-ins-status > .definition-lifecycle-panel { display: grid; margin-top: var(--schegent-space-1); }
+.pb .inspector .status-badge { font-size: inherit; }
+
+/* The Workflow's settings: a section's body, the description's box, the issues. */
+/* The first section stands the redesign's 16px between sections off what comes
+   before it: the Status block, or the issues. */
+.pb .ins-body > :not(details) + details.sect { margin-top: var(--schegent-space-4); }
+.pb .wf-sect-body { padding-top: var(--schegent-space-2); }
+.pb .wf-sect-body > .inh:first-child { margin-top: 0; }
+.pb .wf-sect-body textarea.input { height: 56px; padding: var(--schegent-space-1-5); }
+.pb .inspector .field-errors { margin: 0; padding-left: calc(var(--schegent-space-4) + var(--schegent-space-0-5)); }
+
+/* A branch: its rule above the first heading, each value with its remove button
+   level with the field, then the moves, and the delete closing the body on a line of
+   its own, at the left, as in the redesign. */
+.pb .wf-branch-rule { margin: 0 0 var(--schegent-space-2); }
+.pb .ins-body .wf-cond-value { display: flex; align-items: flex-end; gap: var(--schegent-space-1-5); }
+.pb .ins-body .wf-cond-value > .field { flex: 1; min-width: 0; }
+.pb .ins-body .wf-cond-value > .icon-btn, .pb .ins-body .repeat-carry-row > .icon-btn { margin-bottom: var(--schegent-space-2-5); }
+.pb .ins-body .wf-cond-add { margin: 0 0 var(--schegent-space-2-5); }
+.pb .wf-branch-actions { display: flex; align-items: center; gap: var(--schegent-space-1); margin-top: var(--schegent-space-3); }
+.pb .wf-branch-delete { margin-top: var(--schegent-space-3); }
+.pb .wf-branch-delete > .wf-delete { padding: 0 var(--schegent-space-1-5); color: var(--schegent-status-error-text); }
+
+/* A step's Repeat or For each settings, under its choice of how it runs. */
+.pb .ins-body .wf-node-control > h3:first-child { margin-top: var(--schegent-space-4); }
+.pb .wf-node-carry h4 { margin: 0 0 var(--schegent-space-1-5); font-weight: 600; }
+.pb .ins-body .repeat-carry-row { display: flex; align-items: flex-end; gap: var(--schegent-space-1-5); }
+.pb .ins-body .repeat-carry-row > .field { flex: 1 1 0; min-width: 0; }
+
+/* The Workflow's ports keep an editor of their own, drawn with the Builder's
+   older form classes (pipeline-builder.css). In the inspector those take the
+   redesign's field metrics and focus ring, so the pane reads as one. */
+.pb .inspector :is(.text-input, .select-input) { height: var(--schegent-control-height); padding: 0 var(--schegent-space-2); border-color: var(--schegent-input-border); border-radius: var(--schegent-radius-sm); color: var(--schegent-input-fg); font-size: var(--schegent-text-body); }
+.pb .inspector :is(.text-input, .select-input):focus { border-color: var(--schegent-input-border); }
+.pb .inspector :is(.text-input, .select-input):focus-visible { outline: 2px solid var(--schegent-focus-border); outline-offset: 2px; }
+.pb .inspector .form-label { font-size: var(--schegent-text-secondary); font-weight: 400; }
+.pb .inspector .checkbox-field > .form-label { font-size: inherit; color: inherit; }
+.pb .inspector .wf-inspector-section { display: flex; flex-direction: column; gap: var(--schegent-space-2); }
+.pb .inspector .wf-inspector-section > .btn { align-self: flex-start; }
+.pb .inspector .wf-inspector-heading { margin-top: var(--schegent-space-2); font-size: var(--schegent-text-secondary); font-weight: 600; }
+.pb .inspector .wf-inspector-heading:first-child { margin-top: 0; }
+/* A port or a binding is a card of fields two to a row, its remove button under them. */
+.pb .inspector :is(.wf-port-row, .wf-binding-row) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: var(--schegent-space-1-5); padding: var(--schegent-space-2); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius-sm); }
+.pb .inspector :is(.wf-port-row, .wf-binding-row) > .checkbox-field { min-height: var(--schegent-control-height); }
+.pb .inspector :is(.wf-port-row, .wf-binding-row) > .btn { grid-column: 1 / -1; justify-self: start; }
+.pb .inspector .wf-binding-actions { display: flex; flex-wrap: wrap; gap: var(--schegent-space-1-5); }
+
+/* Below 761px the panes stack and the page scrolls (pipeline-builder.css). A fork
+   keeps its columns: the canvas scrolls sideways, as the redesign's does. */
+@media (max-width: 760px) {
+  .pb .shell { flex-direction: column; }
+  .pb .shell > .palette, .pb .shell > .palette.collapsed { width: auto; max-height: 200px; border-right: 0; border-bottom: 1px solid var(--schegent-border); }
+  .pb .shell > .inspector { width: auto; border-left: 0; border-top: 1px solid var(--schegent-border); }
+  /* Stacked, the palette folds up over the canvas, so its toggle turns a quarter: the collapse
+     chevron points up and the expand chevron down. Collapsed, it is a bar across the page rather
+     than the 40px rail, so it keeps its title and the head's own padding. */
+  .pb .shell > .palette .pal-head .icon-btn > .i { transform: rotate(90deg); }
+  .pb .shell > .palette.collapsed .pal-title { display: inline; }
+  .pb .shell > .palette.collapsed .pal-head { padding-inline: var(--schegent-space-3) var(--schegent-space-2); }
+}

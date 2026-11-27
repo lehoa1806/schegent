@@ -11,7 +11,12 @@ import { resolve } from 'node:path';
 import { filesMatching } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const EXTENSION_PATH = resolve(REPO_ROOT, 'src', 'extension.ts');
+// FR-R3-119 — the production wiring moved. `new MessageRouter({...})` was 240
+// lines inside `wireStage2()` in `src/extension.ts`; it is now
+// `src/activation/sidebar-router-wiring.ts`, which is where `src/activation/` is
+// the composition root says it should have been. This gate reads the wiring, not
+// the entry file, so it follows the construction rather than the filename.
+const EXTENSION_PATH = resolve(REPO_ROOT, 'src', 'activation', 'sidebar-router-wiring.ts');
 const TEST_ROOT = resolve(REPO_ROOT, 'tests');
 
 const READ_ONLY_ROUTER_TEST_ALLOWLIST: ReadonlySet<string> = new Set([

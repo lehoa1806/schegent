@@ -79,7 +79,8 @@ async function makeWindow(
     store,
     queue,
     executionLease: new ExecutionLeaseManager(store, lock.id, clock, noopScheduler),
-    controller: controller as unknown as SchegentWorkflowController
+    controller: controller as unknown as SchegentWorkflowController,
+    failurePolicyDefault: { resolve: () => 'halt-on-failure' }
   });
   const coordinator = new ScheduledStartCoordinator({
     store,
@@ -104,6 +105,9 @@ async function makeWindow(
     clearTimer: fakeTimer.clearTimer
   });
   const service = new GuardedRunService({
+    // FR-R3-136 (FR-008) — this suite exercises a trusted workspace; the
+    // untrusted rows live in the trust-specific describe block.
+    isWorkspaceTrusted: () => true,
     lock,
     queue,
     controller: controller as unknown as SchegentWorkflowController,

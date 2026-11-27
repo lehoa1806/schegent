@@ -16,19 +16,34 @@
 //
 // See `specs/007-principal-review-remediation/contracts/guarded-run-service.md`.
 
+import { randomUUID } from 'node:crypto';
+import { decideEntry } from '../state/entry-trust-decision';
 import type { QueueManager } from '../queue/queue-manager';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
 import type { WorkspaceLockManager } from '../state/lock';
 import { STALENESS_THRESHOLD_MS } from '../state/lock';
+import { PRIMACY_RESOURCE } from '../state/ownership-registry';
+import { OWNERSHIP_VERIFY_DEADLINE_MS, readOwnershipStatusWithinDeadline } from '../state/ownership-claim';
+import { systemScheduler } from '../state/lock';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
+import { classifyEnqueueFailure } from './enqueue-failure';
 import type { AuditLogWriter } from '../audit/audit-log-writer';
 import type {
+  FeatureRequest,
   FeatureRequestRerun,
   QueueLifecycle,
-  ScheduledStartSource
+  ScheduledStartSource,
+  WorkflowOccurrenceIdentity
 } from '../queue/feature-request';
 import { MAX_DESCRIPTION_LENGTH } from '../queue/feature-request';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import { MAX_PENDING_TASKS_PER_QUEUE } from '../contracts/queue-feature-request-helpers';
+import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
+import type { AtomicComposableLaunchInput } from '../state/workspace-state-connected';
+import {
+  QueueMutationRejected,
+  type WorkspaceStateStore
+} from '../state/workspace-state';
 import type { FrozenRunPlan } from '../contracts/run-request';
 import type { PipelineCatalog } from '../config/pipeline-config';
 import type { ScheduledStartCoordinator } from './scheduled-start-coordinator';
@@ -88,6 +103,14 @@ export interface GuardedScheduleRequest {
   // is the definition the operator submitted against. Omission is valid and
   // leaves every pre-existing path byte-identical.
   runPlan?: FrozenRunPlan;
+  // Spec 261 FR-007 — set by the host when this row is the next node of a Workflow
+  // already on this queue, which is not new work. It changes nothing about whether
+  // the queue may start anything: a queue held for its Start stays held, and holds
+  // this row too; a paused queue stays paused, with this row waiting behind the
+  // pause. No webview value reaches it: only the host's Workflow dispatchers set it.
+  continuesWorkflow?: true;
+  // FR-R5-F08 — optional occurrence identity for workflow-dispatched Phase attempts.
+  workflowOccurrence?: WorkflowOccurrenceIdentity;
 }
 
 export interface GuardedScheduleResult {
@@ -96,21 +119,60 @@ export interface GuardedScheduleResult {
     | 'rejected-foreign-lock'
     | 'rejected-paused'
     | 'rejected-validation'
-    | 'rejected-horizon-exceeded';
+    | 'rejected-horizon-exceeded'
+    // FR-R3-136 (FR-008) — a distinct outcome, not folded into
+    // `rejected-validation`. The request was well-formed; the workspace was not
+    // trusted, and a caller that cannot tell those apart cannot tell the
+    // operator what to do about it.
+    | 'rejected-untrusted'
+    // FR-R4-F05 (FR-016) — the queue state could not be read or saved. The request
+    // may be fine, and nothing was committed, so it is not `rejected-validation`.
+    // `reason` is always `queue-state-unavailable`.
+    | 'failed-storage';
   reason?: string;
   queueItemId?: string;
   // Feature 065 — `'now'` when the host coerced or routed to `running`;
-  // `'idle-pending'` when the host landed the task in `idle-pending`.
+  // `'idle-pending'` when the host landed the task in `idle-pending`. A silent
+  // append preserves the lifecycle it found, whichever that was.
   lifecycleAfter?: QueueLifecycle;
 }
 
 export interface GuardedRunServiceDeps {
+  /**
+   * FR-R3-136 (FR-008) — Workspace Trust, read fresh on every admission.
+   *
+   * REQUIRED, AND DELIBERATELY NOT OPTIONAL. Every other trust-shaped
+   * dependency in this file is optional with a benign default, and that is the
+   * wrong shape here: an omitted reader would have to default to *trusted* to
+   * keep existing callers working, so the one construction site that forgot it
+   * would silently admit runs in an untrusted workspace — the exact defect this
+   * requirement closes, reintroduced as a default. Six test call sites and one
+   * production call site is a small price for a compile error instead.
+   *
+   * A THUNK, NOT A BOOLEAN, for the same reason `registerGuardedCommand` takes
+   * one: this service outlives the moment it was built, and
+   * `onDidGrantWorkspaceTrust` can fire between construction and admission.
+   */
+  readonly isWorkspaceTrusted: () => boolean;
   readonly lock: WorkspaceLockManager;
   readonly queue: QueueManager;
   readonly controller: Pick<SchegentWorkflowController, 'getCatalog'>;
   readonly logger: SanitizedLogger;
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
-  readonly store: Pick<WorkspaceStateStore, 'getLock' | 'getQueue' | 'updateQueue'>;
+  readonly store: Pick<
+    WorkspaceStateStore,
+    'getLock' | 'getQueue' | 'updateQueue' | 'runCommitClaim'
+  > &
+    Partial<
+      Pick<
+        WorkspaceStateStore,
+        | 'canCommitConnectedRun'
+        | 'ownership'
+        | 'supportsBatchWrite'
+        | 'admitComposableWorkflowLaunchAtomically'
+        | 'getDefaultQueueId'
+      >
+    >;
   readonly clock?: () => number;
   /** Optional override for tests; production reads the catalog via the controller. */
   readonly catalogProvider?: () => PipelineCatalog;
@@ -135,6 +197,23 @@ export class GuardedRunService {
   public async scheduleOrEnqueue(
     req: GuardedScheduleRequest
   ): Promise<GuardedScheduleResult> {
+    // FR-R3-136 (FR-008) — FIRST, before validation. This service is the single
+    // admission point for every run-starting and queue-mutating path, so it
+    // refuses on its own account rather than trusting that a command wrapper
+    // already did: the wrapper covers the palette and the sidebar covers IPC,
+    // but `scheduled-work-wiring`'s timers and the drain reach this method with
+    // no wrapper above them at all.
+    //
+    // It shares the decision function with `registerGuardedCommand` instead of
+    // re-implementing the comparison, following `judgeBackendContainment` —
+    // "so both the admission check and the spawn-time check read the same
+    // answer instead of each implementing it".
+    const trust = this.checkWorkspaceTrust();
+    if (trust) {
+      await this.emitRejection('schedule', 'rejected-untrusted', trust, req.via);
+      return { outcome: 'rejected-untrusted', reason: trust };
+    }
+
     const validated = this.validateDescription(req.description);
     if (validated.kind === 'invalid') {
       await this.emitRejection('schedule', 'rejected-validation', validated.reason, req.via);
@@ -153,7 +232,7 @@ export class GuardedRunService {
       return { outcome: 'rejected-validation', reason: pipelineCheck.reason };
     }
 
-    const foreign = this.checkForeignFreshLock();
+    const foreign = await this.checkAuthoritativePrimacy();
     if (foreign) {
       await this.emitRejection('schedule', 'rejected-foreign-lock', foreign, req.via);
       return { outcome: 'rejected-foreign-lock', reason: foreign };
@@ -166,7 +245,14 @@ export class GuardedRunService {
     // representation. The retired `paused` mirror is absent from every record
     // written after the v13 collapse, so reading it here admitted schedules onto
     // a paused queue rather than rejecting them.
-    if (this.deps.store.getQueue(req.queueId ?? 'default').queueLifecycle === 'operator-paused') {
+    //
+    // Spec 261 FR-007 — a Workflow's next node is exempt, because that Workflow is
+    // already on the queue. Three paths reach this gate during a pause: a leaf that
+    // fails with a recovery connection, a leaf finished by its own Resume, and a
+    // pause landing between a leaf ending and the Workflow hearing of it. A refusal
+    // would fail the Workflow over a pause, so the row waits behind the pause instead.
+    const lifecycleAtAdmission = this.deps.store.getQueue(req.queueId ?? 'default').queueLifecycle;
+    if (lifecycleAtAdmission === 'operator-paused' && req.continuesWorkflow !== true) {
       const reason = 'queue-paused';
       await this.emitRejection('schedule', 'rejected-paused', reason, req.via);
       return { outcome: 'rejected-paused', reason };
@@ -185,20 +271,259 @@ export class GuardedRunService {
       );
     }
 
+    // FR-R4-F05 (F7) — the `try` covers the commit and nothing after it. A throw here is
+    // a queue rule refusing the request (a validation outcome with its own code) or a
+    // storage fault; either way the answer is a fixed code, and the exception goes to
+    // the log only, through `describeFailure`.
+    let feature: Awaited<ReturnType<QueueManager['enqueue']>>;
     try {
-      const feature = await this.deps.queue.enqueue(validated.value, {
+      feature = await this.deps.queue.enqueue(validated.value, {
         ...(req.pipelineId ? { pipelineId: req.pipelineId } : {}),
         ...(req.queueId ? { queueId: req.queueId } : {}),
         ...(req.position !== null && req.position !== undefined ? { position: req.position } : {}),
         ...(req.rerun ? { rerun: req.rerun } : {}),
-        ...(req.runPlan ? { runPlan: req.runPlan } : {})
+        ...(req.runPlan ? { runPlan: req.runPlan } : {}),
+        ...(req.workflowOccurrence ? { workflowOccurrence: req.workflowOccurrence } : {})
       });
+    } catch (err) {
+      const failure = classifyEnqueueFailure(err);
+      this.deps.logger.warn('guarded-run-service: enqueue failed', {
+        outcome: failure.outcome,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      await this.emitRejection('schedule', failure.outcome, failure.reason, req.via);
+      return { outcome: failure.outcome, reason: failure.reason };
+    }
+    // After the commit. The task is in the queue whatever happens next, so a failure
+    // here is logged and the result is still `enqueued`: reporting a rejection for a
+    // task that is in the queue would invite the operator to enqueue it twice.
+    try {
       const lifecycleAfter = await this.applyStartIntentPolicy(req, policy);
       return { outcome: 'enqueued', queueItemId: feature.id, lifecycleAfter };
     } catch (err) {
-      const reason = this.deps.logger.sanitize((err as Error).message ?? 'enqueue-failed');
-      await this.emitRejection('schedule', 'rejected-validation', reason, req.via);
-      return { outcome: 'rejected-validation', reason };
+      this.deps.logger.warn('guarded-run-service: start-intent step failed after the commit', {
+        queueItemId: feature.id,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      return { outcome: 'enqueued', queueItemId: feature.id };
+    }
+  }
+
+  /**
+   * FR-R8-01 (01-02, 01-03) — Admit a composable Workflow launch by running all
+   * `GuardedRunService` trust, validation, authoritative primacy, pause, and
+   * start-intent policy checks, then committing `KEYS.controlLedger`,
+   * `KEYS.connectedRuns`, and `KEYS.queue` together in one SQLite batch
+   * transaction (with deterministic rollback on non-batch stores and
+   * idempotency on `connectedRunId` / `workflowOccurrence`).
+   */
+  public async admitComposableWorkflowLaunchAtomically(input: {
+    readonly req: GuardedScheduleRequest;
+    readonly queueItemId?: string;
+    readonly connectedRun: ConnectedWorkflowRun;
+    readonly rebindConnectedRun?: AtomicComposableLaunchInput['rebindConnectedRun'];
+    readonly mutateControlLedger: AtomicComposableLaunchInput['mutateControlLedger'];
+  }): Promise<GuardedScheduleResult> {
+    if (this.deps.store.admitComposableWorkflowLaunchAtomically === undefined) {
+      return { outcome: 'failed-storage', reason: 'atomic-launch-unsupported' };
+    }
+    const { req } = input;
+    const trust = this.checkWorkspaceTrust();
+    if (trust) {
+      await this.emitRejection('schedule', 'rejected-untrusted', trust, req.via);
+      return { outcome: 'rejected-untrusted', reason: trust };
+    }
+    const validated = this.validateDescription(req.description);
+    if (validated.kind === 'invalid') {
+      await this.emitRejection('schedule', 'rejected-validation', validated.reason, req.via);
+      return { outcome: 'rejected-validation', reason: validated.reason };
+    }
+    const rerunCheck = this.validateRerunPair(req.rerun ?? null, req.pipelineId ?? null);
+    if (rerunCheck.kind === 'invalid') {
+      await this.emitRejection('schedule', 'rejected-validation', rerunCheck.reason, req.via);
+      return { outcome: 'rejected-validation', reason: rerunCheck.reason };
+    }
+    const pipelineCheck = this.validatePipelineId(req.pipelineId ?? null, req.runPlan ?? null);
+    if (pipelineCheck.kind === 'invalid') {
+      await this.emitRejection('schedule', 'rejected-validation', pipelineCheck.reason, req.via);
+      return { outcome: 'rejected-validation', reason: pipelineCheck.reason };
+    }
+    const foreign = await this.checkAuthoritativePrimacy();
+    if (foreign) {
+      await this.emitRejection('schedule', 'rejected-foreign-lock', foreign, req.via);
+      return { outcome: 'rejected-foreign-lock', reason: foreign };
+    }
+    const targetQueueId = req.queueId ?? this.deps.store.getDefaultQueueId?.() ?? 'default';
+    const lifecycleAtAdmission = this.deps.store.getQueue(targetQueueId).queueLifecycle;
+    if (lifecycleAtAdmission === 'operator-paused' && req.continuesWorkflow !== true) {
+      const reason = 'queue-paused';
+      await this.emitRejection('schedule', 'rejected-paused', reason, req.via);
+      return { outcome: 'rejected-paused', reason };
+    }
+    const policy = this.resolveStartIntentPolicy({ ...req, queueId: targetQueueId });
+    if (policy.kind === 'rejected-horizon') {
+      await this.emitHorizonRejection(req, policy.requestedScheduledStartAt);
+      throw new ScheduledStartHorizonError(policy.requestedScheduledStartAt, req.callerId);
+    }
+
+    const now = this.clock();
+    const allocatedId = input.queueItemId ?? randomUUID();
+    const preCommitSnapshot = {
+      queueLifecycle: this.deps.store.getQueue(targetQueueId).queueLifecycle,
+      scheduledStartAt: this.deps.store.getQueue(targetQueueId).scheduledStartAt
+    };
+    let outcome: Awaited<ReturnType<WorkspaceStateStore['admitComposableWorkflowLaunchAtomically']>>;
+    try {
+      outcome = await this.deps.store.admitComposableWorkflowLaunchAtomically({
+        queueId: targetQueueId,
+        connectedRun: input.connectedRun,
+        ...(input.rebindConnectedRun !== undefined
+          ? { rebindConnectedRun: input.rebindConnectedRun }
+          : {}),
+        mutateControlLedger: input.mutateControlLedger,
+        mutateQueue: (queue) => {
+          preCommitSnapshot.queueLifecycle = queue.queueLifecycle;
+          preCommitSnapshot.scheduledStartAt = queue.scheduledStartAt;
+          if (req.workflowOccurrence !== undefined) {
+            const occ = req.workflowOccurrence;
+            const existing = queue.requests.find(
+              (r) =>
+                r.status !== 'canceled' &&
+                r.workflowOccurrence !== undefined &&
+                r.workflowOccurrence.rootRunId === occ.rootRunId &&
+                r.workflowOccurrence.invocationId === occ.invocationId &&
+                r.workflowOccurrence.attemptId === occ.attemptId
+            );
+            if (existing !== undefined) {
+              return { queue, request: existing };
+            }
+          }
+          const pendingCount = queue.requests.filter((item) => item.status === 'pending').length;
+          if (pendingCount >= MAX_PENDING_TASKS_PER_QUEUE) {
+            throw new QueueMutationRejected(
+              'task-cap-reached',
+              `Queue ${targetQueueId} already has ${MAX_PENDING_TASKS_PER_QUEUE} pending tasks`
+            );
+          }
+          const insertAt =
+            req.position !== null && req.position !== undefined
+              ? req.position
+              : queue.requests.length;
+          if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > queue.requests.length) {
+            throw new QueueMutationRejected(
+              'position-out-of-range',
+              `Position must be in [0, ${queue.requests.length}] (got ${String(req.position)})`
+            );
+          }
+          const nextRequest: FeatureRequest = {
+            id: allocatedId,
+            description: validated.value,
+            enqueuedAt: now,
+            createdAt: now,
+            startedAt: null,
+            updatedAt: now,
+            completedAt: null,
+            status: 'pending',
+            queueId: targetQueueId,
+            position: insertAt,
+            pauseCause: null,
+            runId: null,
+            retryCount: 0,
+            lastError: null,
+            pausedReason: null,
+            ...(req.pipelineId ? { pipelineId: req.pipelineId } : {}),
+            ...(req.rerun ? { rerun: req.rerun } : {}),
+            ...(req.runPlan ? { runPlan: req.runPlan } : {}),
+            ...(req.workflowOccurrence ? { workflowOccurrence: req.workflowOccurrence } : {})
+          };
+          const denseIndex = new Map<string, number>();
+          queue.requests
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .forEach((item, idx) => denseIndex.set(item.id, idx));
+          const shifted = queue.requests.map((item) => {
+            const dense = denseIndex.get(item.id) ?? item.position;
+            const repositioned = dense >= insertAt ? dense + 1 : dense;
+            return repositioned === item.position
+              ? item
+              : { ...item, position: repositioned, updatedAt: now };
+          });
+          let nextLifecycle = queue.queueLifecycle;
+          let nextScheduledStartAt = queue.scheduledStartAt;
+          let nextScheduledStartSource = queue.scheduledStartSource;
+          if (policy.kind === 'now') {
+            nextLifecycle = 'running';
+            nextScheduledStartAt = null;
+            nextScheduledStartSource = null;
+          } else if (policy.kind === 'scheduled') {
+            nextLifecycle = 'idle-pending';
+            nextScheduledStartAt = policy.scheduledStartAt;
+            nextScheduledStartSource = policy.source;
+          } else if (
+            (policy.kind === 'no-intent-human' || policy.kind === 'no-intent-automation') &&
+            queue.queueLifecycle !== 'idle-pending'
+          ) {
+            nextLifecycle = 'idle-pending';
+            nextScheduledStartAt = null;
+            nextScheduledStartSource = null;
+          }
+          return {
+            queue: {
+              ...queue,
+              queueLifecycle: nextLifecycle,
+              scheduledStartAt: nextScheduledStartAt,
+              scheduledStartSource: nextScheduledStartSource,
+              requests: [...shifted, nextRequest],
+              updatedAt: now
+            },
+            request: nextRequest
+          };
+        }
+      });
+    } catch (err) {
+      const failure = classifyEnqueueFailure(err);
+      this.deps.logger.warn('guarded-run-service: atomic composable launch failed', {
+        outcome: failure.outcome,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      await this.emitRejection('schedule', failure.outcome, failure.reason, req.via);
+      return { outcome: failure.outcome, reason: failure.reason };
+    }
+
+    if (outcome.outcome === 'rejected') {
+      const mappedOutcome =
+        outcome.code === 'stale-execution-fence'
+          ? ('rejected-foreign-lock' as const)
+          : outcome.code === 'unknown-queue-id' ||
+              outcome.code === 'task-cap-reached' ||
+              outcome.code === 'position-out-of-range'
+            ? ('rejected-validation' as const)
+            : ('failed-storage' as const);
+      await this.emitRejection('schedule', mappedOutcome, outcome.code, req.via);
+      return { outcome: mappedOutcome, reason: outcome.code };
+    }
+
+    if (outcome.idempotent) {
+      return {
+        outcome: 'enqueued',
+        queueItemId: outcome.queueItemId,
+        lifecycleAfter: this.deps.store.getQueue(targetQueueId).queueLifecycle
+      };
+    }
+
+    try {
+      const lifecycleAfter = await this.applyPostCommitStartIntentSideEffects(
+        { ...req, queueId: targetQueueId },
+        policy,
+        preCommitSnapshot
+      );
+      return { outcome: 'enqueued', queueItemId: outcome.queueItemId, lifecycleAfter };
+    } catch (err) {
+      this.deps.logger.warn('guarded-run-service: start-intent step failed after atomic commit', {
+        queueItemId: outcome.queueItemId,
+        error: describeFailure(err, (value) => this.deps.logger.sanitize(value))
+      });
+      return { outcome: 'enqueued', queueItemId: outcome.queueItemId };
     }
   }
 
@@ -232,6 +557,16 @@ export class GuardedRunService {
    * `extractResetTimestamp` and to have validated it is in the future and
    * within the 7-day horizon. If validation fails the caller MUST fall back
    * to `system-pause-restore-unavailable` + legacy `operator-paused`.
+   *
+   * FR-R3-136 — NOT trust-guarded, and that is the deliberate boundary. The two
+   * methods above are admission points, reachable with nothing running; this one
+   * is downstream of a run that was already admitted, and its only caller is the
+   * retry handler. It returns `void`, so a refusal here could not be reported —
+   * it would drop a scheduled restore the retry handler believes it arranged,
+   * leaving a queue paused with no deadline and no record of why. A window that
+   * has a run to recover was trusted when the run started, and trust cannot be
+   * revoked mid-window (spec C1), so the case a guard would catch does not
+   * arise; a guard that cannot report is worse than the absent one.
    */
   public async transitionToScheduledRestore(args: {
     scheduledStartAt: number;
@@ -255,7 +590,8 @@ export class GuardedRunService {
         },
         result: undefined
       }),
-      queueId
+      queueId,
+      this.deps.store.runCommitClaim(queueId)
     );
     if (this.deps.scheduledStartCoordinator) {
       await this.deps.scheduledStartCoordinator.arm(
@@ -308,7 +644,18 @@ export class GuardedRunService {
   public async applyStartQueueIntent(
     intent: { startMode: 'now' | 'scheduled' | 'cancel-schedule'; scheduledStartAt?: number; source: 'operator-restart' },
     opts: { queueId?: string } = {}
-  ): Promise<{ outcome: 'applied' | 'rejected-horizon' | 'noop'; lifecycleAfter?: QueueLifecycle; requestedScheduledStartAt?: number }> {
+  ): Promise<{ outcome: 'applied' | 'rejected-horizon' | 'rejected-untrusted' | 'noop'; lifecycleAfter?: QueueLifecycle; requestedScheduledStartAt?: number }> {
+    // FR-R3-136 (FR-008) — the second admission surface. Every branch below
+    // ends in `store.updateQueue`, which is a persisted workspace write, so the
+    // trust check belongs here and not only on `scheduleOrEnqueue`. The
+    // `cancel-schedule` branch is included even though it only clears fields:
+    // clearing a persisted deadline is still writing the workspace's state.
+    const untrusted = this.checkWorkspaceTrust();
+    if (untrusted) {
+      await this.emitRejection('schedule', 'rejected-untrusted', untrusted, 'webview');
+      return { outcome: 'rejected-untrusted' };
+    }
+
     const queueId = opts.queueId ?? 'default';
     const current = this.deps.store.getQueue(queueId);
     const now = this.clock();
@@ -331,7 +678,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       return { outcome: 'applied', lifecycleAfter: 'idle-pending' };
     }
 
@@ -364,7 +713,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       if (coordinator) {
         if (current.scheduledStartAt !== null) {
           await coordinator.change(queueId, requested, source);
@@ -389,7 +740,9 @@ export class GuardedRunService {
         updatedAt: now
       },
       result: undefined
-    }), queueId);
+    }), queueId,
+      this.deps.store.runCommitClaim(queueId)
+    );
     if (wasIdlePending) {
       await this.appendScheduleAudit('idle-pending-exited', {
         queueId,
@@ -424,6 +777,18 @@ export class GuardedRunService {
     // emitted on this path and lifecycle is preserved.
     const currentLifecycle = this.deps.store.getQueue(req.queueId ?? 'default').queueLifecycle;
     if (currentLifecycle === 'running') {
+      return { kind: 'append-tail-no-chooser' };
+    }
+    // Spec 261 FR-007 — a Workflow's next node, on a queue nothing holds for a Start.
+    // Its last leaf finished before this row was admitted, so the queue reads
+    // `active-empty`, and entering the hold here would stop the Workflow after every
+    // node. The two states are listed by name so that `idle-pending` falls through:
+    // that hold is the operator's to release (rules 32 and 33), and this row waits
+    // behind it with everything else.
+    if (
+      req.continuesWorkflow === true &&
+      (currentLifecycle === 'active-empty' || currentLifecycle === 'operator-paused')
+    ) {
       return { kind: 'append-tail-no-chooser' };
     }
     const intent = req.startIntent;
@@ -470,6 +835,54 @@ export class GuardedRunService {
    * coordinator timer when relevant. Emits the required audit events.
    * Returns the lifecycle the queue lands in.
    */
+  private async applyPostCommitStartIntentSideEffects(
+    req: GuardedScheduleRequest,
+    policy: ReturnType<GuardedRunService['resolveStartIntentPolicy']>,
+    preCommit: { readonly queueLifecycle: QueueLifecycle; readonly scheduledStartAt: number | null }
+  ): Promise<QueueLifecycle> {
+    if (policy.kind === 'rejected-horizon') return 'active-empty';
+    const now = this.clock();
+    const queueId = req.queueId ?? 'default';
+    if (policy.kind === 'append-tail-no-chooser') return this.deps.store.getQueue(queueId).queueLifecycle;
+    const wasIdlePending = preCommit.queueLifecycle === 'idle-pending';
+    if (policy.kind === 'now') {
+      if (policy.coercedFromPast && policy.originalScheduledStartAt !== undefined) {
+        await this.appendScheduleAudit('scheduled-start-past-timestamp-coerced-to-now', {
+          queueId, requestedScheduledStartAt: policy.originalScheduledStartAt, coercedAt: now,
+          scheduledStartSource: policy.source, transitionReason: 'past-timestamp'
+        });
+      }
+      if (wasIdlePending && preCommit.scheduledStartAt !== null && this.deps.scheduledStartCoordinator) {
+        await this.deps.scheduledStartCoordinator.cancel(queueId, 'operator-cancel');
+      }
+      if (wasIdlePending) {
+        await this.appendScheduleAudit('idle-pending-exited', {
+          queueId, exitReason: 'operator-start-now', scheduledStartSource: policy.source, transitionReason: 'operator-start-now'
+        });
+      }
+      return 'running';
+    }
+    if (policy.kind === 'scheduled') {
+      if (this.deps.scheduledStartCoordinator) await this.deps.scheduledStartCoordinator.arm(queueId, policy.scheduledStartAt, policy.source);
+      if (!wasIdlePending) {
+        await this.appendScheduleAudit('idle-pending-entered', {
+          queueId, scheduledStartAt: policy.scheduledStartAt, scheduledStartSource: policy.source, transitionReason: policy.source
+        });
+      }
+      return 'idle-pending';
+    }
+    const reason = policy.kind === 'no-intent-human' ? 'operator-no-start-mode' : 'automation-no-start-mode';
+    if (!wasIdlePending) {
+      await this.appendScheduleAudit('idle-pending-entered', { queueId, scheduledStartAt: null, scheduledStartSource: null, transitionReason: reason });
+    }
+    if (policy.kind === 'no-intent-automation') {
+      const payload: Record<string, unknown> = { queueId, transitionReason: reason };
+      if (policy.callerId !== undefined) payload.callerId = policy.callerId;
+      await this.appendScheduleAudit('automation-enqueue-no-start-mode', payload);
+    }
+    return 'idle-pending';
+  }
+
   private async applyStartIntentPolicy(
     req: GuardedScheduleRequest,
     policy: ReturnType<GuardedRunService['resolveStartIntentPolicy']>
@@ -482,14 +895,11 @@ export class GuardedRunService {
     const queueId = req.queueId ?? 'default';
     const current = this.deps.store.getQueue(queueId);
     if (policy.kind === 'append-tail-no-chooser') {
-      // Feature 065 (FR-006) — `running` queue silent enqueue. Lifecycle
-      // is preserved; no scheduledStartAt fields are touched; no
-      // scheduled-start-* / idle-pending-* audit events are emitted.
-      // The task was already appended to the queue via `queue.enqueue`.
-      void now;
-      void current;
-      void queueId;
-      return 'running';
+      // Feature 065 (FR-006) — silent enqueue. Lifecycle is preserved; no
+      // scheduledStartAt fields are touched; no scheduled-start-* /
+      // idle-pending-* audit events are emitted. The task was already appended
+      // to the queue via `queue.enqueue`.
+      return current.queueLifecycle;
     }
     if (policy.kind === 'now') {
       if (policy.coercedFromPast && policy.originalScheduledStartAt !== undefined) {
@@ -514,7 +924,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       if (wasIdlePending) {
         await this.appendScheduleAudit('idle-pending-exited', {
           queueId,
@@ -540,7 +952,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       if (this.deps.scheduledStartCoordinator) {
         await this.deps.scheduledStartCoordinator.arm(
           queueId,
@@ -570,7 +984,9 @@ export class GuardedRunService {
             updatedAt: now
           },
           result: undefined
-        }), queueId);
+        }), queueId,
+          this.deps.store.runCommitClaim(queueId)
+        );
         await this.appendScheduleAudit('idle-pending-entered', {
           queueId,
           scheduledStartAt: null,
@@ -592,7 +1008,9 @@ export class GuardedRunService {
           updatedAt: now
         },
         result: undefined
-      }), queueId);
+      }), queueId,
+        this.deps.store.runCommitClaim(queueId)
+      );
       await this.appendScheduleAudit('idle-pending-entered', {
         queueId,
         scheduledStartAt: null,
@@ -735,12 +1153,34 @@ export class GuardedRunService {
     const catalog =
       this.deps.catalogProvider?.() ?? this.deps.controller.getCatalog();
     if (!catalog.pipelinesById.has(pipelineId)) {
+      if (catalog.workflowsById?.has(pipelineId)) {
+        return {
+          kind: 'invalid',
+          reason: `workflow-requires-graph-launch:${this.deps.logger.sanitize(pipelineId)}`
+        };
+      }
       return {
         kind: 'invalid',
         reason: `pipeline-id-unknown:${this.deps.logger.sanitize(pipelineId)}`
       };
     }
     return { kind: 'ok' };
+  }
+
+  /**
+   * FR-R3-136 (FR-008) — a refusal reason when the workspace is untrusted, or
+   * `null` when admission may proceed.
+   *
+   * Shaped as `checkForeignFreshLock` below is — reason-or-null rather than a
+   * boolean — because the two are the same kind of check at the same gate, and
+   * the outcome each produces has to name why it refused.
+   */
+  private checkWorkspaceTrust(): string | null {
+    const decision = decideEntry({
+      disposition: 'mutating',
+      workspaceTrusted: this.deps.isWorkspaceTrusted()
+    });
+    return decision.allowed ? null : decision.reason;
   }
 
   private checkForeignFreshLock(): string | null {
@@ -750,6 +1190,25 @@ export class GuardedRunService {
     const age = this.clock() - existing.heartbeatAt;
     if (age > STALENESS_THRESHOLD_MS) return null;
     return `foreign-fresh:${this.deps.logger.sanitize(existing.ownerId)}`;
+  }
+
+  private async checkAuthoritativePrimacy(): Promise<string | null> {
+    const mementoForeign = this.checkForeignFreshLock();
+    if (mementoForeign !== null) return mementoForeign;
+    if (this.deps.store.canCommitConnectedRun !== undefined) {
+      const canCommit = await this.deps.store.canCommitConnectedRun();
+      if (!canCommit) return 'primacy-lost';
+    }
+    const registry = this.deps.store.ownership;
+    if (registry !== undefined && typeof registry.readStatus === 'function') {
+      const status = await readOwnershipStatusWithinDeadline(registry, PRIMACY_RESOURCE, OWNERSHIP_VERIFY_DEADLINE_MS, systemScheduler);
+      if (status.outcome === 'unavailable') return 'ownership-unverified';
+      const holder = status.outcome === 'present' ? status.record.holder : null;
+      if (holder !== null && holder.ownerId !== this.deps.lock.id && this.clock() - holder.heartbeatAt <= STALENESS_THRESHOLD_MS) {
+        return `foreign-fresh:${this.deps.logger.sanitize(holder.ownerId)}`;
+      }
+    }
+    return null;
   }
 
   private async emitRejection(

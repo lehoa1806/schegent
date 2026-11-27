@@ -41,3 +41,30 @@ empty/
 # Per-run test temp root created by tests/global-temp-root.ts. Anchored for the
 # same reason `/build/` above is: an unanchored pattern matches at every depth.
 /.tmp/
+
+# FR-R3-095 — the local gate attestation. Untracked deliberately: it records one
+# machine's observation of one tree at one moment, so committing it would publish
+# a claim about a checkout nobody else has, and the next clone would inherit an
+# attestation it never earned.
+/.gate-attestation.json
+
+# FR-R3-104 — the backend qualification record, untracked for the same reason: it records what
+# three third-party CLIs did on one machine at one moment. The versions a BUILD was qualified
+# against are committed instead, in src/contracts/qualified-backend-versions.ts, because an
+# installed extension has no repository to read this file from.
+/.backend-qualification.json
+
+# FR-R3-120 — generated at package time from the lockfiles, and packaged inside the
+# VSIX. Not tracked: it is a build output whose content is fully derived, and
+# committing it would put a timestamp in every release diff.
+schegent-sbom.cdx.json
+
+# FR-R5-F21 (FR-025) -- the third-party notices, generated at package time from the module graphs
+# and the installed packages' license files, and packaged inside the VSIX. Not tracked for the
+# reason the SBOM is not: it is fully derived and carries a timestamp.
+/THIRD-PARTY-NOTICES.md
+
+# FR-R4-F09 (research R27) -- the release driver's outputs: the staging VSIX, the candidate, its
+# release record and the advisory captures an operator makes. Local, untracked, and anchored for
+# the same reason `/build/` and `/.tmp/` above are.
+/.release/

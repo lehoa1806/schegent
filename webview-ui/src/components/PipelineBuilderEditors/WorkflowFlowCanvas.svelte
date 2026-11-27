@@ -1,0 +1,202 @@
+<script lang="ts">
+  // The canvas: lanes of flow, laid out by `workflow-flow-layout.ts`.
+  //
+  // This file assembles the view bundle and renders one subtree per root. It
+  // decides nothing about placement — that is the layout module's job, and the
+  // split is what lets the placement rules be tested without mounting anything.
+  //
+  // Two lanes, not one. Nodes reachable from a start are the flow; nodes no start
+  // reaches are `unreachable-node` defects, and they render BELOW in a lane of
+  // their own, under a note that says why they block the save, rather than being
+  // hidden. A canvas that draws only the reachable graph would hide the very node
+  // the operator has to connect or delete to make the save pass, with the host's
+  // defect pointing at something invisible.
+  //
+  // The surface is the redesign's `.canvas-wrap` (sg-builder.css): the dotted
+  // ground and the region a screen reader can jump to. The redesign places its
+  // cards at fixed coordinates with SVG edges between them; this canvas keeps the
+  // layout module's lanes and draws each edge in CSS (workflow-flow.css), so a
+  // card never needs a coordinate, and the CSP never sees a computed `style`.
+  //
+  // A press on the ground, anywhere but a card or a control, shows the Workflow
+  // again, as in the mockup.
+  import type {
+    CandidateBlockControl,
+    PortablePhaseDefinition,
+    PortablePipelineDefinition,
+    PortableWorkflowDefinition,
+    WorkflowConnection,
+    WorkflowNode
+  } from '../../lib/snapshot-types';
+  import {
+    buildWorkflowFlowLayout,
+    describeCandidateBlockCanvasPath,
+    type FlowNodeSlot
+  } from './workflow-flow-layout';
+  import type { WorkflowFlowSelection, WorkflowFlowView } from './workflow-flow-view';
+  import type { WorkflowDraftError } from './workflow-catalog-state';
+  import type { MutableWorkflow } from './types';
+  import WorkflowFlowSubtree from './WorkflowFlowSubtree.svelte';
+
+  interface Props {
+    nodes: readonly WorkflowNode[];
+    connections: readonly WorkflowConnection[];
+    startNodeIds: readonly string[];
+    control?: CandidateBlockControl;
+    pipelines: readonly PortablePipelineDefinition[];
+    phases?: readonly PortablePhaseDefinition[];
+    workflows?: readonly PortableWorkflowDefinition[];
+    allWorkflows?: readonly MutableWorkflow[];
+    /** Both indexed alongside their authored list; see `visibleWorkflowDefects`. */
+    nodeDefects: readonly (readonly WorkflowDraftError[])[];
+    connectionDefects: readonly (readonly WorkflowDraftError[])[];
+    readonly: boolean;
+    selection: WorkflowFlowSelection | null;
+    onselect: (selection: WorkflowFlowSelection) => void;
+    oninsertafter: (nodeId: string) => void;
+    onsplice: (connectionIndex: number) => void;
+    onnodemove: (index: number, delta: number) => void;
+    onnoderemove: (index: number) => void;
+    onopenworkflow?: (workflowId: string, fromNodeId: string) => void;
+  }
+
+  const props: Props = $props();
+
+  const layout = $derived(
+    buildWorkflowFlowLayout({
+      nodes: props.nodes,
+      connections: props.connections,
+      startNodeIds: props.startNodeIds
+    })
+  );
+
+  /** Every placed slot, so an arm can find the subtree its target renders as. */
+  const slotsById = $derived(
+    new Map<string, FlowNodeSlot>(
+      [...layout.slots, ...layout.detached].map((slot) => [slot.nodeId, slot])
+    )
+  );
+
+  /** Pre-order means a root is exactly a slot the walk entered at depth 0. */
+  const roots = $derived(layout.slots.filter((slot) => slot.depth === 0));
+  const detachedRoots = $derived(layout.detached.filter((slot) => slot.depth === 0));
+
+  const candidateBlockPath = $derived(
+    describeCandidateBlockCanvasPath(props.control, props.nodes, props.phases ?? [])
+  );
+  let blockCanvasExpanded = $state(true);
+
+  /** What a press on the canvas leaves alone: a card's box and every control. */
+  const NOT_GROUND = 'button, a, input, select, textarea, label, .node';
+
+  /**
+   * A press on the ground shows the Workflow again. It is a pointer shortcut:
+   * Escape and the inspector's back button are the keyboard's way to the same
+   * place (WorkflowFlowBuilder), so nothing on the canvas needs a pointer.
+   */
+  function onGroundPress(event: MouseEvent): void {
+    if (props.selection === null || props.selection.kind === 'workflow') return;
+    if (!(event.target instanceof Element) || event.target.closest(NOT_GROUND) !== null) return;
+    props.onselect({ kind: 'workflow' });
+  }
+
+  const view = $derived<WorkflowFlowView>({
+    nodes: props.nodes,
+    connections: props.connections,
+    slotsById,
+    pipelines: props.pipelines,
+    phases: props.phases,
+    workflows: props.allWorkflows ?? props.workflows,
+    control: props.control,
+    nodeDefects: props.nodeDefects,
+    connectionDefects: props.connectionDefects,
+    cycleNodeIds: layout.cycleNodeIds,
+    readonly: props.readonly,
+    selection: props.selection,
+    onselect: props.onselect,
+    oninsertafter: props.oninsertafter,
+    onsplice: props.onsplice,
+    onnodemove: props.onnodemove,
+    onnoderemove: props.onnoderemove,
+    onopenworkflow: props.onopenworkflow
+  });
+</script>
+
+<!-- A press on the ground is a pointer shortcut. Escape and the inspector's back button are the
+     keyboard's way to the same place, so the region takes no key of its own. -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+<div
+  class="canvas-wrap wf-canvas"
+  data-testid="workflow-canvas"
+  role="region"
+  aria-label="Workflow graph canvas"
+  onclick={onGroundPress}
+>
+  {#if candidateBlockPath}
+    <div
+      class="wf-candidate-block-banner"
+      data-testid="workflow-canvas-candidate-block-banner"
+    >
+      <div class="wf-candidate-block-head">
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-selection-mode">
+          Candidate block · Exclusive single-active selection
+        </span>
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-policy">
+          {candidateBlockPath.availabilityPolicy}
+        </span>
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-return">
+          {candidateBlockPath.validatedReturnPath}
+        </span>
+        <span class="wf-badge" data-testid="workflow-canvas-candidate-exits">
+          Exits: {candidateBlockPath.terminalExits.join(' · ')}
+        </span>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          data-testid="workflow-canvas-candidate-block-toggle"
+          aria-expanded={blockCanvasExpanded}
+          onclick={() => (blockCanvasExpanded = !blockCanvasExpanded)}
+        >
+          {blockCanvasExpanded ? 'Collapse candidates' : 'Expand candidates'}
+        </button>
+      </div>
+      {#if !blockCanvasExpanded}
+        <p class="wf-candidate-block-collapsed" data-testid="workflow-canvas-candidate-collapsed">
+          Ordered candidates ({candidateBlockPath.candidates.length}):
+          {candidateBlockPath.candidates.map((c) => `${c.candidateId} (${c.phaseName})`).join(' → ')}
+        </p>
+      {/if}
+    </div>
+  {/if}
+  {#if props.nodes.length === 0}
+    <div class="empty-selection" data-testid="workflow-canvas-empty">
+      No steps yet. Add one from the Add steps panel.
+    </div>
+  {:else}
+    <div class="wf-lanes">
+      {#if roots.length > 0}
+        <div class="wf-lane" data-testid="workflow-lane-flow">
+          {#each roots as slot (slot.nodeId)}
+            <WorkflowFlowSubtree {view} {slot} />
+          {/each}
+        </div>
+      {/if}
+
+      {#if detachedRoots.length > 0}
+        <div class="wf-lane" data-testid="workflow-lane-detached">
+          <!-- Says what is wrong AND why it matters: an unreachable node blocks
+               the save, and "not connected" alone does not convey that. -->
+          <div class="lane-note wf-lane-note" data-testid="workflow-lane-detached-note">
+            <svg class="i" aria-hidden="true"><use href="#i-warn"></use></svg>
+            {roots.length === 0
+              ? 'No start node is set, so nothing below can run. Select a node and mark it a start.'
+              : 'Not reachable from a start. Connect these or remove them before saving.'}
+          </div>
+          {#each detachedRoots as slot (slot.nodeId)}
+            <WorkflowFlowSubtree {view} {slot} />
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+</div>

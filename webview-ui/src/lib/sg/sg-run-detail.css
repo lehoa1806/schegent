@@ -1,0 +1,27 @@
+/* Redesign design language: the run detail page.
+   Ported from the run detail surface of the mockup `schegent_redesign_surfaces.html`: the step
+   list beside the selected step, and the log.
+
+   A route sheet. It is imported by the root component of the route that uses it, not by an entry
+   point, so its bytes stay out of the startup stylesheets. Scoped under `.sg`; `sg-core.css` and
+   `sg-pages.css` supply the controls and the page frame. */
+
+.sg .split { display: grid; grid-template-columns: 260px 1fr; gap: var(--schegent-space-4); align-items: start; }
+.sg .steps { list-style: none; margin: 0; padding: 0; border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); overflow: hidden; }
+.sg .steps li + li { border-top: 1px solid var(--schegent-border); }
+.sg .step { display: flex; align-items: center; gap: var(--schegent-space-2); width: 100%; padding: var(--schegent-space-2) var(--schegent-space-2-5); background: none; border: 0; cursor: pointer; text-align: left; }
+.sg .step:focus-visible { outline-offset: -2px; }
+.sg .step[aria-current='step'] { background: var(--schegent-selection-bg); color: var(--schegent-selection-fg); }
+.sg .step[aria-current='step'] :is(.nm small, .tm) { color: inherit; }
+.sg .step[aria-current='step'] :is(.s-run, .s-ok, .s-err, .s-warn, .s-idle) { color: inherit; --sg-status-color: currentColor; }
+.sg .step .nm { flex: 1; min-width: 0; }
+.sg .step .nm small { display: block; font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); }
+.sg .step .tm { font-size: var(--schegent-text-caption); color: var(--schegent-muted-fg); font-variant-numeric: tabular-nums; }
+.sg .st-ic { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; border: 1.5px solid var(--sg-status-color, currentColor); }
+.sg .st-ic svg.i { width: 11px; height: 11px; stroke-width: 2.2; }
+.sg .log { font-family: var(--schegent-mono-font); font-size: var(--schegent-text-secondary); border: 1px solid var(--schegent-border); border-radius: var(--schegent-radius); background: var(--schegent-shell-bg); max-height: 360px; overflow-y: auto; }
+.sg .log div { display: grid; grid-template-columns: 70px 74px 1fr; gap: var(--schegent-space-2); padding: 3px var(--schegent-space-2-5); }
+.sg .log div:nth-child(odd) { background: color-mix(in srgb, var(--schegent-list-hover) 50%, transparent); }
+.sg .log .k { color: var(--schegent-muted-fg); }
+
+@media (max-width: 860px) { .sg .split { grid-template-columns: 1fr; } }

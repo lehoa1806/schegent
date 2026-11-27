@@ -14,7 +14,7 @@
 // are the shipped code. A suite that wants to observe a store refusal sets one of
 // the fake's verdict seams and lets the real service carry it.
 //
-// `defaultPipelineId` is a thunk read fresh on every call, exactly as it is in the
+// `defaultWorkflowId` is a thunk read fresh on every call, exactly as it is in the
 // host (FR-059) — a test that changes it mid-run gets the new value, and one that
 // does not name it gets no configured default at all.
 
@@ -25,10 +25,10 @@ import type { FakeStoreSeed } from './fake-catalog-store';
 
 export interface FakeLifecycleOptions {
   /**
-   * The `schegent.defaultPipelineId` this workspace holds, for the FR-059
+   * The resolved `schegent.defaultWorkflowId` this workspace holds, for the FR-059
    * deactivation advisory. Defaults to none configured.
    */
-  readonly defaultPipelineId?: () => string;
+  readonly defaultWorkflowId?: () => string;
 }
 
 /** The real six operations over `store`. Never `null` — the store exists. */
@@ -36,7 +36,7 @@ export function fakeCatalogLifecycle(
   store: FakeCatalogStore,
   options: FakeLifecycleOptions = {}
 ): CatalogLifecycleOps {
-  const ops = createHostCatalogLifecycle(store, options.defaultPipelineId ?? (() => ''));
+  const ops = createHostCatalogLifecycle(store, options.defaultWorkflowId ?? (() => ''));
   if (ops === null) throw new Error('unreachable: a store was supplied');
   return ops;
 }

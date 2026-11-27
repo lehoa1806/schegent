@@ -1,8 +1,28 @@
 import * as vscode from 'vscode';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
+import { describeFailure } from '../lib/errors';
 import type { GuardedRunService } from '../services/guarded-run-service';
-import type { PipelineDef, PipelineCatalog } from '../config/pipeline-config';
+import { ENQUEUE_STORAGE_FAULT_TOAST } from '../services/enqueue-failure';
+
+/**
+ * FR-R4-F05 (FR-014; contract F, F6; contract O, O5) — what the operator is told when
+ * scheduling fails for a reason the command has no code for. Fixed text: an exception's
+ * message can carry a path, so it goes to the log through `describeFailure` and never to
+ * the toast. The outcomes the launch service returns as codes keep their own handling.
+ */
+export const SCHEDULE_FAILED_TOAST =
+  'Schegent: the task could not be scheduled. See the Schegent log for details.';
+
+/**
+ * Feature 285 (OD-2, FR-009, D7) — what the command says when it is run with no `pipelineId`.
+ * Queue work is composed from Workflows in the Queue's Add work composer, so the command points
+ * there and reveals the Schegent view instead of opening a Pipeline picker. Fixed text.
+ */
+export const SCHEDULE_NEEDS_A_WORKFLOW_GUIDANCE =
+  'Schegent: add work from a Queue in the Schegent view. Select Add work, then choose a Workflow.';
+
+const SCHEGENT_VIEW_COMMAND = 'workbench.view.extension.schegent';
 
 export interface ScheduleCommandArgs {
   description?: string;
@@ -18,15 +38,26 @@ export interface ScheduleCommandArgs {
   scheduledStartAt?: number;
 }
 
-interface PipelinePickItem extends vscode.QuickPickItem {
-  readonly pipelineId: string;
-}
-
 export interface RunScheduleCtx {
   readonly guardedRunService: GuardedRunService;
-  readonly getCatalog: () => PipelineCatalog;
   readonly notifier: Notifier;
   readonly logger: SanitizedLogger;
+}
+
+/**
+ * The no-`pipelineId` answer (FR-009): the guidance first, then the view. The guidance is the
+ * answer and the reveal a convenience beside it, so a failed reveal is logged and leaves the
+ * guidance standing rather than reaching the "could not be scheduled" toast.
+ */
+async function pointAtTheComposer(ctx: RunScheduleCtx): Promise<void> {
+  ctx.notifier.info(SCHEDULE_NEEDS_A_WORKFLOW_GUIDANCE);
+  try {
+    await vscode.commands.executeCommand(SCHEGENT_VIEW_COMMAND);
+  } catch (err) {
+    ctx.logger.warn('schedule: the Schegent view could not be revealed', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
+  }
 }
 
 export async function runSchedule(
@@ -34,14 +65,13 @@ export async function runSchedule(
   ctx: RunScheduleCtx
 ): Promise<void> {
   try {
-    const catalog = ctx.getCatalog();
-    let pipelineId: string | undefined = args?.pipelineId;
+    const pipelineId = args?.pipelineId;
     if (!pipelineId) {
-      pipelineId = await pickPipelineId(catalog.pipelines, catalog.defaultPipelineId);
-      if (pipelineId === undefined) return;
+      await pointAtTheComposer(ctx);
+      return;
     }
 
-    let description = args?.description?.trim();
+    let description = args.description?.trim();
     if (!description) {
       const input = await vscode.window.showInputBox({
         prompt: 'Schegent: enqueue feature',
@@ -54,14 +84,14 @@ export async function runSchedule(
     // Feature 065 — schedule command is a programmatic scheduled enqueue.
     // Resolve the target instant from the caller arg; fall back to now
     // (the host coerces past timestamps to running, per FR-014a).
-    const scheduledStartAt = args?.scheduledStartAt ?? Date.now();
+    const scheduledStartAt = args.scheduledStartAt ?? Date.now();
     const result = await ctx.guardedRunService.scheduleOrEnqueue({
       description,
       scheduledAt: Date.now(),
       via: 'command-palette',
-      pipelineId: pipelineId ?? null,
-      queueId: args?.queueId ?? null,
-      position: args?.position ?? null,
+      pipelineId,
+      queueId: args.queueId ?? null,
+      position: args.position ?? null,
       startIntent: {
         startMode: 'scheduled',
         scheduledStartAt,
@@ -80,54 +110,23 @@ export async function runSchedule(
         ctx.notifier.info('Schegent: another window holds the workspace lock.');
         return;
       case 'rejected-validation':
+        if (result.reason?.startsWith('workflow-requires-graph-launch:')) {
+          ctx.notifier.warn(
+            `Schegent: rejected (${result.reason}). Launch composable Workflows from the Workflow Launch view.`
+          );
+          return;
+        }
         ctx.notifier.warn(`Schegent: rejected (${result.reason ?? 'validation-failed'}).`);
+        return;
+      // FR-R4-F05 (F8) — one fixed sentence; `reason` is a code and is not echoed.
+      case 'failed-storage':
+        ctx.notifier.error(ENQUEUE_STORAGE_FAULT_TOAST);
         return;
     }
   } catch (err) {
-    ctx.notifier.error(`Schegent: ${(err as Error).message}`);
-    ctx.logger.error((err as Error).message);
+    ctx.notifier.error(SCHEDULE_FAILED_TOAST);
+    ctx.logger.error('schedule: unexpected failure', {
+      error: describeFailure(err, (value) => ctx.logger.sanitize(value))
+    });
   }
-}
-
-async function pickPipelineId(
-  pipelines: readonly PipelineDef[],
-  defaultPipelineId: string
-): Promise<string | undefined> {
-  // Feature 098 (T049, FR-033a/FR-033b) — `defaultPipelineId` is the empty
-  // string when no default is set, which is now what a fresh install ships.
-  // With nothing to pick from, that empty id is still what travels onward: the
-  // launch path answers it with the FR-023 refusal that names it, whereas
-  // returning `undefined` here would abort the command silently.
-  if (pipelines.length === 0) {
-    return defaultPipelineId;
-  }
-  // One Pipeline and no default has exactly one thing the operator could have
-  // meant. Answering the unset default instead would send an id nothing
-  // resolves to the launch path while a resolvable one sat unused.
-  if (pipelines.length === 1) {
-    return defaultPipelineId === '' ? pipelines[0].id : defaultPipelineId;
-  }
-  // Feature 098 (T050, FR-035) — no row is badged. One id used to carry a
-  // `$(zap)` label, a `[BuiltIn]` detail and a place ahead of the sort,
-  // because one Pipeline came from the built-in layer. Every Pipeline is
-  // imported now, so that marking would tell an operator their own definition
-  // was "built in" on the strength of the id they chose.
-  const items: PipelinePickItem[] = pipelines.map((p) => ({
-    label: p.name,
-    description: p.id,
-    picked: p.id === defaultPipelineId,
-    pipelineId: p.id
-  }));
-  items.sort((a, b) => {
-    // The operator's default still sorts first: that is a choice they made.
-    if (a.pipelineId === defaultPipelineId) return -1;
-    if (b.pipelineId === defaultPipelineId) return 1;
-    return a.label.localeCompare(b.label);
-  });
-  const choice = await vscode.window.showQuickPick(items, {
-    title: 'Schegent: select pipeline',
-    placeHolder: defaultPipelineId === '' ? 'Select a pipeline' : `Default: ${defaultPipelineId}`,
-    ignoreFocusOut: false
-  });
-  return choice?.pipelineId;
 }

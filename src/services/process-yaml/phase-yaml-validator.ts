@@ -37,24 +37,35 @@
 // Errors are values. Nothing here throws.
 
 import {
+  modelValueDefect,
   PHASE_DESCRIPTION_MAX_LEN,
   PHASE_ID_PATTERN,
   PHASE_INSTRUCTION_MAX_LEN,
   PHASE_NAME_MAX_LEN,
   PHASE_SKILL_MAX_LEN,
+  PHASE_SPEND_TOKENS_MAX,
+  PHASE_SPEND_TOKENS_MIN,
+  PHASE_SPEND_USD_MAX,
+  PHASE_SPEND_USD_MIN,
   PHASE_TIMEOUT_MAX,
   PHASE_TIMEOUT_MIN
 } from '../../config/process-definition-validator';
 import {
   PHASE_EFFORT_LEVELS,
   PHASE_EVIDENCE_POLICIES,
+  PHASE_HOST_VERIFICATIONS,
   PHASE_RETRY_CONDITION_MAX_LEN,
   PHASE_SIDE_EFFECTS,
+  RETRY_CAP_OUTCOMES,
+  isNativeReviewKind,
   type PhaseDefinitionEffort,
   type PhaseEvidencePolicy,
-  type PhaseSideEffects
+  type PhaseHostVerification,
+  type PhaseSideEffects,
+  type RetryCapOutcome
 } from '../../contracts/process-definitions';
-import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../runner/backend-runner-factory';
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../../contracts/backend-kinds';
+import { isUnsupportedEffortForBackend } from '../../contracts/backend-descriptors';
 import {
   PHASE_YAML_API_VERSION,
   PHASE_YAML_KIND,
@@ -65,9 +76,24 @@ import {
   type PhaseYamlMetadata,
   type PhaseYamlSpec,
   type YamlMappingNode,
+  type YamlNode,
   type YamlScalarNode
 } from './types';
-import { DOCUMENT_KEY_ORDER, METADATA_KEY_ORDER, SPEC_KEY_ORDER } from './yaml-serializer';
+import {
+  CAPABILITY_SEPARATOR,
+  DOCUMENT_KEY_ORDER,
+  METADATA_KEY_ORDER,
+  SPEC_KEY_ORDER
+} from './yaml-serializer';
+import {
+  ALL_PHASE_CAPABILITIES,
+  isPhaseCapability,
+  type PhaseCapability
+} from '../../contracts/phase-capabilities';
+import {
+  validateResultContract,
+  type ResultContract
+} from '../../contracts/decision-results';
 
 /**
  * How long a defect's field path may be.
@@ -157,6 +183,27 @@ export function findScalar(node: YamlMappingNode, key: string): YamlScalarNode |
   return entry !== undefined && entry.value.kind === 'scalar' ? entry.value : undefined;
 }
 
+/**
+ * Whether a joined capability scalar names more members than the vocabulary holds (FR-005).
+ *
+ * Counts separators and stops at the first member over the bound, so a hostile list costs at most
+ * `ALL_PHASE_CAPABILITIES.length + 1` separator searches and no member lookup. The empty scalar is
+ * the empty set, not one empty member.
+ */
+function holdsMoreMembersThanVocabulary(joined: string): boolean {
+  if (joined.length === 0) return false;
+  let members = 1;
+  for (
+    let at = joined.indexOf(CAPABILITY_SEPARATOR);
+    at !== -1;
+    at = joined.indexOf(CAPABILITY_SEPARATOR, at + 1)
+  ) {
+    members += 1;
+    if (members > ALL_PHASE_CAPABILITIES.length) return true;
+  }
+  return false;
+}
+
 function hasKey(node: YamlMappingNode, key: string): boolean {
   return node.entries.some((candidate) => candidate.key === key);
 }
@@ -199,6 +246,44 @@ function readInteger(scalar: YamlScalarNode): number | null {
   if (scalar.quoted || !INTEGER_PATTERN.test(scalar.value)) return null;
   const parsed = Number(scalar.value);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
+ * FR-R3-112 — a bounded numeric field, read once for both spend denominations.
+ *
+ * Written once rather than twice for the reason the catalog validator's twin states: the only
+ * difference between the two fields is whether the figure is a whole number, and two copies of the
+ * same range check is how the USD field and the token field come to disagree about what "out of
+ * range" means. A quoted scalar is text by the author's own hand and never satisfies a numeric
+ * field, exactly as `readInteger` has it.
+ */
+function readBoundedNumber(
+  node: YamlMappingNode,
+  key: 'spendBoundUsd' | 'spendBoundTokens',
+  min: number,
+  max: number,
+  integral: boolean,
+  defects: ImportDefect[]
+): number | undefined {
+  const scalar = optionalScalar(node, key, defects);
+  if (scalar === undefined) return undefined;
+  const parsed = scalar.quoted ? Number.NaN : Number(scalar.value);
+  const valid =
+    Number.isFinite(parsed) &&
+    (!integral || Number.isSafeInteger(parsed)) &&
+    parsed >= min &&
+    parsed <= max;
+  if (!valid) {
+    defects.push(
+      defect(
+        key,
+        'invalid-range',
+        `Phase ${key} must be ${integral ? 'an integer' : 'a number'} from ${min} to ${max}`
+      )
+    );
+    return undefined;
+  }
+  return parsed;
 }
 
 function readBoolean(scalar: YamlScalarNode): boolean | null {
@@ -386,13 +471,86 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  // FR-R3-058 — same shape as `evidencePolicy` above.
+  let hostVerification: PhaseHostVerification | undefined;
+  const hostVerificationNode = optionalScalar(section, 'hostVerification', defects);
+  if (hostVerificationNode !== undefined) {
+    if (!(PHASE_HOST_VERIFICATIONS as readonly string[]).includes(hostVerificationNode.value)) {
+      defects.push(
+        defect(
+          'hostVerification',
+          'invalid-enum',
+          `Phase hostVerification must be one of ${PHASE_HOST_VERIFICATIONS.join(', ')}`
+        )
+      );
+    } else {
+      hostVerification = hostVerificationNode.value as PhaseHostVerification;
+    }
+  }
+
+  // FR-R3-086 — the declared capability set, decoded from the joined scalar the
+  // writer produces (`yaml-serializer.ts` `SPEC_KEY_ORDER`, where the reason for
+  // that encoding is recorded). Three distinct readings, and the distinction is
+  // the point: the key ABSENT is the unbounded default, `""` is the empty set --
+  // nothing granted -- and a joined list is that set.
+  //
+  // An unknown member is REFUSED rather than dropped, for the same reason the
+  // catalog validator refuses one: dropping yields a narrower set than the author
+  // wrote, and the phase is then refused at run time for a reason invisible in the
+  // document. A duplicate is refused too, so that every accepted document is the
+  // one the writer would have produced.
+  let capabilities: PhaseCapability[] | undefined;
+  const capabilitiesNode = optionalScalar(section, 'capabilities', defects);
+  if (capabilitiesNode !== undefined) {
+    const raw = capabilitiesNode.value;
+    // Feature 254 (FR-R4-F07, FR-005) — a list longer than the vocabulary always holds an unknown
+    // member or a repeat, so it is refused on its count, before any member is looked up. The
+    // lookup and the duplicate check below were quadratic in the list, and the list is operator
+    // input. Counting separators stops at the fifth member.
+    if (holdsMoreMembersThanVocabulary(raw)) {
+      defects.push(
+        defect(
+          'capabilities',
+          'too-many-members',
+          `Phase capabilities list at most ${ALL_PHASE_CAPABILITIES.length} members`
+        )
+      );
+    } else {
+      const members = raw.length === 0 ? [] : raw.split(CAPABILITY_SEPARATOR);
+      const unknown = members.filter((member) => !isPhaseCapability(member));
+      const duplicated = new Set(members).size < members.length;
+      if (unknown.length > 0) {
+        defects.push(
+          defect(
+            'capabilities',
+            'invalid-enum',
+            `Phase capabilities must each be one of ${ALL_PHASE_CAPABILITIES.join(', ')}`
+          )
+        );
+      } else if (duplicated) {
+        defects.push(
+          defect('capabilities', 'duplicate-member', 'Phase capabilities must not repeat a member')
+        );
+      } else {
+        capabilities = members as PhaseCapability[];
+      }
+    }
+  }
+
   let model: string | undefined;
   const modelNode = optionalScalar(section, 'model', defects);
   if (modelNode !== undefined) {
-    if (modelNode.value.trim().length === 0) {
+    const candidate = modelNode.value.trim();
+    // Feature 254 (FR-R4-F07, FR-034; H5) — the argv check is the definition validator's own, called
+    // rather than restated: a `model` this reader admitted and the catalog refused would preview clean
+    // and fail at the commit (FR-021), and a flag-shaped value reaches the child's command line.
+    const refusal = candidate.length === 0 ? null : modelValueDefect(candidate);
+    if (candidate.length === 0) {
       defects.push(defect('model', 'non-empty-required', 'Phase model must be non-empty'));
+    } else if (refusal === null) {
+      model = candidate;
     } else {
-      model = modelNode.value.trim();
+      defects.push(defect('model', refusal.code, refusal.message));
     }
   }
 
@@ -414,7 +572,7 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
 
   // The catalog's own cross-field rule. Checked here so preflight can say the
   // resource is invalid rather than letting the commit fail later (FR-021).
-  if (runner === 'agy' && (effort === 'xhigh' || effort === 'max')) {
+  if (effort !== undefined && isUnsupportedEffortForBackend(runner, effort)) {
     defects.push(defect('effort', 'runner-incompatible', 'Agy supports low, medium, or high effort'));
   }
 
@@ -435,6 +593,27 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  // FR-R3-112 — the same bounds the catalog validator applies, imported rather than restated: two
+  // copies of "what is a valid spend bound" is how the import path and the save path come to
+  // disagree, and the disagreement would present as a document accepted by one and refused by the
+  // other on the same field.
+  const spendBoundUsd = readBoundedNumber(
+    section,
+    'spendBoundUsd',
+    PHASE_SPEND_USD_MIN,
+    PHASE_SPEND_USD_MAX,
+    false,
+    defects
+  );
+  const spendBoundTokens = readBoundedNumber(
+    section,
+    'spendBoundTokens',
+    PHASE_SPEND_TOKENS_MIN,
+    PHASE_SPEND_TOKENS_MAX,
+    true,
+    defects
+  );
+
   const loopable = readOptionalBoolean(section, 'loopable', defects);
   const isRequired = readOptionalBoolean(section, 'isRequired', defects);
   const forceContinueOnRetryCap = readOptionalBoolean(
@@ -442,6 +621,32 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     'forceContinueOnRetryCap',
     defects
   );
+
+  // FR-R3-157 — the three-valued outcome, same shape as `sideEffects` above and
+  // closed to the same registry the catalog validator uses. Both routes must
+  // refuse the same set: a value this reader admitted and the catalog rejected
+  // would import clean and then fail when the Builder wrote it back.
+  //
+  // Read INDEPENDENTLY of `forceContinueOnRetryCap`, and no cross-field rule
+  // between them. A document carrying both, even contradicting each other, is
+  // valid (contract V2) — precedence is decided once, in
+  // `contracts/retry-cap-outcome.ts`, and a second opinion here is exactly the
+  // second resolution site FR-007 forbids.
+  let onRetryCap: RetryCapOutcome | undefined;
+  const onRetryCapNode = optionalScalar(section, 'onRetryCap', defects);
+  if (onRetryCapNode !== undefined) {
+    if (!(RETRY_CAP_OUTCOMES as readonly string[]).includes(onRetryCapNode.value)) {
+      defects.push(
+        defect(
+          'onRetryCap',
+          'invalid-enum',
+          `Phase onRetryCap must be one of ${RETRY_CAP_OUTCOMES.join(', ')}`
+        )
+      );
+    } else {
+      onRetryCap = onRetryCapNode.value as RetryCapOutcome;
+    }
+  }
 
   let retryCondition: string | undefined;
   const retryNode = optionalScalar(section, 'retryCondition', defects);
@@ -472,23 +677,71 @@ function validateSpec(section: YamlMappingNode, defects: ImportDefect[]): PhaseY
     }
   }
 
+  const nativeReview = optionalScalar(section, 'nativeReview', defects)?.value;
+  if (nativeReview !== undefined && !isNativeReviewKind(nativeReview)) {
+    defects.push(defect('nativeReview', 'invalid-enum', 'Phase nativeReview must be code or security'));
+  }
+
+  let resultContract: ResultContract | undefined;
+  const resultContractEntry = section.entries.find((candidate) => candidate.key === 'resultContract');
+  if (resultContractEntry !== undefined) {
+    const rawResultContract = plainYamlValue(resultContractEntry.value);
+    const rcValidated = validateResultContract(rawResultContract, 'resultContract');
+    if (!rcValidated.ok) {
+      for (const rcError of rcValidated.errors) {
+        defects.push(defect(rcError.field, rcError.code, rcError.message));
+      }
+    } else {
+      resultContract = rcValidated.value;
+    }
+  }
+
   if (defects.length !== before) return null;
 
   const common = {
     ...(runner !== undefined ? { runner } : {}),
     ...(sideEffects !== undefined ? { sideEffects } : {}),
     ...(evidencePolicy !== undefined ? { evidencePolicy } : {}),
+    ...(hostVerification !== undefined ? { hostVerification } : {}),
+    ...(capabilities !== undefined ? { capabilities } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+    ...(spendBoundUsd !== undefined ? { spendBoundUsd } : {}),
+    ...(spendBoundTokens !== undefined ? { spendBoundTokens } : {}),
     ...(loopable !== undefined ? { loopable } : {}),
     ...(isRequired !== undefined ? { isRequired } : {}),
     ...(forceContinueOnRetryCap !== undefined ? { forceContinueOnRetryCap } : {}),
-    ...(retryCondition !== undefined ? { retryCondition } : {})
+    ...(onRetryCap !== undefined ? { onRetryCap } : {}),
+    ...(retryCondition !== undefined ? { retryCondition } : {}),
+    ...(isNativeReviewKind(nativeReview) ? { nativeReview } : {}),
+    ...(resultContract !== undefined ? { resultContract } : {})
   };
   return hasInstruction
     ? { instruction: instruction as string, ...common }
     : { skill: skill as string, ...common };
+}
+
+function plainYamlValue(node: YamlNode): unknown {
+  if (node.kind === 'scalar') {
+    if (node.quoted) return node.value;
+    if (/^[+-]?\d+$/.test(node.value)) {
+      const parsed = Number(node.value);
+      if (Number.isSafeInteger(parsed)) return parsed;
+    }
+    const numeric = Number(node.value);
+    if (Number.isFinite(numeric) && String(numeric) === node.value) return numeric;
+    if (node.value === 'true') return true;
+    if (node.value === 'false') return false;
+    return node.value;
+  }
+  if (node.kind === 'sequence') return node.items.map(plainYamlValue);
+  const mapping = Object.create(null) as Record<string, unknown>;
+  for (const entry of node.entries) {
+    if (Object.prototype.hasOwnProperty.call(mapping, entry.key)) continue;
+    mapping[entry.key] = plainYamlValue(entry.value);
+  }
+  return mapping;
 }
 
 function readOptionalBoolean(

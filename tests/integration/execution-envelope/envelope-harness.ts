@@ -48,7 +48,7 @@ import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -144,9 +144,12 @@ export const REQUEST: RunRequest = {
   instructions: INSTRUCTIONS
 };
 
+// FR-R3-199 — the token trails the audit block: since feature 107 the parser
+// reads it nowhere else. Printed before the block, it left every phase this
+// fixture ran `issues_remain`, which went unseen while a last phase in that
+// state still completed the Run.
 const cleanStdout = (phase: string): string =>
   [
-    '[SCHEGENT_STATUS: CLEAR]',
     '=== SCHEGENT AUDIT LOG ===',
     `phase: ${phase}`,
     'files_created: []',
@@ -156,7 +159,8 @@ const cleanStdout = (phase: string): string =>
     'network_calls: ["none"]',
     'ruleset_switches: ["none"]',
     'notes: ok',
-    '=== END AUDIT LOG ==='
+    '=== END AUDIT LOG ===',
+    '[SCHEGENT_STATUS: CLEAR]'
   ].join('\n');
 
 function output(phase: string): RawInvocationOutput {
@@ -287,7 +291,7 @@ export async function driveEnvelopeRun(
   const liveCatalog = catalog();
 
   const controller = new SchegentWorkflowController(
-    new PhaseRunner(runner, new PromptBuilder(), audit, logger),
+    new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger }),
     store,
     queue,
     { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar,

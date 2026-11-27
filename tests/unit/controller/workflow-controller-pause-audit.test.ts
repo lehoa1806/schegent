@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore } from '../../../src/state/workspace-state';
 import type { Memento } from '../../../src/state/workspace-state';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkflowControllerDeps } from '../../../src/controller/workflow-controller';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -34,7 +35,6 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       historyStore: undefined,
       catalog: undefined,
       auditWriter: { append: auditAppendSpy } as any,
-      watchdog: undefined,
       sessionCleanup: undefined,
       getRetryCap: undefined
     };
@@ -75,7 +75,9 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     const result = await controller.pauseActivePhase();
     expect(result.ok).toBe(true);
@@ -118,7 +120,9 @@ describe('WorkflowController Audit Emissions (Feature 072)', () => {
       phaseBreakpoints: [],
       phaseOverrides: [],
       resumeTargetPhaseId: null
-    } as any);
+    } as any,
+      unfencedCommit('test-fixture')
+    );
 
     await expect(controller.pauseActivePhase()).resolves.toMatchObject({ ok: true });
     

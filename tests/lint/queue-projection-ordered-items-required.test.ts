@@ -23,10 +23,10 @@ import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
-const HOST_SNAPSHOT = resolve(REPO_ROOT, 'src/ui/sidebar/snapshot.ts');
+const HOST_SNAPSHOT = resolve(REPO_ROOT, 'src/contracts/generated/snapshot-types.ts');
 const WEBVIEW_SNAPSHOT_TYPES = resolve(
   REPO_ROOT,
-  'webview-ui/src/lib/snapshot-types.ts'
+  'webview-ui/src/lib/generated/snapshot-mirror.ts'
 );
 
 describe('Feature 065 BUG-009 T077 — QueueProjection.orderedItems contract', () => {

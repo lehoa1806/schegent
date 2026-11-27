@@ -9,7 +9,14 @@
   // It takes the whole snapshot rather than two hand-picked fields because it
   // needs three and User Story 2 adds more, and because `builder`, `settings`
   // and `runs` already take the snapshot for the same reason.
+  //
+  // Since the redesign the surface is a page and a drawer beside it (design
+  // rule 7): the list stays in view while a run's detail, or the form that
+  // runs it again, is open. Opening the drawer moves focus to its heading and
+  // names the run on the status line; closing it, by its own button or by
+  // Escape, hands focus back to the run it was opened from (rule 10).
 
+  import { tick } from 'svelte';
   import type { WorkflowSnapshot } from '../lib/snapshot-types';
   import {
     applyRenderBound,
@@ -26,6 +33,7 @@
     type HistoryLocation
   } from '../lib/history-filters';
   import { resolveRerunTarget } from '../lib/history-rerun';
+  import { statusLine } from '../lib/status-line.svelte';
   import HistoryFilterBar from './HistoryFilterBar.svelte';
   import HistorySection from './HistorySection.svelte';
   import HistoryRunDetail from './HistoryRunDetail.svelte';
@@ -87,21 +95,82 @@
   // than the filtered one. A detail that vanished because the operator's own
   // filters exclude the run they just opened would be the surface arguing with
   // itself. `null` when the row is gone — retention can remove it while the
-  // detail is open — and the list is what shows instead.
+  // detail is open — and the drawer closes instead.
   const selectedRow = $derived(
     location.selectedRunId === null
       ? null
       : (allRows.find((row) => row.runId === location.selectedRunId) ?? null)
   );
 
+  // The drawer's two views share one heading id, so the drawer is labelled by
+  // whichever of them it shows and focus has one place to land.
+  const DRAWER_HEADING_ID = 'history-drawer-heading';
+  let root = $state<HTMLElement | null>(null);
+  let drawer = $state<HTMLElement | null>(null);
+  // What opened the drawer, for focus to go back to. Plain rather than state:
+  // nothing renders from it.
+  let opener: HTMLElement | null = null;
+
+  function rememberOpener(): void {
+    const active = document.activeElement;
+    // A control inside the drawer (the detail's Run again…) only changes what
+    // the drawer shows, so whatever opened the drawer is still the way back.
+    if (drawer?.contains(active) === true) return;
+    opener = active instanceof HTMLElement && active !== document.body ? active : null;
+  }
+
+  async function focusDrawerHeading(): Promise<void> {
+    await tick();
+    drawer?.querySelector<HTMLElement>(`#${DRAWER_HEADING_ID}`)?.focus();
+  }
+
+  // Focus comes back only when the drawer had it. Escape pressed in the list
+  // closes the drawer too, and leaves focus where the operator put it.
+  function focusLeftBehind(): boolean {
+    const active = document.activeElement;
+    return document.hasFocus() && (active === document.body || drawer?.contains(active) === true);
+  }
+
+  // Back to the opener while it is still there and reachable. Otherwise to the
+  // run's name in the list: the opener may have been an item in the row's menu,
+  // which has closed since. Otherwise, when the filters leave the run out of
+  // the list, to the page's heading rather than nowhere.
+  async function returnFocus(runId: string): Promise<void> {
+    const from = opener;
+    opener = null;
+    await tick();
+    if (from?.isConnected === true && from.closest('[hidden]') === null) {
+      from.focus();
+      return;
+    }
+    const rowElement = Array.from(
+      root?.querySelectorAll<HTMLElement>('[data-history-row]') ?? []
+    ).find((element) => element.dataset.historyRow === runId);
+    const target =
+      rowElement?.querySelector<HTMLElement>('.rowname') ?? root?.querySelector<HTMLElement>('h1');
+    target?.focus();
+  }
+
   function openDetail(runId: string): void {
+    rememberOpener();
+    // A run opened from the list replaces whatever the drawer shows, a rerun
+    // form included. The list stays in view beside the drawer now, and a form
+    // kept in front of the run just asked for would answer the click with
+    // nothing.
+    rerunRunId = null;
     location = { ...location, selectedRunId: runId };
+    const row = allRows.find((candidate) => candidate.runId === runId);
+    if (row) statusLine.announce(`Showing details for ${row.descriptionPreview || row.runId}.`);
+    void focusDrawerHeading();
   }
 
   // The filters are untouched on the way back, which is the whole reason the
   // selection lives in `HistoryLocation` beside them (SC-005).
   function closeDetail(): void {
+    const runId = location.selectedRunId;
+    const restore = focusLeftBehind();
     location = { ...location, selectedRunId: null };
+    if (restore && runId !== null) void returnFocus(runId);
   }
 
   // FR-033 (T065) — which run the trigger form is open for, held apart from
@@ -131,71 +200,86 @@
   // definition the form composes against. Both come from the same snapshot but
   // are separate fields, so the panel takes `undefined` as a state rather than
   // as an error — see its `pipeline` prop.
-  const rerunPipeline = $derived(
-    rerunTarget === null || rerunTarget.state !== 'ready'
-      ? undefined
-      : (snapshot.availablePipelines ?? []).find((p) => p.id === rerunTarget.launchable.id)
-  );
+  const rerunPipeline = $derived.by(() => {
+    if (rerunTarget === null || rerunTarget.state !== 'ready') return undefined;
+    const targetId = rerunTarget.launchable.id;
+    const fromPipelines = (snapshot.availablePipelines ?? []).find((p) => p.id === targetId);
+    if (fromPipelines) return fromPipelines;
+    const wf = (snapshot.workflowCatalog?.effective ?? []).find((w) => w.workflowId === targetId);
+    if (!wf) return undefined;
+    return {
+      id: wf.workflowId,
+      name: wf.name,
+      description: wf.description,
+      phases: wf.nodes.flatMap((n) => (n.phaseId ? [n.phaseId] : [])),
+      inputs: wf.inputs,
+      outputs: wf.outputs
+    };
+  });
+
+  const showsRerun = $derived(rerunRow !== null && rerunTarget !== null);
+  const drawerOpen = $derived(showsRerun || selectedRow !== null);
 
   function openRerun(runId: string): void {
+    rememberOpener();
     rerunRunId = runId;
+    void focusDrawerHeading();
   }
 
+  // The detail the form was opened from is still underneath, so focus goes to
+  // its heading; with no detail open the drawer closes and focus goes back to
+  // the run.
   function closeRerun(): void {
+    const runId = rerunRunId;
+    const restore = focusLeftBehind();
     rerunRunId = null;
+    if (!restore || runId === null) return;
+    if (selectedRow === null) void returnFocus(runId);
+    else void focusDrawerHeading();
+  }
+
+  // Escape closes the drawer, the rerun form first because it sits in front of
+  // the detail, unless something nearer already answered it (an open menu, a
+  // confirmation dialog) or it was pressed outside this page.
+  function closeDrawerOnEscape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !drawerOpen) return;
+    const target = event.target;
+    const onPage = target === document.body || (target instanceof Node && root?.contains(target) === true);
+    if (!onPage) return;
+    if (showsRerun) closeRerun();
+    else closeDetail();
   }
 </script>
 
-<main class="history-dashboard" data-testid="history-dashboard">
-  <header class="history-header">
-    <div>
-      <h1>Run History</h1>
-      <p>Every queue's runs in one place — the ones still going and the ones already finished.</p>
-    </div>
-    <span
-      class="history-count"
-      data-testid="history-render-count"
-      aria-label={`Showing ${bounded.shown} of ${bounded.matched} matching runs`}
-    >
-      {bounded.shown} of {bounded.matched} {bounded.matched === 1 ? 'run' : 'runs'}
-    </span>
-  </header>
+<svelte:document onkeydown={closeDrawerOnEscape} />
 
-  {#if rerunRow && rerunTarget}
-    <!-- FR-033 — ahead of the detail, because it was opened from it. Closing
-         the panel does not clear `location`, so the detail is still underneath
-         and comes back. -->
-    <section class="history-ledger" aria-label="Repeat a run">
-      <HistoryRerunPanel
-        row={rerunRow}
-        target={rerunTarget}
-        pipeline={rerunPipeline}
-        onClose={closeRerun}
-      />
-    </section>
-  {:else if selectedRow}
-    <!-- FR-024 — the detail replaces the list rather than sitting beside it.
-         The surface is one column wide in the sidebar, and a run understood in
-         full is the whole answer to the question the operator just asked. -->
-    <section class="history-ledger" aria-label="Run detail">
-      <HistoryRunDetail
-        row={selectedRow}
-        {catalogNames}
-        onBack={closeDetail}
-        onRerun={isPrimary ? () => openRerun(selectedRow.runId) : undefined}
-      />
-    </section>
-  {:else}
-  <section class="history-ledger" aria-label="History filters and results">
-    <div class="history-filters">
-      <label class="search-field">
-        <span class="visually-hidden">Search run history</span>
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <circle cx="11" cy="11" r="7"></circle>
-          <path d="m20 20-3.5-3.5"></path>
-        </svg>
-        <input bind:value={query} type="search" placeholder="Search by run ID, queue, or description" />
-      </label>
+<main
+  class="history-dashboard"
+  class:page-split={drawerOpen}
+  data-testid="history-dashboard"
+  bind:this={root}
+>
+  <div class="page">
+    <div class="phead">
+      <div>
+        <!-- Focusable from script only: the way back when a closed drawer's run
+             is not in the list. -->
+        <h1 tabindex="-1">History</h1>
+        <div class="purpose">Every run, finished or not. Select a run to see what happened.</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search">
+        <svg class="i" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input
+          class="input"
+          type="search"
+          placeholder="Search by run ID, queue, or description"
+          aria-label="Search run history"
+          bind:value={query}
+        />
+      </div>
       <!-- FR-016 — the six filters, in the one component that owns them. The
            search box above is not one of them: it is a free-text sweep over what
            is already listed, and it composes with the six the same way. -->
@@ -219,7 +303,7 @@
            operator with a filter applied that their workspace has no runs sends
            them looking for a data-loss bug. The way out is offered here as well
            as on the bar, because this is where an operator lands on it. -->
-      <div class="filtered-empty" data-testid="history-filtered-empty" role="status">
+      <div class="empty" data-testid="history-filtered-empty" role="status">
         <strong>No matching runs</strong>
         <span>
           {narrowed
@@ -227,7 +311,12 @@
             : 'Adjust the search or the filters.'}
         </span>
         {#if narrowed}
-          <button type="button" data-testid="history-filtered-empty-clear" onclick={clearFilters}>
+          <button
+            type="button"
+            class="btn btn-secondary"
+            data-testid="history-filtered-empty-clear"
+            onclick={clearFilters}
+          >
             Clear filters
           </button>
         {/if}
@@ -237,133 +326,103 @@
         rows={bounded.rows}
         {isPrimary}
         {catalogNames}
+        selectedTaskId={location.selectedRunId}
         variant="ledger"
         onOpenDetail={openDetail}
         onRerunRow={openRerun}
       />
     {/if}
-  </section>
+
+    <!-- FR-052 — under the list, where the design keeps its count. The words are
+         exactly the count: the render-cost check reads them back. -->
+    <p class="countline" data-testid="history-render-count">
+      {bounded.shown} of {bounded.matched} {bounded.matched === 1 ? 'run' : 'runs'}
+    </p>
+  </div>
+
+  {#if drawerOpen}
+    <aside
+      class="drawer"
+      aria-labelledby={DRAWER_HEADING_ID}
+      data-testid="history-drawer"
+      bind:this={drawer}
+    >
+      {#if rerunRow && rerunTarget}
+        <!-- FR-033 — ahead of the detail, because it was opened from it. Closing
+             the panel does not clear `location`, so the detail is still underneath
+             and comes back. -->
+        <HistoryRerunPanel
+          row={rerunRow}
+          target={rerunTarget}
+          pipeline={rerunPipeline}
+          onClose={closeRerun}
+          headingId={DRAWER_HEADING_ID}
+        />
+      {:else if selectedRow}
+        <!-- FR-024 — the detail opens beside the list rather than in its place
+             (design rule 7), and takes the whole width in a narrow window, where
+             there is no room for both. -->
+        <!-- FR-R3-127 (FR-004) — the retention consequence belongs on the Run, not
+             only on a settings page. Threaded from here because the panel is two
+             levels down and the facts live on the snapshot. -->
+        <HistoryRunDetail
+          row={selectedRow}
+          {catalogNames}
+          {isPrimary}
+          rawTranscriptMode={snapshot.generalSettings?.rawTranscriptMode ?? 'errors-only'}
+          retentionMaxAgeDays={snapshot.generalSettings?.sessionRetentionMaxAgeDays ?? 30}
+          onBack={closeDetail}
+          onRerun={isPrimary ? () => openRerun(selectedRow.runId) : undefined}
+          headingId={DRAWER_HEADING_ID}
+        />
+      {/if}
+    </aside>
   {/if}
 </main>
 
 <style>
+  /* The page and the drawer side by side. The page scrolls on its own, so the
+     drawer stays put while the list moves under the operator's hand. */
   .history-dashboard {
     display: flex;
     flex: 1;
     min-height: 0;
-    flex-direction: column;
-    gap: var(--schegent-space-3);
-    overflow-y: auto;
-    padding: var(--schegent-space-4) var(--schegent-space-5) var(--schegent-space-5);
   }
-  .history-header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 20px;
+  /* The query container for the filter bar's narrow layout, in HistoryFilterBar.svelte. */
+  .toolbar {
+    container: history-toolbar / inline-size;
   }
-  .history-header h1 {
-    margin: 0;
-    font-size: var(--schegent-text-heading);
-    font-weight: 650;
-    letter-spacing: -0.025em;
+  /* Wide enough for the whole placeholder, which the redesign's 260px cuts short. 19em of
+     text room, plus 40px for the icon's inset and the end padding, holds it at the 13px and
+     14px editor fonts. The sheet's `max-width: 100%` still caps it. The page's class leads
+     so the rule outranks the sheet's `.sg .toolbar .search` whatever order the two load in. */
+  .history-dashboard .toolbar .search {
+    width: calc(19em + 40px);
   }
-  .history-header p {
-    max-width: 65ch;
-    margin: 5px 0 0;
+  /* FR-052 — above the rows it qualifies, in the count line's voice. */
+  .truncation-note {
+    margin: 0 0 var(--schegent-space-2);
     color: var(--schegent-muted-fg);
     font-size: var(--schegent-text-secondary);
     line-height: 1.45;
     text-wrap: pretty;
   }
-  .history-count {
-    flex: 0 0 auto;
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-caption);
-    font-variant-numeric: tabular-nums;
-  }
-  .history-ledger {
-    min-width: 0;
-    overflow: hidden;
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-surface);
-  }
-  .history-filters {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: var(--schegent-space-3);
-    border-bottom: 1px solid var(--schegent-divider);
-  }
-  .search-field {
-    position: relative;
-    display: flex;
-    width: min(460px, 100%);
-    align-items: center;
-    color: var(--schegent-muted-fg);
-  }
-  .search-field svg {
-    position: absolute;
-    left: 10px;
-    pointer-events: none;
-  }
-  .search-field input {
-    width: 100%;
-    min-height: var(--schegent-control-height);
-    padding: 6px 10px 6px 34px;
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius-sm);
-    background: var(--schegent-input-bg);
-  }
-  .filtered-empty {
-    display: flex;
-    min-height: 190px;
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    gap: 5px;
-    color: var(--schegent-muted-fg);
-  }
-  .filtered-empty strong {
-    color: var(--schegent-fg);
-  }
-  .filtered-empty button {
-    margin-top: 6px;
-    min-height: var(--schegent-control-height);
-    padding: 5px 12px;
-    border: 1px solid var(--schegent-input-border);
-    border-radius: var(--schegent-radius-sm);
-    background: transparent;
-    color: var(--schegent-fg);
-    cursor: pointer;
-  }
-  .truncation-note {
-    margin: 0;
-    padding: 8px var(--schegent-space-3);
-    border-bottom: 1px solid var(--schegent-divider);
-    color: var(--schegent-muted-fg);
-    font-size: var(--schegent-text-caption);
-    line-height: 1.45;
-  }
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    clip-path: inset(50%);
-    white-space: nowrap;
+  .empty span {
+    display: block;
+    max-width: 38ch;
+    margin-inline: auto;
   }
 
-  @media (max-width: 720px) {
-    .history-dashboard {
-      padding: 16px;
+  /* Design rule 7 — a narrow window has no room for both, so the drawer takes
+     the whole width until it closes. */
+  @media (max-width: 860px) {
+    .page-split > .page {
+      display: none;
     }
-    .history-header,
-    .history-filters {
-      align-items: stretch;
-      flex-direction: column;
+    .page-split > .drawer {
+      flex: 1;
+      width: auto;
+      border-left: 0;
     }
   }
 </style>

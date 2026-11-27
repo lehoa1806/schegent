@@ -1,0 +1,18 @@
+{
+  "declares": {
+    "description": "npm that cannot be started is failed, tool-unavailable",
+    "outcome": {
+      "status": "failed",
+      "reason": "tool-unavailable"
+    }
+  },
+  "registry": "https://registry.example.test/",
+  "npmVersion": "11.17.0",
+  "audit": {
+    "stdout": "",
+    "exitCode": null,
+    "timedOut": false,
+    "spawnError": true,
+    "overflow": false
+  }
+}

@@ -10,8 +10,9 @@
 //     Pipelines tab is gated by Workspace Trust alone now.
 //   - Render with `resolvedTrust.retryConditions: false` → row-level
 //     retry-condition inputs are read-only (FR-010c).
-//   - Toggle `resolvedTrust.phases` false → true → Save button re-enables,
-//     banner hides (re-render without reload).
+//   - Toggle `resolvedTrust.phases` false → true → the open Phase's Save
+//     button re-enables with the edit still pending, banner hides (re-render
+//     without reload).
 //   - Workspace-trust ceiling (`workspaceTrust: false`) suppresses per-
 //     capability banners in favor of a single workspace-trust banner
 //     (FR-010e).
@@ -22,7 +23,7 @@
 // `WorkflowSnapshot` envelope as `workspaceTrust` and `resolvedTrust.*`.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import PipelineBuilder from '../PipelineBuilder.svelte';
 import type {
   WorkflowSnapshot,
@@ -51,11 +52,32 @@ vi.mock('../../lib/catalog-lifecycle', async (importOriginal) => ({
 
 afterEach(() => cleanup());
 
+/**
+ * Opens the one Phase of `buildSnapshot` from the Phases list.
+ *
+ * The redesign gives the open Phase an editor page of its own in place of the
+ * list, and that page is where Save always stands: the list offers Save only
+ * while an edit is pending, which no denied capability can start. Opening a
+ * Phase is reading, not editing, so the list allows it under every denial.
+ */
+async function openSpecifyPhase(container: HTMLElement): Promise<void> {
+  await fireEvent.click(
+    container.querySelector('[data-testid="phases-list-item-speckit-specify"]') as HTMLButtonElement
+  );
+}
+
 interface TrustOpts {
   isPrimary?: boolean;
   workspaceTrust?: boolean;
   phases?: boolean;
   retryConditions?: boolean;
+  /**
+   * FR-R3-143 (T040) — which ladder step decided, when the fixture wants to pin
+   * it. Left out by every case above this feature, which is the point: the
+   * field is optional on the projection, and a banner that named a layer on its
+   * absence would be guessing.
+   */
+  scope?: 'user' | 'workspace' | 'workspace-trust';
 }
 
 function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
@@ -106,7 +128,10 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
     producedAt: '2026-05-19T00:00:00.000Z',
     availablePipelines: pipelines,
     availablePhases: phases,
-    availableModels: Object.freeze(['claude-sonnet-4-6']),
+    availableModels: Object.freeze(['claude-sonnet-5-5']),
+    // Required by the snapshot type; the Phase's backend select reads it, which
+    // these cases reach now that Save is read on the open Phase's editor page.
+    availableBackends: Object.freeze(['claude']),
     phaseCatalog: {
       state: 'ready',
       records: [{
@@ -146,64 +171,150 @@ function buildSnapshot(opts: TrustOpts = {}): WorkflowSnapshot {
       revision: 'pipeline-revision',
       warnings: []
     },
+    workflowCatalog: {
+      state: 'ready',
+      records: [],
+      effective: [],
+      revision: 'workflow-revision',
+      warnings: []
+    },
     generalSettings: IDLE_GENERAL_SETTINGS,
     workspaceTrust: opts.workspaceTrust ?? true,
     resolvedTrust: {
       phases: opts.phases ?? true,
       retryConditions: opts.retryConditions ?? true
-    }
+    },
+    ...(opts.scope === undefined
+      ? {}
+      : { resolvedScope: { phases: opts.scope, retryConditions: opts.scope } })
   }) as unknown as unknown as WorkflowSnapshot;
 }
 
 describe('PipelineBuilder trust gating (059, T022) — phases disabled', () => {
-  it('disables the Save Phases button and renders the policy banner when resolvedTrust.phases is false', () => {
+  it('disables the Save Phases button and renders the policy banner when resolvedTrust.phases is false', async () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ phases: false }), initialTab: 'phases' }
     });
+    const banner = container.querySelector('[data-testid="trust-banner-phases"]');
+    expect(banner).not.toBeNull();
+    // The redesign's list draws no Save until an edit is pending, so Save is read
+    // on the open Phase's editor page, which always draws it.
+    await openSpecifyPhase(container);
     const saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement | null;
     expect(saveBtn).not.toBeNull();
     expect(saveBtn?.hasAttribute('disabled')).toBe(true);
-    const banner = container.querySelector('[data-testid="trust-banner-phases"]');
-    expect(banner).not.toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).not.toBeNull();
   });
 
-  it('disables every Phase editing control in a secondary window', () => {
+  // FR-R3-143 (T040) — the banner names the layer that decided.
+  //
+  // Both per-capability bodies used to read "disabled by workspace policy"
+  // unconditionally. That sentence is false whenever the deciding step is the
+  // operator's own user setting — the ladder treats a user-layer `false` as a
+  // first-class deny — and it is false at the Workspace Trust ceiling too. An
+  // operator sent to `.vscode/settings.json` for a setting that is not there
+  // concludes the product is broken, which is a worse outcome than the denial.
+  //
+  // Pinned per step rather than once, because "names A layer" is satisfiable by
+  // a banner that names the same wrong layer every time — which is exactly the
+  // defect being corrected.
+  it.each([
+    ['user', /your user settings/i, /this workspace's settings/i],
+    ['workspace', /this workspace's settings/i, /your user settings/i]
+  ] as const)(
+    'names %s as the deciding layer on the phases banner',
+    (scope, expected, forbidden) => {
+      const { container } = render(PipelineBuilder, {
+        props: { snapshot: buildSnapshot({ phases: false, scope }), initialTab: 'phases' }
+      });
+      const cause = container.querySelector('[data-testid="trust-banner-phases-decided-by"]');
+      expect(cause, 'a denied capability must say which layer denied it').not.toBeNull();
+      const text = (cause?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      expect(text).toMatch(expected);
+      expect(text, 'and must not name the layer that did not decide').not.toMatch(forbidden);
+    }
+  );
+
+  it('names the deciding layer on the retry-conditions banner too', () => {
+    // The second banner carried the identical wrong sentence. Correcting one and
+    // leaving the other would ship a tab where two rows disagree about the same
+    // ladder.
+    const { container } = render(PipelineBuilder, {
+      props: {
+        snapshot: buildSnapshot({ retryConditions: false, scope: 'user' }),
+        initialTab: 'phases'
+      }
+    });
+    const cause = container.querySelector(
+      '[data-testid="trust-banner-retry-conditions-decided-by"]'
+    );
+    expect(cause?.textContent ?? '').toMatch(/your user settings/i);
+  });
+
+  it('says the default retry conditions of each Phase stay editable', () => {
+    // A sentence in the Builder gives the Phase kind its capital. The other
+    // banner's title keeps its lower case, since it quotes the setting it names
+    // ("Custom phase prompts").
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot({ retryConditions: false }), initialTab: 'phases' }
+    });
+    const banner = container.querySelector('[data-testid="trust-banner-retry-conditions"]');
+    expect((banner?.textContent ?? '').replace(/\s+/g, ' ')).toContain(
+      'Default retry-conditions for each Phase remain editable.'
+    );
+  });
+
+  it('names no layer at all when the host does not project one', () => {
+    // Legacy tolerance: an older host bundle omits `resolvedScope`. The banner
+    // still says the capability is disabled — that much it knows — and stops
+    // there. Guessing is what T040 removed, so falling back to a guess would
+    // reintroduce it under a different name.
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot({ phases: false }), initialTab: 'phases' }
+    });
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-phases-decided-by"]')).toBeNull();
+    const banner = container.querySelector('[data-testid="trust-banner-phases"]');
+    expect(
+      banner?.textContent ?? '',
+      'the sentence this task deleted must not come back through the fallback'
+    ).not.toMatch(/workspace policy/i);
+  });
+
+  it('disables every Phase editing control in a secondary window', async () => {
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ isPrimary: false }), initialTab: 'phases' }
     });
     const add = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement;
-    const save = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
     expect(add.disabled).toBe(true);
+    // The redesign splits the tab into the list, which holds "New phase", and the
+    // open Phase's editor page, which holds Save and the fields, so the rest is
+    // read on that page.
+    await openSpecifyPhase(container);
+    const save = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement;
+    const name = container.querySelector('[data-testid="phases-name-field-speckit-specify"]') as HTMLInputElement;
     expect(save.disabled).toBe(true);
+    expect(name.readOnly).toBe(true);
   });
 });
 
-describe('PipelineBuilder trust gating (059, T022) — pipelines under Workspace Trust', () => {
-  // Feature 099 (T496f, FR-046) — one case stood here, seeding
-  // `resolvedTrust.pipelineOverrides: false` and pinning Save Pipelines disabled
-  // beside its own banner. The capability and the banner variant are both
-  // deleted: an *override* is a statement about one layer redefining another's
-  // row, and there is one catalog. What gates the tab now is Workspace Trust,
-  // which the pair below pins in both directions — a control dead either way
-  // would satisfy one of them on its own, and neither alone is the claim.
-  it('opens the Pipelines tab for editing under workspace trust, with no per-capability banner', () => {
-    const { container } = render(PipelineBuilder, { props: { snapshot: buildSnapshot() } });
-    const add = container.querySelector('[data-testid="pipelines-add"]') as HTMLButtonElement | null;
+describe('PipelineBuilder trust gating (059, T022) — workflows under Workspace Trust', () => {
+  it('opens the Workflows tab for editing under workspace trust, with no per-capability banner', () => {
+    const { container } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot(), initialTab: 'workflows' }
+    });
+    const add = container.querySelector('[data-testid="workflows-add"]') as HTMLButtonElement | null;
     expect(add).not.toBeNull();
     expect(add?.disabled).toBe(false);
-    expect(container.querySelector('[data-testid="trust-banner-pipelines"]')).toBeNull();
+    expect(container.querySelector('[data-testid="trust-banner-workflows"]')).toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).toBeNull();
   });
 
   it('withholds the editor entirely in an untrusted workspace, and says why (FR-052)', () => {
-    // Not a disabled control: an untrusted workspace activates no catalog at all
-    // (T493c), so rendering the editor would present an empty Library — which
-    // reads as "nothing is defined here" when the truth is "this workspace is not
-    // trusted". The banner and the gated line are the report.
     const { container } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ workspaceTrust: false }) }
     });
-    expect(container.querySelector('[data-testid="pipelines-add"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflows-add"]')).toBeNull();
     expect(container.querySelector('[data-testid="builder-trust-gated"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).not.toBeNull();
   });
@@ -236,14 +347,47 @@ describe('PipelineBuilder trust gating (059, T022) — re-render on toggle', () 
     const { container, rerender } = render(PipelineBuilder, {
       props: { snapshot: buildSnapshot({ phases: false }), initialTab: 'phases' }
     });
-    let saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement | null;
-    expect(saveBtn?.hasAttribute('disabled')).toBe(true);
+    // The redesign's list offers Save only while an edit is pending, so "New
+    // phase" is the list's mutation control the denial closes and the flip opens.
+    let addBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement | null;
+    expect(addBtn?.hasAttribute('disabled')).toBe(true);
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).not.toBeNull();
     await rerender({ snapshot: buildSnapshot({ phases: true }), initialTab: 'phases' });
-    saveBtn = container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement | null;
-    const addBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement | null;
+    addBtn = container.querySelector('[data-testid="phases-add"]') as HTMLButtonElement | null;
     expect(addBtn?.hasAttribute('disabled')).toBe(false);
-    expect(saveBtn?.hasAttribute('disabled')).toBe(true);
+    // Save stayed disabled here before the redesign, as nothing was pending; the
+    // list now leaves out what it would have drawn disabled.
+    expect(container.querySelector('[data-testid="phases-save-all"]')).toBeNull();
     expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
+  });
+
+  it('re-enables the open Phase Save, its edit still pending, when resolvedTrust.phases flips back to true', async () => {
+    // Save on the open Phase's page is closed by three things: the denial, a save
+    // in flight, and nothing to save. An edit is made first so that only the
+    // denial is left to close it, and the flip is what has to open it again.
+    const { container, rerender } = render(PipelineBuilder, {
+      props: { snapshot: buildSnapshot(), initialTab: 'phases' }
+    });
+    await openSpecifyPhase(container);
+    const name = container.querySelector(
+      '[data-testid="phases-name-field-speckit-specify"]'
+    ) as HTMLInputElement;
+    await fireEvent.input(name, { target: { value: 'Specify the feature' } });
+    const save = () =>
+      container.querySelector('[data-testid="phases-save-all"]') as HTMLButtonElement | null;
+    expect(save()?.disabled).toBe(false);
+
+    await rerender({ snapshot: buildSnapshot({ phases: false }), initialTab: 'phases' });
+    expect(save()?.disabled).toBe(true);
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).not.toBeNull();
+
+    await rerender({ snapshot: buildSnapshot({ phases: true }), initialTab: 'phases' });
+    expect(save()?.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="trust-banner-phases"]')).toBeNull();
+    const nameAfter = container.querySelector(
+      '[data-testid="phases-name-field-speckit-specify"]'
+    ) as HTMLInputElement | null;
+    expect(nameAfter?.value).toBe('Specify the feature');
   });
 });
 
@@ -254,7 +398,7 @@ describe('PipelineBuilder — untrusted beats empty (101 US6, T063, FR-032)', ()
   // and the operator would go looking for a document to import when what they
   // need is to trust the workspace. The trust check is ordered first for that
   // reason, and this pins the order rather than the wording.
-  const EMPTY_TAB_STATES = ['pipelines', 'phases', 'workflows'] as const;
+  const EMPTY_TAB_STATES = ['phases', 'workflows'] as const;
 
   for (const initialTab of EMPTY_TAB_STATES) {
     it(`shows the trust banner and no empty-catalog guidance on the ${initialTab} tab`, () => {
@@ -268,13 +412,10 @@ describe('PipelineBuilder — untrusted beats empty (101 US6, T063, FR-032)', ()
   }
 
   it('shows the empty-catalog guidance once the workspace is trusted', () => {
-    // The other half: withholding it when untrusted is only correct if it does
-    // appear when the reason for the emptiness really is an empty catalog. The
-    // fixture's Pipeline catalog projects no records.
     const { container } = render(PipelineBuilder, {
-      props: { snapshot: buildSnapshot({ workspaceTrust: true }), initialTab: 'pipelines' }
+      props: { snapshot: buildSnapshot({ workspaceTrust: true }), initialTab: 'workflows' }
     });
     expect(container.querySelector('[data-testid="trust-banner-workspace-trust"]')).toBeNull();
-    expect(container.querySelector('[data-testid="catalog-empty-state-pipeline"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="catalog-empty-state-workflow"]')).not.toBeNull();
   });
 });

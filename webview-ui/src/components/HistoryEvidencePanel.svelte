@@ -18,14 +18,51 @@
   // The read is per-open and unconditional: the panel is only ever mounted for
   // a run the operator drilled into (FR-023), so there is nothing to throttle.
 
+  import { untrack } from 'svelte';
   import { resolveAuditPointer, type ResolveAuditPointerResult } from '../lib/history-evidence-ipc';
   import { formatAbsoluteTime } from '../lib/format';
 
   interface Props {
     runId: string;
+    /**
+     * FR-R3-127 (FR-004) — the Run's terminal status, the capture mode, and the
+     * window. Together they decide whether an unredacted transcript is being held
+     * for THIS Run, which is the question an operator looking at a failed Run has
+     * and which a settings page cannot answer.
+     */
+    runStatus?: string;
+    rawTranscriptMode?: 'always' | 'errors-only' | 'off';
+    retentionMaxAgeDays?: number;
   }
 
-  const { runId }: Props = $props();
+  const {
+    runId,
+    runStatus = '',
+    rawTranscriptMode = 'errors-only',
+    retentionMaxAgeDays = 30
+  }: Props = $props();
+
+  /**
+   * Whether this Run retains an unredacted raw transcript right now.
+   *
+   * The condition is `(mode, outcome)` and NOT the mode alone. Under the shipped
+   * `errors-only` a successful Run retains nothing raw, and a panel that announced
+   * a retention window anyway would be noise attached to the majority case — which
+   * is how a real warning gets ignored.
+   *
+   *   off          -> never
+   *   always       -> every Run
+   *   errors-only  -> failed, canceled or paused Runs, which is exactly where the
+   *                   audit of 2026-08-27 found the concentration: "where prompts
+   *                   and output are most likely to contain sensitive debugging
+   *                   context".
+   */
+  const RAW_RETAINING_OUTCOMES = ['failed', 'canceled', 'cancelled', 'paused'];
+  const retainsRawTranscript = $derived.by(() => {
+    if (rawTranscriptMode === 'off') return false;
+    if (rawTranscriptMode === 'always') return true;
+    return RAW_RETAINING_OUTCOMES.includes(runStatus.toLowerCase());
+  });
 
   let result = $state<ResolveAuditPointerResult | null>(null);
 
@@ -41,7 +78,11 @@
     const wanted = wantedRunId;
     let live = true;
     result = null;
-    void resolveAuditPointer(wanted).then((answer) => {
+    // Asked untracked. The helper marks the request pending in the snapshot
+    // store, which reads the store's pending set and replaces it; read tracked,
+    // that set makes this effect depend on its own write, and it asks again
+    // until Svelte stops it with `effect_update_depth_exceeded`.
+    void untrack(() => resolveAuditPointer(wanted)).then((answer) => {
       // A late answer for a run the panel has moved off would otherwise
       // overwrite the current one with evidence about a different run.
       if (live) result = answer;
@@ -112,6 +153,30 @@
   <h3>Evidence</h3>
   <p class="message" data-testid="history-evidence-message">{message}</p>
 
+  <!--
+    FR-R3-127 (FR-004) — the retention consequence, at the Run.
+
+    The audit of 2026-08-27 found the tiers correctly separated and then found a
+    concentration: failed, paused and canceled Runs retain UNREDACTED transcripts,
+    which is exactly where prompts and output are most likely to carry sensitive
+    debugging context. An operator looking at such a Run should not have to open a
+    settings page to learn that, or to find the way to remove it.
+
+    Silent when the Run retains nothing raw — see `retainsRawTranscript`.
+  -->
+  {#if retainsRawTranscript}
+    <div class="attn warn raw-retention" data-testid="history-evidence-raw-retention">
+      <svg class="i ic" aria-hidden="true"><use href="#i-warn"></use></svg>
+      <p class="body small">
+        <strong>An unredacted raw transcript is held for this run</strong> — operator prompts,
+        source, and model output — for up to {retentionMaxAgeDays}
+        day{retentionMaxAgeDays === 1 ? '' : 's'} or until the session-artifact byte budget evicts it.
+        To remove it now, run <code>Schegent: Delete Run Evidence</code> from the Command Palette; to
+        keep a copy elsewhere first, <code>Schegent: Export Run Evidence</code>.
+      </p>
+    </div>
+  {/if}
+
   {#if resolved}
     {#if resolved.truncated}
       <!-- T055 — a truncated read that says nothing reads as a complete one. -->
@@ -147,35 +212,39 @@
 </section>
 
 <style>
+  /* A section of the drawer's body, not a box inside it: the drawer's heading
+     rule styles the h3, and this margin stands in for the one that rule takes
+     from a heading that opens its container. */
   .evidence-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: var(--schegent-space-3);
-    border: 1px solid var(--schegent-border);
-    border-radius: var(--schegent-radius);
-    background: var(--schegent-surface);
-  }
-  .evidence-panel h3 {
-    margin: 0;
-    font-size: var(--schegent-text-secondary);
-    font-weight: 600;
+    margin-top: var(--schegent-space-4);
   }
   .message {
     margin: 0;
+    font-size: var(--schegent-text-secondary);
     line-height: 1.45;
     text-wrap: pretty;
   }
   /* FR-029 — a pruned pointer is not an error. Only a resolution that failed
-     borrows the error colour; everything else reads as ordinary text. */
+     borrows the error colour; everything else reads as the section's quiet
+     caption. */
   .tone-info .message {
-    color: var(--schegent-fg);
+    color: var(--schegent-muted-fg);
   }
   .tone-error .message {
     color: var(--schegent-error-text);
   }
-  .note {
+  /* The sheet's warning box, with its own spacing inside the section. Theme
+     tokens only: FR-R3-131 baselined 30 contrast violations and this adds no
+     new hard-coded colour. */
+  .attn.raw-retention {
+    margin: var(--schegent-space-2) 0 0;
+  }
+  .raw-retention .body {
     margin: 0;
+    line-height: 1.45;
+  }
+  .note {
+    margin: var(--schegent-space-1-5) 0 0;
     color: var(--schegent-muted-fg);
     font-size: var(--schegent-text-caption);
     line-height: 1.4;
@@ -183,15 +252,15 @@
   .entries {
     display: flex;
     flex-direction: column;
-    gap: 3px;
-    margin: 4px 0 0;
+    gap: var(--schegent-space-1);
+    margin: var(--schegent-space-2) 0 0;
     padding: 0;
     list-style: none;
   }
   .entry {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--schegent-gap);
+    gap: var(--schegent-space-2);
     align-items: baseline;
     color: var(--schegent-muted-fg);
     font-size: var(--schegent-text-caption);

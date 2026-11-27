@@ -1,6 +1,7 @@
 // Feature 020 T010 — grep regression: webview components must NOT
 // import `CMD_READ_PHASE_LOG`, `CMD_START_PHASE_LOG_TAIL`,
-// `CMD_STOP_PHASE_LOG_TAIL`, or `MSG_PHASE_LOG_ENTRY` directly. The
+// `CMD_STOP_PHASE_LOG_TAIL`, `CMD_ACK_PHASE_LOG_TAIL` or `MSG_PHASE_LOG_BATCH`
+// directly (FR-R6-F07 replaced `MSG_PHASE_LOG_ENTRY` with the batch). The
 // SINGLE call site for these constants in webview code is the helper
 // at `webview-ui/src/lib/phase-log-ipc.ts`.
 //
@@ -9,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { matchingRelativePaths } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -18,7 +19,8 @@ const PHASE_LOG_IPC_CONSTANTS = [
   'CMD_READ_PHASE_LOG',
   'CMD_START_PHASE_LOG_TAIL',
   'CMD_STOP_PHASE_LOG_TAIL',
-  'MSG_PHASE_LOG_ENTRY'
+  'CMD_ACK_PHASE_LOG_TAIL',
+  'MSG_PHASE_LOG_BATCH'
 ] as const;
 
 /**
@@ -31,29 +33,20 @@ const HELPER_MODULE = 'webview-ui/src/lib/phase-log-ipc.ts';
 const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/lib/messages.ts',
   'webview-ui/src/lib/phase-log-ipc.ts',
-  'webview-ui/src/lib/phase-log-store.svelte.ts'
+  'webview-ui/src/lib/phase-log-store.svelte.ts',
+  // FR-R6-F07 — the helper's own unit test pins the wire names the helper posts and filters
+  // on. It is a test of the funnel, not a second way around it.
+  'webview-ui/src/lib/__tests__/phase-log-ipc.test.ts'
 ]);
 
-function listMatchingFiles(pattern: string): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, pattern, { fixed: true }).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) return [];
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) => (abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs));
-}
+
+const matchRel = (pattern: string): readonly string[] =>
+  matchingRelativePaths(REPO_ROOT, SCAN_ROOT, pattern, { fixed: true });
 
 describe('Feature 020 T010 — no inline phase-log IPC imports in webview', () => {
   for (const constant of PHASE_LOG_IPC_CONSTANTS) {
     it(`${constant} is referenced only by the shared helper and the messages shim`, () => {
-      const matched = listMatchingFiles(constant);
+      const matched = matchRel(constant);
       // Vacuity control, asserted BEFORE the offender filter. A renamed or
       // deleted constant matches nothing, therefore offends nothing, and the
       // assertion below passes while proving the opposite of what it claims.

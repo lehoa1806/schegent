@@ -44,20 +44,34 @@
 //     transport tier keeps it.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { ClaudeCliMonitor } from '../../../src/monitor/claude-cli-monitor';
 import {
-  CLI_TRANSPORT_FILE_NAME,
   CliTransportSink,
   type CliTransportRecord,
   type CliTransportRecorder
 } from '../../../src/monitor/cli-transport-sink';
+import { createTransportRouter } from '../../../src/monitor/transport/transport-router';
+import { expectNoDescriptorWarnings } from '../../setup/descriptor-warnings';
 import { clearMetricsCache, readMetrics } from '../../../src/metrics/metrics-service';
 import type { TaskRecord } from '../../../src/contracts/sidebar-ipc';
+
+/**
+ * FR-R3-137 (T1531c, FR-012) — the sinks this fixture builds, disposed before the
+ * `afterAll` below removes the trees they write into. This arm writes with the
+ * real `fs`, so it is the one file outside the sink's own suite that genuinely
+ * holds an append descriptor; it emitted no warning only because the fixture runs
+ * once and the process exits soon after.
+ */
+const live: CliTransportSink[] = [];
+function track<T extends CliTransportSink>(sink: T): T {
+  live.push(sink);
+  return sink;
+}
 
 const RUN_COUNT = 10;
 const PHASES = ['speckit-specify', 'speckit-plan', 'speckit-implement'] as const;
@@ -188,18 +202,20 @@ async function driveFixture(mode: Mode): Promise<ArmResult> {
     mode === 'legacy-per-line-writer' ? new LegacyPerLineAuditWriter(audit) : null;
   const sink =
     mode === 'transport-sink'
-      ? new CliTransportSink({
-          settings: {
-            read: () => ({
-              root,
-              path: join(root, '.schegent', CLI_TRANSPORT_FILE_NAME),
-              maxBytes: 512 * 1024 * 1024,
-              maxGenerations: 3
-            })
-          },
+      ? track(new CliTransportSink({
+          // FR-R4-F04 — the sink hands lines to a router that writes one file per Run under `on`.
+          router: createTransportRouter({
+            workspaceRoot: () => root,
+            readSetting: () => 'on',
+            readRawTranscriptMode: () => 'errors-only',
+            readMaxAgeDays: () => 3650,
+            tempRoot: join(root, '.os-temp'),
+            runStatus: () => undefined,
+            logger
+          }),
           sanitize: (line) => logger.sanitize(line),
           logger
-        })
+        }))
       : null;
 
   // One clock for both arms. The monitor's payloads carry durations and activity
@@ -337,7 +353,12 @@ async function driveFixture(mode: Mode): Promise<ArmResult> {
 
   let transportLogLines: readonly string[] = [];
   if (sink) {
-    const transport = await readFile(join(root, '.schegent', CLI_TRANSPORT_FILE_NAME), 'utf8');
+    // One file per Run under `.schegent/sessions/<runId>/transport.log`, read in Run order.
+    const sessions = join(root, '.schegent', 'sessions');
+    let transport = '';
+    for (const name of (await readdir(sessions)).sort()) {
+      transport += await readFile(join(sessions, name, 'transport.log'), 'utf8');
+    }
     transportLogLines = transport.split('\n').filter((line) => line.length > 0);
   }
 
@@ -409,11 +430,15 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  // Descriptors first, then the trees: a handle outliving its file is how a
+  // warning gets attributed to whichever suite runs next.
+  await Promise.all(live.splice(0).map((sink) => sink.flushAndDispose()));
   for (const arm of [after, before]) {
     if (!arm) continue;
     clearMetricsCache(arm.root);
     await rm(arm.root, { recursive: true, force: true });
   }
+  expectNoDescriptorWarnings();
 });
 
 describe('FR-R3-007 — audit bytes per run', () => {

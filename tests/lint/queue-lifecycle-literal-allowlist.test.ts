@@ -38,13 +38,31 @@ const LIFECYCLE_ALLOWLIST: ReadonlySet<string> = new Set([
   // split, so the reconciler is deleted and the lift is the only emission left.
   // The test below pins that: one occurrence, and no reconciler.
   'src/state/workspace-state.ts',
-  'src/ui/sidebar/snapshot.ts',
-  'src/extension.ts',
+  // FR-R3-132 (T1502) — the lifecycle literals moved with their declarations from
+  // `src/ui/sidebar/snapshot.ts` to `src/contracts/snapshot-projections.ts`, so the
+  // webview could import the shapes rather than restate them. The entry moved with
+  // them; `allowlist-entries-still-apply.test.ts` is what noticed the old one had
+  // stopped excusing anything.
+  'src/contracts/snapshot-projections.ts',
+  // `src/extension.ts` was struck 2026-08-28 (FR-R3-136). The composition root's
+  // last two occurrences left in this feature: the resume sweep's
+  // `run.status === 'running'` filter went to `src/activation/stage2-producers.ts`,
+  // and extracting `wireTrustGrant` into `src/activation/trust-grant-wiring.ts`
+  // took a log line that has since been reworded. Neither successor derives or
+  // carries a *lifecycle*, so neither inherits this entry — they are listed in
+  // `no-running-state-literal.test.ts`, the broader pinned-status guard, and this
+  // set shrinks by one. Same reason the `snapshot-projections.ts` note above
+  // exists: `allowlist-entries-still-apply.test.ts` is what noticed.
   // Feature 092 — derives the next lifecycle for the *resumed queue* from that
   // queue's own contents (`hasInFlight ? 'running' : …`). Feature 065 could read
   // the singleton, so the derivation was not a per-queue one and this file was
   // covered only by the broader status guard.
   'src/queue/queue-manager.ts',
+  // The same per-queue derivation, for the transitions that gain or lose work
+  // rather than the ones that resume a queue. Deliberately confined to the two
+  // unheld lifecycles, so it is not a second `idle-pending` enforcement site.
+  // FR-R7-07 — relocated from `src/queue/queue-lifecycle-refresh.ts` to `src/contracts/`.
+  'src/contracts/queue-lifecycle-refresh.ts',
   // Feature 092 — composes one `QueueRuntime` per registry entry, so a queue's
   // lifecycle crosses to the webview attached to the queue that owns it rather
   // than as a workspace-wide singular (FR-048, FR-051).

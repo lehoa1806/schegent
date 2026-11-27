@@ -1,225 +1,51 @@
-# Commands Reference
-
-Every command Schegent contributes to the VS Code command palette. Every command id is also callable from a keyboard binding (`keybindings.json`) or another extension's `vscode.commands.executeCommand` call.
-
-You can also invoke any of these via the command palette: `Cmd/Ctrl + Shift + P`, then type the command title.
-
-## Quick index
-
-| Command id | Palette title |
-|---|---|
-| `schegent.auto` | Schegent: Run Autonomous Workflow |
-| `schegent.schedule` | Schegent: Enqueue Feature Request |
-| `schegent.resume` | Schegent: Resume Paused or Failed Workflow |
-| `schegent.cancel` | Schegent: Cancel In-Flight Workflow |
-| `schegent.reset` | Schegent: Reset Workspace State |
-| `schegent.showAuditLog` | Schegent: Show Audit Log |
-| `schegent.exportAuditLog` | Export Metadata-Only Audit |
-| `schegent.pauseQueue` | Schegent: Pause Queue |
-| `schegent.resumeQueue` | Schegent: Resume Queue |
-| `schegent.retryQueuedItem` | Schegent: Retry Queued Item |
-| `schegent.moveQueuedItemUp` | Schegent: Move Queued Item Up |
-| `schegent.moveQueuedItemDown` | Schegent: Move Queued Item Down |
-| `schegent.clearCompleted` | Schegent: Clear Completed Queue Items |
-| `schegent.clearFailed` | Schegent: Clear Failed Queue Items |
-| `schegent.rerunFromHistory` | Schegent: Rerun From History |
-| `schegent.showActiveRun` | Schegent: Show Active Run |
-| `schegent.openDashboard` | Schegent: Open Dashboard |
-| `schegent.retryActiveRun` | Schegent: Retry Active Run |
-| `schegent.redetectClaudeTransport` | Schegent: Re-detect Claude CLI prompt transport |
-
-## Lifecycle commands
-
-### `schegent.auto`
-
-**Title:** Schegent: Run Autonomous Workflow
-
-Starts the autonomous workflow. Opens the enqueue dialog if there is no in-flight task, then surrenders control to the drainer until the run terminates. Functionally equivalent to **Enqueue Feature** + auto-drain.
-
-### `schegent.schedule`
-
-**Title:** Schegent: Enqueue Feature Request
-
-Opens the enqueue dialog. Required input is a one- or two-sentence description; optional inputs are a pipeline id and per-phase overrides. The task lands at the bottom of the **Pending** list.
-
-The dialog is the same as the sidebar's **Enqueue Feature** button.
-
-### `schegent.resume`
-
-**Title:** Schegent: Resume Paused or Failed Workflow
-
-Resumes a paused or failed in-flight run. The next phase invocation runs with the `--continue` flag so Claude resumes its prior context.
-
-If no task is paused or failed, the command is a no-op.
-
-### `schegent.cancel`
-
-**Title:** Schegent: Cancel In-Flight Workflow
-
-Cancels the in-flight run. Kills the active subprocess, transitions the task to `failed` (with cause `canceled`), and releases the workspace lock.
-
-The audit log records a `cancel` lifecycle event and a `task-canceled` queue-control event.
-
-### `schegent.retryActiveRun`
-
-**Title:** Schegent: Retry Active Run
-
-Manually triggers a retry of the in-flight phase. Bypasses any scheduled delayed-retry timer. Emits a `retry-manual` audit event. The next invocation runs with `--continue` for context preservation.
-
-### `schegent.reset`
-
-**Title:** Schegent: Reset Workspace State
-
-**Destructive.** Clears the queue, all `WorkflowRun` records, all pause and breakpoint state, and any pending-retry schedule. Re-runs the v2 → v6 migration sequence against the cleared state.
-
-Does **not** delete `.schegent/audit.log`, the raw transcripts, or the diagnostic files. Use as a last resort after a hard crash or to start fresh.
-
-## Queue management
-
-### `schegent.pauseQueue`
-
-**Title:** Schegent: Pause Queue
-
-Pauses the queue. No new tasks drain off the pending list. The in-flight task continues; its terminal transition will not be followed by the next pending task starting.
-
-Emits `queue-paused` with `pauseSource: 'operator'`.
-
-### `schegent.resumeQueue`
-
-**Title:** Schegent: Resume Queue
-
-Resumes a paused queue. If a task became eligible while paused, the drainer picks it up.
-
-Emits `queue-resumed`.
-
-### `schegent.retryQueuedItem`
-
-**Title:** Schegent: Retry Queued Item
-
-Re-enqueues a failed history task at the bottom of pending. Equivalent to right-clicking a failed row and choosing **Rerun**.
-
-### `schegent.moveQueuedItemUp`
-
-**Title:** Schegent: Move Queued Item Up
-
-Moves the selected pending task one position toward the top. The currently-selected sidebar row is the target.
-
-Emits `task-reordered` with `source: 'arrow'`.
-
-### `schegent.moveQueuedItemDown`
-
-**Title:** Schegent: Move Queued Item Down
-
-Moves the selected pending task one position toward the bottom. Mirror of `moveQueuedItemUp`.
-
-### `schegent.clearCompleted`
-
-**Title:** Schegent: Clear Completed Queue Items
-
-Removes all tasks in the `completed` history bucket from the queue. The audit log records a `task-removed` event for each. The per-run session trees are *not* removed by this bulk command — use individual task removal for the session-tree cleanup dialog.
-
-### `schegent.clearFailed`
-
-**Title:** Schegent: Clear Failed Queue Items
-
-Removes all tasks in the `failed` history bucket. Mirror of `clearCompleted`.
-
-### `schegent.rerunFromHistory`
-
-**Title:** Schegent: Rerun From History
-
-Re-enqueues a terminal task (completed or failed) with the same description and the same per-phase overrides. The audit log records a `task-enqueued` event with `via: 'rerun-from-history'`.
-
-## Inspection and navigation
-
-### `schegent.showAuditLog`
-
-**Title:** Schegent: Show Audit Log
-
-Opens `<workspaceRoot>/.schegent/audit.log` in a VS Code editor tab. Read-only friendly: the file is append-only JSONL and rotates on size/age.
-
-### `schegent.exportAuditLog`
-
-**Title:** Schegent: Export Metadata-Only Audit
-
-Writes a redacted copy of `<workspaceRoot>/.schegent/audit.log` to a location you
-choose, defaulting to `schegent-audit-v3.jsonl` at the workspace root. The point
-is a file that is safe to attach to a bug report.
-
-**What "metadata-only" excludes.** Each exported row keeps its `id`, `timestamp`,
-`eventType`, `phase`, `iteration`, `outcome` and `schemaVersion`. From the payload
-it keeps only counts and verdicts — `exitCode`, `outcome`, `terminationReason`,
-`metrics`, `fileChangeCounts`, `toolCategoryCounts`, and the two omitted-evidence
-counts. **Every other payload field is dropped**, not redacted in place: paths,
-identifiers, messages and anything else a payload carries do not appear in the
-output at all.
-
-Only `schemaVersion: 3` entries are exported. Older rows are skipped rather than
-downgraded, because a v3 filter applied to a v2 shape would keep fields it had
-never been reasoned about.
-
-If there is no audit log yet, the command says so and writes nothing. Cancelling
-the save dialog writes nothing.
-
-### `schegent.showActiveRun`
-
-**Title:** Schegent: Show Active Run
-
-Scrolls to and selects the in-flight task in the sidebar. Useful when the history is long and you have lost the scroll position.
-
-### `schegent.openDashboard`
-
-**Title:** Schegent: Open Dashboard
-
-Opens the full-window Schegent dashboard in a new editor tab. The dashboard is a roomier view over the same state model that drives the sidebar.
-
-## Maintenance and diagnostics
-
-### `schegent.redetectClaudeTransport`
-
-**Title:** Schegent: Re-detect Claude CLI prompt transport
-
-Re-probes how the Claude CLI accepts the prompt (argv, file, or stdin) for your installed binary. Useful after upgrading the CLI: if the transport changed, the host will pick the new path without a reload.
-
-## Mutating vs. read-only commands
-
-A subset of commands are gated to the **primary host** when multiple VS Code windows are open against the same workspace. Calls from a secondary host are rejected with `reason: 'not-primary-host'`.
-
-The mutating set (subject to the primary-host gate) includes every command that writes workspace state or workspace settings:
-
-- `schegent.auto`, `schegent.schedule`, `schegent.resume`, `schegent.cancel`, `schegent.retryActiveRun`, `schegent.reset`
-- `schegent.pauseQueue`, `schegent.resumeQueue`, `schegent.retryQueuedItem`, `schegent.moveQueuedItemUp`, `schegent.moveQueuedItemDown`
-- `schegent.clearCompleted`, `schegent.clearFailed`, `schegent.rerunFromHistory`
-- (Internal IPC commands behind the sidebar settings panel — e.g., save phases, save general settings, set/clear breakpoint — are also gated.)
-
-The read-only commands (`showAuditLog`, `showActiveRun`, `openDashboard`, `redetectClaudeTransport`) work in every window.
-
-## Keyboard bindings
-
-Schegent ships no default key bindings — every command must be bound by you if you want one. To bind:
-
-1. `Cmd/Ctrl + K, Cmd/Ctrl + S` to open the keyboard shortcuts editor.
-2. Search for `schegent`.
-3. Click the pencil for any row to assign a chord.
-
-Or edit `keybindings.json` directly:
-
-```jsonc
-[
-  { "key": "cmd+shift+e",  "command": "schegent.schedule" },
-  { "key": "cmd+shift+p",  "command": "schegent.pauseQueue" },
-  { "key": "cmd+alt+r",    "command": "schegent.resume" }
-]
-```
-
-## Programmatic invocation
-
-From another extension or a VS Code task, invoke any command id via `vscode.commands.executeCommand(...)`:
-
-```ts
-await vscode.commands.executeCommand('schegent.showAuditLog');
-```
-
-Mutating commands respect the primary-host gate regardless of the caller.
-
-The next reference page is [Audit Events](audit-events.md).
+# Command Palette reference
+
+This is the manifest-parity index for every command Schegent contributes to the VS Code Command Palette. The full boundary contract—including accepted arguments, the registered-only command IDs, every webview message, guards, and backend argv—is in [API and command reference](api-and-cli.md).
+
+<!-- Source: package.json -->
+<!-- Source: src/activation/ui-wiring.ts -->
+
+| Command | Palette title | Operator result | Source |
+|---|---|---|---|
+| `schegent.auto` | Schegent: Run Autonomous Workflow | Collect a missing task description and start the autonomous workflow. | <!-- Source: package.json --><!-- Source: src/commands/auto.ts --> |
+| `schegent.schedule` | Schegent: Enqueue Feature Request | With no `pipelineId`, reveal the Schegent view and say to add work from a Queue's **Add work** composer; no picker opens and nothing is enqueued. With an explicit `pipelineId`, collect a missing description and enqueue it for the selected/default time. Not the way to launch a Workflow; see [Current limitations](../explanation/core-concepts.md#current-limitations). | <!-- Source: package.json --><!-- Source: src/commands/schedule.ts --> |
+| `schegent.resume` | Schegent: Resume Paused or Failed Workflow | Resume the sole paused or failed Run. | <!-- Source: package.json --><!-- Source: src/commands/resume.ts --> |
+| `schegent.cancel` | Schegent: Cancel In-Flight Workflow | Cancel the addressed Task, or the sole running Run when no ID is supplied. **Owner-only:** refused in a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/cancel.ts --> |
+| `schegent.reset` | Schegent: Reset Workspace State | Ask for confirmation and run the staged workspace reset. **Owner-only:** refused in a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/reset.ts --> |
+| `schegent.showAuditLog` | Schegent: Show Audit Log | Open the workspace audit log. | <!-- Source: package.json --><!-- Source: src/commands/show-audit.ts --> |
+| `schegent.reportFailedRowExits` | Schegent: Report Failed-Row Exits | Count how each failed row was resolved, and open the report; it writes nothing. | <!-- Source: package.json --><!-- Source: src/commands/report-failed-row-exits.ts --> |
+| `schegent.gitApprovals` | Schegent: Git Approvals | List the Git plans this workspace approves without asking, and withdraw one or all of them. | <!-- Source: package.json --><!-- Source: src/commands/git-approvals.ts --> |
+| `schegent.agentConfigAcknowledgements` | Schegent: Agent Config Acknowledgements | List the repository agent configuration acknowledgements stored for this workspace, and withdraw one or all of them. | <!-- Source: package.json --><!-- Source: src/commands/agent-config-acknowledgements.ts --> |
+| `schegent.verifyAuditChain` | Schegent: Verify Audit Chain | Walk the audit log's hash chain across archives and cut records and report the FIRST break; a break also reports the audit sink as failing on the evidence-health surface. It then reads the history against the head checkpoint kept outside the workspace and reports one of seven loss states; a shorter or missing history also fails the audit sink, and the result says how to reach the reset command below. It writes no file, and works in any window. Detection, not prevention: the same OS user can rewrite the log and the checkpoint ([what the chain covers](../security/threat-model.md#t3--audit-log-tampering-or-non-append-writes)). | <!-- Source: package.json --><!-- Source: src/commands/verify-audit-chain.ts --> |
+| `schegent.resetAuditCheckpoint` | Schegent: Reset Audit History Checkpoint | Retire the audit head checkpoint after a loss finding, on modal confirmation, so the next recorded event starts a new history that begins with a reset record. It refuses while any `audit.log*` file is present under `.schegent/` and never deletes or moves evidence. **Owner-only:** refused in a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/reset-audit-checkpoint.ts --> |
+| `schegent.exportAuditLog` | Schegent: Export Metadata-Only Audit | Save a schema-v3 metadata-only audit export, starting in your home directory, to a local file written `0600`; recorded as one audit row. Owner-only. | <!-- Source: package.json --><!-- Source: src/commands/export-audit.ts --> |
+| `schegent.pauseQueue` | Schegent: Pause Queue | Pause the default queue, optionally with a reason. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.resumeQueue` | Schegent: Resume Queue | Resume the default queue. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.retryQueuedItem` | Schegent: Retry Queued Item | Retry the addressed queued item. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.moveQueuedItemUp` | Schegent: Move Queued Item Up | Move the addressed pending item one position up. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.moveQueuedItemDown` | Schegent: Move Queued Item Down | Move the addressed pending item one position down. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.clearCompleted` | Schegent: Clear Completed Queue Items | Remove the default queue's completed items. `CMD_CLEAR_COMPLETED`, the sidebar's own route to the same capability, addresses whichever queue is open instead (FR-R3-150). | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.clearFailed` | Schegent: Clear Failed Queue Items | Remove failed queue items. | <!-- Source: package.json --><!-- Source: src/commands/queue-ops.ts --> |
+| `schegent.rerunFromHistory` | Schegent: Rerun From History | Enqueue a new run from an eligible history entry. | <!-- Source: package.json --><!-- Source: src/commands/rerun-from-history.ts --> |
+| `schegent.showActiveRun` | Schegent: Show Active Run | Reveal the Schegent Activity Bar and announce the selected Run. | <!-- Source: package.json --><!-- Source: src/commands/show-active-run.ts --> |
+| `schegent.openDashboard` | Schegent: Open Dashboard | Open the singleton Dashboard for the current workspace. | <!-- Source: package.json --><!-- Source: src/commands/open-dashboard.ts --> |
+| `schegent.retryActiveRun` | Schegent: Retry Active Run | Retry the best eligible active, queued, or historical Run. | <!-- Source: package.json --><!-- Source: src/commands/retry-active-run.ts --> |
+| `schegent.redetectClaudeTransport` | Schegent: Re-detect Claude CLI prompt transport | Report that Claude prompt transport is fixed to stdin streaming. | <!-- Source: package.json --><!-- Source: src/activation/ui-wiring.ts --> |
+| `schegent.exportRunEvidence` | Schegent: Export Run Evidence | Write one Run's evidence to a folder you choose, with a manifest of what it contains and what it omits. Refuses a destination inside `.schegent/`. | <!-- Source: package.json --><!-- Source: src/commands/evidence-commands.ts --> |
+| `schegent.createDiagnosticsBundle` | Schegent: Create Diagnostics Bundle | Build one JSON bundle for one Run you pick, up to 10 MiB: its status, failure records, metadata-only audit rows, the runtime-log lines that name it, and the host version and settings with secrets removed. Shows every included and omitted item before writing. Raw conversation (transcript, transport, verbose diagnostics) is included only if you choose it after a warning. Written `0600` to a local file outside `.schegent/`; recorded as one audit row. Owner-only. | <!-- Source: package.json --><!-- Source: src/commands/create-diagnostics-bundle.ts --> |
+| `schegent.deleteRunEvidence` | Schegent: Delete Run Evidence | Remove one Run's local evidence after a modal confirmation. Refuses rather than racing a live writer, and reports what it could not remove. **Owner-only:** refused in a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/evidence-commands.ts --> |
+| `schegent.resetOperatorPseudonym` | Schegent: Reset Operator Pseudonym | Replace the pseudonym audit rows carry in place of the OS account name, after a modal confirmation. Records one row that carries neither value; rows already written keep the old one. Owner-only. | <!-- Source: package.json --><!-- Source: src/commands/reset-operator-pseudonym.ts --> |
+| `schegent.backupStore` | Schegent: Back Up Store | Create a consistent online backup of the workspace SQLite application store and companion SHA-256 manifest (`0600` owner-only permissions) inside extension storage, after a modal confirmation. Appends one metadata-only `store-backup` audit row with zero raw paths. **Owner-only:** refused in an untrusted window or a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/sqlite-backup-restore.ts --> |
+| `schegent.verifyStoreBackup` | Schegent: Verify Store Backup | List available workspace SQLite backups and verify a selected backup's file-byte SHA-256 digest, SQLite quick check, foreign-key integrity, schema/reader compatibility, and bounded external dependencies in read-only isolation without modifying the live store. | <!-- Source: package.json --><!-- Source: src/commands/sqlite-backup-restore.ts --> |
+| `schegent.restoreStoreBackup` | Schegent: Restore Store Backup | Validate a selected workspace SQLite backup and, after an explicit destructive confirmation stating what authoritative state will be replaced and lost, replace all authoritative store tables atomically and reload operational caches. Refuses closed with `RUN_IN_FLIGHT` while any Run is non-terminal and appends one metadata-only `store-restore` audit row with zero raw paths. **Owner-only:** refused in an untrusted window or a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/sqlite-backup-restore.ts --> |
+| `schegent.inspectExecutionLanes` | Schegent: Inspect Execution Lanes | Open an unsaved Markdown report of persisted execution lanes, integration requests/journals, and (in trusted primary windows) live read-only Git worktree and target-ref tips, with zero raw paths or Git stderr. In Restricted Mode (untrusted workspaces), reads persisted SQLite state without spawning Git subprocesses and returns immediately without blocking pickers. | <!-- Source: package.json --><!-- Source: src/commands/execution-lane-recovery.ts --> |
+| `schegent.recoverExecutionLane` | Schegent: Recover Execution Lane | Run guarded, keyboard-accessible execution-lane recovery after a mandatory modal disclosure of recorded lane state, integration/journal commits, and live observed Git state: retry a failed candidate freeze (and optionally complete), explicitly acknowledge/cancel an `uncertain` integration request without ever replaying the landing, cancel an open request, complete and retain, pin/unpin, mark cleanup-eligible, run safe cleanup (preserving dirty, pinned, live, locked, open-request, and unrelated worktrees), or reconcile. **Owner-only:** refused in an untrusted window or a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/execution-lane-recovery.ts --> |
+| `schegent.grantNativeReviewScanner` | Schegent: Grant Native Review Scanner | Inspect the standalone `codex-security` executable on the sanitized PATH, present a modal disclosing its uncontained posture (`mechanism: 'none'`), version, binary SHA-256 digest, and fingerprint, and on explicit confirmation grant `codex-security` in the application-scoped uncontained-scanners setting ([settings reference](settings.md)), bind its exact executable fingerprint in workspace state, and append one metadata-only `scanner-consent-changed` audit row. **Owner-only:** refused in an untrusted window or a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/native-review-scanner-consent.ts --> |
+| `schegent.revokeNativeReviewScanner` | Schegent: Revoke Native Review Scanner | Remove `codex-security` from the application-scoped uncontained-scanners setting, clear its workspace fingerprint binding so subsequent invocations fail closed with zero subprocess spawns, and append one metadata-only `scanner-consent-changed` audit row. **Owner-only:** refused in an untrusted window or a window that does not hold the workspace lock. | <!-- Source: package.json --><!-- Source: src/commands/native-review-scanner-consent.ts --> |
+| `schegent.setTelemetryCredential` | Schegent: Set Telemetry Export Credential | Prompt for a `SecretStorage` key (defaulting to the configured telemetry credential key in [settings reference](settings.md); non-telemetry `schegent.*` keys are refused) and a password-masked HTTP header credential value (explicitly naming the target key), store it in VS Code `SecretStorage` without writing it to settings or logs, immediately invalidate the OTLP telemetry exporter's cached credential and spool-replay headers so rotation takes effect on the next batch without reloading, and append one metadata-only `telemetry-credential-changed` audit row when run in the primary window (hashed key prefix only; skipped cleanly in secondary windows). | <!-- Source: package.json --><!-- Source: src/commands/telemetry-credential.ts --> |
+| `schegent.clearTelemetryCredential` | Schegent: Clear Telemetry Export Credential | Prompt for a `SecretStorage` key (defaulting to the configured telemetry credential key; non-telemetry `schegent.*` keys are refused), confirm modally with the target key named explicitly, delete it from VS Code `SecretStorage`, immediately invalidate the OTLP telemetry exporter's cached credential and spool-replay headers, and append one metadata-only `telemetry-credential-changed` audit row when run in the primary window (hashed key prefix only; skipped cleanly in secondary windows). | <!-- Source: package.json --><!-- Source: src/commands/telemetry-credential.ts --> |
+
+The manifest contributes no command menus, keybindings, or `enablement` clauses. Activation and successful Stage 2 initialization still determine which registrations are available at runtime.
+
+<!-- Source: package.json -->
+<!-- Source: src/extension.ts -->

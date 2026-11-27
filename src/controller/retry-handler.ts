@@ -37,15 +37,7 @@ import { backoffForCause } from './rate-limit-backoff';
 import type { GuardedRunService } from '../services/guarded-run-service';
 import { SCHEDULED_START_MAX_HORIZON_MS } from '../services/guarded-run-service';
 import { extractResetTimestamp } from '../parser/rate-limit-reset-extractor';
-import { RETRY_BUFFER_MS } from './retry-constants';
-
-export interface DelayedRetryWatchdog {
-  pauseAndPoll(
-    cause: string,
-    options?: { durationOverrideMs?: number; skipStatusCheck?: boolean }
-  ): Promise<void>;
-  cancelPendingTimer(): void;
-}
+import { RETRY_BUFFER_MS } from '../contracts/retry-bounds';
 
 export interface RetryHandlerDeps {
   store: WorkspaceStateStore;
@@ -62,10 +54,10 @@ export interface RetryHandlerDeps {
    * was correct while a window had one Run: there was one deadline, so one timer
    * held it. With N Runs the deadline is per queue, and the handler must say
    * whose it is arming — `RetryCoordinator` owns the registry that keeps N
-   * deadlines from collapsing onto one handle, and it is still the coordinator
-   * that talks to the watchdog. Late wiring is preserved: the coordinator reads
-   * its watchdog reference at the moment of the call, exactly as this callback
-   * used to.
+   * deadlines from collapsing onto one handle.
+   *
+   * FR-R4-F02 (TA5) — and the coordinator now arms a timer of its own. The credit watchdog is no
+   * longer handed to the retry path at all: it polls credits and nothing else.
    */
   armDelayedRetry: (queueId: string, cause: string, delayMs: number) => Promise<void>;
   auditWriter: Pick<AuditLogWriter, 'append'> | null;
@@ -118,8 +110,12 @@ export class RetryHandler {
     cause: DelayedRetryCause,
     resetsAtMs: number | null,
     rateLimitMessage: string | null,
-    originalCause?: string
+    originalCause?: string,
+    options?: { readonly blockOwnedRetry?: boolean }
   ): Promise<WorkflowRun> {
+    if (options?.blockOwnedRetry === true) {
+      return run;
+    }
     const retryCap = this.deps.getRetryCap();
     // FR-006 — the configured cap-th failure trips the delayed-retry pause.
     if (run.delayedRetryCount >= retryCap - 1) {
@@ -215,6 +211,7 @@ export class RetryHandler {
       phasesCompleted: [...run.phasesCompleted, phaseResult],
       pendingRetryAt: null,
       pendingRetryCause: null,
+      creditPause: null,
       delayedRetryCount: retryCap
     };
     const persisted = await this.deps.persistTransition(run, updated);
@@ -271,11 +268,19 @@ export class RetryHandler {
     if (scheduledRestoreAt !== null && guarded) {
       // System-armed scheduled restore path: preserve the in-flight binding
       // and emit the additive `system-pause-scheduled-restore` event.
-      await this.deps.queue.pause(
+      const scheduledRestorePause = await this.deps.queue.pause(
         persisted.featureId,
         'phase-paused',
         /* preserveInFlightForRestore */ true
       );
+      // FR-R3-153 — `pause` refuses any source status but in-flight, returned
+      // as `{ ok: false, reason }` rather than thrown; the scheduled-restore
+      // audit below must not claim a queue-side pause that never landed.
+      if (scheduledRestorePause.ok === false) {
+        this.deps.logger.warn(
+          `retry-handler: queue.pause (scheduled-restore) refused: ${scheduledRestorePause.reason ?? 'unknown'}`
+        );
+      }
       await guarded.transitionToScheduledRestore({
         scheduledStartAt: scheduledRestoreAt,
         scheduledStartSource: 'system-rate-limit-recovery',
@@ -311,7 +316,14 @@ export class RetryHandler {
       `retry-cap-exhausted:${persisted.id}`,
       'retry-cap'
     );
-    await this.deps.queue.pause(persisted.featureId, 'phase-paused');
+    const legacyPause = await this.deps.queue.pause(persisted.featureId, 'phase-paused');
+    // FR-R3-153 — see the scheduled-restore branch above: a refusal is a
+    // returned value now, not a throw, and must stay visible.
+    if (legacyPause.ok === false) {
+      this.deps.logger.warn(
+        `retry-handler: queue.pause (legacy fallback) refused: ${legacyPause.reason ?? 'unknown'}`
+      );
+    }
     // Bugfix 2026-05-23 — BUG-008: emit `system-pause-restore-unavailable`
     // only on genuine rate-limit failures (`exitCode !== 0`). A successful
     // invocation that somehow reached this fallback path is NOT an
@@ -354,7 +366,8 @@ export class RetryHandler {
       ...run,
       delayedRetryCount: 0,
       pendingRetryAt: null,
-      pendingRetryCause: null
+      pendingRetryCause: null,
+      creditPause: null
     };
     const persisted = await this.deps.persistTransition(run, reset);
     await this.appendAudit('retry-recovered', {

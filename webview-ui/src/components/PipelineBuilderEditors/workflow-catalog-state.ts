@@ -17,9 +17,24 @@
 // (FR-049), so nothing in this module sorts, dedupes, or normalizes either
 // list: add appends, edit replaces in place, remove closes the gap.
 
+import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import {
+  DEFAULT_CANDIDATE_ATTEMPTS,
+  DEFAULT_CANDIDATE_AVAILABILITY_POLICY,
+  DEFAULT_CANDIDATE_BLOCK_DISPATCHES,
+  DEFAULT_MONITORING_WINDOW_MS,
+  MAX_CANDIDATES_PER_BLOCK,
+  MIN_CANDIDATES_PER_BLOCK,
   WORKFLOW_NODE_TERMINAL_STATUSES,
+  type CandidateAvailabilityPolicy,
+  type CandidateBlockControl,
+  type CandidateSpec,
+  type CandidateRetryPolicy,
+  type PipelineExecutionDefaults,
+  type PortablePhaseDefinition,
   type PortablePipelineDefinition,
+  type PortableWorkflowDefinition,
+  type WorkflowBinding,
   type WorkflowCatalogFieldErrorProjection,
   type WorkflowCatalogSourceProjection,
   type WorkflowCondition,
@@ -27,10 +42,35 @@ import {
   type WorkflowConditionOperand,
   type WorkflowConditionOperator,
   type WorkflowConnection,
-  type WorkflowNode
+  type WorkflowDecisionResults,
+  type WorkflowInputPort,
+  type WorkflowNode,
+  type WorkflowOutputPort
 } from '../../lib/snapshot-types';
 import type { SaveWorkflowRow } from '../../lib/definition-rows';
 import type { MutableWorkflow } from './types';
+
+export type WorkflowNodeTarget =
+  | string
+  | { readonly kind: 'phase'; readonly phaseId: string }
+  | { readonly kind: 'workflow'; readonly workflowId: string }
+  | { readonly kind: 'pipeline'; readonly pipelineId: string };
+
+export const MAX_WORKFLOW_NESTING_DEPTH = 8;
+
+export interface ChildWorkflowPreviewNode {
+  readonly nodeId: string;
+  readonly label: string;
+  readonly kind: 'phase' | 'workflow' | 'pipeline';
+  readonly targetId: string;
+  readonly children: readonly ChildWorkflowPreviewNode[];
+  readonly truncatedReason?: 'cycle' | 'max-depth' | 'missing';
+}
+
+export interface ChildWorkflowPreview {
+  readonly nodes: readonly ChildWorkflowPreviewNode[];
+  readonly truncatedReason?: 'cycle' | 'max-depth' | 'missing';
+}
 
 /**
  * Shared with the Pipeline and Phase families on purpose — a Workflow id is
@@ -95,9 +135,24 @@ export function sourceRecordToMutableWorkflow(
     name: definition?.name ?? readDisplayString(display, 'name') ?? '',
     ...(definition?.description !== undefined ? { description: definition.description } : {}),
     version: definition?.version ?? readDisplayNumber(display, 'version') ?? 1,
+    ...(definition?.inputs !== undefined ? { inputs: definition.inputs.map((port) => ({ ...port })) } : {}),
+    ...(definition?.outputs !== undefined ? { outputs: definition.outputs.map((port) => ({ ...port })) } : {}),
     nodes: (definition?.nodes ?? []).map(copyNode),
     connections: (definition?.connections ?? []).map(copyConnection),
+    ...(definition?.bindings !== undefined ? { bindings: definition.bindings.map(copyBinding) } : {}),
     startNodeIds: [...(definition?.startNodeIds ?? [])],
+    ...(definition?.executionDefaults !== undefined
+      ? { executionDefaults: { ...definition.executionDefaults } }
+      : {}),
+    ...(definition?.recommendedNext !== undefined
+      ? { recommendedNext: [...definition.recommendedNext] }
+      : {}),
+    ...(definition?.control !== undefined
+      ? { control: copyCandidateBlockControl(definition.control) }
+      : {}),
+    ...(definition?.decisionResults !== undefined
+      ? { decisionResults: copyDecisionResults(definition.decisionResults) }
+      : {}),
     sourceKey: record.key,
     sourceStatus: record.status,
     sourceErrors: record.errors,
@@ -114,15 +169,54 @@ export function sourceRecordToMutableWorkflow(
  */
 export function toSaveWorkflowRow(workflow: MutableWorkflow): SaveWorkflowRow {
   const description = workflow.description?.trim();
+  const hasExecutionDefaults =
+    workflow.executionDefaults !== undefined &&
+    Object.values(workflow.executionDefaults).some((v) => v !== undefined && v !== '');
   return {
     workflowId: workflow.workflowId,
     name: workflow.name,
     ...(description ? { description } : {}),
     version: workflow.version,
+    ...(workflow.inputs && workflow.inputs.length > 0
+      ? { inputs: workflow.inputs.map((port) => ({ ...port })) }
+      : {}),
+    ...(workflow.outputs && workflow.outputs.length > 0
+      ? { outputs: workflow.outputs.map((port) => ({ ...port })) }
+      : {}),
     nodes: workflow.nodes.map(copyNode),
     connections: workflow.connections.map(copyConnection),
-    startNodeIds: [...workflow.startNodeIds]
+    ...(workflow.bindings && workflow.bindings.length > 0
+      ? { bindings: workflow.bindings.map(copyBinding) }
+      : {}),
+    startNodeIds: [...workflow.startNodeIds],
+    ...(hasExecutionDefaults ? { executionDefaults: { ...workflow.executionDefaults } } : {}),
+    ...(workflow.recommendedNext && workflow.recommendedNext.length > 0
+      ? { recommendedNext: [...workflow.recommendedNext] }
+      : {}),
+    ...(workflow.control !== undefined
+      ? { control: copyCandidateBlockControl(workflow.control) }
+      : {}),
+    ...(workflow.decisionResults !== undefined
+      ? { decisionResults: copyDecisionResults(workflow.decisionResults) }
+      : {})
   };
+}
+
+/** Drafts created in this webview so far; only ever incremented, never reset. */
+let draftSequence = 0;
+
+/**
+ * A source key for a draft, distinct from every other draft's and every stored record's.
+ *
+ * The editor files a draft, its edits and its undo history under `sourceKey`, and the id is the
+ * one thing the operator can still change: rename the first draft and the id it was born with is
+ * free again, so a key derived from that id would be handed out twice. The sequence number
+ * identifies the draft instead. Stored records are keyed `<workflowId>::<index>`, so a key that
+ * does not end in `::<number>` cannot equal one.
+ */
+function nextDraftSourceKey(workflowId: string): string {
+  draftSequence += 1;
+  return `${workflowId}::draft-${draftSequence}`;
 }
 
 /** A blank draft, with an id no row in the catalog already uses. */
@@ -137,7 +231,7 @@ export function makeNewWorkflowDraft(
     nodes: [],
     connections: [],
     startNodeIds: [],
-    sourceKey: `${workflowId}::draft`,
+    sourceKey: nextDraftSourceKey(workflowId),
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false,
@@ -156,10 +250,17 @@ export function makeDuplicateWorkflowDraft(
     ...source,
     workflowId,
     name: `${source.name} (copy)`.slice(0, WORKFLOW_NAME_MAX_LEN),
+    ...(source.inputs ? { inputs: source.inputs.map((port) => ({ ...port })) } : {}),
+    ...(source.outputs ? { outputs: source.outputs.map((port) => ({ ...port })) } : {}),
     nodes: source.nodes.map(copyNode),
     connections: source.connections.map(copyConnection),
+    ...(source.bindings ? { bindings: source.bindings.map(copyBinding) } : {}),
     startNodeIds: [...source.startNodeIds],
-    sourceKey: `${workflowId}::draft`,
+    ...(source.executionDefaults ? { executionDefaults: { ...source.executionDefaults } } : {}),
+    ...(source.recommendedNext ? { recommendedNext: [...source.recommendedNext] } : {}),
+    ...(source.control ? { control: copyCandidateBlockControl(source.control) } : {}),
+    ...(source.decisionResults ? { decisionResults: copyDecisionResults(source.decisionResults) } : {}),
+    sourceKey: nextDraftSourceKey(workflowId),
     sourceStatus: 'effective',
     sourceErrors: [],
     persisted: false,
@@ -196,12 +297,20 @@ export function updateWorkflowNode(
 export function removeWorkflowNode(workflow: MutableWorkflow, index: number): MutableWorkflow {
   if (!inRange(index, workflow.nodes.length)) return workflow;
   const removedId = workflow.nodes[index].nodeId;
+  const nextBindings = workflow.bindings?.filter((binding) => {
+    if (binding.nodeId === removedId) return false;
+    if (binding.kind === 'input' && binding.source.from === 'node-output' && binding.source.nodeId === removedId) {
+      return false;
+    }
+    return true;
+  });
   return {
     ...workflow,
     nodes: workflow.nodes.filter((_, i) => i !== index),
     connections: workflow.connections.filter(
       (edge) => edge.from.nodeId !== removedId && edge.to.nodeId !== removedId
     ),
+    ...(nextBindings !== undefined ? { bindings: nextBindings } : {}),
     startNodeIds: workflow.startNodeIds.filter((nodeId) => nodeId !== removedId)
   };
 }
@@ -286,83 +395,203 @@ export function moveWorkflowConnection(
  */
 export function makeWorkflowNodeDraft(
   workflow: MutableWorkflow,
-  pipelineId: string
+  target: WorkflowNodeTarget
 ): WorkflowNode {
-  return {
-    nodeId: freeIdentifier('node', workflow.nodes.map((node) => node.nodeId)),
-    pipelineId
-  };
+  const nodeId = freeIdentifier('node', workflow.nodes.map((node) => node.nodeId));
+  if (typeof target === 'string') {
+    return { nodeId, pipelineId: target };
+  }
+  if (target.kind === 'phase') {
+    return { nodeId, kind: 'phase', phaseId: target.phaseId };
+  }
+  if (target.kind === 'workflow') {
+    return { nodeId, kind: 'workflow', workflowId: target.workflowId };
+  }
+  return { nodeId, pipelineId: target.pipelineId };
 }
 
 /**
- * A connection seeded from the first two nodes and their first declared ports.
- * A seed the host would reject is still better than an empty row the operator
- * cannot see the shape of; every part of it is editable before save.
+ * Append a node that runs `target` — what the "Add steps" palette does.
+ *
+ * The FIRST node of an empty Workflow is also marked a start. `startNodeIds` must
+ * be non-empty (FR-015) and a lone node that starts nothing is reachable from
+ * nothing, so without this the very first thing the operator adds is immediately
+ * two defects they have to go and find the toggle for.
+ *
+ * Only when the Workflow was empty. A later node is not auto-started: once a
+ * graph exists, which nodes may begin it is a decision the operator has already
+ * made, and quietly adding to it would change how the Workflow runs.
  */
-export function makeWorkflowConnectionDraft(
+export function appendWorkflowNode(
   workflow: MutableWorkflow,
-  pipelines: readonly PortablePipelineDefinition[]
-): WorkflowConnection {
-  const from = workflow.nodes[0];
-  const to = workflow.nodes[1] ?? workflow.nodes[0];
-  return {
-    from: { nodeId: from?.nodeId ?? '', portId: workflowPortIds(from, pipelines, 'out')[0] ?? '' },
-    to: { nodeId: to?.nodeId ?? '', portId: workflowPortIds(to, pipelines, 'in')[0] ?? '' }
-  };
+  target: WorkflowNodeTarget
+): MutableWorkflow {
+  const first = workflow.nodes.length === 0;
+  const node = makeWorkflowNodeDraft(workflow, target);
+  const appended = addWorkflowNode(workflow, node);
+  return first ? toggleWorkflowStartNode(appended, node.nodeId) : appended;
+}
+
+function buildDefaultEndpoint(
+  node: WorkflowNode,
+  pipelines: readonly PortablePipelineDefinition[],
+  direction: 'in' | 'out',
+  workflows: readonly Pick<PortableWorkflowDefinition, 'workflowId' | 'inputs' | 'outputs'>[] = []
+): { readonly nodeId: string; readonly portId?: string } {
+  if (node.kind === 'phase' || node.phaseId !== undefined) {
+    return { nodeId: node.nodeId };
+  }
+  const ports = workflowPortIds(node, pipelines, direction, workflows);
+  if (node.kind === 'workflow' || node.workflowId !== undefined) {
+    return ports[0] ? { nodeId: node.nodeId, portId: ports[0] } : { nodeId: node.nodeId };
+  }
+  return { nodeId: node.nodeId, portId: ports[0] ?? '' };
+}
+
+/**
+ * Append a node and wire it downstream of `sourceNodeId` — the canvas `+` that
+ * sits on the edge between two cards.
+ */
+export function insertWorkflowNodeAfter(
+  workflow: MutableWorkflow,
+  sourceNodeId: string,
+  target: WorkflowNodeTarget,
+  pipelines: readonly PortablePipelineDefinition[],
+  workflows: readonly Pick<PortableWorkflowDefinition, 'workflowId' | 'inputs' | 'outputs'>[] = []
+): MutableWorkflow {
+  const source = workflow.nodes.find((node) => node.nodeId === sourceNodeId);
+  if (!source) return workflow;
+  const node = makeWorkflowNodeDraft(workflow, target);
+  return addWorkflowConnection(addWorkflowNode(workflow, node), {
+    from: buildDefaultEndpoint(source, pipelines, 'out', workflows),
+    to: buildDefaultEndpoint(node, pipelines, 'in', workflows)
+  });
+}
+
+/**
+ * Put a new node ON an existing connection — the canvas `+` that sits between
+ * two cards, which splices rather than forks.
+ */
+export function spliceWorkflowNodeIntoConnection(
+  workflow: MutableWorkflow,
+  index: number,
+  target: WorkflowNodeTarget,
+  pipelines: readonly PortablePipelineDefinition[],
+  workflows: readonly Pick<PortableWorkflowDefinition, 'workflowId' | 'inputs' | 'outputs'>[] = []
+): MutableWorkflow {
+  if (!inRange(index, workflow.connections.length)) return workflow;
+  const connection = workflow.connections[index];
+  if (connection.from.nodeId === connection.to.nodeId) return workflow;
+  const node = makeWorkflowNodeDraft(workflow, target);
+  const inserted = addWorkflowNode(workflow, node);
+  const rerouted = updateWorkflowConnection(inserted, index, {
+    to: buildDefaultEndpoint(node, pipelines, 'in', workflows)
+  });
+  return addWorkflowConnection(rerouted, {
+    from: buildDefaultEndpoint(node, pipelines, 'out', workflows),
+    to: {
+      nodeId: connection.to.nodeId,
+      ...(connection.to.portId !== undefined ? { portId: connection.to.portId } : {}),
+      ...(connection.to.kind !== undefined ? { kind: connection.to.kind } : {})
+    }
+  });
+}
+
+/**
+ * Another outgoing arm on `sourceNodeId`, which is how a split is authored.
+ */
+export function addWorkflowBranch(
+  workflow: MutableWorkflow,
+  sourceNodeId: string,
+  pipelines: readonly PortablePipelineDefinition[],
+  workflows: readonly Pick<PortableWorkflowDefinition, 'workflowId' | 'inputs' | 'outputs'>[] = []
+): MutableWorkflow {
+  const source = workflow.nodes.find((node) => node.nodeId === sourceNodeId);
+  if (!source) return workflow;
+  const outgoing = workflow.connections.filter((edge) => edge.from.nodeId === sourceNodeId);
+  // Any node but the source, so the seed is not a self-edge when one exists.
+  const target = workflow.nodes.find((node) => node.nodeId !== sourceNodeId) ?? source;
+  const fallback = outgoing.length > 0 && !outgoing.some((edge) => edge.isDefault === true);
+  return addWorkflowConnection(workflow, {
+    from: buildDefaultEndpoint(source, pipelines, 'out', workflows),
+    to: buildDefaultEndpoint(target, pipelines, 'in', workflows),
+    ...(fallback ? { isDefault: true } : {})
+  });
 }
 
 /**
  * Point one end of a connection at a different node or port.
- *
- * Changing the node clears the port to that node's first declared one: the old
- * port id belonged to the old node's Pipeline, and silently keeping it is how a
- * retarget produces a defect the operator did not author and cannot see the
- * cause of. Changing only the port leaves the node alone.
  */
 export function retargetWorkflowConnection(
   workflow: MutableWorkflow,
   index: number,
   end: 'from' | 'to',
-  patch: { readonly nodeId?: string; readonly portId?: string },
-  pipelines: readonly PortablePipelineDefinition[]
+  patch: { readonly nodeId?: string; readonly portId?: string; readonly kind?: 'node' | 'return' },
+  pipelines: readonly PortablePipelineDefinition[],
+  workflows: readonly Pick<PortableWorkflowDefinition, 'workflowId' | 'inputs' | 'outputs'>[] = []
 ): MutableWorkflow {
   if (!inRange(index, workflow.connections.length)) return workflow;
   const current = workflow.connections[index][end];
   if (patch.nodeId !== undefined && patch.nodeId !== current.nodeId) {
     const node = workflow.nodes.find((entry) => entry.nodeId === patch.nodeId);
     const direction = end === 'from' ? 'out' : 'in';
-    const portId = workflowPortIds(node, pipelines, direction)[0] ?? '';
-    return updateWorkflowConnection(workflow, index, { [end]: { nodeId: patch.nodeId, portId } });
+    const nextEndpoint = node
+      ? buildDefaultEndpoint(node, pipelines, direction, workflows)
+      : { nodeId: patch.nodeId, portId: '' };
+    return updateWorkflowConnection(workflow, index, { [end]: nextEndpoint });
   }
-  if (patch.portId !== undefined) {
+  if (end === 'to' && patch.kind === 'node' && !workflow.nodes.some((node) => node.nodeId === current.nodeId)) {
+    // A return may name no declared step: a YAML return with no step reads back as
+    // the node id `return`. Clearing its mark then targets what a new branch would.
+    const sourceNodeId = workflow.connections.at(index)?.from.nodeId;
+    const target =
+      workflow.nodes.find((node) => node.nodeId !== sourceNodeId) ??
+      workflow.nodes.find((node) => node.nodeId === sourceNodeId);
+    if (target) {
+      return updateWorkflowConnection(workflow, index, { to: buildDefaultEndpoint(target, pipelines, 'in', workflows) });
+    }
+  }
+  if (patch.portId !== undefined || patch.kind !== undefined) {
+    const nextPortId = patch.portId !== undefined ? patch.portId : current.portId;
+    // A cleared return mark (`kind: 'node'`) leaves a plain node endpoint, written
+    // without a kind like the endpoints this module builds, so ticking the Return
+    // box and clearing it again is no edit at all.
+    const keptKind = (current as { kind?: 'node' | 'return' }).kind;
+    const nextKind = end !== 'to' || patch.kind === 'node' ? undefined : (patch.kind ?? keptKind);
     return updateWorkflowConnection(workflow, index, {
-      [end]: { nodeId: current.nodeId, portId: patch.portId }
+      [end]: {
+        nodeId: current.nodeId,
+        ...(nextPortId !== undefined && nextPortId !== '' ? { portId: nextPortId } : nextPortId === '' && workflow.nodes.find((n) => n.nodeId === current.nodeId)?.pipelineId !== undefined ? { portId: '' } : {}),
+        ...(nextKind !== undefined ? { kind: nextKind } : {})
+      }
     });
   }
   return workflow;
 }
 
 /**
- * The ports a node offers, read from its Pipeline's declaration. An endpoint
- * the Builder cannot offer is one the operator cannot author by mistake, which
- * is why these back selects rather than text fields. An unknown Pipeline
- * yields none, so the row shows the defect instead of an inviting empty select.
+ * The ports a node offers, read from its child Workflow or Pipeline declaration.
  */
 export function workflowPortIds(
   node: WorkflowNode | undefined,
   pipelines: readonly PortablePipelineDefinition[],
-  direction: 'in' | 'out'
+  direction: 'in' | 'out',
+  workflows: readonly Pick<PortableWorkflowDefinition, 'workflowId' | 'inputs' | 'outputs'>[] = []
 ): readonly string[] {
+  if (node?.workflowId !== undefined) {
+    const child = workflows.find((entry) => entry.workflowId === node.workflowId);
+    if (!child) return [];
+    const ports = direction === 'in' ? child.inputs : child.outputs;
+    return Array.isArray(ports) ? ports.map((port) => port.portId) : [];
+  }
   const pipeline = pipelines.find((entry) => entry.pipelineId === node?.pipelineId);
   if (!pipeline) return [];
-  // The declaration crossed an IPC boundary: a host on an older bundle may omit
-  // either list entirely, and an offered-nothing select beats a render crash.
   const ports = direction === 'in' ? pipeline.inputs : pipeline.outputs;
   return Array.isArray(ports) ? ports.map((port) => port.portId) : [];
 }
 
 /** Defects bucketed by the row that has to show them; indexes align with the lists. */
-export interface AnchoredWorkflowDefects {
+interface AnchoredWorkflowDefects {
   readonly byNode: readonly (readonly WorkflowDraftError[])[];
   readonly byConnection: readonly (readonly WorkflowDraftError[])[];
   /** Everything anchored to a scalar field, a whole list, the starts, or nowhere. */
@@ -374,7 +603,7 @@ export interface AnchoredWorkflowDefects {
  * defect whose anchor is not a row lands in `rest`, so a code this build does
  * not recognize still reaches the operator rather than vanishing.
  */
-export function anchorWorkflowDefects(
+function anchorWorkflowDefects(
   errors: readonly (WorkflowDraftError | WorkflowCatalogFieldErrorProjection)[],
   workflow: MutableWorkflow
 ): AnchoredWorkflowDefects {
@@ -391,6 +620,55 @@ export function anchorWorkflowDefects(
   }
 
   return { byNode, byConnection, rest };
+}
+
+/**
+ * The saved defects the cap lets through. The draft's own checks have a cap of their own,
+ * so nothing typed since the save pushes a saved defect out of sight. This is the one place
+ * that says which saved defects pass: what the Builder shows and what the lifecycle panel
+ * keeps both read it, so neither can take a different view of what lies past the cap.
+ */
+function savedDefectsWithinCap(
+  workflow: MutableWorkflow
+): readonly WorkflowCatalogFieldErrorProjection[] {
+  return workflow.sourceErrors.slice(0, MAX_VISIBLE_FIELD_ERRORS);
+}
+
+/** The defects the Builder shows for a Workflow, and how many of the draft's checks it leaves out. */
+export interface VisibleWorkflowDefects extends AnchoredWorkflowDefects {
+  /** The checks the draft fails past their cap, which the Issues list counts. */
+  readonly hiddenChecks: number;
+}
+
+/**
+ * The defects the Builder shows for a Workflow, sorted into the rows that own them: the
+ * saved defects the cap lets through, then the draft's own checks under a cap of their own.
+ * Save stays disabled while the draft fails a check, so no saved defect takes a check's
+ * place, and the checks past their cap are counted. `rest` is the Workflow's Issues list.
+ */
+export function visibleWorkflowDefects(
+  workflow: MutableWorkflow,
+  draftErrors: readonly WorkflowDraftError[]
+): VisibleWorkflowDefects {
+  const checks = boundFieldErrors(draftErrors);
+  const listed = [...boundFieldErrors(savedDefectsWithinCap(workflow)).visible, ...checks.visible];
+  return { ...anchorWorkflowDefects(listed, workflow), hiddenChecks: checks.hiddenCount };
+}
+
+/**
+ * The saved defects the Workflow's Issues list leaves out, for the lifecycle panel to keep
+ * on demand: those a step or branch owns, which show on that row, and those past the cap,
+ * which show nowhere else. Each saved defect is then listed once beside the panel.
+ */
+export function savedDefectsOutsideIssues(
+  workflow: MutableWorkflow
+): readonly WorkflowCatalogFieldErrorProjection[] {
+  const withinCap = savedDefectsWithinCap(workflow);
+  const ownedByRow = withinCap.filter((error) => {
+    const anchor = workflowErrorAnchor(error, workflow);
+    return anchor.kind === 'node' || anchor.kind === 'connection';
+  });
+  return [...ownedByRow, ...workflow.sourceErrors.slice(withinCap.length)];
 }
 
 /** `null` when the move would leave the list, so the caller can no-op cleanly. */
@@ -539,24 +817,35 @@ export function removeWorkflowConditionValue(
 }
 
 /**
- * Read one typed value as the literal it spells: `true`/`false` are booleans and
- * a plain decimal is a number, so a comparison against either means what the
- * operator wrote. Everything else is kept verbatim.
+ * Read one typed value as the literal it is: the text as typed, unchanged.
  *
- * The trade-off is deliberate and one-directional — the *strings* `"5"` and
- * `"true"` are not authorable through this control, while numeric and boolean
- * comparisons would otherwise be impossible to author at all. The pattern is
- * narrow on purpose: `0x10`, `007`, and `TRUE` stay text rather than being
- * silently reinterpreted.
+ * FR-R4-F07 (FR-027; TA5) -- v1 operands are text (a node status, or the location reference an output
+ * is recorded as), and the evaluator compares only values of the same type. A number or a boolean under
+ * `equals` can therefore never match, and the host now refuses it. This used to read `true` and `false`
+ * as booleans and a plain decimal as a number, which made `equals 5` the easiest thing to author and a
+ * condition that could never hold; the cost of that rule was that the string `"5"` was not authorable at
+ * all. Both are fixed by keeping what is typed. The declared type stays `WorkflowConditionLiteral`, so no
+ * caller changes, and a stored numeric or boolean literal still loads and is shown as its text
+ * (`formatWorkflowConditionLiteral`), where the host's defect asks the operator to repair it.
  */
-const DECIMAL_LITERAL = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
-
 export function parseWorkflowConditionLiteral(text: string): WorkflowConditionLiteral {
-  const trimmed = text.trim();
-  if (trimmed === 'true') return true;
-  if (trimmed === 'false') return false;
-  if (DECIMAL_LITERAL.test(trimmed)) return Number(trimmed);
   return text;
+}
+
+/**
+ * A branch `priority` as the control spells it, or `undefined` for "unset".
+ *
+ * Blank means unset rather than zero, and that distinction is load-bearing: the
+ * offer order treats an absent priority as *last*, while `0` would put the arm
+ * first. Anything that is not a whole number also comes back `undefined` — the
+ * host reports `invalid-range` for a bad one, and inventing a number the operator
+ * did not type would author an ordering they never chose.
+ */
+export function parseWorkflowPriority(text: string): number | undefined {
+  const trimmed = text.trim();
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
+  return Number.isInteger(value) ? value : undefined;
 }
 
 /** The inverse: what the value control shows for an authored literal. */
@@ -596,12 +885,12 @@ export function workflowErrorAnchor(
 }
 
 /** Cap the visible defect list and each message, reporting what was hidden. */
-export interface BoundedFieldErrors {
+interface BoundedFieldErrors {
   readonly visible: readonly WorkflowDraftError[];
   readonly hiddenCount: number;
 }
 
-export function boundFieldErrors(
+function boundFieldErrors(
   errors: readonly (WorkflowDraftError | WorkflowCatalogFieldErrorProjection)[]
 ): BoundedFieldErrors {
   const visible = errors.slice(0, MAX_VISIBLE_FIELD_ERRORS).map((error) => ({
@@ -662,7 +951,7 @@ export function validateWorkflowDraft(
     errors.push({
       field: 'nodes',
       code: 'non-empty-required',
-      message: 'A Workflow needs at least one Pipeline node.'
+      message: 'A Workflow needs at least one step.'
     });
   }
 
@@ -676,7 +965,17 @@ export function validateWorkflowDraft(
       });
     }
     seen.add(node.nodeId);
+    if (node.label !== undefined && node.label.length > WORKFLOW_LABEL_MAX_LEN) {
+      errors.push({
+        field: `nodes[${index}].label`,
+        code: 'too-long',
+        message: `Label must be ${WORKFLOW_LABEL_MAX_LEN} characters or fewer.`
+      });
+    }
   });
+
+  errors.push(...portLabelErrors('inputs', workflow.inputs ?? []));
+  errors.push(...portLabelErrors('outputs', workflow.outputs ?? []));
 
   if (workflow.startNodeIds.length === 0 && workflow.nodes.length > 0) {
     errors.push({
@@ -686,6 +985,35 @@ export function validateWorkflowDraft(
     });
   }
 
+  return errors;
+}
+
+/**
+ * A declared public port needs a label of 1 to `WORKFLOW_LABEL_MAX_LEN` characters once trimmed;
+ * the host enforces the same bound at Publish. The input has no length limit of its own, so a
+ * label cleared or over-typed here would otherwise save as a draft that cannot be published.
+ */
+function portLabelErrors(
+  side: 'inputs' | 'outputs',
+  ports: readonly { readonly label: string }[]
+): readonly WorkflowDraftError[] {
+  const errors: WorkflowDraftError[] = [];
+  ports.forEach((port, index) => {
+    const length = port.label.trim().length;
+    if (length === 0) {
+      errors.push({
+        field: `${side}[${index}].label`,
+        code: 'required',
+        message: 'Port label is required.'
+      });
+    } else if (length > WORKFLOW_LABEL_MAX_LEN) {
+      errors.push({
+        field: `${side}[${index}].label`,
+        code: 'too-long',
+        message: `Port label must be ${WORKFLOW_LABEL_MAX_LEN} characters or fewer.`
+      });
+    }
+  });
   return errors;
 }
 
@@ -716,9 +1044,10 @@ interface WorkflowSaveRejectionResult {
 }
 
 /**
- * Turn a host rejection into one line the operator can act on. An unrecognized
- * reason passes through verbatim rather than being flattened into a generic
- * message — a reason this build does not know about is still information.
+ * Turn a host rejection into one line the operator can act on. A reason this function has no
+ * sentence for goes through the shared boundary text (FR-R4-F05, FR-014): a code-shaped reason
+ * is still named, inside a fixed sentence, because a reason this build does not know about is
+ * still information, but free text and the bare dispatch-failure code are not shown.
  */
 export function formatWorkflowSaveRejection(
   reason: string,
@@ -727,7 +1056,7 @@ export function formatWorkflowSaveRejection(
   if (reason === 'stale-catalog') {
     return 'This Workflow layer changed since you started editing. Refresh to take the current version, or reapply your edits on top of it.';
   }
-  if (reason !== 'workflow-validation') return reason;
+  if (reason !== 'workflow-validation') return boundaryRefusalText(reason);
 
   const errors = result?.errors ?? [];
   const shown = errors.slice(0, MAX_VISIBLE_FIELD_ERRORS);
@@ -745,36 +1074,543 @@ export function formatWorkflowSaveRejection(
   return lines.length > 0 ? lines.join('\n') : reason;
 }
 
+/**
+ * A node label is optional, but one that is present must have content: the host refuses an
+ * authored label whose trimmed text is empty. The Label input patches on every keystroke, so
+ * clearing it arrives here as `''`; dropping the field returns the node to "no label authored"
+ * (the placeholder shows its id) instead of storing a value that cannot publish. The text is kept
+ * as typed otherwise, so the space between two words survives while the operator is still typing.
+ */
 function copyNode(node: WorkflowNode): WorkflowNode {
   return {
     nodeId: node.nodeId,
-    pipelineId: node.pipelineId,
-    ...(node.label !== undefined ? { label: node.label } : {})
+    ...(node.kind !== undefined ? { kind: node.kind } : {}),
+    ...(node.phaseId !== undefined ? { phaseId: node.phaseId } : {}),
+    ...(node.workflowId !== undefined ? { workflowId: node.workflowId } : {}),
+    ...(node.pipelineId !== undefined ? { pipelineId: node.pipelineId } : {}),
+    ...(node.label !== undefined && node.label.trim().length > 0 ? { label: node.label } : {})
+  };
+}
+
+function copyBinding(binding: WorkflowBinding): WorkflowBinding {
+  if (binding.kind === 'input') {
+    return {
+      kind: 'input',
+      nodeId: binding.nodeId,
+      inputKey: binding.inputKey,
+      ...(binding.type !== undefined ? { type: binding.type } : {}),
+      ...(binding.required !== undefined ? { required: binding.required } : {}),
+      source:
+        binding.source.from === 'workflow-input'
+          ? { from: 'workflow-input', portId: binding.source.portId }
+          : { from: 'node-output', nodeId: binding.source.nodeId, portId: binding.source.portId },
+      ...(binding.selection !== undefined ? { selection: binding.selection } : {})
+    };
+  }
+  return {
+    kind: 'output',
+    nodeId: binding.nodeId,
+    portId: binding.portId,
+    ...(binding.outputKey !== undefined ? { outputKey: binding.outputKey } : {}),
+    ...(binding.sourcePortId !== undefined ? { sourcePortId: binding.sourcePortId } : {}),
+    ...(binding.type !== undefined ? { type: binding.type } : {}),
+    ...(binding.label !== undefined ? { label: binding.label } : {}),
+    ...(binding.selection !== undefined ? { selection: binding.selection } : {})
+  };
+}
+
+export function addWorkflowInputPort(
+  workflow: MutableWorkflow,
+  port?: Partial<WorkflowInputPort>
+): MutableWorkflow {
+  const existing = workflow.inputs ?? [];
+  const portId = port?.portId ?? freeIdentifier('input', existing.map((p) => p.portId));
+  const next: WorkflowInputPort = {
+    portId,
+    label: port?.label ?? 'Input',
+    type: port?.type ?? 'text',
+    ...(port?.required !== undefined ? { required: port.required } : { required: true }),
+    ...(port?.description !== undefined ? { description: port.description } : {})
+  };
+  return { ...workflow, inputs: [...existing, next] };
+}
+
+export function updateWorkflowInputPort(
+  workflow: MutableWorkflow,
+  index: number,
+  patch: Partial<WorkflowInputPort>
+): MutableWorkflow {
+  const existing = workflow.inputs ?? [];
+  if (!inRange(index, existing.length)) return workflow;
+  const inputs = existing.map((port, i) => (i === index ? { ...port, ...patch } : port));
+  return { ...workflow, inputs };
+}
+
+export function removeWorkflowInputPort(
+  workflow: MutableWorkflow,
+  index: number
+): MutableWorkflow {
+  const existing = workflow.inputs ?? [];
+  if (!inRange(index, existing.length)) return workflow;
+  return { ...workflow, inputs: existing.filter((_, i) => i !== index) };
+}
+
+export function addWorkflowOutputPort(
+  workflow: MutableWorkflow,
+  port?: Partial<WorkflowOutputPort>
+): MutableWorkflow {
+  const existing = workflow.outputs ?? [];
+  const portId = port?.portId ?? freeIdentifier('output', existing.map((p) => p.portId));
+  const next: WorkflowOutputPort = {
+    portId,
+    label: port?.label ?? 'Output',
+    type: port?.type ?? 'markdown',
+    ...(port?.required !== undefined ? { required: port.required } : { required: true }),
+    ...(port?.description !== undefined ? { description: port.description } : {})
+  };
+  return { ...workflow, outputs: [...existing, next] };
+}
+
+export function updateWorkflowOutputPort(
+  workflow: MutableWorkflow,
+  index: number,
+  patch: Partial<WorkflowOutputPort>
+): MutableWorkflow {
+  const existing = workflow.outputs ?? [];
+  if (!inRange(index, existing.length)) return workflow;
+  const outputs = existing.map((port, i) => (i === index ? { ...port, ...patch } : port));
+  return { ...workflow, outputs };
+}
+
+export function removeWorkflowOutputPort(
+  workflow: MutableWorkflow,
+  index: number
+): MutableWorkflow {
+  const existing = workflow.outputs ?? [];
+  if (!inRange(index, existing.length)) return workflow;
+  return { ...workflow, outputs: existing.filter((_, i) => i !== index) };
+}
+
+export function addWorkflowBinding(
+  workflow: MutableWorkflow,
+  binding: WorkflowBinding
+): MutableWorkflow {
+  const existing = workflow.bindings ?? [];
+  return { ...workflow, bindings: [...existing, copyBinding(binding)] };
+}
+
+export function updateWorkflowBinding(
+  workflow: MutableWorkflow,
+  index: number,
+  binding: WorkflowBinding
+): MutableWorkflow {
+  const existing = workflow.bindings ?? [];
+  if (!inRange(index, existing.length)) return workflow;
+  const bindings = existing.map((entry, i) => (i === index ? copyBinding(binding) : entry));
+  return { ...workflow, bindings };
+}
+
+export function removeWorkflowBinding(
+  workflow: MutableWorkflow,
+  index: number
+): MutableWorkflow {
+  const existing = workflow.bindings ?? [];
+  if (!inRange(index, existing.length)) return workflow;
+  return { ...workflow, bindings: existing.filter((_, i) => i !== index) };
+}
+
+export function updateWorkflowExecutionDefaults(
+  workflow: MutableWorkflow,
+  patch: Partial<PipelineExecutionDefaults>
+): MutableWorkflow {
+  const next: PipelineExecutionDefaults = {
+    ...(workflow.executionDefaults ?? {}),
+    ...patch
+  };
+  return { ...workflow, executionDefaults: next };
+}
+
+export function updateWorkflowRecommendedNext(
+  workflow: MutableWorkflow,
+  recommendedNext: readonly string[]
+): MutableWorkflow {
+  return { ...workflow, recommendedNext: [...recommendedNext] };
+}
+
+export function dependentWorkflowsForPhase(
+  phaseId: string,
+  workflows: readonly { readonly workflowId: string; readonly name: string; readonly nodes: readonly WorkflowNode[] }[]
+): readonly { readonly workflowId: string; readonly name: string }[] {
+  return workflows
+    .filter((wf) => wf.nodes.some((node) => node.phaseId === phaseId))
+    .map((wf) => ({ workflowId: wf.workflowId, name: wf.name }));
+}
+
+export function dependentWorkflowsForWorkflow(
+  workflowId: string,
+  workflows: readonly { readonly workflowId: string; readonly name: string; readonly nodes: readonly WorkflowNode[] }[]
+): readonly { readonly workflowId: string; readonly name: string }[] {
+  return workflows
+    .filter(
+      (wf) =>
+        wf.workflowId !== workflowId &&
+        wf.nodes.some((node) => node.workflowId === workflowId)
+    )
+    .map((wf) => ({ workflowId: wf.workflowId, name: wf.name }));
+}
+
+export function buildChildWorkflowPreview(
+  workflowId: string,
+  workflows: readonly { readonly workflowId: string; readonly name?: string; readonly nodes: readonly WorkflowNode[] }[],
+  ancestorIds: readonly string[] = [],
+  depth = 1
+): ChildWorkflowPreview {
+  if (ancestorIds.includes(workflowId)) {
+    return { nodes: [], truncatedReason: 'cycle' };
+  }
+  if (depth > MAX_WORKFLOW_NESTING_DEPTH) {
+    return { nodes: [], truncatedReason: 'max-depth' };
+  }
+  const target = workflows.find((wf) => wf.workflowId === workflowId);
+  if (!target) {
+    return { nodes: [], truncatedReason: 'missing' };
+  }
+  const nextAncestors = [...ancestorIds, workflowId];
+  const nodes: ChildWorkflowPreviewNode[] = target.nodes.map((node) => {
+    const label = node.label?.trim() || node.nodeId;
+    if (node.workflowId !== undefined) {
+      const nested = buildChildWorkflowPreview(node.workflowId, workflows, nextAncestors, depth + 1);
+      return {
+        nodeId: node.nodeId,
+        label,
+        kind: 'workflow',
+        targetId: node.workflowId,
+        children: nested.nodes,
+        ...(nested.truncatedReason !== undefined ? { truncatedReason: nested.truncatedReason } : {})
+      };
+    }
+    if (node.phaseId !== undefined) {
+      return {
+        nodeId: node.nodeId,
+        label,
+        kind: 'phase',
+        targetId: node.phaseId,
+        children: []
+      };
+    }
+    return {
+      nodeId: node.nodeId,
+      label,
+      kind: 'pipeline',
+      targetId: node.pipelineId ?? '',
+      children: []
+    };
+  });
+  return { nodes };
+}
+
+export type { PortablePhaseDefinition };
+
+export function copyCandidateBlockControl(control: CandidateBlockControl): CandidateBlockControl {
+  return {
+    version: 1,
+    kind: 'candidate-block',
+    candidates: control.candidates.map((c) => ({
+      candidateId: c.candidateId,
+      nodeId: c.nodeId,
+      ...(c.priority !== undefined ? { priority: c.priority } : {}),
+      ...(c.maxAttempts !== undefined ? { maxAttempts: c.maxAttempts } : {}),
+      ...(c.retry !== undefined ? { retry: { ...c.retry } } : {}),
+      ...(c.allowUnverifiedTrial !== undefined ? { allowUnverifiedTrial: c.allowUnverifiedTrial } : {})
+    })),
+    ...(control.availabilityPolicy !== undefined ? { availabilityPolicy: control.availabilityPolicy } : {}),
+    ...(control.maxDispatches !== undefined ? { maxDispatches: control.maxDispatches } : {}),
+    ...(control.monitoringWindowMs !== undefined ? { monitoringWindowMs: control.monitoringWindowMs } : {}),
+    ...(control.budget !== undefined ? { budget: { ...control.budget } } : {})
+  };
+}
+
+export function copyDecisionResults(dr: WorkflowDecisionResults): WorkflowDecisionResults {
+  return {
+    version: 1,
+    fields: dr.fields.map((f) => ({ ...f })),
+    bindings: dr.bindings.map((b) => ({
+      fieldId: b.fieldId,
+      source: { ...b.source }
+    }))
+  };
+}
+
+/**
+ * FR-R5-F32 (F32-T02) — Enable candidate-block control on a Workflow draft,
+ * seeding 1..8 candidate rows from its existing Phase nodes (or creating one if empty).
+ */
+export function enableCandidateBlockControl(
+  workflow: MutableWorkflow,
+  defaultPhaseId = 'phase-1'
+): MutableWorkflow {
+  if (workflow.control !== undefined) return workflow;
+  let nodes = [...workflow.nodes];
+  if (nodes.length === 0) {
+    nodes = [{ nodeId: 'cand-node-1', kind: 'phase', phaseId: defaultPhaseId }];
+  }
+  const phaseNodes = nodes.filter((n) => n.kind === 'phase' || n.phaseId !== undefined).slice(0, MAX_CANDIDATES_PER_BLOCK);
+  const candidates: CandidateSpec[] = (phaseNodes.length > 0 ? phaseNodes : [nodes[0]!]).map((n, idx) => ({
+    candidateId: freeIdentifier(`candidate-${idx + 1}`, []),
+    nodeId: n.nodeId,
+    priority: idx + 1,
+    maxAttempts: DEFAULT_CANDIDATE_ATTEMPTS,
+    allowUnverifiedTrial: false
+  }));
+  return {
+    ...workflow,
+    nodes,
+    startNodeIds: candidates.map((c) => c.nodeId),
+    control: {
+      version: 1,
+      kind: 'candidate-block',
+      candidates,
+      availabilityPolicy: DEFAULT_CANDIDATE_AVAILABILITY_POLICY,
+      maxDispatches: DEFAULT_CANDIDATE_BLOCK_DISPATCHES,
+      monitoringWindowMs: DEFAULT_MONITORING_WINDOW_MS
+    }
+  };
+}
+
+export function disableCandidateBlockControl(workflow: MutableWorkflow): MutableWorkflow {
+  if (workflow.control === undefined) return workflow;
+  const { control: _removed, ...rest } = workflow;
+  return rest;
+}
+
+/**
+ * Add a candidate row (up to MAX_CANDIDATES_PER_BLOCK = 8) using stable IDs,
+ * creating and binding a Phase node when no unbound Phase node exists.
+ */
+export function addCandidateRow(
+  workflow: MutableWorkflow,
+  phaseId = 'phase-1'
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control || control.candidates.length >= MAX_CANDIDATES_PER_BLOCK) return workflow;
+  const takenCandidateIds = control.candidates.map((c) => c.candidateId);
+  const candidateId = freeIdentifier(`candidate-${control.candidates.length + 1}`, takenCandidateIds);
+  const boundNodeIds = new Set(control.candidates.map((c) => c.nodeId));
+  const unboundPhaseNode = workflow.nodes.find(
+    (n) => (n.kind === 'phase' || n.phaseId !== undefined) && !boundNodeIds.has(n.nodeId)
+  );
+  let nodes = workflow.nodes;
+  let targetNodeId: string;
+  if (unboundPhaseNode) {
+    targetNodeId = unboundPhaseNode.nodeId;
+  } else {
+    const takenNodeIds = workflow.nodes.map((n) => n.nodeId);
+    targetNodeId = freeIdentifier(`cand-node-${control.candidates.length + 1}`, takenNodeIds);
+    nodes = [...workflow.nodes, { nodeId: targetNodeId, kind: 'phase', phaseId }];
+  }
+  const nextCandidate: CandidateSpec = {
+    candidateId,
+    nodeId: targetNodeId,
+    priority: control.candidates.length + 1,
+    maxAttempts: DEFAULT_CANDIDATE_ATTEMPTS,
+    allowUnverifiedTrial: false
+  };
+  const nextCandidates = [...control.candidates, nextCandidate];
+  const nextStarts = Array.from(new Set([...workflow.startNodeIds, targetNodeId]));
+  return {
+    ...workflow,
+    nodes,
+    startNodeIds: nextStarts,
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+/**
+ * Remove a candidate row while keeping at least MIN_CANDIDATES_PER_BLOCK = 1.
+ */
+export function removeCandidateRow(
+  workflow: MutableWorkflow,
+  index: number
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control || control.candidates.length <= MIN_CANDIDATES_PER_BLOCK) return workflow;
+  if (!inRange(index, control.candidates.length)) return workflow;
+  const removed = control.candidates[index]!;
+  const nextCandidates = control.candidates.filter((_, i) => i !== index);
+  const nextNodes = workflow.nodes.filter((n) => n.nodeId !== removed.nodeId);
+  const nextStarts = workflow.startNodeIds.filter((id) => id !== removed.nodeId);
+  return {
+    ...workflow,
+    nodes: nextNodes.length > 0 ? nextNodes : workflow.nodes,
+    startNodeIds: nextStarts.length > 0 ? nextStarts : nextCandidates.map((c) => c.nodeId),
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+/**
+ * Reorder a candidate row by `delta` (-1 or +1) while preserving each row's stable `candidateId`.
+ */
+export function moveCandidateRow(
+  workflow: MutableWorkflow,
+  index: number,
+  delta: number
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control) return workflow;
+  const targetIndex = index + delta;
+  if (!inRange(index, control.candidates.length) || !inRange(targetIndex, control.candidates.length)) {
+    return workflow;
+  }
+  const nextCandidates = [...control.candidates];
+  const [moved] = nextCandidates.splice(index, 1);
+  nextCandidates.splice(targetIndex, 0, moved);
+  return {
+    ...workflow,
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+export interface CandidateRowPatch {
+  readonly candidateId?: string;
+  readonly nodeId?: string;
+  readonly phaseId?: string;
+  readonly priority?: number;
+  readonly maxAttempts?: number;
+  readonly retry?: CandidateRetryPolicy;
+  readonly allowUnverifiedTrial?: boolean;
+}
+
+/**
+ * Update one candidate row and/or its bound Phase node target without duplicating Phase fields.
+ */
+export function updateCandidateRow(
+  workflow: MutableWorkflow,
+  index: number,
+  patch: CandidateRowPatch
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control || !inRange(index, control.candidates.length)) return workflow;
+  const current = control.candidates[index]!;
+  const targetNodeId = patch.nodeId ?? current.nodeId;
+  let nodes = workflow.nodes;
+  if (patch.phaseId !== undefined) {
+    nodes = workflow.nodes.map((n) =>
+      n.nodeId === targetNodeId
+        ? { ...n, kind: 'phase' as const, phaseId: patch.phaseId, workflowId: undefined, pipelineId: undefined }
+        : n
+    );
+  }
+  const updated: CandidateSpec = {
+    candidateId: patch.candidateId ?? current.candidateId,
+    nodeId: targetNodeId,
+    ...(patch.priority !== undefined
+      ? { priority: patch.priority }
+      : current.priority !== undefined
+        ? { priority: current.priority }
+        : {}),
+    ...(patch.maxAttempts !== undefined
+      ? { maxAttempts: patch.maxAttempts }
+      : current.maxAttempts !== undefined
+        ? { maxAttempts: current.maxAttempts }
+        : {}),
+    ...(patch.retry !== undefined
+      ? { retry: { ...patch.retry } }
+      : current.retry !== undefined
+        ? { retry: { ...current.retry } }
+        : {}),
+    ...(patch.allowUnverifiedTrial !== undefined
+      ? { allowUnverifiedTrial: patch.allowUnverifiedTrial }
+      : current.allowUnverifiedTrial !== undefined
+        ? { allowUnverifiedTrial: current.allowUnverifiedTrial }
+        : {})
+  };
+  const nextCandidates = control.candidates.map((c, i) => (i === index ? updated : c));
+  return {
+    ...workflow,
+    nodes,
+    control: {
+      ...control,
+      candidates: nextCandidates
+    }
+  };
+}
+
+export interface CandidateBlockPolicyPatch {
+  readonly availabilityPolicy?: CandidateAvailabilityPolicy;
+  readonly maxDispatches?: number;
+  readonly monitoringWindowMs?: number;
+  readonly maxMicrousd?: number | undefined;
+}
+
+export function updateCandidateBlockPolicy(
+  workflow: MutableWorkflow,
+  patch: CandidateBlockPolicyPatch
+): MutableWorkflow {
+  const control = workflow.control;
+  if (!control) return workflow;
+  const nextBudget =
+    'maxMicrousd' in patch
+      ? patch.maxMicrousd !== undefined
+        ? ({ mode: 'strict-usd' as const, limitMicrousd: patch.maxMicrousd })
+        : ({ mode: 'count-only' as const })
+      : control.budget;
+  const { budget: _oldBudget, ...restControl } = control;
+  return {
+    ...workflow,
+    control: {
+      ...restControl,
+      ...(patch.availabilityPolicy !== undefined ? { availabilityPolicy: patch.availabilityPolicy } : {}),
+      ...(patch.maxDispatches !== undefined ? { maxDispatches: patch.maxDispatches } : {}),
+      ...(patch.monitoringWindowMs !== undefined ? { monitoringWindowMs: patch.monitoringWindowMs } : {}),
+      ...(nextBudget !== undefined ? { budget: nextBudget } : {})
+    }
   };
 }
 
 function copyConnection(connection: WorkflowConnection): WorkflowConnection {
   return {
-    from: { nodeId: connection.from.nodeId, portId: connection.from.portId },
-    to: { nodeId: connection.to.nodeId, portId: connection.to.portId },
+    from: {
+      nodeId: connection.from.nodeId,
+      ...(connection.from.portId !== undefined ? { portId: connection.from.portId } : {})
+    },
+    to: {
+      nodeId: connection.to.nodeId,
+      ...(connection.to.portId !== undefined ? { portId: connection.to.portId } : {}),
+      ...(connection.to.kind !== undefined ? { kind: connection.to.kind } : {})
+    },
+    ...(connection.handoff !== undefined ? { handoff: connection.handoff } : {}),
     ...(connection.condition !== undefined
       ? {
-          condition: {
-            left: { ...connection.condition.left },
-            operator: connection.condition.operator,
-            ...(connection.condition.right !== undefined
-              ? {
+        condition:
+          'left' in connection.condition
+            ? {
+              left: { ...connection.condition.left },
+              operator: connection.condition.operator,
+              ...(connection.condition.right !== undefined
+                ? {
                   right: Array.isArray(connection.condition.right)
                     ? [...connection.condition.right]
                     : connection.condition.right
                 }
-              : {})
-          }
-        }
+                : {})
+            }
+            : structuredClone(connection.condition)
+      }
       : {}),
     ...(connection.priority !== undefined ? { priority: connection.priority } : {}),
     ...(connection.isDefault !== undefined ? { isDefault: connection.isDefault } : {}),
-    ...(connection.selection !== undefined ? { selection: connection.selection } : {})
+    ...(connection.selection !== undefined ? { selection: connection.selection } : {}),
+    // F15-FR-01: an authored handoff policy must survive any edge edit made in the builder.
+    ...(connection.contextPolicy !== undefined ? { contextPolicy: connection.contextPolicy } : {})
   };
 }
 
@@ -785,7 +1621,8 @@ function inRange(index: number, length: number): boolean {
 /** The condition on connection `index`, or null when there is no such condition. */
 function conditionAt(workflow: MutableWorkflow, index: number): WorkflowCondition | null {
   if (!inRange(index, workflow.connections.length)) return null;
-  return workflow.connections[index].condition ?? null;
+  const condition = workflow.connections[index].condition;
+  return condition !== undefined && 'left' in condition ? condition : null;
 }
 
 /** Write a condition back with its right operand reconciled to operator and source. */

@@ -2,20 +2,41 @@ import type { SanitizedLogger } from '../../../lib/logger';
 import type { AuditEventType } from '../../../contracts/audit-events';
 import type { BackendPingService } from '../../../services/backend-ping-service';
 import type { HistoryEvidenceResolution } from '../../../services/history/history-evidence-service';
+import type { DescriptionResolution } from '../../../services/history/history-description-resolver';
+import type { DecisionRecordOpener } from '../../../services/decision-record/decision-record-open';
+import type { FailureRecordAnswerer } from '../../../services/failure-record/failure-record-service';
+import type { StorageDetailsReader } from '../../../contracts/sidebar-ipc/storage-details';
+import type { UsageAccountingReader } from '../../../contracts/sidebar-ipc/usage-accounting';
+import type { ExportFormat } from '../../../contracts/reporting/report-manifest';
+import type { HostReportExportResult } from '../../../contracts/sidebar-ipc/reporting';
+import type { ChangeEntry, ReviewOpened } from '../../../contracts/change-review';
+import type { ChangeReviewEditorOpenOutcome } from '../../../contracts/sidebar-ipc/execution-visibility';
+import type { ChangeReviewApi } from '../../../headless/change-review-api';
+import type { ExecutionVisibilityApi } from '../../../headless/execution-visibility-api';
+import type { PhaseContextApi } from '../../../headless/phase-context-api';
+import type { ReportingApi } from '../../../headless/reporting-api';
 import type { CatalogLifecycleOps, CatalogStore } from '../../../catalog';
 import type { PipelineCatalog } from '../../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../../contracts/catalog-version';
 import type { RunOutputRecord } from '../../../contracts/run-results';
-import type { BackendRunnerKind } from '../../../runner/backend-runner-factory';
+import type { BackendMap } from '../../../contracts/backend-descriptors';
+import type { BackendRunnerKind } from '../../../contracts/backend-kinds';
+import type { UncontainedGrantOutcome } from '../../../services/uncontained-grant-writer';
 import type { ConnectedWorkflowRun } from '../../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../../state/workspace-state';
 import type { ChildRunStateReader } from '../connected-run-projector';
+import type { CompletionProvenance } from '../../../queue/feature-request';
 import type { QueueDeletionImpact } from '../../../queue/queue-manager';
+import type { WorkflowLeafControlHooks } from '../../../services/workflow-execution/workflow-leaf-control';
+import type { ProductionWorkflowComposition } from '../../../services/workflow-execution/production-workflow-composition';
 import type {
+  GuardedRunService,
   GuardedScheduleRequest,
   GuardedScheduleResult
 } from '../../../services/guarded-run-service';
 import type {
+  AckPhaseLogTailRequest,
+  AckPhaseLogTailResponse,
   CommandAckMessage,
   ExportProcessYamlResult,
   ReadMetricsRequest,
@@ -28,16 +49,29 @@ import type {
   StopPhaseLogTailResponse
 } from '../messages';
 
-export interface QueueRemover {
-  remove(id: string): Promise<boolean>;
-}
-
+// FR-R3-161 (T047, FR-007a) — 2026-09-04. `interface QueueRemover { remove(id):
+// Promise<boolean> }` stood here, and `RouterDeps` declared a `queueRemover`
+// field of that type. Both are gone with the fallback branch T046 deleted: the
+// capability's only consumer was that branch, and a declared-but-unconsumed
+// capability is an invitation for the next handler to reach for a boolean
+// deletion route rather than the typed one. Task removal is `PhaseOps.deleteTask`
+// (`controller/task-deletion.ts`), which releases the lease, records a
+// session-cleanup decision, and distinguishes its two refusals.
 export interface QueueOps {
   retry(id: string): Promise<{ ok: boolean; reason?: string }>;
   moveUp(id: string): Promise<{ ok: boolean; reason?: string }>;
   moveDown(id: string): Promise<{ ok: boolean; reason?: string }>;
-  clearCompleted(): Promise<{ removed: number }>;
-  clearFailed(): Promise<{ removed: number }>;
+  // FR-R3-150 (T1621) — required, not optional. The sidebar route no longer
+  // relies on `QueueManager.clearCompleted`'s `DEFAULT_QUEUE_ID` default
+  // parameter; that default remains on the real method for the separate
+  // `schegent.clearCompleted` palette route (`queue-ops.ts`), which is not
+  // this port.
+  clearCompleted(
+    queueId: string
+  ): Promise<{ ok: boolean; reason?: string; removed: number }>;
+  // `clearFailed` left this port with `CMD_CLEAR_FAILED` in the lifecycle
+  // round-check of 2026-08-30 (finding D). `QueueManager` still implements it
+  // for `schegent.clearFailed`; the router just has nothing that calls it.
   setQueuePausedState(
     paused: boolean,
     queueId?: string,
@@ -78,6 +112,7 @@ export interface QueueOps {
     taskId?: string;
     priorStatus?: string;
     runId?: string | null;
+    completionProvenance?: CompletionProvenance | null;
     sessionCleaned?: boolean;
     sessionCleanupRefusal?: 'not-contained' | 'resolve-failed';
   }>;
@@ -112,7 +147,11 @@ export interface QueueOps {
  * from quietly dropping it.
  */
 export interface PhaseOps {
-  skipPhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
+  skipPhase(
+    runId: string,
+    phaseId: string,
+    queueId: string
+  ): Promise<{ ok: boolean; reason?: string }>;
   disablePhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
   enablePhase(phaseId: string, queueId: string): Promise<{ ok: boolean; reason?: string }>;
   deleteTask?(
@@ -124,6 +163,7 @@ export interface PhaseOps {
     taskId?: string;
     priorStatus?: string;
     runId?: string | null;
+    completionProvenance?: CompletionProvenance | null;
     sessionCleaned?: boolean;
     sessionCleanupRefusal?: 'not-contained' | 'resolve-failed';
   }>;
@@ -198,7 +238,6 @@ export interface ConnectedRunPort {
 
 export interface RouterDeps {
   readonly executeCommand: <T = unknown>(commandId: string, ...args: unknown[]) => Thenable<T> | Promise<T>;
-  readonly queueRemover: QueueRemover;
   readonly queueOps?: QueueOps;
   readonly phaseOps?: PhaseOps;
   /**
@@ -225,6 +264,12 @@ export interface RouterDeps {
    */
   readonly isTrusted?: () => boolean;
   readonly notifyWarning?: (message: string) => void;
+  /**
+   * BUG-001 (FR-019) — optional post-unpause hook invoked after `CMD_RESUME_QUEUE`
+   * transitions a queue out of `'operator-paused'` so one-click manual Resume
+   * immediately resumes a paused Run or drains pending work.
+   */
+  readonly onQueueResumed?: (queueId?: string, prompt?: string) => Promise<void>;
   readonly logger: Pick<SanitizedLogger, 'info' | 'warn' | 'error' | 'debug' | 'sanitize'>;
   readonly audit?: {
     append(entry: {
@@ -293,7 +338,7 @@ export interface RouterDeps {
    * Decision 6) and is out of feature 099's scope. Read fresh per save so the
    * revision gate compares against the configuration as it stands now.
    */
-  readonly readModelsConfig?: () => Record<BackendRunnerKind, readonly string[]>;
+  readonly readModelsConfig?: () => BackendMap<readonly string[]>;
   readonly getCatalog?: () => PipelineCatalog;
   /**
    * Feature 102 (T038, FR-022) — the published version behind `getCatalog`'s copy
@@ -323,6 +368,7 @@ export interface RouterDeps {
    */
   readonly guardedRun?: {
     scheduleOrEnqueue(request: GuardedScheduleRequest): Promise<GuardedScheduleResult>;
+    admitComposableWorkflowLaunchAtomically?: GuardedRunService['admitComposableWorkflowLaunchAtomically'];
   };
   /**
    * Feature 087 (FR-030) — the effective global backend, as the run factory and
@@ -364,9 +410,35 @@ export interface RouterDeps {
    * answer `startPipelineRun` already gives when `guardedRun` is absent.
    */
   readonly connectedRuns?: ConnectedRunPort;
+  /** FR-R8-01 (01-03) — resolves the SQLite-backed production composition registered on `WorkspaceStateStore`. */
+  readonly getProductionComposition?: () => ProductionWorkflowComposition;
+  /** Reaches `continueConnectedRun` with the rest of these deps; see `ContinuationDeps`. */
+  readonly workflowControlHooks?: WorkflowLeafControlHooks;
+  /** Reaches `continueConnectedRun` the same way; see `ContinuationDeps`. */
+  readonly wakeWorkflowQueue?: (queueId: string) => void;
+  /** Reaches `continueConnectedRun` the same way; see `ContinuationDeps`. */
+  readonly retireWorkflowFailures?: (run: ConnectedWorkflowRun) => Promise<void>;
   readonly writeGeneralSettings?: (
     updates: Readonly<Record<string, unknown>>
   ) => Promise<{ ok: true } | { ok: false; reason: string }>;
+  /**
+   * FR-R3-144 (T018, D-2) — `CMD_SET_UNCONTAINED_BACKEND_GRANT` handler hook.
+   *
+   * A port of its own, beside `writeGeneralSettings` rather than inside it. The
+   * two write different things for different reasons: one is a batched draft of
+   * `KEY_SPECS` values, this one is a per-id read-modify-write of the
+   * application-scoped setting that decides whether a backend with no OS-enforced
+   * bound may spawn. Sharing a port would let one write's failure be reported as
+   * the other's, and would make a rejected draft field able to take a grant with
+   * it.
+   *
+   * Optional so unit tests that do not exercise this command can omit the wiring;
+   * the handler REJECTS when it is absent rather than accepting silently.
+   */
+  readonly setUncontainedBackendGrant?: (
+    kind: BackendRunnerKind,
+    granted: boolean
+  ) => Promise<UncontainedGrantOutcome>;
   /**
    * Feature 063 — `CMD_SET_CONFIRM_SUPPRESSION` handler hook. Persists
    * the per-action "Don't ask again" preference to the
@@ -396,6 +468,8 @@ export interface RouterDeps {
   readonly phaseLogTailService?: {
     start(req: StartPhaseLogTailRequest): Promise<StartPhaseLogTailResponse>;
     stop(req: StopPhaseLogTailRequest): Promise<StopPhaseLogTailResponse>;
+    /** FR-R6-F07 (FR-009) — batch credit, the ready ack, gap and duplicate reports. */
+    ack(req: AckPhaseLogTailRequest): Promise<AckPhaseLogTailResponse>;
   };
   /**
    * Feature 084 (FR-018, FR-019, research R3) — hands a serialized document to
@@ -421,9 +495,15 @@ export interface RouterDeps {
    * UTF-8" and "has a byte-order mark" are refusals this format states rather
    * than repairs (FR-004). Reads the chosen file exactly once and retains
    * nothing — no lock, no watch, no copy (FR-031, FR-045).
+   *
+   * Feature 254 (FR-R4-F07, FR-003) — `too-large` is a fourth arm: the host judged the file over the
+   * parser's 1 MiB cap BEFORE reading its contents, so no bytes accompany it. It adds no member
+   * name (it reuses `outcome`), so the process-YAML paths pin holds, and the command turns it into
+   * the parser's own `too-large` refusal.
    */
   readonly openProcessYamlDocument?: () => Promise<
     | { readonly outcome: 'read'; readonly bytes: Uint8Array }
+    | { readonly outcome: 'too-large' }
     | { readonly outcome: 'canceled' }
     | { readonly outcome: 'failed'; readonly message: string }
   >;
@@ -440,6 +520,56 @@ export interface RouterDeps {
   readonly historyEvidenceService?: {
     resolve(runId: string): Promise<HistoryEvidenceResolution>;
   };
+  /**
+   * FR-R3-071 (feature 152) — resolves one history row's stored description
+   * for the sidebar's replay panel. Optional and injected at activation for
+   * the same reason `historyEvidenceService` is: the sidecar read needs a
+   * workspace root, and no handler may learn one of its own.
+   *
+   * `null` means the run id names no history row — state, answered here rather
+   * than by the validator.
+   */
+  readonly historyDescriptionService?: {
+    resolve(runId: string): Promise<DescriptionResolution | null>;
+  };
+  /**
+   * FR-R4-F15 (contract Q4) — the row's newest failure record, read for "Show last error". Absent in
+   * a harness that builds no service; the handler then answers `internal-error`. The service is built
+   * over the requesting window's own queue state, so a pair it does not hold is an unknown row.
+   */
+  readonly readFailureRecord?: FailureRecordAnswerer['answer'];
+  /**
+   * FR-R6-F05 (contract surfaces-and-wiring.md §5) — storage pressure and one inventory page, read
+   * for the storage details view. Absent in a harness that builds no reader; the handler then answers
+   * `unavailable`. Built by the headless API's `createStorageDetailsReader`, so this surface and the
+   * headless one give the same answer.
+   */
+  readonly storageDetails?: StorageDetailsReader;
+  /**
+   * FR-R6-F06 (contracts/surfaces-and-wiring.md section 4) — one revision-pinned accounting page.
+   * Absent in a harness that builds no reader; the handler then answers `store-unavailable`. Built
+   * by the headless API's `createUsageAccountingReader`, so both surfaces give the same answer.
+   */
+  readonly usageAccounting?: UsageAccountingReader;
+  readonly reportingApi?: () => ReportingApi | null;
+  readonly exportReportWithDialog?: (request: {
+    readonly reportId: string;
+    readonly format: ExportFormat;
+  }) => Promise<HostReportExportResult>;
+  readonly executionVisibility?: ExecutionVisibilityApi;
+  readonly changeReviewApi?: () => ChangeReviewApi | null;
+  readonly openReviewInEditor?: (
+    opened: ReviewOpened,
+    entries: readonly ChangeEntry[]
+  ) => Promise<ChangeReviewEditorOpenOutcome>;
+  readonly phaseContextApi?: () => PhaseContextApi | null;
+  /**
+   * FR-R5-F19 (feature 278, contract decision-record-open.md) — opens a blocked row's `decisions.md`
+   * read-only. Absent in a harness that builds no opener; the handler then answers `internal-error`.
+   * The opener checks workspace trust itself, because this command is read-only and so passes no
+   * router trust gate.
+   */
+  readonly openDecisionRecord?: (request: { readonly rowId: string }) => ReturnType<DecisionRecordOpener['open']>;
   readonly backendPingService?: Pick<BackendPingService, 'ping'>;
   /**
    * Feature 073 — existing session-scoped correlation id reused (not newly

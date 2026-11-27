@@ -1,32 +1,59 @@
-// Feature 065 (T017) — Queue lifecycle transition + lockstep invariants.
+// FR-R3-152 (T1631, FR-003, FR-004) — Queue lifecycle transition + lockstep
+// invariants, exercised against the production writer(s) directly.
 //
-// The lifecycle discriminator (`queueLifecycle`) is stored alongside the
-// legacy `paused` mirror on `QueueState`. The legal transition graph is
-// defined in specs/065-enqueue-start-separation/data-model.md §QueueLifecycle:
+// This file used to assert against a hand-written local `transition()`
+// function — a second, private model of the transition graph that called no
+// production code. It agreed with a false claim (`running ⇒ inFlightId !==
+// null`, still visible in this file's own prior history) because nothing here
+// ever exercised `refreshUnheldLifecycle`, so the false claim and the false
+// test stayed green together. Per FR-003, that private oracle is gone; every
+// case below calls `refreshUnheldLifecycle`/`withRefreshedLifecycle`
+// (`src/queue/queue-lifecycle-refresh.ts`) or the actual `QueueManager`
+// methods that call them.
 //
-//     active-empty  ↔  idle-pending  ↔  running  ↔  operator-paused
-//     active-empty  ↔  running
-//     operator-paused → active-empty (when pending empties on resume)
+// The ratified table (FR-001, `src/contracts/snapshot-vocabulary.ts`):
 //
-// This test exercises every legal transition via the in-memory QueueState
-// representation and asserts:
+//   running         — not held, ≥1 pending or in-flight Task.
+//   active-empty    — not held, no pending or in-flight Task.
+//   idle-pending    — held, pending work, waiting for an explicit trigger.
+//   operator-paused — held, regardless of work.
+//
+// Lockstep invariants asserted throughout:
 //   (i)   paused === (queueLifecycle === 'operator-paused')
-//   (ii)  scheduledStartAt != null ⇒ queueLifecycle === 'idle-pending'
+//   (ii)  scheduledStartAt !== null ⇒ queueLifecycle === 'idle-pending'
 //   (iii) queueLifecycle === 'idle-pending' ⇒ inFlightId === null
-//   (iv)  queueLifecycle === 'running' ⇒ inFlightId !== null
-//
-// Illegal transitions are documented; `transition()` returns a discriminated
-// result so callers can branch on `'illegal'` rather than throw.
-// Per FR-001..FR-005 + FR-019.
+// `queueLifecycle === 'running' ⇒ inFlightId !== null` is deliberately NOT
+// asserted — it is the disproven claim this feature closes (LC-Q-03).
 
 import { describe, it, expect } from 'vitest';
-import type {
-  QueueLifecycle,
-  QueueState,
-  ScheduledStartSource
-} from '../../../src/queue/feature-request';
+import { QueueManager } from '../../../src/queue/queue-manager';
+import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
+import {
+  refreshUnheldLifecycle,
+  withRefreshedLifecycle
+} from '../../../src/queue/queue-lifecycle-refresh';
+import type { FeatureRequest, QueueState } from '../../../src/queue/feature-request';
+import { makeCoordinator } from './auto-drain-fixture';
 
-function makeState(partial: Partial<QueueState>): QueueState {
+/** A pending request, filled in only as far as `withRefreshedLifecycle` reads. */
+function pendingRequest(id: string): FeatureRequest {
+  return { id, status: 'pending' } as unknown as FeatureRequest;
+}
+
+class FakeMemento implements Memento {
+  private map = new Map<string, unknown>();
+  get<T>(key: string): T | undefined {
+    return this.map.get(key) as T | undefined;
+  }
+  update(key: string, value: unknown): Thenable<void> {
+    if (value === undefined) this.map.delete(key);
+    else this.map.set(key, value);
+    return Promise.resolve();
+  }
+}
+
+function makeState(partial: Partial<QueueState> = {}): QueueState {
   return {
     requests: [],
     inFlightId: null,
@@ -41,386 +68,253 @@ function makeState(partial: Partial<QueueState>): QueueState {
   };
 }
 
+/**
+ * Lockstep invariants that must hold of any persisted `QueueState`.
+ *
+ * `paused` is deliberately not checked here: FR-R3-011 retired it to
+ * migration-input-only (`@deprecated`, `feature-request.ts`) — live writers
+ * (every one this file calls) never populate it, so `store.getQueue(...)`
+ * returns `undefined` for it on any record written by current code. Asserting
+ * `paused === (queueLifecycle === 'operator-paused')` against that live output
+ * would be testing a field production code no longer writes; the retired
+ * mirror's own lockstep is `queue-state-migrator`'s concern, not this file's.
+ */
 function assertLockstep(state: QueueState): void {
-  // (i) paused mirror lockstep
-  expect(state.paused).toBe(state.queueLifecycle === 'operator-paused');
-  // (ii) scheduledStartAt implies idle-pending
   if (state.scheduledStartAt !== null) {
     expect(state.queueLifecycle).toBe('idle-pending');
   }
-  // (iii) idle-pending has no in-flight
   if (state.queueLifecycle === 'idle-pending') {
     expect(state.inFlightId).toBeNull();
   }
-  // (iv) running has an in-flight
-  if (state.queueLifecycle === 'running') {
-    expect(state.inFlightId).not.toBeNull();
-  }
 }
 
-type Transition =
-  | { kind: 'enqueue-now'; pendingId: string }
-  | { kind: 'enqueue-scheduled'; pendingId: string; scheduledStartAt: number; source: ScheduledStartSource }
-  | { kind: 'enqueue-no-intent'; pendingId: string }
-  | { kind: 'start-now-from-idle-pending' }
-  | { kind: 'start-running'; inFlightId: string }
-  | { kind: 'pause' }
-  | { kind: 'resume-with-pending'; inFlightId: string }
-  | { kind: 'resume-without-pending' }
-  | { kind: 'in-flight-terminate-nonempty'; nextInFlightId: string }
-  | { kind: 'in-flight-terminate-empty' }
-  | { kind: 'cancel-schedule' };
-
-type TransitionResult = { kind: 'ok'; state: QueueState } | { kind: 'illegal'; reason: string };
-
-function transition(state: QueueState, t: Transition): TransitionResult {
-  switch (t.kind) {
-    case 'enqueue-now': {
-      // active-empty | idle-pending → running
-      if (state.queueLifecycle === 'operator-paused') {
-        return { kind: 'illegal', reason: 'cannot start-now on operator-paused queue' };
-      }
-      if (state.queueLifecycle === 'running') {
-        // silent enqueue while running keeps queue running
-        return {
-          kind: 'ok',
-          state: { ...state, requests: [...state.requests], updatedAt: state.updatedAt + 1 }
-        };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'running',
-          pauseSource: null,
-          scheduledStartAt: null,
-          scheduledStartSource: null,
-          inFlightId: t.pendingId
-        }
-      };
-    }
-    case 'enqueue-scheduled': {
-      if (state.queueLifecycle === 'operator-paused' || state.queueLifecycle === 'running') {
-        return { kind: 'illegal', reason: `cannot schedule on ${state.queueLifecycle}` };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'idle-pending',
-          pauseSource: null,
-          scheduledStartAt: t.scheduledStartAt,
-          scheduledStartSource: t.source
-        }
-      };
-    }
-    case 'enqueue-no-intent': {
-      if (state.queueLifecycle === 'operator-paused') {
-        return { kind: 'illegal', reason: 'cannot enqueue on operator-paused without a resume' };
-      }
-      if (state.queueLifecycle === 'running') {
-        return { kind: 'ok', state: { ...state, updatedAt: state.updatedAt + 1 } };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'idle-pending',
-          pauseSource: null,
-          scheduledStartAt: null,
-          scheduledStartSource: null
-        }
-      };
-    }
-    case 'start-now-from-idle-pending': {
-      if (state.queueLifecycle !== 'idle-pending') {
-        return { kind: 'illegal', reason: 'must be idle-pending' };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'running',
-          pauseSource: null,
-          scheduledStartAt: null,
-          scheduledStartSource: null,
-          inFlightId: 'r-test'
-        }
-      };
-    }
-    case 'start-running': {
-      if (state.queueLifecycle === 'operator-paused') {
-        return { kind: 'illegal', reason: 'cannot start-running on operator-paused' };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'running',
-          pauseSource: null,
-          inFlightId: t.inFlightId,
-          scheduledStartAt: null,
-          scheduledStartSource: null
-        }
-      };
-    }
-    case 'pause': {
-      if (state.queueLifecycle === 'operator-paused') {
-        return { kind: 'illegal', reason: 'already paused' };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'operator-paused',
-          pauseSource: null,
-          paused: true,
-          pausedReason: 'operator',
-          // scheduledStartAt is preserved on pause (per data-model: it
-          // survives across pause/resume so the schedule can be re-armed
-          // when the operator resumes — distinct from cancel)
-          inFlightId: null
-        }
-      };
-    }
-    case 'resume-with-pending': {
-      if (state.queueLifecycle !== 'operator-paused') {
-        return { kind: 'illegal', reason: 'must be operator-paused' };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'running',
-          pauseSource: null,
-          paused: false,
-          pausedReason: null,
-          inFlightId: t.inFlightId,
-          scheduledStartAt: null,
-          scheduledStartSource: null
-        }
-      };
-    }
-    case 'resume-without-pending': {
-      if (state.queueLifecycle !== 'operator-paused') {
-        return { kind: 'illegal', reason: 'must be operator-paused' };
-      }
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'active-empty',
-          pauseSource: null,
-          paused: false,
-          pausedReason: null,
-          scheduledStartAt: null,
-          scheduledStartSource: null
-        }
-      };
-    }
-    case 'in-flight-terminate-nonempty': {
-      if (state.queueLifecycle !== 'running') {
-        return { kind: 'illegal', reason: 'must be running' };
-      }
-      return {
-        kind: 'ok',
-        state: { ...state, queueLifecycle: 'running', pauseSource: null, inFlightId: t.nextInFlightId }
-      };
-    }
-    case 'in-flight-terminate-empty': {
-      if (state.queueLifecycle !== 'running') {
-        return { kind: 'illegal', reason: 'must be running' };
-      }
-      // FR-005 carve-out: running → active-empty (NEVER idle-pending) when
-      // an in-flight task terminates with no pending.
-      return {
-        kind: 'ok',
-        state: {
-          ...state,
-          queueLifecycle: 'active-empty',
-          pauseSource: null,
-          inFlightId: null,
-          scheduledStartAt: null,
-          scheduledStartSource: null
-        }
-      };
-    }
-    case 'cancel-schedule': {
-      if (state.queueLifecycle !== 'idle-pending') {
-        return { kind: 'illegal', reason: 'must be idle-pending' };
-      }
-      return {
-        kind: 'ok',
-        state: { ...state, scheduledStartAt: null, scheduledStartSource: null }
-      };
-    }
-  }
-}
-
-describe('Feature 065 — QueueLifecycle transitions', () => {
-  it('active-empty → idle-pending via enqueue-no-intent', () => {
-    const s0 = makeState({ queueLifecycle: 'active-empty'});
-    const r = transition(s0, { kind: 'enqueue-no-intent', pendingId: 'r-1' });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('idle-pending');
-    assertLockstep(r.state);
-  });
-
-  it('active-empty → idle-pending via enqueue-scheduled and persists scheduledStartAt', () => {
-    const s0 = makeState({ queueLifecycle: 'active-empty'});
-    const r = transition(s0, {
-      kind: 'enqueue-scheduled',
-      pendingId: 'r-1',
-      scheduledStartAt: 1_700_000_000_000,
-      source: 'operator-chooser'
+describe('refreshUnheldLifecycle / withRefreshedLifecycle — the production writer (FR-001, FR-003)', () => {
+  it('promotes an active-empty queue with only pending work to running — no in-flight Task required', () => {
+    // This is the exact case the disproven claim forbade: `running` with
+    // `inFlightId === null`. If `refreshUnheldLifecycle` is ever reverted to
+    // require a live in-flight Task, this assertion goes red (SC-004).
+    const state = makeState({
+      queueLifecycle: 'active-empty',
+      requests: [pendingRequest('r-1')]
     });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('idle-pending');
-    expect(r.state.scheduledStartAt).toBe(1_700_000_000_000);
-    expect(r.state.scheduledStartSource).toBe('operator-chooser');
-    assertLockstep(r.state);
+    const next = withRefreshedLifecycle(state);
+    expect(next.queueLifecycle).toBe('running');
+    expect(next.inFlightId).toBeNull();
+    assertLockstep(next);
   });
 
-  it('active-empty → running via enqueue-now (skips idle-pending)', () => {
-    const s0 = makeState({ queueLifecycle: 'active-empty'});
-    const r = transition(s0, { kind: 'enqueue-now', pendingId: 'r-1' });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('running');
-    expect(r.state.inFlightId).toBe('r-1');
-    assertLockstep(r.state);
+  it('leaves an active-empty queue with no work at active-empty', () => {
+    const next = withRefreshedLifecycle(makeState({ queueLifecycle: 'active-empty' }));
+    expect(next.queueLifecycle).toBe('active-empty');
+    assertLockstep(next);
   });
 
-  it('idle-pending → running via start-now-from-idle-pending and clears scheduledStartAt', () => {
-    const s0 = makeState({
-      queueLifecycle: 'idle-pending',
-      pauseSource: null,
-      scheduledStartAt: 1_700_000_000_000,
-      scheduledStartSource: 'operator-chooser'
-    });
-    const r = transition(s0, { kind: 'start-now-from-idle-pending' });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('running');
-    expect(r.state.scheduledStartAt).toBeNull();
-    expect(r.state.scheduledStartSource).toBeNull();
-    assertLockstep(r.state);
-  });
-
-  it('running → operator-paused → running (with pending)', () => {
-    const sRun = makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' });
-    const pauseResult = transition(sRun, { kind: 'pause' });
-    if (pauseResult.kind !== 'ok') throw new Error('expected ok');
-    expect(pauseResult.state.queueLifecycle).toBe('operator-paused');
-    expect(pauseResult.state.paused).toBe(true);
-    assertLockstep(pauseResult.state);
-    const resumed = transition(pauseResult.state, {
-      kind: 'resume-with-pending',
-      inFlightId: 'r-2'
-    });
-    if (resumed.kind !== 'ok') throw new Error('expected ok');
-    expect(resumed.state.queueLifecycle).toBe('running');
-    expect(resumed.state.paused).toBe(false);
-    assertLockstep(resumed.state);
-  });
-
-  it('operator-paused → active-empty on resume without pending', () => {
-    const sPaused = makeState({
-      queueLifecycle: 'operator-paused',
-      pauseSource: null,
-      paused: true,
-      pausedReason: 'operator'
-    });
-    const r = transition(sPaused, { kind: 'resume-without-pending' });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('active-empty');
-    expect(r.state.paused).toBe(false);
-    assertLockstep(r.state);
-  });
-
-  it('FR-005 carve-out: running → active-empty when in-flight terminates with empty pending', () => {
-    const sRun = makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' });
-    const r = transition(sRun, { kind: 'in-flight-terminate-empty' });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('active-empty');
-    expect(r.state.inFlightId).toBeNull();
-    assertLockstep(r.state);
-  });
-
-  it('FR-005 carve-out: running → running when in-flight terminates with non-empty pending', () => {
-    const sRun = makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' });
-    const r = transition(sRun, {
-      kind: 'in-flight-terminate-nonempty',
-      nextInFlightId: 'r-2'
-    });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('running');
-    expect(r.state.inFlightId).toBe('r-2');
-    assertLockstep(r.state);
-  });
-
-  it('cancel-schedule clears scheduledStartAt but leaves queue in idle-pending', () => {
-    const s0 = makeState({
-      queueLifecycle: 'idle-pending',
-      pauseSource: null,
-      scheduledStartAt: 1_700_000_000_000,
-      scheduledStartSource: 'operator-chooser'
-    });
-    const r = transition(s0, { kind: 'cancel-schedule' });
-    if (r.kind !== 'ok') throw new Error('expected ok');
-    expect(r.state.queueLifecycle).toBe('idle-pending');
-    expect(r.state.scheduledStartAt).toBeNull();
-    expect(r.state.scheduledStartSource).toBeNull();
-    assertLockstep(r.state);
-  });
-
-  it('rejects illegal transitions', () => {
-    // start-now-from-idle-pending on active-empty
-    const r1 = transition(makeState({ queueLifecycle: 'active-empty'}), {
-      kind: 'start-now-from-idle-pending'
-    });
-    expect(r1.kind).toBe('illegal');
-    // enqueue-scheduled on operator-paused
-    const r2 = transition(
-      makeState({ queueLifecycle: 'operator-paused', pauseSource: null, paused: true, pausedReason: 'operator' }),
-      { kind: 'enqueue-scheduled', pendingId: 'r-1', scheduledStartAt: 1, source: 'operator-chooser' }
+  it('active-empty never carries pending or in-flight work once refreshed', () => {
+    // The converse of the promotion above: whenever refresh settles on
+    // active-empty, hasWork was false.
+    const next = withRefreshedLifecycle(
+      makeState({ queueLifecycle: 'running', inFlightId: null, requests: [] })
     );
-    expect(r2.kind).toBe('illegal');
-    // pause on operator-paused
-    const r3 = transition(
-      makeState({ queueLifecycle: 'operator-paused', pauseSource: null, paused: true, pausedReason: 'operator' }),
-      { kind: 'pause' }
-    );
-    expect(r3.kind).toBe('illegal');
-    // resume-with-pending on running
-    const r4 = transition(makeState({ queueLifecycle: 'running', pauseSource: null, inFlightId: 'r-1' }), {
-      kind: 'resume-with-pending',
-      inFlightId: 'r-2'
-    });
-    expect(r4.kind).toBe('illegal');
-    // cancel-schedule on active-empty
-    const r5 = transition(makeState({ queueLifecycle: 'active-empty'}), {
-      kind: 'cancel-schedule'
-    });
-    expect(r5.kind).toBe('illegal');
+    expect(next.queueLifecycle).toBe('active-empty');
+    expect(next.inFlightId).toBeNull();
+    expect(next.requests.some((r) => r.status === 'pending')).toBe(false);
   });
 
-  it('lockstep invariant: paused === (queueLifecycle === operator-paused) across all lifecycle values', () => {
-    const lifecycles: QueueLifecycle[] = [
-      'running',
-      'operator-paused',
-      'idle-pending',
-      'active-empty'
+  it('never derives a held lifecycle (idle-pending, operator-paused) — both pass through untouched', () => {
+    const idlePending = refreshUnheldLifecycle(
+      makeState({ queueLifecycle: 'idle-pending', requests: [] })
+    );
+    expect(idlePending).toBe('idle-pending');
+    const paused = refreshUnheldLifecycle(
+      makeState({
+        queueLifecycle: 'operator-paused',
+        inFlightId: 'r-1',
+        requests: [pendingRequest('r-2')]
+      })
+    );
+    expect(paused).toBe('operator-paused');
+  });
+});
+
+describe('QueueManager writers — unheld transitions (FR-004)', () => {
+  let store: WorkspaceStateStore;
+  let queue: QueueManager;
+
+  const setup = async (): Promise<void> => {
+    store = new WorkspaceStateStore(new FakeMemento());
+    await store.initialize();
+    queue = new QueueManager(store);
+  };
+
+  it('enqueue does not disturb an already-running queue\'s lifecycle (admission is not a lifecycle caller)', async () => {
+    await setup();
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('running');
+    await queue.enqueue('B');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('running');
+  });
+
+  it('markInFlight promotes an active-empty queue to running (the "start" transition)', async () => {
+    await setup();
+    const a = await queue.enqueue('A');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('active-empty');
+    await queue.markInFlight(a.id, 'run-1');
+    const after = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(after.queueLifecycle).toBe('running');
+    expect(after.inFlightId).toBe(a.id);
+    assertLockstep(after);
+  });
+
+  it('finish() with another pending Task keeps the queue running with no in-flight Task (LC-Q-03)', async () => {
+    await setup();
+    const a = await queue.enqueue('A');
+    const b = await queue.enqueue('B');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'completed');
+    const after = store.getQueue(DEFAULT_QUEUE_ID);
+    // The core regression this feature closes: running, with inFlightId
+    // cleared, because B is still pending. Never idle-pending — that would
+    // require an explicit trigger nothing here provided.
+    expect(after.queueLifecycle).toBe('running');
+    expect(after.inFlightId).toBeNull();
+    expect(queue.findById(b.id)?.status).toBe('pending');
+    assertLockstep(after);
+  });
+
+  it('finish() on the last Task settles the queue at active-empty, never idle-pending (FR-005 carve-out)', async () => {
+    await setup();
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'completed');
+    const after = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(after.queueLifecycle).toBe('active-empty');
+    expect(after.inFlightId).toBeNull();
+    assertLockstep(after);
+  });
+
+  it('retry/restart back to pending promotes an active-empty queue to running, not idle-pending', async () => {
+    await setup();
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.finish(a.id, 'failed');
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('active-empty');
+    const result = await queue.retry(a.id);
+    expect(result.ok).toBe(true);
+    const after = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(queue.findById(a.id)?.status).toBe('pending');
+    // Same shape as the first block's promotion case: running, pending-only,
+    // no in-flight Task — retry is a second production call site that must
+    // agree with `refreshUnheldLifecycle`, not a duplicate of it.
+    expect(after.queueLifecycle).toBe('running');
+    expect(after.inFlightId).toBeNull();
+    assertLockstep(after);
+  });
+});
+
+describe('QueueManager.setQueuePausedState — held transitions (FR-004, per FR-019)', () => {
+  let store: WorkspaceStateStore;
+  let queue: QueueManager;
+
+  const setup = async (): Promise<void> => {
+    store = new WorkspaceStateStore(new FakeMemento());
+    await store.initialize();
+    queue = new QueueManager(store);
+  };
+
+  it('pause holds the queue at operator-paused regardless of work', async () => {
+    await setup();
+    await queue.enqueue('A');
+    const result = await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID);
+    expect(result.ok).toBe(true);
+    const after = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(after.queueLifecycle).toBe('operator-paused');
+    assertLockstep(after);
+  });
+
+  it('resume with pending work re-enters idle-pending (operator must re-schedule, FR-019)', async () => {
+    await setup();
+    await queue.enqueue('A');
+    await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID);
+    const result = await queue.setQueuePausedState(false, DEFAULT_QUEUE_ID);
+    expect(result.ok).toBe(true);
+    const after = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(after.queueLifecycle).toBe('idle-pending');
+    assertLockstep(after);
+  });
+
+  it('resume with no pending work settles at active-empty', async () => {
+    await setup();
+    await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID);
+    const result = await queue.setQueuePausedState(false, DEFAULT_QUEUE_ID);
+    expect(result.ok).toBe(true);
+    expect(store.getQueue(DEFAULT_QUEUE_ID).queueLifecycle).toBe('active-empty');
+  });
+
+  it('resume with an in-flight Task returns to running', async () => {
+    await setup();
+    const a = await queue.enqueue('A');
+    await queue.markInFlight(a.id, 'run-1');
+    await queue.setQueuePausedState(true, DEFAULT_QUEUE_ID);
+    const result = await queue.setQueuePausedState(false, DEFAULT_QUEUE_ID);
+    expect(result.ok).toBe(true);
+    const after = store.getQueue(DEFAULT_QUEUE_ID);
+    expect(after.queueLifecycle).toBe('running');
+    expect(after.inFlightId).toBe(a.id);
+  });
+});
+
+// FR-004's three named refusal paths (idle-pending, workspace-capacity,
+// execution-lease) are exhaustively covered by `auto-drain.test.ts`'s own
+// `drainIfIdle` suite (T036, FR-023–FR-028) — that file owns the
+// `AutoDrainCoordinator` fixture and is the single place it is built
+// (research.md D7). Reusing its exported `makeCoordinator` here, rather than
+// re-deriving a second simulation, is what keeps this suite's refusal
+// coverage from silently drifting out of step with the coordinator's own.
+describe('AutoDrainCoordinator refusals leave the lifecycle untouched (FR-004, reusing auto-drain.test.ts D7)', () => {
+  it('an idle-pending queue is refused before any lifecycle write is attempted', async () => {
+    const { coord, spies } = makeCoordinator('lifecycle');
+    await coord.drainIfIdle(DEFAULT_QUEUE_ID);
+    expect(spies.tryAcquire).not.toHaveBeenCalled();
+    expect(spies.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('a workspace-at-capacity queue is refused without starting or writing anything', async () => {
+    const { coord, spies } = makeCoordinator('workspace-capacity');
+    await coord.drainIfIdle(DEFAULT_QUEUE_ID);
+    expect(spies.tryAcquire).not.toHaveBeenCalled();
+    expect(spies.admitNew).not.toHaveBeenCalled();
+  });
+
+  it('a queue whose execution lease another window holds is refused without starting', async () => {
+    const { coord, spies } = makeCoordinator('lease');
+    await coord.drainIfIdle(DEFAULT_QUEUE_ID);
+    expect(spies.tryAcquire).toHaveBeenCalled();
+    expect(spies.admitNew).not.toHaveBeenCalled();
+  });
+});
+
+describe('lockstep invariant holds for every lifecycle value (FR-001)', () => {
+  // Renamed (code review, 2026-09-03): this case no longer checks
+  // `paused === (queueLifecycle === 'operator-paused')` — see `assertLockstep`'s
+  // own doc comment above for why that clause was dropped. The title now names
+  // the two invariants the body still asserts, so a reader cannot mistake this
+  // for continued `paused`-mirror coverage.
+  it('scheduledStartAt/idle-pending lockstep invariants hold across all four lifecycle values', () => {
+    const cases: readonly QueueState[] = [
+      makeState({ queueLifecycle: 'running', inFlightId: 'r-1' }),
+      makeState({
+        queueLifecycle: 'operator-paused',
+        paused: true,
+        pausedReason: 'operator'
+      }),
+      makeState({
+        queueLifecycle: 'idle-pending',
+        scheduledStartAt: 1_700_000_000_000,
+        scheduledStartSource: 'operator-chooser'
+      }),
+      makeState({ queueLifecycle: 'active-empty' })
     ];
-    for (const lc of lifecycles) {
-      const state = makeState({
-        queueLifecycle: lc,
-        pauseSource: null,
-        paused: lc === 'operator-paused',
-        pausedReason: lc === 'operator-paused' ? 'operator' : null,
-        inFlightId: lc === 'running' ? 'r-1' : null,
-        scheduledStartAt: lc === 'idle-pending' ? 1_700_000_000_000 : null,
-        scheduledStartSource: lc === 'idle-pending' ? 'operator-chooser' : null
-      });
-      assertLockstep(state);
-    }
+    for (const state of cases) assertLockstep(state);
   });
 });

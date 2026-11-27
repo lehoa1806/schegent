@@ -74,20 +74,39 @@ const ALLOWED: ReadonlySet<string> = new Set(['src/state/queue-state-migrator.ts
  * are listed by file because `.paused` is a field name three unrelated records
  * share, and a token scan cannot tell them apart:
  */
+const HANDOFF_PAUSE_REASON =
+  'reads the recovery handoff pause flag (FR-R6-F08) — `HandoffRow.paused`, the ' +
+  '`recovery_handoffs.paused` column, or `LegacyMapping.paused` — which only picks the pin ' +
+  'purpose and is unrelated to any queue lifecycle';
+
+const HANDOFF_PAUSE_READERS = [
+  'src/services/recovery-handoff/handoff-explanation.ts',
+  'src/services/recovery-handoff/handoff-operator.ts',
+  'src/services/recovery-handoff/handoff-pins.ts',
+  'src/services/recovery-handoff/handoff-prepare.ts',
+  'src/services/recovery-handoff/handoff-settle.ts',
+  'src/services/recovery-handoff/handoff-store-rows.ts',
+  'src/services/recovery-handoff/legacy-handoff-import.ts'
+] as const;
+
 const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
+  ...HANDOFF_PAUSE_READERS.map((file): [string, string] => [file, HANDOFF_PAUSE_REASON]),
   [
     'src/state/queue-state-migrator.ts',
     'reads the mirror as migration input, off the legacy record it is lifting'
   ],
   [
     'src/state/workspace-state.ts',
-    'reads the mirror as migration input in `ensureExtendedQueueShape` and the ' +
-      'v6 → v7 step, both of which run on records that predate the discriminator'
+    'reads the mirror as migration input in `ensureExtendedQueueShape` on records that predate the discriminator'
   ],
   [
-    'src/queue/queue-registry.ts',
+    'src/state/workspace-state-migrations.ts',
+    'reads the mirror as migration input in `migrateV6ToV7IfNeeded` (extracted from `workspace-state.ts` by FR-R7-07)'
+  ],
+  [
+    'src/contracts/queue-registry.ts',
     'reads `QueuePauseView.paused` — the derived view the projection is handed, ' +
-      'not a persisted field'
+      'not a persisted field (relocated from `src/queue/queue-registry.ts` by FR-R7-07)'
   ],
   [
     'src/watchdog/credit-watchdog.ts',
@@ -98,6 +117,18 @@ const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
     'src/queue/queue-manager.ts',
     'reads `WatchdogState.paused` when clear-all decides whether the watchdog ' +
       'needs clearing; the queue pause on the line below it reads `queueLifecycle`'
+  ],
+  [
+    'src/services/phase-log/phase-log-service.ts',
+    'reads `QueueItem.paused` — the per-Task pause record the queue projector ' +
+      'derives into the wire snapshot, not a persisted field — to tell a ' +
+      'system-paused row still in flight from an operator-paused one'
+  ],
+  [
+    'src/services/workflow-execution/quota-permit-arbiter.ts',
+    'reads `QuotaWaiter.paused` — the derived waiter eligibility flag mapped ' +
+      'from `QuotaWaiterRecord.status === "paused"` in the control ledger, ' +
+      'never a `QueueState.paused` mirror'
   ]
 ]);
 
@@ -108,7 +139,7 @@ const READ_ALLOWED: ReadonlyMap<string, string> = new Map([
  */
 const ANCHORS = [
   'src/state/queue-state-migrator.ts',
-  'src/state/workspace-state.ts',
+  'src/state/workspace-state-queue.ts',
   'src/queue/queue-manager.ts'
 ] as const;
 

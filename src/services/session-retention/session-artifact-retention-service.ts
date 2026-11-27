@@ -7,6 +7,7 @@ import {
   resolveContainedTarget,
   type ContainmentRefusal
 } from '../../lib/path-containment';
+import { doesSubtreeOverlapProtectedPathsSync } from '../../lib/protected-path-match';
 
 export interface SessionArtifactRetentionPolicy {
   readonly maxAgeMs: number;
@@ -40,6 +41,19 @@ interface ArtifactGroup {
   scanFailed: boolean;
 }
 
+/**
+ * FR-R3-050 (M-12) — the shared staging directory for default-mode transcripts.
+ *
+ * Mirrors the path `raw-transcript-writer.ts` writes to. Named here rather than
+ * inlined so the one place retention has to recognise it is visible, and so a
+ * rename shows up as a mismatch rather than as a silently unrecognised directory
+ * that reverts to being one unprotectable group.
+ */
+const PENDING_STAGING_DIR_NAME = '.pending';
+
+/** `raw-<runId>.log` — the writer/retention filename contract. */
+const RAW_TRANSCRIPT_NAME = /^raw-(.+)\.log$/;
+
 interface FsLike {
   readdir(target: string, options: { withFileTypes: true }): Promise<readonly import('node:fs').Dirent[]>;
   lstat(target: string): Promise<import('node:fs').Stats>;
@@ -54,6 +68,18 @@ export interface SessionArtifactRetentionDeps {
   readonly audit?: Pick<AuditLogWriter, 'append'> | null;
   readonly now?: () => Date;
   readonly filesystem?: FsLike;
+  /**
+   * FR-R4-F15 (K2.1) — the failure-record pass. Called inside `sweep()`'s serialized chain, after the
+   * session pass, with the same age and the same clock. Its outcome is discarded: record counts are
+   * not part of `SessionArtifactRetentionResult`, `getUsage()` or the `session-retention-applied`
+   * payload, because the spec gives the audit log no new field.
+   */
+  readonly failureRecords?: { sweep(maxAgeMs: number, now: Date): Promise<unknown> };
+  /**
+   * FR-R7-11 (FR-020) — Protected database paths (active canonical/fallback DB,
+   * sidecars, and preserved unselected copies) that session retention must never delete.
+   */
+  readonly protectedPaths?: () => readonly string[];
 }
 
 const EMPTY_USAGE: SessionArtifactUsage = Object.freeze({
@@ -71,7 +97,9 @@ function errnoCode(error: unknown): string {
   return 'unknown';
 }
 
-function normalizedPolicy(policy: SessionArtifactRetentionPolicy): SessionArtifactRetentionPolicy {
+// Exported (FR-R4-F15, Q3.3): the failure-record read answers `expired` against the very age the sweep
+// applies, so both normalize the setting through this one function and cannot disagree about it.
+export function normalizedPolicy(policy: SessionArtifactRetentionPolicy): SessionArtifactRetentionPolicy {
   return {
     maxAgeMs: Number.isFinite(policy.maxAgeMs) ? Math.max(0, policy.maxAgeMs) : 0,
     maxBytes: Number.isSafeInteger(policy.maxBytes) ? Math.max(0, policy.maxBytes) : 0
@@ -126,6 +154,9 @@ export class SessionArtifactRetentionService {
    */
   private refusals = new Set<ContainmentRefusal>();
 
+  /** FR-R4-F04 (S6) — this sweep's `recordNoop`; set per sweep, safe for the same reason as `refusals`. */
+  private recordNoop = true;
+
   constructor(private readonly deps: SessionArtifactRetentionDeps) {
     this.sessionsRoot = path.join(deps.workspaceRoot, '.schegent', 'sessions');
     this.fs = deps.filesystem ?? fs;
@@ -136,14 +167,39 @@ export class SessionArtifactRetentionService {
     return this.usage;
   }
 
-  public sweep(protectedRunIds: ReadonlySet<string> = new Set()): Promise<SessionArtifactRetentionResult> {
+  /**
+   * FR-R4-F04 (S6) — `recordNoop: false` skips the `session-retention-applied` row for a sweep that
+   * removed nothing, so the hourly maintenance pass does not fill the audit log. Every other caller
+   * passes no option and keeps the row.
+   */
+  public sweep(
+    protectedRunIds: ReadonlySet<string> = new Set(),
+    options: { readonly recordNoop?: boolean } = {}
+  ): Promise<SessionArtifactRetentionResult> {
     const protectedSnapshot = new Set(protectedRunIds);
-    const operation = this.sweepTail.then(
-      () => this.performSweep(protectedSnapshot),
-      () => this.performSweep(protectedSnapshot)
-    );
+    const recordNoop = options.recordNoop ?? true;
+    // FR-R4-F15 (K2.2) — the record pass belongs to the operation the tail chains, so a second sweep in
+    // this window starts only after both passes have ended. No lock is added.
+    const run = async (): Promise<SessionArtifactRetentionResult> => {
+      this.recordNoop = recordNoop;
+      const result = await this.performSweep(protectedSnapshot);
+      await this.sweepFailureRecords();
+      return result;
+    };
+    const operation = this.sweepTail.then(run, run);
     this.sweepTail = operation.then(() => undefined, () => undefined);
     return operation;
+  }
+
+  /** K2.3 — a pass that fails is one warning by code; the session result is returned regardless. */
+  private async sweepFailureRecords(): Promise<void> {
+    const pass = this.deps.failureRecords;
+    if (pass === undefined) return;
+    try {
+      await pass.sweep(normalizedPolicy(this.deps.policy()).maxAgeMs, this.now());
+    } catch (error) {
+      this.deps.logger.warn('failure-record-retention: pass failed', { errorCode: errnoCode(error) });
+    }
   }
 
   private async performSweep(protectedRunIds: ReadonlySet<string>): Promise<SessionArtifactRetentionResult> {
@@ -182,6 +238,32 @@ export class SessionArtifactRetentionService {
     }
 
     for (const entry of entries) {
+      // FR-R3-050 (M-12) — the shared staging directory is enumerated one level
+      // down, so each pending transcript becomes its own candidate group.
+      //
+      // Default-mode transcripts stage in ONE directory shared by every run
+      // (`raw-transcript-writer.ts`: `sessions/.pending/raw-<runId>.log`). The
+      // `??` fallback below keys a directory by its own name, which is right for
+      // the always-mode layout where a directory IS a run — and catastrophic
+      // here, because it made the whole staging area a single group keyed
+      // `.pending`. `sweep()` receives real Run IDs and can never receive a
+      // directory name, so that group was unprotectable BY CONSTRUCTION: an age
+      // or byte-pressure sweep deleted every active transcript in one pass.
+      // Measured before the fix: three staged transcripts, all three protected,
+      // zero survivors.
+      //
+      // Recursing here rather than widening the fallback keeps that fallback
+      // doing the one job it is correct for. And it introduces no new coupling:
+      // the `raw-<runId>.log` expression below is already the contract between
+      // the writer and this enumeration for files in the sessions root; this
+      // applies the same expression one directory further in.
+      if (entry.isDirectory() && entry.name === PENDING_STAGING_DIR_NAME) {
+        failures += await this.enumeratePendingStaging(
+          path.join(sessionsRoot, entry.name),
+          groups
+        );
+        continue;
+      }
       // FR-R3-005 (T325) — `readdir` reports a symlink as neither file nor
       // directory, so an entry that is one used to drop out of this
       // enumeration entirely: silently skipped, which is the opposite of
@@ -191,7 +273,7 @@ export class SessionArtifactRetentionService {
       // inside the sessions root is pruned like any other entry (`rm` unlinks
       // the link, not its target), one that leaves is refused and recorded.
       const named = entry.isFile() || entry.isSymbolicLink();
-      const rawMatch = named ? /^raw-(.+)\.log$/.exec(entry.name) : null;
+      const rawMatch = named ? RAW_TRANSCRIPT_NAME.exec(entry.name) : null;
       const runId = rawMatch?.[1]
         ?? (entry.isDirectory() || entry.isSymbolicLink() ? entry.name : null);
       if (!runId || runId === '.' || runId === '..') continue;
@@ -220,6 +302,7 @@ export class SessionArtifactRetentionService {
       .filter((group) => !group.scanFailed && !protectedRunIds.has(group.runId))
       .sort((a, b) => a.mtimeMs - b.mtimeMs || a.runId.localeCompare(b.runId));
     const removed = new Set<string>();
+    const refusedGroups = new Set<string>();
     let removedBytes = 0;
 
     for (const group of candidates) {
@@ -228,6 +311,7 @@ export class SessionArtifactRetentionService {
       failures += outcome.failures;
       removedBytes += outcome.removedBytes;
       if (outcome.complete) removed.add(group.runId);
+      else if (outcome.failures > 0) refusedGroups.add(group.runId);
     }
 
     let retainedBytes = [...groups.values()]
@@ -235,7 +319,7 @@ export class SessionArtifactRetentionService {
       .reduce((sum, group) => sum + group.size, 0);
     for (const group of candidates) {
       if (retainedBytes <= policy.maxBytes) break;
-      if (removed.has(group.runId)) continue;
+      if (removed.has(group.runId) || refusedGroups.has(group.runId)) continue;
       const outcome = await this.removeGroup(group, sessionsRoot);
       failures += outcome.failures;
       removedBytes += outcome.removedBytes;
@@ -346,6 +430,12 @@ export class SessionArtifactRetentionService {
         removedBytes += target.size;
         continue;
       }
+      const protectedList = this.deps.protectedPaths?.() ?? [];
+      if (protectedList.length > 0 && doesSubtreeOverlapProtectedPathsSync(target.fullPath, protectedList)) {
+        failures += 1;
+        this.deps.logger.warn('session-retention: remove-artifact refused', { reason: 'protected-path' });
+        continue;
+      }
       try {
         await this.fs.rm(target.fullPath, { recursive: true, force: true });
         removedBytes += target.size;
@@ -395,6 +485,7 @@ export class SessionArtifactRetentionService {
     policy: SessionArtifactRetentionPolicy
   ): Promise<void> {
     if (!this.deps.audit) return;
+    if (!this.recordNoop && result.removedArtifactCount === 0) return;
     try {
       await this.deps.audit.append({
         runId: 'system',
@@ -420,6 +511,69 @@ export class SessionArtifactRetentionService {
     } catch (error) {
       this.warnFailure('append-audit', error);
     }
+  }
+
+  /**
+   * FR-R3-050 (M-12) — enumerate the shared staging directory one transcript at a
+   * time, so each belongs to the run that produced it.
+   *
+   * Returns the number of scan failures to add to the caller's count, matching
+   * how the outer loop accounts for them.
+   *
+   * An entry that does not match the filename contract gets its own group keyed
+   * by the entry itself rather than falling back to the directory. That is
+   * deliberate on both sides: it is not attributed to a run that did not produce
+   * it (so a protected run cannot be made to shield someone else's file), and it
+   * is not made blanket-immune either (so a stray file is still reclaimable). It
+   * simply cannot be protected by a Run ID, because no run claims it.
+   */
+  private async enumeratePendingStaging(
+    stagingRoot: string,
+    groups: Map<string, ArtifactGroup>
+  ): Promise<number> {
+    let failures = 0;
+    let entries: readonly import('node:fs').Dirent[];
+    try {
+      entries = await this.fs.readdir(stagingRoot, { withFileTypes: true });
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') {
+        failures += 1;
+        this.warnFailure('scan-root', error);
+      }
+      return failures;
+    }
+
+    for (const entry of entries) {
+      // Same admission rule as the outer loop: a symlink is a candidate and the
+      // containment oracle decides, rather than being silently skipped.
+      const named = entry.isFile() || entry.isSymbolicLink();
+      const match = named ? RAW_TRANSCRIPT_NAME.exec(entry.name) : null;
+      const runId = match?.[1] ?? `${PENDING_STAGING_DIR_NAME}/${entry.name}`;
+      // Mirrors the outer loop's guard, and on the same value: a name like
+      // `raw-..log` parses to an id of `.`, which is not a run and must not
+      // become a group key. (Deletion paths are built from the entry name, never
+      // from the key, so this was a hygiene defect and not a traversal one.)
+      if (!runId || runId === '.' || runId === '..') continue;
+      const group = groups.get(runId) ?? {
+        runId,
+        targets: [],
+        size: 0,
+        mtimeMs: 0,
+        scanFailed: false
+      };
+      groups.set(runId, group);
+      try {
+        const measured = await this.measure(path.join(stagingRoot, entry.name));
+        group.targets.push(measured);
+        group.size += measured.size;
+        group.mtimeMs = Math.max(group.mtimeMs, measured.mtimeMs);
+      } catch (error) {
+        group.scanFailed = true;
+        failures += 1;
+        this.warnFailure('scan-artifact', error);
+      }
+    }
+    return failures;
   }
 
   private warnFailure(operation: string, error: unknown = null): void {

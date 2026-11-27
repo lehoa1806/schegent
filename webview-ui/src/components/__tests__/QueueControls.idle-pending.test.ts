@@ -13,38 +13,86 @@
 // composition invariant (operator sees exactly one Start affordance).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
-import QueueControls from '../QueueControls.svelte';
-import type { QueueLifecycle } from '../../lib/snapshot-types';
+import { disposeIntentLedger } from '../../lib/intent-ledger';
 
-const postCommandSpy = vi.fn();
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
+import QueueControls from '../QueueControls.svelte';
+import { snapshotStore } from '../../lib/snapshot-store.svelte';
+import { CMD_ACK, CMD_START_QUEUE } from '../../lib/messages';
+import type { QueueItem, QueueLifecycle } from '../../lib/snapshot-types';
+
+// FR-R3-154 (T1646) — the stub returns a `correlationId` because the real
+// `postCommand` does, and the Start/Pause/Resume action now awaits its ACK
+// instead of dropping it. A bare `vi.fn()` returns `undefined`, and reading
+// `.correlationId` off that throws inside the click handler: an unhandled
+// rejection that exits `vitest run` 1 while every assertion below still
+// passes, since they all assert the post that already happened.
+let nextCorrelationId = 0;
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
+}));
 vi.mock('../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args)
 }));
+
+/** Answer the post at `callIndex` through the real store, as the host would. */
+function ack(
+  callIndex: number,
+  status: 'accepted' | 'rejected',
+  reason?: string,
+  outcome?: 'accepted' | 'no-op' | 'refused' | 'failed'
+): void {
+  const result = postCommandSpy.mock.results[callIndex];
+  expect(result, `no post at index ${callIndex}`).toBeDefined();
+  const { correlationId } = result!.value as { correlationId: string };
+  snapshotStore.apply({
+    type: CMD_ACK,
+    correlationId,
+    status,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(outcome !== undefined ? { outcome } : {})
+  } as never);
+}
 
 beforeEach(() => {
   postCommandSpy.mockReset();
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
+});
+
+const QUEUE_ID = 'q-beta';
 
 function defaultProps(overrides: Partial<{
   isPrimary: boolean;
+  queueId: string;
   paused: boolean;
   pendingCount: number;
   hasInFlight: boolean;
   clearDoneDisabled: boolean;
   cleanDisabled: boolean;
   queueLifecycle: QueueLifecycle | null;
+  haltedTask: QueueItem | null;
 }> = {}) {
   return {
     isPrimary: true,
+    queueId: QUEUE_ID,
     paused: false,
     pendingCount: 0,
     hasInFlight: false,
     clearDoneDisabled: true,
     cleanDisabled: true,
     queueLifecycle: null as QueueLifecycle | null,
+    haltedTask: null as QueueItem | null,
     onResume: vi.fn(),
     onPause: vi.fn(),
     onClearDone: vi.fn(),
@@ -174,5 +222,103 @@ describe('QueueControls — idle-pending suppression (BUG-007 / FR-018)', () => 
     });
     await fireEvent.click(getByTestId('dashboard-queue-action'));
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Bug "there is no way to start a pending task": a bare CMD_START_QUEUE is
+  // read by the host as the default queue, so this button started a queue the
+  // operator was not looking at.
+  it('names the queue it controls in the CMD_START_QUEUE payload', async () => {
+    const { getByTestId } = render(QueueControls, {
+      props: defaultProps({
+        pendingCount: 2,
+        hasInFlight: false,
+        paused: false,
+        queueLifecycle: 'active-empty'
+      })
+    });
+
+    await fireEvent.click(getByTestId('dashboard-queue-action'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: QUEUE_ID }, LEDGER_IDENTITY);
+  });
+
+  // FR-R3-154 (T1646) — the dashboard's Start/Pause/Resume button reports what
+  // the host answered. This is the surface where the false acceptance was
+  // cheapest to hit: `start-queue.ts`'s bare-drain path can no-op, and the
+  // button's own label flips on the projection rather than on the post, so a
+  // refused Start left a button that said "Pause" over a queue that never
+  // started.
+  it('renders a no-op start as a sentence rather than reporting success', async () => {
+    const { getByTestId, queryByTestId } = render(QueueControls, {
+      props: defaultProps({
+        pendingCount: 2,
+        hasInFlight: false,
+        paused: false,
+        queueLifecycle: 'active-empty'
+      })
+    });
+
+    await fireEvent.click(getByTestId('dashboard-queue-action'));
+    expect(queryByTestId('dashboard-queue-start-message')).toBeNull();
+
+    // `no-op`, not `refused`: nothing was rejected, the queue was already in
+    // the requested state. The distinction is the host's and this layer keeps
+    // it — see `lifecycle-control-ipc.ts`.
+    ack(0, 'rejected', 'start-intent-no-change', 'no-op');
+
+    await waitFor(() => {
+      expect(getByTestId('dashboard-queue-start-message').textContent).toBe(
+        'The queue was already set that way, so nothing changed.'
+      );
+    });
+  });
+
+  // FR-R4-F05 (O4, FR-024) — the interim "not yet known" text promises that the view will update;
+  // a late answer replaces it through the same text path as an on-time one, and a late
+  // acceptance clears it.
+  it('replaces the not-yet-known start text with the late answer, and clears it for a late acceptance', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = render(QueueControls, {
+        props: defaultProps({ pendingCount: 2, hasInFlight: false, paused: false, queueLifecycle: 'active-empty' })
+      });
+      await fireEvent.click(getByTestId('dashboard-queue-action'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getByTestId('dashboard-queue-start-message').textContent).toContain('has not answered yet');
+
+      ack(0, 'rejected', 'start-intent-no-change', 'no-op');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getByTestId('dashboard-queue-start-message').textContent).toBe(
+        'The queue was already set that way, so nothing changed.'
+      );
+
+      await fireEvent.click(getByTestId('dashboard-queue-action'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getByTestId('dashboard-queue-start-message').textContent).toContain('has not answered yet');
+      ack(1, 'accepted', undefined, 'accepted');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queryByTestId('dashboard-queue-start-message')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says nothing when the host accepts the start', async () => {
+    const { getByTestId, queryByTestId } = render(QueueControls, {
+      props: defaultProps({
+        pendingCount: 2,
+        hasInFlight: false,
+        paused: false,
+        queueLifecycle: 'active-empty'
+      })
+    });
+
+    await fireEvent.click(getByTestId('dashboard-queue-action'));
+    ack(0, 'accepted', undefined, 'accepted');
+
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+    // The queue starting is the report. A confirmation sentence on every
+    // accepted click is noise the operator learns to look past.
+    expect(queryByTestId('dashboard-queue-start-message')).toBeNull();
   });
 });

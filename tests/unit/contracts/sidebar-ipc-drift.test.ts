@@ -24,8 +24,11 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
     expect(HostShim.CMD_CANCEL).toBe('CMD_CANCEL');
   });
 
-  it('host shim shares SCHEMA_VERSION with authoritative module', () => {
-    expect(HostShim.SCHEMA_VERSION).toBe(Authoritative.SCHEMA_VERSION);
+  it('host shim shares SIDEBAR_IPC_SCHEMA_VERSION with authoritative module', () => {
+    // FR-R3-110 (FR-103) — renamed from `SCHEMA_VERSION`, which collided with
+    // `src/ui/sidebar/snapshot.ts`'s constant of the same name and a different value (3 vs 4) on
+    // the same host -> webview path. The value did not change.
+    expect(HostShim.SIDEBAR_IPC_SCHEMA_VERSION).toBe(Authoritative.SIDEBAR_IPC_SCHEMA_VERSION);
   });
 
   it('host shim exports the same COMMAND_GUARDS object as authoritative module', () => {
@@ -183,6 +186,15 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
             definitions: [{ id: 'specify', body: null }]
           }
         ]
+      },
+      // FR-R3-144 — both fields are required, and `granted` is required as a
+      // FIELD rather than as a truthy value: `false` is the revoke direction, so
+      // a guard that accepted a payload without it would make an absent flag mean
+      // "grant". The minimal fixture states the grant direction because that is
+      // the one that widens what a spawned process may touch.
+      [Authoritative.CMD_SET_UNCONTAINED_BACKEND_GRANT]: {
+        kind: 'claude',
+        granted: true
       }
     };
     for (const literal of Authoritative.COMMAND_TYPES) {
@@ -229,19 +241,13 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
           exportCmd({ resourceKind: 'phase', resourceId: 'specify' })
         )
       ).toBe(true);
-      for (const inclusion of ['references-only', 'include-referenced'] as const) {
-        expect(
-          Authoritative.isCmdExportProcessYaml(
-            exportCmd({ resourceKind: 'pipeline', resourceId: 'default', inclusion })
-          ),
-          `pipeline export with inclusion '${inclusion}' must be accepted`
-        ).toBe(true);
-      }
-      // Feature 086 (T005, T068) — three modes, because a Workflow's closure is
-      // two levels deep. The middle one is what a Pipeline export has no use for.
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({ resourceKind: 'modelCatalog' })
+        )
+      ).toBe(true);
       for (const inclusion of [
         'references-only',
-        'include-pipelines',
         'include-closure'
       ] as const) {
         expect(
@@ -253,19 +259,26 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       }
     });
 
-    it('does not let the two kinds borrow each other’s inclusion vocabulary', () => {
-      // The three arms exist so no illegal kind/mode pair is constructible. A
-      // guard that checked `inclusion` against the UNION of both vocabularies
-      // would accept both of these and the type would be a comment again.
+    it('rejects retired Pipeline export requests and retired inclusion modes', () => {
       expect(
         Authoritative.isCmdExportProcessYaml(
           exportCmd({
             resourceKind: 'pipeline',
             resourceId: 'default',
-            inclusion: 'include-closure'
+            inclusion: 'references-only'
           })
         ),
-        'a Pipeline has one level of dependency and no closure mode'
+        'Pipeline export is retired'
+      ).toBe(false);
+      expect(
+        Authoritative.isCmdExportProcessYaml(
+          exportCmd({
+            resourceKind: 'workflow',
+            resourceId: 'ship-it',
+            inclusion: 'include-pipelines'
+          })
+        ),
+        '`include-pipelines` is retired'
       ).toBe(false);
       expect(
         Authoritative.isCmdExportProcessYaml(
@@ -274,8 +287,7 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
             resourceId: 'ship-it',
             inclusion: 'include-referenced'
           })
-        ),
-        'a Workflow has two levels, so `include-referenced` names nothing'
+        )
       ).toBe(false);
     });
 
@@ -289,29 +301,13 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
     });
 
     it('rejects a Phase export carrying an inclusion choice a Phase cannot have', () => {
-      // The union exists precisely so this shape is unrepresentable. A guard
-      // that merely ignored the extra field would let it cross the boundary.
       expect(
         Authoritative.isCmdExportProcessYaml(
           exportCmd({
             resourceKind: 'phase',
             resourceId: 'specify',
-            inclusion: 'include-referenced'
+            inclusion: 'references-only'
           })
-        )
-      ).toBe(false);
-    });
-
-    it('rejects a Pipeline export with a missing or unrecognized inclusion', () => {
-      expect(
-        Authoritative.isCmdExportProcessYaml(
-          exportCmd({ resourceKind: 'pipeline', resourceId: 'default' })
-        ),
-        'inclusion is required for a Pipeline — it is the operator’s disclosure choice'
-      ).toBe(false);
-      expect(
-        Authoritative.isCmdExportProcessYaml(
-          exportCmd({ resourceKind: 'pipeline', resourceId: 'default', inclusion: 'all' })
         )
       ).toBe(false);
     });
@@ -365,12 +361,16 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
   // wire and the service to drift silently, both sides being structural. `scope`
   // and `mutation` are checked as retired fields rather than required ones.
   it('every lifecycle command payload is the service request, re-declared nowhere', () => {
-    // Declared together in the focused lifecycle module; the barrel re-exports
-    // them so `sidebar-ipc.ts` remains the single import site for the wire
-    // contract.
+    // Declared in the generated IPC contract module from declarative descriptors;
+    // `sidebar-ipc/catalog-lifecycle.ts` and the barrel re-export them so all
+    // public import sites stay stable without hand-written copies.
     const barrel = fs.readFileSync(path.join(REPO_ROOT, 'src/contracts/sidebar-ipc.ts'), 'utf8');
-    const source = fs.readFileSync(
+    const lifecycleModule = fs.readFileSync(
       path.join(REPO_ROOT, 'src/contracts/sidebar-ipc/catalog-lifecycle.ts'),
+      'utf8'
+    );
+    const generatedSource = fs.readFileSync(
+      path.join(REPO_ROOT, 'src/contracts/generated/sidebar-ipc-types.ts'),
       'utf8'
     );
     const REQUESTS: Readonly<Record<string, string>> = {
@@ -386,10 +386,16 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       expect(barrel, `sidebar-ipc.ts must re-export ${command}`).toMatch(
         new RegExp(`export type \\{[^}]*${command}[^}]*\\} from '\\./sidebar-ipc/catalog-lifecycle'`)
       );
-      const declaration = source.match(
+      expect(lifecycleModule, `catalog-lifecycle.ts must re-export ${command} from generated`).toMatch(
+        new RegExp(`export type \\{[^}]*${command}[^}]*\\} from '\\.\\./generated/sidebar-ipc-types'`)
+      );
+      expect(lifecycleModule, `catalog-lifecycle.ts must not hand-declare ${command}`).not.toMatch(
+        new RegExp(`export interface ${command}\\b`)
+      );
+      const declaration = generatedSource.match(
         new RegExp(`export interface ${command}[\\s\\S]*?\\n\\}`)
       )?.[0];
-      expect(declaration, `${command} must declare a payload`).toBeDefined();
+      expect(declaration, `${command} must declare a payload in generated/sidebar-ipc-types.ts`).toBeDefined();
       // One line, naming the request. Anything else is a re-declaration.
       expect(declaration, `${command} payload must be ${request} itself`).toMatch(
         new RegExp(`readonly payload:\\s*${request};`)
@@ -419,16 +425,17 @@ describe('sidebar-ipc drift guard (FR-024)', () => {
       const authoritative = (Authoritative as unknown as Record<string, unknown>)[guard];
       expect(authoritative, `sidebar-ipc must export ${guard}`).toBeTypeOf('function');
       expect((HostShim as unknown as Record<string, unknown>)[guard]).toBe(authoritative);
-      const type = (Authoritative as unknown as Record<string, string>)[command];
+      const type = (Authoritative as unknown as Record<string, string | undefined>)[command];
+      expect(type, `sidebar-ipc must export ${command}`).toBeTypeOf('string');
       expect(
-        (Authoritative.COMMAND_GUARDS as unknown as Record<string, unknown>)[type]
+        (Authoritative.COMMAND_GUARDS as unknown as Record<string, unknown>)[type!]
       ).toBe(authoritative);
     }
   });
 
-  it('SCHEMA_VERSION is a numeric integer constant', () => {
-    expect(typeof Authoritative.SCHEMA_VERSION).toBe('number');
-    expect(Number.isInteger(Authoritative.SCHEMA_VERSION)).toBe(true);
+  it('SIDEBAR_IPC_SCHEMA_VERSION is a numeric integer constant', () => {
+    expect(typeof Authoritative.SIDEBAR_IPC_SCHEMA_VERSION).toBe('number');
+    expect(Number.isInteger(Authoritative.SIDEBAR_IPC_SCHEMA_VERSION)).toBe(true);
   });
 
   it('webview shim source re-exports the authoritative IPC module via a single export-* statement', () => {

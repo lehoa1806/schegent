@@ -14,16 +14,45 @@
 // of posting a narrowed `{ pipelines }` payload could silently drop authored
 // contract fields, and why nothing here does that.
 
+import type { PhaseCapability } from '../../../src/contracts/phase-capabilities';
 import type {
+  NativeReviewKind,
+  PhaseEvidencePolicy,
+  PhaseHostVerification,
+  PhaseSideEffects,
+  RetryCapOutcome
+} from '../../../src/contracts/process-definitions';
+import type {
+  WorkflowBinding,
+  WorkflowInputPort,
+  WorkflowOutputPort
+} from '../../../src/contracts/workflow-definitions';
+import type {
+  CandidateBlockControl,
   PhaseBinding,
   PhaseDefinition,
   PipelineExecutionDefaults,
   PipelineInputPort,
   PipelineOutputPort,
   WorkflowConnection,
+  WorkflowDecisionResults,
   WorkflowNode
 } from './snapshot-types';
 
+/**
+ * The Phase body an editor serialises a row to.
+ *
+ * The note above says a row IS the definition body and that nothing here narrows
+ * one. That was the intent and not the fact: this interface named eleven of the
+ * twenty-one fields in `AUTHORED_PHASE_FIELDS`, and `toSavePhaseRow` narrowed to
+ * exactly those — so the containment declarations (`sideEffects`,
+ * `capabilities`) were dropped on every save, which is the pre-082 habit the note
+ * was written to disown. The ten missing names are added here and the builder now
+ * walks the authored set instead of restating it.
+ *
+ * `phaseId` is absent on purpose: the Builder row is `id`-keyed, and a body
+ * carrying both spellings is what the host refuses as `identity-ambiguous`.
+ */
 export interface SavePhaseRow {
   readonly id: string;
   readonly name: string;
@@ -34,10 +63,24 @@ export interface SavePhaseRow {
   readonly model?: string;
   readonly effort?: PhaseDefinition['effort'];
   readonly timeoutSeconds?: number;
+  readonly spendBoundUsd?: number;
+  readonly spendBoundTokens?: number;
   readonly loopable?: boolean;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
+  readonly forceContinueOnRetryCap?: boolean;
+  // FR-R3-157 (T046) — declared beside the switch it supersedes, and for the same
+  // reason the ten missing names above were added: `toSavePhaseRow` walks the
+  // authored set, but a field this interface does not name cannot be typed onto a
+  // row, so the editor could not write one. Both forms stay declared indefinitely;
+  // a phase may carry either or both, and the host decides which wins.
+  readonly onRetryCap?: RetryCapOutcome;
   readonly runner?: string;
+  readonly sideEffects?: PhaseSideEffects;
+  readonly evidencePolicy?: PhaseEvidencePolicy;
+  readonly hostVerification?: PhaseHostVerification;
+  readonly nativeReview?: NativeReviewKind;
+  readonly capabilities?: readonly PhaseCapability[];
 }
 
 /**
@@ -74,9 +117,16 @@ export interface SaveWorkflowRow {
   readonly name: string;
   readonly description?: string;
   readonly version: number;
+  readonly inputs?: readonly WorkflowInputPort[];
+  readonly outputs?: readonly WorkflowOutputPort[];
   readonly nodes: readonly WorkflowNode[];
   readonly connections: readonly WorkflowConnection[];
+  readonly bindings?: readonly WorkflowBinding[];
   readonly startNodeIds: readonly string[];
+  readonly executionDefaults?: PipelineExecutionDefaults;
+  readonly recommendedNext?: readonly string[];
+  readonly control?: CandidateBlockControl;
+  readonly decisionResults?: WorkflowDecisionResults;
 }
 
 /** The id a Pipeline row is addressed by; `''` when it declares neither spelling. */

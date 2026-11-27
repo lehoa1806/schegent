@@ -142,7 +142,7 @@ describe('primacy acquisition is compare-and-swap (T303)', () => {
     expect(fs.log.filter((entry) => entry.startsWith('create:')).length).toBeLessThan(20);
   });
 
-  it('does not start the heartbeat for a window that did not acquire', async () => {
+  it('never beats on behalf of a window that did not acquire', async () => {
     const a = manager(hosts[0]!, 'window-a');
     await a.tryAcquire();
     expect(scheduler.intervals).toHaveLength(1);
@@ -150,9 +150,27 @@ describe('primacy acquisition is compare-and-swap (T303)', () => {
     clock.advance(1);
     const b = manager(hosts[1]!, 'window-b');
     await b.tryAcquire();
-    // Still one. A heartbeat armed by a losing window would refresh a mirror
-    // entry it has no claim behind.
-    expect(scheduler.intervals).toHaveLength(1);
+    // FR-032 (BUG-001) amended the COUNT here, not the invariant. This case used
+    // to read "still one interval", and that was a proxy: it stood for "a losing
+    // window does not refresh a record it has no claim behind", which was true
+    // only because a loser armed nothing at all. Arming nothing is the bug — the
+    // window then stayed non-primary for its whole life, unable to take over
+    // from a host that died without releasing — so the loser has an interval now
+    // and the proxy had to go.
+    expect(scheduler.intervals).toHaveLength(2);
+
+    // The invariant it stood for, asserted directly instead. What a loser's
+    // interval runs is `tick()`, which beats only where it holds a fence and
+    // contests where it does not, so no refresh is ever issued against another
+    // window's record however many intervals are armed. `replace:` is that
+    // refresh; `create:` is the contest, which is the point of the beat.
+    const beforeBeat = fs.log.length;
+    await b.tick();
+    expect(fs.log.slice(beforeBeat).filter((entry) => entry.startsWith('replace:'))).toEqual([]);
+    expect(b.fenceOfRecord()).toBeNull();
+    expect(await b.hasPrimacy()).toBe(false);
+    expect(a.fenceOfRecord()).toBe(1);
+    expect(await a.hasPrimacy()).toBe(true);
   });
 
   it('keeps primacy and queue counters independent', async () => {

@@ -1,34 +1,55 @@
 import type { PhaseRunInputs, PhaseRunOutput, PhaseRunner } from '../controller/phase-runner';
 import { composePhaseMessagePath } from '../controller/phase-runner';
+import { dispatchResumingIncompleteTurns } from '../controller/incomplete-turn-resume';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { QueueManager } from '../queue/queue-manager';
+import type { MutationResult, QueueManager } from '../queue/queue-manager';
 import type { SchegentStatusBar } from '../ui/status-bar';
 import type { Notifier } from '../ui/notifications';
 import type { SanitizedLogger } from '../lib/logger';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { IsContinueGate } from '../controller/is-continue-gate';
-import { PhaseSequencer, nextOverridesAfterSkip } from '../controller/phase-sequencer';
 import {
-  computeRunPhaseStats,
+  PhaseSequencer,
+  nextOverridesAfterSkip,
+  type PostPhaseDecision
+} from '../controller/phase-sequencer';
+import { advancedRun } from './run-advance';
+import { terminalSettler } from './run-terminal-effects';
+import { emitTerminalOutcomeAudit } from './terminal-outcome-audit';
+import { failureNotice } from './failure-notice';
+import { BlockerNoticeLedger, emitBlockerNotice } from './blocker-notice';
+import type { InvocationResult } from '../parser/stdout-parser';
+import { failedPhaseNotice, type FailureRecorder } from './failure-record/failed-phase-notice';
+import {
+  cliSessionOf,
+  creditPausedRun,
+  NO_CLI_SESSION,
   type PhaseResult,
-  type RunPhaseStats,
   type SanitizedError,
   type WorkflowRun
 } from '../state/workflow-run';
 import type { ClaudeCliMonitor } from '../monitor/claude-cli-monitor';
-import type { PhaseName } from '../ui/sidebar/snapshot';
+import type { PhaseName } from '../contracts/phase-identity';
 import type { HistoryRecorder } from './history-recorder';
 import type { RetryCoordinator } from './retry-coordinator';
 import type { PhaseDef } from '../config/pipeline-config';
-import { RequiredEvidenceUnavailableError } from '../lib/errors';
+import { RequiredEvidenceUnavailableError, errorMessage } from '../lib/errors';
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
 import {
   DEFAULT_BACKEND,
   type BackendRunnerKind
-} from '../runner/backend-runner-factory';
-import { resolveSessionDispatch } from './session-dispatch-policy';
+} from '../contracts/backend-kinds';
+import { SessionDispositionReporter } from './session-disposition';
 import type { BackendAvailabilityProbe } from './backend-capability-service';
-import type { OptionalPhaseFailureContinuedPayload } from '../contracts/audit-events';
+import type {
+  OptionalPhaseFailureContinuedPayload,
+  OutputTargetRefusedAtDispatchPayload,
+  RunSnapshotDeclinedPayload
+} from '../contracts/audit-events';
+import {
+  judgeOutputTargetsAtDispatch,
+  OutputTargetRefusedAtDispatch
+} from './dispatch-output-guard';
 import type { TerminalTransitionCoordinator } from './terminal-transition-coordinator';
 import { mutationPlanIsApproved } from './mutation-plan';
 import type { RunCheckpointService } from './run-checkpoint-service';
@@ -36,6 +57,8 @@ import type { PhaseMutationReport, RunMutationLedger } from './run-mutation-ledg
 import type { RunOutputRecord } from '../contracts/run-results';
 import { resolveRunOutputs } from './run-output/run-output-resolver';
 import { createBoundedOutputProbe } from './run-output/run-output-probe';
+import { withPhaseOutputFacts } from './run-phase-facts';
+import { handleAttemptSpawnFenceLoss, withAttemptSpawnCheckpoints } from './workflow-execution/attempt-spawn-checkpoints';
 
 /**
  * FR-R3-004 — a phase's own account of what it wrote, taken from the audit
@@ -51,28 +74,40 @@ import { createBoundedOutputProbe } from './run-output/run-output-probe';
  * The paths themselves are untrusted: they come from CLI stdout, which is
  * operator-influenced. Nothing here opens them; the ledger canonicalises them
  * lexically and matches them against sections git itself printed.
+ *
+ * FR-R3-198 — a resumed dispatch joins its invocations' accounts in call order;
+ * one invocation with no account makes the whole account `null`.
  */
-function declaredMutations(output: PhaseRunOutput | null): PhaseMutationReport | null {
-  const audit = output?.result.auditEntry;
-  if (audit === null || audit === undefined) return null;
-  return {
-    declaredPaths: [...audit.filesCreated, ...audit.filesModified, ...audit.filesDeleted]
-  };
+function declaredMutations(outputs: readonly PhaseRunOutput[]): PhaseMutationReport | null {
+  let paths: readonly string[] = [];
+  for (const output of outputs) {
+    const audit = output.result.auditEntry;
+    if (!audit) return null;
+    paths = paths.concat(audit.filesCreated, audit.filesModified, audit.filesDeleted);
+  }
+  return { declaredPaths: paths };
 }
 
 interface RunDriverOptions {
   readonly cliPath: string;
-  readonly cwd: string;
+  readonly cwd: string; readonly resolveRunCwd?: (run: WorkflowRun) => Promise<string>;
   readonly iterationCap: number;
   readonly timeoutMs: number;
+  /** FR-R3-075 — absolute per-invocation wall-clock bound (no per-phase form). */
+  readonly maxDurationMs?: number;
   readonly inheritProcessEnv?: boolean;
   readonly processEnvAllowlist?: readonly string[];
   // Feature 074 — resolve the CLI binary path for a given runner kind.
   // When undefined, falls back to `cliPath` for all runners.
-  readonly cliPathResolver?: (runnerKind: string) => string;
+  readonly cliPathResolver?: (runnerKind: BackendRunnerKind) => string;
   /** Effective global backend for phases without an explicit override. */
   readonly defaultRunnerKind?: BackendRunnerKind;
   readonly skipProbing?: boolean;
+  /**
+   * Review gap GC-07 follow-up — an unwired probe service fails the Run as a failed probe instead
+   * of skipping the probe. The extension sets it; harnesses that wire no service leave it unset.
+   */
+  readonly requireProbe?: boolean;
   readonly isAuditEvidenceAvailable?: () => boolean;
   /**
    * Dynamic reader for `schegent.retry.forceContinueOnCap`. A reader rather
@@ -82,6 +117,7 @@ interface RunDriverOptions {
    * additions. Absent reader means the pre-existing halt.
    */
   readonly getForceContinueOnRetryCap?: () => boolean;
+  readonly getMaxUnchangedComparisons?: () => number; // FR-R4-F17: read per decision, never cached
 }
 
 type PhaseControlEventType =
@@ -137,6 +173,23 @@ export interface RunDriverDeps {
     run: WorkflowRun,
     payload: OptionalPhaseFailureContinuedPayload
   ) => Promise<void>;
+  /**
+   * FR-R3-077 (T1040) — the read-side decline's evidence record.
+   *
+   * Optional on the same terms as `releaseExecutionLease` below: the unit
+   * harnesses build a driver directly and have no audit writer. The decline
+   * itself is NOT optional — it happens whether or not anyone is listening, and
+   * the unconditional `logger.warn` beside this call is what a harness sees.
+   */
+  readonly emitRunSnapshotDeclined?: (
+    run: WorkflowRun,
+    payload: RunSnapshotDeclinedPayload
+  ) => Promise<void>;
+  /** FR-R3-079 (T1058) — the dispatch refusal's evidence record. */
+  readonly emitOutputTargetRefusedAtDispatch?: (
+    run: WorkflowRun,
+    payload: OutputTargetRefusedAtDispatchPayload
+  ) => Promise<void>;
   readonly scheduleAutoDrain: () => void;
   /**
    * Feature 092 (T132, FR-033a) — returns the finished Run's queue execution
@@ -144,7 +197,9 @@ export interface RunDriverDeps {
    * working; the controller always supplies it.
    */
   readonly releaseExecutionLease?: (run: WorkflowRun) => Promise<void>;
+  readonly blockerNoticeLedger?: BlockerNoticeLedger; // FR-R5-F19 (FR-001): the controller's one; a resumed Run's new driver would forget its own
   readonly onRunTerminal?: (run: WorkflowRun) => Promise<void>;
+  readonly failureRecords?: FailureRecorder;
   readonly terminalTransitions?: Pick<TerminalTransitionCoordinator, 'complete'>;
   readonly checkpoints?: Pick<RunCheckpointService, 'checkpoint'>;
   /**
@@ -171,14 +226,48 @@ export class RunDriver {
   private carriedIssues: Array<{ tag?: string; summary: string }> | string[] = [];
   private readonly overriddenActivePhaseAborts = new Set<string>();
   private readonly sequencer = new PhaseSequencer();
+  /** FR-R5-F19 (FR-001) — Runs already told about a blocking decision; in memory, so a host restart forgets it. */
+  private readonly blockerNotices: BlockerNoticeLedger;
+  /** FR-R3-175 (SC-010) — per-drive; cleared in `endOfDriveReset()`. */
+  private sessionDisposition: SessionDispositionReporter;
+  private logger: SanitizedLogger; // FR-R4-F04 (C1, FR-033): the window logger between drives, `{ runId }` during one
 
-  constructor(private readonly deps: RunDriverDeps) {}
+  constructor(private readonly deps: RunDriverDeps) {
+    this.logger = deps.logger; this.sessionDisposition = new SessionDispositionReporter(this.logger); this.blockerNotices = deps.blockerNoticeLedger ?? new BlockerNoticeLedger();
+  }
 
   public get running(): boolean {
     return this.isRunning;
   }
 
   public cancelActive(): void {
+    this.cancellationController?.abort();
+  }
+
+  /**
+   * FR-R3-103 (FR-046, FR-047) — this window lost the execution fence, so its child has no
+   * business still writing the workspace.
+   *
+   * WHAT WAS OPEN. Losing the fence stopped the state store from committing and did nothing
+   * about the child: no path from fence loss reached an `AbortController` or the process tree.
+   * So a superseded window's subprocess kept mutating the shared checkout while its state
+   * writes were refused — fencing protected state, not the tree, and the tree is what the CLI
+   * changes.
+   *
+   * THE SAME LADDER AS A CANCEL, on purpose. `cancelActive()` aborts the controller, which the
+   * runner's own abort handling turns into the SIGTERM → SIGKILL group escalation. Reaching for
+   * the process tree directly from here would be a second termination path, and two paths for
+   * one job is how they come to disagree about what "terminated" means.
+   *
+   * WHAT THIS MUST NOT DO, and it is a hard rule rather than a preference: it does not touch
+   * the window-primacy lease. `AGENTS.md` states that no Run-scoped path releases primacy —
+   * primacy's tenure is activation to disposal, and FR-028's history is a window that stopped
+   * being primary while it was still executing work. This acts on the INVOCATION.
+   *
+   * Idempotent by construction: aborting an already-aborted controller is a no-op, and a
+   * window can lose its fence more than once in a session.
+   */
+  public abortOnSupersession(): void {
     this.cancellationController?.abort();
   }
 
@@ -231,9 +320,34 @@ export class RunDriver {
    * a successor on the same queue while this driver is mid-flight, and the
    * successor is not a newer snapshot of this Run.
    */
-  private latestSnapshotOf(run: WorkflowRun): WorkflowRun | null {
+  private async latestSnapshotOf(run: WorkflowRun): Promise<WorkflowRun | null> {
     const found = this.deps.store.findRunByTask(run.featureId);
-    return found !== null && found.run.id === run.id ? found.run : null;
+    if (found === null || found.run.id !== run.id) return null;
+    // FR-R3-077 (T1040) — and it must not have been written by a holder whose
+    // lease had already moved on.
+    //
+    // The commit point refuses a write it can see; `Memento` has no conditional
+    // write, so a write from a superseded holder can still land in the window
+    // between the verify and the update. This is the reader that disbelieves
+    // one. Declining here costs this driver its refreshed snapshot — every
+    // caller already handles `null`, because a Task can be deleted mid-flight —
+    // and it never costs the Run its record.
+    const verdict = await this.deps.store.readRunIfLive(found.queueId);
+    if (verdict.outcome === 'superseded' && verdict.run.id === run.id) {
+      this.logger.warn(
+        `run snapshot declined: record for run ${run.id} was written at fence ` +
+          `${verdict.writtenAtFence}, superseded by ${verdict.liveFence}`
+      );
+      await this.deps
+        .emitRunSnapshotDeclined?.(run, {
+          runId: run.id,
+          writtenAtFence: verdict.writtenAtFence,
+          liveFence: verdict.liveFence
+        })
+        .catch(() => undefined);
+      return null;
+    }
+    return found.run;
   }
 
   /**
@@ -254,23 +368,79 @@ export class RunDriver {
     run: WorkflowRun,
     inputs: PhaseRunInputs
   ): Promise<PhaseRunOutput> {
+    // FR-R3-079 (T1056) — the output targets are re-judged HERE, at the last
+    // host-side instruction before the child exists.
+    //
+    // Request-time validation decided containment lexically and the operator
+    // confirmed it; the whole planning phase then ran. This is the second gate
+    // that item asks for, and this is the seam because every phase passes
+    // through it exactly once and it already sits inside the Run's attribution
+    // window. The frozen plan is READ, never rewritten (FR-017): the verdict
+    // gates execution and is not a correction to what the operator approved.
+    const execCwd = (await this.deps.options.resolveRunCwd?.(run)) ?? this.deps.options.cwd;
+    const verdict = await judgeOutputTargetsAtDispatch(
+      execCwd,
+      run.envelope?.outputs ?? []
+    );
+    if (verdict.outcome === 'refused') {
+      // `.catch` for the same reason `emitRunSnapshotDeclined` above has one: a
+      // failing audit append must not replace the named refusal as this Run's
+      // failure cause. The refusal is the fact; the record of it is best-effort.
+      await this.deps
+        .emitOutputTargetRefusedAtDispatch?.(run, {
+          runId: run.id,
+          portId: verdict.portId,
+          reason: verdict.reason
+        })
+        .catch(() => undefined);
+      this.logger.warn(
+        `output target refused at dispatch: port ${verdict.portId} (${verdict.reason})`
+      );
+      // A Run-level failure with a named cause, raised BEFORE the runner is
+      // called, so the child is never given the target. Not a silent downgrade,
+      // and not an error surfaced from a child that was never started.
+      throw new OutputTargetRefusedAtDispatch(verdict.portId, verdict.reason);
+    }
     await this.deps.mutationLedger?.observeBeforePhase(run);
     let output: PhaseRunOutput | null = null;
+    const outputs: PhaseRunOutput[] = [];
     try {
-      output = await this.deps.runner.run(inputs);
+      output = await withAttemptSpawnCheckpoints(
+        { store: this.deps.store, queue: this.deps.queue, run, activePhaseDef: inputs.phaseDef },
+        async () => {
+          const res = await dispatchResumingIncompleteTurns(this.deps.runner, inputs, (each) => { outputs.push(each); });
+          return res;
+        }
+      );
       return output;
     } finally {
-      await this.deps.mutationLedger?.observeAfterPhase(run, declaredMutations(output));
+      const declared = output === null ? null : declaredMutations(outputs);
+      await this.deps.mutationLedger?.observeAfterPhase(run, declared);
+    }
+  }
+
+  /**
+   * FR-R3-153 (code-review fix 2026-09-03, `drive-loop-loc-budget.test.ts`'s
+   * shrink-only gate) — `finish`/`pause` now refuse a transition outside the
+   * closed table by returning `{ ok: false, reason }` rather than always
+   * succeeding; every call site here logs a refusal the same one-line way, so
+   * this is factored out instead of repeating the `if (result.ok === false)`
+   * block at each of the four sites `drive()`/`failClosedForAuditEvidence`
+   * call `queue.pause`/`queue.finish` from.
+   */
+  private logQueueRefusal(op: 'pause' | 'finish', context: string, result: MutationResult): void {
+    if (result.ok === false) {
+      this.logger.warn(`run-driver: queue.${op} (${context}) refused: ${result.reason ?? 'unknown'}`);
     }
   }
 
   public async drive(initial: WorkflowRun, description: string): Promise<void> {
     if (this.isRunning) {
-      this.deps.logger.warn('controller already running; ignoring duplicate driveRun');
+      this.logger.withContext({ runId: initial.id }).warn('controller already running; ignoring duplicate driveRun');
       return;
     }
-    this.isRunning = true;
-    this.cancellationController = new AbortController();
+    this.isRunning = true; this.cancellationController = new AbortController();
+    this.logger = this.deps.logger.withContext({ runId: initial.id }); this.sessionDisposition = new SessionDispositionReporter(this.logger);
     let run = initial;
     let previousPhaseMessage: Readonly<Record<string, string>> | null = null;
     let pendingIsContinue = this.deps.isContinueGate.consume();
@@ -289,9 +459,10 @@ export class RunDriver {
       // in one window the first to finish released primacy for both. `drive()`
       // now holds only its queue's execution lease.
       this.assertAuditEvidenceAvailable();
-      // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start
+      // Feature 074 T017 — Probe all distinct runners referenced in the pipeline at start. Review gap
+      // GC-07: skipped only by `skipProbing` or an unwired service without `requireProbe`, never by `NODE_ENV`.
       if (
-        process.env.NODE_ENV !== 'test' &&
+        (this.deps.backendCapabilities !== undefined || this.deps.options.requireProbe === true) &&
         !this.deps.options.skipProbing &&
         run.phasesCompleted.length === 0 &&
         run.currentIteration === 0 &&
@@ -304,14 +475,12 @@ export class RunDriver {
         );
         for (const runnerKind of runners) {
           try {
-            const available = this.deps.backendCapabilities
-              ? await this.deps.backendCapabilities.probeAvailability(runnerKind)
-              : false;
+            const available = (await this.deps.backendCapabilities?.probeAvailability(runnerKind)) ?? false;
             if (!available) throw new Error('backend unavailable');
           } catch {
             const failureMessage =
               `Runner probe failed for ${runnerKind}: CLI executable is unavailable or invalid.`;
-            this.deps.logger.error(`run-driver: ${failureMessage}`);
+            this.logger.error(`run-driver: ${failureMessage}`);
             const sanitized: SanitizedError = {
               code: 'runner-probe-failed',
               message: failureMessage,
@@ -323,8 +492,11 @@ export class RunDriver {
               ...run,
               status: 'failed',
               lastError: sanitized,
-              lastTransitionAt: Date.now()
+              lastTransitionAt: Date.now(),
+              creditPause: null,
+              failureCause: 'runner_probe_failed'
             });
+            await this.deps.failureRecords?.record({ run, cause: 'runner_probe_failed', result: null });
 
             if (this.deps.appendRunnerProbeFailedAudit) {
               await this.deps.appendRunnerProbeFailedAudit(run, {
@@ -333,40 +505,23 @@ export class RunDriver {
                 runId: run.id
               });
             }
-            this.deps.statusBar.update(run.id, {
-              kind: 'failed',
-              phase: run.currentPhase,
-              detail: failureMessage
-            });
-            this.deps.notifier.warn(`Schegent: ${failureMessage}`);
+            const probeNotice = failureNotice({ cause: 'runner_probe_failed', runnerKind });
+            this.deps.statusBar.update(run.id, { kind: 'failed', phase: run.currentPhase, detail: probeNotice.statusDetail });
+            this.deps.notifier.warn(probeNotice.message);
             try {
-              await this.deps.queue.finish(run.featureId, 'failed', {
+              const finished = await this.deps.queue.finish(run.featureId, 'failed', {
                 code: sanitized.code,
                 message: sanitized.message,
                 phase: sanitized.phase ?? undefined,
                 correlationId: run.id
               });
+              this.logQueueRefusal('finish', 'probe failed', finished);
             } catch (queueError) {
-              this.deps.logger.warn(
-                `run-driver: queue.finish (probe failed) failed: ${(queueError as Error).message}`
-              );
+              this.logger.warn(`run-driver: queue.finish (probe failed) failed: ${errorMessage(queueError)}`);
             }
-            // Feature 072 — emit task-execution-ended
-            try {
-              if (this.deps.emitTaskLifecycleAudit) {
-                await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-                  taskId: run.featureId,
-                  runId: run.id,
-                  terminalStatus: 'failed',
-                  phasesCompleted: 0,
-                  phasesSkipped: 0,
-                  phasesTotal: run.pipeline?.phases.length || 0,
-                  lastErrorSummary: failureMessage
-                });
-              }
-            } catch (auditErr) {
-              this.deps.logger.warn(`run-driver: task-execution-ended (failed) audit failed: ${(auditErr as Error).message}`);
-            }
+            // Feature 072 — emit task-execution-ended. FR-R3-107: one emitter, and the
+            // statistics are DERIVED here rather than hand-written as zeros.
+            await this.emitTerminalOutcome(run, 'failed', { lastErrorSummary: failureMessage });
               
             await this.deps.emitRunEndedBreakpointAudit(run);
             await this.deps.historyRecorder.record(run, description, 'failed');
@@ -378,9 +533,7 @@ export class RunDriver {
       while (run.currentPhase !== 'done' && run.status === 'running') {
         this.assertAuditEvidenceAvailable();
         if (this.cancellationController!.signal.aborted) {
-          run = await this.deps.persistTransition(run, { ...run, status: 'canceled' });
-          await this.deps.emitRunEndedBreakpointAudit(run);
-          await this.deps.historyRecorder.record(run, description, 'canceled');
+          await this.handleCancellation(run, description, (canceled) => { run = canceled; });
           break;
         }
 
@@ -391,6 +544,7 @@ export class RunDriver {
         });
         if (preDecision.kind === 'skip-phase') {
           const { override: phaseOverride, skippedResult, transition: decision } = preDecision;
+          this.deps.runner.evictStagnationTracker(run.id, skippedResult.phase); // FR-009
           const nextPhaseDef = decision.kind === 'advance'
             ? run.pipeline?.phases.find((phase) => phase.id === decision.nextPhase)
             : undefined;
@@ -409,12 +563,7 @@ export class RunDriver {
               decision.kind === 'advance' ? decision.nextIteration : run.currentIteration,
             lastTransitionAt: Date.now(),
             phasesCompleted: [...run.phasesCompleted, skippedResult],
-            ...(sessionOwnerMatchesTarget
-              ? {}
-              : {
-                  lastCliSessionId: undefined,
-                  lastCliSessionRunnerKind: undefined
-                })
+            ...(sessionOwnerMatchesTarget ? {} : NO_CLI_SESSION)
           };
           run = await this.deps.persistTransition(run, advanced);
           previousPhaseMessage = null;
@@ -482,13 +631,9 @@ export class RunDriver {
         }
         const requestedContinue = pendingIsContinue;
         pendingIsContinue = false;
-        const sessionDispatch = resolveSessionDispatch({
+        const sessionDispatch = this.sessionDisposition.resolve(run, effectiveRunnerKind, {
           requestedContinue,
-          pendingSessionReuse,
-          resumePrompt: run.resumePrompt,
-          persistedSessionId: run.lastCliSessionId,
-          persistedSessionRunnerKind: run.lastCliSessionRunnerKind,
-          effectiveRunnerKind
+          pendingSessionReuse
         });
         if (run.resumePrompt !== undefined) {
           const nextRun = { ...run };
@@ -514,10 +659,13 @@ export class RunDriver {
           // specifies a runner, use the cliPathResolver to pick the
           // correct binary; otherwise fall back to the global cliPath.
           cliPath: this.resolveCliPath(effectiveRunnerKind),
-          cwd: this.deps.options.cwd,
+          cwd: (await this.deps.options.resolveRunCwd?.(run)) ?? this.deps.options.cwd, evidenceRoot: this.deps.options.cwd,
           timeoutMs: activePhaseDef?.timeoutSeconds
             ? activePhaseDef.timeoutSeconds * 1000
             : this.deps.options.timeoutMs,
+          // FR-R3-075 — deliberately NOT per-phase: the deadline bounds the
+          // invocation as a whole and a Phase definition cannot loosen it.
+          maxDurationMs: this.deps.options.maxDurationMs,
           inheritProcessEnv: this.deps.options.inheritProcessEnv !== false,
           processEnvAllowlist: this.deps.options.processEnvAllowlist,
           runId: run.id,
@@ -542,6 +690,7 @@ export class RunDriver {
           isContinue: sessionDispatch.isContinue,
           sessionReuse: sessionDispatch.sessionReuse,
           resumeSessionId: sessionDispatch.resumeSessionId,
+          resumeSessionCostUsd: sessionDispatch.resumeSessionCostUsd,
           resumePrompt: sessionDispatch.resumePrompt,
           // FR-R3-001 (T260) — forwarded whole, on every phase of the Run, so
           // the request the operator approved is the request each phase is asked
@@ -555,10 +704,9 @@ export class RunDriver {
             this.phaseOverrideAbortKey(run.id, run.currentPhase)
           )
         ) {
-          const latestRun = this.latestSnapshotOf(run);
-          if (latestRun !== null) {
-            run = latestRun;
-          }
+          // FR-009: the killed iteration was never compared — see endOfDriveReset().
+          this.deps.runner.evictStagnationTracker(run.id, run.currentPhase);
+          run = (await this.latestSnapshotOf(run)) ?? run;
           this.cancellationController = new AbortController();
           continue;
         }
@@ -566,30 +714,22 @@ export class RunDriver {
         // Capture the backend-owned session before any pause/breakpoint
         // branch persists and exits. A completed invocation can disclose
         // its exact session ID even when the controller immediately pauses;
-        // that ID is what makes a later resume safe and deterministic.
-        if (output.cliSessionId !== undefined) {
-          run = {
-            ...run,
-            lastCliSessionId: output.cliSessionId,
-            lastCliSessionRunnerKind: effectiveRunnerKind
-          };
-          pendingSessionReuse = true;
-        }
+        // that ID is what makes a later resume safe and deterministic. The reported feature directory
+        // (spec 278, U1) rides the same capture.
+        if (output.cliSessionId !== undefined) pendingSessionReuse = true;
+        run = withPhaseOutputFacts(run, output, effectiveRunnerKind);
 
         const postDecision = this.sequencer.decideAfterPhase({
           run,
-          output,
-          iteration,
+          output, iteration,
           iterationCap: this.deps.options.iterationCap,
           activePhaseDef,
-          latestManualPauseAt: this.latestSnapshotOf(run)?.manualPauseAt ?? null,
+          latestManualPauseAt: (await this.latestSnapshotOf(run))?.manualPauseAt ?? null,
           now: Date.now(),
-          forceContinueOnRetryCapDefault:
-            this.deps.options.getForceContinueOnRetryCap?.() ?? false
+          blockOwnedRetry: activePhaseDef?.resultContract !== undefined && this.deps.queue.findById(run.featureId)?.workflowOccurrence !== undefined,
+          ...this.sequencer.liveRetryPolicyOf(this.deps.options)
         });
-        for (const w of postDecision.warnings) {
-          this.deps.logger.warn(w);
-        }
+        this.handlePostPhaseDecisionSideEffects(run, postDecision, output.result, description);
 
         if (postDecision.kind === 'pause-breakpoint') {
           const consumedPhaseId = postDecision.consumedPhaseId;
@@ -679,14 +819,8 @@ export class RunDriver {
         }
 
         if (postDecision.kind === 'pause-rate-limit') {
-          const paused: WorkflowRun = {
-            ...run,
-            status: 'paused',
-            currentIteration: iteration,
-            lastTransitionAt: Date.now(),
-            phasesCompleted: [...run.phasesCompleted, phaseResult]
-          };
-          run = await this.deps.persistTransition(run, paused);
+          // FR-R4-F02 (W5 G15) — paused and naming its credit pause in the same write.
+          run = await this.deps.persistTransition(run, creditPausedRun(run, iteration, phaseResult, Date.now()));
           this.deps.statusBar.update(run.id, { kind: 'paused', phase: run.currentPhase });
           await this.deps.retryCoordinator.handleRateLimitPause(postDecision.cause, run);
           // Pause-style exit (T136): paused on a rate limit, resumed when the
@@ -717,52 +851,32 @@ export class RunDriver {
             currentIteration: iteration,
             lastTransitionAt: Date.now(),
             phasesCompleted: [...run.phasesCompleted, phaseResult],
-            lastError: sanitized
+            lastError: sanitized,
+            creditPause: null,
+            failureCause: postDecision.failureCause
           };
           run = await this.deps.persistTransition(run, failed);
-          await this.deps.emitRunEndedBreakpointAudit(run);
-          this.deps.statusBar.update(run.id, {
-            kind: 'failed',
-            phase: run.currentPhase,
-            detail: sanitized.message
+          const notice = await failedPhaseNotice(this.deps.failureRecords, this.deps.options, {
+            run, decision: postDecision, result: output.result, taskTitle: description, iteration
           });
-          this.deps.notifier.warn(
-            `Schegent: ${run.currentPhase} failed — ${sanitized.message}. Run "Schegent: Resume" to retry.`
-          );
-          try {
-            await this.deps.queue.finish(run.featureId, 'failed', {
+          // FR-R3-128 (T1484) — the terminal effect sequence, in one place. The
+          // ORDER is unchanged and is load-bearing; see `run-terminal-effects.ts`.
+          await this.settle({
+            run,
+            description,
+            terminalStatus: 'failed',
+            presentation: {
+              statusBar: { kind: 'failed', phase: run.currentPhase, detail: notice.statusDetail },
+              notify: { level: 'warn', message: notice.message }
+            },
+            queueError: {
               code: sanitized.code,
               message: sanitized.message,
               phase: sanitized.phase ?? undefined,
               correlationId: run.id
-            });
-          } catch (qErr) {
-            this.deps.logger.warn(
-              `run-driver: queue.finish (failed) failed: ${(qErr as Error).message}`
-            );
-          }
-          try {
-            await this.deps.historyRecorder.record(run, description, 'failed');
-          } catch (hErr) {
-            this.deps.logger.warn(
-              `run-driver: history record (failed) failed: ${(hErr as Error).message}`
-            );
-          }
-          // Feature 072 — emit task-execution-ended (failed).
-          try {
-            await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-              taskId: run.featureId,
-              runId: run.id,
-              terminalStatus: 'failed',
-              durationMs: Date.now() - run.startedAt,
-              ...this.computePhaseStats(run),
-              lastErrorSummary: sanitized.message
-            });
-          } catch (err) {
-            this.deps.logger.warn(
-              `run-driver: task-execution-ended (failed) audit failed: ${(err as Error).message}`
-            );
-          }
+            },
+            auditExtra: { lastErrorSummary: sanitized.message }
+          });
           break;
         }
 
@@ -791,7 +905,7 @@ export class RunDriver {
             phasesCompleted: [...run.phasesCompleted, phaseResult]
           };
           run = await this.deps.persistTransition(run, paused);
-          await this.deps.queue.pause(run.featureId, 'phase-paused');
+          this.logQueueRefusal('pause', 'verify-paused', await this.deps.queue.pause(run.featureId, 'phase-paused'));
           await this.deps.appendPhaseControlAudit('phase-paused', run, {
             runId: run.id,
             phaseId: run.currentPhase
@@ -816,9 +930,9 @@ export class RunDriver {
           // old read would have merged the successor's phase, iteration, and
           // completed-phase list into this pause write. There is nothing left to
           // pause, so the loop exits the same way every other pause branch does.
-          const latestRun = this.latestSnapshotOf(run);
+          const latestRun = await this.latestSnapshotOf(run);
           if (latestRun === null) {
-            this.deps.logger.warn(
+            this.logger.warn(
               `manual pause skipped: run ${run.id} is no longer active on its queue`
             );
             break;
@@ -828,8 +942,7 @@ export class RunDriver {
             // The invocation just completed after the operator's pause
             // write. Keep the session ownership captured from its output;
             // the latest persisted snapshot predates that output.
-            lastCliSessionId: run.lastCliSessionId,
-            lastCliSessionRunnerKind: run.lastCliSessionRunnerKind,
+            ...cliSessionOf(run),
             status: 'paused',
             currentPhase:
               decision.kind === 'advance' ? decision.nextPhase : latestRun.currentPhase,
@@ -841,7 +954,7 @@ export class RunDriver {
             phasesCompleted: [...latestRun.phasesCompleted, phaseResult]
           };
           run = await this.deps.persistTransition(latestRun, paused);
-          await this.deps.queue.pause(run.featureId, 'phase-paused');
+          this.logQueueRefusal('pause', 'manual-paused', await this.deps.queue.pause(run.featureId, 'phase-paused'));
           await this.deps.appendPhaseControlAudit('phase-paused', run, {
             runId: run.id,
             phaseId: phaseResult.phase,
@@ -876,29 +989,16 @@ export class RunDriver {
           nextRunnerKind !== undefined &&
           effectiveRunnerKind !== nextRunnerKind;
         if (crossesRunnerBoundary) pendingSessionReuse = false;
-        const advanced: WorkflowRun = {
-          ...run,
-          currentPhase: decision.kind === 'advance' ? decision.nextPhase : run.currentPhase,
-          currentIteration:
-            decision.kind === 'advance' || decision.kind === 'loop'
-              ? decision.nextIteration
-              : run.currentIteration,
-          lastTransitionAt: Date.now(),
-          phasesCompleted: [...run.phasesCompleted, phaseResult],
-          ...(optionalTerminalContinued
-            ? {
-                delayedRetryCount: 0,
-                pendingRetryAt: null,
-                pendingRetryCause: null
-              }
-            : {}),
-          ...(crossesRunnerBoundary
-            ? {
-                lastCliSessionId: undefined,
-                lastCliSessionRunnerKind: undefined
-              }
-            : {})
-        };
+        // FR-R3-157 (T028) — one write, including the degraded mark. See
+        // `run-advance.ts` for why the fold lives there rather than here.
+        const advanced = advancedRun({
+          run,
+          decision,
+          phaseResult,
+          optionalTerminalContinued,
+          crossesRunnerBoundary,
+          now: Date.now()
+        });
         run = await this.deps.persistTransition(run, advanced);
         if (optionalTerminalContinued) {
           await this.deps.emitOptionalPhaseFailureContinued(run, {
@@ -919,6 +1019,7 @@ export class RunDriver {
           ...run,
           status: 'completed',
           lastTransitionAt: Date.now(),
+          creditPause: null,
           // Folded in *before* persistTransition, not written after it. The
           // `finally` below re-persists the outer `run` through
           // `terminalTransitions.complete`, so a later write is overwritten
@@ -926,42 +1027,21 @@ export class RunDriver {
           ...(runOutputs.length > 0 ? { runOutputs } : {})
         };
         run = await this.deps.persistTransition(run, completed);
-        await this.deps.emitRunEndedBreakpointAudit(run);
-        this.deps.statusBar.update(run.id, { kind: 'completed' });
-        this.deps.notifier.info(`Schegent: workflow ${run.featureId} completed.`);
-        try {
-          await this.deps.queue.finish(run.featureId, 'completed');
-        } catch (qErr) {
-          this.deps.logger.warn(
-            `run-driver: queue.finish (completed) failed: ${(qErr as Error).message}`
-          );
-        }
-        try {
-          await this.deps.historyRecorder.record(run, description, 'completed');
-        } catch (hErr) {
-          this.deps.logger.warn(
-            `run-driver: history record (completed) failed: ${(hErr as Error).message}`
-          );
-        }
-        // Feature 072 — emit task-execution-ended (completed).
-        try {
-          await this.deps.emitTaskLifecycleAudit('task-execution-ended', run, {
-            taskId: run.featureId,
-            runId: run.id,
-            terminalStatus: 'completed',
-            durationMs: Date.now() - run.startedAt,
-            ...this.computePhaseStats(run)
-          });
-        } catch (err) {
-          this.deps.logger.warn(
-            `run-driver: task-execution-ended (completed) audit failed: ${(err as Error).message}`
-          );
-        }
+        // FR-R3-128 (T1484) — same sequence as the failure arm, same order.
+        await this.settle({
+          run,
+          description,
+          terminalStatus: 'completed',
+          presentation: {
+            statusBar: { kind: 'completed' },
+            notify: { level: 'info', message: `Schegent: workflow ${run.featureId} completed.` }
+          }
+        });
       }
     } catch (error) {
+      if (handleAttemptSpawnFenceLoss(error, this.deps.store, this.deps.queue, run, this.logger)) { allowAutoDrain = false; return; }
       const auditUnavailable =
-        error instanceof RequiredEvidenceUnavailableError ||
-        this.deps.options.isAuditEvidenceAvailable?.() === false;
+        error instanceof RequiredEvidenceUnavailableError || this.deps.options.isAuditEvidenceAvailable?.() === false;
       if (!auditUnavailable) throw error;
 
       allowAutoDrain = false;
@@ -969,19 +1049,29 @@ export class RunDriver {
     } finally {
       if (run.status !== 'running') {
         if (run.status !== 'paused') {
-          await this.deps.terminalTransitions?.complete(run, description);
+          // Guarded for the same reason `onRunTerminal` below is: everything
+          // after this block — `isRunning`, the execution-lease release, the
+          // auto-drain — is this Run giving its queue back, and a throw here
+          // used to skip all of it and wedge the queue for the window's
+          // lifetime. FR-R3-077 made the commit points inside `complete()`
+          // fenced, so it can now refuse where it previously could not.
+          try {
+            await this.deps.terminalTransitions?.complete(run, description);
+          } catch (error) {
+            this.logger.warn(
+              `run-driver: terminal transition failed: ${errorMessage(error)}`
+            );
+          }
         }
         try {
           await this.deps.onRunTerminal?.(run);
         } catch (error) {
-          this.deps.logger.warn(
-            `run-driver: terminal retention hook failed: ${(error as Error).message}`
+          this.logger.warn(
+            `run-driver: terminal retention hook failed: ${errorMessage(error)}`
           );
         }
       }
-      this.isRunning = false;
-      this.cancellationController = null;
-      this.carriedIssues = [];
+      this.endOfDriveReset(run);
       // Feature 092 (T132, FR-033a) — this is the ordinary terminal funnel for
       // completed, failed, and canceled Runs, so it is where the execution
       // lease's tenure ends. Unconditional on the drain gates below: a Run that
@@ -992,6 +1082,63 @@ export class RunDriver {
         this.deps.scheduleAutoDrain();
       }
     }
+  }
+
+  /**
+   * Feature 194 (FR-009, T019) — the two side effects `decideAfterPhase()`'s
+   * result drives that are not branch-specific: surfacing its warnings, and
+   * dropping this (run, phase) pair's stagnation tracker entry when the
+   * sequencer signals its loop (if any) is over. Extracted out of `drive()`
+   * itself — governed shrink-only by `tests/lint/drive-loop-loc-budget.
+   * test.ts` (FR-R3-128) — rather than inlined there.
+   */
+  private handlePostPhaseDecisionSideEffects(
+    run: WorkflowRun,
+    postDecision: PostPhaseDecision,
+    result: InvocationResult,
+    description: string
+  ): void {
+    for (const w of postDecision.warnings) this.logger.warn(w);
+    // FR-R5-F19 (FR-001): every branch passes here, so the first blocking report notifies once per Run.
+    emitBlockerNotice(
+      { runId: run.id, runLabel: description, result },
+      {
+        ledger: this.blockerNotices,
+        notifier: this.deps.notifier,
+        logger: this.logger
+      }
+    );
+    if (postDecision.evictStagnationTracker) {
+      // Same phaseId key `maybeEmit()` uses (`phaseDef?.id ?? phase`), and it
+      // cannot differ: `decideBeforePhase()` resolves the def by that id.
+      this.deps.runner.evictStagnationTracker(run.id, run.currentPhase);
+    }
+  }
+
+  // Feature 194 (FR-009, C2.5, SC-007): returning is the one funnel every
+  // `drive()` exit passes, so the eviction here is whole-Run — one key would be
+  // the wrong one, per `PhaseRetryEvaluator.evictRunStagnationTrackers()`.
+  // Rationale: tests/unit/services/run-driver-lifecycle-audit.test.ts.
+  private endOfDriveReset(run: WorkflowRun): void {
+    this.isRunning = false;
+    this.cancellationController = null;
+    this.carriedIssues = [];
+    this.sessionDisposition.reset(); this.logger = this.deps.logger;
+    this.deps.runner.evictStagnationTracker(run.id);
+  }
+
+  // No eviction here: inside `drive()`'s try, so `endOfDriveReset()` covers it.
+  private async handleCancellation(run: WorkflowRun, description: string, commit: (canceled: WorkflowRun) => void): Promise<void> {
+    const canceled = await this.deps.persistTransition(run, {
+      ...run,
+      status: 'canceled',
+      creditPause: null
+    });
+    // `commit` before the two writes below, as the inline block this replaced did: either can
+    // throw, and `drive()` left holding a `running` Run skips its terminal funnel (FR-033a).
+    commit(canceled);
+    await this.deps.emitRunEndedBreakpointAudit(canceled);
+    await this.deps.historyRecorder.record(canceled, description, 'canceled');
   }
 
   private assertAuditEvidenceAvailable(): void {
@@ -1026,13 +1173,9 @@ export class RunDriver {
       phasesCompleted: [...run.phasesCompleted, phaseResult],
       pendingRetryAt: null,
       pendingRetryCause: null,
+      creditPause: null,
       delayedRetryCount: 0,
-      ...(crossesRunnerBoundary
-        ? {
-            lastCliSessionId: undefined,
-            lastCliSessionRunnerKind: undefined
-          }
-        : {})
+      ...(crossesRunnerBoundary ? NO_CLI_SESSION : {})
     };
     const persisted = await this.deps.persistTransition(run, advanced);
     await this.deps.emitOptionalPhaseFailureContinued(persisted, {
@@ -1067,37 +1210,40 @@ export class RunDriver {
       ...run,
       status: 'failed',
       lastError,
-      lastTransitionAt: Date.now()
+      lastTransitionAt: Date.now(),
+      creditPause: null,
+      failureCause: 'audit_evidence_unavailable'
     });
+    await this.deps.failureRecords?.record({ run: failed, cause: 'audit_evidence_unavailable', result: null });
 
-    this.deps.logger.error(
+    this.logger.error(
       'run-driver: execution stopped because required structured audit evidence is unavailable'
     );
+    const notice = failureNotice({ cause: 'audit_evidence_unavailable' });
     this.deps.statusBar.update(failed.id, {
       kind: 'failed',
       phase: failed.currentPhase,
-      detail: message
+      detail: notice.statusDetail
     });
-    this.deps.notifier.warn(
-      'Schegent: execution stopped because required structured audit evidence is unavailable. Resolve the evidence sink and reload the workspace before resuming.'
-    );
+    this.deps.notifier.warn(notice.message);
     try {
-      await this.deps.queue.finish(failed.featureId, 'failed', {
+      const finished = await this.deps.queue.finish(failed.featureId, 'failed', {
         code: lastError.code,
         message: lastError.message,
         phase: lastError.phase ?? undefined,
         correlationId: failed.id
       });
+      this.logQueueRefusal('finish', 'audit unavailable', finished);
     } catch (queueError) {
-      this.deps.logger.warn(
-        `run-driver: queue.finish (audit unavailable) failed: ${(queueError as Error).message}`
+      this.logger.warn(
+        `run-driver: queue.finish (audit unavailable) failed: ${errorMessage(queueError)}`
       );
     }
     try {
       await this.deps.historyRecorder.record(failed, description, 'failed');
     } catch (historyError) {
-      this.deps.logger.warn(
-        `run-driver: history record (audit unavailable) failed: ${(historyError as Error).message}`
+      this.logger.warn(
+        `run-driver: history record (audit unavailable) failed: ${errorMessage(historyError)}`
       );
     }
     return failed;
@@ -1133,20 +1279,37 @@ export class RunDriver {
     if (!outputs || outputs.length === 0) return [];
 
     return resolveRunOutputs(outputs, {
-      workspaceRoot: this.deps.options.cwd,
+      workspaceRoot: (await this.deps.options.resolveRunCwd?.(run)) ?? this.deps.options.cwd,
       probe: createBoundedOutputProbe()
     });
   }
 
-  // Feature 072 — derive phase stats from the pipeline snapshot and
-  // completion records for the task-execution-ended payload.
-  //
-  // FR-R3-009 — delegated to `computeRunPhaseStats` in `state/workflow-run.ts`
-  // so the durable metrics rollup reports the same three numbers this payload
-  // does. Both are unioned by run id downstream; two implementations would let
-  // a total depend on which range a run fell in.
-  private computePhaseStats(run: WorkflowRun): RunPhaseStats {
-    return computeRunPhaseStats(run);
+  private settleTerminalFn: ReturnType<typeof terminalSettler> | null = null;
+
+  /**
+   * FR-R3-128 (T1484) — the terminal effect sequence; `run-terminal-effects.ts` owns
+   * the order and the reasoning. Bound lazily because `deps` is a parameter property
+   * and a field initializer would read it before assignment.
+   */
+  private get settle(): ReturnType<typeof terminalSettler> {
+    this.settleTerminalFn ??= terminalSettler(this.deps, (run, status, extra) =>
+      this.emitTerminalOutcome(run, status, extra)
+    );
+    return this.settleTerminalFn;
+  }
+
+  /**
+   * The driver's half of the one emitter; `terminal-outcome-audit.ts` owns the payload,
+   * the guard and the reasoning. It stays a method because `terminalSettler` binds to it.
+   */
+  private async emitTerminalOutcome(
+    run: WorkflowRun,
+    terminalStatus: 'completed' | 'failed',
+    extra: { readonly lastErrorSummary?: string } = {}
+  ): Promise<void> {
+    const audit = this.deps.emitTaskLifecycleAudit;
+    const sink = audit ? { emitTaskLifecycle: audit } : null;
+    await emitTerminalOutcomeAudit(sink, this.logger, run, terminalStatus, extra);
   }
 }
 

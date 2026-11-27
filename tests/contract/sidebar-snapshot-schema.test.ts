@@ -23,6 +23,9 @@ import { buildBuilderLifecycleByKind } from '../../src/ui/sidebar/builder-lifecy
 import { SCHEMA_VERSION, buildIdleSnapshot } from '../../src/ui/sidebar/snapshot';
 import { StateProjector } from '../../src/ui/sidebar/state-projector';
 import { SPECKIT_PHASE_DEFS } from '../fixtures/speckit-catalog-fixture';
+// FR-R3-132 (T1502) — annotated because `BuilderLifecycle` moved to contracts and
+// the inferred parameter type no longer flows here under the strictness ratchet.
+import type { BuilderVersionEntry } from '../../src/contracts/snapshot-projections';
 
 // Feature 098 (T080) — `PORTED_PIPELINE` names `speckit-specify` and
 // `speckit-plan`, which used to resolve out of the built-in Phase layer. That layer
@@ -264,11 +267,15 @@ describe('sidebar snapshot — record lifecycle is additive (feature 101)', () =
     const pipeline = snapshot.pipelineCatalog?.records.find((r) => r.pipelineId === 'ported');
     expect(pipeline?.lifecycle?.state).toBe('active-with-draft');
     // Newest first, and the pending draft is not the active one.
-    expect(pipeline?.lifecycle?.versions.map((entry) => entry.versionId)).toEqual([
+    expect(
+      pipeline?.lifecycle?.versions.map((entry: BuilderVersionEntry) => entry.versionId)
+    ).toEqual([
       'v-ported-2',
       'v-ported-1'
     ]);
-    expect(pipeline?.lifecycle?.versions.filter((entry) => entry.isActive)).toHaveLength(1);
+    expect(
+      pipeline?.lifecycle?.versions.filter((entry: BuilderVersionEntry) => entry.isActive)
+    ).toHaveLength(1);
     expect(pipeline?.lifecycle?.changedFields).toEqual({
       kind: 'changed',
       fields: [

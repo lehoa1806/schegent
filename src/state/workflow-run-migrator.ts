@@ -35,8 +35,8 @@
  *
  *     Also adds `pauseSource: 'operator' | 'cascade' | null` to each
  *     `QueueRegistryEntry` (default `'operator'` when
- *     `state === 'manually-paused'`, else `null`). Migrated via
- *     `migrateQueueRegistryV4ToV5()`.
+ *     `state === 'manually-paused'`, else `null`), now folded into
+ *     `migrateV12ToV13()` in `src/state/queue-state-migrator.ts`.
  *
  *   repair (feature 056): removes legacy bugfix phases that were
  *     accidentally persisted into the immutable `speckit-new-feature`
@@ -45,9 +45,11 @@
  *     single migration-style home.
  */
 
-import { DELAYED_RETRY_CAP } from '../controller/retry-constants';
-import { buildMutationPlan } from '../services/mutation-plan';
+import { DELAYED_RETRY_CAP } from '../contracts/retry-bounds';
+import { isSessionIdShape } from '../lib/session-id-shape';
+import { buildMutationPlan } from './mutation-plan';
 import type {
+  CreditPause,
   DelayedRetryCause,
   ManualPauseCause,
   PhaseBreakpoint,
@@ -83,7 +85,15 @@ const VALID_MANUAL_PAUSE_CAUSES: ReadonlySet<ManualPauseCause> = new Set<ManualP
   // the Run would reload without the field the webview Resume control requires.
   // Deliberately not the task-level `'phase-paused'`: this set is what keeps the
   // two vocabularies disjoint, and a test feeds that exact value in to prove it.
-  'verify-paused'
+  'verify-paused',
+  // FR-R3-112 — the spend bound. Listed here for the reason the note above gives, and it is not
+  // hypothetical for this cause: a run paused for spend is paused across a host restart by
+  // definition — nobody resumes a budget pause in the same second — so this is the value most
+  // likely to be read back off disk. Omitted, it would parse to null, `manualPausePairInvariant`
+  // would zero `manualPauseAt` with it, and the run would reload without the field the Resume
+  // control requires. Additive, so no version bump: no record written before the bound existed
+  // can carry it.
+  'spend-bound-reached'
 ]);
 
 const VALID_BREAKPOINT_ACTORS: ReadonlySet<'operator' | 'system'> = new Set<'operator' | 'system'>([
@@ -91,7 +101,7 @@ const VALID_BREAKPOINT_ACTORS: ReadonlySet<'operator' | 'system'> = new Set<'ope
   'system'
 ]);
 
-export interface WorkflowRunRepairedAuditEvent {
+export interface WorkflowRunPhaseRepairAuditEvent {
   readonly type: 'workflow-run-repaired';
   readonly runId: string;
   readonly pipelineId: 'speckit-new-feature';
@@ -101,9 +111,39 @@ export interface WorkflowRunRepairedAuditEvent {
   readonly remainingPhaseCount: number;
 }
 
+/** Names the Run and the repair, and carries no part of the id it dropped. */
+export interface WorkflowRunSessionIdRepairAuditEvent {
+  readonly type: 'workflow-run-repaired';
+  readonly runId: string;
+  readonly repair: 'remove-malformed-cli-session-id';
+}
+
+export type WorkflowRunRepairedAuditEvent =
+  | WorkflowRunPhaseRepairAuditEvent
+  | WorkflowRunSessionIdRepairAuditEvent;
+
 export interface WorkflowRunRepairResult {
   readonly run: WorkflowRun;
   readonly auditEvent: WorkflowRunRepairedAuditEvent | null;
+}
+
+export type SupportedRunSchemaCheckResult =
+  | { readonly supported: true }
+  | { readonly supported: false; readonly reason: 'unsupported-run-schema-version' };
+
+/**
+ * Verify that a raw persisted run record does not declare an unsupported future
+ * or legacy schema version tag (`FR-R5-F02-T10`).
+ */
+export function checkSupportedRunSchema(raw: unknown): SupportedRunSchemaCheckResult {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { supported: false, reason: 'unsupported-run-schema-version' };
+  }
+  const rec = raw as Record<string, unknown>;
+  if ('schemaVersion' in rec && rec.schemaVersion !== undefined) {
+    return { supported: false, reason: 'unsupported-run-schema-version' };
+  }
+  return { supported: true };
 }
 
 export function migrateLegacyRun(legacy: unknown): WorkflowRun | null {
@@ -249,11 +289,6 @@ function sanitizePlannedTotal(raw: unknown): WorkflowRun['plannedTotal'] {
   return { phaseCount, iterationCap, maxPhaseInvocations };
 }
 
-/** v7 -> v8 forward migration. Idempotent on v8 records. */
-export function migrateV7ToV8(legacy: unknown): WorkflowRun | null {
-  return migrateLegacyRun(legacy);
-}
-
 export function repairLegacyRunSnapshot(run: WorkflowRun): WorkflowRunRepairResult {
   const pipeline = run.pipeline;
   if (!pipeline || pipeline.id !== 'speckit-new-feature') {
@@ -293,6 +328,111 @@ export function repairLegacyRunSnapshot(run: WorkflowRun): WorkflowRunRepairResu
   };
 }
 
+/**
+ * Drops a persisted id that fails the shape check, with its owner and its cost figure (FR-R3-209);
+ * the event names none of them.
+ */
+export function repairPersistedSessionId(run: WorkflowRun): WorkflowRunRepairResult {
+  const id: unknown = run.lastCliSessionId;
+  if (typeof id !== 'string' || isSessionIdShape(id)) return { run, auditEvent: null };
+  const {
+    lastCliSessionId: _droppedId,
+    lastCliSessionRunnerKind: _droppedOwner,
+    lastCliSessionCostUsd: _droppedCost,
+    ...kept
+  } = run;
+  return {
+    run: kept,
+    auditEvent: {
+      type: 'workflow-run-repaired',
+      runId: run.id,
+      repair: 'remove-malformed-cli-session-id'
+    }
+  };
+}
+
+/**
+ * FR-R4-F02 (data-model §3 "Load") — a repair the closed audit contract has no event for.
+ *
+ * A malformed `creditPause` is repaired to `null`, which makes the Run ineligible for an unattended
+ * resume rather than wrongly eligible. No audit event type is added for it: the caller logs one
+ * warning per entry, and an entry carries a reason code and nothing from the Run (hard rules 22
+ * and 23).
+ */
+export interface LoadRepairWarning {
+  readonly reasonCode: 'credit-pause-repaired';
+}
+
+export interface CreditPauseRepairResult {
+  readonly run: WorkflowRun;
+  readonly warning: LoadRepairWarning | null;
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNullOrFiniteNonNegative(value: unknown): value is number | null {
+  return value === null || isFiniteNonNegative(value);
+}
+
+/** The persisted object, field by field: numeric-or-null, finite, non-negative, window after pause. */
+function isValidCreditPauseShape(value: unknown): value is CreditPause {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!isFiniteNonNegative(record.pausedAt)) return false;
+  if (!isNullOrFiniteNonNegative(record.windowStartedAt)) return false;
+  if (!isNullOrFiniteNonNegative(record.stoppedAt)) return false;
+  return record.windowStartedAt === null || record.windowStartedAt >= record.pausedAt;
+}
+
+/**
+ * Accepts a persisted `creditPause` only when its shape is valid AND it sits on a Run the store's
+ * invariant would accept it on; anything else becomes `null` with one warning.
+ *
+ * The second half is not in the data model's list, and it is the cheap half of the same promise: a
+ * well-formed record beside a running status or a retry pair is corruption, and left in place it
+ * would make `validateRunInvariants` refuse every later patch of that Run, which is a Run nothing
+ * can change. An absent key and an explicit `null` are the two healthy states and are left alone;
+ * the v15 step, not this repair, writes the default.
+ */
+export function repairCreditPauseOnLoad(run: WorkflowRun): CreditPauseRepairResult {
+  const value: unknown = run.creditPause;
+  if (value === undefined || value === null) return { run, warning: null };
+  const contradictsRun =
+    run.status !== 'paused' ||
+    run.pendingRetryAt !== null ||
+    run.pendingRetryCause !== null ||
+    run.manualPauseCause !== null;
+  if (isValidCreditPauseShape(value) && !contradictsRun) return { run, warning: null };
+  return { run: { ...run, creditPause: null }, warning: { reasonCode: 'credit-pause-repaired' } };
+}
+
+export interface WorkflowRunLoadRepairResult {
+  readonly run: WorkflowRun;
+  readonly auditEvents: readonly WorkflowRunRepairedAuditEvent[];
+  /** Repairs with no audit event of their own; the store logs one warning per entry. */
+  readonly warnings: readonly LoadRepairWarning[];
+}
+
+/**
+ * Applies the phase repair, then the session-id repair, and lists their events in that order, then
+ * the credit-pause repair, whose warning is reported beside the events rather than as one.
+ */
+export function repairRunOnLoad(run: WorkflowRun): WorkflowRunLoadRepairResult {
+  const phaseRepair = repairLegacyRunSnapshot(run);
+  const sessionRepair = repairPersistedSessionId(phaseRepair.run);
+  const creditRepair = repairCreditPauseOnLoad(sessionRepair.run);
+  const auditEvents = [phaseRepair.auditEvent, sessionRepair.auditEvent].filter(
+    (event): event is WorkflowRunRepairedAuditEvent => event !== null
+  );
+  return {
+    run: creditRepair.run,
+    auditEvents,
+    warnings: creditRepair.warning === null ? [] : [creditRepair.warning]
+  };
+}
+
 const VALID_WORKFLOW_STATUSES: ReadonlySet<WorkflowRunStatus> = new Set<WorkflowRunStatus>([
   'running',
   'paused',
@@ -320,62 +460,6 @@ function normalizeStatus(raw: unknown, delayedRetryCount: number): WorkflowRunSt
     return 'paused';
   }
   return validated;
-}
-
-/**
- * Feature 028 — v4 → v5 forward migration. Idempotent on already-v5 records.
- * Delegates to `migrateLegacyRun()` which has been extended to populate the
- * v5 fields with safe defaults. Exposed as a named alias so the activation
- * code path documents the migration step explicitly.
- */
-export function migrateV4ToV5(legacy: unknown): WorkflowRun | null {
-  return migrateLegacyRun(legacy);
-}
-
-/**
- * Feature 028 — v4 → v5 forward migration for `QueueRegistryEntry` records.
- *
- * Adds `pauseSource: 'operator' | 'cascade' | null` to each entry:
- *   - `state === 'manually-paused'` ⇒ default `'operator'` (preserve any
- *     valid existing value).
- *   - otherwise ⇒ `null`.
- *
- * Idempotent: passes an already-v5 record through unchanged. Returns a
- * shallow-cloned array; non-array input becomes `[]`.
- *
- * FR-R3-011 (T423) — **the result is migration input, never persisted state.**
- * `state` and `pauseSource` are no longer fields of `QueueRegistryEntry`; a
- * queue's pause and its attribution live in that queue's `QueueState`, and the
- * registry's view of both is derived on read by `projectQueueRegistry()`. So
- * this lift no longer has a destination field to fill, and writing its output
- * back would re-add the mirror `migrateV12ToV13()` exists to remove — on every
- * activation, since the collapse would strip it again on the next load.
- *
- * The rule it encodes is not lost, it moved: `legacyRegistryPause()` in
- * `src/state/queue-state-migrator.ts` reads a legacy entry with exactly this
- * defaulting — `manually-paused` with no recorded source attributes to
- * `'operator'` — and feeds the answer into the single value. Same rule, applied
- * where the surviving representation is written rather than into a field that
- * no longer exists. The function stays exported because a v4 workspace's shape
- * is still the thing being read, and its unit tests are what pin that reading.
- */
-export function migrateQueueRegistryV4ToV5(legacy: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(legacy)) return [];
-  const result: Array<Record<string, unknown>> = [];
-  for (const item of legacy) {
-    if (item === null || typeof item !== 'object') continue;
-    const rec = item as Record<string, unknown>;
-    const state = rec.state;
-    if (state === 'manually-paused') {
-      const existing = rec.pauseSource;
-      const pauseSource =
-        existing === 'operator' || existing === 'cascade' ? existing : 'operator';
-      result.push({ ...rec, pauseSource });
-    } else {
-      result.push({ ...rec, pauseSource: null });
-    }
-  }
-  return result;
 }
 
 function parsePendingCause(value: unknown): DelayedRetryCause | null {

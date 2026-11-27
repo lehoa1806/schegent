@@ -16,18 +16,28 @@
 // `QueueListView.svelte`) — restored here against this component's direct
 // `{snapshot}` prop-mounting rather than that file's global-store-driven one.
 
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { disposeIntentLedger } from '../../../lib/intent-ledger';
+
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 
 import QueueIdlePendingPanel from '../QueueIdlePendingPanel.svelte';
-import { CMD_DISMISS_MIGRATION_NOTICE, CMD_START_QUEUE } from '../../../lib/messages';
+import { snapshotStore } from '../../../lib/snapshot-store.svelte';
+import { CMD_ACK, CMD_DISMISS_MIGRATION_NOTICE, CMD_START_QUEUE } from '../../../lib/messages';
 import { MUTATING_COMMAND_TYPES } from '../../../../../src/contracts/sidebar-command-metadata';
+import { DEFAULT_QUEUE_ID } from '../../../../../src/contracts/queue-identity';
 import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
-import type { WorkflowSnapshot } from '../../../lib/snapshot-types';
+import type { QueueLifecycle, QueueRuntime, WorkflowSnapshot } from '../../../lib/snapshot-types';
 
 let nextCorrelationId = 0;
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
-  correlationId: `corr-${++nextCorrelationId}`
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
 }));
 vi.mock('../../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args),
@@ -36,17 +46,92 @@ vi.mock('../../../lib/vscode-api', () => ({
   setWebviewState: () => {}
 }));
 
+/**
+ * Answer the post at `callIndex` the way the host would.
+ *
+ * FR-R3-154 (T1646) — through `snapshotStore.apply({type: CMD_ACK, …})`, the
+ * store's own message entry point, so the case runs the real `applyAck`, the
+ * real `correlatedLifecycle` and the real refusal table. Mocking
+ * `lifecycle-control-ipc` instead would leave the assertion checking the mock.
+ */
+function ack(
+  callIndex: number,
+  status: 'accepted' | 'rejected',
+  reason?: string,
+  outcome?: 'accepted' | 'no-op' | 'refused' | 'failed'
+): void {
+  const result = postCommandSpy.mock.results[callIndex];
+  expect(result, `no post at index ${callIndex}`).toBeDefined();
+  const { correlationId } = result!.value as { correlationId: string };
+  snapshotStore.apply({
+    type: CMD_ACK,
+    correlationId,
+    status,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(outcome !== undefined ? { outcome } : {})
+  } as never);
+}
+
+/**
+ * A `QueueRuntime` carrying nothing but the identity and lifecycle this panel
+ * reads. Filler for the rest: the panel's gate is `lifecycle`, and a fixture
+ * that populated the run-derived lists would suggest they were consulted.
+ *
+ * FR-R3-152 (T1633) — `scheduledStartAt`/`scheduledStartSource` are the two
+ * fields this feature adds; both default to `null` (no schedule) so every
+ * pre-existing call site that does not pass one keeps its old meaning.
+ */
+function runtime(
+  queueId: string,
+  lifecycle: QueueLifecycle,
+  scheduledStartAt: number | null = null
+): QueueRuntime {
+  return {
+    queueId,
+    name: queueId,
+    position: 0,
+    lifecycle,
+    inFlightRun: null,
+    phases: Object.freeze([]),
+    phaseOverrides: Object.freeze([]),
+    manualPause: null,
+    phaseBreakpoints: Object.freeze([]),
+    pendingCount: 1,
+    tasks: Object.freeze([]),
+    scheduledStartAt,
+    scheduledStartSource: scheduledStartAt !== null ? 'operator-chooser' : null
+  } as unknown as QueueRuntime;
+}
+
 function snapshot(
   queueOverrides: {
     readonly lifecycle?: 'running' | 'operator-paused' | 'idle-pending' | 'active-empty';
     readonly scheduledStartAt?: number | null;
     readonly migrationNotice?: 'pending' | 'dismissed';
+    /**
+     * The runtimes the snapshot publishes. Defaults to one entry for the default
+     * queue at `lifecycle`/`scheduledStartAt`, keeping every pre-existing call
+     * site's shorthand working now that the panel reads the per-queue runtime
+     * instead of `snapshot.queue`.
+     */
+    readonly queues?: readonly QueueRuntime[];
   } = {}
 ): WorkflowSnapshot {
   return {
     schemaVersion: 4,
     isPrimary: true,
-    queues: Object.freeze([]),
+    queues: Object.freeze(
+      queueOverrides.queues ??
+        (queueOverrides.lifecycle === undefined
+          ? []
+          : [
+              runtime(
+                DEFAULT_QUEUE_ID,
+                queueOverrides.lifecycle,
+                queueOverrides.scheduledStartAt ?? null
+              )
+            ])
+    ),
     queue: {
       inFlight: null,
       pending: Object.freeze([]),
@@ -77,13 +162,15 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   cleanup();
 });
 
 describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated from QueueListView)', () => {
   it('renders nothing when the default queue is not idle-pending', () => {
     const { queryByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ lifecycle: 'running' }) }
+      props: { queueId: DEFAULT_QUEUE_ID, snapshot: snapshot({ lifecycle: 'running' }) }
     });
 
     expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
@@ -94,6 +181,7 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
   it('renders the ScheduledStartIndicator, not the Start-queue button, once a start is scheduled', () => {
     const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
       props: {
+        queueId: DEFAULT_QUEUE_ID,
         snapshot: snapshot({
           lifecycle: 'idle-pending',
           scheduledStartAt: Date.parse('2026-08-12T03:00:00.000Z')
@@ -107,7 +195,10 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
 
   it('renders the Start-queue button, not the indicator, when no start is scheduled', () => {
     const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null }) }
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
     });
 
     expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
@@ -116,7 +207,10 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
 
   it('opens the restart chooser on Start-queue click', async () => {
     const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null }) }
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
     });
 
     await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
@@ -128,7 +222,10 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
 
   it('dispatches exactly one CMD_START_QUEUE for the whole queue on "Start now"', async () => {
     const { getByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null }) }
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
     });
 
     await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
@@ -136,13 +233,17 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
 
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
+      queueId: DEFAULT_QUEUE_ID,
       startIntent: { startMode: 'now', source: 'operator-restart' }
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('closes the chooser without posting when the operator dismisses it', async () => {
     const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null }) }
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
     });
 
     await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
@@ -152,12 +253,87 @@ describe('QueueIdlePendingPanel — idle-pending affordance (T012a, relocated fr
     expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
     expect(postCommandSpy).not.toHaveBeenCalled();
   });
+
+  // FR-R3-154 (T1646) — this panel is the FR-018 chooser's sole dispatcher, and
+  // it closes the chooser on commit. So a refusal of the operator's chosen time
+  // had nowhere at all to land: the chooser vanished, the queue stayed
+  // idle-pending, and the Start-queue button came back as if nothing had been
+  // asked. `rejected-horizon` is the live case — the operator picks a time
+  // outside the queue's accepted range, which is a mistake only the host can
+  // detect and only this sentence can explain.
+  it('renders the refusal after the chooser closes, so a rejected time is not silent', async () => {
+    const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
+    });
+
+    await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+    await fireEvent.click(getByTestId('start-mode-chooser-now'));
+    expect(queryByTestId('idle-pending-start-message')).toBeNull();
+
+    ack(0, 'rejected', 'rejected-horizon', 'refused');
+
+    await waitFor(() => {
+      expect(getByTestId('idle-pending-start-message').textContent).toBe(
+        'That start time is outside the range this queue accepts.'
+      );
+    });
+    // The chooser is still gone — the report is a sentence beside the panel,
+    // not a re-opened dialog that would discard what the operator had entered.
+    expect(queryByTestId('idle-pending-chooser-host')).toBeNull();
+  });
+
+  // FR-R4-F05 (O4, FR-024) — the interim "not yet known" text promises that the view will update;
+  // a late answer replaces it through the same text path as an on-time one, and a late
+  // acceptance clears it.
+  it('replaces the not-yet-known text of a chosen start with the late answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId } = render(QueueIdlePendingPanel, {
+        props: {
+          queueId: DEFAULT_QUEUE_ID,
+          snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+        }
+      });
+      await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+      await fireEvent.click(getByTestId('start-mode-chooser-now'));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getByTestId('idle-pending-start-message').textContent).toContain('has not answered yet');
+
+      ack(0, 'rejected', 'rejected-horizon', 'refused');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getByTestId('idle-pending-start-message').textContent).toBe(
+        'That start time is outside the range this queue accepts.'
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says nothing when the host accepts the chosen start', async () => {
+    const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({ lifecycle: 'idle-pending', scheduledStartAt: null })
+      }
+    });
+
+    await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+    await fireEvent.click(getByTestId('start-mode-chooser-now'));
+    ack(0, 'accepted', undefined, 'accepted');
+
+    await waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(1));
+    expect(queryByTestId('idle-pending-start-message')).toBeNull();
+  });
 });
 
 describe('QueueIdlePendingPanel — v6 → v7 migration notice (FR-020, relocated from QueueListView)', () => {
   it('renders the migration notice and its dismiss affordance when migrationNotice === "pending"', () => {
     const { queryByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ migrationNotice: 'pending' }) }
+      props: { queueId: DEFAULT_QUEUE_ID, snapshot: snapshot({ migrationNotice: 'pending' }) }
     });
 
     expect(queryByTestId('migration-notice')).not.toBeNull();
@@ -166,7 +342,7 @@ describe('QueueIdlePendingPanel — v6 → v7 migration notice (FR-020, relocate
 
   it('does NOT render the migration notice when migrationNotice === "dismissed"', () => {
     const { queryByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ migrationNotice: 'dismissed' }) }
+      props: { queueId: DEFAULT_QUEUE_ID, snapshot: snapshot({ migrationNotice: 'dismissed' }) }
     });
 
     expect(queryByTestId('migration-notice')).toBeNull();
@@ -174,29 +350,242 @@ describe('QueueIdlePendingPanel — v6 → v7 migration notice (FR-020, relocate
 
   it('does NOT render the migration notice when migrationNotice is absent', () => {
     const { queryByTestId } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ lifecycle: 'active-empty' }) }
+      props: { queueId: DEFAULT_QUEUE_ID, snapshot: snapshot({ lifecycle: 'active-empty' }) }
     });
 
     expect(queryByTestId('migration-notice')).toBeNull();
   });
 
-  it('dismissing posts exactly one non-mutating CMD_DISMISS_MIGRATION_NOTICE, and the notice clears once the host applies it', async () => {
+  it('dismissing posts exactly one CMD_DISMISS_MIGRATION_NOTICE, and the notice clears once the host applies it', async () => {
     const { getByTestId, queryByTestId, rerender } = render(QueueIdlePendingPanel, {
-      props: { snapshot: snapshot({ migrationNotice: 'pending' }) }
+      props: { queueId: DEFAULT_QUEUE_ID, snapshot: snapshot({ migrationNotice: 'pending' }) }
     });
 
     await fireEvent.click(getByTestId('migration-notice-dismiss'));
 
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_DISMISS_MIGRATION_NOTICE);
-    // Dismiss is non-destructive UX state, not a mutation of queue work.
-    expect(MUTATING_COMMAND_TYPES).not.toContain(CMD_DISMISS_MIGRATION_NOTICE);
+    // Dismiss touches no queue work, but it writes the queue memento, and FR-R4-F05
+    // (FR-003) gates any persisted write: the host refuses it untrusted and secondary.
+    expect(MUTATING_COMMAND_TYPES).toContain(CMD_DISMISS_MIGRATION_NOTICE);
 
     // The host applies the dismiss and pushes the next snapshot back down;
     // simulated here as a prop update, matching this component's direct
     // `{snapshot}` mounting.
-    await rerender({ snapshot: snapshot({ migrationNotice: 'dismissed' }) });
+    await rerender({ queueId: DEFAULT_QUEUE_ID, snapshot: snapshot({ migrationNotice: 'dismissed' }) });
 
     expect(queryByTestId('migration-notice')).toBeNull();
+  });
+});
+
+// Bug: "there is no way to start a pending task". `snapshot.queue` is the
+// composer's projection of `DEFAULT_QUEUE_ID` alone, so a panel that gated on
+// it rendered nothing for every other queue — and hard rule 31 forbids
+// auto-promoting an `idle-pending` queue, so nothing else would start it either.
+const OTHER_QUEUE_ID = 'queue-2';
+
+describe('QueueIdlePendingPanel — the queue it is shown for (hard rule 56)', () => {
+  it('offers Start for a non-default idle-pending queue while the default queue is active-empty', () => {
+    const { getByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'active-empty',
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'active-empty'),
+            runtime(OTHER_QUEUE_ID, 'idle-pending')
+          ]
+        })
+      }
+    });
+
+    expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
+  });
+
+  it('renders nothing for a running queue even when the default queue is idle-pending', () => {
+    const { queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'idle-pending',
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'idle-pending'),
+            runtime(OTHER_QUEUE_ID, 'running')
+          ]
+        })
+      }
+    });
+
+    expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
+    expect(queryByTestId('idle-pending-scheduled-host')).toBeNull();
+    expect(queryByTestId('idle-pending-chooser-host')).toBeNull();
+  });
+
+  it('renders nothing when the snapshot publishes no runtime for the queue', () => {
+    const { queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'idle-pending',
+          queues: [runtime(DEFAULT_QUEUE_ID, 'idle-pending')]
+        })
+      }
+    });
+
+    expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
+  });
+
+  it('names the queue it is shown for in the CMD_START_QUEUE payload', async () => {
+    const { getByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'active-empty',
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'active-empty'),
+            runtime(OTHER_QUEUE_ID, 'idle-pending')
+          ]
+        })
+      }
+    });
+
+    await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+    await fireEvent.click(getByTestId('start-mode-chooser-now'));
+
+    expect(postCommandSpy).toHaveBeenCalledTimes(1);
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
+      queueId: OTHER_QUEUE_ID,
+      startIntent: { startMode: 'now', source: 'operator-restart' }
+    }, LEDGER_IDENTITY);
+  });
+
+  it('does not repeat the default queue\'s migration notice on another queue\'s panel', () => {
+    const { queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          migrationNotice: 'pending',
+          queues: [runtime(DEFAULT_QUEUE_ID, 'active-empty'), runtime(OTHER_QUEUE_ID, 'active-empty')]
+        })
+      }
+    });
+
+    expect(queryByTestId('migration-notice')).toBeNull();
+  });
+
+  it('does not repeat the default queue\'s scheduled start on another queue\'s panel', () => {
+    const { queryByTestId, getByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'idle-pending',
+          scheduledStartAt: Date.parse('2026-08-12T03:00:00.000Z'),
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'idle-pending'),
+            runtime(OTHER_QUEUE_ID, 'idle-pending')
+          ]
+        })
+      }
+    });
+
+    expect(queryByTestId('idle-pending-scheduled-host')).toBeNull();
+    expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
+  });
+});
+
+// FR-R3-152 (T1633, FR-005, FR-007) — before this feature, `scheduledStartAt`
+// lived only on `snapshot.queue` (the default queue's own projection), so this
+// panel's `isDefaultQueue` branch was the only way it could ever be non-null.
+// A non-default queue's own armed schedule was unprojectable and this panel
+// rendered the plain "Start queue" button for it regardless of what was
+// actually armed. These cases assert the fix: every queue's own
+// `QueueRuntime.scheduledStartAt` drives its own panel, default included.
+describe('QueueIdlePendingPanel — per-queue scheduled start (FR-R3-152)', () => {
+  it('renders a non-default queue\'s own scheduled start, not the default queue\'s', () => {
+    const nonDefaultDeadline = Date.parse('2026-09-05T08:00:00.000Z');
+    const { getByTestId, queryByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          // The default queue's own top-level projection is deliberately left
+          // unscheduled here — if the panel were still reading `snapshot.queue`
+          // this case would render the "Start queue" button, not the indicator.
+          lifecycle: 'idle-pending',
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'idle-pending'),
+            runtime(OTHER_QUEUE_ID, 'idle-pending', nonDefaultDeadline)
+          ]
+        })
+      }
+    });
+
+    expect(getByTestId('idle-pending-scheduled-host')).not.toBeNull();
+    expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-05');
+  });
+
+  it("renders the default queue's own schedule through the same path as any other queue", () => {
+    const defaultDeadline = Date.parse('2026-09-06T09:00:00.000Z');
+    const { getByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: DEFAULT_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'idle-pending',
+          // Deliberately empty: `snapshot.queue.scheduledStartAt` must not be
+          // the source of truth for the default queue any more than for any
+          // other. Only the per-queue `queues[]` entry carries it.
+          scheduledStartAt: null,
+          queues: [runtime(DEFAULT_QUEUE_ID, 'idle-pending', defaultDeadline)]
+        })
+      }
+    });
+
+    expect(getByTestId('idle-pending-scheduled-host')).not.toBeNull();
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-06');
+  });
+
+  it('switching the selected queue switches which schedule is rendered, without reading snapshot.queue', () => {
+    const firstDeadline = Date.parse('2026-09-07T10:00:00.000Z');
+    const secondDeadline = Date.parse('2026-09-08T11:00:00.000Z');
+    const snap = snapshot({
+      lifecycle: 'idle-pending',
+      queues: [
+        runtime(DEFAULT_QUEUE_ID, 'idle-pending', firstDeadline),
+        runtime(OTHER_QUEUE_ID, 'idle-pending', secondDeadline)
+      ]
+    });
+
+    const { getByTestId, rerender } = render(QueueIdlePendingPanel, {
+      props: { queueId: DEFAULT_QUEUE_ID, snapshot: snap }
+    });
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-07');
+
+    // Same snapshot, different selection — the panel must switch to the newly
+    // selected queue's own value, not retain the previous selection's.
+    void rerender({ queueId: OTHER_QUEUE_ID, snapshot: snap });
+    expect(getByTestId('scheduled-start-fire-time').textContent).toContain('2026-09-08');
+  });
+
+  it("names the selected non-default queue on Cancel, Change, and Start-now, never the default's id", async () => {
+    const { getByTestId } = render(QueueIdlePendingPanel, {
+      props: {
+        queueId: OTHER_QUEUE_ID,
+        snapshot: snapshot({
+          lifecycle: 'idle-pending',
+          queues: [
+            runtime(DEFAULT_QUEUE_ID, 'idle-pending'),
+            runtime(OTHER_QUEUE_ID, 'idle-pending', Date.parse('2026-09-09T12:00:00.000Z'))
+          ]
+        })
+      }
+    });
+
+    await fireEvent.click(getByTestId('scheduled-start-cancel'));
+
+    expect(postCommandSpy).toHaveBeenCalledTimes(1);
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
+      queueId: OTHER_QUEUE_ID,
+      startIntent: { startMode: 'cancel-schedule', source: 'operator-restart' }
+    }, LEDGER_IDENTITY);
   });
 });

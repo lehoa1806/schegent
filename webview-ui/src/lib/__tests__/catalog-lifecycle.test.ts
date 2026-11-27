@@ -85,6 +85,7 @@ const {
   restoreDefinitionVersion,
   saveDefinitionDraft
 } = await import('../catalog-lifecycle');
+const { disposeIntentLedger } = await import('../intent-ledger');
 
 // See the header: bound rather than referenced inline so the single-sender lint
 // keeps meaning "a module that dispatches" and not "a module that names".
@@ -126,6 +127,8 @@ const DRAFT_REQUEST = {
 const CONFIRM_OPTIONS = { definitionName: 'Plan', originatingElement: null };
 
 beforeEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   ackListeners.clear();
   pendingSet.clear();
   confirmCalls.length = 0;
@@ -219,15 +222,21 @@ describe('the transport, asserted once for all six operations', () => {
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
   });
 
-  it('ignores a late ack after the timeout has already settled the promise', async () => {
+  // FR-R4-F05 (I3; TA9) — this case used to assert that the one-shot listener was unsubscribed at
+  // the timeout. It stays now, until the host answers: the intent ledger keeps the identity so a
+  // retry can reuse it and the host's late ack is not lost. What still holds is that the settled
+  // promise cannot change, and that the ack removes the listener.
+  it('settles once at the timeout, and a late ack changes nothing and removes the listener', async () => {
     const postMessage = vi.fn();
     const promise = saveDefinitionDraft(DRAFT_REQUEST, postMessage);
     const env = postMessage.mock.calls[0][0] as Envelope;
     vi.advanceTimersByTime(5000);
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
-    // The one-shot listener is unsubscribed on settle, so no listener remains to
-    // deliver a stale accepted ack into a resolved promise.
-    expect(ackListeners.has(env.correlationId)).toBe(false);
+    expect(ackListeners.has(env.correlationId)).toBe(true);
+
+    ackListeners.get(env.correlationId)!({ status: 'accepted' });
+
+    await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
   });
 
   it('does NOT cross-resolve two operations in flight at once', async () => {
@@ -460,5 +469,28 @@ describe('the two confirmation gates (FR-049, FR-050)', () => {
       fireAck((call[0] as Envelope).correlationId, 'accepted');
     }
     await Promise.all(pending);
+  });
+});
+
+// FR-R4-F05 (T17; contract I, I4 to I6) — this helper sends through the intent ledger: a retry of an
+// unresolved action posts the same correlation id and the same payload, and the host's answer
+// reaches the retry.
+describe('retry identity (T17)', () => {
+  it('posts the same correlation id and payload for a retry after a timeout, and answers it with the ACK', async () => {
+    const posted: Array<{ correlationId: string; payload: unknown }> = [];
+    const postMessage = (msg: unknown): void => {
+      posted.push(msg as { correlationId: string; payload: unknown });
+    };
+    const first = saveDefinitionDraft(DRAFT_REQUEST, postMessage);
+    await vi.advanceTimersByTimeAsync(5000);
+    await expect(first).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
+
+    const retry = saveDefinitionDraft(DRAFT_REQUEST, postMessage);
+
+    expect(posted).toHaveLength(2);
+    expect(posted[1]!.correlationId).toBe(posted[0]!.correlationId);
+    expect(posted[1]!.payload).toEqual(posted[0]!.payload);
+    fireAck(posted[0]!.correlationId, 'accepted');
+    await expect(retry).resolves.toMatchObject({ status: 'accepted' });
   });
 });

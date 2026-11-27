@@ -1,0 +1,342 @@
+// FR-R3-090 §5 — this feature hardens the install. It does not bump anything.
+//
+// "Do not bump the held majors as part of this item. The cadence is the
+// deliverable; the upgrades are their own changes with their own verification.
+// Bundling them hides a dependency bump inside a hardening change."
+//
+// And: "Keep the scanners. CodeQL, both dependency audits and provenance are
+// credited controls and nothing here touches them."
+//
+// Both are easy to honour and easy to violate by accident — a `npm install`
+// during development rewrites ranges silently. This gate is its own file rather
+// than an extra concern bolted onto the staleness gate, because a gate that
+// answers for two things is the shape that makes gates hard to control, which is
+// the subject of FR-R3-088 next door.
+//
+// WHAT IT PINS. The declared range of every dependency at the point feature 155
+// landed, plus the untouched state of the four scanner surfaces. One addition is
+// expected and named: `axe-core`, which FR-R3-091 declares for the accessibility
+// scan and which the constitution's forbidden-action carve-out permits precisely
+// because a task names it.
+//
+// FR-R4-F09 (FR-021, FR-022, FR-025) changes exactly ONE range: `@secretlint/node` moves from
+// `^13.0.4` to `^10.2.2`, aligning the engine with the 10.2.2 ruleset and CLI it already runs
+// beside and the family `@vscode/vsce` depends on. It is an alignment to versions already in the
+// lockfile, made offline; no package is added and none is removed. The same feature adds the case
+// that checks the denominator the documents state ("18 of the 22") against this file, so the next
+// declaration cannot leave a document counting a manifest that no longer exists.
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+import { pinMismatchMessage } from './dependency-scope-message';
+
+const REPO_ROOT = resolve(__dirname, '..', '..');
+const read = (relPath: string): string => readFileSync(resolve(REPO_ROOT, relPath), 'utf8');
+
+/**
+ * Declared additions, each with its reason.
+ *
+ * Note the two kinds. `axe-core` was a genuine ADDITION — a package the tree did not
+ * have. The two secretlint entries are **promotions**: both were already resolved in
+ * `package-lock.json` as transitive dependencies of `@vscode/vsce`, so the dependency
+ * tree does not grow by declaring them. `semver` is a third promotion (FR-R4-F21), a
+ * development transitive already resolved at 7.7.4. That distinction is asserted below,
+ * not merely asserted here.
+ */
+const PERMITTED_ADDITIONS: ReadonlyMap<string, string> = new Map([
+  [
+    'axe-core',
+    'FR-R3-091: the accessibility scan. Development-only, one package rather than two — ' +
+      '@axe-core/playwright would be a second package for a wrapper around two lines. The ' +
+      'active task names it, which is the constitution\'s stated condition for an install.'
+  ],
+  [
+    'secretlint',
+    'FR-R3-109: PROMOTION, not an addition — already resolved in package-lock.json at ' +
+      '10.2.2 as a transitive of @vscode/vsce, so no package is installed by declaring it. ' +
+      'Declared because leaving a SECURITY gate depending on the dependency graph of a ' +
+      'packaging tool means a vsce upgrade that dropped secretlint would silently disarm ' +
+      'the secret scan, and the failure would present as a green gate.'
+  ],
+  [
+    '@secretlint/secretlint-rule-preset-recommend',
+    'FR-R3-109: PROMOTION, same reasoning — already lockfile-resolved at 10.2.2. This is ' +
+      'the ruleset .secretlintrc.json names; a config referencing a hoisted transitive is ' +
+      'not a contract, since npm is free to stop hoisting it.'
+  ],
+  [
+    'semver',
+    'FR-R4-F21: PROMOTION, not an addition — the advisory comparison evaluates advisory and ' +
+      'disposition ranges with npm\'s own library and options. semver 7.7.4 was already ' +
+      'resolved in package-lock.json as a development transitive, so declaring it installs ' +
+      'nothing, and the comparison no longer depends on another package keeping it hoisted.'
+  ]
+]);
+
+/** The promotions above, which must add no package to the tree. */
+const PROMOTIONS = [
+  'secretlint',
+  '@secretlint/secretlint-rule-preset-recommend',
+  'semver'
+] as const;
+
+/** Ranges as declared when feature 155 landed. A change here must be deliberate. */
+const PINNED: ReadonlyMap<string, string> = new Map([
+  ['@eslint/js', '^9.39.5'],
+  ['@playwright/test', '^1.62.1'],
+  // FR-R4-F09 (research R19): ALIGNED from ^13.0.4. The ruleset the scan runs
+  // (`@secretlint/secretlint-rule-preset-recommend`) and the CLI (`secretlint`) resolve at 10.2.2,
+  // as do the copies `@vscode/vsce` carries; only this engine sat at 13. Moving the other two to
+  // 13 would be a major upgrade of two packages and would change the rules that run, so the
+  // engine moves to the family. `@secretlint/node` 13 becomes a held major
+  // (`docs/release/held-major-upgrades.md`).
+  ['@secretlint/node', '^10.2.2'],
+  ['@types/node', '^22.20.1'],
+  ['@types/vscode', '1.125.0'],
+  ['@vitest/coverage-v8', '^3.2.7'],
+  ['@vscode/test-electron', '^2.3.9'],
+  ['@vscode/vsce', '^3.9.2'],
+  ['esbuild', '^0.28.2'],
+  ['eslint', '^9.39.5'],
+  ['eslint-plugin-svelte', '^3.23.0'],
+  ['globals', '^14.0.0'],
+  ['prettier', '^3.9.6'],
+  ['svelte', '^5.56.8'],
+  ['ts-morph', '^28.0.0'],
+  ['typescript', '^5.4.0'],
+  ['typescript-eslint', '^8.67.0'],
+  ['vitest', '^3.2.6']
+]);
+
+/** The credited controls SUP-01 names. Nothing in this feature touches them. */
+/**
+ * FR-R3-099 — the scanners that SURVIVE, named as scripts rather than as workflows.
+ *
+ * SUP-01 credited three workflow files. All three are withdrawn: Actions were
+ * retired by operator decision for budget, and `docs/release/
+ * withdrawn-ci-controls.md` records what each one was. "Keep the scanners" is still
+ * a requirement rather than an assumption, so the requirement moves to the scanners
+ * that still run, and the one with no local substitute is recorded as lost rather
+ * than quietly dropped from the credit list.
+ */
+const SURVIVING_SCANNERS = ['security:secrets', 'security:audit'] as const;
+
+/** Withdrawn with Actions, and recorded as withdrawn rather than deleted silently. */
+const WITHDRAWN_SCANNERS = ['codeql'] as const;
+
+interface Manifest {
+  readonly dependencies?: Record<string, string>;
+  readonly devDependencies?: Record<string, string>;
+}
+
+/**
+ * The pin counts a document states, as `<n> of the <m>` and as `<n> of the root manifest's <m>`.
+ * Comment markers and line breaks are folded away first, so a figure that wraps is still read.
+ */
+function statedPinCounts(text: string): {
+  readonly plain: Array<[number, number]>;
+  readonly possessive: Array<[number, number]>;
+} {
+  const flat = text
+    .split('\n')
+    .map((line) => line.replace(/^\s*#\s?/, ''))
+    .join(' ')
+    .replace(/\s+/g, ' ');
+  const pairs = (pattern: RegExp): Array<[number, number]> =>
+    [...flat.matchAll(pattern)].map((match) => [Number(match[1]), Number(match[2])]);
+  return {
+    plain: pairs(/\b(\d+) of the (\d+)\b/g),
+    possessive: pairs(/\b(\d+) of the root manifest(?:'s)? (\d+)\b/g)
+  };
+}
+
+const root = JSON.parse(read('package.json')) as Manifest;
+const webview = JSON.parse(read('webview-ui/package.json')) as Manifest;
+
+describe('FR-R3-090 §5 — no dependency is bumped, and the scanners are untouched', () => {
+  it('both manifests still declare zero runtime dependencies', () => {
+    // The posture this repository ships. An accessibility scanner arriving as a
+    // runtime dependency would be a much larger change than the one declared.
+    expect(root.dependencies ?? {}).toEqual({});
+    expect(webview.dependencies ?? {}).toEqual({});
+  });
+
+  it('every pinned range is unchanged', () => {
+    const drifted: string[] = [];
+    const procedure: string[] = [];
+    for (const [pkg, range] of PINNED) {
+      const actual = root.devDependencies?.[pkg];
+      if (actual === undefined || actual === range) continue;
+      drifted.push(`${pkg}: ${range} -> ${actual}`);
+      procedure.push(pinMismatchMessage(pkg, range, actual));
+    }
+    expect(
+      drifted,
+      'A dependency range moved. If the bump is intended it is its OWN change with its own ' +
+        'verification — bundling it here hides it inside a hardening change, which FR-R3-090 §5 ' +
+        'forbids by name.\n' +
+        procedure.join('\n')
+    ).toEqual([]);
+  });
+
+  it('every addition beyond the pinned set is one the feature declares, with a reason', () => {
+    const declared = new Set([...PINNED.keys(), ...PERMITTED_ADDITIONS.keys()]);
+    const unexplained = Object.keys(root.devDependencies ?? {}).filter((pkg) => !declared.has(pkg));
+    expect(
+      unexplained,
+      'An undeclared dependency appeared. Name it here with why it is needed, or remove it.'
+    ).toEqual([]);
+    for (const [, reason] of PERMITTED_ADDITIONS) expect(reason.length).toBeGreaterThan(60);
+  });
+
+  it('the promoted packages were already in the lockfile, so the tree did not grow', () => {
+    // The whole justification for FR-R3-109's declarations is that they install nothing.
+    // A comment claiming that is worth exactly as much as the claims this round has spent
+    // itself removing, so it is checked: each promoted package must already have a
+    // lockfile entry, and at the version now declared.
+    const lock = JSON.parse(read('package-lock.json')) as {
+      packages?: Record<string, { version?: string; dev?: boolean }>;
+    };
+    const packages = lock.packages ?? {};
+    for (const pkg of PROMOTIONS) {
+      // Read as possibly-absent and narrowed once. `packages` is typed as total over its keys,
+      // so `entry?.x` after the assertion below reads as dead to the linter while the absence is
+      // the very thing being asserted.
+      const entry = packages[`node_modules/${pkg}`] as
+        | { dev?: boolean; version?: string }
+        | undefined;
+      expect(
+        entry,
+        `${pkg} is declared as a PROMOTION but has no lockfile entry — then it is an ` +
+          'ADDITION, and the reason recorded for it is wrong.'
+      ).toBeDefined();
+      expect(entry?.dev, `${pkg} must remain development-only`).toBe(true);
+      const declared = (root.devDependencies ?? {})[pkg];
+      expect(declared, `${pkg} must be declared`).toBeTruthy();
+      // `^10.2.2` must match the resolved 10.2.2 — a promotion that changed the version
+      // would be a bump wearing a promotion's reason.
+      expect(
+        (declared as string).replace(/^[\^~]/, ''),
+        `${pkg} is declared at ${declared as string} but the lockfile resolves ` +
+          `${entry?.version ?? 'nothing'}. A promotion must not move a version.`
+      ).toBe(entry?.version);
+    }
+  });
+
+  it('the surviving scanners still exist and are still reached by the attested chain', () => {
+    // SUP-01 credits scanning; "keep the scanners" is a requirement, not an
+    // assumption. What this catches now is a scanner script deleted, emptied, or
+    // dropped out of the one chain that runs anything.
+    const manifest = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+    for (const script of SURVIVING_SCANNERS) {
+      expect(manifest.scripts[script], `${script} must still exist`).toBeTruthy();
+    }
+    // Reached by the ATTESTED chain, not merely present in the manifest — that
+    // distinction is the whole of FR-R3-100. `security:audit` is the deliberate
+    // exception: it queries the npm registry, so gating on it would fail an offline
+    // tree for a reason that has nothing to do with the tree. SECURITY.md states
+    // that it is operator-invoked and why, which is what keeps the exception from
+    // being a silent gap.
+    expect(manifest.scripts['gate']).toContain('npm run security:secrets');
+    expect(manifest.scripts['verify:all']).toContain('security:secrets');
+    expect(read('SECURITY.md')).toContain('operator-invoked');
+  });
+
+  it('records the scanner that was LOST, so its absence is a statement rather than a gap', () => {
+    // CodeQL had no local equivalent, so its withdrawal is a real reduction in
+    // coverage. A credit list that simply stopped mentioning it would read as if
+    // nothing had changed.
+    const security = read('SECURITY.md');
+    for (const lost of WITHDRAWN_SCANNERS) {
+      expect(
+        security.toLowerCase(),
+        `SECURITY.md must record that ${lost} no longer runs, and when it last did`
+      ).toContain(lost);
+    }
+    expect(security).toMatch(/2026-08-26/);
+    expect(existsSync('docs/release/withdrawn-ci-controls.md')).toBe(true);
+  });
+
+  it('every document that states how much of the manifest this file pins states the real figure (FR-022)', () => {
+    // "18 of the 21" outlived the declaration that made it "18 of the 22", in three places, because
+    // each was typed by hand. The figure is derived here from this file's own table and from the
+    // manifest, and each document is read for it. Whitespace is normalized first, so a sentence
+    // that wraps across two lines counts.
+    const declared = Object.keys(root.devDependencies ?? {}).length;
+    const expected: Array<[number, number]> = [[PINNED.size, declared]];
+    const documents: ReadonlyArray<{ readonly path: string; readonly times: number }> = [
+      { path: '.github/dependabot.yml', times: 1 },
+      { path: 'docs/operations/gate-recording.md', times: 2 }
+    ];
+    for (const { path, times } of documents) {
+      const stated = statedPinCounts(read(path));
+      expect(
+        stated.plain,
+        `${path} must state the pin as ${PINNED.size} of the ${declared}, ${times} time(s)`
+      ).toEqual(Array.from({ length: times }, () => expected[0]));
+      expect(stated.possessive, `${path} counts the manifest in a form this gate cannot read`).toEqual([]);
+    }
+  });
+
+  it('NON-VACUITY: a planted wrong count, in either wording, is reported', () => {
+    expect(statedPinCounts('pins the declared range of 18 of the 21 root\n  manifest ranges').plain).toEqual([
+      [18, 21]
+    ]);
+    expect(statedPinCounts('The pin covers 18 of the root manifest\'s 21 ranges.').possessive).toEqual([
+      [18, 21]
+    ]);
+    expect(statedPinCounts('nothing is stated here')).toEqual({ plain: [], possessive: [] });
+  });
+
+  it('NON-VACUITY: a bumped range and an undeclared addition are both detected', () => {
+    const bumped = new Map(PINNED);
+    bumped.set('globals', '^17.0.0');
+    const drifted = [...bumped].filter(([pkg, range]) => PINNED.get(pkg) !== range);
+    expect(drifted).toHaveLength(1);
+
+    const declared = new Set([...PINNED.keys(), ...PERMITTED_ADDITIONS.keys()]);
+    expect(declared.has('some-new-package')).toBe(false);
+    expect(declared.has('axe-core')).toBe(true);
+  });
+});
+
+describe('FR-R5-F21 (FR-005, FR-006) — a moved pin names the procedure that moves it', () => {
+  const message = pinMismatchMessage('globals', '^14.0.0', '^17.0.0');
+
+  it('names the package, the pinned range and the range now declared', () => {
+    expect(message).toContain('globals');
+    expect(message).toContain('^14.0.0');
+    expect(message).toContain('^17.0.0');
+  });
+
+  it.each([
+    'tests/lint/dependency-change-scope.test.ts',
+    'PINNED',
+    '.github/dependabot.yml',
+    'docs/operations/gate-recording.md',
+    'docs/release/held-major-upgrades.md',
+    'Intentional dependency change',
+    'webview-ui/package.json',
+    'webview-ui/package-lock.json'
+  ])('names %s', (needle) => {
+    expect(message).toContain(needle);
+  });
+
+  it('names the root manifest and lockfile, not only the webview pair', () => {
+    const withoutWebview = message
+      .split('webview-ui/package-lock.json')
+      .join('')
+      .split('webview-ui/package.json')
+      .join('');
+    expect(withoutWebview).toContain('package.json');
+    expect(withoutWebview).toContain('package-lock.json');
+  });
+
+  it('NON-VACUITY: the message is built from its arguments, not a fixed string', () => {
+    const other = pinMismatchMessage('jsdom', '^25.0.0', '^31.0.0');
+    expect(other).toContain('jsdom');
+    expect(other).not.toContain('globals');
+    expect(other).not.toEqual(message);
+  });
+});

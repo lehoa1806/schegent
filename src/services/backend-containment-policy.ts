@@ -1,0 +1,364 @@
+import { SUPPORTED_BACKENDS, type BackendRunnerKind } from '../contracts/backend-kinds';
+import {
+  findBackendDescriptor,
+  type BackendContainmentMechanism
+} from '../contracts/backend-descriptors';
+import { REVIEW_SCANNERS, type ReviewScannerId } from '../contracts/containment-qualification';
+
+export type { BackendContainmentMechanism };
+
+/**
+ * FR-R3-056 (H-01) — whether a backend may run at all.
+ *
+ * The decision this enforces is recorded in
+ * `docs/architecture/agent-capability-posture.md`: shape 3 of the three the
+ * 2026-08-23 review offered. Uncontained backends become a separately enabled
+ * mode, and the shipped default refuses them.
+ *
+ * WHY A REFUSAL AND NOT A WARNING
+ *
+ * FR-R3-031/032 added disclosure. The review is explicit that disclosure changed
+ * informed consent, not reachability or impact, and does not reduce the severity —
+ * a document does not bound a process. The only thing that changes reachability is
+ * refusing to spawn.
+ *
+ * WHAT "CONTAINED" MEANS HERE
+ *
+ * Exactly one thing: the adapter's own argv carries an OS-enforced bound. It is
+ * not a claim that the agent is safe, that the sandbox is escape-proof, or that a
+ * contained backend cannot damage the workspace — `workspace-write` permits
+ * writing the workspace, which is the point of it. It means the operating system,
+ * not a prompt, decides what the process can reach.
+ *
+ * `backend-containment-policy.test.ts` proves this classification against each
+ * adapter's actual argv rather than trusting the table below, because a
+ * hand-kept restatement of a fact the code already carries is the defect
+ * FR-R3-051 spent a whole cycle removing.
+ */
+
+/**
+ * FR-R3-125 (FR-002) — WHICH boundary, not only whether there is one.
+ *
+ * `BackendContainment` answers "is there an OS-enforced bound". It cannot answer
+ * "which one", so nothing could check
+ * `docs/architecture/backend-containment-qualification.md`'s matrix against the
+ * product, and a record that cannot be checked is a record that drifts. This
+ * table is the one place the answer lives:
+ *
+ *   - `containmentOf` DERIVES its verdict from it, so the classification and the
+ *     mechanism cannot disagree;
+ *   - `BackendPostureAdmittedPayload.containmentMechanism` records it per run,
+ *     derived at emission and never passed in;
+ *   - `tests/lint/containment-qualification-parity.test.ts` asserts the
+ *     qualification record names the same mechanism for every backend, failing in
+ *     BOTH directions.
+ *
+ * `none` is a value, never an absent one: a payload with no mechanism field is
+ * what a pre-FR-R3-125 log looks like, and "uncontained" must be distinguishable
+ * from "not recorded".
+ */
+export type BackendContainment = 'os-enforced' | 'none';
+
+/** The mechanism this backend's argv actually carries (safe `'none'` for unknown kinds). */
+export function mechanismOf(kind: BackendRunnerKind): BackendContainmentMechanism {
+  return findBackendDescriptor(kind)?.containmentMechanism ?? 'none';
+}
+
+/**
+ * Every backend's mechanism. Exported so the parity gate enumerates rather than
+ * samples, for the reason `containmentByBackend` already gives.
+ */
+export function mechanismByBackend(): ReadonlyMap<BackendRunnerKind, BackendContainmentMechanism> {
+  return new Map(
+    SUPPORTED_BACKENDS.map((kind: BackendRunnerKind) => [kind, mechanismOf(kind)])
+  );
+}
+
+/**
+ * Derived, not restated. A second set listing the uncontained backends is a second
+ * authority for one fact, which is how the two come to disagree.
+ */
+export function containmentOf(kind: BackendRunnerKind): BackendContainment {
+  return mechanismOf(kind) === 'none' ? 'none' : 'os-enforced';
+}
+
+/** Every backend, classified. Exported so a gate can enumerate rather than sample. */
+export function containmentByBackend(): ReadonlyMap<BackendRunnerKind, BackendContainment> {
+  return new Map(SUPPORTED_BACKENDS.map((kind: BackendRunnerKind) => [kind, containmentOf(kind)]));
+}
+
+export type ContainmentVerdict =
+  | { readonly outcome: 'allowed'; readonly containment: BackendContainment }
+  | {
+      readonly outcome: 'refused';
+      readonly reason: 'uncontained-backend-not-enabled';
+      readonly kind: BackendRunnerKind;
+      readonly message: string;
+    };
+
+/** The setting an operator sets to accept the uncontained posture, per backend. */
+export const ALLOW_UNCONTAINED_SETTING = 'schegent.backend.uncontainedBackends';
+
+/** The application-scoped setting an operator grants via consent to run standalone uncontained review scanners. */
+export const ALLOW_UNCONTAINED_SCANNER_SETTING = 'schegent.backend.uncontainedScanners';
+
+/** The key this replaced. Named so the refusal message can say what changed. */
+export const REMOVED_ALLOW_UNCONTAINED_SETTING = 'schegent.backend.allowUncontainedBackends';
+
+/**
+ * FR-R3-125 (FR-004a) — what a list entry can be wrong about, and the two are
+ * different problems needing different sentences.
+ *
+ * `unsupported` is a typo (`"claud"`): the id is not a backend, so the message
+ * names the ids that are. FR-R6-F09 (research R4) retired the second problem,
+ * `already-contained`: an OS-enforced backend is qualified per tuple, and on an
+ * unqualified tuple its grant is the acceptance, so listing it is no longer a no-op.
+ *
+ * Neither THROWS. A malformed safety setting must fail closed and leave the
+ * product usable: an exception here would take down activation, and an operator
+ * whose extension will not start does not read the reason.
+ */
+export type UncontainedEntryProblem = {
+  readonly entry: string;
+  readonly problem: 'unsupported';
+  readonly message: string;
+};
+
+export interface GrantedUncontainedBackends {
+  /** Entries that name a real backend. */
+  readonly granted: ReadonlySet<BackendRunnerKind>;
+  /** Entries that grant nothing, each with why. Empty in the ordinary case. */
+  readonly problems: readonly UncontainedEntryProblem[];
+}
+
+/**
+ * Read the setting's raw value into a grant.
+ *
+ * Validated rather than filtered (FR-004a): a setting that silently drops what it
+ * does not understand cannot be reasoned about by the operator who wrote it.
+ * Anything that is not an array of strings yields an empty grant — the
+ * fail-closed direction — and every rejected entry is reported.
+ */
+/**
+ * How much of a rejected entry is echoed back, and how many are reported.
+ *
+ * Both are bounds on operator-controlled input reaching a log line. The value
+ * comes from settings, so it is as long as someone made it, and an unbounded echo
+ * turns a malformed setting into an unbounded log write — the same reasoning
+ * `MAX_REPORTED_PATHS` applies in `run-checkpoint-service.ts`. Truncation is
+ * marked, so a reader can tell a long value from a short one.
+ */
+const MAX_ECHOED_ENTRY_CHARS = 64;
+const MAX_REPORTED_ENTRIES = 10;
+
+const echo = (value: string): string =>
+  value.length <= MAX_ECHOED_ENTRY_CHARS
+    ? value
+    : `${value.slice(0, MAX_ECHOED_ENTRY_CHARS)}… (${value.length} chars)`;
+
+export function resolveUncontainedGrant(raw: unknown): GrantedUncontainedBackends {
+  const granted = new Set<BackendRunnerKind>();
+  const problems: UncontainedEntryProblem[] = [];
+  if (!Array.isArray(raw)) return { granted, problems };
+  for (const value of raw) {
+    // Reporting stops; VALIDATION does not. A list longer than the report bound
+    // still grants exactly the entries that are valid, so truncating the report
+    // can never widen the grant.
+    const report = problems.length < MAX_REPORTED_ENTRIES;
+    if (typeof value !== 'string') {
+      if (report) {
+        problems.push({
+          entry: echo(typeof value === 'symbol' ? value.toString() : String(value)),
+          problem: 'unsupported',
+          message:
+            `'${ALLOW_UNCONTAINED_SETTING}' entries must be backend ids; supported ids are ` +
+            `${SUPPORTED_BACKENDS.join(', ')}. This entry grants nothing.`
+        });
+      }
+      continue;
+    }
+    const kind = SUPPORTED_BACKENDS.find((supported: BackendRunnerKind) => supported === value);
+    if (kind === undefined) {
+      if (report) {
+        problems.push({
+          entry: echo(value),
+          problem: 'unsupported',
+          message:
+            `'${echo(value)}' is not a backend id. Supported ids are ` +
+            `${SUPPORTED_BACKENDS.join(', ')}. This entry grants nothing.`
+        });
+      }
+      continue;
+    }
+    granted.add(kind);
+  }
+  return { granted, problems };
+}
+
+export interface GrantedUncontainedScanners {
+  /** Entries that name a supported standalone native review scanner. */
+  readonly granted: ReadonlySet<ReviewScannerId>;
+  /** Entries that grant nothing, each with why. Empty in the ordinary case. */
+  readonly problems: readonly UncontainedEntryProblem[];
+}
+
+export function resolveUncontainedScannerGrant(raw: unknown): GrantedUncontainedScanners {
+  const granted = new Set<ReviewScannerId>();
+  const problems: UncontainedEntryProblem[] = [];
+  if (!Array.isArray(raw)) return { granted, problems };
+  for (const value of raw) {
+    const report = problems.length < MAX_REPORTED_ENTRIES;
+    if (typeof value !== 'string') {
+      if (report) {
+        problems.push({
+          entry: echo(typeof value === 'symbol' ? value.toString() : String(value)),
+          problem: 'unsupported',
+          message:
+            `'${ALLOW_UNCONTAINED_SCANNER_SETTING}' entries must be scanner ids; supported ids are ` +
+            `${REVIEW_SCANNERS.join(', ')}. This entry grants nothing.`
+        });
+      }
+      continue;
+    }
+    const scanner = REVIEW_SCANNERS.find((supported: ReviewScannerId) => supported === value);
+    if (scanner === undefined) {
+      if (report) {
+        problems.push({
+          entry: echo(value),
+          problem: 'unsupported',
+          message:
+            `'${echo(value)}' is not a review scanner id. Supported ids are ` +
+            `${REVIEW_SCANNERS.join(', ')}. This entry grants nothing.`
+        });
+      }
+      continue;
+    }
+    granted.add(scanner);
+  }
+  return { granted, problems };
+}
+
+/**
+ * FR-R6-F09 (research R4) -- the confirm-modal detail for granting an OS-enforced
+ * backend. Its bound is not refused by `judgeBackendContainment`, so there is no
+ * refusal sentence to reuse; this one says what the grant accepts. Built from the
+ * kind alone: no path, version or setting value reaches it.
+ */
+export function unqualifiedGrantMessage(kind: BackendRunnerKind): string {
+  return (
+    `Granting '${kind}' in '${ALLOW_UNCONTAINED_SETTING}' accepts it on a platform, architecture ` +
+    `or version where its bound (${mechanismOf(kind)}) has not been qualified. On a qualified ` +
+    `tuple the grant changes nothing.`
+  );
+}
+
+/**
+ * May this backend run?
+ *
+ * A pure function of the backend and the granted set, so the decision is testable
+ * without a workspace, a CLI, or a spawn — and so both the admission check and
+ * the spawn-time check read the same answer instead of each implementing it.
+ *
+ * FR-R3-125 — the second parameter was a boolean meaning "all uncontained
+ * backends are allowed". It is now the set actually granted, so allowing `agy`
+ * does not allow `claude`. The parameter stays REQUIRED for the reason
+ * `createBackendRunner`'s docblock gives.
+ */
+export function judgeBackendContainment(
+  kind: BackendRunnerKind,
+  granted: ReadonlySet<BackendRunnerKind>
+): ContainmentVerdict {
+  const containment = containmentOf(kind);
+  if (containment === 'os-enforced' || granted.has(kind)) {
+    return { outcome: 'allowed', containment };
+  }
+  return {
+    outcome: 'refused',
+    reason: 'uncontained-backend-not-enabled',
+    kind,
+    // Names the setting, the exact value to add, the scope of the grant, and the
+    // key this replaced. A refusal an operator cannot act on is a refusal they
+    // will work around.
+    message:
+      `The '${kind}' backend runs without an OS-enforced bound on what it can reach: ` +
+      'model-generated actions execute with your local user authority. Add ' +
+      `'${kind}' to '${ALLOW_UNCONTAINED_SETTING}' to accept that for this backend only, ` +
+      'or choose a backend that carries a sandbox. The setting is application-scoped, so it ' +
+      `applies to every workspace in this installation. It replaces the removed boolean ` +
+      `'${REMOVED_ALLOW_UNCONTAINED_SETTING}', which now grants nothing. See ` +
+      'docs/architecture/agent-capability-posture.md and ' +
+      'docs/operations/untrusted-repositories.md.'
+  };
+}
+
+/**
+ * FR-R4-F06 (FR-007, FR-009) -- what a GRANTED uncontained backend means, in one sentence
+ * the launch surface shows.
+ *
+ * `judgeBackendContainment`'s refusal is worded for a backend that has NOT been granted
+ * ("Add '...' to ..."), so it cannot be reused for the granted case: it would tell an
+ * operator who already granted to grant. This is the other half. It is built here, beside
+ * the refusal, for the reason the refusal is: one module owns what an uncontained posture
+ * is, and the webview composes none of it (hard rule 2).
+ *
+ * It states the same three substances the refusal and the setting description state
+ * (`tests/lint/backend-permission-posture.test.ts` reads this output too): the authority
+ * being granted, the application scope of the grant, and that it is per backend. It ends
+ * by pointing at Settings, where the grant is revoked.
+ *
+ * Built from the validated `kind` ALONE. No operator text, setting value or path can reach
+ * it, so it is safe to project to the webview and to render. The display name is the kind
+ * with its first letter capitalised, which extends to a fourth backend without an edit.
+ */
+export function uncontainedGrantNotice(kind: BackendRunnerKind): string {
+  const name = findBackendDescriptor(kind)?.displayLabel ?? `${kind.charAt(0).toUpperCase()}${kind.slice(1)}`;
+  return (
+    `${name} runs with no OS-enforced bound, so model-generated actions execute with your ` +
+    'local user authority; you accepted that for this backend only, the grant is ' +
+    'application-scoped and applies in every trusted workspace in this installation, and ' +
+    'you can review or revoke it in Settings.'
+  );
+}
+
+/**
+ * FR-R3-056 — thrown rather than returned, because there is no runner to return.
+ * A distinct type so a caller can report the posture refusal as itself instead of
+ * as a generic construction failure.
+ *
+ * FR-R3-146 (FR-005) — MOVED HERE from `runner/backend-runner-factory.ts`, where it
+ * was declared beside the throw. The controller must now recognise it, and
+ * `tests/lint/backend-kind-placement.test.ts` forbids any module outside
+ * `src/runner/` taking a VALUE from the factory — the exemption is one file wide and
+ * is for the composition root. Adding the controller to that allowlist would widen
+ * an exemption whose narrowness is the point.
+ *
+ * `services/` is where this product already puts a thrown refusal a caller must
+ * recognise across a module boundary: `CapabilityNotEnforceableError` in
+ * `services/capability-refusal.ts` says so, and cites this type's reasoning while
+ * doing it. Here rather than in a file of its own because the message a caller
+ * reports is built ten lines above, by `judgeBackendContainment`, and a refusal type
+ * separated from the judgement that raises it is two files to keep in step.
+ */
+export class UncontainedBackendRefusedError extends Error {
+  public constructor(
+    public readonly kind: BackendRunnerKind,
+    message: string
+  ) {
+    super(message);
+    this.name = 'UncontainedBackendRefusedError';
+  }
+}
+
+/**
+ * Recognise the refusal across a module boundary without an instanceof trap.
+ *
+ * The shape `isCapabilityRefusal` established. A predicate rather than a bare
+ * `instanceof` at the call site because the caller is `catch (err: unknown)`, and a
+ * predicate narrows without the caller importing the constructor for a type guard
+ * it then has to spell itself.
+ */
+export function isUncontainedBackendRefusal(
+  error: unknown
+): error is UncontainedBackendRefusedError {
+  return error instanceof UncontainedBackendRefusedError;
+}

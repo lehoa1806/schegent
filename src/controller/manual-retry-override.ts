@@ -1,15 +1,21 @@
 import type { SanitizedLogger } from '../lib/logger';
 import type { QueueManager } from '../queue/queue-manager';
 import type { RetryCoordinator } from '../services/retry-coordinator';
-import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { WorkflowRun } from '../state/workflow-run';
+import {
+  QueueMutationRejected,
+  allowedSameStatusFor,
+  type WorkspaceStateStore
+} from '../state/workspace-state';
 import type { MutationResult } from './phase-control-service';
 import type { RunSessionRegistry } from './run-session';
 import { resolveControlTarget } from './sole-run-resolver';
 
+/** The retry countdown fired between the caller's read and the update that would clear it. */
+class CountdownAlreadyFired extends Error {}
+
 export interface ManualRetryOverrideDeps {
   readonly logger: SanitizedLogger;
-  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getRunMap' | 'getQueue' | 'setRun'>;
+  readonly store: Pick<WorkspaceStateStore, 'getRun' | 'getRunMap' | 'getQueue' | 'updateRun' | 'runCommitClaim'>;
   readonly queue: Pick<QueueManager, 'setQueuePausedState'>;
   readonly sessions: Pick<RunSessionRegistry, 'peek' | 'acquire'>;
   readonly retryCoordinator: Pick<
@@ -73,14 +79,38 @@ export async function applyManualRetryOverride(
     await deps.queue.setQueuePausedState(false, target.queueId, null);
   }
 
-  const priorCount = run.delayedRetryCount;
-  const updated: WorkflowRun = {
-    ...run,
-    delayedRetryCount: 0,
-    pendingRetryAt: null,
-    pendingRetryCause: null
-  };
-  await store.setRun(target.queueId, updated);
+  // FR-R4-F01 (FR-008) — a PATCH of the retry fields on the Run as it is inside the
+  // chain. The countdown may have fired since the read above; that is checked here,
+  // on the current Run, and refused rather than written over a Run already retrying.
+  let priorCount = run.delayedRetryCount;
+  try {
+    await store.updateRun(
+      target.queueId,
+      {
+        runId: run.id,
+        allowedStatuses: allowedSameStatusFor('operator'),
+        label: 'manual-retry-override',
+        patch: (current) => {
+          if (current.pendingRetryAt === null) throw new CountdownAlreadyFired();
+          priorCount = current.delayedRetryCount;
+          return {
+            delayedRetryCount: 0,
+            pendingRetryAt: null,
+            pendingRetryCause: null,
+            creditPause: null
+          };
+        }
+      },
+      store.runCommitClaim(target.queueId)
+    );
+  } catch (error) {
+    if (error instanceof CountdownAlreadyFired) return { ok: false, reason: 'not-pending-retry' };
+    if (error instanceof QueueMutationRejected) {
+      if (error.reason === 'stale-run-id') return { ok: false, reason: 'no-active-run' };
+      if (error.reason === 'run-status-precondition') return { ok: false, reason: 'not-pending-retry' };
+    }
+    throw error;
+  }
   await retryCoordinator.appendManualRetryAudit({
     runId: run.id,
     phase: run.currentPhase,

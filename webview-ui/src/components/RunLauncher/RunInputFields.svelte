@@ -34,31 +34,38 @@
   }
 </script>
 
+<!-- Drawn as the redesign's form fields: the port's name in small muted type above its box, with
+     "(required)" where the mockup writes "(optional)", and its declared type and description in a
+     caption under the box, as the add-task drawer's hint sits under its box. The box names that
+     caption as its description. -->
 <section class="contract-section" data-testid="run-launcher-contract">
-  <h4 class="section-heading">Pipeline contract</h4>
-  <p class="section-note">The inputs this Pipeline declares. Each one is validated before the run is queued.</p>
+  <h4 class="section-heading">Workflow contract</h4>
+  <p class="hint note">The inputs this Workflow declares. Each one is validated before the run is queued.</p>
 
   {#each ports as port (port.portId)}
     <div class="port-row" data-port-control>
       <label class="port-label" for={`run-input-${port.portId}`} data-testid={`run-input-label-${port.portId}`}>
         {port.label}
         {#if port.required}
-          <span class="required-marker" data-testid={`run-input-required-${port.portId}`}>required</span>
+          <span data-testid={`run-input-required-${port.portId}`}>(required)</span>
         {/if}
       </label>
-      <span class="port-type" data-testid={`run-input-type-${port.portId}`}>{port.type}</span>
-      {#if port.description}
-        <p class="port-description">{port.description}</p>
-      {/if}
       <input
         id={`run-input-${port.portId}`}
         data-testid={`run-input-${port.portId}`}
-        class="port-input"
+        class="input"
         type="text"
+        aria-describedby={`run-input-hint-${port.portId}`}
         {disabled}
         value={values[port.portId] ?? ''}
         oninput={(event) => onChange(port.portId, event.currentTarget.value)}
       />
+      <p class="hint port-hint" id={`run-input-hint-${port.portId}`}>
+        <span class="port-type" data-testid={`run-input-type-${port.portId}`}>{port.type}</span>
+        {#if port.description}
+          <span>{port.description}</span>
+        {/if}
+      </p>
       {#if errors.has(fieldId(port.portId))}
         <p class="field-error" data-testid={`run-launcher-error-${fieldId(port.portId)}`}>
           {errors.get(fieldId(port.portId))}
@@ -69,54 +76,38 @@
 </section>
 
 <style>
-  .contract-section {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
   .section-heading {
-    margin: 0;
-    font-size: 0.95em;
+    font-size: var(--schegent-text-secondary);
+    font-weight: 600;
   }
-  .section-note {
+  .note,
+  .port-hint,
+  .field-error {
     margin: 0;
-    font-size: 0.85em;
-    opacity: 0.8;
+  }
+  .note {
+    margin-top: var(--schegent-space-1);
   }
   .port-row {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--schegent-space-1);
+    margin-top: var(--schegent-space-3);
   }
   .port-label {
-    font-weight: 600;
-    font-size: 0.9em;
+    font-size: var(--schegent-text-secondary);
+    color: var(--schegent-muted-fg);
   }
-  .required-marker {
-    margin-left: 6px;
-    font-weight: 400;
-    font-size: 0.8em;
-    color: var(--vscode-descriptionForeground);
+  .port-hint {
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: var(--schegent-space-1-5);
   }
   .port-type {
-    font-size: 0.8em;
-    opacity: 0.8;
-  }
-  .port-description {
-    margin: 0;
-    font-size: 0.85em;
-    opacity: 0.8;
-  }
-  .port-input {
-    padding: 4px 6px;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
-    border-radius: var(--schegent-radius);
+    font-family: var(--schegent-mono-font);
   }
   .field-error {
-    margin: 0;
-    font-size: 0.85em;
+    font-size: var(--schegent-text-caption);
     color: var(--schegent-error-text);
   }
 </style>

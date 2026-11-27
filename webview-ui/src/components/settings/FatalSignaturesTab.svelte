@@ -1,38 +1,91 @@
 <script lang="ts">
   /**
-   * Feature 011 T069 — Fatal Signatures sub-tab.
+   * Feature 011 T069 — the failure signatures, the Settings page's Failure signatures section.
    *
-   * Renders two visual sections per contracts/fatal-signatures.md:
-   *   1. Built-in (read-only) — mirrors `FATAL_SIGNATURES` from
+   * Renders two visual sections per contracts/fatal-signatures.md, in the
+   * redesign's order and under its headings:
+   *   1. "Your additions" (operator-defined, editable) — a table of
+   *      text inputs reflecting `snapshot.generalSettings.fatalSignatures`,
+   *      with "Add text" under it. The page Save
+   *      (`settings-page.svelte.ts`) writes them through the shared
+   *      `saveGeneralSettings` helper with the unprefixed key
+   *      `fatalSignatures`.
+   *   2. "Built in" (read-only) — mirrors `FATAL_SIGNATURES` from
    *      `webview-ui/src/lib/fatal-signature-registry.ts`. No edit
-   *      controls; static "Built-in" badge per FR-038 / SC-010.
-   *   2. Operator-defined (editable) — vertical list of text inputs
-   *      reflecting `snapshot.generalSettings.fatalSignatures`. Save
-   *      goes through the shared `saveGeneralSettings` helper with the
-   *      unprefixed key `fatalSignatures`.
+   *      controls; the heading's "read-only" tag marks the whole list
+   *      once (FR-038 / SC-010), where each row carried its own
+   *      "Built-in" badge before the redesign.
+   *
+   * THE ORDER. The contract says "Built-ins always render first". What
+   * that order decides is which list a match is attributed to, and the
+   * host's effective list keeps the built-ins first whatever order this
+   * page shows the two in (`src/lib/fatal-signature-registry.ts`). The
+   * page follows the mockup, which puts the additions first, and
+   * `webview-ui/README.md` records the departure.
    *
    * Defense-in-depth validation:
    *   - empty / whitespace-only inputs blocked from save (FR-029-like),
    *   - duplicates flagged inline (host merger dedupes anyway).
    *
+   * WHY THIS ADDS DIFFERENTLY FROM `general/StringListField.svelte`, which is
+   * the other editable list on this surface: a signature is free text matched
+   * as a substring, so there is no pattern to refuse at add and no way to fix
+   * a character except by editing the row. That is a decision, not drift —
+   * `general/field-types.ts`, on the `'string-list'` kind, carries the rule and
+   * the reasoning. Read it before giving a third list a fourth behaviour.
+   *
+   * The `{#each}` below is keyed by INDEX and must stay that way; the reason
+   * and its regression test are at
+   * `__tests__/FatalSignaturesTab.duplicate-key.test.ts`.
+   *
    * Feature 018 — Settings UI Hover Text & Descriptions: every focusable
    * control on this tab uses the `use:hoverTextAnchor` action which
    * manages `aria-describedby` and lazily portals a hover/focus
    * popover when the description body exceeds 80 chars. Built-in
-   * items are non-focusable so they are described by the section
-   * header alone.
+   * items are non-focusable, so nothing in that section takes a
+   * popover. The redesign draws no line under a heading, so each
+   * section's own description is its accessible description
+   * (`aria-describedby`), out of sight.
    */
+  import {
+    OUTCOME_NOT_YET_KNOWN_TEXT,
+    boundaryRefusalText,
+    isOutcomeNotYetKnown
+  } from '../../lib/boundary-refusal-text';
   import type { GeneralSettings, WorkflowSnapshot } from '../../lib/snapshot-types';
   import { IDLE_GENERAL_SETTINGS } from '../../lib/snapshot-types';
   import { FATAL_SIGNATURES } from '../../lib/fatal-signature-registry';
-  import { saveGeneralSettings } from '../../lib/save-general-settings';
+  import { saveGeneralSettings, type SaveResult } from '../../lib/save-general-settings';
   import { hoverTextAnchor } from '../hover-text/hover-text-anchor-action';
   import { FATAL_SIGNATURES_DESCRIPTIONS } from './FatalSignaturesTab.descriptions';
+  import { SettingsPage } from './settings-page.svelte';
+  import { descriptionWords, settingsSearch, type SearchWords } from './settings-search.svelte';
 
   interface Props {
     snapshot: WorkflowSnapshot;
+    /** The page whose header saves and reverts this list; a tab on its own gets its own. */
+    page?: SettingsPage;
   }
-  const { snapshot }: Props = $props();
+  const { snapshot, page = new SettingsPage() }: Props = $props();
+
+  const LEAD = FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body;
+  /** The additions table's column heading. */
+  const COLUMN = 'Text to match';
+
+  // The page's search finds each list by its fixed words. The text of an addition is the user's
+  // own, so it is never searched; a built-in entry is fixed, so it is.
+  const { row: searchRow, refusal } = settingsSearch();
+  const additionsWords = (): SearchWords => [
+    ...descriptionWords(FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header']),
+    COLUMN,
+    'schegent.fatalSignatures',
+    LEAD
+  ];
+  const builtInWords = (): SearchWords => [
+    ...descriptionWords(FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header']),
+    LEAD,
+    ...FATAL_SIGNATURES
+  ];
 
   const currentSettings = $derived<GeneralSettings>(
     snapshot.generalSettings ?? IDLE_GENERAL_SETTINGS
@@ -44,9 +97,22 @@
 
   let draft = $state<string[]>([]);
   let lastProjectedJson = $state('');
-  let status = $state<{ status: 'idle' | 'pending' | 'accepted' | 'rejected'; reason?: string }>({
-    status: 'idle'
-  });
+  let status = $state<{
+    status: 'idle' | 'pending' | 'accepted' | 'rejected' | 'unknown';
+    reason?: string;
+  }>({ status: 'idle' });
+
+  // FR-R4-F05 (I5, I6, I8, FR-024) — a timeout reads as not yet known, never "Save rejected",
+  // and a late answer replaces it through the same path. Unmounting aborts the wait.
+  const lifetime = new AbortController();
+  $effect(() => () => lifetime.abort());
+  function showSaveResult(result: SaveResult): void {
+    status = result.status === 'accepted'
+      ? { status: 'accepted' }
+      : isOutcomeNotYetKnown(result.reason)
+        ? { status: 'unknown' }
+        : { status: 'rejected', reason: result.reason };
+  }
 
   $effect(() => {
     const next = [...projectedAdditions];
@@ -67,6 +133,12 @@
 
   function updateEntry(index: number, value: string): void {
     draft = draft.map((v, i) => (i === index ? value : v));
+  }
+
+  /** A remove button is named after its row's text, as the mockup's is; an empty row's by its place. */
+  function removeName(entry: string, index: number): string {
+    const text = entry.trim();
+    return text.length > 0 ? `Remove ${text}` : `Remove row ${index + 1}`;
   }
 
   const trimmedDraft = $derived(draft.map((s) => s.trim()));
@@ -103,287 +175,208 @@
   async function save(): Promise<void> {
     if (!canSave) return;
     status = { status: 'pending' };
-    const result = await saveGeneralSettings({ fatalSignatures: trimmedDraft });
-    status = result.status === 'accepted'
-      ? { status: 'accepted' }
-      : { status: 'rejected', reason: result.reason };
+    showSaveResult(
+      await saveGeneralSettings({ fatalSignatures: trimmedDraft }, undefined, {
+        signal: lifetime.signal,
+        onLateOutcome: showSaveResult
+      })
+    );
   }
 
   function resetAll(): void {
     draft = [...projectedAdditions];
     status = { status: 'idle' };
   }
+
+  // The list is one change to the page however many rows moved. An empty row counts as a
+  // change but keeps this list out of the page Save until it is filled or removed.
+  $effect(() =>
+    page.register({
+      changes: () => (dirty ? { signatures: 1 } : {}),
+      canSave: () => canSave,
+      save,
+      revert: resetAll
+    })
+  );
 </script>
 
+<!--
+  The redesign’s failure-signature section: its lead, the additions as an editable table with
+  “Add text” under it, then the built-in list under a read-only tag. The page header’s Save and
+  Revert write and discard the additions with every other change on the page. The mockup draws
+  no line under a heading, so each section’s description is out of sight and is the section’s
+  accessible description.
+-->
 <section class="fatal-signatures-tab" data-testid="settings-fatal-signatures-tab">
-  <header class="tab-header">
-    <h2>{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].title}</h2>
-    <p class="hint">{FATAL_SIGNATURES_DESCRIPTIONS['tab-header'].body}</p>
-  </header>
+  <p class="lead small muted">{LEAD}</p>
 
-  <div class="section" data-testid="fatal-built-in-section">
-    <header class="section-header">
-      <h3>{FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].title}</h3>
-      <span class="badge badge-builtin">Read-only</span>
-    </header>
-    <p class="hint">{FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].body}</p>
-    <ul class="signature-list" data-testid="fatal-built-in-list">
-      {#each FATAL_SIGNATURES as sig}
-        <li class="signature-item">
-          <code class="sig-text">{sig}</code>
-          <span class="badge badge-builtin">Built-in</span>
-        </li>
-      {/each}
-    </ul>
-  </div>
-
-  <div class="section" data-testid="fatal-operator-section">
-    <header class="section-header">
-      <h3>{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].title}</h3>
-      <div class="actions">
-        <button
-          type="button"
-          class="btn btn-primary"
-          data-testid="fatal-add"
-          onclick={addEntry}
-          use:hoverTextAnchor={{
-            controlId: 'fatal-add',
-            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-add']
-          }}
-        >+ Add</button>
-        <button
-          type="button"
-          class="btn btn-primary"
-          data-testid="fatal-save"
-          disabled={!canSave}
-          onclick={save}
-          use:hoverTextAnchor={{
-            controlId: 'fatal-save',
-            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-save']
-          }}
-        >Save</button>
-        <button
-          type="button"
-          class="btn btn-ghost"
-          data-testid="fatal-reset"
-          disabled={!dirty}
-          onclick={resetAll}
-          use:hoverTextAnchor={{
-            controlId: 'fatal-reset',
-            description: FATAL_SIGNATURES_DESCRIPTIONS['operator-reset']
-          }}
-        >Reset</button>
-      </div>
-    </header>
-    <p class="hint">{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].body}</p>
+  <section
+    class="section"
+    data-testid="fatal-operator-section"
+    aria-labelledby="fatal-operator-heading"
+    aria-describedby="fatal-operator-description"
+    use:searchRow={additionsWords}
+  >
+    <h3 id="fatal-operator-heading">{FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].title}</h3>
+    <p id="fatal-operator-description" class="sr-only">
+      {FATAL_SIGNATURES_DESCRIPTIONS['operator-section-header'].body}
+    </p>
 
     {#if draft.length === 0}
-      <p class="empty-msg" data-testid="fatal-operator-empty">
-        No operator-defined fatal signatures. Click + Add to create one.
+      <p class="empty-msg small muted" data-testid="fatal-operator-empty">
+        No additions yet. Choose Add text to make the first one.
       </p>
     {:else}
-      <ul class="signature-list editable" data-testid="fatal-operator-list">
-        {#each draft as entry, i (i)}
-          <li class="signature-item editable-row">
-            <input
-              type="text"
-              class="text-input"
-              data-testid="fatal-operator-input-{i}"
-              aria-label="Fatal signature {i + 1}"
-              value={entry}
-              oninput={(e) => updateEntry(i, (e.target as HTMLInputElement).value)}
-              placeholder="verbatim substring"
-              spellcheck="false"
-              use:hoverTextAnchor={{
-                controlId: `fatal-operator-input-${i}`,
-                description: FATAL_SIGNATURES_DESCRIPTIONS['operator-input']
-              }}
-            />
-            <button
-              type="button"
-              class="btn btn-destructive btn-tight"
-              data-testid="fatal-operator-remove-{i}"
-              aria-label="Remove fatal signature {i + 1}"
-              onclick={() => removeEntry(i)}
-              use:hoverTextAnchor={{
-                controlId: `fatal-operator-remove-${i}`,
-                description: FATAL_SIGNATURES_DESCRIPTIONS['operator-remove']
-              }}
-            >Remove</button>
-          </li>
-        {/each}
-      </ul>
+      <div class="table-wrap">
+        <table class="t fit" data-testid="fatal-operator-list">
+          <thead>
+            <tr>
+              <th scope="col">{COLUMN}</th>
+              <th scope="col"><span class="sr-only">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each draft as entry, i (i)}
+              <tr>
+                <td>
+                  <input
+                    type="text"
+                    class="input mono"
+                    data-testid="fatal-operator-input-{i}"
+                    aria-label="Fatal signature {i + 1}"
+                    value={entry}
+                    oninput={(e) => updateEntry(i, (e.target as HTMLInputElement).value)}
+                    placeholder="verbatim substring"
+                    spellcheck="false"
+                    use:hoverTextAnchor={{
+                      controlId: `fatal-operator-input-${i}`,
+                      description: FATAL_SIGNATURES_DESCRIPTIONS['operator-input']
+                    }}
+                  />
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    class="icon-btn"
+                    data-testid="fatal-operator-remove-{i}"
+                    aria-label={removeName(entry, i)}
+                    onclick={() => removeEntry(i)}
+                    use:hoverTextAnchor={{
+                      controlId: `fatal-operator-remove-${i}`,
+                      description: FATAL_SIGNATURES_DESCRIPTIONS['operator-remove']
+                    }}
+                  ><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm add"
+      data-testid="fatal-add"
+      onclick={addEntry}
+      use:hoverTextAnchor={{
+        controlId: 'fatal-add',
+        description: FATAL_SIGNATURES_DESCRIPTIONS['operator-add']
+      }}
+    ><svg class="i" aria-hidden="true"><use href="#i-plus"></use></svg>Add text</button>
 
     {#if hasEmpty}
-      <div class="warning" data-testid="fatal-operator-warning-empty" role="status">
+      <div class="warning small" data-testid="fatal-operator-warning-empty" role="status">
         At least one entry is empty. Fill or remove it before saving.
       </div>
     {/if}
     {#if intraOperatorDupes.length > 0}
-      <div class="warning" data-testid="fatal-operator-warning-dupes" role="status">
+      <div class="warning small" data-testid="fatal-operator-warning-dupes" role="status">
         Duplicate entries: {intraOperatorDupes.join(', ')} — the host
         will dedupe them on save.
       </div>
     {/if}
     {#if builtInOverlaps.length > 0}
-      <div class="warning" data-testid="fatal-operator-warning-builtin-overlap" role="status">
+      <div class="warning small" data-testid="fatal-operator-warning-builtin-overlap" role="status">
         Already in the built-in registry: {builtInOverlaps.join(', ')}
         — these entries are redundant and will keep the
         <code>built-in</code> attribution.
       </div>
     {/if}
     {#if status.status === 'pending'}
-      <div class="status pending" data-testid="fatal-status" role="status">Saving...</div>
+      <div class="save-status small muted" data-testid="fatal-status" role="status">Saving...</div>
     {:else if status.status === 'accepted'}
-      <div class="status accepted" data-testid="fatal-status" role="status">Saved.</div>
+      <div class="save-status small s-ok" data-testid="fatal-status" role="status">Saved.</div>
+    {:else if status.status === 'unknown'}
+      <div class="save-status small muted" data-testid="fatal-status" role="status">{OUTCOME_NOT_YET_KNOWN_TEXT}</div>
     {:else if status.status === 'rejected'}
-      <div class="status rejected" data-testid="fatal-status" role="alert">
-        Save rejected: <code>{status.reason ?? 'unknown'}</code>
+      <div class="save-status small s-err" data-testid="fatal-status" role="alert" use:refusal>
+        Save rejected. {boundaryRefusalText(status.reason ?? '')}
       </div>
     {/if}
-  </div>
+  </section>
+
+  <section
+    class="section"
+    data-testid="fatal-built-in-section"
+    aria-labelledby="fatal-built-in-heading"
+    aria-describedby="fatal-built-in-description"
+    use:searchRow={builtInWords}
+  >
+    <h3 id="fatal-built-in-heading">
+      {FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].title} <span class="tag">read-only</span>
+    </h3>
+    <p id="fatal-built-in-description" class="sr-only">
+      {FATAL_SIGNATURES_DESCRIPTIONS['built-in-section-header'].body}
+    </p>
+    <ul class="builtin-list mono small" data-testid="fatal-built-in-list">
+      {#each FATAL_SIGNATURES as sig}
+        <li>{sig}</li>
+      {/each}
+    </ul>
+  </section>
 </section>
 
 <style>
-  .fatal-signatures-tab {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    padding: 8px 0;
+  /* The mockup’s lead is a plain paragraph, so it stands a line’s space below the top of the
+     section, level with nothing in the navigation beside it, and the first part’s own top margin
+     takes over below it. */
+  .lead {
+    margin: var(--schegent-space-3) 0;
   }
-  .tab-header h2 {
-    margin: 0 0 4px 0;
-    font-size: 1.1em;
+  /* Each part heads with an h3 set as the redesign’s section heading (`.section > h2`), as
+     the parts inside a general settings group do. */
+  .section > h3 {
+    display: flex;
+    align-items: center;
+    gap: var(--schegent-space-2);
+    margin-bottom: var(--schegent-space-2);
+    font-size: var(--schegent-text-subheading);
     font-weight: 600;
   }
-  .hint {
-    margin: 0 0 8px 0;
-    color: var(--schegent-muted-fg);
-    font-size: 0.85em;
-  }
+  /* A section’s description is out of sight (`.sr-only`, which is absolutely positioned). The
+     section is its containing block, so the description scrolls with the page. */
   .section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    border: 0;
-    border-top: 1px solid var(--schegent-divider);
-    border-radius: 0;
-    background: transparent;
-    padding: var(--schegent-space-4) 0;
+    position: relative;
   }
-  .section-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .section-header h3 {
+  .builtin-list {
     margin: 0;
-    font-size: 0.95em;
-    font-weight: 600;
-    flex: 1;
-  }
-  .actions {
-    display: flex;
-    gap: 6px;
-  }
-  .signature-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .signature-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border: 1px solid var(--schegent-divider);
-    border-radius: var(--schegent-radius-sm);
-    background: var(--vscode-input-background);
-  }
-  .signature-item.editable-row {
-    background: transparent;
-  }
-  .sig-text {
-    flex: 1;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
-    color: var(--schegent-fg);
-    background: transparent;
-    padding: 0;
-  }
-  .text-input {
-    flex: 1;
-    background: var(--vscode-input-background);
-    color: var(--schegent-fg);
-    border: 1px solid var(--sch-glass-border);
-    border-radius: var(--schegent-radius-sm);
-    padding: 4px 8px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
-  }
-  .text-input:focus {
-    outline: none;
-    border-color: var(--schegent-focus-border);
-  }
-  .badge {
-    font-size: 0.7em;
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: var(--schegent-radius-sm);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .badge-builtin {
-    background: var(--vscode-list-hoverBackground);
-    color: var(--schegent-muted-fg);
-    border: 1px solid var(--schegent-divider);
+    padding-left: 18px;
   }
   .empty-msg {
-    color: var(--schegent-muted-fg);
-    font-style: italic;
-    margin: 4px 0;
-    font-size: 0.85em;
+    margin: 0;
+  }
+  .add {
+    margin-top: var(--schegent-space-1-5);
+  }
+  .warning,
+  .save-status {
+    margin-top: var(--schegent-space-2);
+    line-height: 1.45;
   }
   .warning {
-    color: var(--schegent-color-warning);
-    background: color-mix(in srgb, var(--schegent-color-warning) 8%, transparent);
-    border: 1px solid color-mix(in srgb, var(--schegent-color-warning) 30%, transparent);
-    border-radius: var(--schegent-radius);
-    padding: 6px 8px;
-    font-size: 0.85em;
+    color: var(--schegent-status-warning-text);
   }
-  .status {
-    font-size: 0.85em;
-    padding: 4px 8px;
-    border-radius: var(--schegent-radius);
-  }
-  .status.pending { color: var(--schegent-muted-fg); }
-  .status.accepted { color: var(--vscode-charts-green); }
-  .status.rejected { color: var(--schegent-error-text); }
-  .btn {
-    padding: 4px 12px;
-    border-radius: var(--schegent-radius-sm);
-    font-size: 0.9em;
-    font-weight: 500;
-    cursor: pointer;
-    border: 1px solid transparent;
-  }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-tight { padding: 2px 8px; font-size: 0.8em; }
-  .btn-primary { background: var(--schegent-button-bg); color: var(--schegent-button-fg); }
-  .btn-primary:hover:not(:disabled) { background: var(--schegent-button-hover); }
-  .btn-ghost { background: transparent; color: var(--schegent-muted-fg); }
-  .btn-ghost:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
-  .btn-destructive { background: transparent; color: var(--schegent-error-text); border-color: var(--schegent-color-error); }
-  code {
-    background: var(--vscode-textCodeBlock-background);
-    padding: 1px 4px;
-    border-radius: 3px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 0.85em;
+  .warning code {
+    font-family: var(--schegent-mono-font);
   }
 </style>

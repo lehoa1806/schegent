@@ -143,6 +143,7 @@ export const workflowSnapshot = {
       "phaseOverrides": [],
       "manualPause": null,
       "phaseBreakpoints": [],
+      "startFailure": null,
       "pendingCount": 1,
       "tasks": [
         {
@@ -161,7 +162,8 @@ export const workflowSnapshot = {
           "position": 0,
           "pauseCause": null,
           "currentPipelineId": "dev-new-feature",
-          "hasOnDiskLogs": true
+          "hasOnDiskLogs": true,
+          "phaseProgress": null
         },
         {
           "id": "visual-task-pending",
@@ -179,7 +181,8 @@ export const workflowSnapshot = {
           "position": 1,
           "pauseCause": null,
           "currentPipelineId": "dev-new-feature",
-          "hasOnDiskLogs": false
+          "hasOnDiskLogs": false,
+          "phaseProgress": null
         },
         {
           "id": "visual-task-complete",
@@ -197,9 +200,12 @@ export const workflowSnapshot = {
           "position": 2,
           "pauseCause": null,
           "currentPipelineId": "dev-new-feature",
-          "hasOnDiskLogs": true
+          "hasOnDiskLogs": true,
+          "phaseProgress": null
         }
-      ]
+      ],
+      "scheduledStartAt": null,
+      "scheduledStartSource": null
     }
   ],
   "queue": {
@@ -219,7 +225,8 @@ export const workflowSnapshot = {
       "position": 0,
       "pauseCause": null,
       "currentPipelineId": "dev-new-feature",
-      "hasOnDiskLogs": true
+      "hasOnDiskLogs": true,
+      "phaseProgress": null
     },
     "pending": [
       {
@@ -238,7 +245,8 @@ export const workflowSnapshot = {
         "position": 1,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": false
+        "hasOnDiskLogs": false,
+        "phaseProgress": null
       }
     ],
     "recent": [
@@ -258,7 +266,8 @@ export const workflowSnapshot = {
         "position": 2,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": true
+        "hasOnDiskLogs": true,
+        "phaseProgress": null
       }
     ],
     "orderedItems": [
@@ -278,7 +287,8 @@ export const workflowSnapshot = {
         "position": 0,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": true
+        "hasOnDiskLogs": true,
+        "phaseProgress": null
       },
       {
         "id": "visual-task-pending",
@@ -296,7 +306,8 @@ export const workflowSnapshot = {
         "position": 1,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": false
+        "hasOnDiskLogs": false,
+        "phaseProgress": null
       },
       {
         "id": "visual-task-complete",
@@ -314,7 +325,8 @@ export const workflowSnapshot = {
         "position": 2,
         "pauseCause": null,
         "currentPipelineId": "dev-new-feature",
-        "hasOnDiskLogs": true
+        "hasOnDiskLogs": true,
+        "phaseProgress": null
       }
     ],
     "queues": [
@@ -325,7 +337,9 @@ export const workflowSnapshot = {
         "state": "active",
         "pauseSource": null,
         "schedule": null,
-        "taskCount": 3
+        "taskCount": 3,
+        "failurePolicy": "halt-on-failure",
+        "failurePolicyOverride": null
       }
     ],
     "paused": false,
@@ -367,7 +381,16 @@ export const workflowSnapshot = {
     "signal": null,
     "detectedIssues": [],
     "msSinceLastStdout": 2000,
-    "msSinceLastStderr": null
+    "msSinceLastStderr": null,
+    // FR-R3-208 — `false` deliberately: a Run that is not holding renders as it
+    // always did, so no golden changes.
+    "held": false,
+    // Feature 211 — `null` deliberately: this fixture backs the visual goldens,
+    // and an unbounded invocation renders the monitor row exactly as it did
+    // before the bound existed. A value here would change every golden that
+    // includes the row, which is a different change than this one.
+    "maxDurationMs": null,
+    "deadlineApproaching": false
   },
   "telemetry": {
     "pid": 4242,
@@ -529,12 +552,280 @@ export const workflowSnapshot = {
     "revision": "visual-pipeline-revision",
     "warnings": []
   },
+  "phaseCatalog": {
+    "state": "ready",
+    "records": [
+      {
+        "key": "speckit-specify::0",
+        "phaseId": "speckit-specify",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-specify",
+          "name": "Specify",
+          "version": 1,
+          "instruction": "Define scope and acceptance criteria.",
+          "model": "claude-sonnet-5-5",
+          "effort": "high",
+          "timeoutSeconds": 1800,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-clarify::0",
+        "phaseId": "speckit-clarify",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-clarify",
+          "name": "Clarify",
+          "version": 1,
+          "instruction": "Resolve material ambiguity.",
+          "model": "claude-sonnet-5-5",
+          "effort": "medium",
+          "timeoutSeconds": 1200,
+          "loopable": true,
+          "retryCondition": "ambiguities_remain",
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-plan::0",
+        "phaseId": "speckit-plan",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-plan",
+          "name": "Plan",
+          "version": 1,
+          "instruction": "Create an implementation plan.",
+          "model": "gpt-5.6-codex",
+          "effort": "high",
+          "timeoutSeconds": 1800,
+          "loopable": false,
+          "runner": "codex"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-tasks::0",
+        "phaseId": "speckit-tasks",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-tasks",
+          "name": "Tasks",
+          "version": 1,
+          "instruction": "Break the plan into tasks.",
+          "timeoutSeconds": 1200,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-analyze::0",
+        "phaseId": "speckit-analyze",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-analyze",
+          "name": "Analyze",
+          "version": 1,
+          "instruction": "Check consistency and risk.",
+          "timeoutSeconds": 1200,
+          "loopable": true,
+          "retryCondition": "issues_remain",
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "speckit-implement::0",
+        "phaseId": "speckit-implement",
+        "status": "effective",
+        "definition": {
+          "phaseId": "speckit-implement",
+          "name": "Implement",
+          "version": 1,
+          "instruction": "Implement and verify the approved plan.",
+          "timeoutSeconds": 5400,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      },
+      {
+        "key": "finalize::0",
+        "phaseId": "finalize",
+        "status": "effective",
+        "definition": {
+          "phaseId": "finalize",
+          "name": "Finalize",
+          "version": 1,
+          "instruction": "Review, commit, and integrate the result.",
+          "timeoutSeconds": 1800,
+          "loopable": false,
+          "runner": "claude"
+        },
+        "display": {},
+        "errors": []
+      }
+    ],
+    "effective": [
+      {
+        "phaseId": "speckit-specify",
+        "name": "Specify",
+        "version": 1,
+        "instruction": "Define scope and acceptance criteria.",
+        "model": "claude-sonnet-5-5",
+        "effort": "high",
+        "timeoutSeconds": 1800,
+        "loopable": false,
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-clarify",
+        "name": "Clarify",
+        "version": 1,
+        "instruction": "Resolve material ambiguity.",
+        "model": "claude-sonnet-5-5",
+        "effort": "medium",
+        "timeoutSeconds": 1200,
+        "loopable": true,
+        "retryCondition": "ambiguities_remain",
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-plan",
+        "name": "Plan",
+        "version": 1,
+        "instruction": "Create an implementation plan.",
+        "model": "gpt-5.6-codex",
+        "effort": "high",
+        "timeoutSeconds": 1800,
+        "loopable": false,
+        "runner": "codex"
+      },
+      {
+        "phaseId": "speckit-tasks",
+        "name": "Tasks",
+        "version": 1,
+        "instruction": "Break the plan into tasks.",
+        "timeoutSeconds": 1200,
+        "loopable": false,
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-analyze",
+        "name": "Analyze",
+        "version": 1,
+        "instruction": "Check consistency and risk.",
+        "timeoutSeconds": 1200,
+        "loopable": true,
+        "retryCondition": "issues_remain",
+        "runner": "claude"
+      },
+      {
+        "phaseId": "speckit-implement",
+        "name": "Implement",
+        "version": 1,
+        "instruction": "Implement and verify the approved plan.",
+        "timeoutSeconds": 5400,
+        "loopable": false,
+        "runner": "claude"
+      },
+      {
+        "phaseId": "finalize",
+        "name": "Finalize",
+        "version": 1,
+        "instruction": "Review, commit, and integrate the result.",
+        "timeoutSeconds": 1800,
+        "loopable": false,
+        "runner": "claude"
+      }
+    ],
+    "revision": "visual-phase-revision",
+    "warnings": []
+  },
+  "workflowCatalog": {
+    "state": "ready",
+    "records": [
+      {
+        "key": "dev-new-feature::0",
+        "workflowId": "dev-new-feature",
+        "status": "effective",
+        "definition": {
+          "workflowId": "dev-new-feature",
+          "name": "New Feature",
+          "version": 1,
+          "nodes": [
+            { "nodeId": "speckit-specify", "kind": "phase", "phaseId": "speckit-specify" },
+            { "nodeId": "speckit-clarify", "kind": "phase", "phaseId": "speckit-clarify" },
+            { "nodeId": "speckit-plan", "kind": "phase", "phaseId": "speckit-plan" },
+            { "nodeId": "speckit-tasks", "kind": "phase", "phaseId": "speckit-tasks" },
+            { "nodeId": "speckit-analyze", "kind": "phase", "phaseId": "speckit-analyze" },
+            { "nodeId": "speckit-implement", "kind": "phase", "phaseId": "speckit-implement" },
+            { "nodeId": "finalize", "kind": "phase", "phaseId": "finalize" }
+          ],
+          "connections": [
+            { "from": { "nodeId": "speckit-specify" }, "to": { "nodeId": "speckit-clarify" } },
+            { "from": { "nodeId": "speckit-clarify" }, "to": { "nodeId": "speckit-plan" } },
+            { "from": { "nodeId": "speckit-plan" }, "to": { "nodeId": "speckit-tasks" } },
+            { "from": { "nodeId": "speckit-tasks" }, "to": { "nodeId": "speckit-analyze" } },
+            { "from": { "nodeId": "speckit-analyze" }, "to": { "nodeId": "speckit-implement" } },
+            { "from": { "nodeId": "speckit-implement" }, "to": { "nodeId": "finalize" } }
+          ],
+          "startNodeIds": ["speckit-specify"]
+        },
+        "display": {
+          "id": "dev-new-feature",
+          "name": "New Feature",
+          "version": 1
+        },
+        "errors": [],
+        "derivedInputs": [],
+        "derivedOutputs": []
+      }
+    ],
+    "effective": [
+      {
+        "workflowId": "dev-new-feature",
+        "name": "New Feature",
+        "version": 1,
+        "nodes": [
+          { "nodeId": "speckit-specify", "kind": "phase", "phaseId": "speckit-specify" },
+          { "nodeId": "speckit-clarify", "kind": "phase", "phaseId": "speckit-clarify" },
+          { "nodeId": "speckit-plan", "kind": "phase", "phaseId": "speckit-plan" },
+          { "nodeId": "speckit-tasks", "kind": "phase", "phaseId": "speckit-tasks" },
+          { "nodeId": "speckit-analyze", "kind": "phase", "phaseId": "speckit-analyze" },
+          { "nodeId": "speckit-implement", "kind": "phase", "phaseId": "speckit-implement" },
+          { "nodeId": "finalize", "kind": "phase", "phaseId": "finalize" }
+        ],
+        "connections": [
+          { "from": { "nodeId": "speckit-specify" }, "to": { "nodeId": "speckit-clarify" } },
+          { "from": { "nodeId": "speckit-clarify" }, "to": { "nodeId": "speckit-plan" } },
+          { "from": { "nodeId": "speckit-plan" }, "to": { "nodeId": "speckit-tasks" } },
+          { "from": { "nodeId": "speckit-tasks" }, "to": { "nodeId": "speckit-analyze" } },
+          { "from": { "nodeId": "speckit-analyze" }, "to": { "nodeId": "speckit-implement" } },
+          { "from": { "nodeId": "speckit-implement" }, "to": { "nodeId": "finalize" } }
+        ],
+        "startNodeIds": ["speckit-specify"]
+      }
+    ],
+    "revision": "visual-workflow-revision",
+    "warnings": []
+  },
   "availablePhases": [
     {
       "id": "speckit-specify",
       "name": "Specify",
       "instruction": "Define scope and acceptance criteria.",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "effort": "high",
       "timeoutSeconds": 1800,
       "loopable": false,
@@ -544,7 +835,7 @@ export const workflowSnapshot = {
       "id": "speckit-clarify",
       "name": "Clarify",
       "instruction": "Resolve material ambiguity.",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5-5",
       "effort": "medium",
       "timeoutSeconds": 1200,
       "loopable": true,
@@ -597,8 +888,8 @@ export const workflowSnapshot = {
   ],
   "availableModels": {
     "claude": [
-      "claude-sonnet-4-6",
-      "claude-opus-4-6"
+      "claude-sonnet-5-5",
+      "claude-opus-5-5"
     ],
     "codex": [
       "gpt-5.6-codex"
@@ -607,10 +898,22 @@ export const workflowSnapshot = {
       "Gemini 3.1 Pro (High)"
     ]
   },
+  "workspaceModelCatalog": { "revision": "visual-models-v1", "models": {
+    "claude": [
+      "claude-sonnet-5-5",
+      "claude-opus-5-5"
+    ],
+    "codex": [
+      "gpt-5.6-codex"
+    ],
+    "agy": [
+      "Gemini 3.1 Pro (High)"
+    ]
+  } },
   "configuredModels": {
     "claude": [
-      "claude-sonnet-4-6",
-      "claude-opus-4-6"
+      "claude-sonnet-5-5",
+      "claude-opus-5-5"
     ],
     "codex": [
       "gpt-5.6-codex"
@@ -632,21 +935,29 @@ export const workflowSnapshot = {
     "phases": true,
     "retryConditions": true
   },
+  // FR-R3-143 (T037) — two DIFFERENT steps, both consistent with the `true` above.
+  // `phases` is allowed because the user set it so explicitly; `retryConditions`
+  // is allowed because nothing is set and the workspace is trusted. A fixture that
+  // used one value for both would render one row of the disclosure twice and leave
+  // the distinction it exists to draw unexercised by the visual suite.
+  "resolvedScope": {
+    "phases": "user",
+    "retryConditions": "workspace-trust"
+  },
   "generalSettings": {
     "cliPath": "claude",
     "codexPath": "codex",
     "agyPath": "agy",
     "loggingVerbose": true,
     "loopMaxIterations": 10,
-    "invocationTimeoutSeconds": 5400,
+    "invocationIdleTimeoutSeconds": 5400,
+    "invocationMaxDurationSeconds": 21600,
     "watchdogPollIntervalMinutes": 30,
     "auditRotationSizeMB": 5,
     "auditRotationMaxAgeDays": 30,
-    "defaultPipelineId": "speckit-new-feature",
-    "fatalSignatures": [],
+    "defaultWorkflowId": "speckit-new-feature",
+    "fatalSignatures": ["quota exceeded for project"],
     "claudeAutoCompactPctOverride": undefined,
-    "queueGlobalConcurrencyCap": 1,
-    "queueDefaultQueueId": "default",
     "runtimeLogLevel": "INFO",
     "runtimeLogFilePath": "",
     "retryMaxAttempts": 5,
@@ -656,19 +967,29 @@ export const workflowSnapshot = {
     "sessionRetentionMaxAgeDays": 30,
     "sessionRetentionMaxBytes": 536870912,
     "rawTranscriptMode": "always",
+    "transportCaptureMode": "inherit",
+    "cliInheritEnvironment": true,
+    "cliEnvironmentMode": "allowlist",
+    "cliEnvironmentAllowlist": [],
+    "backendProbeTimeoutSeconds": 5,
+    "uiConfirmationsEnable": true,
+    "multiRootSuppressWarning": false,
+    "backendRunner": "claude",
+    "spendMaxUsdPerRun": null,
+    "spendMaxTokensPerRun": null,
+    "queueHaltOnTaskFailure": "halt-on-failure",
     "scopes": {
       "cliPath": "default",
       "loggingVerbose": "workspace",
       "loopMaxIterations": "default",
-      "invocationTimeoutSeconds": "default",
+      "invocationIdleTimeoutSeconds": "default",
+      "invocationMaxDurationSeconds": "default",
       "watchdogPollIntervalMinutes": "default",
       "auditRotationSizeMB": "default",
       "auditRotationMaxAgeDays": "default",
-      "defaultPipelineId": "default",
-      "fatalSignatures": "default",
+      "defaultWorkflowId": "default",
+      "fatalSignatures": "workspace",
       "claudeAutoCompactPctOverride": "default",
-      "queueGlobalConcurrencyCap": "default",
-      "queueDefaultQueueId": "default",
       "runtimeLogLevel": "default",
       "runtimeLogFilePath": "default",
       "retryMaxAttempts": "default",
@@ -679,7 +1000,18 @@ export const workflowSnapshot = {
       "retryForceContinueOnCap": "default",
       "codexPath": "default",
       "agyPath": "default",
-      "rawTranscriptMode": "default"
+      "rawTranscriptMode": "default",
+      "transportCaptureMode": "default",
+      "cliInheritEnvironment": "default",
+      "cliEnvironmentMode": "default",
+      "cliEnvironmentAllowlist": "default",
+      "backendProbeTimeoutSeconds": "default",
+      "uiConfirmationsEnable": "default",
+      "multiRootSuppressWarning": "default",
+      "backendRunner": "default",
+      "spendMaxUsdPerRun": "default",
+      "spendMaxTokensPerRun": "default",
+      "queueHaltOnTaskFailure": "default"
     }
   },
   "sessionArtifacts": {
@@ -688,8 +1020,15 @@ export const workflowSnapshot = {
     "lastSweepAt": "2026-08-01T06:00:00.000Z",
     "lastSweepFailures": 0
   },
+  "streamPressure": {
+    "liveBuffers": 4,
+    "retainedBytes": 5242880,
+    "ceilingBytes": 268435456,
+    "machineMemoryBytes": 17179869184
+  },
   "evidenceHealth": {
     "overall": "healthy",
+    "transportDrops": { "lines": 0, "bytes": 0 },
     "audit": {
       "status": "healthy",
       "continuationPolicy": "fail-closed",
@@ -724,11 +1063,86 @@ export const workflowSnapshot = {
       "failureCount": 0,
       "lastFailureAt": null,
       "cause": null
+    },
+    "auditCheckpoint": {
+      "status": "healthy",
+      "continuationPolicy": "continue-degraded",
+      "failureCount": 0,
+      "lastFailureAt": null,
+      "cause": null
+    },
+    "transport": {
+      "status": "healthy",
+      "continuationPolicy": "continue-degraded",
+      "failureCount": 0,
+      "lastFailureAt": null,
+      "cause": null
+    },
+    "verboseDiagnostics": {
+      "status": "healthy",
+      "continuationPolicy": "continue-degraded",
+      "failureCount": 0,
+      "lastFailureAt": null,
+      "cause": null
     }
   },
   "confirmationsEnabled": true,
   "confirmSuppression": {
     "version": 1,
     "suppressedActionKeys": []
-  }
+  },
+  // FR-R3-145 (T1572) — the memento-sourced queue settings. Literals here, unlike
+  // everywhere else, because this fixture is a captured snapshot: it is `as const`
+  // so the visual suite renders one fixed frame, and a derived value would make the
+  // frame move when a default moves. `1` and `"default"` are what a cold workspace
+  // reports, matching the rest of this fixture's idle posture.
+  "queueSettings": {
+    "globalConcurrencyCap": 1,
+    "defaultQueueId": "default"
+  },
+  // FR-R3-144 (T021) — the three postures a shipped default produces: `claude` and
+  // `agy` carry no OS-enforced bound and are ungranted, `codex` carries one and
+  // needs no grant. Literals for the reason the paragraph above gives — this is a
+  // captured frame — and the values are what `composeBackendPostures([])` returns,
+  // which is what a cold workspace with the manifest default `[]` projects.
+  // The refusal sentences are `judgeBackendContainment`'s own, copied whole. They
+  // are long, and that is the point: the tab renders the enforcement's wording
+  // verbatim, so the baseline must photograph a tab carrying two of them. Held to
+  // the projection by `tests/unit/ui/sidebar/backend-posture-projection.test.ts`,
+  // which compares this literal against `composeBackendPostures([])` — the first
+  // version of this fixture omitted both, and three screenshots recorded a surface
+  // with no refusal on it while a fresh install shows two.
+  "backendPostures": [
+    {
+      "kind": "claude",
+      "containment": "none",
+      "mechanism": "none",
+      "grant": "not-granted",
+      "refusal":
+        "The 'claude' backend runs without an OS-enforced bound on what it can reach: model-generated actions execute with your local user authority. Add 'claude' to 'schegent.backend.uncontainedBackends' to accept that for this backend only, or choose a backend that carries a sandbox. The setting is application-scoped, so it applies to every workspace in this installation. It replaces the removed boolean 'schegent.backend.allowUncontainedBackends', which now grants nothing. See docs/architecture/agent-capability-posture.md and docs/operations/untrusted-repositories.md."
+    },
+    {
+      "kind": "agy",
+      "containment": "none",
+      "mechanism": "none",
+      "grant": "not-granted",
+      "refusal":
+        "The 'agy' backend runs without an OS-enforced bound on what it can reach: model-generated actions execute with your local user authority. Add 'agy' to 'schegent.backend.uncontainedBackends' to accept that for this backend only, or choose a backend that carries a sandbox. The setting is application-scoped, so it applies to every workspace in this installation. It replaces the removed boolean 'schegent.backend.allowUncontainedBackends', which now grants nothing. See docs/architecture/agent-capability-posture.md and docs/operations/untrusted-repositories.md."
+    },
+    {
+      "kind": "codex",
+      "containment": "os-enforced",
+      "mechanism": "codex-sandbox-workspace-write",
+      "grant": "not-required"
+    }
+  ],
+  "backendGrantProblems": []
 } as const satisfies WorkflowSnapshot;
+
+// FR-R7-15 (W07, T018) — derived visual fixture with `agy` absent from
+// `availableBackends`, leaving the default all-found `workflowSnapshot` untouched
+// for existing visual baselines and backend-posture projection assertions.
+export const workflowSnapshotWithMissingAgy: WorkflowSnapshot = {
+  ...workflowSnapshot,
+  availableBackends: ['claude', 'codex']
+};

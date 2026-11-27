@@ -92,6 +92,12 @@ export interface ResetStageSupport {
   quiesce(): Promise<ResetQuiesceOutcome>;
   /** Append the bounded reset event. Best-effort: never fails the transaction. */
   recordReset(payload: WorkspaceStateResetPayload): Promise<void>;
+  /**
+   * FR-R4-F03 (FR-011; TA8) — whether this window holds workspace primacy now. The reset records an
+   * audit event, so it is an owner-only command; the Stage 1 registration asks the live Stage 2
+   * through this, and answers "owner" when there is no Stage 2 (no writer, lock or log exists then).
+   */
+  isOwner(): Promise<boolean>;
 }
 
 /**
@@ -181,9 +187,12 @@ async function record(
 }
 
 export async function runReset(ctx: ResetContext): Promise<ResetOutcome> {
-  // Non-modal, as before. The sidebar path already puts a destructive
-  // `useConfirm('workspace.reset')` dialog in front of this one; only the text
-  // changes here, not the gate or its modality.
+  // Non-modal, as before — and the ONLY confirmation a reset gets. This comment
+  // used to say the sidebar path puts a `useConfirm('workspace.reset')` dialog in
+  // front of it, and used that to justify the modality; the sender was deleted,
+  // and the only caller of that key left in the tree is a test. `schegent.reset`
+  // is reached from the Command Palette, so this prompt is host-side and
+  // unconditional: `schegent.ui.confirmations.enable` cannot suppress it.
   const choice = await vscode.window.showInformationMessage(
     RESET_CONFIRMATION_MESSAGE,
     RESET_CONFIRM_LABEL,

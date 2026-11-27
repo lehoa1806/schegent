@@ -37,7 +37,7 @@ const OVER_LONG = `a > 0 or ${'b'.repeat(PHASE_RETRY_CONDITION_MAX_LEN - 13)} > 
 
 const REVISION = 'rev-no-rewrite';
 const identity = (value: string): string => value;
-const MODELS = { claude: ['claude-opus-5'], codex: [], agy: [] } as const;
+const MODELS = { claude: ['claude-opus-5-5'], codex: [], agy: [] } as const;
 
 const ROWS: readonly unknown[] = [
   { phaseId: 'over-long', name: 'Over long', version: 1, instruction: 'Do the work', retryCondition: OVER_LONG },

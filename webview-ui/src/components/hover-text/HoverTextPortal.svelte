@@ -27,6 +27,12 @@
     onMouseLeave
   }: Props = $props();
 
+  /**
+   * A control inside this is an item of an open menu. Its description keeps clear of the whole
+   * menu, so it does not cover the items the user is about to point at.
+   */
+  const MENU_SELECTOR = '[role="menu"]';
+
   let popoverEl: HTMLDivElement | undefined = $state();
   let resolvedSide: HoverTextAnchor = $state('bottom');
   let popoverLeft = $state(0);
@@ -38,6 +44,7 @@
     const triggerRect = anchorEl.getBoundingClientRect();
     const popoverRect = popoverEl.getBoundingClientRect();
     const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const menu = anchorEl.closest(MENU_SELECTOR);
     const placement = computePlacement(
       {
         left: triggerRect.left,
@@ -50,7 +57,8 @@
       { width: popoverRect.width, height: popoverRect.height },
       viewport,
       anchor,
-      preferredPlacement
+      preferredPlacement,
+      menu === null ? undefined : menu.getBoundingClientRect()
     );
     resolvedSide = placement.side;
     popoverLeft = placement.offsetX;

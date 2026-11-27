@@ -13,15 +13,45 @@
 
 import type {
   PhaseCatalogSourceRecord,
-  PipelineCatalogSourceRecord,
   WorkflowCatalogSourceProjection
 } from '../../lib/snapshot-types';
 import type {
   SavePhaseRow,
-  SavePipelineRow,
   SaveWorkflowRow
 } from '../../lib/definition-rows';
-import type { ImportTargetLayers } from './process-import-state';
+import {
+  confirmTargetBlockedReason,
+  type ImportTargetGate,
+  type ImportTargetLayers
+} from './process-import-state';
+
+export { confirmTargetBlockedReason, type ImportTargetGate };
+
+/**
+ * Top-level Builder Import button gate (Feature 326).
+ *
+ * Only window primacy blocks starting an import from the Builder header:
+ * untrusted primary windows still admit Model Catalog imports (FR-056), and
+ * per-catalog trust / unsaved-edits checks run at Confirm once preflight
+ * identifies which catalog(s) the document writes.
+ */
+export function topLevelImportDisabledReason(isPrimary: boolean): string | null {
+  return isPrimary ? null : 'Only the primary window can import.';
+}
+
+/**
+ * Why a Workflow cannot be exported, or `null` when it can.
+ *
+ * Unsaved drafts are not in the catalog yet; stored Workflows remain exportable
+ * even with missing references so broken graphs stay portable (FR-016).
+ */
+export function workflowExportDisabledReason(
+  row: { readonly persisted: boolean } | null
+): string | null {
+  return row === null || row.persisted
+    ? null
+    : 'Save this Workflow first. Export writes the definition the catalog holds, not an unsaved draft.';
+}
 
 /** Whatever a row can be asked about. The list rows are a superset of this. */
 export interface ExportableRow {
@@ -65,12 +95,22 @@ export function phaseExportAvailability(row: ExportableRow): ExportAvailability 
   return { resolves: true, disabledReason: '' };
 }
 
+/** The tab the import is started from, which is the catalog the gate observes. */
+export type ImportEntryCatalog = 'phase' | 'workflow';
+
 export interface ImportEntryGate {
+  /** Whose save and whose edits `savePending` and `mutationActive` report. */
+  readonly catalog: ImportEntryCatalog;
   readonly trusted: boolean;
   readonly savePending: boolean;
-  /** True while an undeclared local Phase edit is outstanding. */
+  /** True while an undeclared local edit to that catalog is outstanding. */
   readonly mutationActive: boolean;
 }
+
+const IMPORT_CATALOG_NAMES: Readonly<Record<ImportEntryCatalog, string>> = Object.freeze({
+  phase: 'Phase',
+  workflow: 'Workflow'
+});
 
 /**
  * Why an import cannot be started, or `null` when it can (FR-053, FR-057).
@@ -83,20 +123,22 @@ export interface ImportEntryGate {
  * reason: one declared mutation at a time.
  *
  * Feature 085 T035 — this gates the SINGLE import entry point (FR-055a), which
- * now opens documents of either kind. Only the trust sentence changed: the
- * document is not classified before it is read, so naming the kind there would
- * be a claim about a file nobody has opened yet. The other two still name the
- * Phase catalog because that is literally what they observe — a Phase save, a
- * Phase draft — and generalizing their wording would describe a condition this
- * gate is not being told about.
+ * opens documents of either kind. The trust sentence names no kind: the
+ * document is not classified before it is read, so naming one there would be a
+ * claim about a file nobody has opened yet. The other two name the catalog the
+ * caller says it observes, because that is literally what they report — that
+ * tab's save, that tab's draft. The Phases and Workflows tabs both mount the
+ * entry point, and each feeds the gate its own state, so a fixed "Phase" told
+ * the Workflows tab about a catalog it had not touched.
  */
 export function importDisabledReason(gate: ImportEntryGate): string | null {
   if (!gate.trusted) {
     return 'This workspace is not trusted, so an imported resource could not be saved.';
   }
-  if (gate.savePending) return 'A Phase save is still in progress.';
+  const name = IMPORT_CATALOG_NAMES[gate.catalog];
+  if (gate.savePending) return `A ${name} save is still in progress.`;
   if (gate.mutationActive) {
-    return 'Save or discard your pending Phase changes before importing.';
+    return `Save or discard your pending ${name} changes before importing.`;
   }
   return null;
 }
@@ -134,7 +176,6 @@ export function importDisabledReason(gate: ImportEntryGate): string | null {
  */
 export function storedWritableLayers(
   phaseRecords: readonly PhaseCatalogSourceRecord[],
-  pipelineRecords: readonly PipelineCatalogSourceRecord[] = [],
   workflowRecords: readonly WorkflowCatalogSourceProjection[] = []
 ): ImportTargetLayers {
   // `display` carries the identity key under whichever name the row used, so the
@@ -143,9 +184,6 @@ export function storedWritableLayers(
   // shape is precisely one it must keep refusing.
   return {
     phases: phaseRecords.map((record) => ({ ...record.display }) as unknown as SavePhaseRow),
-    pipelines: pipelineRecords.map(
-      (record) => ({ ...record.display }) as unknown as SavePipelineRow
-    ),
     workflows: workflowRecords.map(
       (record) => ({ ...record.display }) as unknown as SaveWorkflowRow
     )

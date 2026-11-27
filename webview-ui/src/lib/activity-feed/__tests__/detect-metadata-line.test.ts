@@ -37,9 +37,9 @@ describe('Feature 029 T022 — detectMetadataLine', () => {
   });
 
   it('detects model=', () => {
-    const m = detectMetadataLine('model=claude-opus-4-7');
+    const m = detectMetadataLine('model=claude-opus-5-5');
     expect(m?.key).toBe('model');
-    expect(m?.value).toBe('claude-opus-4-7');
+    expect(m?.value).toBe('claude-opus-5-5');
   });
 
   it('detects num_turns=', () => {

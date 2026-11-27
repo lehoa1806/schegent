@@ -1,7 +1,21 @@
+import { SUPPORTED_BACKENDS } from '../../lib/generated/backend-descriptors';
+import { boundaryRefusalText } from '../../lib/boundary-refusal-text';
 import type { WorkflowSnapshot } from '../../lib/snapshot-types';
 
 /** Every backend the editor shows a section for, whatever either list holds. */
-const EDITABLE_BACKENDS: readonly string[] = ['claude', 'codex', 'agy'];
+const EDITABLE_BACKENDS: readonly string[] = SUPPORTED_BACKENDS;
+
+function isSafeBackendKey(key: string): boolean {
+  return key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
+}
+
+function ownModelsFor(
+  map: Readonly<Record<string, readonly string[] | undefined>> | undefined,
+  key: string
+): readonly string[] {
+  if (!map || !isSafeBackendKey(key) || !Object.hasOwn(map, key)) return [];
+  return map[key] ?? [];
+}
 
 /**
  * The editable catalog, seeded from CONFIGURATION — `schegent.models` — and
@@ -22,10 +36,33 @@ export function initialModels(
   configured: WorkflowSnapshot['configuredModels']
 ): Record<string, string[]> {
   const models: Record<string, string[]> = {};
-  for (const kind of new Set([...EDITABLE_BACKENDS, ...Object.keys(configured ?? {})])) {
-    models[kind] = [...(configured?.[kind as keyof NonNullable<typeof configured>] ?? [])];
+  const source = configured as Readonly<Record<string, readonly string[] | undefined>> | undefined;
+  for (const kind of new Set([...EDITABLE_BACKENDS, ...Object.keys(source ?? {})])) {
+    if (!isSafeBackendKey(kind)) continue;
+    models[kind] = [...ownModelsFor(source, kind)];
   }
   return models;
+}
+
+/**
+ * Exact structural equality between two normalized Model Catalog maps (key union
+ * plus ordered per-backend model lists), used to derive Models dirty state.
+ */
+export function areModelsEqual(
+  left: Readonly<Record<string, readonly string[]>>,
+  right: Readonly<Record<string, readonly string[]>>
+): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    if (!isSafeBackendKey(key)) continue;
+    const a = ownModelsFor(left, key);
+    const b = ownModelsFor(right, key);
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] !== b[i]) return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -62,8 +99,9 @@ export function withModelAdded(
   backend: string,
   value: string
 ): Record<string, string[]> | null {
+  if (!isSafeBackendKey(backend)) return null;
   const trimmed = value.trim();
-  const current = models[backend] ?? [];
+  const current = ownModelsFor(models, backend);
   if (trimmed.length === 0 || current.includes(trimmed)) return null;
   return { ...models, [backend]: [...current, trimmed] };
 }
@@ -74,8 +112,8 @@ export function withModelRemoved(
   backend: string,
   index: number
 ): Record<string, string[]> {
+  if (!isSafeBackendKey(backend) || !Object.hasOwn(models, backend)) return models;
   const current = models[backend];
-  if (!current) return models;
   return { ...models, [backend]: current.filter((_, position) => position !== index) };
 }
 
@@ -86,9 +124,8 @@ export function withModelReplaced(
   index: number,
   value: string
 ): Record<string, string[]> {
-  const current = models[backend];
-  if (!current) return models;
-  const next = [...current];
+  if (!isSafeBackendKey(backend) || !Object.hasOwn(models, backend)) return models;
+  const next = [...models[backend]];
   next[index] = value;
   return { ...models, [backend]: next };
 }
@@ -105,7 +142,8 @@ export function withModelsDetected(
   backend: string,
   detected: readonly string[]
 ): Record<string, string[]> {
-  return { ...models, [backend]: mergeDetectedModels(models[backend] ?? [], detected) };
+  if (!isSafeBackendKey(backend)) return models;
+  return { ...models, [backend]: mergeDetectedModels(ownModelsFor(models, backend), detected) };
 }
 
 /**
@@ -119,9 +157,13 @@ export function withModelsDetected(
  * timeout, a persistence failure, the config API being unavailable) has no
  * extra detail to add beyond the code itself.
  */
-export function formatModelCatalogSaveRejection(reason: string): string {
+export function formatModelCatalogSaveRejection(reason: string, mutation: 'manual-edit' | 'import-package'): string {
   if (reason === 'stale-catalog') {
-    return `${reason} — the catalog changed since this document was inspected; inspect it again`;
+    return mutation === 'import-package'
+      ? `${reason} — the catalog changed since this document was inspected. Open the import and inspect it again.`
+      : `${reason} — the catalog changed. Revert the draft and reapply your edits.`;
   }
-  return reason;
+  // FR-R4-F05 (O1) — a reason this function has no sentence for goes through the shared
+  // boundary text (a timeout and a dispatch failure included), never raw.
+  return boundaryRefusalText(reason);
 }

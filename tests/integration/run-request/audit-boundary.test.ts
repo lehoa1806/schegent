@@ -37,6 +37,7 @@
 // would be a second source of truth for what a secret looks like.
 
 import { describe, expect, it } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import {
   buildCatalog,
   type PhaseDef,
@@ -201,7 +202,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
         expect(text, `audit leaked the ${field} sentinel`).not.toContain(sentinel);
       }
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -212,7 +213,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
 
       expect(auditText(harness)).not.toContain(harness.workspaceRoot);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -226,7 +227,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
 
       expect(harness.audit.entries.length).toBeGreaterThan(0);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -248,7 +249,7 @@ describe('no audit event carries what the operator composed (FR-047, SC-010)', (
         }
       }
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 });
@@ -263,7 +264,7 @@ describe('a refused submission audits the refusal, never the content', () => {
 
       expect(harness.audit.entries).toEqual([]);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -276,7 +277,9 @@ describe('a refused submission audits the refusal, never the content', () => {
         // submission was accepted and there was no refusal to audit.
         queue: { ...queue, queueLifecycle: 'operator-paused' as const, pauseSource: 'operator' as const },
         result: undefined
-      }), 'default');
+      }), 'default',
+        unfencedCommit('test-fixture')
+      );
 
       await submit(harness, LOADED);
 
@@ -286,7 +289,7 @@ describe('a refused submission audits the refusal, never the content', () => {
         expect(text).not.toContain(sentinel);
       }
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 
@@ -309,7 +312,7 @@ describe('a refused submission audits the refusal, never the content', () => {
       expect(text).toContain('[redacted]');
       expect(text).not.toContain(SENTINEL.secret);
     } finally {
-      harness.cleanup();
+      await harness.cleanup();
     }
   });
 });

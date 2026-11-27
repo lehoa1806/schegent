@@ -3,9 +3,11 @@ import type { SanitizedLogger } from '../../lib/logger';
 import { renderWebviewHtml, cspPlaceholderHtml, FALLBACK_FAILURE_HTML } from './html';
 import { generateNonce } from './csp';
 import { validateInboundMessage } from './ipc-validator';
+import { isSnapshotResyncRequest } from '../../contracts/snapshot-bounds';
+import { SnapshotTransport } from './snapshot-transport';
 import type { ProjectorHandle } from './projector-handle';
 import type { SidebarCommand, CommandAckMessage } from './messages';
-import { STATE_SNAPSHOT, CMD_OPEN_DASHBOARD, CMD_ACK } from './messages';
+import { CMD_OPEN_DASHBOARD, CMD_ACK } from './messages';
 import type { Disposable } from '../../state/workspace-state';
 import { PlaceholderProjector } from './placeholder-projector';
 
@@ -26,6 +28,11 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
   private view: vscode.WebviewView | null = null;
   private projectorSub: Disposable | null = null;
+  // FR-R4-F08 (V2, V4) — the visibility listener, released beside `projectorSub`, and the last
+  // visibility seen so only a not-visible-to-visible transition posts.
+  private visibilitySub: Disposable | null = null;
+  private lastVisible = false;
+  private readonly transport = new SnapshotTransport();
   private projector: ProjectorHandle;
   private dispatcher: InboundDispatch | null;
   private readonly extensionRoot: string;
@@ -40,6 +47,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
   public setProjector(projector: ProjectorHandle): void {
     this.projector = projector;
+    this.transport.forceFullResync();
     if (this.view) {
       this.projectorSub?.dispose();
       this.projectorSub = projector.subscribe((snapshot) => {
@@ -96,15 +104,34 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     }
 
     view.webview.onDidReceiveMessage((raw) => this.handleInbound(raw));
+    this.transport.reset();
 
     this.projectorSub?.dispose();
     this.projectorSub = this.projector.subscribe((snapshot) => {
       void this.postSnapshot(snapshot);
     });
 
+    // FR-R4-F08 (V2) — a hidden sidebar is sent nothing, so a reveal posts the projector's current
+    // snapshot once, whether or not anything changed while it was hidden. Only a transition counts:
+    // a repeated `visible` event posts nothing, and the snapshot is read at the event, so a projector
+    // swapped while hidden is the one answered.
+    this.lastVisible = view.visible;
+    this.visibilitySub?.dispose();
+    this.visibilitySub = view.onDidChangeVisibility(() => {
+      const revealed = view.visible && !this.lastVisible;
+      this.lastVisible = view.visible;
+      if (revealed) {
+        this.transport.forceFullResync();
+        void this.postSnapshot(this.projector.getCurrentSnapshot());
+      }
+    });
+
     view.onDidDispose(() => {
       this.projectorSub?.dispose();
       this.projectorSub = null;
+      this.visibilitySub?.dispose();
+      this.visibilitySub = null;
+      this.transport.reset();
       this.view = null;
     });
   }
@@ -112,23 +139,54 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
   public dispose(): void {
     this.projectorSub?.dispose();
     this.projectorSub = null;
+    this.visibilitySub?.dispose();
+    this.visibilitySub = null;
+    this.transport.reset();
     this.view = null;
   }
 
   private async postSnapshot(snapshot: unknown): Promise<void> {
     const view = this.view;
-    if (!view) return;
+    // FR-R4-F08 (V1) — a hidden sidebar's snapshots are not posted. Only this snapshot post is
+    // gated: acknowledgements and every other message are posted as they always were (FR-014).
+    if (!view || !view.visible) return;
+    const prepared = this.transport.preparePost(snapshot);
     try {
-      await view.webview.postMessage({ type: STATE_SNAPSHOT, payload: snapshot });
+      const delivered = await view.webview.postMessage(prepared.message);
+      if (delivered === false) prepared.markFailed();
     } catch (err) {
+      prepared.markFailed();
       this.logger.debug(`sidebar: postMessage failed: ${(err as Error).message}`);
     }
   }
 
   private handleInbound(raw: unknown): void {
+    if (isSnapshotResyncRequest(raw)) {
+      this.transport.forceFullResync();
+      void this.postSnapshot(this.projector.getCurrentSnapshot());
+      return;
+    }
     const result = validateInboundMessage(raw);
     if (!result.ok) {
-      this.logger.debug(`sidebar: dropping invalid message (${result.reason})`);
+      // FR-R3-102 (FR-037) — `warn`, not `debug`.
+      //
+      // This is a TRUST BOUNDARY rejection: the webview is the untrusted side, and a
+      // message that fails validation is either a defect or a probe. The default
+      // runtime log level is INFO (`settings-schema.ts` `runtimeLogLevel`), so at
+      // `debug` a probing webview was **invisible at default settings** — the host
+      // dropped the message correctly and told nobody. `ARCHITECTURE.md` had claimed
+      // for a year that these were "audited as `audit.invalid_command`"; no such
+      // event has ever existed, and the claim is corrected there rather than here.
+      //
+      // `warn` is the floor, not the destination. An audit event is the shape the
+      // document always promised and is the stronger answer, recorded as the
+      // destination in `ARCHITECTURE.md` rather than built here — the audit
+      // vocabulary is a closed union with parity gates on both sides of the boundary,
+      // so adding a member is its own change with its own tests.
+      //
+      // `result.reason` is a closed reason code from the validator, never
+      // operator-authored text, so it is safe on this path.
+      this.logger.warn(`sidebar: rejected invalid message (${result.reason})`);
       return;
     }
     const view = this.view;

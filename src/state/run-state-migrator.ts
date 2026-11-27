@@ -8,7 +8,7 @@
 // leaving `KEYS.run` untouched. The two migrations never overlap a key, and
 // that is what keeps each of them a single-key write — a `Memento` offers no
 // multi-key transaction, so a half-populated workspace has to be unreachable by
-// construction rather than by care (`contracts/state-schema.ts:74-78`).
+// construction rather than by care (`src/contracts/state-schema.ts:74-78`).
 //
 // Like every migrator in this repo it is a **pure** function over the record it
 // is handed. It has no store, so `KEYS.queue` is not merely left alone — there
@@ -18,7 +18,7 @@
 // registry into a function that runs before the registry is loaded.
 // ---------------------------------------------------------------------------
 
-import { DEFAULT_QUEUE_ID } from '../queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../contracts/queue-identity';
 import { STATE_SCHEMA_VERSION_V11 } from '../contracts/state-schema';
 import type { WorkflowRun, WorkflowRunStatus } from './workflow-run';
 

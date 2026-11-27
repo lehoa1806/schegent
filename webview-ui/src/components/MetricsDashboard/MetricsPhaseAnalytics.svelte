@@ -14,42 +14,45 @@
   }
 </script>
 
-<section class="phase-analytics" aria-label="Phase analytics" data-testid="metrics-phase-analytics">
-  <h2 class="section-title">Phase Analytics</h2>
+<!-- The mockup's step table: the step's name over its id, then the figures,
+     right-aligned. The product shows every column the mockup puts under its
+     Columns menu, so nothing is hidden behind it. -->
+<section class="section steps" aria-labelledby="metrics-steps-heading" data-testid="metrics-phase-analytics">
+  <h2 id="metrics-steps-heading">Steps</h2>
   {#if aggregates.length === 0}
-    <p class="empty" data-testid="metrics-phase-analytics-empty">No phase executions recorded yet.</p>
+    <p class="empty" data-testid="metrics-phase-analytics-empty">No Phase executions recorded yet.</p>
   {:else}
-    <div class="table-scroll">
-      <table class="phase-analytics-table" data-testid="metrics-phase-analytics-table">
+    <div class="table-wrap">
+      <table class="t" data-testid="metrics-phase-analytics-table">
         <thead>
           <tr>
-            <th>Phase Type</th>
-            <th>Executions</th>
-            <th>Total Duration</th>
-            <th>Avg Duration</th>
-            <th>p50</th>
-            <th>p90</th>
-            <th>p99</th>
-            <th>Longest</th>
-            <th>Shortest</th>
-            <th>Backend Calls</th>
-            <th>Total Cost</th>
+            <th scope="col">Step</th>
+            <th scope="col" class="num">Runs</th>
+            <th scope="col" class="num">Median</th>
+            <th scope="col" class="num">p90</th>
+            <th scope="col" class="num">p99</th>
+            <th scope="col" class="num">Longest</th>
+            <th scope="col" class="num">Shortest</th>
+            <th scope="col" class="num">Average</th>
+            <th scope="col" class="num">Total time</th>
+            <th scope="col" class="num">Backend calls</th>
+            <th scope="col" class="num">Cost</th>
           </tr>
         </thead>
         <tbody>
           {#each aggregates as agg (agg.phaseType)}
             <tr data-testid="metrics-phase-analytics-row-{agg.phaseType}">
-              <td>{formatPhaseLabel(agg.phaseType)}</td>
-              <td>{agg.executionCount}</td>
-              <td>{formatDuration(agg.totalDurationMs)}</td>
-              <td>{formatDuration(agg.avgDurationMs)}</td>
-              <td>{formatDuration(agg.p50DurationMs)}</td>
-              <td>{formatDuration(agg.p90DurationMs)}</td>
-              <td>{formatDuration(agg.p99DurationMs)}</td>
-              <td>{formatDuration(agg.longestDurationMs)}</td>
-              <td>{formatDuration(agg.shortestDurationMs)}</td>
-              <td>{agg.totalBackendInvocations}</td>
-              <td class:cost-not-recorded={agg.totalCostUsd === undefined}>{formatCost(agg.totalCostUsd)}</td>
+              <td>{formatPhaseLabel(agg.phaseType)}<div class="sub mono">{agg.phaseType}</div></td>
+              <td class="num">{agg.executionCount}</td>
+              <td class="num">{formatDuration(agg.p50DurationMs)}</td>
+              <td class="num">{formatDuration(agg.p90DurationMs)}</td>
+              <td class="num">{formatDuration(agg.p99DurationMs)}</td>
+              <td class="num">{formatDuration(agg.longestDurationMs)}</td>
+              <td class="num">{formatDuration(agg.shortestDurationMs)}</td>
+              <td class="num">{formatDuration(agg.avgDurationMs)}</td>
+              <td class="num">{formatDuration(agg.totalDurationMs)}</td>
+              <td class="num">{agg.totalBackendInvocations}</td>
+              <td class="num" class:cost-not-recorded={agg.totalCostUsd === undefined}>{formatCost(agg.totalCostUsd)}</td>
             </tr>
           {/each}
         </tbody>
@@ -59,5 +62,7 @@
 </section>
 
 <style>
-  .table-scroll { overflow-x: auto; }
+  .steps td.num {
+    white-space: nowrap;
+  }
 </style>

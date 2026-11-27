@@ -16,7 +16,7 @@
 //
 // Four rules, each naming the specific regression it forbids:
 //
-//   1. `extension.ts` calls `useOwnershipStorage` exactly once, and passes
+//   1. `workspace-session.ts` calls `useOwnershipStorage` exactly once, and passes
 //      `createDiskOwnershipFs()`. Once, because a second call would repoint the
 //      registry after managers have taken fences from the first, silently
 //      invalidating every live claim.
@@ -40,7 +40,11 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
-const EXTENSION = 'src/extension.ts';
+// FR-R3-119 — `useOwnershipStorage` moved with the leases into
+// `src/activation/workspace-session.ts`, which is `src/activation/` — the
+// directory ARCHITECTURE.md calls the composition root. This gate follows the
+// call, not the filename.
+const EXTENSION = 'src/activation/workspace-session.ts';
 const LOCK = 'src/state/lock.ts';
 const LEASE = 'src/state/execution-lease.ts';
 
@@ -115,7 +119,13 @@ const EXTENSION_SOURCE = stripComments(read(EXTENSION));
  * instead of mandating one of the two shapes.
  */
 function ownershipDirectoryExpression(args: string): string {
-  const identifier = /^\s*createDiskOwnershipFs\s*\(\s*(\w+)\s*\)/.exec(args)?.[1];
+  // FR-R3-069 — the adapter takes { workspaceRoot, <dir> }; the directory to
+  // follow is the second shorthand property. The bare-identifier form is kept
+  // so the helper still reads the pre-152 shape if it ever returns. Feature 217
+  // (FR-003) — an optional second argument, the logger, names no directory.
+  const identifier =
+    /^\s*createDiskOwnershipFs\s*\(\s*\{\s*workspaceRoot,\s*(\w+)\s*\}\s*(?:,\s*\w+\s*)?\)/.exec(args)?.[1] ??
+    /^\s*createDiskOwnershipFs\s*\(\s*(\w+)\s*\)/.exec(args)?.[1];
   if (identifier === undefined) return args;
   const binding = new RegExp(`\\bconst\\s+${identifier}\\s*=([^;]*);`).exec(EXTENSION_SOURCE);
   expect(binding, `the ${identifier} binding must be readable in ${EXTENSION}`).not.toBeNull();

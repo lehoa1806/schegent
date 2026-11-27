@@ -25,6 +25,10 @@
   --schegent-button-border: var(--vscode-button-border, transparent);
   --schegent-button-secondary-bg: var(--vscode-button-secondaryBackground, #3a3d41);
   --schegent-button-secondary-fg: var(--vscode-button-secondaryForeground, #f0f0f0);
+  --schegent-button-secondary-hover: var(
+    --vscode-button-secondaryHoverBackground,
+    color-mix(in srgb, var(--schegent-fg) 10%, var(--schegent-button-secondary-bg))
+  );
 
   --schegent-input-bg: var(--vscode-input-background, #252526);
   --schegent-input-fg: var(--vscode-input-foreground, #cccccc);
@@ -42,6 +46,28 @@
   --schegent-color-system: var(--vscode-disabledForeground, #858585);
   --schegent-color-disabled: var(--vscode-charts-purple, #b180d7);
   --schegent-warning-fg: var(--vscode-editorWarning-foreground, #cca700);
+  /* FR-R3-131 (T1498) — the saturated accent may draw a border, an underline or a
+   * bar, but it may not be small TEXT. `--schegent-color-active` is
+   * `--vscode-charts-blue`, and blue text on the blue-tinted active surface failed
+   * WCAG AA contrast in every shipped theme: **24 of the 30 findings**
+   * `tests/a11y/a11y-baseline.json` had accepted since FR-R3-091 are this one
+   * mistake, repeated across four components. (The other 6 were `opacity` on a
+   * history badge; see `HistoryRunRow.svelte`.)
+   *
+   * The fix is at the TOKEN, not at the baseline, and it is the same pattern
+   * `--schegent-error-text` below already established for the saturated red: the
+   * colour that carries MEANING stays on the border and the underline, and the text
+   * uses the theme's own foreground, which VS Code guarantees against its own
+   * surfaces. Colour is therefore not the only indicator of an active tab either,
+   * which WCAG 1.4.1 asks for independently.
+   *
+   * A theme with no `--vscode-foreground` falls back to the same value
+   * `--schegent-fg` does; nothing here invents a colour.
+   *
+   * USE IT WHEREVER THE ACCENT CARRIES TEXT. The rule is not "the four sites the
+   * baseline named" — `.elapsed-pill` in `StatusBar.svelte` had the same pair and
+   * was never baselined, because it lives in the sidebar webview. */
+  --schegent-color-active-fg: var(--vscode-foreground, #cccccc);
   /* Error borders may use the saturated theme red, but small text needs a
    * contrast-safe foreground in both the VS Code host and local previews. */
   --schegent-error-text: var(
@@ -53,6 +79,18 @@
     )
   );
   --schegent-error-fg: var(--schegent-error-text);
+  /* An invalid field's border and a destructive control's hover fill, drawn as VS Code draws
+   * its own input validation. The border is the saturated red, so it never colours text. */
+  --schegent-error-border: var(--vscode-inputValidation-errorBorder, var(--schegent-color-error));
+  --schegent-error-bg: var(
+    --vscode-inputValidation-errorBackground,
+    color-mix(in srgb, var(--schegent-color-error) 9%, transparent)
+  );
+  /* The ground of inline code and example blocks, as VS Code's Markdown preview draws it. */
+  --schegent-code-bg: var(
+    --vscode-textCodeBlock-background,
+    color-mix(in srgb, var(--schegent-fg) 10%, transparent)
+  );
 
   --sch-font-primary: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
   --schegent-mono-font: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Consolas, monospace);
@@ -105,17 +143,13 @@
 }
 
 /* Feature 018 — Hover-text primitives.
- * Global styles so both inline-render (HoverText.svelte wrapper) and
- * portal-render (HoverTextPortal.svelte mounted by the hoverTextAnchor
- * action into document.body) share the same visual contract. */
-
-.hover-text-container {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  position: relative;
-}
+ * Global styles for portal-render: HoverTextPortal.svelte, mounted into
+ * document.body by the hoverTextAnchor action.
+ *
+ * FR-R3-140 deleted the inline-render half. `HoverText.svelte` was unreachable
+ * from either bundle entry point, and `.hover-text-container` — the wrapper it
+ * alone applied — went with it. `.hover-text-inline-help` stays: the action
+ * writes it at `hover-text-anchor-action.ts`, and a live test asserts it. */
 
 .hover-text-inline-help {
   margin: 0;
@@ -128,7 +162,11 @@
 .hover-text-popover-body {
   position: fixed;
   z-index: var(--hover-text-z, 2000);
-  max-width: 320px;
+  /* No wider than the panel less the placement's 4px edge pad on each side (EDGE_PAD in
+     hover-text-positioning.ts). The portal measures the box where it first draws, at the panel's
+     left edge, and places it from that size. A box as wide as the panel narrowed as it moved in
+     from the edge, took one more line, and grew over the field it was placed above. */
+  max-width: min(320px, calc(100vw - 8px));
   min-width: 180px;
   padding: 8px 10px;
   background: var(--hover-text-bg);
@@ -176,6 +214,19 @@
   [role='button'] {
     min-width: 44px !important;
     min-height: 44px !important;
+  }
+
+  /* A `<summary>` is actuated exactly like a button — tapped to toggle its
+   * `<details>` — but matches neither selector above, so it was the one
+   * interactive element this block never raised. The settings groups
+   * (FR-R3-143) came out at 35px because of it. `padding-block` does the
+   * centering the min-height alone would not: `summary` stays `display:
+   * list-item` here, so the disclosure marker each group renders survives.
+   * `!important` for the same reason the rules above carry it — the component
+   * styles are Svelte-scoped and outrank a bare element selector. */
+  summary {
+    min-height: 44px !important;
+    padding-block: 12px !important;
   }
 
   input:not([type='checkbox']):not([type='radio']),
@@ -243,7 +294,7 @@ button {
     transform var(--schegent-duration-fast) var(--schegent-ease-out);
 }
 
-button:active:not(:disabled) {
+button:active:not(:disabled, [aria-disabled='true']) {
   transform: translateY(1px);
 }
 
@@ -307,4 +358,79 @@ a:focus-visible {
     transition-duration: 0ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Redesign tokens.
+ *
+ * The values the two redesign mockups (`schegent_redesign_surfaces.html` and
+ * `workflow_builder_redesign.html`) draw with, expressed on the theme layer above. The
+ * stylesheets in `src/lib/sg/` are the only consumers so far; `webview-ui/README.md` maps each
+ * mockup variable to its token.
+ *
+ * This first block adds what the mockups need and the product did not have. Every name in it is
+ * new, so nothing here changes a shipped surface.
+ *
+ * The status-text tokens follow `--schegent-error-text`: the saturated colour keeps the dot, the
+ * icon and the border, and text mixes 55% of it toward the foreground so that it holds WCAG AA on
+ * the surfaces the mockups put it on. `src/lib/__tests__/sg-stylesheets.test.ts` reads the share
+ * from these declarations and checks the result against both mockup palettes. */
+:root {
+  --schegent-link-fg: var(--vscode-textLink-foreground, #3794ff);
+  --schegent-selection-bg: var(--vscode-list-activeSelectionBackground, var(--schegent-surface-selected));
+  --schegent-selection-fg: var(--vscode-list-activeSelectionForeground, var(--schegent-fg));
+  --schegent-color-workflow: var(--vscode-charts-purple, #b180d7);
+
+  --schegent-status-active-text: color-mix(in srgb, var(--schegent-color-active) 55%, var(--schegent-fg));
+  --schegent-status-completed-text: color-mix(in srgb, var(--schegent-color-completed) 55%, var(--schegent-fg));
+  --schegent-status-warning-text: color-mix(in srgb, var(--schegent-color-warning) 55%, var(--schegent-fg));
+  --schegent-status-error-text: var(--schegent-error-text);
+  --schegent-workflow-text: color-mix(in srgb, var(--schegent-color-workflow) 55%, var(--schegent-fg));
+
+  --schegent-shadow-popover: 0 2px 8px var(--vscode-widget-shadow, rgb(0 0 0 / 0.36));
+  --schegent-ring-selected: 0 0 0 1px var(--schegent-focus-border);
+  /* A high contrast theme marks a selection with an outline, not a fill: its list selection
+     background is undefined or the page's own black. A selected state drawn as a fill alone
+     also draws this ring, transparent until the block below sets it. */
+  --schegent-selection-outline: transparent;
+  /* The border a high contrast theme draws around every control. VS Code defines the colour in
+     those themes alone, so it is transparent in any other unless the theme asks for it. */
+  --schegent-contrast-border: var(--vscode-contrastBorder, transparent);
+  --schegent-chart-series-1: var(--schegent-color-active);
+  --schegent-chart-grid: color-mix(in srgb, var(--schegent-fg) 12%, var(--schegent-bg));
+  --schegent-canvas-dot: color-mix(in srgb, var(--schegent-fg) 10%, var(--schegent-bg));
+
+  /* Half steps between the spacing tokens above, for the mockups' 2, 6, 10, 14, 20 and 28px. */
+  --schegent-space-0-5: 2px;
+  --schegent-space-1-5: 6px;
+  --schegent-space-2-5: 10px;
+  --schegent-space-3-5: 14px;
+  --schegent-space-4-5: 20px;
+  --schegent-space-5-5: 28px;
+}
+
+/* VS Code names a high contrast theme, dark or light, in a class on the body. There the selection
+ * ring takes the outline the theme's own lists draw. */
+.vscode-high-contrast,
+.vscode-high-contrast-light {
+  --schegent-selection-outline: var(--vscode-contrastActiveBorder, var(--schegent-focus-border));
+}
+
+/* The mockups' geometry and type ramp differ from the shipped product's, so they are scoped to
+ * the opt-in `.sg` root instead of being changed at `:root`. A surface takes the redesign values
+ * by carrying the class; everything outside it keeps the values above. The font sizes are the
+ * mockups' pixel sizes at the 13px default, written in rem so they follow `--vscode-font-size`. */
+.sg {
+  --schegent-radius: 8px;
+  --schegent-radius-sm: 5px;
+  --schegent-control-height: 28px;
+  --schegent-control-height-compact: 24px;
+
+  --schegent-text-micro: calc(10rem / 13);
+  --schegent-text-caption: calc(11rem / 13);
+  --schegent-text-secondary: calc(12rem / 13);
+  --schegent-text-body: 1rem;
+  --schegent-text-subheading: calc(14rem / 13);
+  --schegent-text-title: calc(15rem / 13);
+  --schegent-text-heading: calc(18rem / 13);
+  --schegent-text-display: calc(24rem / 13);
 }

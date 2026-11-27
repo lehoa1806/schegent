@@ -3,12 +3,16 @@
 // wrapped by `useConfirm(actionKey)` so the operator-facing confirmation
 // flow gates the destructive side effect.
 //
-// The 15 destructive commands are the ones that mutate persisted queue,
+// The 14 destructive commands are the ones that mutate persisted queue,
 // run, workspace, or catalog state in a user-visible way. Each has an
 // `ActionKey` entry in `webview-ui/src/lib/action-copy.ts`, but the table is a
 // superset: it also carries keys for destructive decisions that are not commands
-// of their own (the output overwrite confirmed inside a run launch).
-// `workspace.reset` is the lone non-suppressible action.
+// of their own (the output overwrite confirmed inside a run launch, and
+// `workspace.reset`, whose command was deleted while its host-side prompt in
+// `src/commands/reset.ts` stayed). Which keys are non-suppressible is
+// `NEVER_SUPPRESSIBLE` in `webview-ui/src/lib/use-confirm.ts`; this header said
+// `workspace.reset` was the only one until FR-R3-143 (T042) added a second, and
+// naming them here again would only reproduce that.
 //
 // For each call site that hands a destructive command constant to a sender —
 // `<sender>(CMD_DESTRUCTIVE, ...)` — under `webview-ui/src/**/*.{svelte,ts}`
@@ -20,29 +24,45 @@
 // and the deferred-callback pattern
 // (`function onClick() { useConfirm(...).then((ok) => { if (ok) postCommand(...) }); }`).
 //
-// LEGACY_FILES allows orphaned components that still carry ungated
-// destructive calls but are no longer reachable from any live UI
-// surface; their deletion is parked behind a follow-up cleanup spec
-// (the active code path moved to Dashboard.svelte + QueueControls.svelte
-// post-053). The lint test asserts each entry still exists on disk so
-// the allowlist can never silently rot once the file is removed.
+// LEGACY_FILES is empty. It held orphaned components that still carried
+// ungated destructive calls but were reachable from no live UI surface,
+// parked behind a cleanup spec that has since run: FR-R3-140 deleted its
+// last entry, `QueueGlobalActions.svelte`, with the rest of the
+// unreachable webview surface. The active code path had already moved to
+// Dashboard.svelte + QueueControls.svelte post-053. See
+// ../../docs/architecture/webview-dead-surface-removal.md.
+//
+// Two assertions used to police the entries: one that each still existed
+// on disk, one that each still had an ungated call site left to excuse.
+// Both were deleted with the entry they guarded rather than left
+// iterating an empty set, which is green forever and proves nothing. An
+// empty allowlist needs no self-cleaning. A repopulated one needs both
+// blocks back, and an entry added without them should not pass review.
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { filesUnder } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
 
-// The 15 commands that the action-copy table gates. Adding a new
+// The 14 commands that the action-copy table gates. Adding a new
 // destructive command means adding it here AND to ACTION_COPY (the
 // pinned-key unit test at `webview-ui/src/lib/__tests__/action-copy.test.ts`
 // keeps the latter honest).
+//
+// `CMD_CLEAR_FAILED` and `CMD_RESET` were the 14th and 15th until the lifecycle
+// round-check of 2026-08-30 (finding D) deleted both from the IPC contract. They
+// are gone from here rather than parked in an exemption because a command that
+// does not exist cannot have an ungated call site — which is why the exemption
+// list below went with them.
 const DESTRUCTIVE_COMMANDS: readonly string[] = [
-  'CMD_CLEAR_ALL',
+  // FR-R3-150 (T1618c) — CMD_CLEAR_ALL retired as a sidebar-postable command
+  // (research.md D1); CMD_CLEAR_QUEUE is its queue-scoped replacement and the
+  // one Clean All now dispatches from the webview.
+  'CMD_CLEAR_QUEUE',
   'CMD_CLEAR_COMPLETED',
-  'CMD_CLEAR_FAILED',
   'CMD_REMOVE_QUEUE_ITEM',
   'CMD_CANCEL',
   'CMD_PAUSE_QUEUE',
@@ -51,7 +71,6 @@ const DESTRUCTIVE_COMMANDS: readonly string[] = [
   'CMD_RESTART_CANCELED_TASK',
   'CMD_MODIFY_TASK',
   'CMD_RERUN_FROM_HISTORY',
-  'CMD_RESET',
   // Feature 095 (T011, FR-003) — deleting a queue drops its pending Tasks with
   // no undo. Both posts of its two-phase flow live in one function body in
   // `webview-ui/src/lib/queue-control-ipc.ts` alongside the `useConfirm(` call,
@@ -65,19 +84,22 @@ const DESTRUCTIVE_COMMANDS: readonly string[] = [
   // Feature 100 (T509a, FR-050) — throwing away unpublished work. The one
   // lifecycle operation that destroys content with no version record behind it,
   // and the only way a draft-only definition leaves the catalog entirely.
-  'CMD_DISCARD_DEFINITION_DRAFT'
+  'CMD_DISCARD_DEFINITION_DRAFT',
+  // Feature 195 (T064, FR-025) — attested completion. Destructive in the sense
+  // this gate exists for even though it deletes nothing: it moves the task into
+  // `completed`, which no transition returns from (192's invariant 4), so it
+  // spends the operator's ability to retry. FR-025 also requires the assertion
+  // be explicit and never inferred, and this gate is what makes the prompt the
+  // only way the webview can reach the command.
+  'CMD_ATTEST_TASK_COMPLETED'
 ];
 
-// Dead-code components that still carry ungated destructive call sites
-// but are no longer reachable from any live UI surface. The follow-up
-// cleanup spec will delete them; until then, the allowlist prevents
-// noise while still pinning real regressions in live code.
-const LEGACY_FILES: ReadonlySet<string> = new Set<string>([
-  // Replaced post-053 by `QueueControls.svelte` + `Dashboard.svelte`
-  // handler bodies. Its only consumer (`QueueList.svelte`) is itself
-  // orphaned (no Dashboard import).
-  'webview-ui/src/components/QueueGlobalActions.svelte'
-]);
+// Empty since FR-R3-140. The exemption stays declared because the filter
+// below still consults it and a future orphan may earn one, but nothing
+// is exempt today: every ungated destructive call site under
+// `webview-ui/src` is a failure of the scan below, with no escape hatch
+// already open for it.
+const LEGACY_FILES: ReadonlySet<string> = new Set<string>();
 
 interface CallSite {
   readonly file: string;
@@ -222,17 +244,33 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
     expect(allSites.length).toBeGreaterThan(0);
   });
 
-  it('discovers each of the 15 destructive commands at least once in webview source', () => {
-    // We accept matches from either live or legacy files so the sanity
-    // check stays meaningful even when a destructive command has been
-    // subsumed by another (e.g., `CMD_CLEAR_FAILED` is no longer wired
-    // up from any live component — `CMD_CLEAR_ALL` covers it — but the
-    // constant must still be handed to a sender somewhere in the webview tree).
-    const seen = new Set(allSites.map((s) => s.command));
-    const missing = DESTRUCTIVE_COMMANDS.filter((cmd) => !seen.has(cmd));
+  // This used to read "discovers each of the 15", and accepted matches from
+  // legacy files so it would keep holding for commands no live component wired
+  // up. FR-R3-140 deleted the legacy files, and with them the last webview
+  // sender of three commands the host still accepted, so the check grew a
+  // `NO_WEBVIEW_SENDER` exemption map naming those three rather than weakening.
+  //
+  // The map is gone again, and this is the state it was written to reach. Its
+  // three entries left one at a time and for different reasons, which is the
+  // point: `CMD_RETRY_PHASE_NOW` earned a new dispatcher (finding C of the
+  // lifecycle round-check of 2026-08-30), and `CMD_CLEAR_FAILED` and `CMD_RESET`
+  // were deleted from the contract entirely (finding D). Nothing the host still
+  // accepts is unreachable from the webview, so nothing needs excusing, and the
+  // list's own instruction was to delete it rather than leave two assertions
+  // iterating an empty set.
+  //
+  // A repopulated list needs both of those assertions back — that every entry
+  // really has no sender, and that the list is non-empty so the first one
+  // iterates something — and an entry added without them should not pass review.
+  const sentCommands = new Set(allSites.map((s) => s.command));
+
+  it('discovers every destructive command, because every one has a webview sender', () => {
+    const missing = DESTRUCTIVE_COMMANDS.filter((cmd) => !sentCommands.has(cmd));
     expect(
       missing,
-      `Destructive commands handed to no sender anywhere in webview source:\n${missing.join('\n')}`
+      `Destructive commands handed to no sender anywhere in webview source. Either a ` +
+        `sender was removed — wire it back, or delete the command from the contract as ` +
+        `finding D did — or the scan is broken:\n${missing.join('\n')}`
     ).toEqual([]);
   });
 
@@ -252,13 +290,6 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
     ).toEqual([]);
   });
 
-  it('every entry in LEGACY_FILES still exists on disk (allowlist is not stale)', () => {
-    for (const rel of LEGACY_FILES) {
-      const abs = resolve(REPO_ROOT, rel);
-      expect(existsSync(abs), `legacy allowlist entry no longer exists on disk: ${rel}`).toBe(true);
-    }
-  });
-
   // Feature 082 (US7, T055) — catalog removals used to be invisible to the scan
   // above. A removal was an *omission* from a whole-array save command, so no
   // destructive command name appeared at the call site at all; what was
@@ -275,63 +306,154 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
   // moved into `deactivateDefinition`, beside the post it authorises).
   //
   // What remains is the other half of the claim, which the sender scan cannot
-  // make: that each catalog action key is actually reached. Four keys collapsed to
-  // two here — one `remove` key per definition kind became one kind-agnostic
-  // deactivate, and `catalog.reset-workflows` has no successor because emptying a
-  // layer in one write is not an operation the store provides any more.
-  const CATALOG_LIFECYCLE_ACTION_KEYS: readonly string[] = [
-    'catalog.deactivate-definition',
-    'catalog.discard-draft'
-  ];
+  // make: that each action key is actually reached.
+  //
+  // This began as a two-key check over the catalog lifecycle alone. The
+  // lifecycle round-check of 2026-08-30 (finding E) widened it to every key,
+  // because the narrow version could not have caught what happened: FR-R3-140
+  // deleted `PhaseTracker.svelte`, the only component that passed
+  // `run.retry-phase-now` to `useConfirm`, and no gate said anything — the copy
+  // stayed in the table, typed and tested, describing a prompt nothing could
+  // raise. The key list is read from the canonical source rather than restated
+  // here, so a key added to it is a key this check immediately demands a
+  // consumer for.
+  //
+  // Feature 193 (FR-001/FR-009) — that source is now
+  // `src/contracts/action-keys.ts`'s `ACTION_KEYS` tuple. It used to be the
+  // hand-written `ActionKey` union in `action-copy.ts`, which that feature
+  // replaced with a re-export of the generated mirror; parsing `action-copy.ts`
+  // after that returned an empty list. Read the HOST tuple, not the generated
+  // webview mirror: the mirror is a derived artifact, and a gate that reads a
+  // derived copy passes when generation is stale. That the two agree is its own
+  // check (`tests/parity/action-key-parity.test.ts`,
+  // `tests/contract/action-keys-generation.test.ts`).
+  const ACTION_KEYS_SOURCE = readFileSync(
+    resolve(REPO_ROOT, 'src', 'contracts', 'action-keys.ts'),
+    'utf8'
+  );
 
-  it('passes each catalog lifecycle action key to useConfirm in live code', () => {
+  /**
+   * FR-R3-143 (T055) — the terminator is anchored to END OF LINE, and the
+   * capture has its comments stripped before keys are read.
+   *
+   * The pattern was `([\s\S]*?);` — lazy, so it stopped at the FIRST semicolon
+   * anywhere in the capture. There is one inside the prose comment in the middle
+   * of the union ("so the kind became a parameter; and a layer reset…"), so this
+   * function returned the twelve keys above that comment and the check below
+   * silently stopped asking about `catalog.deactivate-definition`,
+   * `catalog.discard-draft`, `run.overwrite-output` and `queue.delete` — a
+   * quarter of the union, and the four newest members of it. The sentence above
+   * claiming "a key added to the union is a key this check immediately demands a
+   * consumer for" was false for exactly the keys most likely to be added.
+   *
+   * A union member's semicolon is the last thing on its line; a semicolon inside
+   * a sentence is not, so `;[^\S\n]*\n` separates the two without needing to
+   * parse TypeScript. Comments are then dropped from the capture, because the
+   * key extractor matches any single-quoted run and the union demonstrably
+   * carries prose — a quoted word in that prose would read as a seventeenth key.
+   *
+   * Feature 193 — the shape being parsed is now a tuple, so the terminator is
+   * `]` rather than a line-final semicolon. The truncation hazard the note above
+   * describes is unchanged in kind: `[\s\S]*?` still stops at the first `]`, and
+   * a `]` inside a comment in that tuple would still truncate the capture
+   * silently. Comment-stripping runs FIRST for exactly that reason — before the
+   * terminator is sought, not just before keys are read — so prose inside the
+   * tuple can neither end the capture early nor contribute a phantom key. The
+   * equality assertion below is what makes either failure loud.
+   */
+  function declaredActionKeys(): readonly string[] {
+    const withoutComments = ACTION_KEYS_SOURCE.replace(/\/\/[^\n]*/g, '');
+    const tuple = /export const ACTION_KEYS = \[([\s\S]*?)\]/.exec(withoutComments);
+    if (!tuple) return [];
+    return [...tuple[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  }
+
+  // Keys whose prompt is deliberately raised somewhere other than a webview
+  // `useConfirm` call. Same bar as any exemption in this file: a sentence saying
+  // where the confirmation went, not a name parked on a list.
+  const CONFIRMED_ELSEWHERE: ReadonlyMap<string, string> = new Map([
+    [
+      'workspace.reset',
+      'The webview sender (CMD_RESET) was deleted by the lifecycle round-check of ' +
+        '2026-08-30 (finding D). Reset survives as the palette command schegent.reset, ' +
+        'which raises its own host-side prompt — RESET_CONFIRMATION_MESSAGE in ' +
+        'src/commands/reset.ts — so the decision is still confirmed, just not here. The ' +
+        'key stays declared because it is a member of NEVER_SUPPRESSIBLE in use-confirm.ts ' +
+        '(FR-R3-143 T042 added settings.disable-confirmations as the second), and dropping ' +
+        'it would leave that rule tested only by a key whose prompt is raised in the webview.'
+    ]
+  ]);
+
+  const MIN_ELSEWHERE_REASON_LENGTH = 40;
+
+  /**
+   * FR-R3-143 (T055) — an EQUALITY, not a floor.
+   *
+   * This was `toBeGreaterThan(10)`, written to catch the regex matching nothing.
+   * It cannot catch the regex matching a PREFIX, which is what it was doing:
+   * twelve of sixteen keys passed a `> 10` floor comfortably, so the truncation
+   * described above sat here green for as long as it existed. A floor can only
+   * ever detect the total failure of a parser, never its partial failure, and
+   * partial is the failure a source-parsing lint actually has.
+   *
+   * Raise this WITH the union, in the same change. The number is the point: it
+   * is what makes the next truncation fail loudly instead of shrinking quietly.
+   */
+  // FR-R3-144 (T033) — 17 → 18 with `backend.grant-uncontained`, the settings
+  // control that waives OS-enforced containment for a backend. Raised in the same
+  // change as the union, which is what the note above asks for.
+  //
+  // Feature 195 (T064, FR-025) — 18 → 19 with `queue.attest-completed`, the
+  // third exit from a halted queue. Same discipline: raised in the change that
+  // added the key.
+  const DECLARED_ACTION_KEY_COUNT = 19;
+
+  it('reads every key the ActionKey union declares, and no others', () => {
+    expect(
+      declaredActionKeys().length,
+      'the union parser must see the whole union. If a key was added, raise ' +
+        'DECLARED_ACTION_KEY_COUNT in the same change; if it dropped, the ' +
+        'terminator anchor is matching early again.'
+    ).toBe(DECLARED_ACTION_KEY_COUNT);
+    // Named anchors, one from each end and one from beyond the old truncation
+    // point, so a count that is right for the wrong reason still fails.
+    expect(declaredActionKeys()).toContain('queue.clean-all');
+    expect(declaredActionKeys()).toContain('catalog.deactivate-definition');
+    expect(declaredActionKeys()).toContain('queue.delete');
+  });
+
+  it('passes every declared action key to useConfirm in live code', () => {
     const sources = files.map((filePath) => readFileSync(filePath, 'utf8'));
-    const missing = CATALOG_LIFECYCLE_ACTION_KEYS.filter((key) => {
-      const re = new RegExp(`useConfirm\\(\\s*'${key.replace('.', '\\.')}'`);
+    const missing = declaredActionKeys().filter((key) => {
+      if (CONFIRMED_ELSEWHERE.has(key)) return false;
+      const re = new RegExp(`useConfirm\\(\\s*'${key.replace(/\./g, '\\.')}'`);
       return !sources.some((source) => re.test(source));
     });
     expect(
       missing,
-      `Action keys declared in ACTION_COPY but never passed to useConfirm:\n${missing.join('\n')}`
+      `Action keys declared in ACTION_COPY but never passed to useConfirm. Either the ` +
+        `component that raised the prompt was deleted — rebuild the dispatcher, as ` +
+        `finding C did for run.retry-phase-now — or the key is dead and should be ` +
+        `removed from the union:\n${missing.join('\n')}`
     ).toEqual([]);
   });
 
-  // Feature 084 (T063, QS-40) — the exchange feature deliberately adds nothing
-  // here. FR-018 and FR-044b: the shared gate exists for actions that remove or
-  // replace something the operator holds INSIDE the product. Export writes a
-  // file the operator names in the host's own save dialog, where overwrite
-  // consent already lives; import only appends, and confirming the plan is the
-  // consent. Registering either here would ask twice for one decision and would
-  // teach the gate to fire on non-destructive actions.
-  //
-  // Pinned as a list rather than a count so a swap — one command out, one in —
-  // is as visible as an addition.
-  it('leaves the destructive-command list at the pinned 15 (FR-018, FR-044b, QS-40)', () => {
-    expect(DESTRUCTIVE_COMMANDS).toEqual([
-      'CMD_CLEAR_ALL',
-      'CMD_CLEAR_COMPLETED',
-      'CMD_CLEAR_FAILED',
-      'CMD_REMOVE_QUEUE_ITEM',
-      'CMD_CANCEL',
-      'CMD_PAUSE_QUEUE',
-      'CMD_RESUME_QUEUE',
-      'CMD_RETRY_PHASE_NOW',
-      'CMD_RESTART_CANCELED_TASK',
-      'CMD_MODIFY_TASK',
-      'CMD_RERUN_FROM_HISTORY',
-      'CMD_RESET',
-      // Feature 095 (T011, FR-003) — the thirteenth. Deleting a queue drops
-      // its pending Tasks with no undo, which is the queue-scoped analogue of
-      // `CMD_CLEAR_ALL`; the gate is the same one, not a second flow.
-      'CMD_DELETE_QUEUE',
-      // Feature 100 (T509a) — the fourteenth and fifteenth, and the first two
-      // whose gate lives inside the sender rather than at the call site
-      // (FR-049, FR-050). Four catalog `ActionKey` entries became two in the
-      // same change, so this list grew by two while the key list shrank by two;
-      // pinning both is what makes that trade visible instead of arithmetic.
-      'CMD_DEACTIVATE_DEFINITION',
-      'CMD_DISCARD_DEFINITION_DRAFT'
-    ]);
+  it('every CONFIRMED_ELSEWHERE key is still declared and still has no webview consumer', () => {
+    const declared = new Set(declaredActionKeys());
+    const sources = files.map((filePath) => readFileSync(filePath, 'utf8'));
+    for (const [key, reason] of CONFIRMED_ELSEWHERE) {
+      expect(declared, `${key} is excused but no longer declared in ActionKey`).toContain(key);
+      expect(
+        reason.trim().length,
+        `${key} needs a reason saying where its confirmation moved to`
+      ).toBeGreaterThan(MIN_ELSEWHERE_REASON_LENGTH);
+      const re = new RegExp(`useConfirm\\(\\s*'${key.replace(/\./g, '\\.')}'`);
+      expect(
+        sources.some((source) => re.test(source)),
+        `${key} is excused as confirmed elsewhere, but a webview useConfirm call now ` +
+          `raises it. Remove it from CONFIRMED_ELSEWHERE.`
+      ).toBe(false);
+    }
   });
 
   it('registers no confirmation action for the exchange commands (FR-018, FR-044b)', () => {
@@ -359,23 +481,6 @@ describe('Feature 063 T046 — destructive command sites must be useConfirm-gate
     expect(
       exchangeKeys,
       `Exchange actions must not register a confirmation action:\n${exchangeKeys.join('\n')}`
-    ).toEqual([]);
-  });
-
-  it('every LEGACY_FILES entry has at least one ungated destructive call site (otherwise it should leave the allowlist)', () => {
-    const offendersByFile = new Map<string, number>();
-    for (const site of allSites) {
-      if (!site.guarded && LEGACY_FILES.has(site.file)) {
-        offendersByFile.set(site.file, (offendersByFile.get(site.file) ?? 0) + 1);
-      }
-    }
-    const stale: string[] = [];
-    for (const rel of LEGACY_FILES) {
-      if (!offendersByFile.has(rel)) stale.push(rel);
-    }
-    expect(
-      stale,
-      `Stale legacy allowlist entries (no ungated destructive call site found):\n${stale.join('\n')}`
     ).toEqual([]);
   });
 });

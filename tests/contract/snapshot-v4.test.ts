@@ -15,12 +15,14 @@
 // lives in `tests/integration/per-queue-snapshot-isolation.test.ts`.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { AuditLogWriter } from '../../src/audit/audit-log-writer';
 import { SanitizedLogger } from '../../src/lib/logger';
-import { createQueue, DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
+import { createQueue } from '../../src/queue/queue-registry';
 import { QueueManager } from '../../src/queue/queue-manager';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
 import type { WorkflowRun } from '../../src/state/workflow-run';
@@ -62,7 +64,15 @@ const QUEUE_RUNTIME_FIELDS = [
   'manualPause',
   'phaseBreakpoints',
   'pendingCount',
-  'tasks'
+  'tasks',
+  // Feature 187 (FR-002) — the first field added to `QueueRuntime` since
+  // feature 092 defined the record. The count in the assertion below moved with
+  // it, and so did the table this list is checked against.
+  'startFailure',
+  // FR-R3-152 (T1632, FR-005) — this queue's own scheduled-start reading,
+  // sourced only from this queue's persisted entry.
+  'scheduledStartAt',
+  'scheduledStartSource'
 ] as const;
 
 const QUEUE_B = 'b1f2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
@@ -164,7 +174,7 @@ describe('snapshot v4 — envelope shape (T085, FR-048 – FR-050)', () => {
   it.each(DELETED_ROOT_SINGULARS)(
     'has no top-level `%s` — deleted, not deprecated (FR-049)',
     async (field) => {
-      await store.setRun(DEFAULT_QUEUE_ID, sampleRun());
+      await store.setRun(DEFAULT_QUEUE_ID, sampleRun(), unfencedCommit('test-fixture'));
       const snapshot = project() as unknown as Record<string, unknown>;
       expect(field in snapshot).toBe(false);
       expect(buildIdleSnapshot({ isPrimary: true }) as unknown as Record<string, unknown>).not.toHaveProperty(
@@ -189,7 +199,7 @@ describe('snapshot v4 — envelope shape (T085, FR-048 – FR-050)', () => {
 });
 
 describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
-  it('carries exactly the eleven fields of data-model.md §1.4', () => {
+  it('carries exactly the fourteen fields of data-model.md §1.4', () => {
     const runtime = project().queues[0];
     expect(runtime).toBeDefined();
     expect(Object.keys(runtime!).sort()).toEqual([...QUEUE_RUNTIME_FIELDS].sort());
@@ -274,7 +284,8 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
         manualPauseAt: 1_700_000_002_000,
         manualPauseCause: 'breakpoint-paused',
         resumeTargetPhaseId: 'speckit-tasks'
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
 
     const runtime = project().queues.find((entry) => entry.queueId === DEFAULT_QUEUE_ID);
@@ -296,7 +307,8 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
         featureId: enqueued.id,
         manualPauseAt: 1_700_000_001_000,
         manualPauseCause: 'operator-paused'
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
 
     const runtime = project().queues.find((entry) => entry.queueId === DEFAULT_QUEUE_ID);
@@ -324,7 +336,8 @@ describe('snapshot v4 — QueueRuntime fields (T086, FR-048, FR-056)', () => {
           { phaseId: 'speckit-implement', setAt: 1_700_000_002_000, actor: 'operator' },
           { phaseId: 'speckit-tasks', setAt: 1_700_000_001_000, actor: 'operator' }
         ]
-      })
+      }),
+      unfencedCommit('test-fixture')
     );
 
     const runtime = project().queues.find((entry) => entry.queueId === DEFAULT_QUEUE_ID);

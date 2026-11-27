@@ -51,9 +51,33 @@ const FROZEN: ReadonlyMap<string, string> = new Map([
   // `disallowed-syntax` while a well-formed pair stays legal. A narrowing, not a
   // widening — vintage 091 pins it with four `refused/` cases and one
   // `accepted/` case for the pair that must keep round-tripping byte-identical.
-  ['yaml-scanner', 'a52994b8c3ad3d09e78d04ce1017b09fc375992acfcfdd05bb1c330d7eb8615d'],
-  ['yaml-parser', '6536987fe243505f2caad0695fd59135c224162be1e84b893c3af058387ec1a0'],
-  ['scalar-style', '5b48ed2a529feb85b808840d81c599162ecdeae0a2dac36720a0ed8c8e20cddf']
+  //
+  // Moved by feature 254 (FR-R4-F07, T015, FR-001, FR-002): the two trailing-space regexes in
+  // `readPlain` and `readBlockLiteral` backtracked quadratically, so one line of twenty thousand
+  // spaces held the host for about a second. They are now two index loops, `stripTrailingSpaces` and
+  // `isBareBlockHeader`, exported for a differential test. The accepted language is unchanged: S-T2
+  // (`tests/unit/process-yaml/yaml-scanner-linear-trims.test.ts`) holds both loops equal to the old
+  // regexes, kept verbatim in the test as an oracle, over a seeded corpus, and the fixtures under
+  // `accepted/` and `refused/` pass untouched.
+  //
+  // Moved again by feature 254 (FR-R4-F07, T039, FR-009, Q1): `KEY_PATTERN` and `looksKeyed` moved to
+  // `scalar-style.ts` and the scanner imports them, so the scanner and the serializer read one key
+  // test (hard rule 46). No production changed. The vintage `254` fixtures
+  // (`accepted/254/quoted-colon-item.yaml`, `refused/254/plain-colon-item.yaml`) pin the quoted form
+  // accepted and the plain form still refused.
+  ['yaml-scanner', '4a2ddb1cd221b436271cedacafd8d0b92585cce71e8bb2661f11ed2f95aaf894'],
+  // Moved by feature 254 (FR-R4-F07, T016, FR-003, FR-004): `tooLargeRefusal()` is exported so the
+  // host's early refusal of an oversized file and the parser's two cap checks build one refusal, with
+  // one message. The cap, both checks and the text are unchanged (`yaml-parser-guards.test.ts`).
+  ['yaml-parser', '3a18739c8136bcd693f49574f664809ece3a1efd4bedbc769d65ace7e087276f'],
+  // Moved by feature 254 (FR-R4-F07, T038, FR-009, FR-010, Q1, Q2): `KEY_PATTERN` and `looksKeyed`
+  // moved here from the scanner, and `chooseScalarStyle` gained a position so a sequence item that
+  // would read as a mapping entry (`ollama:llama3`) is written quoted. `plainScalarDefect` now also
+  // names a value that opens with a double quote, which the scanner never reads as plain (it opens a
+  // quoted scalar there), so what the scanner accepts is unchanged and only what the serializer
+  // writes plain narrows. Pinned by `accepted/254/`, `refused/254/` and
+  // `tests/unit/process-yaml/scalar-round-trip.test.ts`.
+  ['scalar-style', '1a3c32c7b6a136f1a2dd2bfdbcd61c615bb723bfbe6c9379803586a1ec531307']
 ]);
 
 function sourceOf(name: string): string {

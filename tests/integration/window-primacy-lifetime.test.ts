@@ -20,6 +20,7 @@
 // between deciding whether a second Run exists to observe.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { unfencedCommit } from '../../src/state/ownership-claim';
 import { RunDriver } from '../../src/services/run-driver';
 import type { RunDriverDeps } from '../../src/services/run-driver';
 import { WorkspaceStateStore, type Memento } from '../../src/state/workspace-state';
@@ -27,7 +28,7 @@ import { WorkspaceLockManager, type Clock, type Scheduler } from '../../src/stat
 import { SanitizedLogger } from '../../src/lib/logger';
 import type { PhaseRunOutput } from '../../src/controller/phase-runner';
 import type { WorkflowRun } from '../../src/state/workflow-run';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 const T0 = 1_700_000_000_000;
 
@@ -128,7 +129,8 @@ async function makeDriver(
       return CLEAN_PHASE_OUTPUT;
     }),
     abort: vi.fn(),
-    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined)
+    appendCapExhaustedPhaseEnd: vi.fn().mockResolvedValue(undefined),
+    evictStagnationTracker: vi.fn()
   };
 
   const deps: RunDriverDeps = {
@@ -157,7 +159,7 @@ async function makeDriver(
     isContinueGate: { consume: vi.fn().mockReturnValue(false) } as never,
     lock,
     persistTransition: async (_oldRun, newRun) => {
-      await store.setRun(DEFAULT_QUEUE_ID, newRun);
+      await store.setRun(DEFAULT_QUEUE_ID, newRun, unfencedCommit('test-fixture'));
       return newRun;
     },
     scheduleAutoDrain: vi.fn()
@@ -186,8 +188,8 @@ async function rivalWindow(): Promise<WorkspaceLockManager> {
 
 describe('feature 092 (T134, BUG-002, FR-032a, SC-013) — primacy outlives the first Run to finish', () => {
   it('keeps the window primary when one of two concurrent Runs terminates', async () => {
-    // Activation (src/extension.ts:1157). This, not a Run, is what opens the
-    // tenure.
+    // Activation (`src/activation/stage2-producers.ts:192`). This, not a Run, is
+    // what opens the tenure.
     await expect(lock.tryAcquire()).resolves.toMatchObject({ acquired: true });
 
     const gate = deferred();
@@ -202,16 +204,17 @@ describe('feature 092 (T134, BUG-002, FR-032a, SC-013) — primacy outlives the 
 
     // The first Run has ended. The second is still in flight, and the window is
     // still the window.
+    //
+    // The lock's advisory mirror, with no host caller by design
+    // (`src/state/lock.ts:85-88`). Asserted as the mirror, not as a production
+    // predicate.
     expect(lock.isHeld()).toBe(true);
 
-    // Both `isPrimary` producers `extension.ts` wires, evaluated as written.
-    const isPrimaryFromHeld = () => lock.isHeld(); // extension.ts:672
-    const isPrimaryFromForeign = () => !lock.isForeignLockHeld(); // extension.ts:936
-    expect(isPrimaryFromHeld()).toBe(true);
-    // Non-discriminating on its own — it asks whether a *foreign* holder exists,
-    // so a self-inflicted release reads as "primary" either way. Asserted
-    // because FR-032a covers both producers, not because it detects the defect.
-    expect(isPrimaryFromForeign()).toBe(true);
+    // Production's `isPrimary` is `lock.hasPrimacy()`, wired at
+    // `src/activation/sidebar-router-wiring.ts:142` and
+    // `src/activation/scheduled-work-wiring.ts:241`. It reads the fenced record,
+    // not the mirror, so a defect in it fails here and nowhere above.
+    await expect(lock.hasPrimacy()).resolves.toBe(true);
 
     // The load-bearing consequence: with primacy dropped, a second window walks
     // in while this one is still running work. Asserted last — `tryAcquire`
@@ -236,7 +239,7 @@ describe('feature 092 (T134, BUG-002, FR-032a, SC-013) — primacy outlives the 
     await second.driver.drive(runFixture('run-2', 'task-2'), 'second');
 
     // No Run is in flight, and primacy is still this window's: only `dispose()`
-    // ends it (src/extension.ts:1181). A Run finishing is not a disposal.
+    // ends it (`src/extension.ts:650`). A Run finishing is not a disposal.
     expect(lock.isHeld()).toBe(true);
     const rival = await rivalWindow();
     await expect(rival.tryAcquire()).resolves.toMatchObject({ acquired: false });

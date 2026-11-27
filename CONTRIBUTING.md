@@ -1,410 +1,359 @@
 # Contributing to Schegent
 
-Thank you for taking the time to contribute. This document covers the
-practical mechanics of filing bugs, suggesting improvements, and
-sending patches to the Schegent extension.
+Schegent accepts changes through pull requests targeting `develop`. Nothing checks them on the remote: hosted CI was retired 2026-08-26 by operator decision (`FR-R3-099`), which deleted `.github/workflows/`, and no branch-protection or repository-ruleset file is present. Verification is local and the whole of it — run `npm run gate` before you open a pull request, because no second enforcement point will catch what you skip. The current state of every release control is generated into [current release controls](docs/release/current-release-controls.md).
+<!-- Source: docs/release/actions-terminal-record.md -->
 
-The fastest path to a good outcome is a clear, reproducible report
-plus the diagnostic artifacts described below. Most issues are
-resolved within a single round-trip once the right context is on
-hand.
+## Your first change
 
----
+Four steps, in this order:
 
-## Table of contents
+1. **Install.** Run the two commands in [Prepare a checkout](#prepare-a-checkout).
+2. **See one Run.** Follow [the quickstart](docs/tutorials/user-quickstart.md) in a disposable workspace.
+3. **Read the hard rules your change touches.** Open `docs/hard-rules.md` in the planning envelope
+   (one directory above this checkout; named here, not linked, because a standalone clone does not
+   have it) and read the rows of its index that your change touches. In a standalone clone, obtain
+   the planning envelope rather than guess at a rule.
+   The planning envelope is the Schegent workspace repository that holds this checkout as its
+   `repo/` directory; cloning this repository alone does not bring it.
+4. **Run `npm run gate`.** It is the full local verification. Nothing on the remote checks a pull request.
 
-1. [Code of conduct](#code-of-conduct)
-2. [Ways to contribute](#ways-to-contribute)
-3. [Filing a bug report](#filing-a-bug-report)
-4. [Requesting a feature](#requesting-a-feature)
-5. [Asking a question](#asking-a-question)
-6. [Reporting a security issue](#reporting-a-security-issue)
-7. [Development setup](#development-setup)
-8. [Commit and PR conventions](#commit-and-pr-conventions)
-9. [Testing](#testing)
-10. [Documentation changes](#documentation-changes)
-11. [License of contributions](#license-of-contributions)
+Two checks keep the pointers honest: `tests/lint/agents-rule-index.test.ts` re-derives the index, and
+`tests/lint/agents-claude-parity.test.ts` fails a pointer file that carries rule text. They cover
+the pointers and the index only; for the rules themselves, the part no tool does for you is reading
+the rows your change touches.
+<!-- Source: tests/lint/agents-rule-index.test.ts -->
+<!-- Source: tests/lint/agents-claude-parity.test.ts -->
+<!-- Source: package.json -->
 
----
+## Read these ten, in this order — then stop
 
-## Code of conduct
+**`FR-R3-121`, 2026-08-27.** As of 2026-08-27, this repository carried **16.6 MB of Markdown
+across 1,377 files** and **151 lint gates** against a 99k-line implementation. These are that day's
+figures and are not kept current here. Almost all of it is reference, and
+nothing said so. A contributor who tried to read their way in had no way to know where the
+bottom was, which is a real entry cost and the mechanical half of the single-reviewer problem
+recorded in [`SECURITY.md`](SECURITY.md).
 
-Be civil, be specific, and assume the other party is acting in good
-faith. Personal attacks, harassment, and off-topic political content
-are out of scope for this project.
+This is the bounded list. **Everything not on it is reference — reach for it when a task sends
+you there, not before.**
 
-If a thread is going off the rails, escalate to the maintainers by
-mentioning them on the issue or PR rather than continuing the
-exchange in public.
+| # | Read | Why it is on a ten-item list |
+|---|---|---|
+| 1 | [`README.md`](README.md) | what the product is, and what it deliberately is not |
+| 2 | this file, to the end | how to get a checkout that builds, and what a PR is expected to carry |
+| 3 | `docs/hard-rules.md` in the planning envelope, one directory above this checkout (named here, not linked) — the **index** at its head, then only the subsystems your change touches | the authority on host-code invariants. Its hard rules are numbered and you are not expected to read all of them; read the rows of the index your change touches. In a standalone clone that file is absent: obtain the planning envelope rather than guess at a rule |
+| 4 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | the module boundaries a change is judged against, including which directory is the composition root |
+| 5 | [`docs/security/threat-model.md`](docs/security/threat-model.md) | what this product claims to prevent and what it explicitly does not. Read before touching audit, logging, IPC or process execution |
+| 6 | [`docs/development/lint-gate-census.md`](docs/development/lint-gate-census.md) | one line per gate, with the current, dated count. You will trip one; this is how you find out what it wanted without reading every gate file |
+| 7 | [`docs/features/custom-phases.md`](docs/features/custom-phases.md) | the Phase model, which most feature work touches |
+| 8 | [`RELEASE.md`](RELEASE.md) | what a release is here — entirely local, three binding refusals — so you do not assume a pipeline that does not exist |
+| 9 | [`SECURITY.md`](SECURITY.md) | how to report a vulnerability, and who reviews security-sensitive paths |
+| 10 | [`docs/development/gate-integrity-measurements.md`](docs/development/gate-integrity-measurements.md) | why the gates are shaped the way they are. Read it when a gate seems excessive — it usually records the incident that produced it |
 
-## Ways to contribute
+**Ten, counted honestly.** There is no optional eleventh: a list of eleven with one marked
+optional is a list of eleven, and the point of a bound is that it binds.
 
-- **Bug reports** — concrete, reproducible failures with logs and a
-  minimal repro. See [Filing a bug report](#filing-a-bug-report).
-- **Feature requests** — proposals for new operator-visible behavior.
-  See [Requesting a feature](#requesting-a-feature).
-- **Documentation fixes** — corrections, clarifications, missing
-  cross-links, broken anchors. Open a PR directly against the
-  affected file under [`docs/`](docs/).
-- **Code patches** — fixes and improvements. Discuss the approach in
-  an issue first if the change is non-trivial; small, atomic patches
-  are easier to land than large refactors.
+**What is deliberately not here**: `specs/` (Spec-Driven Development output, kept as provenance,
+read only when tracing a decision), the rest of `docs/` (reference), and the gate files themselves
+(item 6 is the index into them, and carries the current, dated count). None of that is waste; it is
+simply not an entry path.
 
-## Filing a bug report
+## Start with the governing context
 
-File at <https://github.com/lehoa1806/schegent/issues> using the
-**Bug** template if available. Include:
+Schegent is developed in two supported checkout layouts:
 
-1. **Environment**
-   - Operating system and version.
-   - VS Code version.
-   - Claude CLI version (`claude --version`). Codex CLI version if
-     applicable.
-   - Schegent version (Extensions view, or `package.json` if built
-     from source).
+- **Nested workspace** (`<workspace>/` containing this execution repository at `<workspace>/repo/`): includes parent `docs/hard-rules.md`, workspace `AGENTS.md`, and workspace `scripts/hooks/` (`prepare-commit-msg` and `pre-push`). Keep both repositories' branches and recorded execution-repository hash synchronized as required by `../AGENTS.md`; do not reset, rebase, force-push, or discard either repository without explicit approval.
+- **Standalone execution clone** (this `repo/` repository cloned on its own): installs, builds, tests, and passes `npm run gate` self-contained, but **does not contain** parent `docs/hard-rules.md` or workspace `scripts/hooks/`. Obtain the planning envelope before editing any hard-rule surface rather than guessing at a rule.
 
-2. **Configuration**
-   - The `schegent.*` keys you have set (workspace and user scope).
-     Either paste the relevant subset from `settings.json`, or
-     export it from **Dashboard → Settings → General**.
-   - Active backend (`schegent.backend.runner`).
+Before changing code, read `docs/hard-rules.md` in the planning envelope (one directory above this checkout), the source of truth for host-code invariants; `../AGENTS.md` is the orientation file that points at it. The rules in it are especially important for IPC mutations, audit and redaction behavior, workspace/window locks, forward-only state migration, process execution, catalog publication, and run-plan validation.
 
-3. **Reproduction**
-   - The smallest sequence of operator actions that triggers the
-     issue.
-   - Expected behavior vs. observed behavior.
-   - Frequency: every time, intermittent, once.
+If a change alters host structure or IPC contracts, update the architecture documentation in the same pull request. If it adds text rendered to an operator, follow the English-only decision recorded in `docs/concepts/english-only-not-localizable.md`: keep the literal at its render site and do not add a localization boundary.
+<!-- Source: ../AGENTS.md -->
+<!-- Source: AGENTS.md -->
 
-4. **Diagnostics — what to attach**
+## Prepare a checkout
 
-   | File | Safe to attach? | Notes |
-   |---|---|---|
-   | `<workspaceRoot>/.schegent/audit.log` (recent slice) | yes | Sanitized and paths-free. The single most useful artifact. |
-   | `<workspaceRoot>/.schegent/syslog` (recent slice) | yes | Sanitized runtime log. |
-   | `settings.json` excerpt for `schegent.*` keys | yes | Redact non-Schegent keys if the file has unrelated secrets. |
-   | `<workspaceRoot>/.schegent/sessions/raw-<runId>.log` | **only if asked** | Unredacted. May contain sensitive context. |
-   | `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/` | **only if asked** | Unredacted. Opt-in capture. |
+Use Node `24.19.0` for the repository's pinned development runtime. Both package manifests declare `^22.22.3 || ^24.15.0`. These releases include the SQLite 3.51.3 fix required by the operational store. The hosted Node matrix was retired on 2026-08-26 (`FR-R3-099`).
 
-   When the maintainers ask for raw or verbose artifacts, they will
-   typically also ask you to redact anything you would not want to
-   ship off-machine. You always have the final call on what to
-   share.
-
-5. **Minimal repro** — if the failure depends on a specific Phase or
-   Pipeline definition in the versioned catalog, or on a specific
-   model/effort combination, include the smallest definition that
-   triggers it.
-
-Use [`docs/operations/troubleshooting.md`](docs/operations/troubleshooting.md)
-before filing — many common failure modes (CLI not found, stuck
-queue, retry storm, suppressed runtime log, etc.) have documented
-fixes you can try first.
-
-## Requesting a feature
-
-Feature requests should describe an **operator-visible** problem and
-the smallest behavior change that would solve it.
-
-A useful feature request answers:
-
-- **Who is affected?** What kind of operator workflow runs into
-  this?
-- **What does today look like?** Concrete description of the
-  current friction.
-- **What would the world look like?** The smallest plausible
-  behavior change, not a full design.
-- **Workarounds?** What you do today to live with the current
-  behavior.
-
-Avoid:
-
-- Speculative abstractions ("we should add a plugin system").
-- Internal-implementation prescriptions ("rewrite the runner in
-  language X"). Describe outcomes, not internals.
-
-The maintainers will respond with one of: accepted, accepted with
-modifications, declined, or held for discussion.
-
-## Asking a question
-
-For usage questions that the manual does not answer, open a
-**Question** issue rather than a Bug. Include the same environment
-context as a bug report. If the question reveals a documentation
-gap, the resolution is often a `docs/` patch.
-
-## Reporting a security issue
-
-Do **not** file security-sensitive reports on the public issue
-tracker. Follow the disclosure process in
-[SECURITY.md](SECURITY.md).
-
-## Development setup
-
-### Prerequisites
-
-- Node.js `^22 || ^24`. The checked-in `.nvmrc` pins `24.19.0`, the active
-  LTS; CI runs every gate on it and one extra Linux job on the `22.23.2`
-  floor, so both majors are exercised.
-- VS Code `^1.85.0` for the integration suite.
-- The pinned Playwright browser, installed with `npx playwright install
-  chromium`. `npm run ci:fast` runs `test:visual`, which launches it; without
-  it every visual test fails with `Executable doesn't exist` and the preflight
-  is red for a reason that has nothing to do with your change.
-- For `npm run test:integration` only: a VS Code build, which the runner
-  downloads on first use and caches. `ci:fast` does not run it, so this is not
-  a prerequisite for the preflight — but a first `test:integration` on a clean
-  machine spends its time downloading rather than testing, which is worth
-  knowing before you conclude it has hung.
-- Claude CLI installed and authenticated (for backend smoke tests).
-- Optional: Codex CLI for backend-parity coverage.
-
-### Clone and install
+**The Node floor run.** At each held-major review and before each release, run these one after another, with no other test tier running, and replace the [Node 22 floor record](docs/release/node-floor-record.md) with the result:
 
 ```bash
-git clone https://github.com/lehoa1806/schegent.git
-cd schegent
-npm install        # also installs webview-ui dependencies via postinstall
+fnm exec --using=22.22.3 -- npm ci --engine-strict
+fnm exec --using=22.22.3 -- npm ci --prefix webview-ui --engine-strict
+fnm exec --using=22.22.3 -- npm run test:host
+fnm exec --using=22.22.3 -- npm run build
+fnm exec --using=22.22.3 -- npm run sbom
 ```
 
-### Layout at a glance
+Repeat with `--using=24.15.0` for the 24.x minimum. The macOS extension-host integration tier separately checks the Node and SQLite versions bundled in VS Code.
 
-```text
-.
-├── src/             # Extension host code
-├── webview-ui/      # Svelte UI for sidebar + dashboard
-├── tests/           # Unit, integration, e2e, lint, perf suites
-├── docs/            # Operator manual
-├── resources/       # Static assets
-├── esbuild.config.mjs
-├── tsconfig*.json
-├── vitest.config.ts
-└── package.json
+For a local checkout:
+
+```bash
+nvm use
+npm ci
+npm --prefix webview-ui ci
 ```
 
-### Common scripts
+**Two commands, and the second one is the point (FR-R3-090).** `.npmrc` in both trees sets
+`ignore-scripts=true`, so a plain `npm ci` does not run third-party lifecycle scripts. That disables
+the root `postinstall` which used to install `webview-ui`, which is why the second command exists.
+Without it, `build:webview` stops at its first step, `scripts/check-webview-install.mjs`, with a
+message naming the command to run; before that check (review gap GC-22) the build failed inside
+`vite`, somewhere that did not mention installing.
 
-| Script | Purpose |
-|---|---|
-| `npm run build` | Build host + webview bundles. |
-| `npm run typecheck` / `npm run typecheck:webview` | TypeScript no-emit. |
-| `npm run lint` / `npm run lint:webview` | ESLint, host tree and webview tree. Both enforce the baseline ratchet. |
-| `npm run test` | Vitest unit suites (host + webview). |
-| `npm run test:host` | Host suite only. |
-| `npm run test:webview` | Webview suite only. |
-| `npm run test:coverage` | Unit suites with coverage. |
-| `npm run test:e2e` | End-to-end suite (Vitest). |
-| `npm run test:perf` | Performance suite. |
-| `npm run test:integration` | Boots a real VS Code instance for the **host leg** — the 12 `*.host.test.ts` modules that need a live extension host. About 20 seconds once VS Code is cached; the first run downloads it. Set `SCHEGENT_INTEGRATION_FILTER=<substring>` to run a subset; the run prints what it selected and what it skipped, and a filter matching nothing fails rather than passing over an empty set. |
-| `npm run ci:fast` | Local pre-flight, in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, `package:smoke`. Downloads nothing, but `test:visual` needs the pinned browser and `package:smoke` builds a VSIX, so it is not as quick as its name suggests. |
-| `npm run ci` | Full pre-merge gate. |
-| `npm run package` | Package a `.vsix` artifact. |
+Since **2026-08-26 this is the only authority on how the repository installs.** The hardening used to
+live in the workflow files as `npm ci --ignore-scripts`, so the tree CI scanned was installed
+differently from the tree a contributor ran — the contributor's being the less hardened of the two, on
+the machine that runs an uncontained agent CLI. `FR-R3-099` retired Actions by operator decision and
+deleted those files, so the dual authority is gone rather than reconciled.
 
-The `package` target uses `vsce package --no-dependencies` and
-produces `schegent-<version>.vsix` at the repo root.
+**When you change the install policy, run the self-test:**
 
-### Running the extension locally
-
-1. Open the repository in VS Code.
-2. Press `F5` (Run Extension) to launch an **Extension Development
-   Host** window with Schegent loaded.
-3. Open a trusted workspace folder in the dev host window.
-4. The sidebar header reports CLI status; ensure it shows **CLI
-   ready** before exercising flows.
-
-## Commit and PR conventions
-
-### Branches
-
-`develop` is the integration branch and the default in **both**
-repositories — the planning envelope and this execution repository.
-There is no `main`. Branch from `develop`, and target `develop` in
-every pull request. Use short, descriptive names
-(`fix/cli-detection-windows`, `feat/codex-continue-flag`,
-`docs/retry-troubleshooting`).
-
-This matters beyond convention: CI workflows filter on branch name,
-and a filter naming a branch that does not exist produces neither a
-failing check nor a skipped-run notice — it is indistinguishable from
-a check that passed. Four merge-blocking workflows were scoped to
-`main` for 38 merges before anyone noticed. `tests/lint/`
-[`workflow-trigger-branches.test.ts`](tests/lint/workflow-trigger-branches.test.ts)
-now fails the build when any trigger names a branch that resolves to
-no ref, so the next branch-model change is caught at edit time rather
-than by absence. See
-[docs/operations/merge-gate-observation.md](docs/operations/merge-gate-observation.md).
-
-The recorded alternative — **Option B** — is to create `main` as a
-release branch and move the tag-driven release flow onto it, leaving
-`develop` as the integration target. It is a deliberate branching-model
-decision, not a repair: taking it means updating the trigger filters,
-this section, and the repository default together. Do not create `main`
-incidentally, and do not repoint a trigger at it without that change.
-
-### Commits
-
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-```text
-<type>(<optional-scope>): <imperative summary>
-
-<optional body>
+```bash
+npm run selftest:install    # a real npm ci into a temporary clone; needs a network, takes minutes
 ```
 
-Common types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`,
-`build`, `ci`, `chore`, `style`, `revert`.
+It is not in `npm run gate` and never was: a network install inside the hermetic unit tier is what
+`FR-R3-033` forbids. Its previous home was a `full-gate.yml` job, which no longer exists, so running
+it is now a judgement call rather than a schedule — make it whenever `.npmrc`, the `postinstall`, or
+any documented setup sequence changes.
 
-Keep each commit atomic — one type and one concern per commit. Avoid
-drive-by reformatting, dependency bumps, or renames outside the
-patch's scope.
+**The one lifecycle script this repository needs, named rather than hidden.** `package.json` declares:
 
-### Pull requests
+```json
+"postinstall": "npm --prefix webview-ui install --no-audit --no-fund"
+```
 
-A PR description should answer:
+Its only job is to populate `webview-ui/node_modules`. With scripts off it no longer runs, so the
+second command above replaces it — as a **declared step**, per the FR-R3-065 rule that a prerequisite
+hidden inside a gate is not the same as a declared one. That is not a workaround: every CI job has
+always done exactly this, running `npm --prefix webview-ui ci --ignore-scripts` explicitly.
 
-- **What problem does this solve?** Link the issue if there is one.
-- **What changed?** Surface-level summary; reviewers can read the
-  diff for detail.
-- **How was it tested?** Tests added, suites run locally, manual
-  verification steps.
-- **Risk and compatibility** — does this change `schegent.*` schema,
-  audit-event payloads, or operator-visible defaults? If yes,
-  describe migration impact.
-- **Documentation** — list updated pages under `docs/`. If a
-  user-visible behavior changed, the matching doc page should land
-  in the same PR.
+**No third-party postinstall is required by either tree.** If a future dependency needs one, name it
+here with what it does and why, and run it as its own declared step. Do not re-enable scripts globally
+to accommodate one package, and do not auto-install anything inside a gate — `FR-R3-065` declined that
+for the reason `FR-R3-045` declined putting the Electron download in `ci:fast`.
 
-Small, focused PRs land faster than large, mixed ones. If a PR
-exceeds ~400 lines of substantive change, consider splitting it.
+`tests/lint/install-flag-parity.test.ts` reads the two `.npmrc` files and the documents that teach
+the install sequence. It used to check them against the install flags in the workflow files; those
+were deleted when Actions were retired on 2026-08-26 (`FR-R3-099`), so the dual authority is gone
+rather than reconciled, and what the gate now adds is that no workflow directory has reappeared to
+become a second one.
 
-### What we expect before requesting review
+The visual regression suite needs a Chromium build that `npm ci` does not fetch. Install it once:
 
-- `npm run ci:fast` passes.
-- New behavior is covered by tests (unit at minimum; integration or
-  e2e where the change crosses the host/CLI boundary).
-- Operator-visible changes update the matching `docs/` page.
-- No emojis in code or commit messages.
-- No new dependencies without justification — what it solves, size,
-  maintenance status, license.
-- No lockfile changes outside the requested task.
+```bash
+npx playwright install chromium
+```
 
-### Style notes
+Without it, `npm run test:visual` — and therefore `npm run ci:fast` — fails its preflight with one message naming this command. **Re-run it after any Playwright version bump**: the browser is pinned to a revision the installed Playwright resolves, so a bump moves the target and a cache that worked yesterday stops satisfying it. That is a stale cache, not a broken test, and the preflight says which. The recorded fail/install/pass sequence and what the preflight does not cover are in [Visual gate preflight observations](docs/operations/visual-gate-preflight-observations.md).
 
-- Match the existing formatter and linter configuration; do not
-  introduce new ones unprompted.
-- Prefer the standard library and existing project dependencies
-  over new ones.
-- Handle errors at ownership boundaries. Inner layers throw typed
-  errors; the boundary catches once, logs sanitized fields only
-  (e.g. `errorCode`, `traceId`, `operation`), and returns a
-  structured response. Never log raw `error` or `context` objects.
-- All operator-visible strings that may contain secrets pass
-  through the central sanitizer. Do not add a second redaction set.
-- Validate operator input at system boundaries.
+See [Developer setup](docs/tutorials/developer-setup.md) for the complete build and Extension Development Host check, [Contributor setup rehearsal](docs/development/contributor-setup-rehearsal.md) for the rehearsed paired-workspace vs. standalone-clone setup record and missing-webview diagnostic, and [Coverage measurements and gates](docs/development/coverage-measurements.md) for focused Round 8 regression commands, fixture requirements, and conditional skip inventory.
 
-### Lint baselines and suppressions
+### Activate local Git hooks
 
-`npm run lint` and `npm run lint:webview` lint two separate
-trees through one configuration
-([`scripts/lint-config.mjs`](scripts/lint-config.mjs)) and one
-runner ([`scripts/lint.mjs`](scripts/lint.mjs)). Background and
-the toolchain decisions are in
-[`docs/development/lint-and-type-aware-rules.md`](docs/development/lint-and-type-aware-rules.md).
+Git hooks are local and opt-in; nothing installs them automatically. Inside this execution repository (`repo/`), activate the tracked pre-commit hook (`scripts/hooks/pre-commit`, which runs `node scripts/scan-secrets.mjs --staged`):
 
-Six rules are not yet at `error`. Their finding counts are
-recorded per tree in
-[`tests/lint/eslint-baseline.json`](tests/lint/eslint-baseline.json),
-and the runner fails **in both directions**: a higher count is a
-regression, and a lower one is a stale record. So a change that
-happens to remove findings is not free — lower the number in the
-same commit.
+```bash
+git config core.hooksPath scripts/hooks
+```
 
-**To promote a baselined rule to `error`:**
+In a nested workspace, also activate the parent workspace hooks from the workspace root (`git config core.hooksPath scripts/hooks` for `prepare-commit-msg` and `pre-push`) and verify both repositories with the read-only preflight from the workspace root:
 
-1. Drive its count to zero in every tree it records. Use
-   `node scripts/lint.mjs <host|webview> --sites` to list the
-   sites; fix them, do not suppress them.
-2. Set the rule to `error` in `scripts/lint-config.mjs`. Put it
-   with the tree-wide rules, not inside a `files:`-scoped block —
-   one rule at two severities in one tree is the split this
-   configuration exists to avoid.
-3. Delete the rule's entry from `eslint-baseline.json`. Leaving a
-   zero behind is a record of nothing, and
-   [`tests/lint/eslint-baseline.test.ts`](tests/lint/eslint-baseline.test.ts)
-   rejects an entry for a rule that sits at `error`.
-4. Run both lint commands plus `npx vitest run tests/lint`.
+```bash
+bash scripts/hooks-preflight.sh
+```
 
-Raising a recorded count is allowed, and is a decision you have
-to write down: extend that entry's `reductionNote` with why the
-new sites are deliberate. "The gate went red" is not a reason.
+**`--no-verify` consequences and manual recovery.** In `repo/`, `git commit --no-verify` skips `scripts/hooks/pre-commit` (bypassing the staged secret scan — run `npm run security:secrets:staged` or `npm run security:secrets` manually). In a nested workspace, `git commit --no-verify` skips workspace `prepare-commit-msg` (omitting the `Repo-head:` trailer), and `git push --no-verify` skips workspace `pre-push` (bypassing `scripts/sync-status.sh --verify`, `scripts/merge-record-status.sh`, and the remaining workspace push gates). After a bypass, verify manually from the workspace root with `bash scripts/hooks-preflight.sh`, `scripts/sync-status.sh --verify`, `scripts/sync-status.sh --pr-block`, and `scripts/merge-record-status.sh --verify <remote_sha> <local_sha>`.
+<!-- Source: .nvmrc -->
+<!-- Source: package.json -->
+<!-- Source: .npmrc -->
+<!-- Source: docs/release/actions-terminal-record.md -->
+<!-- Source: scripts/check-playwright-browser.mjs -->
+<!-- Source: scripts/hooks/pre-commit -->
 
-**Suppressions.** `reportUnusedDisableDirectives` is `error`, so
-a directive that suppresses nothing fails the build — 66 of this
-repository's 70 `eslint-disable` comments were exactly that, and
-they were deleted rather than kept. What is permitted:
+## Keep the change scoped
 
-- `// eslint-disable-next-line <rule> -- <reason>`, naming one
-  rule, on the line it applies to, with the reason after `--`.
-- Nothing else. No file-scope `/* eslint-disable */` header, no
-  `/* eslint-disable <rule> */` block form, and no directive
-  without a rule name — each of those turns off a rule for code
-  nobody has read yet, including code added later.
+- Implement the smallest change that satisfies its issue, spec, or invariant. Avoid unrelated refactors, renames, and formatting churn.
+- Preserve operator data and audit semantics. Never edit tests or generated artifacts merely to hide a policy failure.
+- Do not add a built-in Phase, Pipeline, or Workflow to the extension binary. Shipped process examples live in `examples/` and enter a workspace catalog through import.
+- Do not commit secrets, raw transcripts, diagnostic streams, tokens, environment values, or PII to a pull request.
 
-Four directives survive repo-wide; they are the pattern to copy:
-[`tests/integration/cascaded-pause.test.ts:110`](tests/integration/cascaded-pause.test.ts#L110),
-[`tests/integration/index.ts:17`](tests/integration/index.ts#L17),
-[`webview-ui/src/lib/ansi.ts:5`](webview-ui/src/lib/ansi.ts#L5) and
-[`webview-ui/src/components/PipelineBuilderEditors/pipeline-catalog-state.ts:465`](webview-ui/src/components/PipelineBuilderEditors/pipeline-catalog-state.ts#L465).
-If your case does not look like one of those, it is a code
-change, not a suppression.
+<!-- Source: ../AGENTS.md -->
+<!-- Source: .github/PULL_REQUEST_TEMPLATE.md -->
+<!-- Source: examples/speckit-new-feature.workflow.yaml -->
 
-## Testing
+## Follow the actual lint policy
 
-Schegent has five test suites; pick the smallest one that exercises
-your change:
+Run the repository wrappers, not a bare ESLint CLI:
 
-| Suite | When to use |
-|---|---|
-| **Unit** (`tests/unit`, webview unit) | Pure logic, schema validation, classifiers, sanitizer rules. Default home for new tests. |
-| **Lint** (`tests/lint`) | Repo-wide invariants (e.g. single call site for `CMD_SAVE_GENERAL_SETTINGS`). |
-| **Integration** (`tests/integration`) | Code that depends on the VS Code API surface (configuration, commands, secrets). |
-| **End-to-end** (`tests/e2e`) | Operator flows across host + webview + CLI. |
-| **Performance** (`tests/perf`) | Latency- or throughput-sensitive paths. |
+```bash
+npm run lint
+npm run lint:webview
+```
 
-Behavior changes follow TDD: write the failing test first, then
-implement. For refactors, migrations, and urgent fixes, add tests
-around changed behavior where practical.
+The flat configuration is imported by `scripts/lint.mjs`; there is no root `eslint.config.*`. The runner enforces error-severity rules and compares warning counts with `tests/lint/eslint-baseline.json`. A reduction requires lowering the recorded count in the same change; an increase fails as a regression.
 
-Run the appropriate suite locally before pushing. The full gate
-(`npm run ci`) is also enforced in CI.
+Important configured conventions include:
 
-## Documentation changes
+- floating promises, misused promises, and awaiting non-thenables are errors;
+- unnecessary conditions and intentionally retained Svelte findings are warnings bounded by the baseline;
+- an unused parameter may be prefixed with `_`;
+- empty `catch` blocks are permitted by ESLint only because a separate lint test requires a comment declaring why the error is discarded;
+- unused `eslint-disable` directives are errors.
 
-User-facing changes land with a doc update in the same PR. Conventions:
+There is no `format` script or checked-in Prettier configuration (`.prettierrc*`). `prettier` sits in `devDependencies` strictly as a tooling dependency (for developer tooling and test-fixture invocations), not as a repository-wide formatting command; do not run an ad-hoc repo-wide write pass — retain the surrounding file's style and let the supported lint and type gates arbitrate.
+<!-- Source: scripts/lint-config.mjs -->
+<!-- Source: scripts/lint.mjs -->
+<!-- Source: tests/lint/eslint-baseline.json -->
+<!-- Source: package.json -->
 
-- File paths use the project-relative form,
-  e.g. `<workspaceRoot>/.schegent/audit.log`.
-- Settings are written as their full key
-  (e.g. `schegent.logging.verbose`).
-- Commands are written with the palette title in **bold** and the
-  raw id in `code` (e.g. **Schegent: Open Dashboard** /
-  `schegent.openDashboard`).
-- Prefer the language conventions documented in `docs/README.md` —
-  "risk reduction" over "guarantee", "metadata-only audit by
-  default" over "no data is stored", and so on.
+## Regenerate contracts when their sources change
 
-A PR that adds or changes a setting, command, or audit event should
-also update the matching reference table under
-[`docs/reference/`](docs/reference/).
+If you change IPC, audit, settings, queue, state, or backend-runner contract sources, regenerate the checked-in schemas and TypeScript binding, then verify freshness:
 
-## License of contributions
+```bash
+npm run contracts:generate
+npm run contracts:check
+```
 
-By submitting a contribution, you agree that your work is licensed
-under the [MIT License](LICENSE.md), the same terms as the rest of
-the project. If you cannot accept those terms, please do not submit
-a contribution.
+Review every generated difference. Do not hand-edit `src/contracts/generated/` to disagree with its source.
+<!-- Source: package.json -->
+<!-- Source: scripts/generate-contract-schemas.mjs -->
 
----
+## Verify before opening a pull request
 
-Thanks again. The maintainers triage issues and PRs on a best-effort
-basis; clear reports with diagnostic artifacts are the fastest path
-to a resolution.
+**Four tiers, cheapest first** (`FR-R3-132`, extended by `FR-R7-08`) — full detail, the single step list, and what each tier does *not* establish,
+in [Verification tiers](docs/development/verification-tiers.md):
+
+```bash
+npm run test:gates       # lint, parity, and contract gates only (~27s)
+npm run verify:edit      # fast gates + webview build + typechecks + both unit suites — after a small change
+npm run verify:push      # + lint, contracts, docs, security, licences — before you push
+npm run verify:release   # everything, including browser-backed suites and verify:linux — releases
+```
+
+Each tier runs everything the tier below it runs; `repo/tests/lint/verification-tiers.test.ts` proves
+that independently as a set relation over `package.json`, so a cheap tier is never a shortcut. All seven
+aggregate scripts (`verify:edit`, `verify:push`, `verify:release`, `verify:all`, `ci:fast`, `ci`, `gate`)
+are generated from one declared step list (`scripts/verification-steps.json`): edit that file and run
+`node scripts/generate-verification-scripts.mjs` rather than editing aggregate scripts by hand, and
+`npm run docs:check` enforces freshness via `node scripts/generate-verification-scripts.mjs --check`.
+No tier reuses a build artifact: a ratchet that reads source cannot go stale, and a reused `dist/` can.
+
+**Code-line rule for LoC budgets (`FR-R7-08`).** TypeScript size gates (`phase-runner-loc-budget.test.ts`,
+`source-loc-budget.test.ts`, `drive-loop-loc-budget.test.ts`) measure lexical **code lines** via
+`tests/lint/code-lines.ts` (TypeScript AST tokens excluding comments, JSDoc blocks, and blank lines),
+so adding explanatory comments never trips a size ceiling or forces a budget bump.
+
+There is deliberately **no devcontainer**: parity comes from `.nvmrc` plus the two lockfiles, and the
+reasoning and reopening conditions are recorded in
+[the devcontainer declination](docs/development/devcontainer-declination.md) rather than left as a gap.
+
+At minimum, run the checks relevant to the changed tree. The full verification, and what each broad command runs, follows the note on `npm run ci:fast`:
+
+`npm run ci:fast` is **not** one of the tiers, despite the name — see the tier document. The review
+preflight `npm run ci:fast` invokes these manifest targets in order: `typecheck:tests`, `lint`, `verify:all`, `test:evals`, `test:visual`, `test:perf`, `build:host`, and `package:smoke`. It therefore includes browser-backed visual testing and a VSIX package smoke build, not only typechecking and unit tests. The visual step needs the Chromium build declared under [Prepare a checkout](#prepare-a-checkout) — `npx playwright install chromium`, re-run after a Playwright version bump. A missing or stale browser fails the preflight with a single setup message rather than a wall of red specs.
+
+<!-- Source: package.json -->
+
+```bash
+npm run gate
+```
+
+`npm run gate` is the full verification. It runs the five repository checks, then `npm run ci`. The five are contract freshness (`contracts:check`), documentation (`docs:check`), secret scanning (`security:secrets`), pinned actions (`security:actions`) and the structural license check (`license:check`: `LICENSE.md`, the license record, the manifest `license` field).
+
+`npm run ci` runs the typechecks, both lint passes, the builds, coverage, and the eval, visual, accessibility, performance and E2E suites, then package smoke and the extension-host integration tests, but none of the five checks.
+
+`npm run verify:all` is the lighter local check: it builds the webview, runs the five checks, all type checks, both lint passes, the host tests and the covered webview tests, and none of the browser-backed, packaging or integration suites.
+
+**If `test:host` dies with `Segmentation fault: 11` and zero test failures, it is not your change.** Diagnosed 2026-08-24 from two macOS crash reports (2026-08-23 05:56 and 2026-08-24 18:31, both during `test:host`, Node `24.19.0` arm64): `EXC_BAD_ACCESS`, `KERN_INVALID_ADDRESS at 0x1`, on a `V8Worker` platform thread inside V8's concurrent Sparkplug JIT — `ConcurrentBaselineCompiler::JobDispatcher::Run` → `BaselineCompilerTask::Compile` → `BaselineCompiler::GenerateCode` → `AssemblerBase::AddEmbeddedObject`. No JavaScript frame appears in the faulting stack, so no test is implicated; the `npm` wrapper then kills itself propagating the child's signal, which is the line the shell prints. Confirm your own case the same way: `ls -lt ~/Library/Logs/DiagnosticReports/node-*.ips` and read the faulting thread. Re-running is the correct response, and the crash is not currently worked around: `--concurrent-sparkplug` is on by default and is rejected by both `NODE_OPTIONS` and worker `execArgv`, so disabling it would mean replacing `vitest run` with a raw `node` invocation permanently — a standing cost against a rare upstream fault. If it starts recurring in CI rather than locally, that trade is worth revisiting. Several of its checks decided their rules by measurement rather than by choosing a number, and each records how — among them the [duplicate-authority threshold](docs/operations/duplicate-authority-threshold-measurement.md), the [counts the round-3 documents assert](docs/operations/asserted-counts-sweep.md), the [lazy-route wait budget](docs/operations/lazy-route-wait-budget.md) and the [webview coverage floors](docs/development/coverage-measurements.md). `ci` covers the broad build/test/package path but does not invoke `verify:all`; use both for a release-sized change. More focused commands and their exact scopes are documented in [Developer workflows](docs/how-to/developer-workflows.md).
+<!-- Source: package.json -->
+
+Nothing runs on a pull request. Four workflows were configured for `develop` until they were retired
+on 2026-08-26 (`FR-R3-099`) — `PR` and `CI` across three operating systems, a dependency review that
+refused new `high`-severity dependencies, and a CodeQL scan whose findings never failed the build.
+What each one did, and what did and did not replace it, is the subject of
+[the terminal record](docs/release/actions-terminal-record.md) and
+[withdrawn CI controls](docs/release/withdrawn-ci-controls.md).
+
+The practical consequence for a contributor: the hosted three-OS matrix is permanently retired,
+and while `npm run verify:linux` exercises the Linux arm64 unit-tier container leg locally,
+Windows and Linux desktop editor host verification remain unobserved under the dated decline in
+[platform-observation-record.md](docs/operations/platform-observation-record.md) — so a
+Windows-only or Linux-host-only regression can reach `develop`. Run `npm run gate` locally; it is
+the only gate there is.
+<!-- Source: docs/release/actions-terminal-record.md -->
+
+**Dated obligations.** Two lint gates fail on a date: a held major upgrade more than 90 days after
+its review ([held majors](docs/release/held-major-upgrades.md)), and a registered review once its
+day arrives. `npm run review:due` lists every such obligation, with the instant it starts failing,
+before either gate does. It exits 0 when all are current, 1 when one is due, overdue, malformed or
+unregistered, and 2 when a record cannot be read. It is advisory: no gate, tier, release or package
+script runs it (`tests/lint/review-due-is-report-only.test.ts`), and the two gates remain the
+enforcement. It writes nothing.
+<!-- Source: package.json -->
+<!-- Source: scripts/review-due-report.mjs -->
+
+### Run heavy tiers sequentially
+
+Run heavy suites and tiers one at a time on an idle machine — never concurrently in parallel terminals: `test:host`, `test:coverage`, `test:perf`, `test:soak`, `test:visual`, `a11y`, `test:e2e`, `test:integration`, and `verify:linux`. Concurrent runs trigger false failures from CPU/worker-pool saturation, single-threaded perf budgets, shared Playwright fixture port `4173` and webview rebuilds, or competing VS Code Electron instances. See [Run heavy tiers sequentially (avoid contention)](docs/development/verification-tiers.md#run-heavy-tiers-sequentially-avoid-contention) for each suite's contention mechanism.
+
+### Interactive debugging and single-test CLI commands
+
+For fast single-file iteration from the terminal (inside `repo/`):
+
+```bash
+npm run test:host -- tests/unit/<area>/<file>.test.ts          # single host test (or: npx vitest run <path>)
+npm --prefix webview-ui run test -- src/<area>/<file>.test.ts  # single webview test
+```
+
+**`.vscode/launch.json` exists** — `FR-R3-073` added it, and this sentence denied it until
+2026-08-26 (`FR-R3-101`). Its `Run Extension` configuration is the interactive F5 path,
+and its `outFiles` names `dist/**` because that is where `esbuild.config.mjs` bundles the host;
+it named `out/**` until the same date, which is the integration-test compile target, so F5
+breakpoints bound against the wrong artifact and never hit. Its second configuration, `Debug
+Current Host Test File`, runs the host test file open in the editor under the debugger with the
+root vitest config (`webview-ui/` tests have their own config and are not covered by it).
+
+**Nested-workspace VS Code folder caveat:** `.vscode/launch.json` lives at `repo/.vscode/launch.json`
+and is discovered by VS Code **only when `repo/` itself is opened as a VS Code workspace folder**
+(directly or as a folder in a multi-root workspace). Opening only the parent planning-envelope
+directory will not expose `Run Extension` or `Debug Current Host Test File`.
+
+**`.vscode/tasks.json` genuinely does not exist**, and the launch configuration names a
+`preLaunchTask` of `npm: build` anyway. That works because VS Code auto-detects npm scripts as
+tasks; it is not a checked-in task definition, so a contributor who disables npm task
+auto-detection will see the launch fail to build first. One honest sentence rather than either
+claiming a task file or denying the launch file.
+
+`npm run test:integration` remains the checked-in automated Extension Development Host path,
+and it is the one CI-equivalent route — F5 is a person at a keyboard. Inside an F5 Extension
+Development Host window, use `Developer: Open Webview Developer Tools` from the Command Palette
+to inspect the Svelte 5 sidebar or dashboard DOM and console, and run `npm run contracts:check`
+whenever you change a host/webview contract or JSON schema.
+<!-- Source: .vscode/settings.json -->
+<!-- Source: package.json -->
+<!-- Source: tests/integration/runTest.ts -->
+
+## Write the pull request
+
+Use `.github/PULL_REQUEST_TEMPLATE.md` and include:
+
+- a concise summary of what changed and why;
+- the exact validation you ran, leaving unchecked anything not run;
+- the related issue, spec, plan, or backlog item;
+- schema-compatibility and policy/security/privacy impact when applicable;
+- nested-repository sync status when applicable;
+- reviewer notes for known caveats or follow-up work.
+
+The template's self-check calls out redaction, mutating IPC primacy, forbidden `vscode` imports in headless/telemetry code, lock semantics, append-only audit evidence, and Claude continuation argument construction. Treat a checked box as a prompt for a one-line justification.
+<!-- Source: .github/PULL_REQUEST_TEMPLATE.md -->
+<!-- Source: ../AGENTS.md -->
+
+All paths route to `@lehoa1806` in the checked-in CODEOWNERS file, with explicit security-sensitive entries for logging/redaction, audit, headless, telemetry, the Claude runner, security docs, and security policies.
+<!-- Source: .github/CODEOWNERS -->
+
+No commit-message lint, DCO configuration, or general signing rule is checked in. Dependabot-generated dependency commits use `chore(deps-dev)`, but that prefix is scoped to Dependabot and is not a general contributor convention.
+<!-- Source: .github/dependabot.yml -->

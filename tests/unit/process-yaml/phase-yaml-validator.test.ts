@@ -12,7 +12,10 @@
 // FR-001, FR-002, FR-005, FR-006, FR-008, FR-009, FR-026, QS-11, QS-19-22.
 
 import { describe, it, expect } from 'vitest';
-import { PHASE_RETRY_CONDITION_MAX_LEN } from '../../../src/contracts/process-definitions';
+import {
+  PHASE_RETRY_CONDITION_MAX_LEN,
+  RETRY_CAP_OUTCOMES
+} from '../../../src/contracts/process-definitions';
 import { parseDocumentText } from '../../../src/services/process-yaml/yaml-parser';
 import {
   DEFECT_FIELD_MAX,
@@ -82,6 +85,15 @@ function doc(body: {
 }
 
 describe('phase-yaml-validator — document level (FR-002, FR-027)', () => {
+  it('admits only the two native review kinds', () => {
+    for (const kind of ['code', 'security'] as const) {
+      expect(accepted(doc({ spec: ['instruction: Fix confirmed findings', `nativeReview: ${kind}`] })).spec.nativeReview).toBe(kind);
+    }
+    expect(validate(doc({ spec: ['instruction: Fix confirmed findings', 'nativeReview: arbitrary-command'] })))
+      .toMatchObject({ ok: false, kind: 'resource', defects: expect.arrayContaining([
+        expect.objectContaining({ field: 'nativeReview', code: 'invalid-enum' })
+      ]) });
+  });
   it('accepts the minimal well-formed document', () => {
     expect(accepted(doc({}))).toEqual({
       apiVersion: 'schegent/v1',
@@ -228,6 +240,28 @@ describe('phase-yaml-validator — directive (FR-006, FR-007)', () => {
   it('carries skill through as a plain string without resolving it', () => {
     const document = accepted(doc({ spec: ['skill: does-not-exist-anywhere'] }));
     expect(document.spec.skill).toBe('does-not-exist-anywhere');
+  });
+});
+
+describe('phase-yaml-validator — model reaches argv (FR-034, H5)', () => {
+  // The definition validator refuses a model that is not a safe argv token (FR-R3-105); the reader called
+  // it only non-blank, so a flag-shaped value previewed clean and was refused at the commit. The leaf is
+  // shared now, and the parity differential holds the two together on every boundary.
+  it.each([
+    ['a flag', '--dangerously-skip-permissions', 'invalid-charset'],
+    ['a space inside', '"two words"', 'invalid-charset'],
+    ['over the length bound', `m${'x'.repeat(130)}`, 'invalid-length']
+  ])('refuses a model that is %s, naming the field', (_label, value, code) => {
+    const found = defects(doc({ spec: ['instruction: i', `model: ${value}`] }));
+    expect(found).toContainEqual(expect.objectContaining({ field: 'model', code }));
+  });
+
+  it('still accepts a vendor-shaped model and still calls a blank one blank', () => {
+    expect(accepted(doc({ spec: ['instruction: i', 'model: claude-opus-4.5:thinking/high'] })).spec.model).toBe(
+      'claude-opus-4.5:thinking/high'
+    );
+    const found = defects(doc({ spec: ['instruction: i', 'model: " "'] }));
+    expect(found).toContainEqual(expect.objectContaining({ field: 'model', code: 'non-empty-required' }));
   });
 });
 
@@ -399,6 +433,48 @@ describe('phase-yaml-validator — containment fields (FR-001, FR-002)', () => {
         message: 'Phase sideEffects must be one of none, workspace, git, unrestricted'
       })
     );
+  });
+
+  // FR-R3-157 — `onRetryCap`, closed to the same registry the catalog validator
+  // uses. The import path and the save path must refuse the same set, or a file
+  // imports clean and is then rejected when the Builder writes it back.
+  it('refuses an onRetryCap value outside the closed set', () => {
+    const found = defects(doc({ spec: ['instruction: i', 'onRetryCap: continue-ish'] }));
+    expect(found).toContainEqual(
+      expect.objectContaining({
+        field: 'onRetryCap',
+        code: 'invalid-enum',
+        message: 'Phase onRetryCap must be one of fail, continue, continue-degraded'
+      })
+    );
+  });
+
+  it.each(RETRY_CAP_OUTCOMES)('accepts onRetryCap: %s', (value) => {
+    const document = accepted(doc({ spec: ['instruction: i', `onRetryCap: ${value}`] }));
+    expect(document.spec.onRetryCap).toBe(value);
+  });
+
+  it('accepts both authored forms on one phase, carrying each verbatim (V2)', () => {
+    // Contradictory on purpose: `onRetryCap: continue-degraded` beside
+    // `forceContinueOnRetryCap: false`. The validator's job is to admit the
+    // pair, not to reconcile it — precedence lives in `resolveRetryCapOutcome`,
+    // the one resolution site (FR-007). Refusing the pair here would mean an
+    // author could not add the new field without deleting the old one in the
+    // same edit, which is the guarantee FR-002 makes loudest.
+    const document = accepted(
+      doc({
+        spec: [
+          'instruction: i',
+          'onRetryCap: continue-degraded',
+          'forceContinueOnRetryCap: false'
+        ]
+      })
+    );
+    expect(document.spec).toEqual({
+      instruction: 'i',
+      onRetryCap: 'continue-degraded',
+      forceContinueOnRetryCap: false
+    });
   });
 
   it('refuses an evidencePolicy value outside the closed set', () => {

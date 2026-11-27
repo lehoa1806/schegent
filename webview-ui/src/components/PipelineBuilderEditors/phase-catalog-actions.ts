@@ -46,6 +46,16 @@ export interface PhaseHistoryEdit {
   readonly index: number;
 }
 
+// FR-R5-F10 (NF-14): the history bound lives in a module with no imports, so the host's
+// Node16 type-check can load it from tests/perf without pulling in the Builder's graph.
+import {
+  boundHistorySnapshots,
+  MAX_BUILDER_HISTORY_BYTES,
+  MAX_BUILDER_HISTORY_ENTRIES
+} from '../../lib/builder-history-bound';
+
+export { boundHistorySnapshots, MAX_BUILDER_HISTORY_BYTES, MAX_BUILDER_HISTORY_ENTRIES };
+
 /**
  * The edit-state record with `id`'s raw-JSON mode flipped, seeding an entry for
  * a row that has never been touched. The seed and the flip were two functions
@@ -85,35 +95,6 @@ export function duplicatePhaseRow(
     selectedIndex: index + 1,
     mutation: { kind: 'duplicate', sourcePhaseId: original.id, phaseId: duplicate.id },
     mutationSourceKey: duplicate.sourceKey
-  };
-}
-
-/**
- * The rows with `index` and `target` swapped, the selection following whichever
- * of the two it was on.
- *
- * One function for both directions, with the neighbour named rather than
- * derived: the up and down handlers differed only in `index - 1` versus
- * `index + 1`, and their two bounds checks (`index <= 0`,
- * `index >= phases.length - 1`) are the same check on the neighbour.
- */
-export function movePhaseRow(
-  phases: readonly MutablePhase[],
-  index: number,
-  target: number,
-  selectedIndex: number | null
-): PhaseRowsEdit | null {
-  const moved = phases[index];
-  if (!moved || target < 0 || target >= phases.length) return null;
-  const next = [...phases];
-  next[target] = moved;
-  next[index] = phases[target];
-  return {
-    phases: next,
-    selectedIndex:
-      selectedIndex === index ? target : selectedIndex === target ? index : selectedIndex,
-    mutation: { kind: 'edit', phaseId: moved.id },
-    mutationSourceKey: moved.sourceKey
   };
 }
 
@@ -204,14 +185,33 @@ export function retryConditionToggle(phase: MutablePhase): Partial<MutablePhase>
 export function withPhaseHistoryEntry(
   history: readonly MutablePhase[][],
   index: number,
-  serializedPhases: string
+  serializedPhases: string,
+  maxEntries = MAX_BUILDER_HISTORY_ENTRIES,
+  maxBytes = MAX_BUILDER_HISTORY_BYTES
 ): PhaseHistoryEdit | null {
-  const top = index >= 0 ? JSON.stringify(history[index]) : null;
+  const top = index >= 0 && index < history.length ? JSON.stringify(history[index]) : null;
   if (serializedPhases === top) return null;
+  const head = history.slice(0, index + 1);
+  const bounded = boundHistorySnapshots(
+    [...head, JSON.parse(serializedPhases) as MutablePhase[]],
+    maxEntries,
+    maxBytes
+  );
   return {
-    history: [...history.slice(0, index + 1), JSON.parse(serializedPhases)],
-    index: index + 1
+    history: bounded,
+    index: bounded.length - 1
   };
+}
+
+/**
+ * The undo stack for rows adopted from the catalog: one step, a copy of them.
+ *
+ * A step from before an adoption holds rows the catalog has moved on from, and
+ * stepping back to one leaves no pending edit for Save to write. So Undo starts
+ * afresh at every adoption, as the Workflow editor's does once a save lands.
+ */
+export function phaseHistoryFrom(phases: readonly MutablePhase[]): PhaseHistoryEdit {
+  return { history: [JSON.parse(JSON.stringify(phases)) as MutablePhase[]], index: 0 };
 }
 
 /**

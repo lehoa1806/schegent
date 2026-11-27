@@ -17,11 +17,11 @@
 // `emptyCatalogGuidance(pipelines.length)` there. Threading it through the
 // projection instead would put it on the snapshot, across the IPC boundary and
 // into the parity tests, to deliver a constant both ends can already import.
+import type { PhaseName } from '../../contracts/phase-identity';
 import { isLoopPhase, type Phase, type PhaseOutcome } from '../../controller/phase';
 import { DEFAULT_ITERATION_CAP } from '../../services/run-planned-total';
 import type { WorkflowRun } from '../../state/workflow-run';
 import {
-  type PhaseName,
   type PhaseResultState,
   type PhaseTile,
   type SubProgress
@@ -79,6 +79,26 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
       .map((override) => override.phaseId)
   );
 
+  const completedPhaseIds = new Set<string>(run.phasesCompleted.map((entry) => entry.phase));
+
+  // Feature 201 (FR-002, FR-003) — carry the runner's own notion of "not yet
+  // reached" (`isPhaseFuture` in `src/controller/phase-control-decision.ts`)
+  // onto every tile before any state pass (FR-002).
+  for (const tile of tiles) {
+    tile.isFuture =
+      tile.name !== run.currentPhase &&
+      !completedPhaseIds.has(tile.name) &&
+      !removedPhaseIds.has(tile.name);
+  }
+
+  // FR-R3-151 (FR-012) — a future Phase carrying a disabled override projects
+  // `disabled` per-tile as soon as the override is set.
+  for (const tile of tiles) {
+    if (disabledPhaseIds.has(tile.name)) {
+      tile.state = 'disabled';
+    }
+  }
+
   for (const completed of run.phasesCompleted) {
     const idx = phaseIndex(completed.phase, phaseOrder);
     if (idx === -1) continue;
@@ -108,7 +128,7 @@ export function buildPhasesFromRun(run: WorkflowRun | null): PhaseTile[] {
   }
 
   if (run.lastRetryDecision) {
-    const decisionPhaseName = run.lastRetryDecision.phase === 'done' ? null : (run.lastRetryDecision.phase as PhaseName);
+    const decisionPhaseName = phaseNameOrNull(run.lastRetryDecision.phase);
     if (decisionPhaseName) {
       const idx = phaseIndex(decisionPhaseName, phaseOrder);
       if (idx >= 0 && idx < tiles.length) {
@@ -137,6 +157,38 @@ export function phaseIndex(phase: Phase, phaseOrder: ReadonlyMap<PhaseName, numb
   return typeof idx === 'number' ? idx : -1;
 }
 
+/**
+ * A phase value as a phase *name*, or `null` when it names no phase.
+ *
+ * Bug "the phase log that asked for a phase named done" (2026-09-02). The
+ * sentinel is never in `availablePhases`, never has a tile (see `phaseIndex`
+ * above), and never names a readable log — the phase-log service refuses such a
+ * tuple with `unknown-tuple`. Seven sites across this directory each open-coded
+ * that in four different spellings, and one of them drifted: the composer
+ * filtered `inFlightPhase` and not `activeRunPhase` six lines below, which put
+ * `'done'` on every settled Run's row and left the Activity Feed empty after a
+ * restart. `tests/lint/terminal-phase-sentinel-has-one-home.test.ts` keeps the
+ * rule from acquiring an eighth spelling.
+ *
+ * The empty string is `null` too: a nameless phase is not a phase, and every
+ * caller consolidated here already checked for it separately.
+ */
+export function phaseNameOrNull(phase: Phase | null | undefined): PhaseName | null {
+  if (phase === null || phase === undefined) return null;
+  if (phase === 'done' || phase === '') return null;
+  return phase as PhaseName;
+}
+
+/**
+ * The same rule reached through a Run, which is how most callers hold it. The
+ * null-Run case is folded in because both composer call sites read an optional
+ * Run; that is what lets them be the same expression rather than two that can
+ * drift apart again.
+ */
+export function currentPhaseOrNull(run: { currentPhase: Phase } | null | undefined): PhaseName | null {
+  return phaseNameOrNull(run?.currentPhase);
+}
+
 export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null {
   switch (outcome) {
     case 'clean':
@@ -144,6 +196,9 @@ export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null 
     case 'issues_remain':
       return 'issues-remain';
     case 'failed':
+    case 'incomplete_turn':
+      // FR-R3-198 — `incomplete_turn` reaches a tile only once the immediate
+      // resumes are spent, and `transition()` then halts the Run as failed.
       return 'failed';
     case 'timeout':
       return 'timed-out';
@@ -159,20 +214,10 @@ export function mapPhaseOutcome(outcome: PhaseOutcome): PhaseResultState | null 
  * The bar under one Phase tile: counted tasks if any were observed, otherwise
  * the iteration count if the Phase is one that loops, otherwise nothing.
  *
- * Feature 098 (FR-008) — both halves of the iteration branch used to be
- * hardcoded. `isRecursivePhase` recognised exactly `speckit-clarify` and
- * `speckit-analyze`, two ids of a built-in catalog that no longer exists, so an
- * imported looping Phase showed no bar and a Phase merely *named* one of those
- * two showed one it had not earned. And its denominator was a local literal 10,
- * standing where the Run has already frozen the cap the controller will enforce.
- * Both now read the Run: the tile's own definition says whether it loops (the
- * same `retryCondition` `transition()` consults), and `plannedTotal` says how far.
- *
- * The task/iteration order is the other half of that change. Re-keying brings
- * every looping Phase into a branch that two ids used to have to themselves —
- * including the implement Phase of the example pipeline, which is the one that
- * reports task counts. Counted tasks measure the same work more finely, so they
- * take precedence, and the iteration bar is what a looping Phase falls back to.
+ * Feature 098 (FR-008) — both halves of the iteration branch read the Run:
+ * the tile's own definition says whether it loops (the same `retryCondition`
+ * `transition()` consults), and `plannedTotal` says how far. Counted tasks
+ * measure the same work more finely, so they take precedence.
  */
 export function computeSubProgressForTile(
   tile: PhaseTile,
@@ -198,3 +243,8 @@ export function computeSubProgressForTile(
     label: 'iteration' as const
   });
 }
+
+export {
+  projectCandidatePhaseIdentity,
+  type CandidatePhaseIdentityProjection
+} from '../../contracts/candidate-phase-identity';

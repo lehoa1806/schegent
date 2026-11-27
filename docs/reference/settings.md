@@ -1,692 +1,420 @@
-# Settings Reference
-
-Every setting Schegent contributes lives under the `schegent.*` namespace in your VS Code `settings.json`. This page documents every key, its type, default, scope, and validation.
-
-This is a reference, not a tutorial. If you are looking for guided configuration walkthroughs, start in [Installation](../getting-started/installation.md) and follow the per-feature pages in [features/](../README.md#features).
-
-## Scope quick-reference
-
-Each setting carries a `scope`:
-
-| Scope | Meaning |
-|---|---|
-| `application` | Settings that apply across every VS Code window. Stored in user-global `settings.json`. |
-| `resource` | Settings that can be overridden per workspace folder. Stored in user or workspace `settings.json`. |
-| `window` (default) | Settings tied to the VS Code window; rarely used by Schegent. |
-
-A `resource`-scoped value in your workspace overrides the same key in your user settings. An `application`-scoped value cannot be overridden per workspace.
-
-## CLI and backend
-
-### `schegent.cli.path`
-
-- **Type:** `string`
-- **Default:** `"claude"`
-- **Scope:** `application`
-
-Path to the Claude CLI binary. The default `"claude"` works if the binary is on your shell's `PATH`. If your CLI lives elsewhere, set an absolute path:
-
-```jsonc
-{ "schegent.cli.path": "/opt/anthropic/bin/claude" }
-```
-
-### `schegent.cli.inheritEnvironment`
-
-- **Type:** `boolean`
-- **Default:** `true`
-- **Scope:** `application`
-
-When enabled, Schegent backend CLI processes inherit the VS Code extension-host environment and then overlay Schegent-controlled variables such as `SCHEGENT_PHASE`, `SCHEGENT_ITERATION`, and optional Claude auto-compact overrides. Set to `false` in hardened environments to spawn the backend with only Schegent-controlled variables.
-
-Disabling inheritance can break CLIs that rely on ambient variables such as `PATH`, proxy configuration, language runtimes, or vendor authentication tokens. Use an absolute `schegent.cli.path` and configure required authentication through the backend CLI's own supported mechanism before disabling this setting.
-
-This legacy boolean remains authoritative for compatibility: `false` forces
-the `minimal` policy even if `schegent.cli.environmentMode` says otherwise.
-
-### `schegent.cli.environmentMode`
-
-- **Type:** `string`
-- **Default:** `"allowlist"`
-- **Scope:** `application`
-- **Enum:** `inherit` | `minimal` | `allowlist`
-
-Controls which ambient environment variables reach every backend invocation,
-including startup probes and Claude pre-compaction calls:
-
-- `inherit` forwards the full VS Code extension-host environment, then applies
-  Schegent-controlled variables. Emits one sanitized warning per workspace
-  activation.
-- `minimal` forwards only Schegent-controlled variables. Use absolute backend
-  paths and backend-native credential storage.
-- `allowlist` forwards required executable/home/temp/locale/Windows-runtime
-  bootstrap variables, all `LC_*` variables, and the names configured in
-  `schegent.cli.environmentAllowlist`, then applies Schegent-controlled
-  variables last.
-
-Changing this application-scoped setting requires reloading the extension host.
-
-**Default changed to `allowlist` in feature 098.** `inherit` was the
-compatibility default through 0.2.x, and it hands a subprocess the extension
-host's entire environment — every credential VS Code was launched with,
-whether or not the backend has any use for it. `allowlist` is the smallest
-default that still spawns a working CLI: it forwards the bootstrap set
-(`PATH`, `HOME`, `TMPDIR`, locale, and the Windows runtime variables) and
-nothing else. `minimal` is not the default because it forwards no `PATH`
-either, so any backend resolved by name fails to spawn at all.
-
-If a backend stops working after upgrading, the variable it needs is one you
-now name explicitly in `schegent.cli.environmentAllowlist`. The common ones
-are `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` behind a corporate proxy,
-`NODE_EXTRA_CA_CERTS` behind TLS interception, and a vendor token such as
-`ANTHROPIC_API_KEY` where the backend is not using its own credential store.
-Schegent does not forward these implicitly: a proxy URL can carry embedded
-credentials, so the decision to hand one to a subprocess is the operator's to
-make by name.
-
-### `schegent.cli.environmentAllowlist`
-
-- **Type:** `array of environment-variable names`
-- **Default:** `[]`
-- **Scope:** `application`
-- **Element pattern:** `^[A-Za-z_][A-Za-z0-9_]*$`
-
-Names to forward in `allowlist` mode, for example `HTTPS_PROXY` or a
-backend-specific credential variable. Store names only—never `NAME=value`.
-Values are read from the extension host immediately before each spawn and are
-never persisted, audited, or projected to the webview.
-
-### `schegent.backend.runner`
-
-- **Type:** `string`
-- **Default:** `"claude"`
-- **Scope:** `application`
-- **Enum:** `claude` | `codex` | `agy`
-
-Default backend for phase invocations without a phase-level `runner` override.
-`claude` uses `schegent.cli.path`; `codex` uses `schegent.codex.path`; and
-`agy` uses `schegent.agy.path`. All three honor the same audit, redaction,
-bounded-output, timeout, cancellation, and transcript contract.
-
-### `schegent.backend.probeTimeoutSeconds`
-
-- **Type:** `integer`
-- **Default:** `5`
-- **Range:** `1`–`30`
-- **Scope:** `application`
-
-Maximum time for backend availability and model-discovery commands. A timed-out
-probe is terminated and the backend is projected as unavailable. Changing the
-value triggers a new background capability scan.
-
-### `schegent.codex.path`
-
-- **Type:** `string`
-- **Default:** `"codex"`
-- **Scope:** `application`
-
-Path to the Codex CLI binary. Schegent invokes it as `codex exec --json
---sandbox workspace-write` and sends the prompt over stdin.
-
-### `schegent.agy.path`
-
-- **Type:** `string`
-- **Default:** `"agy"`
-- **Scope:** `application`
-
-Path to the Agy CLI binary. Schegent invokes it with stream-JSON output and
-sends the prompt over stdin.
-
-## Workflow tuning
-
-### `schegent.loop.maxIterations`
-
-- **Type:** `number`
-- **Default:** `10`
-- **Scope:** `resource`
-- **Range:** `1` to `50`
-
-Maximum iterations for the Clarify and Analyze loop phases (and any custom loop phase) before force-advancing.
-
-### `schegent.invocation.timeoutSeconds`
-
-- **Type:** `number`
-- **Default:** `5400` (90 minutes)
-- **Scope:** `resource`
-- **Minimum:** `30`
-
-Per-phase CLI idle timeout in seconds. The timer resets every time the CLI emits a stdout or stderr chunk; a phase is only killed after this many seconds of no output. A long-running phase that streams progress continues indefinitely.
-
-### `schegent.watchdog.pollIntervalMinutes`
-
-- **Type:** `number`
-- **Default:** `30`
-- **Scope:** `resource`
-- **Minimum:** `1`
-
-Credit watchdog poll interval in minutes. The watchdog periodically samples the CLI's reported credit balance to surface upcoming rate-limit conditions before they fire.
-
-## Audit log
-
-### `schegent.audit.rotation.sizeMB`
-
-- **Type:** `number`
-- **Default:** `5`
-- **Scope:** `resource`
-- **Minimum:** `1`
-
-Audit log size threshold (megabytes) before rotation. When `.schegent/audit.log` exceeds this size, it rotates to `.schegent/audit.log.<YYYYMMDD-HHMMSS-mmm-id>` and a fresh active file is opened. The millisecond and short random suffix prevent same-second archive collisions; legacy seconds-only names remain readable and eligible for retention.
-
-### `schegent.audit.rotation.maxAgeDays`
-
-- **Type:** `number`
-- **Default:** `30`
-- **Scope:** `resource`
-- **Minimum:** `1`
-
-Audit log age threshold (days) before rotation. Independent of `sizeMB`; either trigger causes a rotation.
-
-Rotated archives are retained per a built-in 7-day archive-age floor plus a count cap (operator-tunable retention surface is not exposed today).
-
-## Pipeline and phase customization
-
-### `schegent.defaultPipelineId`
-
-- **Type:** `string`
-- **Default:** `""`
-- **Scope:** `resource`
-- **Pattern:** `^[a-z][a-z0-9-]{0,63}$` (or empty)
-
-Pipeline id used when a feature is enqueued without an explicit selection. It
-ships **empty** and leaving it empty is a supported configuration: a launch that
-falls through to it is refused with the missing id named, rather than defaulting
-to a pipeline you never chose. Set it to one of your own pipeline ids — imported
-or authored — to give the Enqueue Feature dialog a pre-selection.
-
-### Definitions are not settings
-
-Phase, Pipeline, and Workflow definitions once lived in `schegent.phases`,
-`schegent.pipelines`, and `schegent.workflows`. **Those three keys no longer
-exist.** Definitions live in the versioned catalog store under
-`<workspaceRoot>/.schegent/catalog/`, and you get them there in one of two ways:
-author them in the Pipeline Builder, or import a `schegent/v1` YAML document.
-The settings keys were deleted rather than drained, so there is nothing to
-migrate — re-import from YAML.
-
-Two things follow for anyone who used to reason about these keys:
-
-- **There is one layer.** Nothing shadows anything, there is no
-  workspace-over-user precedence to configure, and a definition either resolves
-  or is reported invalid. An invalid definition stays visible with its field
-  errors and costs only itself.
-- **Every save writes an immutable version.** Saving unchanged content writes
-  nothing; history is bounded at 50 versions per definition. See
-  [Phase Overrides](../features/phase-overrides.md#version-history).
-
-The tables below are the reference for the **definition body** — what the store
-holds, what the Builder edits, and what a `schegent/v1` document carries under
-`spec`. The store keeps bodies verbatim and never validates them; validation
-happens on the way in.
-
-#### Phase definition
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `phaseId` | string | yes | Kebab-case identifier, ≤64 chars (`^[a-z][a-z0-9-]{0,63}$`). No id is reserved and no id is privileged. Identity: an import naming an id the catalog already holds is reported as `skip`, not an overwrite. |
-| `name` | string | yes | Display name (1–80 chars) shown in sidebar tiles, audit logs, and pipeline picker. |
-| `description` | string | no | Portable description, up to 1024 chars. |
-| `version` | positive integer | no | Host-owned optimistic version. Omit on a new definition; the host defaults it to 1. Distinct from the store's `versionId`, which the catalog assigns on every save. |
-| `instruction` | string | conditional | Inline directive, 1–8192 chars. Exactly one of `instruction` or `skill` is required. |
-| `skill` | string | conditional | Declarative skill reference. Exactly one of `instruction` or `skill` is required. |
-| `model` | string | no | Backend model id passed to the selected runner for this phase only. |
-| `effort` | string | no | Reasoning effort. Enum: `low` \| `medium` \| `high` \| `xhigh` \| `max`. |
-| `timeoutSeconds` | integer | no | Per-phase timeout override (1–3600). |
-| `loopable` | boolean | no | Deprecated compatibility field; retry behavior is controlled by `retryCondition`. |
-| `retryCondition` | string | no | Retry-condition DSL expression evaluated against the audit-entry's `metrics` map. See [Custom Phases](../features/custom-phases.md#retry-condition-dsl). |
-| `isRequired` | boolean | no | Whether terminal failure stops the workflow; defaults to `true`. |
-| `forceContinueOnRetryCap` | boolean | no | Advance instead of halting when `retryCondition` is still truthy at the iteration cap. An explicit `false` wins over a workspace-wide `schegent.retry.forceContinueOnCap` of `true`. |
-| `runner` | string | no | Phase runner override: `claude`, `codex`, or `agy`. |
-| `sideEffects` | string | no | Declared side effects: `none`, `workspace`, `git`, or `unrestricted`. Omitted, it is `workspace`. The declaration selects a consent prompt and a rollback checkpoint (`git` and `unrestricted` get both; `none` and `workspace` get neither), and declaring `git` requires a Git-capable `runner` (`claude` or `agy`) or the save is refused. **It does not restrict what the spawned subprocess may do** — the backend runs with its approval prompts disabled either way. See [unprompted-agent-not-contained.md](../concepts/unprompted-agent-not-contained.md). |
-| `evidencePolicy` | string | no | Evidence strictness: `required`, `best-effort`, or `none`. Omitted, it is `required`. |
-
-Both defaults are the narrow end of their range and both apply because the
-definition said nothing — nothing is inferred from the id. A definition that
-omits them is `workspace` and `required`.
-
-Example — the document form, which is what an import reads and an export writes
-(`metadata.phaseId` is the identity; the body moves under `spec`):
-
-```yaml
-apiVersion: schegent/v1
-kind: Phase
-metadata:
-  phaseId: speckit-implement
-  name: Spec-kit Implement (Opus)
-  version: 1
-spec:
-  instruction: Implement the approved plan and verify the result.
-  model: claude-opus-4-7
-  effort: high
-  loopable: false
-```
-
-For the per-run override surface, see [Phase Overrides](../features/phase-overrides.md).
-
-#### Pipeline definition
-
-A pipeline is an ordered chain of phase ids, and may additionally declare a
-contract: what it consumes, what it produces, and how its steps are wired.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `pipelineId` | string | yes | Unique pipeline id, kebab-case, ≤64 chars. In a `schegent/v1` document this is `metadata.id` — the document already declares what it is under `kind`, so the key does not repeat it. No id is reserved. Immutable once saved. |
-| `name` | string | yes | Display name (1–80 chars) shown in the QuickPick picker and sidebar header. |
-| `phaseIds` | array of strings | yes | Ordered list of phase ids. 1–50 entries. Each must match a phase the catalog resolves, whether authored or imported. The same id may appear more than once. Do not list `done`: it is the terminal state the host appends after the last phase, not a definition, and naming it fails the `unknown-phase` check like any other undefined id. |
-| `description` | string | no | Optional summary, ≤1024 chars. |
-| `version` | integer | no | Definition revision, ≥1. The Builder derives the next value on save; it never decreases. |
-| `inputs` | array of objects | no | Declared session inputs: `{ portId, label, type, required?, description? }`. `type` is one of `text`, `source`, `source-list`, `local-file`, `local-folder`, `web-url`, `pipeline-output`, `repository-context`. |
-| `outputs` | array of objects | no | Declared artifacts: `{ portId, label, type, description? }`. `type` is one of `markdown`, `file`, `file-set`, `structured-data`, `run-request`, `external-reference`. |
-| `bindings` | array of objects | no | Wiring between ports and phase steps. See below. |
-| `executionDefaults` | object | no | Advisory run-creation defaults: `runner`, `model`, `effort`, `timeoutSeconds`. Host-owned runtime policy is not authorable here. |
-| `recommendedNext` | array of strings | no | Advisory follow-on pipeline ids. An id with no effective definition is a warning, never an error. |
-
-Bindings address a phase by **position** (`phaseIndex`, zero-based), not by
-`phaseId`, because the same phase may appear twice in one sequence:
-
-- Input binding — `{ "kind": "input", "phaseIndex": N, "inputKey": "...", "source": { "from": "pipeline-input", "portId": "..." } }`, or `"source": { "from": "phase-output", "phaseIndex": M, "portId": "..." }`.
-- Output binding — `{ "kind": "output", "phaseIndex": N, "portId": "...", "outputKey": "..." }`.
-
-A binding that reads from a later phase (`M >= N`) is rejected as a forward
-reference. An input port fed by an earlier phase's output must be declared with
-type `pipeline-output`.
-
-Example:
-
-```yaml
-apiVersion: schegent/v1
-kind: Pipeline
-metadata:
-  id: quick-spec
-  name: Quick Spec
-  version: 1
-spec:
-  phaseIds:
-    - speckit-specify
-    - speckit-plan
-    - speckit-implement
-  inputs:
-    - portId: brief
-      label: Feature brief
-      type: text
-      required: true
-  outputs:
-    - portId: spec
-      label: Specification
-      type: markdown
-  bindings:
-    - kind: input
-      phaseIndex: 0
-      inputKey: brief
-      source:
-        from: pipeline-input
-        portId: brief
-    - kind: output
-      phaseIndex: 0
-      portId: spec
-      outputKey: spec
-```
-
-One definition per id, resolved from the one catalog layer. An invalid
-definition stays visible with its field errors and does not take any other
-definition down with it. Exceeding 20 pipelines, or 50 phases in one pipeline,
-warns without truncating anything. Editing pipelines in the Builder needs
-Workspace Trust; see [Trust Scopes](../operations/trust-scopes.md) and
-[Configuration](../operations/configuration.md).
-
-#### Workflow definition
-
-A Workflow is a reusable acyclic graph whose nodes are pipelines. A Workflow
-definition is a document, not an execution — saving one starts nothing. This is a
-different thing from the run-side "workflow" you see in the queue and the audit
-log; see [Glossary](glossary.md) for both senses.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `workflowId` | string | yes | Unique id, kebab-case, ≤64 chars. Same grammar as `pipelineId`, and likewise `metadata.id` in a `schegent/v1` document. Immutable once saved. |
-| `name` | string | yes | Display name, non-empty. |
-| `description` | string | no | Optional summary. |
-| `version` | integer | no | Definition revision, ≥1. The Builder derives the next value on save; it never decreases. |
-| `nodes` | array of objects | yes | `{ nodeId, pipelineId, label? }`. Each node runs exactly one pipeline. Two nodes may name the same pipeline; they are distinguished only by `nodeId`. |
-| `connections` | array of objects | yes | Typed edges between node ports. See below. |
-| `startNodeIds` | array of strings | yes | Non-empty. Where a composed run would begin. Every other node must be reachable from one of them. |
-
-Connections address a node by **`nodeId`**, never by position — the opposite of
-pipeline `bindings`, which are index-keyed. Reordering, inserting, or removing a
-node therefore preserves every endpoint with no remapping:
-
-```jsonc
-{
-  "from": { "nodeId": "design", "portId": "spec" },
-  "to":   { "nodeId": "build",  "portId": "brief" },
-  "condition": {
-    "left": { "source": "node-status", "nodeId": "design" },
-    "operator": "equals",
-    "right": "completed"
-  },
-  "priority": 10,
-  "isDefault": false,
-  "selection": "first"
-}
-```
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `from`, `to` | object | yes | `{ nodeId, portId }`. Both nodes must exist; the port must be declared on that node's pipeline. |
-| `condition` | object | no | A structured guard, never a string. See below. |
-| `priority` | integer | no | Ascending evaluation order; authored order breaks ties. |
-| `isDefault` | boolean | no | At most one per source node. |
-| `selection` | string | conditional | `first`, `last`, or `exactlyOne`. Required when a collection output (`file-set`) feeds a non-collection input. |
-
-Port compatibility is a fixed table, not something a definition may declare —
-a portable Workflow must behave the same on every host that opens it:
-
-| Output type | Accepted input types |
-|---|---|
-| `markdown` | `text`, `source` |
-| `file` | `local-file`, `source` |
-| `file-set` | `local-folder`, `source-list` |
-| `structured-data` | `pipeline-output` |
-| `run-request` | `pipeline-output` |
-| `external-reference` | `web-url`, `source` |
-
-A **condition** is structured data — `{ left, operator, right? }` — and never a
-string. There is no expression language here, so nothing is parsed or evaluated;
-operands are compared field-wise. This is unrelated to the sandboxed
-`retryCondition` DSL on phases.
-
-- `left` is `{ "source": "node-output", "nodeId": "...", "field": "..." }` or
-  `{ "source": "node-status", "nodeId": "..." }`.
-- `operator` is one of `equals`, `notEquals`, `in`, `exists`, `greaterThan`,
-  `greaterThanOrEqual`, `lessThan`, `lessThanOrEqual`.
-- `right` is a string, number, boolean, or array of those. A `node-status`
-  operand compares against `completed`, `failed`, or `canceled`.
-- `left.nodeId` must name an **ancestor** of the connection's source node — you
-  cannot branch on a result that has not been produced yet.
-
-A Workflow declares no ports of its own. Its inputs and outputs are derived on
-read from the unbound ports of its node pipelines, so they cannot go stale when
-a node's pipeline changes shape.
-
-Validation reports **every** defect at once rather than stopping at the first,
-so a graph can be repaired in one pass. Cycles, unreachable nodes, unresolved
-pipelines, port-type mismatches, duplicate input bindings, missing selection
-rules, and non-ancestor condition operands all block the save.
-
-One definition per id, from the one catalog layer. An invalid definition stays
-visible with its field errors and costs only itself. Editing workflows in the
-Builder needs Workspace Trust; see
-[Trust Scopes](../operations/trust-scopes.md) and
-[Configuration](../operations/configuration.md).
-
-### `schegent.models`
-
-- **Type:** `array of strings`
-- **Default:** `[]`
-- **Scope:** `resource`
-
-List of custom model identifiers (e.g., `claude-3-7-sonnet-20250219`, `sonnet`, `opus`) available in the Pipeline Builder QuickPick. Surface-only — does not validate the ids against an authoritative list.
-
-### Removed settings
-
-`schegent.phases`, `schegent.pipelines`, and `schegent.workflows` were removed
-when definitions moved into the versioned catalog store. They were deleted, not
-drained: there is no migration, and the operator re-imports from YAML.
-
-`schegent.trust.allowPipelineOverrides` and
-`schegent.trust.allowWorkflowOverrides` went with them. Each gated which settings
-layer could redefine what another declared, and with one layer there is no such
-situation to gate. Editing pipelines and workflows now needs Workspace Trust and
-nothing further.
-
-`schegent.rules.injectPerPhase` was withdrawn and removed from the extension
-contract. Existing values in operator-owned settings files are left untouched
-and ignored. Schegent does not create `.claude/rules` files.
-
-## Retry and queue
-
-### `schegent.retry.maxAttempts`
-
-- **Type:** `integer`
-- **Default:** `5`
-- **Scope:** `resource`
-- **Range:** `1` to `5`
-
-Maximum delayed-retry attempts per run before pausing the queue. When a phase encounters a transient error or rate limit, it schedules a delayed retry. After this many consecutive failures without a clean recovery, the run and queue are paused.
-
-The advertised maximum was reduced from `20` to `5` in feature 056 to match the implementation cap.
-
-### `schegent.queue.globalConcurrencyCap`
-
-- **Type:** `integer`
-- **Default:** `1`
-- **Scope:** `resource`
-- **Range:** `1` to `20`
-
-Maximum number of workflow runs that may **execute** across the whole workspace at the same time. Each queue still runs at most one Task, so `cap` concurrent runs means `cap` different queues — set it to `1` for single-run behaviour without deleting any queue.
-
-A value outside the range is refused, not clamped: an out-of-range setting is reported and the previous value stays in force, so a typo cannot silently change how much work runs at once.
-
-The cap gates starts only. Lowering it below the number of runs already executing terminates none of them; the excess drains as they finish. A paused run keeps its slot, so pausing does not free capacity and resuming is never refused for want of one.
-
-Feature 092 unpinned this knob. It was fixed at `1` while a single workspace lock made concurrency unrepresentable; the lock split (window primacy vs per-queue execution lease) removed that constraint. Between 092 and 093 it bounded eligible queues rather than executing runs, because the run engine still drove one run at a time; feature 093 made it a real ceiling on concurrent execution. Raising it does **not** widen the remote or multi-user boundary — see [the expansion gate](../architecture/remote-multi-user-expansion-gate.md). It does mean more Claude processes against one working tree — see [Multiple queues and concurrency](../operations/multi-queue-concurrency.md#concurrent-runs-share-one-working-tree).
-
-**Default changed from `3` to `1` in feature 098.** The range is unchanged and
-nothing about concurrent execution was removed — only which behaviour you get
-without choosing. Concurrent runs share one working tree, and Schegent does not
-resolve their file contention for you: two runs that edit the same file
-interleave their edits, and reconciling that is yours. A default of `3` meant a
-fresh install did that unasked. Raising it is a deliberate trade the operator can
-now make knowingly — see
-[the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
-for the analysis behind the change.
-
-The original reason for the change was narrower and no longer applies: a recovery
-checkpoint is a `git diff --binary HEAD` of the shared tree, and at the time
-`RunCheckpointService` declined to take one whenever a second run was live.
-FR-R3-004 replaced that blanket refusal — each phase's audit record declares what
-it wrote, and the patch is scoped to one run's declaration — so raising the cap
-no longer costs you recovery evidence. It still costs you a shared tree. See
-[Recovery checkpoints](../operations/recovery-checkpoints.md).
-
-## Logging and diagnostics
-
-### `schegent.logging.runtimeLogLevel`
-
-- **Type:** `string`
-- **Default:** `"INFO"`
-- **Scope:** `resource`
-- **Enum:** `DEBUG` | `INFO` | `WARN` | `ERROR`
-
-Runtime debug log severity filter. Records at or above the configured level are appended to the runtime log file; lower-severity records are dropped. Independent of `schegent.logging.verbose` (which controls the unredacted diagnostic sink). Re-read on every emit — mid-run changes apply at the next event boundary.
-
-### `schegent.logging.runtimeLogFilePath`
-
-- **Type:** `string`
-- **Default:** `""`
-- **Scope:** `resource`
-
-Runtime debug log file path. Empty string resolves to `<workspaceRoot>/.schegent/syslog`. Accepts an absolute path (POSIX or Windows) or a workspace-relative path. Relative paths containing `..` are rejected. The parent directory is auto-created on first write; the file is created with mode `0644` on POSIX.
-
-### `schegent.logging.runtimeLogMaxBytes`
-
-- **Type:** `integer`
-- **Default:** `5242880` (5 MiB)
-- **Scope:** `resource`
-- **Range:** `65536` (64 KiB) to `1073741824` (1 GiB)
-
-Maximum size of the active runtime log file before rotation. On a write that would push the file past this size, the active file is rotated to `<path>.1`; existing generations shift by one. Setting changes are read on every log emit, so no reload is required.
-
-### `schegent.logging.runtimeLogMaxGenerations`
-
-- **Type:** `integer`
-- **Default:** `3`
-- **Scope:** `resource`
-- **Range:** `0` to `20`
-
-Number of rotated runtime log generations to keep (`<path>.1` through `<path>.N`). Older generations are deleted on the next rotation.
-
-### `schegent.logging.verbose`
-
-- **Type:** `boolean`
-- **Default:** `false`
-- **Scope:** `resource`
-
-When enabled, every Claude CLI invocation is spawned with `--debug-file`, `--output-format stream-json`, and `--verbose`. CLI streams are captured under `<workspaceRoot>/.schegent/sessions/<runId>/diagnostics/<pipelineId>/<phaseId>/iter-<N>/` as `debug.json`, `stream.jsonl`, and `verbose.log`. **The captured files are unredacted.** Toggle off to return to standard headless mode. The setting is re-read at the entry of every phase invocation — mid-run toggling applies on the *next* phase.
-
-See [Verbose Diagnostics](../features/verbose-diagnostics.md).
-
-### `schegent.logging.rawTranscriptMode`
-
-- **Type:** `string`
-- **Default:** `"errors-only"`
-- **Scope:** `resource`
-- **Enum:** `always` | `errors-only` | `off`
-
-Raw transcript retention policy. A raw transcript is the backend CLI's
-unredacted output for a run — operator prompts, source the model read, and the
-model's replies verbatim — written under the session tree alongside the
-diagnostics described above.
-
-- `always` retains every transcript.
-- `errors-only` stages the transcript privately while the run is in flight and
-  retains it only if the run ends `failed`, `canceled`, or `paused`. A run that
-  succeeds leaves none behind.
-- `off` captures no raw transcript at all.
-
-Structured audit evidence in `.schegent/audit.log` is unaffected by every value
-— it is redacted through `SECRET_PATTERNS` and always written.
-
-The value is **frozen when a run starts**, so changing the setting never
-retargets a transcript already being captured; the next run picks up the new
-policy. Whatever is retained is still subject to
-`sessionRetentionMaxAgeDays` and `sessionRetentionMaxBytes` below.
-
-**Default changed from `always` to `errors-only` in feature 098.** Retaining an
-unredacted transcript for a run that succeeded stores considerably more than
-diagnosis needs, on disk, indefinitely until a retention sweep reaches it. Set
-`always` to opt back in — for a backend you are actively debugging, or where an
-external policy requires a complete record.
-
-### `schegent.logging.sessionRetentionMaxAgeDays`
-
-- **Type:** `integer`
-- **Default:** `30`
-- **Scope:** `resource`
-- **Range:** `1` to `3650`
-
-Maximum age of unredacted raw transcripts and session diagnostic trees. Schegent removes only complete inactive-run groups, sweeping at activation, after a run reaches a terminal state, and after either retention setting changes. Running and paused runs are protected. The structured audit log is outside the managed session root and is never pruned.
-
-### `schegent.logging.sessionRetentionMaxBytes`
-
-- **Type:** `integer`
-- **Default:** `536870912` (512 MiB)
-- **Scope:** `resource`
-- **Range:** `1048576` (1 MiB) to `10737418240` (10 GiB)
-
-Total byte budget for unredacted raw transcripts and session diagnostic trees. When retained artifacts exceed the budget, Schegent removes the oldest complete inactive-run groups first. The Settings surface reports current usage, the last sweep, and contained sweep failures.
-
-## Fatal signatures
-
-### `schegent.fatalSignatures`
-
-- **Type:** `array of non-empty strings`
-- **Default:** `[]`
-- **Scope:** `resource`
-
-Operator-additive supplement to the code-resident Fatal Signature Registry. Each element is a verbatim substring; when present in CLI stdout or stderr, the active phase fails fast on the current invocation. Code-resident signatures cannot be removed or modified here — they are managed via PR review. A malformed value falls back to `[]` without blocking extension activation.
-
-The setting is re-read at every phase invocation entry.
-
-See [Fatal Signatures](../features/fatal-signatures.md).
-
-## Advanced CLI behavior
-
-### `schegent.claude.autoCompactPctOverride`
-
-- **Type:** `integer` or `null`
-- **Default:** `null`
-- **Scope:** `resource`
-- **Range:** `1` to `100` (percent)
-
-When set to an integer in `[1, 100]`, the value is exported as `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to the Claude CLI subprocess, overriding the CLI's built-in auto-compaction threshold. `null` or an out-of-range value leaves the env var unset (CLI default applies). Re-read at every phase invocation entry.
-
-See [Auto-compact Override](../features/auto-compact-override.md).
-
-## Multi-root workspaces
-
-### `schegent.multiRoot.suppressWarning`
-
-- **Type:** `boolean`
-- **Default:** `false`
-- **Scope:** `window`
-
-Suppress the one-shot informational toast that Schegent surfaces at activation when the active workspace contains more than one folder. The toast names the **canonical workspace folder** — the first folder in the `.code-workspace` file, under which Schegent creates `.schegent/`, the audit log, and the per-run session tree.
-
-When `true`, both the toast and the corresponding `multi-root.warning-shown` audit event are suppressed. The canonical-folder selection itself is unaffected — the setting is purely cosmetic.
-
-The setting is `window`-scoped so it only applies to the specific `.code-workspace` file you save it under. See [The Workspace Lock → Multi-root workspaces](../concepts/workspace-lock.md#multi-root-workspaces) for the underlying semantics.
-
-## All-keys index
-
-For quick lookup, the full list of keys:
-
-| Key | Scope | Default |
+# Settings reference
+
+Schegent contributes the settings below to VS Code under the `schegent.*` namespace. Application settings follow the user across workspaces, resource settings belong to a workspace, and window settings apply to the current VS Code window. The typed host schema and the manifest are held in bidirectional parity by a test; this page reports the manifest defaults and bounds rather than inventing another configuration contract.
+
+<!-- Source: package.json -->
+<!-- Source: src/config/settings-schema.ts -->
+<!-- Source: tests/unit/config/settings-schema-parity.test.ts -->
+
+## Backend and process environment
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.cli.path` | string | `claude` | application | Claude executable path. |
+| `schegent.cli.inheritEnvironment` | boolean | `true` | application | **Deprecated** legacy compatibility switch, superseded by `schegent.cli.environmentMode`. When absent (`undefined`), defaults to `true`. Explicit `false` — or any defined non-boolean value (fail-closed) — overrides `schegent.cli.environmentMode` to `minimal` and ignores `schegent.cli.environmentAllowlist`. |
+| `schegent.cli.environmentMode` | `inherit`, `minimal`, or `allowlist` | `allowlist` | application | Selects how much of the extension-host environment reaches backend processes when `schegent.cli.inheritEnvironment` is `true` (or unset). A value that is not one of the three modes is treated as `allowlist`; only the exact, case-sensitive string `inherit` inherits the whole environment. |
+| `schegent.cli.environmentAllowlist` | array of names matching `^[A-Za-z_][A-Za-z0-9_]*$` | `[]` | application | Adds environment-variable names to the bootstrap set in `allowlist` mode; values are read at spawn time. Ignored when effective mode is `minimal` or `inherit`. |
+| `schegent.backend.runner` | `claude`, `codex`, or `agy` | `claude` | application | Selects the default backend. Claude is the default and, like Agy, runs with approval prompts off and acts without asking via `--dangerously-skip-permissions`; Codex uses `exec --json --sandbox workspace-write`. |
+| `schegent.backend.probeTimeoutSeconds` | integer, `1`–`30` | `5` | application | Bounds availability and model-discovery probes. |
+| `schegent.codex.path` | string | `codex` | application | Codex executable path. |
+| `schegent.agy.path` | string | `agy` | application | Agy executable path. |
+| `schegent.backend.uncontainedBackends` | array of unique `claude`, `codex`, or `agy` | `[]` | application | Backends allowed to run with no OS-enforced bound on what they can reach, named one at a time. See [The capability posture setting](#the-capability-posture-setting). |
+| `schegent.backend.uncontainedScanners` | array of unique `codex-security` | `[]` | application | Standalone native review scanners allowed to run with no OS-enforced containment sandbox (`mechanism: 'none'`). Defaults to `[]` (fail-closed, zero subprocess spawns) and requires both this setting and a matching workspace fingerprint binding recorded via `Schegent: Grant Native Review Scanner`. |
+| `schegent.models` | object keyed by `claude`, `codex`, and `agy` | `{ "claude": [], "codex": [], "agy": [] }` | resource | Adds operator-supplied model identifiers to the Model Catalog. |
+
+<!-- Source: package.json -->
+<!-- Source: src/activation/uncached-settings-accessors.ts -->
+<!-- Source: src/contracts/process-environment-policy.ts -->
+<!-- Source: src/runner/spawn-env.ts -->
+<!-- Source: src/runner/claude-cli.ts -->
+<!-- Source: src/runner/codex-cli.ts -->
+<!-- Source: src/runner/agy-cli.ts -->
+<!-- Source: src/activation/backend-wiring.ts -->
+
+<a id="schegentclienvironmentmode"></a>
+
+**Environment-policy precedence** is evaluated once by `readProcessEnvironmentPolicy` (`src/activation/uncached-settings-accessors.ts`) and `resolveProcessEnvironmentPolicy` (`src/contracts/process-environment-policy.ts`), in strict order:
+
+1. **`schegent.cli.inheritEnvironment` (deprecated) first**: if unset (`undefined`), it defaults to `true`. If explicitly `false` — or if defined as any non-boolean value (such as `"false"`, `1`, `null`, or `{}`) — it fails closed to `false`, forcing effective mode `minimal` (`inheritProcessEnv: false`) and dropping `schegent.cli.environmentAllowlist` regardless of `schegent.cli.environmentMode`.
+2. **`schegent.cli.environmentMode` second**: when `inheritEnvironment` is `true`, `'minimal'` yields `minimal` (only Schegent-controlled overlays, no ambient or bootstrap variables, allowlist dropped); only the exact, case-sensitive string `'inherit'` yields `inherit` (full extension-host environment plus overlays); `'allowlist'` or any absent, malformed, misspelled, or mis-cased value resolves to `allowlist` (required bootstrap variables from `REQUIRED_PROCESS_ENV_NAMES`, every `LC_*` variable, valid allowlisted names from `schegent.cli.environmentAllowlist`, plus overlays). See the executable precedence table in [System configuration](system-config.md#backend-process-environment).
+3. **Isolated-lane verification checks (`src/services/execution-lanes/verification-runner.ts`)**: read this same policy per check, except that under both `minimal` and `allowlist` a lane verification check retains the `REQUIRED_PROCESS_ENV_NAMES` bootstrap variables (including `PATH`, `HOME`, `USER`, `LOGNAME`, `USERNAME`, etc.) and `LC_*` so build and test executables can resolve on `PATH`, while still excluding non-allowlisted ambient secrets (and dropping operator allowlist entries under `minimal`; see [execution lanes](../operations/execution-lanes.md)).
+
+The resolved policy reaches every backend process Schegent starts: the Phase runner (and its ACP stdio bridge / native ACP transport), the session compactor, the credit watchdog, the backend capability probe, and the CLI version probe.
+
+The default backend and process-environment policy are resolved during workspace-bound activation. Reload the VS Code Extension Host after changing `schegent.backend.runner`, `schegent.cli.environmentMode`, `schegent.cli.environmentAllowlist`, or `schegent.cli.inheritEnvironment`. In contrast, the three CLI executable-path settings are read for each invocation and can take effect without a reload.
+
+<!-- Source: src/extension.ts -->
+<!-- Source: src/config/cli-path-accessor.ts -->
+
+The backend choice is a privilege choice, not a cosmetic preference. A Phase's `sideEffects` declaration selects its mutation plan, consent, and rollback behavior; a Phase declaring `sideEffects: git` is refused unless its runner is Git-capable. It does not constrain what a spawned subprocess can access. See [Backend operations](../operations/backends.md) and [Unprompted agent, not contained agent](../concepts/unprompted-agent-not-contained.md).
+
+<!-- Source: src/config/phase-runner-policy.ts -->
+<!-- Source: src/activation/git-approval.ts -->
+
+## Execution, queues, and retry
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.loop.maxIterations` | number, `1`–`50` | `10` | resource | Maximum iterations for every phase that has a retry condition. If the condition still holds at the cap, the run fails, unless the phase or `schegent.retry.forceContinueOnCap` is set to continue. |
+| `schegent.loop.maxUnchangedComparisons` | integer, `0`–`49` | `0` | resource | Fails a retry loop below the iteration cap after this many consecutive comparisons in which the figures its retry condition reads did not change. `0` turns it off; any other value outside `0`–`49` is read as `0`. Applies only where the phase's cap outcome is to fail. See `docs/operations/retry-contract.md`. |
+| `schegent.watchdog.pollIntervalMinutes` | number, minimum `1` | `30` | resource | Credit-watchdog polling interval in minutes. |
+| `schegent.invocation.idleTimeoutSeconds` | number, minimum `30` | `5400` | resource | Idle window for one Phase invocation: terminated after this long with no output. Renamed from `schegent.invocation.timeoutSeconds`, which is still read as a fallback while unset. |
+| `schegent.invocation.timeoutSeconds` | number, minimum `30` | `5400` | resource | Deprecated: renamed to `schegent.invocation.idleTimeoutSeconds`, because it was always an idle window, not a total-duration bound. An explicit value is still honored while the new key is unset. |
+| `schegent.invocation.maxDurationSeconds` | number, minimum `60` | `21600` | resource | Absolute wall-clock bound on one Phase invocation, armed at spawn and never reset — bounds a chatty child the idle window cannot. Default is 4x the idle default and ~1.7x the longest legitimately long phase observed (3.6 h). At **80%** of whatever this is set to, the monitor appends one `monitor-deadline-approaching` audit record — elapsed, the bound, the invocation — so the termination is not the first evidence the bound exists. The record is informational: it changes no status and stops nothing. |
+| `schegent.spend.maxUsdPerRun` | number (minimum `0.01`) or `null` | `null` | resource | Per-run spend bound in US dollars. `null` means **no bound**: the mechanism ships unset so no existing run changes behaviour on upgrade. Crossing it **pauses** the run through the ordinary operator-resumable pause (cause `spend-bound-reached`) — never a failure, never a cancellation. Applies to backends that report a cost (`claude`, in USD). The bound is a pause at a phase boundary and never a ceiling inside an invocation: the phase that crosses it always runs to completion, and one more phase can run when the pause lands after the Run reads its state, so a paused Run's total ends above the bound; a backend that reports no cost under this bound is reported once as not measurable and is never read as within budget, and no price is inferred or back-filled. After a restart the total is rebuilt from the audit log and its archives within an 8 MiB read, and a total that could not be rebuilt in full is shown as a lower bound, not as within budget. See `docs/operations/autonomy-bounds-disclosure.md`. A Phase may override it with `spendBoundUsd`. |
+| `schegent.spend.maxTokensPerRun` | number (minimum `1`) or `null` | `null` | resource | Per-run spend bound in tokens, for backends that report tokens and no cost (`codex`, `agy`). `null` means **no bound**. Behaves identically to the dollar bound, including the pause, and is reported once as not measurable when the phase's backend reports no tokens. A Phase may override it with `spendBoundTokens`. |
+| `schegent.defaultWorkflowId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | The default Workflow. Only a Workflow id counts: a value that names no effective Workflow gives no default. The **Add work** composer preselects it when it is among the launchable Workflows and nothing is selected; preselecting opens and submits nothing. The Settings tab's **Default workflow** select lists Workflows only and saves here. Empty means no default; Schegent ships no definitions. |
+| `schegent.defaultPipelineId` | empty string or `^[a-z][a-z0-9-]{0,63}$` | empty string | resource | Deprecated: renamed to `schegent.defaultWorkflowId`. Read only while the new key is unset at every scope, and only when its value names an effective Workflow; a stored Pipeline id is ignored. Schegent never writes it. See [Current limitations](../explanation/core-concepts.md#current-limitations). |
+| `schegent.retry.maxAttempts` | integer, `1`–`5` | `5` | resource | Maximum delayed-retry attempts before the Run and Queue pause. |
+| `schegent.retry.forceContinueOnCap` | boolean | `false` | resource | Workspace-wide **default** for what a Phase does when its `retryCondition` remains truthy at its final allowed iteration: `true` means advance and record a forced-continue runtime event, `false` means fail. A Phase's own `onRetryCap` overrides it — see below, including the third outcome this boolean cannot select. Failed and timed-out outcomes remain terminal. |
+| `schegent.queue.haltOnTaskFailure` | `halt-on-failure` or `continue` | `halt-on-failure` | window | Workspace default for what a Queue does after one of its tasks ends `failed`. `halt-on-failure` starts no further task until the operator retries or removes the failed one; `continue` keeps starting the remaining tasks. A Queue that states its own policy overrides it. |
+
+A workspace or folder value of `schegent.loop.maxIterations`, `schegent.loop.maxUnchangedComparisons`,
+`schegent.spend.maxUsdPerRun`, `schegent.spend.maxTokensPerRun`, `schegent.retry.maxAttempts`,
+`schegent.retry.forceContinueOnCap`, `schegent.invocation.idleTimeoutSeconds` or
+`schegent.invocation.maxDurationSeconds` may only tighten the user's value (or the default): a lower
+cap, a shorter timeout, a cap where none was set, or `false`. A value that would raise, clear or switch off the limit is
+ignored, and activation logs a warning. See [Autonomy bounds](../operations/autonomy-bounds-disclosure.md#where-each-limit-comes-from).
+
+**Daily and workspace-wide cross-run aggregate spend caps do not exist today and remain an explicit open product decision** (alongside GC-10 tighten-only per-run caps above and GC-25 post-turn phase-end overshoot). `schegent.spend.maxUsdPerRun` and `schegent.spend.maxTokensPerRun` bound a single Run only; starting another Run begins a fresh per-run tally, and F06 historical usage accounting reports cross-run totals without enforcing a daily or workspace-wide stop. See [Autonomy bounds](../operations/autonomy-bounds-disclosure.md#open-product-decision-daily-and-workspace-wide-aggregate-spend-caps) and [Usage and Metrics Accounting](../operations/usage-accounting.md#three-spend-and-usage-mechanisms-and-when-each-enforces).
+
+<!-- Source: src/config/tighten-only-limits.ts -->
+
+### The retry-cap outcome is three-valued, and per Phase
+
+`schegent.retry.forceContinueOnCap` answers for a Phase that says nothing. A Phase that says
+something says it in `onRetryCap`, which admits three outcomes rather than two:
+
+| `onRetryCap` | At the cap | What survives the run |
 |---|---|---|
-| `schegent.cli.path` | application | `"claude"` |
-| `schegent.cli.inheritEnvironment` | application | `true` |
-| `schegent.cli.environmentMode` | application | `"allowlist"` |
-| `schegent.cli.environmentAllowlist` | application | `[]` |
-| `schegent.backend.runner` | application | `"claude"` |
-| `schegent.backend.probeTimeoutSeconds` | application | `5` |
-| `schegent.codex.path` | application | `"codex"` |
-| `schegent.agy.path` | application | `"agy"` |
-| `schegent.loop.maxIterations` | resource | `10` |
-| `schegent.invocation.timeoutSeconds` | resource | `5400` |
-| `schegent.watchdog.pollIntervalMinutes` | resource | `30` |
-| `schegent.audit.rotation.sizeMB` | resource | `5` |
-| `schegent.audit.rotation.maxAgeDays` | resource | `30` |
-| `schegent.defaultPipelineId` | resource | `""` |
-| `schegent.models` | resource | `[]` |
-| `schegent.retry.maxAttempts` | resource | `5` |
-| `schegent.retry.forceContinueOnCap` | resource | `false` |
-| `schegent.queue.globalConcurrencyCap` | resource | `1` |
-| `schegent.logging.runtimeLogLevel` | resource | `"INFO"` |
-| `schegent.logging.runtimeLogFilePath` | resource | `""` |
-| `schegent.logging.runtimeLogMaxBytes` | resource | `5242880` |
-| `schegent.logging.runtimeLogMaxGenerations` | resource | `3` |
-| `schegent.logging.verbose` | resource | `false` |
-| `schegent.logging.rawTranscriptMode` | resource | `"errors-only"` |
-| `schegent.logging.sessionRetentionMaxAgeDays` | resource | `30` |
-| `schegent.logging.sessionRetentionMaxBytes` | resource | `536870912` |
-| `schegent.fatalSignatures` | resource | `[]` |
-| `schegent.claude.autoCompactPctOverride` | resource | `null` |
-| `schegent.multiRoot.suppressWarning` | window | `false` |
-| `schegent.ui.confirmations.enable` | window | `true` |
-| `schegent.trust.allowCustomPhases` | window | `null` |
-| `schegent.trust.allowCustomRetryConditions` | window | `null` |
+| `fail` | Ends the Phase failed, with the cap-exhausted cause. | The ordinary failure record. |
+| `continue` | Advances with an explicit unverified warning. | Nothing durable. |
+| `continue-degraded` | Advances, exactly as `continue` does. | A degraded mark on the **Task**, naming the Phase and the condition that was never satisfied. |
 
-## Editing settings
+The workspace boolean maps onto the first two: `true` is `continue`, `false` is `fail`. It cannot
+select `continue-degraded`, which is reachable only per Phase — a workspace-wide degraded default
+would mark every task in the workspace and tell an operator nothing about any of them. Precedence
+is most-specific-first: the Phase's `onRetryCap`, then the Phase's deprecated
+`forceContinueOnRetryCap`, then this setting, then `fail`. A Phase that states anything wins over
+the workspace default, including when it states the opposite of it.
 
-You have three ways to change a setting:
+The **Phase field** `forceContinueOnRetryCap` is deprecated by `onRetryCap` and **keeps loading
+indefinitely**, under the same `true`/`false` mapping it has always had. No definition file already on
+disk needs editing, now or later; a Phase declaring both is resolved by `onRetryCap`. The workspace
+setting on the row above is not deprecated — it remains the default for every Phase that declares
+neither.
 
-1. **VS Code Settings UI** — `Cmd/Ctrl + ,`, search for `schegent`. The UI surfaces descriptions and validation inline.
-2. **Direct `settings.json` edit** — `Cmd/Ctrl + Shift + P` → "Preferences: Open User Settings (JSON)". Type-safe; the JSON schema validates as you type.
-3. **The Schegent sidebar settings panel** — for the subset of settings exposed there (CLI path, models, phase overrides, logging, retries, fatal signatures).
+**A degraded Phase does not fail, and so does not halt its queue.** Under the `halt-on-failure`
+policy set by `schegent.queue.haltOnTaskFailure`, a Queue stops admitting work when one of its rows
+ended `failed`; `continue-degraded` produces a Task that completed, so the Queue drains on and the
+mark is how the unverified condition stays visible afterwards. Choose `fail` for a Phase whose
+unsatisfied condition should stop the queue. See
+[Failure policy](../operations/multi-queue-concurrency.md#failure-policy-halting-a-queue-on-a-failed-task)
+and the Phase field reference in [Custom Phases](../features/custom-phases.md#phase-definition-reference).
 
-All three write to the same underlying `settings.json`. Schegent re-reads every relevant setting at the next phase invocation, so changes apply without a reload unless the setting explicitly documents otherwise.
+<!-- Source: src/contracts/retry-cap-outcome.ts -->
+<!-- Source: src/queue/queue-halt-policy.ts -->
 
-## What does *not* live here
+**The workspace-wide concurrency cap is not on this page, because it is not a
+`settings.json` key.** The maximum number of Runs that may execute at once — still
+defaulting to `1`, still accepted only in `[1, 20]`, still refused rather than clamped
+when out of range — is workspace state, set in the Settings page's **Queues** section and
+saved through `CMD_SAVE_QUEUE_SETTINGS`. The key schegent.queue.globalConcurrencyCap is
+written here without backticks deliberately, on the same rule as the removed
+`allowUncontainedBackends` boolean below: a backticked setting key on a reference page is
+a control an operator can reach in their settings, and this one is genuinely gone from the
+manifest. It was declared there and read by nothing on any scheduling path, so a value
+left behind in `settings.json` changes nothing and never did — it is not migrated, and a
+workspace that never saved a cap from the Queues section keeps the cap of `1` it already
+ran at. See [Multi-queue concurrency](../operations/multi-queue-concurrency.md) for the
+operator guidance and
+[the parallelism ratification](../architecture/local-queue-parallelism-ratification.md)
+for why the memento is the one authority.
 
-- **Workspace state** — runs, queue, pause records. Stored in `workspaceState` (VS Code's per-workspace storage), not in `settings.json`. Reset with `schegent.reset`.
-- **Audit and runtime log files** — local artefacts under `.schegent/`. See [File Layout](file-layout.md).
+<!-- Source: package.json -->
+<!-- Source: src/config/settings-schema.ts -->
+<!-- Source: src/config/general-settings.ts -->
+<!-- Source: src/controller/retry-handler.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/contracts/sidebar-ipc/queue.ts -->
 
-The next reference page is [Commands](commands.md).
+## Audit, transcripts, and runtime logging
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.audit.rotation.sizeMB` | number, minimum `1` | `5` | resource | Audit-log rotation threshold in MiB. |
+| `schegent.audit.rotation.maxAgeDays` | number, minimum `1` | `30` | resource | Maximum age of rotated audit logs. |
+| `schegent.logging.verbose` | boolean | `false` | resource | For Claude, additionally writes unredacted debug, stream, and verbose artifacts. Codex and Agy currently ignore this setting. Changes apply to the next invocation. |
+| `schegent.logging.rawTranscriptMode` | `always`, `errors-only`, or `off` | `errors-only` | resource | Raw-transcript policy frozen when a Run begins. Structured audit remains enabled in every mode. |
+| `schegent.logging.transportCaptureMode` | `inherit`, `off`, `errors-only`, or `on` | `inherit` | resource | Whether the CLI's own stream lines (transport) are kept, per Run. `inherit` follows `rawTranscriptMode`; `off` keeps nothing; `errors-only` keeps a Run's transport only if it fails or is canceled; `on` keeps all of it. Read per line, so a change applies to a Run in progress. Restricted in untrusted workspaces. Bounds and what leaves when are in the [retention disclosure](../operations/evidence-retention-disclosure.md). |
+| `schegent.logging.sessionRetentionMaxAgeDays` | integer, `1`–`3650` | `30` | resource | Age limit for complete, inactive, unredacted session artifacts, for the redacted, bounded failure records in `.schegent/failure-records/`, and for the CLI transport (see `schegent.logging.transportCaptureMode`). Complete inactive-run artifacts and failure records older than this are removed on activation, after terminal runs, when this setting changes, and once an hour in an idle trusted window that owns the workspace; transport records older than this are removed as lines are appended and in that hourly pass, and a legacy shared transport file whose newest record is older than this is removed whole in the hourly pass. The audit log is never pruned by it. |
+| `schegent.logging.sessionRetentionMaxBytes` | integer, `1048576`–`10737418240` | `536870912` | resource | Total byte budget for complete, inactive, unredacted session artifacts. |
+| `schegent.logging.runtimeLogLevel` | `DEBUG`, `INFO`, `WARN`, or `ERROR` | `INFO` | resource | Minimum severity appended to the runtime log; read on each emit. |
+| `schegent.logging.runtimeLogFilePath` | string | empty string | resource | Empty resolves to `.schegent/syslog`. Workspace-relative paths are accepted. Absolute paths are accepted only inside the canonical workspace, extension `globalStorage`, or OS temp roots; the home directory is deliberately excluded. Relative traversal is rejected. On POSIX the log and its generations are `0600`, and every existing directory between the allowed root and the file, one you chose included, is narrowed to owner-only; the root itself is never changed. |
+| `schegent.logging.runtimeLogMaxBytes` | integer, `65536`–`1073741824` | `5242880` | resource | Active runtime-log size before rotation. |
+| `schegent.logging.runtimeLogMaxGenerations` | integer, `0`–`20` | `3` | resource | Number of numbered runtime-log generations retained. |
+| `schegent.fatalSignatures` | array of strings | `[]` | resource | Operator-additive stdout/stderr substrings that fail an invocation immediately; code-resident signatures cannot be removed here. |
+
+<!-- Source: package.json -->
+<!-- Source: src/audit/audit-log-writer.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+<!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
+<!-- Source: src/lib/runtime-log/runtime-log-path.ts -->
+<!-- Source: src/lib/runtime-log/runtime-log-sink.ts -->
+<!-- Source: src/activation/backend-wiring.ts -->
+<!-- Source: src/lib/fatal-signature-registry.ts -->
+
+Unredacted transcripts and verbose diagnostics can contain prompts, source code, and model output. The two session-retention settings prune only complete inactive-run artifacts; they do not prune the active Run or the structured audit log.
+
+<!-- Source: src/services/session-retention/session-artifact-retention-service.ts -->
+<!-- Source: src/audit/raw-transcript-writer.ts -->
+
+## UI, trust, and Claude-specific behavior
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.claude.autoCompactPctOverride` | integer `1`–`100`, or `null` | `null` | resource | When non-null, exports `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` for Claude. |
+| `schegent.multiRoot.suppressWarning` | boolean | `false` | window | Suppresses the activation warning that the first folder is Schegent's canonical workspace. |
+| `schegent.ui.confirmations.enable` | boolean | `true` | window | Globally enables the sidebar's destructive-action confirmations; which actions those are is declared by the `ActionKey` union in `webview-ui/src/lib/action-copy.ts`. A small always-confirm set is outside this setting's reach and still prompts when it is `false` — the set is `NEVER_SUPPRESSIBLE` in `webview-ui/src/lib/use-confirm.ts`, and each member's reason is recorded beside it. Reset Workspace is confirmed host-side by its Command Palette command, outside this setting's reach by that route too. |
+| `schegent.trust.allowCustomPhases` | boolean or `null` | `null` | window | Capability gate for saving custom Phase definitions; Workspace Trust is an upper bound. |
+| `schegent.trust.allowCustomRetryConditions` | boolean or `null` | `null` | window | Capability gate for non-default retry-condition expressions; Workspace Trust is an upper bound. |
+
+<!-- Source: package.json -->
+<!-- Source: src/lib/auto-compact-override.ts -->
+<!-- Source: src/state/multi-root-warning.ts -->
+<!-- Source: src/state/confirmations-config.ts -->
+<!-- Source: webview-ui/src/lib/action-copy.ts -->
+<!-- Source: src/state/capability-trust-resolver.ts -->
+
+`schegent.claude.autoCompactPctOverride` exports the variable; whether the CLI then compacts anything is the CLI's decision, and there are runs where it does not. The threshold governs a session Claude Code has accepted, so a session already too large to be admitted is refused before the threshold is consulted — on that run the override is exported and never fires. Schegent's own pre-phase compaction is the path that would otherwise bound such a session; when that invocation is refused, the phase starts cold with no prior context, and the audit log records a `warning` carrying `outcome: failure`. The reason code says which of two things happened: `session-too-large-to-compact-fresh-session` means the session was not admitted, refused in seconds with the compaction bound untouched, and no amount of time would have helped; `session-compaction-failed-fresh-session` means the compaction ran and did not finish, which is the case a bound is about. Both leave the phase cold, and starting cold is also what ends the condition — the fresh session the phase opens becomes the next boundary's compaction target, so the refusal is not expected to repeat at every later boundary of the same run. Tuning this value changes when an accepted session is compacted. It is not a bound on how large a session may grow, and a run that ends `clean` may still have begun with the override transported and inert.
+
+Internal session compaction sets the same variable to `1` on its own invocation and does not read this setting; that invocation exists only where the host has already decided to compact, so an operator threshold would defeat it rather than tune it.
+
+<!-- Source: src/controller/phase-runner.ts -->
+<!-- Source: src/controller/session-compactor.ts -->
+
+## Evidence privacy profiles
+
+`FR-R3-127`. The evidence store's posture is four settings — `schegent.logging.verbose`,
+`schegent.logging.rawTranscriptMode`, `schegent.logging.sessionRetentionMaxAgeDays` and
+`schegent.logging.sessionRetentionMaxBytes`. Deriving a safe combination from them one at a time is
+the problem the repository audit of 2026-08-27 named, so they are also published as **three named
+profiles** in `src/contracts/privacy-profiles.ts`. The Settings page shows which profile the values
+on the page are, or `custom` with the fields that differ; one press sets a profile's settings, and
+Save writes them together.
+
+| Profile | verbose | rawTranscriptMode | retention age | retention bytes | Who it is for |
+|---|---|---|---|---|---|
+| `ephemeral` | `false` | `off` | 1 day | 1 MiB | A shared account, a managed endpoint, or a home directory that is backed up or synchronized off the machine. Keeps the least unredacted evidence this product can keep. |
+| `diagnostic` | *the shipped default* | *the shipped default* | *the shipped default* | *the shipped default* | A single informed local operator debugging their own Runs on a machine they control. **These are the defaults**, named so that keeping them is a decision rather than an absence of one. |
+| `forensic` | `true` | `always` | 365 days | 4 GiB | An incident you expect to investigate later, on a machine whose disk you are willing to treat as holding the material. |
+
+**`diagnostic`'s values are not written here on purpose.** They are read from the shipped defaults, so
+a moved default moves the profile rather than leaving a second copy behind — the drift this project has
+closed repeatedly. Look them up in the two retention rows above and in
+[the retention disclosure](../operations/evidence-retention-disclosure.md), which derives every bound
+from the constant that enforces it.
+
+### What a profile does not change
+
+Every profile carries these residuals, and they are stated on the profile rather than once here,
+because an operator reads the profile they are choosing:
+
+- **Recovery checkpoints keep unredacted binary Git diffs for 14 days and 256 MiB.** That bound is a
+  constant, not a setting, and **no profile changes it** — `FR-R3-012` decided that deliberately,
+  because a wrong value is silent data loss in a directory an operator never opens. To reduce it, run
+  `Schegent: Delete Run Evidence`.
+- **The structured audit log is retained, and is redacted.** A profile decides how much *unredacted*
+  evidence is kept; it does not turn evidence off.
+- **`.gitignore` keeps evidence out of commits and does nothing about backup, sync, or
+  endpoint-management tooling** copying it off the machine. That is the reason to pick `ephemeral` at
+  all.
+- **A profile is not a permission boundary.** An uncontained backend runs under your local authority
+  and can read the evidence store whatever profile is selected (`FR-R3-125`).
+- **Backend CLIs write their own session stores under your home directory (`<home>/.claude/`, `<home>/.codex/`, `<home>/.gemini/antigravity/`).** Schegent does not pass `--no-session-persistence` or `exec --ephemeral` because session continuation, retry, compaction and manual resume require persisted backend session IDs (and `agy --help` exposes no no-persistence flag). Schegent's privacy profiles, retention sweeps, `Export Run Evidence` and `Delete Run Evidence` manage `.schegent/` and Schegent's checkpoints only — they never delete, redact or age vendor-owned home-directory files.
+
+`ephemeral` also gives up the thing `diagnostic` exists for: with raw capture `off` and transport capture `off`, a failed Run leaves no transcript or Schegent transport log to diagnose from (though the backend CLI may still retain its own session history under `<home>/`). Under `diagnostic` (`errors-only`), a failed, canceled or paused Run retains an unredacted raw transcript (and a failed or canceled Run retains its redacted transport log, while a paused Run's transport stays in the temp stage), and resuming that same Run to `completed` removes both its promoted raw transcript and its promoted `errors-only` transport log.
+
+Nothing here is encrypted at rest, and that is a recorded decision rather than an omission — see
+[the evidence-encryption declination](../architecture/evidence-encryption-declination.md).
+
+## The trust-capability ladder
+
+`schegent.trust.allowCustomPhases` and `schegent.trust.allowCustomRetryConditions` are three-state:
+`true`, `false`, or `null` (the declared default, meaning *follow Workspace Trust*). They resolve
+against `vscode.workspace.isTrusted` through a four-step ladder, and the rule is **any deny wins** —
+an explicit `false` at either scope decides before any `true` is consulted (`FR-R3-108`).
+
+<!-- executable-example: trust-deny-precedence -->
+
+```
+| isTrusted | workspace | user      | allowed |
+|-----------|-----------|-----------|---------|
+| false     | true      | true      | no      |
+| true      | (unset)   | (unset)   | yes     |
+| true      | false     | true      | no      |
+| true      | true      | false     | no      |
+| true      | true      | (unset)   | yes     |
+| true      | (unset)   | true      | yes     |
+| true      | false     | (unset)   | no      |
+| true      | (unset)   | false     | no      |
+| true      | null      | null      | yes     |
+```
+
+These rows are read by `tests/lint/documented-defaults-are-executable.test.ts` and fed through
+`resolveCapabilityDecision` in `src/state/capability-trust-decision.ts`. Rows 3 and 4 are the ones
+`FR-R3-108` changed: before it, the ladder consulted the workspace scope first, so a repository's
+checked-in `true` defeated an operator's explicit `false`. Row 1 is the ceiling — an untrusted
+workspace denies regardless of overrides.
+
+## The capability posture setting
+
+`schegent.backend.uncontainedBackends` — array of backend ids, default **`[]`**, `application` scope.
+
+The backends you allow to run with **no OS-enforced bound** on what they can reach, **named one at a
+time**. `claude` and `agy` are spawned with `--dangerously-skip-permissions`; `codex` carries a
+`workspace-write` sandbox and needs no entry on a platform, architecture and version where that
+sandbox is qualified. On any other tuple it is refused like the others until it is named here, and
+naming it accepts the unqualified sandbox (FR-R6-F09).
+
+Because `schegent.backend.runner` defaults to `claude`, **a fresh install refuses its first run**
+until `claude` is named here or a sandboxed backend is selected (FR-R3-056). Naming a backend is an
+explicit acceptance of that authority **for that backend only** — allowing `agy` does not allow
+`claude` (FR-R3-125).
+
+There are two ways to name one, and they are the same grant reached from different moments:
+
+- **Before the refusal** — the Settings tab shows each backend's posture on its card and, for a
+  backend that has no OS-enforced bound and no grant, an **Allow running unsandboxed…** item in the
+  card's actions menu. The confirmation quotes the refusal the enforcement itself would produce
+  (FR-R3-144).
+- **At the refusal** — the run stops and a modal asks about the backend it just refused, granting
+  that backend on acceptance (FR-R3-146).
+
+Both write this setting through the same writer, so a grant made in one place is the grant the other
+one reads. Revoking is available from the same menu at any time (**Revoke permission to run
+unsandboxed**); it takes effect for the next invocation, not for a run already in flight.
+
+Entries are validated rather than filtered, and neither case throws: an id that is not a backend
+names the ids that are. Anything that is not a list of strings grants nothing.
+
+`application`-scoped on purpose: a workspace must not be able to grant itself the right to run an
+unbounded agent, and the grant therefore applies to **every workspace you open in this
+installation**, not only the one you granted it from.
+
+It is also deliberately **not** one of the keys the general-settings write surface accepts. That
+surface is a batched draft-save: several keys go in one transaction, and a value rejected on an
+unrelated key takes the whole batch with it. A security grant does not belong in a transaction with
+`schegent.logging.verbose`. The Settings control described above therefore writes through its own
+confirmed command, which re-reads the current list at write time and changes one backend's entry —
+so a Settings tab left open for an hour cannot post a stale list that silently revokes a grant
+another window made in the meantime.
+
+**Replaces the removed boolean schegent.backend.allowUncontainedBackends, and the migration fails
+closed on purpose.** That old key is written here without backticks deliberately: a backticked
+setting key on a reference page is a control an operator can reach, and
+`reference-doc-claims.test.ts` refuses one that the manifest does not declare — which is correct, and
+this key is genuinely gone. It is read by nothing, so a stale `true` grants nothing:
+name the backends you actually want. Reading both keys was considered and rejected — two keys
+answering one safety question is the duplicate-authority defect this project has removed repeatedly,
+and the fallback branch that mishandles the old boolean is the one that fails *open*.
+
+See [Agent capability posture](../architecture/agent-capability-posture.md),
+[Backend containment qualification](../architecture/backend-containment-qualification.md) for what
+containment is actually available per backend and platform, and
+[Running Schegent on a repository you do not trust](../operations/untrusted-repositories.md) for when
+naming a backend here is and is not acceptable.
+
+## ACP agent profile
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.acp.profile` | `auto`, `agy-acp-native`, `claude-acp-bridge`, or `codex-acp-bridge` | `auto` | application | Selects the ACP agent profile. `auto` maps the selected backend (`claude`, `codex`, `agy`) to `claude-acp-bridge`, `codex-acp-bridge` or `agy-acp-native`. Naming a profile that does not match the Run's backend refuses with `acp-profile-mismatch`. The setting does not turn ACP dispatch on or off; dispatch is always on. Application scope keeps repository files from installing or replacing a profile. |
+
+<!-- Source: package.json -->
+<!-- Source: src/activation/acp-execution-wiring.ts -->
+<!-- Source: src/runner/backend-runner-factory.ts -->
+
+[The ACP runtime guide](../operations/acp-runtime.md) has the profiles and refusals.
+
+## Isolated execution lanes
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.lanes.enabled` | boolean | `false` | resource | Opt-in per-Run isolated Git worktree execution. When `true`, each admitted Run gets its own working tree outside the workspace and is refused with a named reason, not run in the shared checkout, when the repository or capacity prevents it. A worktree is a working-tree boundary, not a permission boundary: hooks, configuration, credentials and the object store stay shared. |
+| `schegent.lanes.liveCap` | integer, `1`-`20` | `1` | resource | Most live (`preparing`, `active` or `paused`) lanes allowed at once. |
+| `schegent.lanes.provisioningDeadlineSeconds` | integer, `1`-`600` | `120` | resource | Wall-clock deadline in seconds for provisioning one lane. |
+
+<!-- Source: package.json -->
+<!-- Source: src/config/settings-schema.ts -->
+
+## Optional telemetry export
+
+Export is off unless `schegent.telemetry.export.enabled` is `true` and the destination is valid. All of these keys are application-scoped, so workspace and folder settings are never read for them. [The export guide](../operations/telemetry-export.md) has the refusal reasons and what is sent.
+
+| Setting | Type and accepted values | Default | Scope | Purpose |
+|---|---|---|---|---|
+| `schegent.telemetry.export.enabled` | boolean | `false` | application | Opt-in for exporting metadata-only usage observations as OTLP metrics over HTTP. Opens no listener and reads no environment variable. |
+| `schegent.telemetry.export.endpoint` | string | empty | application | Destination URL, for example `https://collector.example.com/v1/metrics`. Empty means unset. The URL is used as written; no path is appended. |
+| `schegent.telemetry.export.protocol` | `otlp-http-json`, `otlp-http-protobuf`, or `otlp-grpc` | `otlp-http-json` | application | Declared protocol. Only `otlp-http-json` is supported; the other two refuse export and open no fallback channel. |
+| `schegent.telemetry.export.allowPlaintextLoopback` | boolean | `false` | application | Allows plaintext `http://` only to a loopback destination (`localhost`, `127.0.0.0/8`, `[::1]`) whose resolved addresses are also loopback at connect time. |
+| `schegent.telemetry.export.credentialSecretKey` | string | empty | application | Identifier of a VS Code `SecretStorage` entry sent as the credential header (managed interactively via `schegent.setTelemetryCredential` and `schegent.clearTelemetryCredential`, which rotate or clear the live exporter cache without reloading). Never put a token in a setting. Empty means unauthenticated export. |
+| `schegent.telemetry.export.credentialHeaderName` | string | `Authorization` | application | Header that carries the credential when `credentialSecretKey` is set. It must be a valid header token and cannot be a header the transport owns. |
+| `schegent.telemetry.export.contentPolicy` | `metadata-only` or `content` | `metadata-only` | application | Content selector. `metadata-only` sends no prompts, responses, tool arguments, transcripts, credentials or paths. `content` is refused with `content-export-unsupported`. Enabling export never changes local transcript retention. |
+
+<!-- Source: package.json -->
+<!-- Source: src/contracts/telemetry-export.ts -->
+<!-- Source: src/services/telemetry-host/telemetry-host-service.ts -->
+
+## Run request budgets (not configurable)
+
+FR-R3-057. A run request is bounded at validation, **before** it is persisted, frozen, built into a
+prompt, or written to stdin. These are fixed constants in
+`src/contracts/validators/run-request-budgets.ts`, not settings: they exist so that one local input
+cannot amplify into memory, persisted state, stdin volume, tokens and provider cost, and an operator
+who could raise them could re-create exactly that.
+
+Every budget counts **UTF-8 bytes**, not characters. A character budget under-counts by up to 4x on
+non-ASCII input, which is the wrong direction for a resource bound.
+
+| budget | limit | error code |
+|---|---|---|
+| one contract input's value | 1 MiB | `input-value-too-large` |
+| one supplemental text or instruction item | 1 MiB | `supplemental-value-too-large` |
+| one supplemental path | 4096 B (`PATH_MAX`) | `supplemental-value-too-large` |
+| one supplemental URL | 2048 B | `supplemental-value-too-large` |
+| one output target | 4096 B | `output-target-too-long` |
+| number of inputs | 64 | `inputs-count-exceeded` |
+| number of supplemental items | 256 | `supplemental-count-exceeded` |
+| number of outputs | 64 | `outputs-count-exceeded` |
+| **the whole request, summed** | **4 MiB** | `request-bytes-exceeded` |
+
+The aggregate is the one that matters most, because per-field budgets do not compose: 256
+supplemental items of 1 MiB each is 256 MiB with every individual field inside its limit.
+
+A violation is reported as a typed `RunRequestFieldError` carrying `limit` and `actual`, alongside
+every other failing field — an operator who pasted three oversized inputs learns all three at once.
+A rejected request mutates nothing. The same budgets also refuse the payload at the transport
+predicate, so a request this large does not reach the code that would report on it.
+
+**Measured ceiling.** A request at exactly the 4 MiB aggregate produces 4,195,498 bytes of prompt
+(1.0003x) — the prompt is the request text plus bounded framing. That number is the input to the
+per-host memory arithmetic in FR-R3-052.
+
+`schegent.*` settings have their own separate limits, listed above. The one overlap is
+`instructions`, which additionally carries the pre-existing character-based
+`instructions-too-long` limit shared with queue item descriptions; the aggregate above counts its
+bytes regardless.
+
+## Where writes go
+
+The General Settings webview (`CMD_SAVE_GENERAL_SETTINGS`) does not accept arbitrary keys. Its host allowlist covers the 33 scalar settings declared in `KEY_SPECS` (`src/config/general-settings-keys.ts` — including `cli.path`, `codex.path`, `agy.path`, `cli.inheritEnvironment`, `cli.environmentMode`, `cli.environmentAllowlist`, `backend.runner`, `backend.probeTimeoutSeconds`, spend bounds, retry/loop/invocation limits, logging/retention settings, and queue failure policy; see [API and command reference](api-and-cli.md#webview-command-boundary)). The host validates the entire update batch before writing, persists each key at the target its manifest scope requires (`Global` for `application`-scoped keys and `Workspace` for `resource`- and `window`-scoped keys), and rolls back earlier writes at their written layer if a later write fails. Model entries (`CMD_SAVE_MODELS`), uncontained-backend posture grants (`CMD_SET_UNCONTAINED_BACKEND_GRANT`), uncontained native review scanner grants (`schegent.backend.uncontainedScanners`, managed via `schegent.grantNativeReviewScanner` / `schegent.revokeNativeReviewScanner`), queue concurrency cap (`CMD_SAVE_QUEUE_SETTINGS`), trust gates (`schegent.trust.allowCustomPhases`, `schegent.trust.allowCustomRetryConditions`), ACP profile (`schegent.acp.profile`), execution lanes (`schegent.lanes.enabled`, `schegent.lanes.liveCap`, `schegent.lanes.provisioningDeadlineSeconds`), telemetry export (`schegent.telemetry.export.enabled` and sibling export keys), and deprecated read-only aliases use their own owning surfaces or VS Code Settings instead of that general-settings payload.
+
+<!-- Source: src/config/general-settings.ts -->
+<!-- Source: src/config/general-settings-keys.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-save-general-settings.ts -->
+
+Values may also be edited through VS Code's normal Settings UI or workspace JSON according to their declared scope. The supported environment-variable surface is documented separately in [System configuration](system-config.md); Schegent does not read a repository `.env` file.
+
+<!-- Source: package.json -->
+<!-- Source: src/config/settings-schema.ts -->

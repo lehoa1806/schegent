@@ -65,6 +65,7 @@ function item(overrides: Partial<QueueItemSnapshot> = {}): QueueItemSnapshot {
     queueId: 'default',
     position: 0,
     pauseCause: null,
+    phaseProgress: null,
     ...overrides
   };
 }
@@ -240,7 +241,7 @@ describe('QueueItem task actions', () => {
     await rerender({ item: item({ pauseCause: 'phase-paused' }) });
     badge = getByTestId('queue-item-pause-cause-task-1');
     expect(badge.textContent).toContain('Paused (operator)');
-    expect(badge.getAttribute('title')).toContain('Operator paused the active phase');
+    expect(badge.getAttribute('title')).toContain('Operator paused the active Phase');
 
     await rerender({ item: item({ pauseCause: 'breakpoint' }) });
     badge = getByTestId('queue-item-pause-cause-task-1');

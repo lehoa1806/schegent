@@ -42,8 +42,8 @@ import type {
   RestoreRequest,
   SaveDraftRequest
 } from '../../../contracts/catalog-lifecycle';
-import { CATALOG_KINDS } from '../../../contracts/catalog-store';
 import type { CatalogKind, StoredDefinition } from '../../../contracts/catalog-store';
+import { isNativeReviewKind } from '../../../contracts/process-definitions';
 import type { CatalogLifecycleOps } from '../../../catalog';
 import type { TrustCapability } from '../../../contracts/sidebar-ipc';
 import { isCapabilityAllowed } from '../../../state/capability-trust-resolver';
@@ -92,7 +92,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * the real predicate can be shown to accept them.
  */
 export function declaresRetryCondition(body: unknown): boolean {
-  return isRecord(body) && 'retryCondition' in body;
+  return isRecord(body) && ('retryCondition' in body || isNativeReviewKind(body['nativeReview']));
 }
 
 /** The single capability that gates authoring a Phase, or none for the other kinds. */
@@ -325,10 +325,22 @@ export const publishDefinitionPackage = async (
  * An empty layer is not a write and gets no record, matching the store, which drops
  * it before the first pass. Only the ids travel; the bodies stop here (FR-060).
  */
+const EXCHANGE_KIND_RANK: Readonly<Record<CatalogKind, number>> = {
+  phase: 0,
+  pipeline: 1,
+  workflow: 2
+};
+
 function exchangeTargets(request: PackagePublishRequest): readonly ImportCommitTarget[] {
+  type ExchangeLayer = PackagePublishRequest['layers'][number] & {
+    readonly kind: 'phase' | 'workflow';
+  };
   return request.layers
-    .filter((layer) => layer.definitions.length > 0)
-    .sort((left, right) => CATALOG_KINDS.indexOf(left.kind) - CATALOG_KINDS.indexOf(right.kind))
+    .filter(
+      (layer): layer is ExchangeLayer =>
+        layer.definitions.length > 0 && (layer.kind === 'phase' || layer.kind === 'workflow')
+    )
+    .sort((left, right) => EXCHANGE_KIND_RANK[left.kind] - EXCHANGE_KIND_RANK[right.kind])
     .map((layer) => ({
       resourceKind: layer.kind,
       resourceIds: layer.definitions.map((definition) => definition.id)

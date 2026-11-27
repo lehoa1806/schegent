@@ -8,6 +8,9 @@ import {
   CMD_REMOVE_TASK_PHASE
 } from './messages';
 import { postCommand } from './vscode-api';
+import { correlatedLifecycle } from './lifecycle-control-ipc';
+import type { LifecycleControlResult } from './lifecycle-control-ipc';
+import type { IntentWaitOptions } from './intent-ledger';
 
 // Feature 093 (FR-018 / T080) — every lifecycle control names the queue whose
 // Run it addresses. The host refuses an unaddressed control at the IPC
@@ -15,37 +18,109 @@ import { postCommand } from './vscode-api';
 // one: a component that cannot say which Run it is acting on has no business
 // posting the command at all.
 
-export function pausePhase(queueId: string): void {
-  postCommand(CMD_PAUSE_PHASE, { queueId });
+// FR-R3-154 (T1646) — Pause, Resume and Restart return what the host answered.
+// They used to return `void`, which was not a simplification but a discard: the
+// `correlationId` `postCommand` hands back was dropped on the next line, so the
+// ACK reached `snapshotStore.applyAck`, cleared the pending flag, and was
+// thrown away. `run-already-paused`, `run-not-paused` and `run-terminal` are
+// refusals the host has always been able to answer, and no caller could see any
+// of them. Skip joined them under FR-R4-F20: its refusal, `run-failed` above
+// all, was discarded the same way.
+//
+// The three below stay in this module — their `postCommand`s are not gated by
+// a `useConfirm`, so the `destructive-actions.lint.test.ts` constraint that
+// keeps retry-now in its component (see the note further down) does not apply.
+
+export function pausePhase(
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_PAUSE_PHASE, { queueId }, (correlationId, payload) => {
+    postCommand(CMD_PAUSE_PHASE, payload, { correlationId });
+  }, wait);
 }
 
-export function resumePhase(queueId: string, prompt?: string): void {
-  postCommand(CMD_RESUME_PHASE, prompt === undefined ? { queueId } : { queueId, prompt });
+export function resumePhase(
+  queueId: string,
+  prompt?: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(
+    CMD_RESUME_PHASE,
+    { queueId, ...(prompt === undefined ? {} : { prompt }) },
+    (correlationId, payload) => {
+      postCommand(CMD_RESUME_PHASE, payload, { correlationId });
+    },
+    wait
+  );
 }
 
-export function restartPhase(phaseId: string, queueId: string): void {
-  postCommand(CMD_RESTART_PHASE, { queueId, phaseId });
+export function restartPhase(
+  phaseId: string,
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_RESTART_PHASE, { queueId, phaseId }, (correlationId, payload) => {
+    postCommand(CMD_RESTART_PHASE, payload, { correlationId });
+  }, wait);
 }
 
-export function skipPhase(phaseId: string, queueId: string): void {
-  postCommand(CMD_SKIP_PHASE, { queueId, phaseId });
+// FR-R4-F20 — `runId` is the Run the operator confirmed, captured by the caller before its
+// confirmation's `await`. The host refuses a Skip that names a Run the queue no longer holds.
+export function skipPhase(
+  runId: string,
+  phaseId: string,
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(
+    CMD_SKIP_PHASE,
+    { queueId, runId, phaseId },
+    (correlationId, payload) => {
+      postCommand(CMD_SKIP_PHASE, payload, { correlationId });
+    },
+    wait
+  );
 }
 
-export function disablePhase(phaseId: string, queueId: string): void {
-  postCommand(CMD_DISABLE_PHASE, { queueId, phaseId });
+// FR-R5-F19 (US3, FR-012) — Disable and Enable return what the host answered, as the five above do.
+// They were the two that discarded it: a refusal (a Run that moved past the phase, an untrusted
+// workspace, a secondary window) cleared the pending flag and left a control that looked as if it
+// had worked. Neither is gated by a `useConfirm`, so neither is bound to its component by the
+// destructive-actions lint, and both belong here with Pause.
+export function disablePhase(
+  phaseId: string,
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_DISABLE_PHASE, { queueId, phaseId }, (correlationId, payload) => {
+    postCommand(CMD_DISABLE_PHASE, payload, { correlationId });
+  }, wait);
 }
 
-export function enablePhase(phaseId: string, queueId: string): void {
-  postCommand(CMD_ENABLE_PHASE, { queueId, phaseId });
+export function enablePhase(
+  phaseId: string,
+  queueId: string,
+  wait?: IntentWaitOptions<LifecycleControlResult>
+): Promise<LifecycleControlResult> {
+  return correlatedLifecycle(CMD_ENABLE_PHASE, { queueId, phaseId }, (correlationId, payload) => {
+    postCommand(CMD_ENABLE_PHASE, payload, { correlationId });
+  }, wait);
 }
 
-// Retry-now is deliberately absent from this module. It is one of the twelve
+// Retry-now is deliberately absent from this module. It is one of the fifteen
 // destructive commands, so `tests/lint/destructive-actions.lint.test.ts`
 // requires its `postCommand` to sit in the same scope as the `useConfirm` that
 // gates it — and that confirm needs component-level context (the originating
 // element and the active phase's display label) which does not belong in a lib
-// module. It dispatches from `PhaseTracker.svelte`, where the queue arrives as
-// a required prop, so the payload cannot lose its address.
+// module. That reason has never changed, and is why the dispatcher lives in a
+// component while its six siblings above live here.
+//
+// The component is `PhaseControlMenu.svelte`. It used to be `PhaseTracker.svelte`,
+// which FR-R3-140 deleted as unreachable from either bundle entry point, leaving
+// the capability built and routable and reachable by nobody — the state the
+// lifecycle round-check of 2026-08-30 recorded as finding C. The replacement is
+// reachable: `RunDetailTier` renders `PhaseProgression`, which renders the menu.
 
 // Phase removal addresses a queued Task by id, not an in-flight Run, so it
 // stays queue-free: the host resolves the owning queue from the Task row.

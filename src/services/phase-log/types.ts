@@ -6,6 +6,12 @@
 // crosses host → webview. The bytes of the source `stream.jsonl` on
 // disk are NEVER altered (010 T10 hard rule).
 
+import type { LiveLogCoverageReason } from '../../contracts/phase-log-bounds';
+import type {
+  StartPhaseLogTailResponse,
+  StopPhaseLogTailResponse
+} from '../../contracts/sidebar-ipc/phase-log';
+
 export type PhaseLogDisplayEntryKind =
   | 'assistant-text'
   | 'tool-use'
@@ -13,7 +19,10 @@ export type PhaseLogDisplayEntryKind =
   | 'system'
   | 'result'
   | 'truncated-head'
-  | 'tail-ended';
+  | 'tail-ended'
+  // FR-R6-F07 (FR-012) — a row that says why output is absent or incomplete.
+  // Its body holds a reason from the closed list and integers, never text.
+  | 'coverage-gap';
 
 // Feature 029 — structured tool-call arguments preserved from the
 // original `tool_use.input` object. String leaves are sanitized by the
@@ -43,10 +52,15 @@ export interface PhaseLogDisplayEntry {
     readonly systemSummary?: string;
     readonly resultSummary?: string;
     readonly droppedEntryCount?: number;
-    readonly reason?: 'webview-stop' | 'webview-dispose' | 'phase-complete';
+    readonly reason?: 'webview-stop' | 'webview-dispose' | 'phase-complete' | LiveLogCoverageReason;
+    /** `coverage-gap` only: how many records or events the gap stands for. */
+    readonly count?: number;
+    /** `coverage-gap` only: how many source bytes the gap stands for. */
+    readonly bytes?: number;
   };
   readonly bodyTruncated: {
     readonly text?: { readonly originalLength: number };
+    readonly toolName?: { readonly originalLength: number };
     readonly toolInput?: { readonly originalLength: number };
     readonly toolArguments?: { readonly originalLength: number };
     readonly toolResult?: { readonly originalLength: number };
@@ -55,13 +69,65 @@ export interface PhaseLogDisplayEntry {
   } | null;
 }
 
+/**
+ * Feature 203 (FR-001, FR-002, FR-021, D1) — the kinds of nothing a phase log
+ * read can arrive at, and the one kind that is not nothing.
+ *
+ * WHY AN ARRAY AND NOT A UNION. `FR-024` requires that a member added without a
+ * card fails a test **naming the member**. A union cannot be enumerated at
+ * runtime, so a parity test written against one must restate the members by
+ * hand — a fifth copy, and the one that decides whether the other four are
+ * checked. With the array as the authority a new member enters every parity
+ * population the moment it is declared. This is `AGENTS.md` rule 67 applied to
+ * a vocabulary: a population written by hand beside the thing it checks is a
+ * population that can silently stop covering it.
+ *
+ * EACH MEMBER IS A DISTINCT OUTCOME THE READER ACTUALLY REACHES (`FR-002`), and
+ * each implies a different operator response — two members implying the same
+ * response would be a defect in the enumeration rather than a detail. That test
+ * is why there are eight and not nine: `record-not-readable` was struck at `Q9`
+ * because it has no production site. Every refusal reaches the operator through
+ * the existing `permission-denied` failure, which returns before a manifest is
+ * built, so no card could ever render for it.
+ */
+export const PHASE_LOG_EMPTY_KINDS = [
+  'entries-present',
+  'phase-running-no-output',
+  'phase-not-recorded',
+  'diagnostics-disabled',
+  'no-iteration-recorded',
+  'record-path-refused',
+  'record-vanished',
+  'nothing-displayable'
+] as const;
+
+export type PhaseLogEmptyKind = (typeof PHASE_LOG_EMPTY_KINDS)[number];
+
+/**
+ * The carrier that takes the member across the boundary (D1, V1).
+ *
+ * `settingKey` stays a **literal** on the one member that needs it, rather than
+ * becoming an optional field on every member: the discriminated shape is what
+ * makes reading `settingKey` off any other member a compile error.
+ */
 export type VerboseDiagnosticsBanner =
-  | { readonly kind: 'enabled-with-sessions' }
-  | { readonly kind: 'enabled-no-sessions-for-tuple' }
+  | { readonly kind: Exclude<PhaseLogEmptyKind, 'diagnostics-disabled'> }
   | {
-      readonly kind: 'disabled-no-sessions';
+      readonly kind: 'diagnostics-disabled';
       readonly settingKey: 'schegent.logging.verbose';
     };
+
+/**
+ * Feature 203 (D7, FR-016, FR-017) — progress at PHASE granularity.
+ *
+ * `IterationManifest.isInFlight` is task-level and stays exactly as it is: it
+ * answers "is this task the running one", which is true and useful and is not
+ * the question a card claiming "this phase is still producing output" needs
+ * answered. `unknown` exists so that "we cannot tell" is representable rather
+ * than being silently rendered as "not running" — it is treated as making no
+ * progress claim, which is not the same as claiming there is no progress.
+ */
+export type PhaseProgress = 'running' | 'not-running' | 'unknown';
 
 export interface PhaseLogSelection {
   readonly queueId: string;
@@ -77,6 +143,22 @@ export interface IterationManifest {
   readonly entries: readonly PhaseLogDisplayEntry[];
   readonly skippedLines: number;
   readonly truncatedCount: number;
+  /**
+   * FR-R3-052 (H-03) — bytes at the START of the stream that were not read,
+   * because the file exceeded the read bound and the tail is the useful end.
+   *
+   * Optional and additive, so a projection built before this field deserializes
+   * unchanged. Present and nonzero is the "no silent caps" report: without it a
+   * reader would show the last 8 MiB of a 4 GiB log as though it were the whole
+   * log, and nothing in the UI could tell the operator otherwise.
+   */
+  readonly skippedLeadingBytes?: number;
+  /**
+   * FR-R6-F07 (FR-001) — the live-log cursor at the end of the last complete,
+   * projector-idle record of this read; `null` when there is no stream file.
+   * Optional so a manifest built before the field still deserializes.
+   */
+  readonly cursor?: string | null;
   readonly verboseDiagnosticsState: VerboseDiagnosticsBanner;
   readonly isInFlight: boolean;
 }
@@ -91,23 +173,7 @@ export type PhaseLogReadResult =
         | 'internal-error';
     };
 
-export type PhaseLogTailStartResult =
-  | {
-      readonly outcome: 'success';
-      readonly sessionId: string;
-      readonly mechanism: 'fs.watch' | 'polling';
-    }
-  | {
-      readonly outcome: 'failure';
-      readonly reason:
-        | 'unknown-tuple'
-        | 'not-in-flight'
-        | 'permission-denied'
-        | 'internal-error';
-    };
+// FR-R6-F07 — the host results are the IPC responses, so the two cannot drift.
+export type PhaseLogTailStartResult = StartPhaseLogTailResponse;
 
-export interface PhaseLogTailStopResult {
-  readonly outcome: 'success' | 'failure';
-  readonly sessionId: string;
-  readonly reason?: 'unknown-session' | 'internal-error';
-}
+export type PhaseLogTailStopResult = StopPhaseLogTailResponse;

@@ -9,8 +9,12 @@
  *   FR-031  — host-owned and unknown top-level fields are rejected.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { AUTHORED_PHASE_FIELDS } from '../../../../../src/contracts/process-definitions.js';
 import RawJsonPhaseEditor from '../RawJsonPhaseEditor.svelte';
 
 afterEach(() => {
@@ -23,7 +27,7 @@ const PHASE_FIXTURE = {
   version: 1,
   instruction: 'Produce a phased implementation plan.',
   loopable: false,
-  model: 'claude-opus-4-7',
+  model: 'claude-opus-5-5',
   effort: 'high'
 };
 
@@ -201,6 +205,145 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
       .toBe(true);
   });
 
+  /**
+   * The reported defect: opening the JSON view on a Phase that declares
+   * `sideEffects` rendered `Invalid JSON: field \`sideEffects\` is not
+   * author-controlled` before a single keystroke, and Save stayed disabled —
+   * the editor refused the document it had just serialized.
+   *
+   * The cause was a forked closed set. `AUTHORED_PHASE_FIELDS` in
+   * `src/config/process-definition-validator.ts` is the host's authority on what
+   * an author may write, and this component carried a 13-name hand-kept copy of
+   * it that predated the containment fields. The host's own comment beside
+   * `sideEffects` names this exact failure — "the save path and the import path
+   * must hold a definition to the same closed set, or a Phase would be accepted
+   * by one route and refused by the other on the same field".
+   *
+   * Derived from the set rather than listed, so the next authored field is
+   * covered with no edit here.
+   */
+  describe('holds the document to the host closed set, not a fork of it', () => {
+    const DECLARED = {
+      sideEffects: 'git',
+      evidencePolicy: 'best-effort',
+      hostVerification: 'exit-code',
+      nativeReview: 'code',
+      capabilities: ['workspace-write'],
+      spendBoundUsd: 5,
+      spendBoundTokens: 100_000,
+      forceContinueOnRetryCap: true,
+      // FR-R3-157 (T049, FR-018, C4.9) — BOTH forms are driven through this matrix,
+      // the deprecated switch above and the outcome here, because "keeps accepting
+      // both" is a claim about two documents and neither one proves it alone. Every
+      // pipeline file on disk carries the switch and will keep loading forever; a
+      // raw editor that quietly refused one of the two would make this route the
+      // place a valid file becomes unsavable.
+      onRetryCap: 'continue-degraded',
+      description: 'A described phase.',
+      timeoutSeconds: 45,
+      retryCondition: 'attempts < 2',
+      isRequired: false,
+      runner: 'codex',
+      resultContract: {
+        version: 1,
+        fields: [{ name: 'verdict', type: 'enum', enumValues: ['pass', 'fail'] }]
+      }
+    } as const;
+
+    /**
+     * `skill` is exclusive-or with `instruction`, which `PHASE_FIXTURE` carries,
+     * so it cannot join the matrix above — a row with both is refused, correctly.
+     * "accepts exactly one bounded skill directive" above drives it on its own
+     * fixture. `phaseId` is the deliberate exclusion; see the test below.
+     */
+    const DRIVEN_ELSEWHERE = ['skill', 'phaseId'];
+
+    it.each(Object.entries(DECLARED))(
+      'accepts a declared %s and leaves Save enabled',
+      async (field, value) => {
+        const onSave = vi.fn();
+        const phase = { ...PHASE_FIXTURE, [field]: value };
+        const { container } = render(RawJsonPhaseEditor, {
+          props: { phase, onsave: onSave }
+        });
+        const save = container.querySelector(
+          '[data-testid="raw-json-save"]'
+        ) as HTMLButtonElement;
+        expect(
+          container.querySelector('[data-testid="raw-json-error"]')?.textContent ?? '',
+          `${field} is in AUTHORED_PHASE_FIELDS and must not be refused`
+        ).not.toContain('is not author-controlled');
+        expect(save.disabled).toBe(false);
+        await fireEvent.click(save);
+        expect(onSave).toHaveBeenCalledWith(phase);
+      }
+    );
+
+    it('covers every authored field the Builder row can carry', () => {
+      // Derived from the host set, so the next authored field lands here with no
+      // edit and fails until it is driven.
+      const covered = new Set([
+        ...Object.keys(PHASE_FIXTURE),
+        ...Object.keys(DECLARED),
+        ...DRIVEN_ELSEWHERE
+      ]);
+      const uncovered = [...AUTHORED_PHASE_FIELDS].filter((field) => !covered.has(field));
+      expect(
+        uncovered,
+        `authored fields this test does not drive: ${uncovered.join(', ')}`
+      ).toEqual([]);
+    });
+
+    it('refuses an unrecognized cap outcome the way it refuses an invalid switch (C4.9)', async () => {
+      // The half that is easy to leave out. Accepting the new form is visible the
+      // first time anyone uses it; refusing a MISSPELLED one is visible only when
+      // a phase silently falls back to `'fail'` at a cap months later, because an
+      // unrecognized outcome is indistinguishable from an absent one downstream.
+      const { container } = render(RawJsonPhaseEditor, { props: { phase: PHASE_FIXTURE } });
+      const textarea = container.querySelector(
+        '[data-testid="raw-json-input"]'
+      ) as HTMLTextAreaElement;
+      await fireEvent.input(textarea, {
+        target: {
+          value: JSON.stringify({ ...PHASE_FIXTURE, onRetryCap: 'continue-degraded-ish' }, null, 2)
+        }
+      });
+
+      expect(
+        (container.querySelector('[data-testid="raw-json-save"]') as HTMLButtonElement).disabled,
+        'a phase naming an outcome outside the three must not be savable'
+      ).toBe(true);
+      expect(
+        container.querySelector('[data-testid="raw-json-error"]')?.textContent ?? '',
+        'the message names the field, so the author can find it'
+      ).toContain('onRetryCap');
+    });
+
+    it('still refuses a value outside a declared closed enum', async () => {
+      const { container } = render(RawJsonPhaseEditor, {
+        props: { phase: PHASE_FIXTURE }
+      });
+      const textarea = container.querySelector(
+        '[data-testid="raw-json-input"]'
+      ) as HTMLTextAreaElement;
+      await fireEvent.input(textarea, {
+        target: {
+          value: JSON.stringify({ ...PHASE_FIXTURE, sideEffects: 'banana' }, null, 2)
+        }
+      });
+      expect((container.querySelector('[data-testid="raw-json-save"]') as HTMLButtonElement).disabled)
+        .toBe(true);
+    });
+
+    it('still refuses `phaseId`, which this row form does not carry', async () => {
+      const { container } = render(RawJsonPhaseEditor, {
+        props: { phase: { ...PHASE_FIXTURE, phaseId: 'speckit-plan' } }
+      });
+      expect((container.querySelector('[data-testid="raw-json-save"]') as HTMLButtonElement).disabled)
+        .toBe(true);
+    });
+  });
+
   it('emits the edited phase via onsave callback when Save is clicked', async () => {
     const onSave = vi.fn();
     const { container } = render(RawJsonPhaseEditor, {
@@ -219,5 +362,22 @@ describe('Feature 011 T054 — RawJsonPhaseEditor (SC-008, FR-028, FR-029, FR-03
     await fireEvent.click(save);
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave.mock.calls[0][0]).toEqual(edited);
+  });
+
+  it('uses shared .sg .btn semantic roles (primary Save, secondary Reset) with zero local .btn CSS overrides', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(join(here, '..', 'RawJsonPhaseEditor.svelte'), 'utf8');
+    const styleBlock = source.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    expect(styleBlock).not.toMatch(/(?:^|\n)\s*\.btn\b/);
+
+    const { container } = render(RawJsonPhaseEditor, {
+      props: { phase: PHASE_FIXTURE }
+    });
+    const save = container.querySelector('[data-testid="raw-json-save"]');
+    const reset = container.querySelector('[data-testid="raw-json-reset"]');
+    expect(save?.classList.contains('btn')).toBe(true);
+    expect(save?.classList.contains('btn-primary')).toBe(true);
+    expect(reset?.classList.contains('btn')).toBe(true);
+    expect(reset?.classList.contains('btn-secondary')).toBe(true);
   });
 });

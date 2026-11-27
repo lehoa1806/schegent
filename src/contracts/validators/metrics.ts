@@ -1,11 +1,5 @@
-import {
-  CMD_READ_METRICS,
-  isReadMetricsRunIdList,
-  type ReadMetricsRequest,
-  type ReadMetricsResponse,
-  type SidebarCommand
-} from '../sidebar-ipc';
-import { fail, hasUnexpectedKeys, ok, type IpcValidationResult } from './shared';
+import type { ReadMetricsResponse } from '../sidebar-ipc';
+import { isFailureCause } from '../failure-cause';
 
 // Covers the outer envelope the webview must trust before rendering. Deep
 // TaskRecord/PhaseRecord validation remains outside this boundary.
@@ -70,7 +64,11 @@ function isValidRunSummary(value: unknown): boolean {
   // Optional, and absent rather than zero when nothing reported. A `null` here
   // would be a third state the reader has no branch for.
   const costUsd = summary['costUsd'];
-  return costUsd === undefined || (typeof costUsd === 'number' && Number.isFinite(costUsd));
+  if (costUsd !== undefined && !(typeof costUsd === 'number' && Number.isFinite(costUsd))) return false;
+  // FR-R4-F14 (M6) — absent, or a member of the closed vocabulary. A present value that is not one is a
+  // record the webview cannot label, so it is refused as a non-finite `costUsd` is, never rendered raw.
+  const failureCause = summary['failureCause'];
+  return failureCause === undefined || isFailureCause(failureCause);
 }
 
 const CUMULATIVE_NUMBER_FIELDS = [
@@ -115,38 +113,4 @@ function isValidMetricsCoverage(value: unknown): boolean {
 
 function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
-}
-
-export function validateReadMetrics(
-  obj: Record<string, unknown>,
-  correlationId: string
-): IpcValidationResult {
-  const payload = obj['payload'];
-  if (payload === null || typeof payload !== 'object') {
-    return fail('missing-payload', { type: CMD_READ_METRICS, correlationId });
-  }
-  const value = payload as Record<string, unknown>;
-  if (hasUnexpectedKeys(value, ['includeArchives', 'runIds'])) {
-    return fail('unexpected-payload-fields', { type: CMD_READ_METRICS, correlationId });
-  }
-  const includeArchives = value['includeArchives'];
-  if (includeArchives !== undefined && typeof includeArchives !== 'boolean') {
-    return fail('invalid-payload-field', { type: CMD_READ_METRICS, correlationId });
-  }
-  // Feature 103 (T092, FR-023) — `runIds` arrives from the webview, so it is
-  // checked here and not merely where it is used. The bound matters as much as
-  // the shape: the host filters the rollup by this list, and an unbounded list
-  // is an unbounded scan the webview chose.
-  const runIds = value['runIds'];
-  if (runIds !== undefined && !isReadMetricsRunIdList(runIds)) {
-    return fail('invalid-payload-field', { type: CMD_READ_METRICS, correlationId });
-  }
-
-  // Rebuilt field by field rather than passed through, so an absent field stays
-  // absent instead of arriving as `undefined` on a key that exists.
-  const request: { -readonly [K in keyof ReadMetricsRequest]: ReadMetricsRequest[K] } = {};
-  if (includeArchives !== undefined) request.includeArchives = includeArchives;
-  if (runIds !== undefined) request.runIds = runIds;
-
-  return ok({ type: CMD_READ_METRICS, correlationId, payload: request } as SidebarCommand);
 }

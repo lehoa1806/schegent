@@ -1,14 +1,44 @@
-import * as fs from 'fs/promises';
+import * as path from 'path';
+import { narrowMode, noticeFor, type NarrowingNotice } from '../lib/narrow-mode';
+import { ensureDirWithinRoot, openWithinRoot } from '../lib/safe-open';
 import type { SanitizedLogger } from '../lib/logger';
 import type { VerboseDiagnosticTarget } from '../runner/invocation-result';
+import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
 export type { VerboseDiagnosticTarget };
 
 export interface VerboseDiagnosticResult {
   readonly warnings: ReadonlyArray<string>;
+  /**
+   * Feature 020 BUG-002 (FR-002a) — `true` once a chunk of the CLI's stdout was
+   * written to `stream.jsonl`. A prepared directory, an empty chunk, a
+   * verbose-only write and a refused or failed stream write capture nothing.
+   * `cli-invocation`'s `diagnosticsEnabled` records this, through the adapter.
+   */
+  readonly streamCaptured: boolean;
 }
 
 type Slot = 'directory' | 'stream' | 'verbose';
+
+/**
+ * FR-R3-050 (M-13) — owner-only, because this content is unredacted by design.
+ *
+ * The module header records that "the operator opted in to raw payloads." That
+ * opt-in is about what gets WRITTEN. It says nothing about who may READ it, and
+ * the threat model claims private modes -- while `mkdir` and `appendFile` were
+ * called with no `mode` at all. Measured before this change under a 022 umask:
+ * directories 0o755, files 0o644, i.e. every local account could read raw prompts
+ * and raw model output.
+ *
+ * `mode` is a POSIX concept. On a platform that does not enforce it these values
+ * are inert, which `narrowMode` reports as `unsupported` and this writer records
+ * as a warning, rather than letting the file be described as private.
+ */
+const DIAGNOSTIC_DIR_MODE = 0o700;
+const DIAGNOSTIC_FILE_MODE = 0o600;
+export const VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX = 256;
+
+const OCTAL_RADIX = 8;
 
 /**
  * Best-effort sibling sink for `--debug-to-file`, `--output-format
@@ -25,17 +55,72 @@ export class VerboseDiagnosticWriter {
   private readonly preparedDirs = new Set<string>();
   private readonly warnings: string[] = [];
   private readonly warnedSlots = new Map<string, Set<Slot>>();
+  private streamCaptured = false;
+  private hadFailure = false;
 
-  constructor(logger: SanitizedLogger) {
+  constructor(
+    logger: SanitizedLogger,
+    private readonly evidenceHealth?: EvidenceHealthReporter
+  ) {
     this.logger = logger;
   }
 
   public async prepare(target: VerboseDiagnosticTarget): Promise<void> {
     if (this.preparedDirs.has(target.directory)) return;
     try {
-      await fs.mkdir(target.directory, { recursive: true });
+      // FR-R3-053 (H-02) — walk the segments, refusing a symlink at every
+      // component, instead of `mkdir -p` on a composed absolute path. The
+      // composer already proved the path does not escape LEXICALLY; that says
+      // nothing about what `mkdir` follows on the way there, and these
+      // diagnostics are deliberately unredacted.
+      //
+      const ready = await ensureDirWithinRoot(
+        target.workspaceRoot,
+        target.segments,
+        DIAGNOSTIC_DIR_MODE
+      );
+      if (ready.outcome === 'refused') {
+        this.hadFailure = true;
+        this.evidenceHealth?.reportFailure(
+          'verboseDiagnostics',
+          ready.reason === 'io-failed' ? ready.errno : 'path-refused'
+        );
+        this.recordWarning(
+          target,
+          'directory',
+          `verbose diagnostic directory refused: ${ready.reason}`
+        );
+        return;
+      }
+      // A `mode` applies only when the path is CREATED. A directory that already
+      // exists -- every workspace that predates this change -- keeps whatever it
+      // had, so the defect would persist for almost all installs. Tighten it.
+      //
+      // One-directional, deliberately: tighten a directory more permissive than
+      // required, never loosen one that is already stricter. An operator (or an
+      // umask) who made it 0o500 meant it, and widening that to 0o700 would be
+      // this fix causing the exposure it exists to remove.
+      //
+      // Feature 217 (FR-007) — through the product's one narrowing routine, which
+      // began life here. `ensureDirWithinRoot` creates but never narrows, so this
+      // directory is narrowed by name.
+      const narrowed = noticeFor(
+        'directory',
+        await narrowMode(target.directory, DIAGNOSTIC_DIR_MODE)
+      );
+      if (narrowed !== null) this.recordNarrowing(target, 'directory', narrowed);
+      if (this.preparedDirs.size >= VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX) {
+        const oldest = this.preparedDirs.values().next().value;
+        if (oldest !== undefined) this.preparedDirs.delete(oldest);
+      }
       this.preparedDirs.add(target.directory);
     } catch (err) {
+      this.hadFailure = true;
+      const code = (err as { code?: unknown } | null)?.code;
+      this.evidenceHealth?.reportFailure(
+        'verboseDiagnostics',
+        typeof code === 'string' ? code : 'write-failed'
+      );
       this.recordWarning(
         target,
         'directory',
@@ -53,7 +138,7 @@ export class VerboseDiagnosticWriter {
   }
 
   public result(): VerboseDiagnosticResult {
-    return { warnings: [...this.warnings] };
+    return { warnings: [...this.warnings], streamCaptured: this.streamCaptured };
   }
 
   private async appendBestEffort(
@@ -64,8 +149,49 @@ export class VerboseDiagnosticWriter {
   ): Promise<void> {
     if (chunk.length === 0) return;
     try {
-      await fs.appendFile(file, chunk, 'utf8');
+      // FR-R3-053 — through the walk, not on the composed path.
+      const leaf = path.basename(file);
+      const opened = await openWithinRoot(target.workspaceRoot, [...target.segments, leaf], {
+        flags: 'a',
+        createDirs: true,
+        dirMode: DIAGNOSTIC_DIR_MODE,
+        fileMode: DIAGNOSTIC_FILE_MODE
+      });
+      if (opened.outcome === 'refused') {
+        this.hadFailure = true;
+        this.evidenceHealth?.reportFailure(
+          'verboseDiagnostics',
+          opened.reason === 'io-failed' ? opened.errno : 'path-refused'
+        );
+        this.recordWarning(target, slot, `verbose diagnostic ${slot} refused: ${opened.reason}`);
+        return;
+      }
+      // Same reasoning as the directory: the mode applies on creation, so a file
+      // written before this change stays readable until it is tightened. The
+      // exposure is identical, so the treatment is.
+      //
+      // Feature 217 — the open has already narrowed this file, and every
+      // directory it walked through, with the modes declared above; what is left
+      // here is saying so.
+      for (const notice of opened.narrowing) {
+        this.recordNarrowing(target, notice.scope === 'directory' ? 'directory' : slot, notice);
+      }
+      try {
+        await opened.handle.write(chunk, null, 'utf8');
+        if (slot === 'stream') this.streamCaptured = true;
+        if (!this.hadFailure) {
+          this.evidenceHealth?.reportSuccess('verboseDiagnostics');
+        }
+      } finally {
+        await opened.handle.close().catch(() => undefined);
+      }
     } catch (err) {
+      this.hadFailure = true;
+      const code = (err as { code?: unknown } | null)?.code;
+      this.evidenceHealth?.reportFailure(
+        'verboseDiagnostics',
+        typeof code === 'string' ? code : 'write-failed'
+      );
       this.recordWarning(
         target,
         slot,
@@ -74,10 +200,49 @@ export class VerboseDiagnosticWriter {
     }
   }
 
+  /**
+   * Record what a narrowing did, because silently changing a permission is the
+   * same class of surprise as silently leaving one open. A narrowing is an
+   * informational line; a path that could not be made private is a warning,
+   * so it is never described as private.
+   *
+   * Feature 217 — the notice is path-free: it carries an errno-shaped code, never
+   * the platform's message, which can name the path.
+   */
+  private recordNarrowing(target: VerboseDiagnosticTarget, slot: Slot, notice: NarrowingNotice): void {
+    switch (notice.outcome) {
+      case 'narrowed':
+        this.logger.info(
+          `verbose diagnostic ${slot} mode tightened to owner-only (was ${notice.previousMode.toString(OCTAL_RADIX)})`
+        );
+        return;
+      case 'refused-symlink':
+        this.hadFailure = true;
+        this.evidenceHealth?.reportFailure('verboseDiagnostics', 'path-refused');
+        this.recordWarning(
+          target,
+          slot,
+          `verbose diagnostic ${slot} mode not enforced: path is a symbolic link`
+        );
+        return;
+      case 'unsupported':
+        this.recordWarning(
+          target,
+          slot,
+          `verbose diagnostic ${slot} mode could not be enforced: ${notice.code}`
+        );
+        return;
+    }
+  }
+
   private recordWarning(target: VerboseDiagnosticTarget, slot: Slot, message: string): void {
     const seen = this.warnedSlots.get(target.directory) ?? new Set<Slot>();
     if (seen.has(slot)) return;
     seen.add(slot);
+    if (!this.warnedSlots.has(target.directory) && this.warnedSlots.size >= VERBOSE_DIAGNOSTIC_TRACKED_DIRS_MAX) {
+      const oldest = this.warnedSlots.keys().next().value;
+      if (oldest !== undefined) this.warnedSlots.delete(oldest);
+    }
     this.warnedSlots.set(target.directory, seen);
     this.warnings.push(message);
     this.logger.warn(message);

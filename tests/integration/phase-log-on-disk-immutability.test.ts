@@ -23,7 +23,7 @@ import { SanitizedLogger } from '../../src/lib/logger';
 import { readIterationManifest } from '../../src/services/phase-log/phase-log-reader';
 import {
   PhaseLogTailSession,
-  type PhaseLogEntryPushPayload
+  type LiveLogBatchItem
 } from '../../src/services/phase-log/phase-log-tail-session';
 
 const logger = new SanitizedLogger();
@@ -80,7 +80,7 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
         subtype: 'init',
         cwd: '/Users/dev/repo',
         session_id: 'sess-1',
-        model: 'claude-opus-4-7',
+        model: 'claude-opus-5-5',
         tools: 'Read,Write,Edit,Bash'
       }),
       JSON.stringify({
@@ -117,8 +117,19 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
           content: [
             {
               type: 'text',
-              text:
-                '=== SCHEGENT AUDIT LOG ===\n[SCHEGENT_STATUS: CLEAR]\n=== END SCHEGENT AUDIT LOG ==='
+              text: [
+                '=== SCHEGENT AUDIT LOG ===',
+                'phase: phase-1',
+                'files_created: []',
+                'files_modified: []',
+                'files_deleted: []',
+                'commands_executed: []',
+                'network_calls: []',
+                'ruleset_switches: []',
+                'notes: ok',
+                '=== END AUDIT LOG ===',
+                '[SCHEGENT_STATUS: CLEAR]'
+              ].join('\n')
             }
           ]
         }
@@ -141,21 +152,28 @@ describe('Feature 029 T033 — phase-log on-disk immutability (SC-005)', () => {
       workspaceRoot: tmpDir,
       selection: SELECTION,
       isInFlight: true,
+      progress: 'running',
       caps: { perFieldBytes: 4096, maxEntries: 500 },
       sanitize
     });
     expect(manifest.entries.length).toBeGreaterThan(0);
 
     // 2. Tail-session lifecycle.
-    const pushed: PhaseLogEntryPushPayload[] = [];
+    const pushed: LiveLogBatchItem[] = [];
     const tail = new PhaseLogTailSession({
       sessionId: 'tail-1',
+      workspaceRoot: tmpDir,
       filePath: streamPath,
       selection: { ...SELECTION, iterationN: SELECTION.iterationN },
-      pushToWebview: (msg) => pushed.push(msg),
+      postBatch: (batch) => {
+        pushed.push(...batch.entries);
+        return true;
+      },
       sanitize,
       caps: { perFieldBytes: 4096 }
     });
+    await tail.start();
+    tail.ack({ batchSeq: 0 });
     await tail.tick();
     await tail.tick();
     expect(pushed.length).toBeGreaterThan(0);

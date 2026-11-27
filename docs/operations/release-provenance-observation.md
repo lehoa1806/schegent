@@ -1,162 +1,295 @@
-# Release-provenance observation record
+# Observe release provenance
 
-**Status**: mechanism landed, observation **outstanding**
-**Opened**: 2026-08-22
-**Source finding**: `P3-PROV` (Low likelihood / Low impact), audit Table 5 row P3
+<!-- doc-class: record -->
 
-## What the release workflow could and could not establish
+> **Withdrawn, 2026-08-26.** The controls this runbook observes are gone: GitHub
+> Actions were retired by operator decision, for budget, and all eight workflow files
+> were deleted (`FR-R3-099`). This page is kept as a **dated historical record** of
+> how those controls were observed while they ran — the observations were true when
+> made and are not rewritten here — but every procedure below is now inert. What the
+> workflows actually produced over fourteen weeks is read once in
+> [the terminal record](../release/actions-terminal-record.md); what each withdrawn
+> control was is recorded in
+> [withdrawn CI controls](../release/withdrawn-ci-controls.md).
 
-[`release.yml`](../../.github/workflows/release.yml) was already the strictest
-chain in the repository: `verify:all`, `build`, `package:smoke`, the only
-`test:integration` that runs to completion, every action pinned to a commit
-SHA, `permissions: contents: read`, a CycloneDX SBOM, and `SHA256SUMS` over
-both payloads.
+> **FR-R3-120 note, 2026-08-27.** The banner above has said "withdrawn" since
+> 2026-08-26, and every paragraph below it went on reading as present-tense
+> instruction — *"Use this runbook to verify…"*, *"Then verify each attested
+> subject…"* — over a workflow file that does not exist. A reader who skimmed the
+> banner and followed the commands got `gh attestation verify --signer-workflow
+> …/release.yml` against a `release.yml` that was deleted. A withdrawal notice and
+> a live imperative in the same document is the same defect `FR-R3-116` found in
+> the threat model, and it is repaired the same way: the record stands, the
+> instruction stops instructing.
+>
+> **What a recipient can actually check is in [§ What is checkable
+> today](#what-is-checkable-today), at the foot of this page.**
 
-`SHA256SUMS` was generated and uploaded by that same unsigned job. So
-[`RELEASE.md`](../../RELEASE.md)'s instruction to "verify it against
-`SHA256SUMS`" established that a download arrived intact and nothing at all
-about where it came from — anyone able to substitute the artifact could
-substitute the digest file beside it. The prescribed step existed and was one
-signature short of meaning something.
+This runbook **described** how to verify that a published VSIX was the artifact
+produced by Schegent's checked-in release workflow for a specific tag and commit.
+It treated checksum integrity, workflow provenance, package policy, and Marketplace
+publication as separate claims, because the automation of the time established
+different evidence for each one. **None of those procedures can be run now**, and
+they are preserved unrewritten because the observations were true when made
+(`FR-R3-067`).
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: RELEASE.md -->
 
-Two smaller gaps sat beside it. Nothing compared the tag to the manifest, so a
-`v0.3.0` tag on a commit declaring `0.2.0` produced a `schegent-0.2.0.vsix`
-under it with no step noticing — and when this record was opened the manifest
-(`0.2.0`) was already ahead of the only tag in the repository (`v0.1.0`).
-And `package:smoke` asserts the entry allowlist over a temporary-directory
-package built from the same `dist/`, deliberately not over the file that ships,
-so the allowlist held over an archive that was probably byte-identical to the
-released one on an assumption the workflow neither stated nor tested.
+## Know the release boundary
 
-## What was changed
+`Release package` runs on pushes of tags matching `v*` and on manual dispatch.
+A tag run requires the tag name, after removing the leading `v`, to equal the
+root `package.json` version byte-for-byte. That comparison occurs before
+dependency installation. A manual dispatch skips the comparison because its
+ref is not a tag.
+<!-- Source: ../release/actions-terminal-record.md -->
 
-Five steps added to one job, one step amended, one job-level `permissions:`
-block:
+A manual dispatch performs verification, build, package smoke, extension-host
+integration, final packaging and policy inspection, SBOM/checksum generation,
+attestation, and a 90-day workflow-artifact upload. It does not create a GitHub
+Release. Only a tag run reaches the final release-publication step.
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: RELEASE.md -->
 
-| Change | What it establishes |
-|---|---|
-| `actions/attest-build-provenance`, pinned | each released file's digest is bound to this repository, this workflow file, and the commit it was built from |
-| tag/manifest parity, before `npm ci` | a tag that disagrees with `package.json` fails in seconds, naming both values |
-| released-file policy assertion | the entry allowlist and size budgets hold over the bytes that ship, not only over a temp-dir package |
-| single resolution of the released `.vsix` | five consumers read one path, so no step can act on an archive another step never checked |
-| `gh release create` on tag runs | the artifact outlives the 90-day workflow-run retention, so the attestation points at something fetchable |
+The workflow-level permission is `contents: read`. Its one `package` job
+replaces that default with `contents: write`, `id-token: write`, and
+`attestations: write`: release creation, OIDC identity, and provenance creation
+are all confined to that job.
+<!-- Source: ../release/actions-terminal-record.md -->
 
-The permission widening is job-scoped: `contents: write`, `id-token: write` and
-`attestations: write` on the `package` job, with the workflow-level default left
-at `contents: read`. A job-level block replaces the workflow default rather than
-extending it, which is why `contents: read` is restated inside it.
+All external actions in the workflow are pinned to 40-character commit SHAs,
+and `npm run security:actions` checks that property across every workflow.
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: scripts/check-workflow-pins.mjs -->
+<!-- Source: package.json -->
 
-Ordering is the load-bearing part. Attestation runs *after* the released-file
-assertion, and the release is published last. An attestation over an archive
-this project's own gate would refuse is worse than no attestation, because it is
-what an operator trusts *instead of* reading the archive.
+## Follow the artifact through the job
 
-## What holds locally, and what does not
+The release job installs both dependency trees with lifecycle scripts disabled,
+runs `verify:all`, builds the extension, runs `package:smoke`, and executes the
+integration suite under `xvfb`. It then runs `npm run package` and requires
+exactly one root-level `.vsix`.
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: package.json -->
 
-Locally checkable, and checked:
+The single resolved VSIX path is reused by every later consumer. Before any
+attestation or upload, `scripts/check-vsix-smoke.mjs` inspects that exact file
+for archive safety, the closed content policy, size bounds, and required
+manifest values. This is separate from `package:smoke`, whose qualified VSIX is
+created in a temporary directory.
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: scripts/check-vsix-smoke.mjs -->
+<!-- Source: scripts/package-vsix-smoke.mjs -->
 
-- `npm run security:actions` — the new pin is a 40-hex commit SHA. The SHA is
-  the commit `refs/tags/v4` dereferences to, not the annotated tag object, which
-  would have satisfied the regex while pinning something other than a commit.
-- `npm run docs:check` — `RELEASE.md` still carries the strings the gate
-  requires, and every relative link here resolves.
-- The released-file assertion reuses
-  [`scripts/check-vsix-smoke.mjs`](../../scripts/check-vsix-smoke.mjs) through
-  its existing path argument, so the allowlist has one definition rather than a
-  second copy in YAML.
-- The released-file assertion was run end to end against a real `npm run
-  package` archive and reported the same figures as `package:smoke` in the same
-  tree: 52 entries, 956717 compressed bytes, 2654160 uncompressed. That is the
-  strongest available local evidence that the two assertions see the same
-  content; the requirement is that they agree **within one CI run**, which only
-  a run can answer.
-- The parity and resolution step bodies were exercised directly against five and
-  three cases respectively: matching tag, mismatched tag, malformed tag (`vfoo`
-  fails as a mismatch rather than crashing), non-tag ref (skips, exit 0), a tag
-  name carrying `;` and a command (treated as data — the ref name reaches the
-  shell through the step environment, never through `${{ }}` interpolation into
-  a script body), and zero / one / two archives in the workspace root.
+The job generates three release payloads:
 
-Not locally checkable: everything the attestation actually is. There is no
-attestation without a tagged run on the remote, and no verification output
-without an attestation.
+| File | How it is produced | Provenance subject? |
+|---|---|---|
+| the single `*.vsix` | `npm run package` | yes |
+| `schegent-sbom.cdx.json` | `npm sbom --sbom-format cyclonedx` | yes |
+| `SHA256SUMS` | `sha256sum` over the VSIX and SBOM | no |
 
-## Observation procedure — outstanding
+<!-- Source: ../release/actions-terminal-record.md -->
 
-Cutting a release requires pushing a tag, which is an outward action outside the
-authority of the cycle that made this change. The conclusions below are
-therefore recorded as **outstanding by decision** rather than left implied or
-filled in on assumption.
+`actions/attest-build-provenance` attests the VSIX and CycloneDX SBOM after the
+released-package policy passes. `SHA256SUMS` is deliberately not attested: its
+contents are the hashes of the two subjects, and verifying each subject's
+attestation is the stronger identity check.
+<!-- Source: ../release/actions-terminal-record.md -->
 
-Once a tag is on the remote, an operator should run each command and fill in the
-result:
+All three files are uploaded as the `schegent-release-artifacts` workflow
+artifact with 90-day retention. On a tag run, the final step creates a durable
+GitHub Release containing the same three paths. A pre-existing Release for the
+tag is a hard failure rather than an update, and every `v0.*` tag is marked as a
+prerelease.
+<!-- Source: ../release/actions-terminal-record.md -->
 
-| # | Step | Command | Observed |
-|---|---|---|---|
-| 1 | Cut a release from a commit whose manifest matches the tag | `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z` | _(unfilled)_ |
-| 2 | Confirm the run is green and `security:actions` passed inside it | `gh run list --workflow=release.yml --limit=1` | _(unfilled)_ |
-| 3 | Confirm two attestation subjects exist | `gh attestation list --repo lehoa1806/schegent` (or the run's Attestations tab) | _(unfilled)_ |
-| 4 | Verify the released package as an outside operator would | `gh attestation verify schegent-X.Y.Z.vsix --repo lehoa1806/schegent --signer-workflow lehoa1806/schegent/.github/workflows/release.yml` | _(unfilled)_ |
-| 5 | Verify the SBOM the same way | same command against `schegent-sbom.cdx.json` | _(unfilled)_ |
-| 6 | Confirm a local build fails it | `npm run package` then the command from step 4 against that file — **expected to fail** | _(unfilled)_ |
-| 7 | Confirm the released-file entry count equals `package:smoke`'s in the same run | read both step logs | _(unfilled)_ |
-| 8 | Confirm the GitHub Release exists, is published, and is marked prerelease while the version is `0.x` | `gh release view vX.Y.Z` | _(unfilled)_ |
-| 9 | Confirm a mismatched tag is refused | tag a commit whose manifest differs, push, and read the first failure — **expected to fail**, naming both values | _(unfilled)_ |
-| 10 | Confirm the artifact is still reachable after 90 days | `gh release download vX.Y.Z` past the retention window | _(unfilled)_ |
+## Observe a tag run
 
-Step 6 is the one that turns the provenance claim into a distinction. Delete the
-local `.vsix` afterwards: an archive in the working tree is a leftover, not a
-candidate.
+Start from the published tag and record these immutable identifiers:
 
-## Expect the first run to surface something
+- tag name;
+- root manifest version at the tagged commit;
+- tagged commit SHA;
+- `Release package` run URL or identifier;
+- workflow source path `.github/workflows/release.yml`;
+- published GitHub Release URL or identifier.
 
-This chain has never executed with these steps. Four failure modes are worth
-recognising, because each is a **new finding** rather than a regression of this
-change:
+The tag and manifest version must match, and the workflow run must be for the
+tag's commit rather than a manual run or a run for another tag.
+<!-- Source: ../release/actions-terminal-record.md -->
 
-1. **The attestation step failing outright.** Artifact attestations need the
-   repository to be public or on a plan that includes them. `lehoa1806/schegent`
-   answers an unauthenticated API request today, so it is public and this should
-   not fire — but a visibility change would break the release chain rather than
-   the build, and this is where that would show up.
-2. **The released-file assertion failing where `package:smoke` passed.** That
-   would mean packaging is *not* deterministic from a fixed `dist/`, which is
-   exactly the assumption this step exists to test. It is the most interesting
-   outcome available and should be read as information, not as a broken step.
-3. **`gh release create` refusing because a release already exists.** On a
-   re-run of a tag this fails by design, naming the situation. `RELEASE.md` says
-   do not retag: delete that release deliberately, or cut a new version.
-4. **`gh attestation verify` failing on the operator's machine for tooling
-   reasons.** The subcommand arrived in `gh` 2.49.0 and the lookup is an API
-   call. A missing subcommand or a missing login is not a verdict on the
-   artifact — `RELEASE.md` says this too, in the place an operator reads it.
+Read the job log in order and record evidence for each load-bearing boundary:
 
-## The gate that does not exist yet
+1. `Check the tag matches the manifest version` names the same tag and manifest
+   version.
+2. `Package smoke` succeeds after the build.
+3. `Integration tests` succeeds before final packaging.
+4. `Resolve the released package` finds exactly one VSIX.
+5. `Released package policy` succeeds against that resolved filename.
+6. SBOM and checksum generation succeed.
+7. `Attest build provenance` succeeds for the VSIX and SBOM.
+8. The artifact upload succeeds before `Publish the GitHub Release`.
 
-The business request for this item scoped it to the workflow and the release
-document: no source change, no test change, no dependency. That boundary was
-honored, and the consequence belongs here rather than nowhere.
+<!-- Source: ../release/actions-terminal-record.md -->
 
-`tests/unit/build/release-qualification.test.ts` asserts only that
-`release.yml` exists. Nothing asserts the properties this change is made of, so
-after it they are held by `security:actions` (pins only) and by reading. The
-missing gate is a `tests/lint/` test that parses `release.yml` and asserts:
+Record the file count and compressed/uncompressed byte counts printed by the
+released-package policy. If the temporary `Package smoke` step and final policy
+step report different content, do not assume the final file is equivalent;
+investigate the package inputs and the two archive paths.
+<!-- Source: scripts/check-vsix-smoke.mjs -->
+<!-- Source: ../release/actions-terminal-record.md -->
 
-1. the workflow-level `permissions:` block is exactly `contents: read`;
-2. every widening beyond it is declared at job level;
-3. no attestation or upload step appears before the released-file assertion;
-4. no step after `npm run package` expands a `*.vsix` glob of its own;
-5. the parity step precedes the first `npm ci`.
+## Verify downloaded payloads
 
-Items 3 and 4 are the ones worth having: they are ordering and
-single-resolution properties that a well-intentioned future edit can break
-silently, and neither leaves a trace in any other gate. This is a follow-up,
-recorded and not built.
+Download the VSIX, `schegent-sbom.cdx.json`, and `SHA256SUMS` from the same
+GitHub Release into an otherwise empty directory. First check the two hashes
+against the downloaded checksum file:
 
-## Related
+```bash
+sha256sum --check SHA256SUMS
+```
 
-- [../../RELEASE.md](../../RELEASE.md) — the pre-release checklist, the
-  cutting-a-release procedure, and the operator-facing verification command.
-- [merge-gate-observation.md](merge-gate-observation.md) — the same shape of
-  record for the workflow-trigger retarget, and the reason both exist.
-- [release-notes.md](release-notes.md) — operator-visible changes per release.
+The workflow creates `SHA256SUMS` with GNU `sha256sum` over exactly the VSIX and
+SBOM. A successful check establishes consistency with that downloaded digest
+file; it does not by itself authenticate who produced either file.
+<!-- Source: ../release/actions-terminal-record.md -->
+
+Then verify each attested subject using the repository identity and the exact
+signer workflow. **This command cannot be run today** — `.github/workflows/release.yml`
+was deleted with the other seven workflow files, so there is no signer workflow to
+name and no attestation to verify against. It is reproduced as a record of what the
+procedure was:
+
+```bash
+gh attestation verify <downloaded-vsix> \
+  --repo <owner>/<repository> \
+  --signer-workflow <owner>/<repository>/.github/workflows/release.yml
+
+gh attestation verify schegent-sbom.cdx.json \
+  --repo <owner>/<repository> \
+  --signer-workflow <owner>/<repository>/.github/workflows/release.yml
+```
+
+Use the actual repository owner/name and downloaded VSIX filename. The release
+body generated by the workflow publishes the first command shape, and the
+workflow attests both subjects. Preserve the successful verification output in
+the observation record.
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: RELEASE.md -->
+
+As an independent content check, run the repository policy against the
+downloaded VSIX from a checkout of the release source:
+
+```bash
+node scripts/check-vsix-smoke.mjs <downloaded-vsix>
+```
+
+This confirms the archive still satisfies the current checkout's content and
+manifest policy. Record the checker revision as well as its result: running a
+newer policy against an older release is not the same observation as the
+policy step from the tagged workflow.
+<!-- Source: scripts/check-vsix-smoke.mjs -->
+<!-- Source: ../release/actions-terminal-record.md -->
+
+Inspect the SBOM as the document paired with that VSIX; do not substitute an
+SBOM generated from a later checkout. The workflow's attestation binds the
+downloaded SBOM bytes, while its checksum file pairs those bytes with the VSIX
+inside the same release asset set.
+<!-- Source: ../release/actions-terminal-record.md -->
+
+## Interpret the evidence precisely
+
+- A matching `SHA256SUMS` result proves transfer integrity relative to the
+  checksum file, not workflow identity.
+- A successful attestation verification binds the subject to the named
+  repository and signer workflow; it does not mean the VSIX passed an unrelated
+  policy revision.
+- A successful released-package policy step proves the exact resolved VSIX
+  passed the policy at the tagged commit.
+- A successful integration step exercises the built extension before final
+  packaging; the workflow does not reinstall the released VSIX into a second
+  VS Code host.
+- A GitHub Release proves durable publication by this workflow. It is not
+  Marketplace publication.
+
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: scripts/check-vsix-smoke.mjs -->
+<!-- Source: scripts/package-vsix-smoke.mjs -->
+<!-- Source: RELEASE.md -->
+
+No checked-in workflow or npm script publishes to the Visual Studio Marketplace,
+and the repository encodes no Git-tag signing requirement. Record either policy
+only when separately supported by external operational evidence.
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: package.json -->
+<!-- Source: RELEASE.md -->
+
+## Observation record
+
+For each release, keep a compact record like this:
+
+| Claim | Evidence | Result |
+|---|---|---|
+| Tag equals manifest version | tag, manifest value, parity-step log | pass/fail |
+| Source identity | tag commit SHA and run identifier | observed/not observed |
+| Final VSIX policy | released-package log and policy counts | pass/fail |
+| Payload integrity | checksum verification output | pass/fail |
+| VSIX provenance | attestation verification output | pass/fail |
+| SBOM provenance | attestation verification output | pass/fail |
+| Durable publication | GitHub Release and three asset names | observed/not observed |
+| Consumer smoke | environment and result for the downloaded VSIX | pass/fail/not run |
+
+Do not mark provenance observed from a green build alone. The observation is
+complete only when the published subjects have been downloaded and their
+attestations verified against the repository and workflow identity.
+<!-- Source: ../release/actions-terminal-record.md -->
+<!-- Source: RELEASE.md -->
+
+## Failure triage
+
+- A parity failure means the tag does not match the committed root manifest;
+  do not publish that artifact or silently retag it.
+- Zero or multiple VSIX files means final-package selection is ambiguous; no
+  later step is authorized to choose another path independently.
+- A final policy failure after `package:smoke` means the archive selected for
+  release differs in a policy-relevant way from the temporary smoke package.
+- An attestation failure prevents the final GitHub Release step, because release
+  creation is last.
+- A release-already-exists failure requires a deliberate cleanup decision or a
+  new version; the workflow refuses to update the existing release.
+
+<!-- Source: ../release/actions-terminal-record.md -->
+
+
+## What is checkable today
+
+Written 2026-08-27 (`FR-R3-120`), because a page that only says what *used to* be
+verifiable teaches a recipient nothing.
+
+**Distribution posture: private-to-author.** The VSIX is built and installed by the
+person who built it and is not passed to anyone. See
+[Distribution posture](../architecture/distribution-posture.md) for the dated
+decision and the condition that would change it. The rest of this section describes
+what would be available to a recipient *if that changed*, and is honest about how
+little that is.
+
+| Claim | Checkable? | By what |
+|---|---|---|
+| "this VSIX contains component X at version Y" | **yes** | `schegent-sbom.cdx.json`, emitted at package time beside the VSIX and packaged inside it — CycloneDX 1.5, generated from the lockfiles |
+| "the extension ships no runtime dependencies" | **yes** | the same SBOM; this is its strongest statement and it is verifiable by unzipping the VSIX |
+| "the manifests and any version tag agree" | **yes, at build time** | `scripts/check-manifest-versions.mjs`, which `release:preflight` refuses on |
+| "the tree was green when this was built" | **yes, at build time** | `.gate-attestation.json`, which `release:preflight` refuses without |
+| "this file was built by the person who claims it" | **no** | there is no signature. `FR-R3-120` recorded that decline against the private-to-author posture, with its reversal condition |
+| "this file was built from commit C" | **no, transferably** | the gate attestation names the commit, but it stays on the builder's machine; nothing binds it to the artifact a recipient holds |
+| "a third party observed the build" | **no** | there is no third party. This is what the retired workflows provided and nothing replaced them |
+
+**Observed / relied on / inferred**, kept apart: *observed* — the workflow files are
+absent from every ref (`FR-R3-099`'s terminal record), and the SBOM and manifest
+checks run locally on demand; *relied on* — that `gh attestation verify` requires a
+resolvable signer workflow; *inferred* — that no attestation for any Schegent
+artifact can therefore be verified. No attestation was queried, because there is no
+credential in this checkout to query with.
+<!-- Source: scripts/generate-sbom.mjs -->
+<!-- Source: scripts/check-manifest-versions.mjs -->
+<!-- Source: ../architecture/distribution-posture.md -->

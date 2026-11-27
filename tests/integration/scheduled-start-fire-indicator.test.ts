@@ -36,8 +36,8 @@ beforeEach(async () => {
   h = await makeHarness();
 });
 
-afterEach(() => {
-  h.cleanup();
+afterEach(async () => {
+  await h.cleanup();
 });
 
 class FakeStatusBarItem implements StatusBarItemLike {

@@ -1,131 +1,176 @@
-# Recovery checkpoints
+# Recovery from an interrupted run
 
-Schegent freezes a mutation plan when a run starts. Phases declared with
-`git` or `unrestricted` side effects require an operator approval whose receipt
-contains the plan fingerprint and approved phase IDs. Editing the catalog does
-not broaden that receipt; resume requests approval again when fingerprints do
-not match.
+Restored under FR-R3-062, which recorded that the stuck-run, crash-restart, safe-reset and
+checkpoint-recovery runbooks were deleted without replacement. Cited from
+`src/services/run-checkpoint-retention.ts`.
+<!-- Source: src/services/run-checkpoint-retention.ts -->
+<!-- Source: src/state/workspace-state.ts -->
+<!-- Source: src/services/run-checkpoint-service.ts -->
 
-Immediately before each approved Git-capable phase, Schegent captures a private
-binary diff and status manifest below the extension global-storage directory.
-Checkpoint creation is fail-closed: the phase does not start if recovery
-evidence cannot be written. Files and directories use owner-only permissions,
-and what is kept is bounded both inside and across run directories — see
-[Where they live, and how long they last](#where-they-live-and-how-long-they-last).
+Read [Data retention and deletion](data-retention-and-deletion.md) first if the question is what is
+kept and for how long; this page is about getting a workspace moving again. For rehearsed,
+symptom-first procedures covering future SQLite schema refusal, quarantined workspace-state
+writers (GC-04), and stuck execution lanes, see [Incident recovery guide](incident-recovery-guide.md).
 
-A checkpoint is a `.patch` beside a `<timestamp>-<phase>.json` metadata file. The
-metadata carries `runId`, `phaseId`, `capturedAt`, `baseCommit`, the
-`git status --porcelain=v1` manifest, and an `attribution` block of
-`{mode, inFlightRuns, paths}`.
+## Before anything: what state is safe to touch
 
-## Where they live, and how long they last
+Two things hold a run's identity, and they are not the same:
 
-One directory per run, under VS Code's global storage for this extension:
+- **The audit log** (`.schegent/audit.log`) is append-only evidence. Never delete it to clear a
+  stuck run — a hard rule, not a preference. It is the only record of what happened, and a
+  reset that erases it removes the evidence needed to explain the reset.
+- **Operational workspace state** — authoritative in the per-workspace SQLite schema-9 store
+  (`<globalStorageUri>/sqlite/<scopeId>/schegent-state.db`, backed through `WorkspaceStateStore`;
+  VS Code `Memento` remains only for pre-cutover fallback and passthrough keys) — holds queues,
+  tasks, run records, history, execution leases, and schedules. This is what a reset clears.
+  See [SQLite application store](sqlite-application-store.md) and
+  [SQLite rollback runbook](sqlite-rollback-runbook.md).
 
-```text
-<globalStorageUri>/checkpoints/<runId>/
-├── <timestamp>-<phaseId>.patch          # git diff --binary HEAD, mode 0600
-├── <timestamp>-<phaseId>.json           # metadata for the patch above
-└── <timestamp>-<phaseId>.declined.json  # marker; no patch was taken
+## A run appears stuck
+
+1. **Check whether the process is actually gone.** Cancel the phase from the sidebar. Cancellation
+   signals the backend's whole process tree, not just the direct child (FR-R3-054); if the runtime
+   log records *"process tree not confirmed gone after SIGKILL"*, a descendant may still be
+   running and writing to the workspace. Deal with that before restarting anything, or the next
+   phase races it.
+2. **Check the lease.** A queue whose execution lease is held by a window that is gone will be
+   reclaimed once its heartbeat goes stale (15 seconds — `STALENESS_THRESHOLD_MS` in
+   `src/state/lock.ts`, which is the value this sentence is checked against). Waiting is correct;
+   forcing it is not.
+3. **Read the runtime log** rather than guessing:
+   [Inspect the runtime log](runtime-log.md).
+
+## The host crashed or was reloaded mid-run
+
+On activation the extension reattaches: it claims the workspace lock, reattaches the credit
+watchdog, and resumes a persisted run. Nothing needs doing by hand for the ordinary case.
+
+Each Run that activation resumes this way, and each Run the credit watchdog later resumes when a
+rate-limit backoff ends or credits return, raises one warning as soon as the resume is admitted. It
+names the queue, the first 8 characters of the Run id and the phase, and names the two commands
+*Schegent: Show Active Run* and *Schegent: Cancel In-Flight Workflow*. The warning has no buttons and
+changes nothing: the Run is already working in the workspace, so start no other agent beside it until
+you have looked. A Run the queue drain resumes is **not** announced this way.
+
+If the run does **not** resume, the likely cause is that its lease is still held by the previous
+session's owner id and has not yet gone stale. That resolves itself within the staleness threshold.
+
+## Safe reset
+
+`schegent.reset` clears workspace state — queue, run records, leases. It does **not** and must not
+delete the audit log or raw transcripts. After a reset:
+
+- The audit log still contains every event from the run that was reset, so the history remains
+  explainable.
+- Session artifacts follow their own retention policy; see
+  [Data retention and deletion](data-retention-and-deletion.md).
+
+Prefer cancelling the phase and letting the lease expire over a reset. A reset is the right tool
+when state is *inconsistent*, not when a run is merely slow.
+
+## Checkpoints
+
+A run checkpoint captures the working tree's diff at the point a run reached. There is **no
+in-product restore path**: nothing resumes from a checkpoint automatically, and a later resume does
+not read one — a checkpoint is restored by an operator applying the patch file by hand.
+Retention is bounded — checkpoints are pruned by age and count like other evidence, so an old
+checkpoint is not a durable record and must not be treated as one. The audit log is the durable
+record.
+
+**Deleting a Run's evidence removes its checkpoint.** `Schegent: Delete Run Evidence` removes the Run's
+directory under `<globalStorage>/checkpoints/` together with the workspace evidence. That holds for Runs that
+have finished and whose evidence is in this workspace: the command refuses a Run that is still executing, and
+refuses a Run with no evidence in this workspace without touching its checkpoint. It reports the checkpoint
+as removed, absent, or retained with a reason (a link in the directory is never followed, and one that cannot
+be removed is left and named).
+
+### Restoring a checkpoint by hand
+
+A checkpoint is two files in `<globalStorage>/checkpoints/<runId>/`: `<prefix>.patch` and
+`<prefix>.json`. The prefix is the capture time in milliseconds and the Phase id, such as
+`1800000000000-speckit-implement`. Two captures of one Phase in the same millisecond are not
+merged: the second takes `-1`, the third `-2`, the lowest free number, and its manifest carries the
+same suffix. A `<prefix>.declined.json` marker has no patch and nothing to restore. Markers and
+snapshots share one budget of 20 entries per Run directory, so a Run that declines often keeps its
+older snapshots for less time.
+
+**1. What a checkpoint holds.** The patch is `git diff --binary` against the commit named by
+`baseCommit` in the manifest: the staged and unstaged edits to tracked files, new tracked files and
+binary files included. It does not hold an untracked file, and it never holds an ignored file;
+ignored files are neither captured nor listed nor counted. The manifest says which case you are
+in:
+
+- `completeness: "complete"` means no untracked, non-ignored entry existed when it was taken.
+- `completeness: "incomplete"` means at least one did. `excludedUntracked` lists up to 50 of them
+  (a wholly untracked directory is listed once, with a trailing `/`) and `excludedUntrackedCount`
+  is the full number. An empty patch beside `incomplete` is a work tree whose only changes were
+  untracked, not a work tree with no changes.
+- In a record made while other Runs were in flight, only entries under this Run's own declared
+  paths are named; the rest are only counted in `unattributedUntrackedCount`.
+- A manifest with no `completeness` field was written before the field existed. Read it as
+  `unknown`, never as complete, and assume untracked files may be missing.
+
+**2. A disposable target.** Apply the patch to a copy, never to the live workspace. Clone it with
+`git clone --no-hardlinks` and check out `baseCommit` detached. Do not use `git worktree`: a
+worktree shares the original repository's refs, hooks and object store, so it is not disposable. If
+`baseCommit` is the empty tree (a repository with no commit yet), there is nothing to check out:
+start from `git init`. Replace the placeholders with the workspace path, a new empty directory
+outside the workspace, the manifest's `baseCommit` and the patch file's full path.
+
+```bash
+# Either a clone at the base commit ...
+git clone --no-hardlinks <workspace> <tmp>
+git -C <tmp> checkout --detach <baseCommit>
+# ... or, when the repository has no commit yet, an empty one.
+git init <tmp>
+# Check first: this changes nothing, and exits non-zero if the patch does not apply cleanly.
+git -C <tmp> apply --check --binary <patch>
+git -C <tmp> apply --binary <patch>
+# Only when the check failed: a three-way merge, which needs the base blobs (a clone has them).
+git -C <tmp> apply --3way --binary <patch>
+# Or last: apply what applies and write the rest to .rej files for a manual merge.
+git -C <tmp> apply --reject --binary <patch>
 ```
 
-That location is **outside your workspace**. The generated `.schegent/.gitignore`
-does not reach it, the session-artifact sweep does not visit it, and the same
-directory accumulates work from every workspace this extension has ever opened.
-A `.patch` is unredacted source, so treat the store as you would the working tree
-it came from.
+**3. Check, then apply.** Run `--check` first and apply only if it exits 0. `git apply` is
+all-or-nothing: when the check fails, nothing has been written.
 
-Two budgets bound it, and neither knows about the other:
+**4. When the check fails.** The patch's lines no longer match the target, which happens when the
+target has commits beyond `baseCommit`. `--3way` works through the index, so the target's own
+changes must be committed first; it merges using the base blobs a clone holds, and leaves conflict
+markers and a non-zero exit where the two edits meet. `--reject` works on an uncommitted target: it
+applies the hunks that fit and writes the others beside the file as `<name>.rej` for a manual merge.
 
-| Bound | Value | Scope |
-|---|---|---|
-| Artifacts per run | newest 20 | *Inside* one run directory. Declines count on the same budget. |
-| Age | 14 days | *Across* run directories. A directory whose newest artifact is older than this is removed whole. |
-| Total size | 256 MiB | *Across* run directories. While the store is over budget, whole directories go oldest-first until it fits. |
-| Recent-run floor | newest 10 directories | Held back from the **size** bound. |
+**5. Copying back.** Review the result in the target (`git -C <tmp> diff` and `status`), then copy
+the files you want into the workspace by path. Do not copy the target's `.git`.
 
-The floor does **not** hold a directory back from the age bound, and the
-asymmetry is deliberate: "recent but over budget" is plausibly still wanted,
-while "old" is the bound saying nobody wants it however few there are. A floor
-that covered both would leave a residue of ancient diffs nothing could ever
-reap.
+**6. What cannot be restored.** Everything in `excludedUntracked` (and, for `unknown`, anything
+untracked), and every ignored file. If a file listed there matters, it is still in the workspace
+as it was left; the checkpoint was never going to return it.
 
-The outer bounds are **age and volume, never lifecycle**. A run completing does
-not delete its checkpoints — a finished run's patch is exactly what you want when
-that run turns out to have gone badly. `.declined.json` markers are ordinary
-artifacts under the same policy; they are not reaped preferentially for being
-`restorable: false`.
+#### When a checkpoint cannot be taken
 
-The values are code-resident constants in
-[`run-checkpoint-retention.ts`](../../src/services/run-checkpoint-retention.ts),
-not settings. A setting here would be a knob whose wrong value is silent data
-loss in a directory you never open.
+A Git-capable Phase is blocked, and the Run's error reads `checkpoint-unavailable: <reason>`, when
+a snapshot cannot be taken. A blocked Phase is not a declined one: a decline writes a marker and
+the Phase proceeds, a failure to snapshot stops it. The reason tells you what to change:
 
-The cross-run sweep runs once per window activation and does not block it. It
-removes only inside the checkpoint root, refuses an entry that resolves outside
-it, and does not follow a symlink into one. A sweep that removed nothing logs
-nothing; a sweep that removed something writes one
-`checkpoint-retention: sweep complete` line to the [runtime log](runtime-log.md)
-carrying counts, bytes, and which bound triggered it. Retention writes nothing to
-`audit.log`, which never carries a workspace path. If the checkpoint root cannot
-be read the sweep warns once and gives up — no phase, run, or activation fails
-because retention could not run.
+- `diff-size-limit`: the diff against the base is over 20 MiB. Commit or stash large changes, or
+  remove the large file from the tracked set.
+- `status-size-limit`: the working-tree status is over 1 MiB, in practice thousands of untracked
+  files. Ignore, move or remove the generated files.
+- `capture-failed`: Git itself could not be read; check that `git` runs in the workspace.
+- `artifact-write-failed`: the checkpoint directory or a file in it could not be written; check the
+  extension's global storage for space and permissions.
 
-**If you need a patch to outlive these bounds, copy it elsewhere.** Nothing warns
-before a reap, and there is no undo.
+## What this page does not claim
 
-## Restoring one by hand
-
-There is no in-product restore. Read the metadata beside the patch, check out the
-commit it names, and apply:
-
-```sh
-# 1. Which commit was the tree on when this was taken?
-cat '<globalStorageUri>/checkpoints/<runId>/<timestamp>-<phaseId>.json'
-
-# 2. Would it apply cleanly? --check changes nothing.
-git -C <workspace> apply --check '<...>/<timestamp>-<phaseId>.patch'
-
-# 3. Apply it against the commit the metadata named.
-git -C <workspace> checkout <baseCommit>
-git -C <workspace> apply '<...>/<timestamp>-<phaseId>.patch'
-```
-
-Use `baseCommit`, not whatever is currently checked out. A patch taken with
-several runs in flight holds only one run's sections, so it is a subset of a tree
-that has kept moving; applying it to a later commit is not guaranteed to be a
-no-op even when it succeeds. Commit or stash your current work first — `git apply`
-writes into the working tree.
-
-A run directory that is not there was reaped by the age or size bound above, or
-never held a patch because the snapshot was declined. Neither leaves a record of
-the file that used to exist; the runtime log's `checkpoint-retention` lines say
-how many directories a sweep removed, not which.
-
-## When there is a marker instead of a patch
-
-Schegent declines rather than writing a snapshot it cannot attribute to a single
-run. A decline writes **no** `.patch` and records a
-`<timestamp>-<phase>.declined.json` marker carrying `runId`, `phaseId`,
-`declinedAt`, `inFlightRuns`, `restorable: false`, a `reason`, and a `detail`
-naming what to deal with — plus a counts-only runtime-log warning. **A decline is
-not a failure: the Git-capable phase proceeds.** Only a genuinely failed snapshot
-blocks its phase. Markers are pruned on the same 20-per-run budget as snapshots,
-and their run directory is reaped by the same cross-run bounds.
-
-| `reason` | What it means | What to do |
-|---|---|---|
-| `unattributed-worktree-change` | The tree holds a change no run's audit record claims — a hand edit, or a write that escaped its phase. `detail.paths` names them. | Commit, stash, or revert those paths. |
-| `path-mutated-by-multiple-runs` | Two runs both reported writing the same file, so neither patch can be separated. `detail.paths` names them. | Let one run finish and commit, or cancel one. |
-| `attribution-evidence-incomplete` | This run's history, or a live sibling's, has a gap — a run resumed after a window restart, a phase that produced no audit record, or a git read that failed. `detail.ownEvidence` and `detail.unaccountedSiblings` say which. | Nothing to repair; the next run started in this window records cleanly. |
-| `no-attributable-changes-observed` | Nothing this run claims is still uncommitted, so there is nothing to snapshot. | Expected after a run's own work has been committed. |
-| `concurrent-runs-share-one-worktree` | **Historical.** Written by Schegent before FR-R3-004, when every checkpoint above one in-flight run was declined regardless of attribution. Nothing emits it now. | Nothing; the marker predates the current behaviour. |
-
-To make declines less likely, run at `schegent.queue.globalConcurrencyCap = 1`, or
-keep the working tree clean of hand edits while runs are in flight — see
-[Multiple queues and concurrency](multi-queue-concurrency.md#recovery-checkpoints-under-concurrency).
-
-Terminal state changes use a workspace-state intent journal. Activation replays
-an unfinished intent before any queue scheduler starts, then reconciles the
-terminal run, queue projection, and idempotent history entry before clearing the
-journal.
+On this page, "Restoring a checkpoint by hand" is backed by an automated end-to-end test in
+`tests/integration/checkpoints/manual-restore-runbook.test.ts`, which runs its commands in
+throwaway repositories and fails if the fenced block and the test's command list differ. The
+remaining prose sections on this page (run cancellation and host-crash reattachment) do not have a
+single end-to-end procedure harness on this page itself; however, the three critical operator
+incident procedures (future schema refusal and schema-8 rollback, quarantined workspace-state
+writer auto-recovery / reload / `schegent.reset`, and stuck execution lanes) are rehearsed
+end-to-end in [Incident recovery guide](incident-recovery-guide.md) via
+[`tests/integration/operator-incident-guide-rehearsal.test.ts`](../../tests/integration/operator-incident-guide-rehearsal.test.ts)
+and [`tests/integration/sqlite-rollback-runbook-rehearsal.test.ts`](../../tests/integration/sqlite-rollback-runbook-rehearsal.test.ts).

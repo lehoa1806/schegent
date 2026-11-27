@@ -52,3 +52,140 @@ describe('exact VSIX content policy', () => {
     );
   });
 });
+
+/**
+ * FR-R3-112 — repository tooling configuration stays out of the package.
+ *
+ * FOUND BY THE PACKAGING GATE, which is the part worth recording. `vsce package` refused the
+ * build with *"found GitHub Token"* pointing at `.secretlintrc.json` line 15 — the allowlist entry
+ * holding a **synthetic** token (`ghp_0123456789…`, sequential filler) so the redaction fixture in
+ * `workflow-catalog-projector.test.ts` does not trip the scanner. The scanner's verdict about the
+ * string was wrong; its verdict about the FILE was right, and that is the defect: a repository lint
+ * configuration was being shipped to every operator who installs the extension.
+ *
+ * The two untracked records are here for the same reason one step further on: `.gate-attestation.json`
+ * and `.backend-qualification.json` describe one machine's observation of one tree at one moment.
+ * Neither is committed, so neither is usually present — which is exactly why an ignore rule is the
+ * right place for them rather than a hope that they never are.
+ */
+describe('the package carries no repository tooling configuration', () => {
+  const MUST_NOT_SHIP = [
+    '.secretlintrc.json',
+    '.secretlintignore',
+    '.gate-attestation.json',
+    '.backend-qualification.json'
+  ] as const;
+
+  it('ignores each by name in .vscodeignore', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const ignore = readFileSync(
+      resolve(__dirname, '..', '..', '..', '.vscodeignore'),
+      'utf8'
+    );
+    for (const name of MUST_NOT_SHIP) {
+      expect(
+        ignore.split('\n').some((line) => line.trim() === name),
+        `${name} must be ignored by name; a published extension has no use for it`
+      ).toBe(true);
+    }
+  });
+
+  it('would reject each if it reached the archive anyway', async () => {
+    // The ignore rule is a claim about what vsce does; this is the independent check that the
+    // content policy would catch the file if the rule were ever removed or misspelled.
+    const { assertAllowedEntryNames } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const names = await plausiblePackagedNames();
+    for (const name of MUST_NOT_SHIP) {
+      expect(
+        () => assertAllowedEntryNames([...names, `extension/${name}`]),
+        `${name} must not be an allowed entry`
+      ).toThrow();
+    }
+  });
+});
+
+/**
+ * FR-R3-181 (FR-028) — a leaked test scratch root stays out of the package, by two rules.
+ *
+ * Global setup now sweeps every `.tmp/vitest-<pid>/` root whose run is provably gone, which makes
+ * the allowlist look redundant for `.tmp/`. It is not, and it must not be relaxed on those grounds:
+ * the sweep runs only when the suite does, so a package built after a crash and before the next
+ * test run still meets whatever the crash left. The ignore rule fixes the cause seen on 2026-08-23;
+ * the allowlist is what catches the next cause nobody predicted.
+ */
+describe('a leaked test scratch root stays out of the package', () => {
+  /** Two files under a dead run's root. Which files does not matter to a closed list. */
+  const LEAKED_ROOT = ['.tmp/vitest-50939/.gitignore', '.tmp/vitest-50939/audit.log'] as const;
+
+  it('ignores the scratch directory in .vscodeignore', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const ignore = readFileSync(resolve(__dirname, '..', '..', '..', '.vscodeignore'), 'utf8');
+    expect(ignore.split('\n').some((line) => line.trim() === '.tmp/**')).toBe(true);
+  });
+
+  it('would reject the root if it reached the archive anyway', async () => {
+    const { assertAllowedEntryNames } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const names = await plausiblePackagedNames();
+    for (const name of LEAKED_ROOT) {
+      expect(
+        () => assertAllowedEntryNames([...names, `extension/${name}`]),
+        `${name} must not be an allowed entry`
+      ).toThrow(/unexpected packaged file extension\/\.tmp\/vitest-50939\//);
+    }
+  });
+});
+
+/**
+ * FR-R4-F09 (research R5, R27; contract test T15) — the module graphs and the release outputs stay
+ * out of the package, and out of version control, by two rules each.
+ *
+ * `dist/module-graph/*.json` is written by both bundlers so the SBOM can say what was bundled,
+ * and `.vscodeignore` keeps nothing JSON out of `dist/` on its own, so without a rule of its own
+ * the graph files would ship. `.release/` holds the staging VSIX, the candidate and the release
+ * record: a stray record at the package root would otherwise be packaged by the next
+ * `package:smoke` and fail the allowlist. The ignore rules fix the cause, and the allowlist stays
+ * the closed check that catches the next cause nobody predicted, as it does for the scratch root
+ * above.
+ */
+describe('the module graphs and the release outputs stay out of the package', () => {
+  const GRAPH_AND_RELEASE_ENTRIES = [
+    'dist/module-graph/host.json',
+    'dist/module-graph/webview.json',
+    '.release/schegent-0.2.0.release.json',
+    '.release/staging/schegent-0.2.0.vsix'
+  ] as const;
+
+  const lines = async (name: '.vscodeignore' | '.gitignore') => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    return readFileSync(resolve(__dirname, '..', '..', '..', name), 'utf8')
+      .split('\n')
+      .map((line) => line.trim());
+  };
+
+  it('ignores dist/module-graph in .vscodeignore', async () => {
+    expect((await lines('.vscodeignore')).includes('dist/module-graph/**')).toBe(true);
+  });
+
+  it('ignores .release in .vscodeignore', async () => {
+    expect((await lines('.vscodeignore')).includes('.release/**')).toBe(true);
+  });
+
+  it('ignores .release in .gitignore, anchored or not', async () => {
+    const gitignore = await lines('.gitignore');
+    expect(gitignore.includes('.release/') || gitignore.includes('/.release/')).toBe(true);
+  });
+
+  it('would reject each if it reached the archive anyway', async () => {
+    const { assertAllowedEntryNames } = await import('../../../scripts/check-vsix-smoke.mjs');
+    const names = await plausiblePackagedNames();
+    for (const name of GRAPH_AND_RELEASE_ENTRIES) {
+      expect(
+        () => assertAllowedEntryNames([...names, `extension/${name}`]),
+        `${name} must not be an allowed entry`
+      ).toThrow(/unexpected packaged file/);
+    }
+  });
+});

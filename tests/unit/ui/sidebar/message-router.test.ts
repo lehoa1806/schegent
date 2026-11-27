@@ -5,19 +5,20 @@ import {
   type RouterDeps
 } from '../../../../src/ui/sidebar/message-router';
 import { SanitizedLogger } from '../../../../src/lib/logger';
+import { HANDLERS, HANDLER_TABLE } from '../../../../src/ui/sidebar/commands';
+import { COMMAND_TYPES } from '../../../../src/contracts/sidebar-ipc';
+import type { CommandHandler } from '../../../../src/ui/sidebar/commands/handler-contract';
+import { ack } from '../../../../src/ui/sidebar/commands/handler-helpers';
 import type { CommandAckMessage, SidebarCommand } from '../../../../src/ui/sidebar/messages';
 import {
   CMD_CANCEL,
   CMD_OPEN_AUDIT_LOG,
   CMD_REMOVE_QUEUE_ITEM,
-  CMD_RESET,
-  CMD_RESUME,
   CMD_START,
   CMD_RETRY_QUEUE_ITEM,
   CMD_MOVE_QUEUE_ITEM_UP,
   CMD_MOVE_QUEUE_ITEM_DOWN,
   CMD_CLEAR_COMPLETED,
-  CMD_CLEAR_FAILED,
   CMD_PAUSE_QUEUE,
   CMD_RESUME_QUEUE,
   CMD_PAUSE_PHASE,
@@ -42,11 +43,18 @@ interface CapturedAuditEntry {
   correlationId?: string;
 }
 
+// FR-R3-161 (T049, FR-016 re-expressed, 7 of 7) — 2026-09-04. This double
+// carried a boolean `remove(...)`, its `removed`/`removeResult` fields, and a
+// `removeTask(...)` pass-through that called it when `removeTaskResult` was set
+// to `null`, so the router's now-deleted fallback branch could be exercised
+// through the typed surface. No `it(...)` in this file ever set that field to
+// `null` (the three that touch it at :393, :407 and :436 all assign a result
+// object), so the pass-through never ran and the boolean route was never
+// reached: narrowing the fake to the typed surface asserts nothing less than it
+// did. The field's type loses `| null` for the same reason.
 class FakeQueueOps {
-  removed: string[] = [];
-  removeResult: boolean = true;
   removeTaskCalls: string[] = [];
-  removeTaskResult: { ok: boolean; reason?: string; queueId?: string } | null = {
+  removeTaskResult: { ok: boolean; reason?: string; queueId?: string } = {
     ok: true,
     queueId: 'default'
   };
@@ -56,10 +64,11 @@ class FakeQueueOps {
   moveUpResult: { ok: boolean; reason?: string } = { ok: true };
   moveDownCalls: string[] = [];
   moveDownResult: { ok: boolean; reason?: string } = { ok: true };
-  clearCompletedCalls: number = 0;
-  clearCompletedResult: { removed: number } = { removed: 0 };
-  clearFailedCalls: number = 0;
-  clearFailedResult: { removed: number } = { removed: 0 };
+  clearCompletedCalls: string[] = [];
+  clearCompletedResult: { ok: boolean; reason?: string; removed: number } = {
+    ok: true,
+    removed: 0
+  };
   setQueuePausedStateCalls: Array<{
     paused: boolean;
     queueId: string | undefined;
@@ -70,19 +79,10 @@ class FakeQueueOps {
   setQueuePausedStateResult: { ok: boolean; reason?: string; queueId?: string } = { ok: true };
   setQueuePausedStateThrows: Error | null = null;
 
-  async remove(id: string): Promise<boolean> {
-    this.removed.push(id);
-    return this.removeResult;
-  }
   async removeTask(
     id: string
   ): Promise<{ ok: boolean; reason?: string; queueId?: string }> {
     this.removeTaskCalls.push(id);
-    if (this.removeTaskResult === null) {
-      // Pass-through to legacy `remove(...)` so router fallback can be exercised.
-      const ok = await this.remove(id);
-      return ok ? { ok: true } : { ok: false, reason: 'unknown-task-id' };
-    }
     return this.removeTaskResult;
   }
   async retry(id: string): Promise<{ ok: boolean; reason?: string }> {
@@ -97,13 +97,9 @@ class FakeQueueOps {
     this.moveDownCalls.push(id);
     return this.moveDownResult;
   }
-  async clearCompleted(): Promise<{ removed: number }> {
-    this.clearCompletedCalls++;
+  async clearCompleted(queueId: string): Promise<{ ok: boolean; reason?: string; removed: number }> {
+    this.clearCompletedCalls.push(queueId);
     return this.clearCompletedResult;
-  }
-  async clearFailed(): Promise<{ removed: number }> {
-    this.clearFailedCalls++;
-    return this.clearFailedResult;
   }
   async setQueuePausedState(
     paused: boolean,
@@ -135,13 +131,19 @@ function makeRouter(opts: {
 } {
   const queueOps = opts.queueOps ?? new FakeQueueOps();
   const executeCommand = vi.fn();
-  executeCommand.mockResolvedValue(undefined);
+  // FR-R3-154 (T1646) — routes that read their command's answer are no longer
+  // only `cmd-cancel`: the five lifecycle routes read one too, and `undefined`
+  // now means the Workspace Trust gate refused before the handler ran. So the
+  // shared fake states an acceptance rather than nothing. `{ ok: true }` is the
+  // `MutationResult` the majority of these commands return (`runCancel`,
+  // `queue-ops`), and it is understood by both readers — `ackGenericResult` and
+  // `normalizeCommandResult`. Cases asserting a refusal override it.
+  executeCommand.mockResolvedValue({ ok: true });
   const acks: CapturedAck[] = [];
   const warnings: string[] = [];
   const auditEntries: CapturedAuditEntry[] = [];
   const deps: RouterDeps = {
     executeCommand: executeCommand as unknown as RouterDeps['executeCommand'],
-    queueRemover: queueOps,
     queueOps,
     phaseOps: {
       skipPhase: vi.fn(async () => ({ ok: true })),
@@ -343,6 +345,27 @@ describe('MessageRouter.dispatch', () => {
     expect(acks[0].msg.reason).toBe('queue-paused');
   });
 
+  // FR-R4-F05 (FR-017) — the storage-fault outcome is additive and reaches the webview as its fixed
+  // code: the operator's surface words it, and nothing of the exception travels.
+  it('CMD_START acks a storage fault as rejected with the fixed queue-state-unavailable code', async () => {
+    executeCommand.mockResolvedValueOnce({
+      result: { outcome: 'failed-storage', reason: 'queue-state-unavailable' },
+      queueId: null,
+      queueName: null
+    });
+    await dispatch(
+      router,
+      {
+        type: CMD_START,
+        correlationId: 'storage-fault',
+        payload: { description: 'queued task', queueId: 'default', position: 0 }
+      },
+      acks
+    );
+    expect(acks[0]!.msg.status).toBe('rejected');
+    expect(acks[0]!.msg.reason).toBe('queue-state-unavailable');
+  });
+
   it('CMD_START primary-host gate is unchanged: secondary host rejects with secondary-window-readonly (T021b, US2)', async () => {
     const built = makeRouter({ isPrimary: () => false });
     const localAcks: CapturedAck[] = [];
@@ -375,17 +398,12 @@ describe('MessageRouter.dispatch', () => {
     expect(acks[0].msg.status).toBe('accepted');
   });
 
-  it('routes CMD_RESUME to schegent.resume', async () => {
-    await dispatch(router, { type: CMD_RESUME, correlationId: 'c3' }, acks);
-    expect(executeCommand).toHaveBeenCalledWith('schegent.resume');
-    expect(acks[0].msg.status).toBe('accepted');
-  });
-
-  it('routes CMD_RESET to schegent.reset', async () => {
-    await dispatch(router, { type: CMD_RESET, correlationId: 'c4', payload: { confirmed: true } }, acks);
-    expect(executeCommand).toHaveBeenCalledWith('schegent.reset');
-    expect(acks[0].msg.status).toBe('accepted');
-  });
+  // `CMD_RESUME` and `CMD_RESET` were routed here until the lifecycle
+  // round-check of 2026-08-30 (finding D) deleted them. Both were `exec` shims
+  // onto `schegent.resume` / `schegent.reset`, and after FR-R3-140 deleted
+  // `ControlPanel.svelte` — their only sender — the routes these two tests
+  // covered were routes only these two tests took. The palette commands they
+  // forwarded to are untouched and still registered.
 
   it('routes CMD_OPEN_AUDIT_LOG to schegent.showAuditLog', async () => {
     await dispatch(router, { type: CMD_OPEN_AUDIT_LOG, correlationId: 'c5' }, acks);
@@ -427,21 +445,14 @@ describe('MessageRouter.dispatch', () => {
     expect(removedEvents[0].correlationId).toBe('rm-1');
   });
 
-  it('rejects CMD_REMOVE_QUEUE_ITEM with task-not-in-pending-state for non-pending rows (BUG-002)', async () => {
-    const built = makeRouter();
-    built.queueOps.removeTaskResult = { ok: false, reason: 'task-not-in-pending-state' };
-    const localAcks: CapturedAck[] = [];
-    await dispatch(
-      built.router,
-      { type: CMD_REMOVE_QUEUE_ITEM, correlationId: 'rm-2', payload: { id: 'in-flight-task', confirmed: true } },
-      localAcks
-    );
-    expect(localAcks[0].msg.status).toBe('rejected');
-    expect(localAcks[0].msg.reason).toBe('task-not-in-pending-state');
-    expect(built.warnings.some((w) => /pending/i.test(w))).toBe(true);
-    // The reject path must NOT emit a task-removed audit event.
-    expect(built.auditEntries.filter((e) => e.eventType === 'task-removed')).toHaveLength(0);
-  });
+  // FR-R3-153 (T1641, research.md grounding facts) — a
+  // 'rejects...task-not-in-pending-state for non-pending rows' case used to
+  // live here, driven entirely by a mocked `queueOps.removeTaskResult`
+  // rather than the real `QueueManager.removeTask`. The real method never
+  // produced that reason for any status, before or after this feature —
+  // removal has always been unrestricted by status (spec FR-014). Removed
+  // as a stale case that treated a mock's own fabricated reason as an
+  // invariant the implementation was ever asserting.
 
   it('rejects CMD_REMOVE_QUEUE_ITEM with unknown-task-id when the task is missing (BUG-002)', async () => {
     const built = makeRouter();
@@ -457,34 +468,84 @@ describe('MessageRouter.dispatch', () => {
     expect(built.auditEntries.filter((e) => e.eventType === 'task-removed')).toHaveLength(0);
   });
 
-  it('sends rejected ack with sanitized reason on dispatch error', async () => {
+  // The subject here is the ROUTER's own catch-all sanitization, not any one
+  // route. It used to be driven through `CMD_CANCEL`, which was a route that
+  // let a dispatch throw propagate; feature 202 (FR-032) moved cancel onto
+  // `execForOutcome`, which catches the throw inside the handler, so cancel no
+  // longer reaches this path at all. Re-pointed at `CMD_START` — the one
+  // remaining route that still calls `executeCommand` without catching — so the
+  // property keeps its coverage rather than losing it to the route that used to
+  // carry it. Cancel's replacement behaviour is pinned directly below.
+  // FR-R4-F05 (T9, FR-011, FR-014; TA9) — this case used to assert that the
+  // router's catch-all sent the SANITIZED MESSAGE as the ack's reason
+  // ("[REDACTED]" inside it). A sanitized message still carries whatever the
+  // redaction patterns do not know, so the reason is now always the fixed code and
+  // the detail goes to the log only. The cases that carry the whole contract are in
+  // the describe at the foot of this file.
+  it('answers a dispatch error that propagates out of a handler with the fixed code, never a message', async () => {
     executeCommand.mockRejectedValueOnce(new Error('boom: Bearer abcdefghijklmnopqrst'));
     await dispatch(
       router,
-      { type: CMD_CANCEL, correlationId: 'c8', payload: { taskId: 'task-error' } },
+      {
+        type: CMD_START,
+        correlationId: 'c8',
+        payload: { description: 'add login', queueId: 'default' }
+      },
       acks
     );
     expect(acks[0].msg.status).toBe('rejected');
-    expect(acks[0].msg.reason).toBeDefined();
+    expect(acks[0].msg.outcome).toBe('failed');
+    expect(acks[0].msg.reason).toBe('command-dispatch-failed');
     expect(acks[0].msg.reason).not.toContain('abcdefghijklmnopqrst');
-    expect(acks[0].msg.reason).toContain('[REDACTED]');
+    expect(acks[0].msg.reason).not.toContain('[REDACTED]');
+  });
+
+  // Feature 202 (FR-007, FR-032, data-model.md §1.1) — the same throw, through
+  // the corrected cancel route, is answered with a CODE and never a message.
+  // That asymmetry is the contract, not an omission: the reason crosses to the
+  // webview, and a message from this layer can carry a workspace path, so the
+  // sanitized text goes to the extension log instead. Asserting the absence of
+  // the secret AND the absence of the sanitizer's own marker is what
+  // distinguishes "the message was redacted" from "no message crossed at all" —
+  // only the second is what this route now does.
+  it('answers a dispatch error on the corrected cancel route with a code, not a sanitized message', async () => {
+    executeCommand.mockRejectedValueOnce(new Error('boom: Bearer abcdefghijklmnopqrst'));
+    await dispatch(
+      router,
+      { type: CMD_CANCEL, correlationId: 'c8b', payload: { taskId: 'task-error' } },
+      acks
+    );
+    expect(acks[0].msg.status).toBe('rejected');
+    expect(acks[0].msg.outcome).toBe('failed');
+    expect(acks[0].msg.reason).toBe('command-dispatch-failed');
+    expect(acks[0].msg.reason).not.toContain('abcdefghijklmnopqrst');
+    expect(acks[0].msg.reason).not.toContain('[REDACTED]');
   });
 
   describe('Queue mutating commands (T042)', () => {
-    it('CMD_RETRY_QUEUE_ITEM calls queueOps.retry and acks accepted on ok', async () => {
-      queueOps.retryResult = { ok: true };
+    // These three used to drive `queueOps.retry` directly, because the handler
+    // called it directly. That fork is the defect: returning the row to
+    // `pending` is not asking the queue to drain, and only the host command
+    // registration fires the drain, so the sidebar's Retry left the Task sitting
+    // pending with no Run and no log. The handler now delegates — the shape
+    // `cmd-restart-canceled-task` always had — so what these pin is the
+    // delegation and the ack it produces.
+    it('CMD_RETRY_QUEUE_ITEM delegates to schegent.retryQueuedItem and acks accepted on ok', async () => {
+      executeCommand.mockResolvedValueOnce({ ok: true, queueId: 'default' });
       await dispatch(
         router,
         { type: CMD_RETRY_QUEUE_ITEM, correlationId: 'r1', payload: { id: 'q-1' } },
         acks
       );
-      expect(queueOps.retryCalls).toEqual(['q-1']);
+      expect(executeCommand).toHaveBeenCalledWith('schegent.retryQueuedItem', { id: 'q-1' });
+      // The fork is gone: the router no longer reaches past the command.
+      expect(queueOps.retryCalls).toEqual([]);
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_RETRY_QUEUE_ITEM rejects with reason and notifies on illegal-state', async () => {
+    it('CMD_RETRY_QUEUE_ITEM rejects with reason on illegal-state', async () => {
       const built = makeRouter();
-      built.queueOps.retryResult = { ok: false, reason: 'illegal-state' };
+      built.executeCommand.mockResolvedValueOnce({ ok: false, reason: 'illegal-state' });
       const localAcks: CapturedAck[] = [];
       await dispatch(
         built.router,
@@ -493,7 +554,10 @@ describe('MessageRouter.dispatch', () => {
       );
       expect(localAcks[0].msg.status).toBe('rejected');
       expect(localAcks[0].msg.reason).toBe('illegal-state');
-      expect(built.warnings.length).toBeGreaterThan(0);
+      // The operator-facing warning moved with the mutation: `runRetryQueuedItem`
+      // raises it through the host notifier before returning `{ ok: false }`,
+      // which is outside this router's scope. `queue-mutations.test.ts` is where
+      // that notification is asserted now.
     });
 
     it('CMD_MOVE_QUEUE_ITEM_UP calls queueOps.moveUp', async () => {
@@ -530,19 +594,22 @@ describe('MessageRouter.dispatch', () => {
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_CLEAR_COMPLETED calls queueOps.clearCompleted', async () => {
-      queueOps.clearCompletedResult = { removed: 4 };
-      await dispatch(router, { type: CMD_CLEAR_COMPLETED, correlationId: 'cc1' }, acks);
-      expect(queueOps.clearCompletedCalls).toBe(1);
+    it('CMD_CLEAR_COMPLETED calls queueOps.clearCompleted with the selected queueId', async () => {
+      queueOps.clearCompletedResult = { ok: true, removed: 4 };
+      await dispatch(
+        router,
+        { type: CMD_CLEAR_COMPLETED, correlationId: 'cc1', payload: { queueId: 'q-3' } },
+        acks
+      );
+      expect(queueOps.clearCompletedCalls).toEqual(['q-3']);
       expect(acks[0].msg.status).toBe('accepted');
     });
 
-    it('CMD_CLEAR_FAILED calls queueOps.clearFailed', async () => {
-      queueOps.clearFailedResult = { removed: 2 };
-      await dispatch(router, { type: CMD_CLEAR_FAILED, correlationId: 'cf1' }, acks);
-      expect(queueOps.clearFailedCalls).toBe(1);
-      expect(acks[0].msg.status).toBe('accepted');
-    });
+    // `CMD_CLEAR_FAILED` sat here until finding D deleted it — the one member of
+    // that batch that was not an `exec` shim, so its removal also retired
+    // `QueueOps.clearFailed`. `schegent.clearFailed` still runs `runClearFailed`
+    // against `QueueManager`, which `tests/integration/queue-mutations.test.ts`
+    // now drives directly.
 
     it('CMD_PAUSE_QUEUE calls queueOps.setQueuePausedState(true)', async () => {
       await dispatch(router, { type: CMD_PAUSE_QUEUE, correlationId: 'pq1' }, acks);
@@ -612,7 +679,7 @@ describe('MessageRouter.dispatch', () => {
         {
           type: CMD_SKIP_PHASE,
           correlationId: 'sk1',
-          payload: { queueId: 'default', phaseId: 'speckit-plan' }
+          payload: { queueId: 'default', runId: 'run-1', phaseId: 'speckit-plan' }
         },
         acks
       );
@@ -768,7 +835,7 @@ describe('MessageRouter.dispatch', () => {
   describe('No thrown exceptions on illegal state (T042 / FR-032)', () => {
     it('CMD_RETRY_QUEUE_ITEM never throws on not-found, returns rejected ack', async () => {
       const built = makeRouter();
-      built.queueOps.retryResult = { ok: false, reason: 'not-found' };
+      built.executeCommand.mockResolvedValueOnce({ ok: false, reason: 'not-found' });
       const localAcks: CapturedAck[] = [];
       await expect(
         dispatch(
@@ -782,4 +849,199 @@ describe('MessageRouter.dispatch', () => {
     });
   });
 
+});
+
+// FR-R4-F05 (T9; contract F, F1 to F5; FR-011 to FR-014; SC-004) — what the router's
+// catch-all sends and logs for ANY thrown value.
+//
+// WHY THE FIXED CODE. The catch-all used to ack `(err as Error).message` after
+// sanitizing it: `null` and `undefined` gave no ack at all (the cast read a property
+// of nothing and the catch itself threw), and any message reached the webview with
+// whatever the redaction patterns did not recognise. Now a throw before an ack gives
+// exactly one `command-dispatch-failed` ack with no `result`, a throw after an ack
+// gives none, and the detail goes to the log through `describeFailure`, bounded.
+describe('MessageRouter catch-all (T9, F1 to F5)', () => {
+  const PATH = '/synthetic/home/user-252/secret.txt';
+  // Built at runtime so no credential-shaped literal sits in the source.
+  const CREDENTIAL = ['Bearer', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(' ');
+  const GETTER_MARKER = 'SYNTHETIC-MARKER-252-9';
+  const MARKERS = ['user-252', 'abcdefghijklmnopqrstuvwxyz0123456789', GETTER_MARKER] as const;
+
+  const CONTROL_CHARACTERS = ['line1', String.fromCharCode(0, 7, 27), '[31mred', '\r\nline2'].join('');
+  const throwingMessage = Object.defineProperty(new Error('placeholder'), 'message', {
+    configurable: true,
+    get(): string {
+      throw new Error(`message getter exploded ${GETTER_MARKER}`);
+    }
+  }) as Error;
+
+  const THROWN: ReadonlyArray<readonly [string, unknown]> = [
+    ['an Error holding a path', new Error(`failed at ${PATH}`)],
+    ['an Error holding a credential', new Error(`boom: ${CREDENTIAL}`)],
+    ['an Error holding control characters', new Error(CONTROL_CHARACTERS)],
+    ['an Error holding 1 MiB of text', new Error('A'.repeat(1024 * 1024))],
+    ['a string', `thrown string ${PATH}`],
+    ['an object with no message', { code: 'E_SYNTHETIC', path: PATH }],
+    ['null', null],
+    ['undefined', undefined],
+    ['an Error whose message getter throws', throwingMessage]
+  ];
+
+  interface RecordedLog {
+    readonly level: string;
+    readonly message: string;
+    readonly context: Record<string, unknown> | undefined;
+  }
+
+  function routerWithRecordingLogger(): {
+    router: MessageRouter;
+    executeCommand: ReturnType<typeof vi.fn>;
+    logs: RecordedLog[];
+  } {
+    const logs: RecordedLog[] = [];
+    const executeCommand = vi.fn();
+    const sanitizer = new SanitizedLogger();
+    const record = (level: string) => (message: string, context?: Record<string, unknown>) => {
+      logs.push({ level, message, context });
+    };
+    const router = new MessageRouter({
+      executeCommand: executeCommand as unknown as RouterDeps['executeCommand'],
+      isPrimary: () => true,
+      isTrusted: () => true,
+      logger: {
+        info: record('info'),
+        warn: record('warn'),
+        error: record('error'),
+        debug: record('debug'),
+        sanitize: (value: string) => sanitizer.sanitize(value)
+      } as unknown as RouterDeps['logger']
+    });
+    return { router, executeCommand, logs };
+  }
+
+  const START: SidebarCommand = {
+    type: CMD_START,
+    correlationId: 'fixed-ack',
+    payload: { description: 'add login', queueId: 'default' }
+  };
+
+  it.each(THROWN)('sends one fixed ack and no thrown content when a handler throws %s', async (_label, thrown) => {
+    const { router, executeCommand, logs } = routerWithRecordingLogger();
+    executeCommand.mockRejectedValueOnce(thrown);
+    const acks: CapturedAck[] = [];
+
+    await dispatch(router, START, acks);
+
+    expect(acks.map((a) => a.msg)).toEqual([
+      {
+        type: 'CMD_ACK',
+        correlationId: 'fixed-ack',
+        status: 'rejected',
+        outcome: 'failed',
+        reason: 'command-dispatch-failed'
+      }
+    ]);
+    const wire = JSON.stringify(acks[0]?.msg);
+    for (const marker of MARKERS) expect(wire).not.toContain(marker);
+    expect(wire).not.toContain('AAAAAAAAAA');
+    expect(wire).not.toContain(String.fromCharCode(7));
+    expect(logs.filter((l) => l.message.includes('failed')).length).toBeGreaterThan(0);
+  });
+
+  it('sends one fixed ack when the router itself catches (the handler throws before acking)', async () => {
+    // A synthetic handler: no production handler throws before its first ack on
+    // demand for every thrown kind, and the router's contract is independent of
+    // which handler threw.
+    const { router, logs } = routerWithRecordingLogger();
+    const handlers = HANDLERS as unknown as Map<string, CommandHandler>;
+    const spy = vi.spyOn(handlers, 'get').mockImplementation(() => async () => {
+      throw new Error(`before any ack ${PATH}`);
+    });
+    try {
+      const acks: CapturedAck[] = [];
+      await dispatch(router, START, acks);
+
+      expect(acks).toHaveLength(1);
+      expect(acks[0]?.msg).toMatchObject({ status: 'rejected', reason: 'command-dispatch-failed' });
+      expect(acks[0]?.msg.result).toBeUndefined();
+      const failures = logs.filter((l) => l.message === 'sidebar router: command failed');
+      expect(failures).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('sends no second ack when a handler throws after it acked, and logs one line', async () => {
+    const { router, logs } = routerWithRecordingLogger();
+    const handlers = HANDLERS as unknown as Map<string, CommandHandler>;
+    const spy = vi.spyOn(handlers, 'get').mockImplementation(() => async (ctx) => {
+      await ack(ctx, 'accepted');
+      throw new Error(`after the ack ${PATH}`);
+    });
+    try {
+      const acks: CapturedAck[] = [];
+      await dispatch(router, START, acks);
+
+      expect(acks.map((a) => a.msg.status)).toEqual(['accepted']);
+      const failures = logs.filter((l) => l.message === 'sidebar router: command failed');
+      expect(failures).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('logs { type, correlationId, error } with a bounded, sanitized error and no payload or stack', async () => {
+    const { router, executeCommand, logs } = routerWithRecordingLogger();
+    executeCommand.mockRejectedValueOnce(
+      new Error(`boom: ${CREDENTIAL} ${'B'.repeat(4096)}`)
+    );
+
+    await dispatch(router, START, []);
+
+    const failures = logs.filter((l) => l.message === 'sidebar router: command failed');
+    expect(failures).toHaveLength(1);
+    const context = failures[0]?.context;
+    expect(failures[0]?.level).toBe('warn');
+    expect(Object.keys(context ?? {}).sort()).toEqual(['correlationId', 'error', 'type']);
+    expect(context).toMatchObject({ type: CMD_START, correlationId: 'fixed-ack' });
+    const detail = String(context?.error);
+    expect(detail.length).toBeLessThanOrEqual(512);
+    expect(detail).not.toContain('abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(detail).not.toContain('add login');
+    expect(detail).not.toMatch(/\n\s+at /);
+  });
+
+  it('registers a handler in HANDLER_TABLE for every COMMAND_TYPES member and acks command-dispatch-failed if a lookup misses (FR-R5-F10)', async () => {
+    expect(Object.keys(HANDLER_TABLE).sort()).toEqual([...COMMAND_TYPES].sort());
+    for (const type of COMMAND_TYPES) {
+      expect(typeof HANDLERS.get(type)).toBe('function');
+    }
+
+    const { router, logs } = routerWithRecordingLogger();
+    const handlers = HANDLERS as unknown as Map<string, CommandHandler>;
+    const spy = vi.spyOn(handlers, 'get').mockReturnValueOnce(undefined);
+    try {
+      const acks: CapturedAck[] = [];
+      await dispatch(router, START, acks);
+
+      expect(acks).toHaveLength(1);
+      expect(acks[0]?.msg).toEqual({
+        type: 'CMD_ACK',
+        correlationId: 'fixed-ack',
+        status: 'rejected',
+        outcome: 'failed',
+        reason: 'command-dispatch-failed'
+      });
+      const warnings = logs.filter(
+        (l) => l.level === 'warn' && l.message === 'sidebar router: missing command handler'
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.context).toEqual({
+        type: CMD_START,
+        correlationId: 'fixed-ack'
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

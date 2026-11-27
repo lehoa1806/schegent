@@ -1,9 +1,25 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import type { SanitizedLogger } from '../lib/logger';
+import { spawnCommandFor } from '../lib/spawn-command';
 import {
   SUPPORTED_BACKENDS,
   type BackendRunnerKind
-} from '../runner/backend-runner-factory';
+} from '../contracts/backend-kinds';
+import {
+  emptyBackendModels,
+  getBackendDescriptor,
+  mapMutableBackends,
+  type BackendMap
+} from '../contracts/backend-descriptors';
+import {
+  BACKEND_AVAILABILITY_VERSION,
+  UNKNOWN_LOCAL_QUOTA_ID,
+  validateQuotaContext,
+  type BackendAvailabilityAdapter,
+  type FrozenPhaseQuotaTarget,
+  type QuotaContext,
+  type QuotaStatusCheckSupport
+} from '../contracts/backend-availability';
 
 export const DEFAULT_BACKEND_PROBE_TIMEOUT_SECONDS = 5;
 export const MIN_BACKEND_PROBE_TIMEOUT_SECONDS = 1;
@@ -39,7 +55,7 @@ interface BackendInspection {
 export interface BackendCapabilitySnapshot {
   readonly generation: number;
   readonly availableBackends: readonly BackendRunnerKind[];
-  readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
+  readonly availableModels: BackendMap<readonly string[]>;
 }
 
 export interface BackendAvailabilityProbe {
@@ -72,17 +88,18 @@ export interface BackendCapabilityServiceDeps {
   readonly readTimeoutSeconds: () => unknown;
   readonly buildEnv: () => NodeJS.ProcessEnv;
   readonly logger: Pick<SanitizedLogger, 'debug' | 'warn'>;
+  /** FR-R7-16 (16-14): live workspace trust check; when false, probes return unavailable with zero spawns. */
+  readonly isTrusted?: () => boolean;
   readonly onDidChange?: () => void;
   readonly spawnFn?: SpawnFn;
   /** Test seam; production always uses the complete closed registry. */
   readonly backendKinds?: readonly BackendRunnerKind[];
+  readonly availabilityAdapters?:
+    | Partial<BackendMap<BackendAvailabilityAdapter>>
+    | undefined;
 }
 
-const EMPTY_MODELS: Record<BackendRunnerKind, readonly string[]> = Object.freeze({
-  claude: Object.freeze([]),
-  codex: Object.freeze([]),
-  agy: Object.freeze([])
-});
+const EMPTY_MODELS: BackendMap<readonly string[]> = emptyBackendModels();
 
 export function normalizeBackendProbeTimeoutSeconds(value: unknown): number {
   return typeof value === 'number'
@@ -104,6 +121,7 @@ export function normalizeBackendProbeTimeoutSeconds(value: unknown): number {
 export class BackendCapabilityService implements BackendAvailabilityProbe {
   private readonly spawnFn: SpawnFn;
   private readonly backendKinds: readonly BackendRunnerKind[];
+  private readonly availabilityAdapters = new Map<BackendRunnerKind, BackendAvailabilityAdapter>();
   private readonly activeChildren = new Set<ChildProcess>();
   private readonly killTimers = new Map<ChildProcess, ReturnType<typeof setTimeout>>();
   private requestedGeneration = 0;
@@ -117,6 +135,53 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
   constructor(private readonly deps: BackendCapabilityServiceDeps) {
     this.spawnFn = deps.spawnFn ?? (spawn as unknown as SpawnFn);
     this.backendKinds = deps.backendKinds ?? SUPPORTED_BACKENDS;
+    if (deps.availabilityAdapters !== undefined) {
+      for (const kind of SUPPORTED_BACKENDS) {
+        const adapter = deps.availabilityAdapters[kind];
+        if (adapter !== undefined) {
+          this.availabilityAdapters.set(kind, adapter);
+        }
+      }
+    }
+  }
+
+  public registerAvailabilityAdapter(
+    kind: BackendRunnerKind,
+    adapter: BackendAvailabilityAdapter
+  ): void {
+    this.availabilityAdapters.set(kind, adapter);
+  }
+
+  public getAvailabilityAdapter(
+    kind: BackendRunnerKind
+  ): BackendAvailabilityAdapter | undefined {
+    return this.availabilityAdapters.get(kind);
+  }
+
+  public getStatusCheckSupport(kind: BackendRunnerKind): QuotaStatusCheckSupport {
+    const adapter = this.availabilityAdapters.get(kind);
+    return adapter?.statusCheck ?? 'unsupported';
+  }
+
+  public resolveQuotaContext(frozenPhase: FrozenPhaseQuotaTarget): QuotaContext {
+    const adapter = this.availabilityAdapters.get(frozenPhase.runner);
+    if (adapter !== undefined) {
+      const validated = validateQuotaContext(adapter.resolveQuotaContext(frozenPhase));
+      if (!validated.ok) {
+        throw new Error(validated.message);
+      }
+      return validated.value;
+    }
+    const adapterId = `${frozenPhase.runner}-cli`;
+    return Object.freeze({
+      version: BACKEND_AVAILABILITY_VERSION,
+      adapterId,
+      adapterVersion: BACKEND_AVAILABILITY_VERSION,
+      quotaIds: Object.freeze([UNKNOWN_LOCAL_QUOTA_ID]),
+      identity: 'unknown',
+      statusCheck: 'unsupported',
+      capacity: 1
+    });
   }
 
   public getSnapshot(): BackendCapabilitySnapshot {
@@ -127,7 +192,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     return this.snapshot.availableBackends;
   }
 
-  public getAvailableModels(): Record<BackendRunnerKind, readonly string[]> {
+  public getAvailableModels(): BackendMap<readonly string[]> {
     return this.snapshot.availableModels;
   }
 
@@ -136,7 +201,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
   }
 
   public async probe(kind: BackendRunnerKind): Promise<BackendProbeResult> {
-    if (this.disposed) {
+    if (this.disposed || this.deps.isTrusted?.() === false) {
       return { runner: kind, available: false, cause: 'unknown' };
     }
     const result = await this.runBoundedCommand(kind, ['--help']);
@@ -175,11 +240,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
       return this.snapshot;
     }
 
-    const models: Record<BackendRunnerKind, readonly string[]> = {
-      claude: Object.freeze([]),
-      codex: Object.freeze([]),
-      agy: Object.freeze([])
-    };
+    const models = mapMutableBackends<readonly string[]>(() => Object.freeze([]));
     const available: BackendRunnerKind[] = [];
     for (const inspection of inspections) {
       if (!inspection.available) continue;
@@ -226,11 +287,12 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     // editor and drove the `modelAvailable` advisory, they silently displaced
     // the operator's own `schegent.models` catalog. The catalog is
     // configuration and now reaches the webview as such, on its own field.
-    if (kind === 'claude' || kind === 'codex') {
+    const discoveryArgs = getBackendDescriptor(kind).modelDiscoveryArgs;
+    if (discoveryArgs === null) {
       return { kind, available: true, models: NO_MODELS };
     }
 
-    const detected = await this.runBoundedCommand(kind, ['models']);
+    const detected = await this.runBoundedCommand(kind, discoveryArgs);
     const models = detected.ok
       ? parseAgyModels(detected.stdout)
       : Object.freeze([] as string[]);
@@ -245,7 +307,7 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     kind: BackendRunnerKind,
     args: readonly string[]
   ): Promise<CommandResult> {
-    if (this.disposed) {
+    if (this.disposed || this.deps.isTrusted?.() === false) {
       return { ok: false, timedOut: false, exitCode: null, stdout: '' };
     }
     let cliPath: string;
@@ -264,7 +326,8 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
     return new Promise<CommandResult>((resolve) => {
       let child: ChildProcess;
       try {
-        child = this.spawnFn(cliPath, args, {
+        // Review gap GC-24 & FR-R7-16 (16-16): resolve against the child's exact env on real spawns.
+        child = this.spawnFn(spawnCommandFor(cliPath, env), args, {
           cwd: this.deps.cwd,
           env,
           shell: false,
@@ -341,6 +404,25 @@ export class BackendCapabilityService implements BackendAvailabilityProbe {
   }
 
   private terminate(child: ChildProcess): void {
+    // A child with no pid NEVER STARTED, and signalling it is not the no-op the
+    // shape of the call suggests. `spawn` failing -- ENOENT for a backend that is
+    // simply not installed, which is the ordinary misconfiguration and exactly
+    // what a probe exists to discover -- still returns a ChildProcess, and that
+    // object reports `pid === undefined` with `exitCode` and `signalCode` both
+    // null. The two checks below therefore read it as live.
+    //
+    // libuv leaves the process handle's pid at 0 for a child that never started,
+    // so `child.kill(sig)` reaches `kill(0, sig)`, which POSIX defines as "every
+    // process in the CALLER's process group" -- the extension host and whatever
+    // shares its group, terminated because a configured CLI was absent. Measured
+    // on Node 24: the call returns `true`, so nothing upstream reads as failed,
+    // and the host is gone.
+    //
+    // This guard belongs ahead of the liveness checks rather than inside them:
+    // `pid` is assigned once at spawn and never changes, so a child that reaches
+    // here without one can never become signallable, and the SIGKILL escalation
+    // armed below would carry the identical hazard 2s later.
+    if (child.pid === undefined) return;
     if (child.exitCode !== null || child.signalCode !== null) return;
     try {
       child.kill('SIGTERM');

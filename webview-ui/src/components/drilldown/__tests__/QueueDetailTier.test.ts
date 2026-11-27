@@ -10,11 +10,18 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { disposeIntentLedger } from '../../../lib/intent-ledger';
+
+// FR-R4-F05 (I4) — a command sent through the intent ledger carries the ledger's identity as
+// the third argument of `postCommand`; the payload assertions below stay exact.
+const LEDGER_IDENTITY = expect.objectContaining({ correlationId: expect.any(String) });
 
 import QueueDetailTier from '../QueueDetailTier.svelte';
+import { buildSnapshot as launchSnapshot } from '../../Runs/__tests__/launch-fixture';
+import { isMenuItemOff } from '../../sg/__tests__/menu-item-state';
 import {
   CMD_ACK,
-  CMD_CLEAR_ALL,
+  CMD_CLEAR_QUEUE,
   CMD_CLEAR_COMPLETED,
   CMD_DELETE_QUEUE,
   CMD_MOVE_QUEUE_ITEM_DOWN,
@@ -24,23 +31,28 @@ import {
   CMD_REORDER_TASK,
   CMD_RENAME_QUEUE,
   CMD_RESUME_QUEUE,
-  CMD_START
+  CMD_START,
+  CMD_START_QUEUE
 } from '../../../lib/messages';
 import { buildInFlightRun, buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture';
 import { snapshotStore } from '../../../lib/snapshot-store.svelte';
 import { useConfirm } from '../../../lib/use-confirm';
-import { IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
+import { IDLE_GENERAL_SETTINGS, TERMINAL_WORKFLOW_STATUSES } from '../../../lib/snapshot-types';
 import type {
   ConnectedRunProjection,
   InFlightRunProjection,
   QueueItem,
+  QueueRuntime,
   QueueSummary,
   WorkflowSnapshot
 } from '../../../lib/snapshot-types';
 
 let nextCorrelationId = 0;
-const postCommandSpy = vi.fn((..._args: readonly unknown[]) => ({
-  correlationId: `corr-${++nextCorrelationId}`
+const postCommandSpy = vi.fn((...args: readonly unknown[]) => ({
+  // FR-R4-F05 (I4) — honours the identity the intent ledger supplies, as the real `postCommand` does.
+  correlationId:
+    (args[2] as { correlationId?: string } | undefined)?.correlationId ??
+    `corr-${++nextCorrelationId}`
 }));
 vi.mock('../../../lib/vscode-api', () => ({
   postCommand: (...args: unknown[]) => postCommandSpy(...args),
@@ -70,13 +82,18 @@ function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
     pausedReason: null,
     currentPhase: null,
     position: 0,
+    phaseProgress: null,
     ...overrides
   };
 }
 
 function summary(id: string, name: string, position: number): QueueSummary {
   // Feature 097 (T012) removed the registry-schedule UI (Mechanism B); the
-  // wire field stays mandatory but dormant — always null here.
+  // wire field stays mandatory but dormant, and is null in every case here.
+  // Nothing in `webview-ui/src` reads it any more. This helper used to take a
+  // `schedule` argument so the LC-Q-05 case below could arm one; that is what
+  // made LC-Q-05 vacuous, and the armed schedule it now sets is
+  // `QueueRuntime.scheduledStartAt` — see `betaScheduledStartAt` below.
   return {
     id,
     name,
@@ -84,7 +101,9 @@ function summary(id: string, name: string, position: number): QueueSummary {
     state: 'active',
     pauseSource: null,
     schedule: null,
-    taskCount: 0
+    taskCount: 0,
+    failurePolicy: 'halt-on-failure',
+    failurePolicyOverride: null
   };
 }
 
@@ -119,14 +138,39 @@ function buildSnapshot(
     readonly lifecycle?: 'running' | 'operator-paused' | 'idle-pending' | 'active-empty';
     readonly connectedRuns?: readonly ConnectedRunProjection[];
     readonly inFlightRun?: InFlightRunProjection | null;
+    /** Feature 187 — `q-beta`'s outstanding failed start; `default` never has one. */
+    readonly startFailure?: QueueRuntime['startFailure'];
     /** Feature 097 — override when a test needs more than one phase to tell rows apart. */
     readonly pipelines?: readonly {
       readonly id: string;
       readonly name: string;
       readonly phases: readonly string[];
     }[];
+    /**
+     * FR-R3-150 (T1622) — Default's own Tasks, for the handful of cases that
+     * mount this tier on `default` itself and need something on it to clean.
+     * Defaults to the single unrelated pending Task every other case's
+     * sibling-isolation assertions read as "not mine".
+     */
+    readonly defaultTasks?: readonly QueueItem[];
+    /**
+     * Code-review finding (LC-Q-05) — `q-beta`'s armed scheduled start, if any.
+     *
+     * `QueueRuntime.scheduledStartAt`, not `QueueSummary.schedule`. This
+     * override named the latter until the baseline pass that corrected it,
+     * while `deriveCleanAllContext` has read the former since FR-R3-150's
+     * iteration-5 review (`lib/queue-derived.ts`): `QueueSummary.schedule` is
+     * the registry-level mechanism Feature 097 left permanently null, so a
+     * fixture arming it built a queue with no schedule by any measure
+     * production recognizes, and LC-Q-05 asserted against a gate it had no way
+     * to move. The sibling fixture in `lib/__tests__/clean-all-context.test.ts`
+     * was corrected at the time; this one was missed and went red once the host
+     * suite could reach the webview stages again (FR-R3-160).
+     */
+    readonly betaScheduledStartAt?: number | null;
   } = {}
 ): WorkflowSnapshot {
+  const defaultTasks = overrides.defaultTasks ?? [task('other-queue-task', { position: 0, label: 'not mine' })];
   return Object.freeze({
     schemaVersion: 4,
     isPrimary: true,
@@ -136,7 +180,8 @@ function buildSnapshot(
         name: 'Default',
         position: 0,
         lifecycle: 'running',
-        tasks: [task('other-queue-task', { position: 0, label: 'not mine' })]
+        pendingCount: defaultTasks.filter((item) => item.status === 'pending').length,
+        tasks: defaultTasks
       }),
       buildQueueRuntime({
         queueId: 'q-beta',
@@ -144,6 +189,8 @@ function buildSnapshot(
         position: 1,
         lifecycle: overrides.lifecycle ?? 'running',
         inFlightRun: overrides.inFlightRun ?? null,
+        startFailure: overrides.startFailure ?? null,
+        scheduledStartAt: overrides.betaScheduledStartAt ?? null,
         pendingCount: betaTasks.filter((item) => item.status === 'pending').length,
         tasks: betaTasks
       })
@@ -152,7 +199,7 @@ function buildSnapshot(
       inFlight: null,
       pending: Object.freeze([]),
       recent: Object.freeze([]),
-      orderedItems: Object.freeze([task('other-queue-task', { label: 'not mine' })]),
+      orderedItems: Object.freeze(defaultTasks),
       queues: Object.freeze([
         summary('default', 'Default', 0),
         summary('q-beta', 'nightly', 1)
@@ -237,6 +284,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The ledger is module state: an unsettled intent from one case would be reused by the next.
+  disposeIntentLedger();
   cleanup();
 });
 
@@ -279,7 +328,15 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
     expect(throughput).toMatch(/1\s*failed/i);
   });
 
-  it('pauses THIS queue, not the workspace default', async () => {
+  // FR-R3-154 (T044) — renamed from "pauses THIS queue, not the workspace
+  // default". The assertion is a dispatch check: it reads `postCommandSpy` and
+  // never reads an ACK, so nothing here observes the queue being paused. The
+  // old name claimed the outcome, which is the class of stale test-name this
+  // feature closes. Replacing the assertion with an outcome-based one is
+  // `FR-R3-150`'s scope (it owns the queue-addressed control surface), so this
+  // is the relabel alternative FR-012 allows: the name now states exactly what
+  // the body verifies, and the gap stays visible instead of reading as covered.
+  it('dispatches CMD_PAUSE_QUEUE naming this queue, not the workspace default', async () => {
     const { getByTestId } = mount(
       buildSnapshot([task('live', { status: 'in-flight' })], {
         inFlightRun: buildInFlightRun({ runId: 'live' })
@@ -295,7 +352,11 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
   // handlers through this tier's own `queueId`, not `Dashboard.svelte`'s
   // removed optional-`queueId` branch. Pause is covered above; these three
   // cover the remaining handlers the mount wires up.
-  it('resumes THIS queue when it is paused', async () => {
+  // FR-R3-154 (T044) — renamed from "resumes THIS queue when it is paused",
+  // for the reason given on the pause case above. The `operator-paused`
+  // snapshot is a precondition for the button being rendered as Resume, not
+  // evidence that the resume took effect.
+  it('dispatches CMD_RESUME_QUEUE naming this queue while it is paused', async () => {
     const { getByTestId } = mount(
       buildSnapshot([task('waiting', { position: 0, status: 'pending' })], {
         lifecycle: 'operator-paused'
@@ -314,7 +375,20 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
     await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED);
+    // FR-R3-150 (T1621b) — addressed to this tier's own queue, not the
+    // bare command envelope that used to (silently) mean Default.
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'q-beta' }, LEDGER_IDENTITY);
+  });
+
+  it('clears Default’s completed Tasks when Default is the queue on screen', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], { defaultTasks: [task('done', { status: 'completed' })] }),
+      { queueId: 'default' }
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_COMPLETED, { queueId: 'default' }, LEDGER_IDENTITY);
   });
 
   it('cleans all of THIS queue’s finished and pending Tasks', async () => {
@@ -324,25 +398,91 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
 
     await fireEvent.click(getByTestId('dashboard-queue-clean'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_ALL);
+    // FR-R3-150 (T1618/T1622d) — CMD_CLEAR_QUEUE, addressed to this tier's
+    // own queue. Replaces the bare CMD_CLEAR_ALL envelope, which reset every
+    // queue in the workspace regardless of which one was open (LC-Q-01).
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'q-beta' }, LEDGER_IDENTITY);
+  });
+
+  it('cleans Default when Default is the queue on screen', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], { defaultTasks: [task('done', { status: 'completed' })] }),
+      { queueId: 'default' }
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clean'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_CLEAR_QUEUE, { queueId: 'default' }, LEDGER_IDENTITY);
+  });
+
+  // Code-review finding (iteration 4, FR-011) — CMD_CLEAR_QUEUE/
+  // CMD_CLEAR_COMPLETED were posted fire-and-forget: nothing on this tier
+  // listened for the ack, so an `unknown-queue-id` refusal (the queue was
+  // deleted from another window between opening the confirmation and
+  // confirming it) reached no one. Both now surface on the same shared
+  // refusal line `deleteThisQueue`'s refusals already use.
+  it('surfaces a Clean All refusal on the shared refusal line', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('done', { position: 0, status: 'completed' })])
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clean'));
+    ack(0, 'rejected', 'unknown-queue-id');
+
+    await vi.waitFor(() =>
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/no longer exists/i)
+    );
+  });
+
+  it('surfaces a Clear Done refusal on the shared refusal line', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot([task('done', { position: 0, status: 'completed' })])
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
+    ack(0, 'rejected', 'unknown-queue-id');
+
+    await vi.waitFor(() =>
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/no longer exists/i)
+    );
+  });
+
+  // FR-R4-F05 code review (I6, FR-024) — the not-yet-known text says the view will update; a late
+  // acceptance has to take it away, and a late refusal has to replace it.
+  it('replaces a Clear Done timeout with the late answer, once', async () => {
+    vi.useFakeTimers();
+    try {
+      const { getByTestId, queryByTestId } = mount(
+        buildSnapshot([task('done', { position: 0, status: 'completed' })])
+      );
+      await fireEvent.click(getByTestId('dashboard-queue-clear-done'));
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/has not answered yet/i);
+
+      ack(0, 'accepted');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queryByTestId('queue-control-refusal')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('disables Clear Done when this queue has no completed Tasks', () => {
     const { getByTestId } = mount(buildSnapshot([task('p', { status: 'pending' })]));
 
-    expect((getByTestId('dashboard-queue-clear-done') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clear-done'))).toBe(true);
   });
 
   it('enables Clear Done once this queue has a completed Task', () => {
     const { getByTestId } = mount(buildSnapshot([task('done', { status: 'completed' })]));
 
-    expect((getByTestId('dashboard-queue-clear-done') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clear-done'))).toBe(false);
   });
 
   it('disables Clean All only when every reset surface is empty (FR-008 idle gate)', () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(true);
   });
 
   it.each([
@@ -352,7 +492,7 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
   ])('enables Clean All when this queue has %s', (_label, oneTask) => {
     const { getByTestId } = mount(buildSnapshot([oneTask]));
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
   });
 
   it('enables Clean All when this queue has an in-flight Task, even with nothing else to reset', () => {
@@ -362,27 +502,62 @@ describe('QueueDetailTier — this queue’s work (FR-057)', () => {
       })
     );
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
   });
 
   it('enables Clean All when this queue is paused, even with an otherwise empty queue', () => {
     const { getByTestId } = mount(buildSnapshot([], { lifecycle: 'operator-paused' }));
 
-    expect((getByTestId('dashboard-queue-clean') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
   });
 
-  it('enqueues added work onto THIS queue', async () => {
-    const { getByTestId } = mount(buildSnapshot([]));
+  // Code-review finding (LC-Q-05) — an armed scheduled start is itself
+  // something Clean All clears (`QueueManager.clearQueue` reports
+  // `wasNoop: false` for exactly this state); the gate used to only check
+  // tasks/run/pause and left this queue permanently unreachable via the button.
+  it('enables Clean All when this queue’s only leftover state is an armed schedule (LC-Q-05)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], {
+        lifecycle: 'idle-pending',
+        // 30 minutes past the snapshot's own `producedAt`, the reading the
+        // "in 30m" relative schedule this case used to express as a
+        // `QueueSummary.schedule` record now arrives as.
+        betaScheduledStartAt: Date.parse('2026-08-12T00:30:00.000Z')
+      })
+    );
+
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
+  });
+
+  // The negative half of the case above, and the reason it cannot quietly go
+  // vacuous a second time: `idle-pending` on its own must NOT enable the
+  // button. Two superseded iterations of the gate inferred "a schedule is
+  // armed" from that lifecycle alone (`lib/queue-derived.ts` records both as
+  // wrong in tree); under either of them this case fails and the one above
+  // passes for the wrong reason. Together they pin `scheduledStartAt` as the
+  // only thing that moves the gate.
+  it('leaves Clean All disabled when an idle-pending queue has no schedule armed', () => {
+    const { getByTestId } = mount(
+      buildSnapshot([], { lifecycle: 'idle-pending', betaScheduledStartAt: null })
+    );
+
+    expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(true);
+  });
+
+  it('mounts the task composer, loading, before either catalog has resolved (FR-002)', async () => {
+    // Feature 285 (OD-2): the Queue input form that listed Pipeline rows here is retired. The
+    // composer renders its loading arm instead, and adding work onto this queue is pinned by
+    // 'published Workflow task composition' below.
+    const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
 
     await fireEvent.click(getByTestId('queue-composer-open'));
-    const textarea = getByTestId('dashboard-queue-input-textarea');
-    await fireEvent.input(textarea, { target: { value: 'ship the release' } });
-    await fireEvent.click(getByTestId('dashboard-queue-input-submit'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(
-      CMD_START,
-      expect.objectContaining({ description: 'ship the release', queueId: 'q-beta' })
-    );
+    expect(getByTestId('queue-task-composer')).toBeTruthy();
+    expect(getByTestId('launch-section-loading-workflow')).toBeTruthy();
+    expect(getByTestId('dashboard-network-dependence-note')).toBeTruthy();
+    expect(queryByTestId('dashboard-queue-input-textarea')).toBeNull();
+    expect(getByTestId('queue-composer').querySelector('select')).toBeNull();
+    expect(getByTestId('queue-composer').textContent).not.toContain('Standard');
   });
 });
 
@@ -394,7 +569,7 @@ describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
     const { queryByTestId } = mount(buildSnapshot([]));
 
     expect(queryByTestId('queue-composer')).toBeNull();
-    expect(queryByTestId('dashboard-queue-input-textarea')).toBeNull();
+    expect(queryByTestId('queue-task-composer')).toBeNull();
   });
 
   it('opens the composer on "Add work" and hides the trigger while it is open', async () => {
@@ -410,17 +585,12 @@ describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
     const { getByTestId, queryByTestId, rerender } = mount(buildSnapshot([]));
 
     await fireEvent.click(getByTestId('queue-composer-open'));
-    await fireEvent.input(getByTestId('dashboard-queue-input-textarea'), {
-      target: { value: 'ship the release' }
-    });
-    await fireEvent.click(getByTestId('dashboard-queue-input-submit'));
-
     expect(getByTestId('queue-composer')).not.toBeNull();
 
     // The host accepted the Task; the next snapshot poll reflects it in this
     // queue's pending count, which is the only signal the parent has, since
-    // `QueueInputForm` posts its own submission command internally and exposes
-    // no event-handler props (research.md R3).
+    // the composer posts its own submission internally and exposes no
+    // event-handler props (research.md R3).
     await rerender({ snapshot: buildSnapshot([task('new-task')]) });
 
     expect(queryByTestId('queue-composer')).toBeNull();
@@ -475,14 +645,11 @@ describe('QueueDetailTier — on-demand composer (T008, FR-009)', () => {
     const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
 
     await fireEvent.click(getByTestId('queue-composer-open'));
-    await fireEvent.input(getByTestId('dashboard-queue-input-textarea'), {
-      target: { value: 'discard me' }
-    });
     await fireEvent.click(getByTestId('queue-composer-cancel'));
 
     expect(queryByTestId('queue-composer')).toBeNull();
     expect(queryByTestId('queue-composer-open')).not.toBeNull();
-    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_START, expect.anything());
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_START, expect.anything(), LEDGER_IDENTITY);
   });
 });
 
@@ -551,7 +718,7 @@ describe('QueueDetailTier — configuration is reachable (FR-064)', () => {
   it('renames the queue by id, with a trimmed name', async () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    await fireEvent.click(getByTestId('queue-config-open'));
+    await fireEvent.click(getByTestId('queue-rename-open'));
     await fireEvent.input(getByTestId('queue-rename-name'), {
       target: { value: '  release train  ' }
     });
@@ -566,7 +733,7 @@ describe('QueueDetailTier — configuration is reachable (FR-064)', () => {
   it('refuses a blank rename', async () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    await fireEvent.click(getByTestId('queue-config-open'));
+    await fireEvent.click(getByTestId('queue-rename-open'));
     await fireEvent.input(getByTestId('queue-rename-name'), { target: { value: '   ' } });
     await fireEvent.click(getByTestId('queue-rename-submit'));
 
@@ -579,7 +746,7 @@ describe('QueueDetailTier — configuration is reachable (FR-064)', () => {
   it('seeds the rename field with the queue’s current name', async () => {
     const { getByTestId } = mount(buildSnapshot([]));
 
-    await fireEvent.click(getByTestId('queue-config-open'));
+    await fireEvent.click(getByTestId('queue-rename-open'));
 
     expect((getByTestId('queue-rename-name') as HTMLInputElement).value).toBe('nightly');
   });
@@ -646,7 +813,7 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
 
     // The first post carries no `confirmed` flag: it asks what the delete costs.
     expect(postCommandSpy).toHaveBeenCalledTimes(1);
-    expect(postCommandSpy).toHaveBeenNthCalledWith(1, CMD_DELETE_QUEUE, { queueId: 'q-beta' });
+    expect(postCommandSpy).toHaveBeenNthCalledWith(1, CMD_DELETE_QUEUE, { queueId: 'q-beta' }, LEDGER_IDENTITY);
 
     ack(0, 'rejected', 'confirmation-required', DELETE_IMPACT);
     await vi.waitFor(() => expect(useConfirm).toHaveBeenCalledTimes(1));
@@ -662,7 +829,7 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
     expect(postCommandSpy).toHaveBeenNthCalledWith(2, CMD_DELETE_QUEUE, {
       queueId: 'q-beta',
       confirmed: true
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('posts nothing further when the operator declines', async () => {
@@ -690,17 +857,22 @@ describe('QueueDetailTier — deleting a queue (US1)', () => {
     await vi.waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
   });
 
-  it('disables the control with a stated reason on the default queue (FR-003)', () => {
+  it('disables the control with a stated reason on the default queue (FR-003)', async () => {
     const { getByTestId } = mount(buildSnapshot([]), { queueId: 'default' });
 
-    expect((getByTestId('queue-delete') as HTMLButtonElement).disabled).toBe(true);
+    expect(isMenuItemOff(getByTestId('queue-delete'))).toBe(true);
     expect(getByTestId('queue-delete-disabled-reason').textContent).toMatch(/default queue/i);
+
+    // The item is off but still takes the click, so the menu is what refuses it.
+    await fireEvent.click(getByTestId('queue-delete'));
+    expect(postCommandSpy).not.toHaveBeenCalled();
+    expect(useConfirm).not.toHaveBeenCalled();
   });
 
   it('leaves the control live on a non-default queue', () => {
     const { getByTestId, queryByTestId } = mount(buildSnapshot([]));
 
-    expect((getByTestId('queue-delete') as HTMLButtonElement).disabled).toBe(false);
+    expect(isMenuItemOff(getByTestId('queue-delete'))).toBe(false);
     expect(queryByTestId('queue-delete-disabled-reason')).toBeNull();
   });
 
@@ -732,7 +904,7 @@ describe('QueueDetailTier — moving a pending Task (US4)', () => {
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_TASK, {
       taskId: 'waiting',
       targetQueueId: 'default'
-    });
+    }, LEDGER_IDENTITY);
     const payload = postCommandSpy.mock.calls[0]![1] as Record<string, unknown>;
     expect(Object.keys(payload)).not.toContain('position');
   });
@@ -853,7 +1025,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
     expect(postCommandSpy).toHaveBeenCalledWith(CMD_REORDER_TASK, {
       taskId: 'source',
       newPosition: 1
-    });
+    }, LEDGER_IDENTITY);
   });
 
   it('dropping onto its own row is a no-op', async () => {
@@ -864,7 +1036,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
     await fireEvent.mouseDown(handle);
     await fireEvent.drop(wrap, { dataTransfer: { getData: () => 'waiting' } });
 
-    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_REORDER_TASK, expect.anything());
+    expect(postCommandSpy).not.toHaveBeenCalledWith(CMD_REORDER_TASK, expect.anything(), LEDGER_IDENTITY);
   });
 
   it('clicking the up arrow posts CMD_MOVE_QUEUE_ITEM_UP for that Task', async () => {
@@ -872,7 +1044,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
 
     await fireEvent.click(getByTestId('queue-task-reorder-up-waiting'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_UP, { id: 'waiting' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_UP, { id: 'waiting' }, LEDGER_IDENTITY);
   });
 
   it('clicking the down arrow posts CMD_MOVE_QUEUE_ITEM_DOWN for that Task', async () => {
@@ -880,7 +1052,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
 
     await fireEvent.click(getByTestId('queue-task-reorder-down-waiting'));
 
-    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_DOWN, { id: 'waiting' });
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_MOVE_QUEUE_ITEM_DOWN, { id: 'waiting' }, LEDGER_IDENTITY);
   });
 
   it('surfaces a refusal when the host rejects a reorder', async () => {
@@ -890,7 +1062,7 @@ describe('QueueDetailTier — reordering a pending Task (US2, feature 030)', () 
     ack(0, 'rejected', 'timeout');
 
     await vi.waitFor(() =>
-      expect(getByTestId('queue-control-refusal').textContent).toMatch(/did not answer/i)
+      expect(getByTestId('queue-control-refusal').textContent).toMatch(/has not answered yet/i)
     );
   });
 });
@@ -911,14 +1083,26 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
     );
 
     const text = getByTestId('queue-task-pipeline-a').textContent ?? '';
-    expect(text).toMatch(/unknown pipeline/i);
+    expect(text).toMatch(/unknown workflow/i);
     expect(text).not.toContain('deleted-pipeline');
   });
 
+  // FR-R3-158 (T023) — the fixture now carries the pair the host counted against
+  // this Task's own resolved Pipeline, because that count moved to the host. The
+  // assertion is unchanged and still fails if the row shows any other figure;
+  // what changed is only where the figure comes from. The counting rule itself is
+  // asserted at its new home in `tests/unit/services/settled-phase-progress.test.ts`
+  // and `tests/unit/ui/sidebar/task-phase-progress-projection.test.ts`.
   it('counts phase completion against the Task’s own resolved Pipeline (FR-003)', () => {
     const { getByTestId } = mount(
       buildSnapshot(
-        [task('a', { currentPipelineId: 'standard', currentPhase: 'speckit-plan' })],
+        [
+          task('a', {
+            currentPipelineId: 'standard',
+            currentPhase: 'speckit-plan',
+            phaseProgress: { settled: 1, total: 3 }
+          })
+        ],
         {
           pipelines: [
             { id: 'standard', name: 'Standard', phases: ['speckit-specify', 'speckit-plan', 'speckit-tasks'] }
@@ -967,19 +1151,26 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
     const { getByTestId } = mount(
       buildSnapshot(
         [
+          // FR-R3-158 (T023) — each row carries its own pair, which is what makes
+          // the non-borrowing claim below sharper than it was: the two rows now
+          // differ in the figure itself rather than only in the `currentPhase`
+          // both were counted from, so a row reading a sibling's field would show
+          // the wrong number rather than coincidentally the right one.
           task('live', {
             position: 0,
             status: 'in-flight',
             currentPipelineId: 'standard',
             currentPhase: 'speckit-tasks',
-            startedAt: '2026-08-12T00:00:00.000Z'
+            startedAt: '2026-08-12T00:00:00.000Z',
+            phaseProgress: { settled: 2, total: 3 }
           }),
           task('waiting', {
             position: 1,
             status: 'pending',
             currentPipelineId: 'standard',
             currentPhase: null,
-            startedAt: null
+            startedAt: null,
+            phaseProgress: { settled: 0, total: 3 }
           })
         ],
         {
@@ -997,6 +1188,62 @@ describe('QueueDetailTier — Task row surfaces its own detail', () => {
     expect(getByTestId('queue-task-timing-live').textContent).toMatch(/\d+[smh]/i);
     expect(getByTestId('queue-task-timing-waiting').textContent).toMatch(/waiting/i);
   });
+
+  // FR-R3-158 (T021, FR-014, SC-008) — the row renders the pair the host sent it
+  // and computes nothing. The figure below is deliberately one no local
+  // derivation could produce: the row's pipeline lists three phases, so a webview
+  // that still counted for itself would render `of 3` and could never reach 5.
+  it('renders the host’s settled-phase pair verbatim, deriving nothing of its own (FR-014)', () => {
+    const { getByTestId } = mount(
+      buildSnapshot(
+        [
+          task('recorded', {
+            status: 'failed',
+            currentPipelineId: 'standard',
+            currentPhase: null,
+            phaseProgress: { settled: 5, total: 7 }
+          })
+        ],
+        {
+          pipelines: [
+            { id: 'standard', name: 'Standard', phases: ['speckit-specify', 'speckit-plan', 'speckit-tasks'] }
+          ]
+        }
+      )
+    );
+
+    expect(getByTestId('queue-task-progress-recorded').textContent).toContain('5 of 7');
+  });
+
+  // FR-R3-158 (T021, FR-014, SC-008) — unknown is not zero. A row whose pair the
+  // host could not resolve shows no figure at all: `0 of 0` reads as a finished
+  // run of nothing, and a placeholder dash reads as a number the operator has yet
+  // to load. Neither is true, so the row says nothing rather than saying that.
+  it('renders no progress figure at all when the host resolved no pair (SC-008)', () => {
+    const { getByTestId, queryByTestId } = mount(
+      buildSnapshot([
+        task('unknown', {
+          status: 'failed',
+          currentPipelineId: 'standard',
+          phaseProgress: null
+        })
+      ])
+    );
+
+    // The figure element is absent outright rather than present-and-blank, so
+    // there is no node a later change could quietly start filling with a zero.
+    expect(queryByTestId('queue-task-progress-text-unknown')).toBeNull();
+    // And the cell that would have held it carries no number of any kind — not
+    // `0`, not `0 of 0`, not a dash standing in for one.
+    // No `?? ''` here, unlike the two older reads of `textContent` in this file:
+    // `getByTestId` returns a non-nullable element, so the fallback is dead and
+    // `no-unnecessary-condition` counts it. Those two are baselined; a third
+    // would be a regression, so this one is written without it rather than
+    // matched to its neighbours.
+    const cell = getByTestId('queue-task-progress-unknown').textContent;
+    expect(cell).not.toMatch(/\d/);
+    expect(cell).not.toMatch(/of|phases|—|-{1,2}/);
+  });
 });
 
 describe('QueueDetailTier — empty queue (Edge Case)', () => {
@@ -1012,7 +1259,23 @@ describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () =>
   it('withholds the configuration affordance', () => {
     const { queryByTestId } = mount(buildSnapshot([]), { isPrimary: false });
 
-    expect(queryByTestId('queue-config-open')).toBeNull();
+    expect(queryByTestId('queue-rename-open')).toBeNull();
+  });
+
+  // The header holds no queue actions here, so the page says why, in the words the queue's
+  // refusal uses when this window asks for a change.
+  it('says why it offers no queue actions', () => {
+    const { getByTestId } = mount(buildSnapshot([]), { isPrimary: false });
+
+    expect(getByTestId('queue-detail-read-only').textContent.trim()).toBe(
+      'This window is not the primary one, so it cannot change the queue.'
+    );
+  });
+
+  it('shows no read-only line in the primary window', () => {
+    const { queryByTestId } = mount(buildSnapshot([]));
+
+    expect(queryByTestId('queue-detail-read-only')).toBeNull();
   });
 
   // Feature 095 — the delete and move controls are mutations, so they
@@ -1044,29 +1307,443 @@ describe('QueueDetailTier — read-only in a non-primary window (FR-065)', () =>
   });
 });
 
-// Feature 097 (T012a) — the idle-pending start affordance now shares this
-// tier's chrome. `QueueIdlePendingPanel` reads the *default* queue's own
-// projection (a pre-existing limitation carried forward unmodified, see the
-// component's own header comment) and carries no isPrimary prop of its own;
-// gating is entirely the mount decision made here.
+// Feature 097 (T012a) — the idle-pending start affordance shares this tier's
+// chrome. It carries no isPrimary prop of its own, so window gating is entirely
+// the mount decision made here; queue gating is the `queueId` this tier passes
+// down. Bug "there is no way to start a pending task": the panel used to read
+// the *default* queue's projection, and the two cases below used to assert that
+// — a queue that could never be started, pinned as passing coverage.
 describe('QueueDetailTier — mounts the idle-pending affordance (T012a)', () => {
-  function idlePendingSnapshot(): WorkflowSnapshot {
+  /** `q-beta` — the queue this tier is mounted for — is the idle-pending one. */
+  function shownQueueIdlePending(): WorkflowSnapshot {
+    return buildSnapshot([], { lifecycle: 'idle-pending' });
+  }
+
+  /** Only the *default* queue is idle-pending; `q-beta` is running. */
+  function otherQueueIdlePending(): WorkflowSnapshot {
     const base = buildSnapshot([]);
     return {
       ...base,
+      queues: Object.freeze([
+        { ...base.queues[0]!, lifecycle: 'idle-pending' },
+        ...base.queues.slice(1)
+      ]),
       queue: { ...base.queue, lifecycle: 'idle-pending', scheduledStartAt: null }
-    } as WorkflowSnapshot;
+    } as unknown as WorkflowSnapshot;
   }
 
-  it('shows the idle-pending start affordance when the default queue is idle-pending', () => {
-    const { getByTestId } = mount(idlePendingSnapshot());
+  it('shows the idle-pending start affordance when the queue on screen is idle-pending', () => {
+    const { getByTestId } = mount(shownQueueIdlePending());
 
     expect(getByTestId('idle-pending-start-queue-button')).not.toBeNull();
   });
 
-  it('withholds the idle-pending affordance in a non-primary window', () => {
-    const { queryByTestId } = mount(idlePendingSnapshot(), { isPrimary: false });
+  it('names the queue on screen when the operator starts it', async () => {
+    const { getByTestId } = mount(shownQueueIdlePending());
+
+    await fireEvent.click(getByTestId('idle-pending-start-queue-button'));
+    await fireEvent.click(getByTestId('start-mode-chooser-now'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, {
+      queueId: 'q-beta',
+      startIntent: { startMode: 'now', source: 'operator-restart' }
+    }, LEDGER_IDENTITY);
+  });
+
+  it('withholds the affordance when a different queue is the idle-pending one', () => {
+    const { queryByTestId } = mount(otherQueueIdlePending());
 
     expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
+  });
+
+  it('withholds the idle-pending affordance in a non-primary window', () => {
+    const { queryByTestId } = mount(shownQueueIdlePending(), { isPrimary: false });
+
+    expect(queryByTestId('idle-pending-start-queue-button')).toBeNull();
+  });
+});
+
+// Bug "there is no way to start a pending task" (2026-09-02), second finding —
+// `hasInFlight` read `QueueRuntime.inFlightRun !== null` as "this queue is
+// executing". The projection does not mean that: its contract says `null` iff the
+// queue owns *no* Run, so a Run that ended keeps projecting, carrying a terminal
+// status. A queue whose Run failed therefore reported itself busy for as long as
+// the record survived, and `QueueControls` rendered **Pause** where **Start
+// Queue** belonged — leaving pending rows with no operator route to start at all.
+// Observed live: 21 pending Tasks, nothing executing, and a Run that had been
+// `failed` for eight hours.
+//
+// The two questions are now derived separately, so this block asserts both:
+// "is working a Run" (the button) and "owns a Run" (the Clean All reset gate,
+// which must keep counting a stale record as something there is to clean).
+describe('QueueDetailTier — a Run that has ended is not a Run in flight', () => {
+  const pendingRow = () => [task('waiting', { position: 0, status: 'pending' })];
+
+  it.each(TERMINAL_WORKFLOW_STATUSES)(
+    'offers Start Queue when the owned Run has ended as %s and rows are still pending',
+    (status) => {
+      const { getByTestId } = mount(
+        buildSnapshot(pendingRow(), {
+          lifecycle: 'running',
+          inFlightRun: buildInFlightRun({ runId: 'r-ended', status })
+        })
+      );
+
+      expect(getByTestId('dashboard-queue-action').textContent.trim()).toBe('Start Queue');
+    }
+  );
+
+  it.each(['running', 'paused'] as const)(
+    'still offers Pause while the owned Run reads %s',
+    (status) => {
+      const { getByTestId } = mount(
+        buildSnapshot(pendingRow(), {
+          lifecycle: 'running',
+          inFlightRun: buildInFlightRun({ runId: 'r-live', status })
+        })
+      );
+
+      expect(getByTestId('dashboard-queue-action').textContent.trim()).toBe('Pause');
+    }
+  );
+
+  it('starts THIS queue from the recovered affordance', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot(pendingRow(), {
+        lifecycle: 'running',
+        inFlightRun: buildInFlightRun({ runId: 'r-ended', status: 'failed' })
+      })
+    );
+
+    await fireEvent.click(getByTestId('dashboard-queue-action'));
+
+    expect(postCommandSpy).toHaveBeenCalledWith(CMD_START_QUEUE, { queueId: 'q-beta' }, LEDGER_IDENTITY);
+  });
+
+  it.each(TERMINAL_WORKFLOW_STATUSES)(
+    'keeps Clean All enabled when a %s Run record is the only thing left to reset',
+    (status) => {
+      const { getByTestId } = mount(
+        buildSnapshot([], {
+          lifecycle: 'active-empty',
+          inFlightRun: buildInFlightRun({ runId: 'r-ended', status })
+        })
+      );
+
+      expect(isMenuItemOff(getByTestId('dashboard-queue-clean'))).toBe(false);
+    }
+  );
+});
+
+// Feature 187 (T023, FR-001) — the notice is mounted for the queue on screen,
+// and the mount is what these cases assert. `QueueStartFailureNotice.test.ts`
+// covers what it renders; the risk here is the one a component test cannot see —
+// a notice wired to `snapshot.queue` (the default queue, which the composer pins
+// to `DEFAULT_QUEUE_ID`) rather than to the queue this tier is showing. That is
+// the exact defect feature 097 T012 had to fix in `QueueIdlePendingPanel`, so it
+// is worth a case that reads `q-beta` and would fail on a default-queue read.
+describe('QueueDetailTier — a failed start on this queue', () => {
+  const FAILURE = Object.freeze({
+    kind: 'admission' as const,
+    admission: 'admitResume' as const,
+    at: '2026-08-12T00:00:00.000Z',
+    summary: 'the backend refused the run'
+  });
+
+  it('shows the notice for the queue whose start failed', () => {
+    const { getByTestId } = mount(buildSnapshot([], { startFailure: FAILURE }));
+
+    expect(getByTestId('queue-start-failure-q-beta').textContent).toContain(
+      'Resuming this queue failed'
+    );
+  });
+
+  it('shows nothing when this queue has no failed start', () => {
+    const { queryByTestId } = mount(buildSnapshot([]));
+
+    expect(queryByTestId('queue-start-failure-q-beta')).toBeNull();
+  });
+
+  it('does not borrow the report from a sibling queue', () => {
+    // The tier is mounted on `default`, whose runtime carries no report — only
+    // `q-beta`'s does. A notice reading the wrong queue's runtime renders here.
+    const { queryByTestId } = mount(buildSnapshot([], { startFailure: FAILURE }), {
+      queueId: 'default'
+    });
+
+    expect(queryByTestId('queue-start-failure-default')).toBeNull();
+    expect(queryByTestId('queue-start-failure-q-beta')).toBeNull();
+  });
+
+  it('reports a failed start on a secondary window too', () => {
+    // Not gated on `isPrimary`, unlike `QueueIdlePendingPanel`: that panel owns
+    // a Start button and a secondary window may not dispatch one. This notice
+    // has no action, so withholding it would only hide the fact.
+    const { getByTestId } = mount(buildSnapshot([], { startFailure: FAILURE }), {
+      isPrimary: false
+    });
+
+    expect(getByTestId('queue-start-failure-q-beta')).toBeTruthy();
+  });
+});
+
+
+describe('QueueDetailTier — published Workflow task composition', () => {
+  function snapshot(): WorkflowSnapshot {
+    const launch = launchSnapshot();
+    return { ...buildSnapshot([], { lifecycle: 'active-empty' }),
+      launchables: launch.launchables, workflowCatalog: launch.workflowCatalog,
+      availablePipelines: launch.availablePipelines };
+  }
+
+  it('adds a Workflow to this Queue through the existing host boundary, then offers an explicit Queue start', async () => {
+    const state = snapshot();
+    const view = mount(state);
+    expect(view.queryByTestId('queue-task-composer')).toBeNull();
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+    await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
+    expect(postCommandSpy).toHaveBeenCalledTimes(1);
+    expect(postCommandSpy.mock.calls.at(0)?.at(1)).toMatchObject({
+      queueId: 'q-beta', workflowId: 'analysis-pipeline', startNodeId: 'node-a'
+    });
+    ack(0, 'accepted', undefined, { outcome: 'started', connectedRunId: 'cr-new', revision: 1, queueItemId: 'new-task' });
+    await vi.waitFor(() => expect(view.getByTestId('workflow-trigger-status').textContent).toContain('Added task to queue'));
+    expect(postCommandSpy.mock.calls.some(([type]) => type === CMD_START_QUEUE)).toBe(false);
+    const queued = buildSnapshot([task('new-task')], { lifecycle: 'idle-pending' });
+    await view.rerender({ snapshot: { ...queued, launchables: state.launchables, workflowCatalog: state.workflowCatalog } });
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+    expect(view.getByTestId('idle-pending-start-queue-button')).toBeTruthy();
+  });
+
+  it('defers auto-close while a multi-task batch is in flight and closes once the batch finishes (F36-T06, AC-10)', async () => {
+    const state = snapshot();
+    const view = mount(state);
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: { value: 'First batch task\n---schegent-task---\nSecond batch task' }
+    });
+
+    await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
+    expect(postCommandSpy).toHaveBeenCalledTimes(1);
+
+    // First task is accepted and the snapshot's pendingCount rises while task 2 is in flight.
+    ack(0, 'accepted', undefined, {
+      outcome: 'started',
+      connectedRunId: 'cr-batch-1',
+      revision: 1,
+      queueItemId: 'batch-task-1'
+    });
+    await vi.waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(2));
+    const afterFirst = buildSnapshot([task('batch-task-1')], { lifecycle: 'idle-pending' });
+    await view.rerender({
+      snapshot: { ...afterFirst, launchables: state.launchables, workflowCatalog: state.workflowCatalog }
+    });
+
+    // Composer stays open while the second task is still in flight.
+    expect(view.getByTestId('queue-composer')).toBeTruthy();
+
+    // Second task is accepted; batch completes and the composer auto-closes.
+    ack(1, 'accepted', undefined, {
+      outcome: 'started',
+      connectedRunId: 'cr-batch-2',
+      revision: 1,
+      queueItemId: 'batch-task-2'
+    });
+    await vi.waitFor(() => expect(view.queryByTestId('queue-composer')).toBeNull());
+  });
+
+  it('keeps the composer open when a multi-task batch halts after an earlier task raised pendingCount (F36-T06, AC-10)', async () => {
+    const state = snapshot();
+    const view = mount(state);
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('launchable-select-workflow-analysis-pipeline'));
+    await fireEvent.input(view.getByTestId('run-supplemental-instruction'), {
+      target: { value: 'First batch task\n---schegent-task---\nSecond batch task' }
+    });
+
+    await fireEvent.click(view.getByTestId('workflow-trigger-submit'));
+    ack(0, 'accepted', undefined, {
+      outcome: 'started',
+      connectedRunId: 'cr-batch-1',
+      revision: 1,
+      queueItemId: 'batch-task-1'
+    });
+    await vi.waitFor(() => expect(postCommandSpy).toHaveBeenCalledTimes(2));
+
+    const afterFirst = buildSnapshot([task('batch-task-1')], { lifecycle: 'idle-pending' });
+    await view.rerender({
+      snapshot: { ...afterFirst, launchables: state.launchables, workflowCatalog: state.workflowCatalog }
+    });
+
+    // Second task is refused by the host.
+    ack(1, 'accepted', undefined, {
+      outcome: 'rejected-queue',
+      reason: 'queue-refused',
+      detail: 'queue-paused'
+    });
+    await vi.waitFor(() =>
+      expect(view.getByTestId('workflow-trigger-status').textContent).toContain('Added 1 of 2 tasks.')
+    );
+
+    // Composer stays open with the remaining task preserved in the textarea.
+    expect(view.getByTestId('queue-composer')).toBeTruthy();
+    expect((view.getByTestId('run-supplemental-instruction') as HTMLTextAreaElement).value).toBe(
+      'Second batch task'
+    );
+  });
+
+  it('shows the trust explanation and no launch form in an untrusted workspace', async () => {
+    const view = mount({ ...snapshot(), workspaceTrust: false });
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    expect(view.getByTestId('queue-task-composer').textContent).toContain('Workspace is not trusted');
+    expect(view.queryByTestId('launchable-select-workflow-analysis-pipeline')).toBeNull();
+    expect(postCommandSpy).not.toHaveBeenCalled();
+  });
+
+  it('offers no Add work control to a secondary window', () => {
+    const view = mount({ ...snapshot(), isPrimary: false }, { isPrimary: false });
+    expect(view.queryByTestId('queue-composer-open')).toBeNull();
+    expect(view.queryByTestId('queue-task-composer')).toBeNull();
+  });
+});
+
+// The redesign's queue page (docs/mockup/schegent_redesign_surfaces.html): a breadcrumb back to
+// Queues, the name with its state chips, one primary action and the rest in one "More queue
+// actions" menu with the destructive item last (design rule 4), and adding a task in a drawer
+// beside the page (rule 7) that takes focus and hands it back when it closes (rule 10).
+describe('QueueDetailTier — the redesign’s page header and add-task drawer', () => {
+  const HALTED = Object.freeze({
+    kind: 'halted' as const,
+    taskId: 'broken',
+    taskName: 'task broken',
+    at: '2026-08-12T00:00:00.000Z'
+  });
+
+  it('goes back through a Queues breadcrumb', () => {
+    const back = mount(buildSnapshot([])).getByTestId('queue-detail-back');
+
+    expect(back.textContent).toBe('Queues');
+    expect(back.closest('nav')?.getAttribute('aria-label')).toBe('Breadcrumb');
+  });
+
+  it('draws the lifecycle as a status chip, with a Halted chip beside it while the queue is halted', () => {
+    const paused = mount(buildSnapshot([], { lifecycle: 'operator-paused' }));
+    const chip = paused.getByTestId('queue-detail-lifecycle');
+    expect(chip.classList.contains('chip')).toBe(true);
+    expect(chip.classList.contains('s-warn')).toBe(true);
+    expect(chip.querySelector('use')?.getAttribute('href')).toBe('#i-pause');
+    expect(paused.queryByTestId('queue-detail-halted')).toBeNull();
+    cleanup();
+
+    const halted = mount(
+      buildSnapshot([task('broken', { status: 'failed' })], { lifecycle: 'idle-pending', startFailure: HALTED })
+    );
+    expect(halted.getByTestId('queue-detail-lifecycle').classList.contains('s-idle')).toBe(true);
+    expect(halted.getByTestId('queue-detail-halted').textContent).toBe('Halted');
+    expect(halted.getByTestId('queue-detail-halted').classList.contains('s-err')).toBe(true);
+  });
+
+  it('tags the workspace default queue and no other', () => {
+    const onDefault = mount(buildSnapshot([]), { queueId: 'default' });
+    expect(onDefault.getByText('Default queue').classList.contains('tag')).toBe(true);
+    cleanup();
+
+    expect(mount(buildSnapshot([])).queryByText('Default queue')).toBeNull();
+  });
+
+  it('keeps Add work as the one primary action and every other queue action in one menu, destructive last', () => {
+    const view = mount(buildSnapshot([task('done', { status: 'completed' })]));
+    const add = view.getByTestId('queue-composer-open');
+    expect(add.classList.contains('btn-primary')).toBe(true);
+    // "Add work" is what the `schegent.schedule` message, the default-Workflow setting and the
+    // docs tell the operator to select; the drawer it opens is headed "Add task to <queue>".
+    expect(add.textContent).toBe('Add work');
+
+    expect(view.container.querySelectorAll('[role="menu"][aria-label="More queue actions"]')).toHaveLength(1);
+    const menu = view.getByTestId('queue-delete').closest('[role="menu"]');
+    const items = Array.from(menu?.querySelectorAll('[role="menuitem"]') ?? []);
+    expect(items.map((item) => item.textContent)).toEqual([
+      'Rename…',
+      'Clear completed tasks…',
+      'Clear everything…',
+      'Delete queue…'
+    ]);
+    expect(items.at(-1)?.classList.contains('danger')).toBe(true);
+  });
+
+  it('opens Add task in a drawer beside the page, named for this queue', async () => {
+    const view = mount(buildSnapshot([task('a'), task('b')]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+
+    const drawer = view.getByTestId('queue-composer');
+    expect(drawer.tagName).toBe('ASIDE');
+    expect(drawer.parentElement).toBe(view.getByTestId('queue-detail-tier'));
+    expect(document.getElementById(drawer.getAttribute('aria-labelledby') ?? '')?.textContent).toBe(
+      'Add task to nightly'
+    );
+    expect(view.getByTestId('queue-composer-position').textContent).toBe('Runs after the 2 pending tasks.');
+
+    await view.rerender({ snapshot: buildSnapshot([task('a')]) });
+    expect(view.getByTestId('queue-composer-position').textContent).toBe('Runs after the 1 pending task.');
+  });
+
+  it('says so when nothing is pending ahead of the new task', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+
+    expect(view.getByTestId('queue-composer-position').textContent).toBe('No pending tasks ahead of it.');
+  });
+
+  it('moves focus into the drawer it opens', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+
+    await vi.waitFor(() =>
+      expect(view.getByTestId('queue-composer').contains(document.activeElement)).toBe(true)
+    );
+  });
+
+  it('closes the drawer from its Close button and on Escape', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByTestId('queue-composer-close'));
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+  });
+
+  it('lets Escape close an open menu before it closes the drawer', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    await fireEvent.click(view.getByRole('button', { name: 'More queue actions' }));
+    const rename = view.getByTestId('queue-rename-open');
+    await fireEvent.keyDown(rename, { key: 'Escape' });
+
+    expect(rename.closest('[role="menu"]')?.hasAttribute('hidden')).toBe(true);
+    expect(view.getByTestId('queue-composer')).toBeTruthy();
+
+    await fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(view.queryByTestId('queue-composer')).toBeNull();
+  });
+
+  it('hands focus back to Add work when the drawer closes with focus inside it', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-composer-open'));
+    const cancel = view.getByTestId('queue-composer-cancel');
+    cancel.focus();
+    await fireEvent.click(cancel);
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(view.getByTestId('queue-composer-open')));
+  });
+
+  it('puts the cursor in the name field when Rename… is chosen', async () => {
+    const view = mount(buildSnapshot([]));
+    await fireEvent.click(view.getByTestId('queue-rename-open'));
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(view.getByTestId('queue-rename-name')));
   });
 });

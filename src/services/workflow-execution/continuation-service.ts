@@ -27,10 +27,33 @@ import type {
   ContinueWorkflowPayload,
   ContinueWorkflowResult
 } from '../../contracts/sidebar-ipc';
-import type { ConnectedWorkflowRun } from '../../state/connected-workflow-run';
+import { resolveBoundQueueId, type ConnectedWorkflowRun } from '../../state/connected-workflow-run';
 import type { ChildRunStateReader } from '../../ui/sidebar/connected-run-projector';
+import {
+  continueWaitingHandoff,
+  type ContinueWaitingHandoffDeps,
+  type ContinueWaitingHandoffInput,
+  type ContinueWaitingHandoffResult
+} from './continuation-composer';
 import type { NodeRunStartDeps } from './node-run-starter';
+import { phaseDispatchResultOf, startPhaseAttempt } from './phase-attempt-start';
+import {
+  ControlCommandService,
+  type ControlCommandServiceDeps
+} from './control-command-service';
+import {
+  getOrCreateProductionWorkflowComposition,
+  type ProductionWorkflowComposition
+} from './production-workflow-composition';
+import type { WorkflowLeafControlHooks } from './workflow-leaf-control';
 import { continueWorkflow, type ConnectedRunWriter } from './workflow-launcher';
+
+export {
+  continueWaitingHandoff,
+  type ContinueWaitingHandoffDeps,
+  type ContinueWaitingHandoffInput,
+  type ContinueWaitingHandoffResult
+};
 
 /**
  * The connected-run store, as a continuation needs it: read one run, read a
@@ -51,6 +74,24 @@ export interface ContinuationDeps extends NodeRunStartDeps {
    * as a crash.
    */
   readonly connectedRuns?: ConnectedRunStore;
+  /**
+   * What a Pause or Cancel needs from the window that runs it: stopping the leaf, its countdown,
+   * and the fence. Optional because a caller with no controller, the headless entrypoint, has no
+   * leaf of its own to stop.
+   */
+  readonly workflowControlHooks?: WorkflowLeafControlHooks;
+  /**
+   * Offers a queue its work once a command has queued a leaf on it. The drain is edge-triggered and
+   * a command has no driver on the stack, so nothing else would. Optional for the same reason as the
+   * hooks above: the headless entrypoint has no drain to offer it to.
+   */
+  readonly wakeWorkflowQueue?: (queueId: string) => void;
+  /**
+   * Takes the failed rows a Workflow's Retry answers off the queue. Optional like the hooks above: a
+   * headless caller that omits it leaves the new attempt waiting behind the failed row, and on a
+   * `halt-on-failure` queue that row reports the halt.
+   */
+  readonly retireWorkflowFailures?: (run: ConnectedWorkflowRun) => Promise<void>;
   /**
    * The projector's two functions, passed **by reference** rather than as
    * closures over the reader.
@@ -75,6 +116,14 @@ export interface ContinuationDeps extends NodeRunStartDeps {
     nodeId: string,
     readChildState: ChildRunStateReader
   ) => boolean;
+  /**
+   * FR-R5-F31 — optional candidate-block control command service (or deps)
+   * shared between the editor `CMD_CONTINUE_WORKFLOW` handler and the headless
+   * workflow-run adapter.
+   */
+  readonly controlCommandService?: ControlCommandService;
+  readonly controlCommandServiceDeps?: ControlCommandServiceDeps;
+  readonly productionComposition?: ProductionWorkflowComposition;
 }
 
 export interface ContinuationInput {
@@ -121,12 +170,100 @@ export async function continueConnectedRun(
   deps: ContinuationDeps,
   input: ContinuationInput
 ): Promise<ContinueWorkflowResult> {
+  const commandService =
+    deps.controlCommandService ??
+    deps.productionComposition?.controlCommandService ??
+    (deps.controlCommandServiceDeps !== undefined
+      ? new ControlCommandService(deps.controlCommandServiceDeps)
+      : undefined);
+
+  if (input.payload.controlCommand !== undefined) {
+    if (commandService === undefined) return LAUNCHER_UNAVAILABLE;
+    const acknowledgement = await commandService.executeControlCommand(
+      input.payload.controlCommand
+    );
+    return {
+      outcome: 'control-acknowledged',
+      acknowledgement
+    };
+  }
+
   const runs = deps.connectedRuns;
   if (runs === undefined) return LAUNCHER_UNAVAILABLE;
 
   // Gate 1.
   const run = runs.get(input.payload.connectedRunId);
   if (run === null) return { outcome: 'rejected-run', reason: 'run-not-found' };
+
+  if (input.payload.operation !== undefined) {
+    const composition =
+      deps.productionComposition ??
+      getOrCreateProductionWorkflowComposition(runs, {
+        ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {})
+      });
+    const serviceToRun = composition.createControlService({
+      connectedRuns: runs,
+      ...(input.workspaceRoot !== null ? { workspaceRoot: input.workspaceRoot } : {}),
+      dispatchPhase: async (phaseInput) => {
+        if (run.frozenClosure === undefined) {
+          return { outcome: 'rejected', reason: 'missing-closure' };
+        }
+        return phaseDispatchResultOf(
+          await startPhaseAttempt(deps, phaseInput, input.workspaceRoot, {
+            continuesWorkflow: true
+          })
+        );
+      },
+      ...(commandService !== undefined ? { controlCommandService: commandService } : {}),
+      ...deps.workflowControlHooks
+    });
+    const outcome = await serviceToRun.executeCommand({
+      runId: run.connectedRunId,
+      commandId:
+        input.payload.commandId ??
+        `${run.connectedRunId}:${input.payload.operation}:${input.payload.expectedRevision}`,
+      expectedRevision: input.payload.expectedRevision,
+      operation: input.payload.operation,
+      ...(input.payload.invocationId !== undefined
+        ? { targetInvocationId: input.payload.invocationId }
+        : {}),
+      targetNodeId: input.payload.nodeId,
+      continuationRequest: input.payload.request,
+      now: input.startedAt
+    });
+    if (outcome.accepted) {
+      // After the commit, because a refused Retry leaves its failed row standing, and before the wake,
+      // because the drain reads that row. Not on a replay: a failure that came after the first delivery
+      // is not one this Retry answered.
+      const answersFailures =
+        input.payload.operation === 'retry-phase' || input.payload.operation === 'retry-invocation';
+      if (answersFailures && !outcome.idempotentReplay) {
+        await deps.retireWorkflowFailures?.(outcome.run);
+      }
+      if (outcome.receipt.spawnedAttemptId !== undefined) {
+        deps.wakeWorkflowQueue?.(resolveBoundQueueId(outcome.run));
+      }
+      return {
+        outcome: 'started',
+        revision: outcome.run.revision,
+        queueItemId: outcome.receipt.spawnedAttemptId ?? outcome.receipt.targetInvocationId
+      };
+    }
+    if (outcome.refusalCode === 'run-not-found') {
+      return { outcome: 'rejected-run', reason: 'run-not-found' };
+    }
+    if (outcome.refusalCode === 'stale-revision') {
+      return staleResult(deps, runs, outcome.run);
+    }
+    return {
+      outcome: 'rejected-state',
+      reason:
+        outcome.refusalCode === 'active-descendant-blocks-retry'
+          ? 'child-not-terminal'
+          : 'node-not-eligible',
+      projection: deps.projectRun(outcome.run ?? run, runs.readChildState)
+    };
+  }
 
   const continued = await continueWorkflow(
     {

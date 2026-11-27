@@ -21,8 +21,8 @@ import { ZippedStreamBuffer } from '../../src/runner/zipped-stream-buffer';
 //       event carries the saved `model`.
 //
 // The flow exercises the router validator path (T013a) + the catalog
-// merge (built-in vs user) + the runtime emission at
-// `phase-runner.ts:172-176`. The host-side validators reject malformed
+// merge (built-in vs user) + the runtime emission onto `startPayload` in
+// `phase-runner.ts`. The host-side validators reject malformed
 // rows; the integration test uses only well-formed rows.
 //
 // Feature 100 (T514) — the override arrives one definition at a time, on
@@ -71,7 +71,7 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -235,7 +235,7 @@ async function runHarness(opts: HarnessOpts): Promise<{
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: opts.workspaceRoot }, logger);
   const { runner, invocations } = makeCliRunner();
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);
@@ -290,7 +290,6 @@ function buildRouter(): {
   const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
-    queueRemover: { remove: vi.fn().mockResolvedValue(true) },
     isPrimary: () => true,
     isTrusted: () => true,
     notifyWarning: vi.fn(),
@@ -364,9 +363,11 @@ describe('Feature 026 T018 — per-phase Effort/Model override end-to-end', () =
 
   it('(d) SC-002 smoke: model override on head/middle/tail built-in phases surfaces on phase-start', async () => {
     const modelByPhase: Record<string, string> = {
-      'speckit-specify': 'claude-haiku-4-5-20251001',
-      'speckit-plan': 'claude-sonnet-4-6',
-      'speckit-implement': 'claude-opus-4-7'
+      'speckit-specify': 'claude-haiku-5-5',
+      'speckit-plan': 'claude-sonnet-5-5',
+      // Not `EXAMPLE_MODEL`: an override that failed to apply would surface the
+      // fixture's own `speckit-implement`, which declares it, and still pass.
+      'speckit-implement': 'claude-fable-5-1'
     };
     const authored: PhaseDef[] = Object.entries(modelByPhase).map(([id, model]) => ({
       id,
@@ -438,9 +439,13 @@ describe('BUG-003 successor — an override on a non-default Pipeline (US3)', ()
     // The successor of 'removing the user catalog entry falls back to workspace
     // effort:high'. There is no lower layer to fall back TO, so dropping the
     // override drops it outright — and the second half of the assertion is what
-    // makes that precise: the Phase is still there, still carrying the `model`
-    // the catalog declares for it. Only the operator's edit went away.
-    const { auditLog } = await runHarness({
+    // makes that precise: the Phase frozen onto the Run is still the row the
+    // catalog declares, field for field. Only the operator's edit went away.
+    //
+    // That half used to read the declared `model` back off phase-start. The
+    // bugfix document declares no model, so neither does the fixture's row, and
+    // a payload compared against an absent model proves nothing either way.
+    const { auditLog, storedRunPipeline } = await runHarness({
       phases: [],
       workspaceRoot: tmpRoot,
       pipelineId: SPECKIT_BUGFIX_PIPELINE_ID
@@ -449,11 +454,13 @@ describe('BUG-003 successor — an override on a non-default Pipeline (US3)', ()
       (e) => e.eventType === 'phase-start' && e.payload.phaseId === 'bugfix-implement'
     );
     expect(implementStarts.length).toBeGreaterThan(0);
-    const declared = SPECKIT_ALL_PHASE_DEFS.find((p) => p.id === 'bugfix-implement');
     for (const evt of implementStarts) {
       expect(evt.payload).not.toHaveProperty('effort');
-      expect(evt.payload.model).toBe(declared?.model);
+      expect(evt.payload).not.toHaveProperty('model');
     }
+    const declared = SPECKIT_ALL_PHASE_DEFS.find((p) => p.id === 'bugfix-implement');
+    const frozen = (storedRunPipeline?.phases ?? []).find((p) => p.id === 'bugfix-implement');
+    expect(frozen).toMatchObject(declared!);
   });
 });
 
@@ -472,7 +479,7 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
       };
       return args.omitModelOn === id
         ? base
-        : { ...base, model: 'claude-sonnet-4-6' };
+        : { ...base, model: 'claude-sonnet-5-5' };
     });
   }
 
@@ -509,7 +516,7 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
       expect(starts.length).toBeGreaterThan(0);
       for (const evt of starts) {
         expect(evt.payload.effort).toBe('xhigh');
-        expect(evt.payload.model).toBe('claude-sonnet-4-6');
+        expect(evt.payload.model).toBe('claude-sonnet-5-5');
       }
     }
 
@@ -530,7 +537,8 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
     // 'xhigh' across all three phases. Feature 099 (T496f, FR-042) — the title
     // read "falls back to the next-precedence layer", and the body's own comment
     // already said workspace-step-b has no fallback, so `model` is absent on its
-    // phase-start payload (no empty-string, no null — see phase-runner.ts:172-176).
+    // phase-start payload (no empty-string, no null — see the conditional
+    // `startPayload.model` assignment in `phase-runner.ts`).
     // With one catalog that absence is the whole claim, and the title now says so.
     const { auditLog } = await runHarness({
       phases: makeCustomPhases({ omitModelOn: 'workspace-step-b' }),
@@ -556,7 +564,7 @@ describe('Feature 026 T025a — a custom Pipeline mixing effort+model (US3, SC-0
       expect(starts.length).toBeGreaterThan(0);
       for (const evt of starts) {
         expect(evt.payload.effort).toBe('xhigh');
-        expect(evt.payload.model).toBe('claude-sonnet-4-6');
+        expect(evt.payload.model).toBe('claude-sonnet-5-5');
       }
     }
   });

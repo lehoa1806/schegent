@@ -124,7 +124,6 @@ function buildHarness(): Harness {
   const store = new FakeCatalogStore();
   const deps: RouterDeps = {
     executeCommand: vi.fn().mockResolvedValue(undefined),
-    queueRemover: { remove: vi.fn().mockResolvedValue(true) },
     isPrimary: () => true,
     // The router-level workspace-trust gate is exercised by a separate
     // test. Here we route the command through to the handler so the

@@ -36,15 +36,13 @@ import type { RawInvocationOutput, InvocationRequest } from '../../src/runner/in
 import type { SchegentStatusBar } from '../../src/ui/status-bar';
 import type { Notifier } from '../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../src/state/lock';
-import type {
-  DelayedRetryWatchdog,
-  WorkflowControllerDeps
-} from '../../src/controller/workflow-controller';
+import type { WorkflowControllerDeps } from '../../src/controller/workflow-controller';
+import { RecordingDeadlineTimer } from '../recording-deadline-timer';
 import {
   RATE_LIMIT_BACKOFF_MS,
   RETRY_BUFFER_MS
-} from '../../src/controller/retry-constants';
-import { DEFAULT_QUEUE_ID } from '../../src/queue/queue-registry';
+} from '../../src/contracts/retry-bounds';
+import { DEFAULT_QUEUE_ID } from '../../src/contracts/queue-identity';
 
 class FakeMemento implements Memento {
   private map = new Map<string, unknown>();
@@ -64,8 +62,8 @@ class FakeMemento implements Memento {
 // the parsed epoch invariant relative to `Date.now()`.
 function rateLimitedStdout(resetsAtSec: number): string {
   return [
-    '{"type":"system","subtype":"init","session_id":"int-027","model":"claude-sonnet-4-5","cwd":"/tmp/wsp"}',
-    `{"type":"rate_limit_event","rate_limit_info":{"status":"allow","resetsAt":${resetsAtSec}}}`,
+    '{"type":"system","subtype":"init","session_id":"int-027","model":"claude-sonnet-5-5","cwd":"/tmp/wsp"}',
+    `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":${resetsAtSec}}}`,
     `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":${resetsAtSec}}}`
   ].join('\n');
 }
@@ -98,26 +96,13 @@ function makeLock(): WorkspaceLockManager {
   } as unknown as WorkspaceLockManager;
 }
 
-function makeStubWatchdog(): DelayedRetryWatchdog & {
-  pauseAndPoll: ReturnType<typeof vi.fn>;
-  cancelPendingTimer: ReturnType<typeof vi.fn>;
-} {
-  return {
-    pauseAndPoll: vi.fn(async () => {}),
-    cancelPendingTimer: vi.fn()
-  } as unknown as DelayedRetryWatchdog & {
-    pauseAndPoll: ReturnType<typeof vi.fn>;
-    cancelPendingTimer: ReturnType<typeof vi.fn>;
-  };
-}
-
 interface Harness {
   controller: SchegentWorkflowController;
   store: WorkspaceStateStore;
   queue: QueueManager;
   audit: AuditLogWriter;
   workspaceRoot: string;
-  watchdog: ReturnType<typeof makeStubWatchdog>;
+  deadlineTimer: RecordingDeadlineTimer;
   logger: SanitizedLogger;
 }
 
@@ -129,11 +114,11 @@ async function makeHarness(
 ): Promise<Harness> {
   const logger = new SanitizedLogger(logSinks);
   const audit = new AuditLogWriter({ workspaceRoot }, logger);
-  const phaseRunner = new PhaseRunner(cli, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner: cli, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);
-  const watchdog = makeStubWatchdog();
+  const deadlineTimer = new RecordingDeadlineTimer();
 
   const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
   const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
@@ -142,7 +127,7 @@ async function makeHarness(
   const deps: WorkflowControllerDeps = {
     catalog: buildSpeckitCatalog(),
     auditWriter: audit,
-    watchdog
+    deadlineTimer
   };
 
   const controller = new SchegentWorkflowController(
@@ -157,7 +142,7 @@ async function makeHarness(
     deps
   );
 
-  return { controller, store, queue, audit, workspaceRoot, watchdog, logger };
+  return { controller, store, queue, audit, workspaceRoot, deadlineTimer, logger };
 }
 
 async function readRetryScheduledPayload(workspaceRoot: string): Promise<{

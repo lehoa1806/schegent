@@ -257,3 +257,66 @@ describe('what the surface offers on a run, and what it must not (T050)', () => 
     noDeletion();
   });
 });
+
+/**
+ * FR-R3-127 (FR-004, T023) — the retention consequence, at the Run.
+ *
+ * The condition is `(mode, outcome)`, not the mode alone. Under the shipped
+ * `errors-only`, a successful Run retains nothing raw, so announcing a retention
+ * window on it would be noise attached to the majority case — and noise is how a
+ * real warning comes to be ignored. All the combinations are asserted, in both
+ * directions, because "silent when it should speak" and "speaking when it should
+ * be silent" are both defects and only one of them is loud.
+ */
+describe('the raw-transcript retention readout (FR-R3-127)', () => {
+  const RETAINING = 'history-evidence-raw-retention';
+
+  function mountWith(
+    runStatus: string,
+    rawTranscriptMode: 'always' | 'errors-only' | 'off',
+    retentionMaxAgeDays = 30
+  ) {
+    resolveAuditPointer.mockResolvedValue(ARMS[0]![1]);
+    return render(HistoryEvidencePanel, {
+      props: { runId: 'run-1', runStatus, rawTranscriptMode, retentionMaxAgeDays }
+    });
+  }
+
+  it.each([
+    ['failed', 'errors-only'],
+    ['canceled', 'errors-only'],
+    ['paused', 'errors-only'],
+    ['completed', 'always'],
+    ['failed', 'always']
+  ] as const)('speaks for a %s run under %s', async (status, mode) => {
+    const { findByTestId } = mountWith(status, mode);
+    const note = await findByTestId(RETAINING);
+    expect(note.textContent).toMatch(/unredacted raw transcript is held/i);
+    // Both actions named, because the operator's next move is one of them and the
+    // commands existed only as unwired services until FR-R3-127.
+    expect(note.textContent).toMatch(/Schegent: Delete Run Evidence/);
+    expect(note.textContent).toMatch(/Schegent: Export Run Evidence/);
+  });
+
+  it.each([
+    ['completed', 'errors-only'],
+    ['completed', 'off'],
+    ['failed', 'off'],
+    ['paused', 'off']
+  ] as const)('is silent for a %s run under %s', async (status, mode) => {
+    const { queryByTestId, findByTestId } = mountWith(status, mode);
+    // Wait for the panel to settle so the absence is an assertion about the
+    // rendered state rather than about a race.
+    await findByTestId('history-evidence-message');
+    expect(queryByTestId(RETAINING)).toBeNull();
+  });
+
+  it('states the window it was given, not a hard-coded one', async () => {
+    const { findByTestId } = mountWith('failed', 'errors-only', 1);
+    const note = await findByTestId(RETAINING);
+    // Singular, and the number is the configured one: a readout that always said
+    // "30 days" would be a second copy of a setting.
+    expect(note.textContent).toMatch(/up to 1\s+day\b/);
+    expect(note.textContent).not.toMatch(/30 days/);
+  });
+});

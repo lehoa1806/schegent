@@ -1,5 +1,14 @@
-import type { BackendRunnerKind } from '../runner/backend-runner-factory';
+import type { CapabilityEnforcement, CapabilityResidual, PhaseCapability } from './phase-capabilities';
+import type { BackendRunnerKind } from './backend-kinds';
+import type { TeardownOutcome, TeardownResidual } from './containment-qualification';
+import type {
+  BackendContainment,
+  BackendContainmentMechanism
+} from '../services/backend-containment-policy';
 import type { TerminationReason } from '../state/workflow-run';
+import type { FailureCause } from './failure-cause';
+import type { RunnerLabel, TreeEscalation } from './backend-runner';
+import type { PromptIdentity } from '../runner/prompt-identity';
 // Feature FR-R3-006 — the reset transaction's phase and refusal literals are
 // declared once, in a module that imports nothing, and the audit payload reuses
 // them rather than restating them. A restated copy is a second source of truth
@@ -31,6 +40,51 @@ import type { CatalogKind } from './catalog-store';
 // `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030 / 031 / 032 precedent).
 // Historical records lack the field and are backwards-compatible per
 // the warn-and-preserve parser discipline.
+//
+// Feature 242 (FR-R4-F14) — additive `failureCause?` on `task-execution-ended`: the closed code (nine
+// members, `./failure-cause`) of why a Run failed. Present only when `terminalStatus` is `failed` and the
+// Run recorded one; absent on completion and on every earlier record ("cause not recorded"). The
+// projection admits it by identity, and `phase-end` with its two causes is untouched. Additive — no
+// `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 precedent).
+//
+// Feature 244 (FR-R4-F16) — additive `completionProvenance?` on `task-removed`, in the payload and in
+// `stateTransition.newState`: `'operator-attested'` when the removed row carried it, `null` otherwise
+// (`./completion-provenance`). Absence means "not recorded": written before this feature, or a value the
+// projection refused. The projection admits the field by identity in both copies, each on its own value,
+// and a refused value costs the field, never the entry. Additive — no `AUDIT_SCHEMA_VERSION` bump
+// (028 / 030 / 031 / 032 / 242 precedent).
+//
+// Feature 250 (FR-R4-F03) — additive event type `audit-integrity-condition`, written only by the audit
+// writer itself (never by a caller): a diagnosed damaged tail and the first row after a deliberate
+// history reset. The payload is versioned and sits in `./audit-integrity-condition`; the projection
+// admits it by identity. A reader that does not know it preserves the row (warn-and-preserve).
+// Additive — no `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 / 242 precedent).
+//
+// Feature 251 (FR-R4-F04) — additive event type `operator-pseudonym-reset`, written by the reset command
+// only. Its payload is empty (`{}`): neither the old nor the new pseudonym is in the row, and no path,
+// actor or content can be. Its `runId` is `''`, so it is `system` scope. `evidence-exported`, already
+// registered by feature 249, is now written for the first time, with a closed payload of its own
+// (`../audit/evidence-lifecycle-payload`). A reader that does not know either preserves the row
+// (warn-and-preserve). Additive — no `AUDIT_SCHEMA_VERSION` bump (same precedent).
+//
+// Feature 253 (FR-R4-F06) — additive event type `host-teardown-unconfirmed`, written at shutdown, before
+// ownership is released, for a backend tree the host could not answer for (`platform-unanswerable`, or
+// `bound-elapsed` at the teardown bound); Run-scoped, with a closed payload below. Additive value
+// `orphaned-group` in `RunResumePayload.liveness`; additive `enforcement` and `residuals` on
+// `capability-applied` and `unqualified` on `capability-refused` (closed unions from `./phase-capabilities`).
+// A reader that does not know either preserves the row (warn-and-preserve). Additive — no
+// `AUDIT_SCHEMA_VERSION` bump (same precedent).
+//
+// Feature 304 (FR-R6-F05) — additive system-scoped `artifact-lifecycle-mutation`; metadata-only payload
+// in `./artifact-lifecycle/audit-payload`. Additive — no `AUDIT_SCHEMA_VERSION` bump (same precedent).
+//
+// Feature 318 (FR-R7-04) — additive task-scoped `agent-config-acknowledged`; closed metadata-only payload
+// (`backend`, `fileCount`, `decision`) in `./agent-config-acknowledgement`. Additive — no schema bump.
+//
+// Principal Review F5/F6 — additive system-scoped `scanner-consent-changed` and
+// `telemetry-credential-changed`; closed metadata-only payloads in
+// `../audit/operator-security-audit-payload` (zero paths, zero secret values or raw key names).
+// Additive — no `AUDIT_SCHEMA_VERSION` bump.
 export const AUDIT_SCHEMA_VERSION = 3 as const;
 
 export type {
@@ -82,6 +136,9 @@ export interface PhaseStartPayload {
   readonly timeoutMs?: number;
   readonly isContinue: boolean;
   readonly sessionReuse: boolean;
+  // FR-R4-F12: additive, optional; absent on every earlier row and read as not recorded; no
+  // `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 / 242 precedent).
+  readonly promptIdentity?: PromptIdentity;
 }
 
 export const RUNNER_EVENT_TYPES = ['cli-invocation', 'file-write', 'runner-probe-failed'] as const;
@@ -124,7 +181,50 @@ export const MONITOR_EVENT_TYPES = [
   'monitor-invocation-completed',
   'monitor-invocation-failed',
   'monitor-invocation-canceled',
-  'monitor-invocation-summary'
+  'monitor-invocation-summary',
+  // Feature 093 BUG-001 (T102a) — the two events the fix needs, both of them
+  // records of something the monitor previously did in silence.
+  //
+  // `monitor-helper-invocation-exited`: a host-internal helper spawned on the
+  // Run's behalf — today only the pre-phase compaction — has ended. It is NOT
+  // one of the three invocation-terminal events above, and that distinction is
+  // the whole fix: the compaction's exit used to be written as the Run's, which
+  // ended the Run's monitoring while its phase child had six hours left to run.
+  // A helper that dies badly is still a fact about the Run, so it is reported
+  // here rather than dropped, with `outcome: 'failure'` when it exits unclean —
+  // the audit tail renders that as an error line, which is what a compaction
+  // crash deserves.
+  //
+  // `monitor-chunk-declined`: output arrived for a Run that cannot accept it.
+  // The handlers used to `return` on that condition without leaving a trace,
+  // which is why BUG-001 read as "the phase produced nothing" for six hours
+  // instead of "the monitor refused 4,000 chunks". Emitted once per (run,
+  // cause) on the sink's warn-once pattern, and the running total rides on the
+  // Run's monitor state.
+  //
+  // Additive — no `AUDIT_SCHEMA_VERSION` bump (follows 028 / 030 / 031 / 032
+  // precedent). Neither payload carries a path, and both are scalars.
+  'monitor-helper-invocation-exited',
+  'monitor-chunk-declined',
+  // Feature 211 — the invocation has crossed `APPROACH_THRESHOLD_FRACTION` of
+  // its absolute wall-clock bound and is still running.
+  //
+  // The three bounds on an invocation are all terminal-or-nothing: the idle
+  // window, the stall detector, and `maxDurationSeconds`. A phase that keeps
+  // producing output trips none of the first two, so the wall-clock cap used to
+  // kill it with nothing written first — the operator saw a six-hour silence
+  // and a SIGTERM, and read it as a hang. This is the record that makes the
+  // distance to the bound answerable from the audit log alone.
+  //
+  // `outcome: 'info'` — an approach is not a failure, and `'failure'` renders
+  // as an error line in the audit tail. The tail's `categorize` is given an
+  // explicit `warning` branch for this type rather than letting it fall to the
+  // `system` default.
+  //
+  // Additive — no `AUDIT_SCHEMA_VERSION` bump (028 / 030 / 031 / 032 and 093
+  // BUG-001 above are the precedent). The payload is four scalars: elapsed,
+  // the bound, the invocation id, and whether it was a helper. No path.
+  'monitor-deadline-approaching'
 ] as const;
 
 export const AUDIT_PIPELINE_EVENT_TYPES = [
@@ -276,6 +376,15 @@ export const TRUST_GATE_EVENT_TYPES = ['trust.capability-denied'] as const;
 // contracts/cmd-clear-all.md §Idempotency).
 export const QUEUE_FULL_RESET_EVENT_TYPES = ['queue-cleared-all'] as const;
 
+// FR-R3-150 (T1620) — queue-scoped Clean All, distinct from the
+// workspace-wide `queue-cleared-all` above. Emitted by the queue-scoped
+// orchestrator (`src/commands/clear-queue.ts`) once per confirmed,
+// non-no-op `CMD_CLEAR_QUEUE`. Payload is structural counts + the addressed
+// `queueId` + a closed-enum runner-state literal, so `SECRET_PATTERNS` is
+// unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows the 063
+// precedent). No event is emitted when `ClearQueueResult.wasNoop` is `true`.
+export const QUEUE_SCOPED_RESET_EVENT_TYPES = ['queue-cleared'] as const;
+
 // Feature FR-R3-006 (T348) — the workspace-state reset transaction, recorded
 // once per attempt. Deliberately one event rather than one per phase: a reset
 // either happened or it did not, and six entries describing the same operator
@@ -340,10 +449,138 @@ export const MIGRATION_V7_EVENT_TYPES = ['state-migrated-v6-to-v7'] as const;
 // is unchanged. Additive — no `AUDIT_SCHEMA_VERSION` bump (follows the 030 / 065
 // migration-event precedent); historical records lack these events entirely and
 // stay readable under the warn-and-preserve parser discipline.
+/**
+ * FR-R3-103 — what activation decided about a persisted `running` Run, and what a lost fence
+ * did to its child.
+ *
+ * WHY THREE EVENTS AND NOT ONE FIELD. These are three different histories and an operator
+ * chasing "why did my Run not come back" needs to tell them apart:
+ *
+ *   - `run-resume-declined-orphan-alive` — the previous host's process tree is still running,
+ *     so activation did NOT resume into it. Nothing failed; the Run is executing somewhere and
+ *     this window is deliberately staying out of the worktree.
+ *   - `run-invocation-aborted-on-supersession` — this window lost the execution fence while
+ *     holding a live child, so the host terminated the invocation. The operator did not cancel
+ *     it, which is precisely why it needs a record: without one, a Run that stops mid-phase
+ *     looks like a crash.
+ *   - `run-resumed` — the ordinary case, written by the activation sweep so the OTHER two are
+ *     legible as exceptions rather than as the only entries that exist. A trail that logs only the
+ *     unusual path cannot distinguish "nothing happened" from "nothing was checked".
+ *
+ * Every payload is ids, a closed liveness verdict, and nothing else. No paths, no
+ * operator-authored content. Additive, so no `AUDIT_SCHEMA_VERSION` bump — the same
+ * warn-and-preserve reasoning the migration families above record.
+ */
+/**
+ * FR-R3-111 (FR-112) — an unparseable Run record was preserved rather than destroyed.
+ *
+ * WHY THIS EVENT EXISTS. The load path did `changed = true; continue;` — the record was dropped,
+ * written over, and left no trace. An operator whose Run vanished had nothing to read, and no
+ * reader could tell a corrupt record from one that never existed. Meanwhile an unparseable QUEUE
+ * entry had been preserved for inspection since the v9 -> v10 migrator. The asymmetry was
+ * unexplained, and the silence was the worse half of it.
+ *
+ * PAYLOAD DISCIPLINE. `queueId` and a closed reason code, plus the resulting depth so a reader can
+ * see whether the cap is being approached. The rejected value itself is kept in the Memento
+ * quarantine, NOT here: it is arbitrary persisted data and could carry anything, and the audit log
+ * is not the place for content nobody has validated.
+ */
+export const RUN_QUARANTINE_EVENT_TYPES = ['run-record-quarantined'] as const;
+export type RunQuarantineEventType = (typeof RUN_QUARANTINE_EVENT_TYPES)[number];
+
+export interface RunRecordQuarantinedPayload {
+  readonly queueId: string;
+  readonly reason: 'unparseable' | 'migration-failed';
+  readonly quarantineDepth: number;
+}
+
+/**
+ * A preserved record, as stored.
+ *
+ * `raw` is the value that failed to parse. It lives in the Memento rather than in the audit log
+ * precisely because it is unvalidated — see the payload note above.
+ */
+export interface RunQuarantineEntry {
+  readonly queueId: string;
+  readonly capturedAtMs: number;
+  readonly reason: 'unparseable' | 'migration-failed';
+  readonly raw: unknown;
+}
+
+/**
+ * How many quarantined Run records to keep.
+ *
+ * Bounded oldest-out, in the same shape the queue quarantine uses: a corruption loop must not be
+ * able to fill the Memento. Small on purpose — these exist to be looked at once, and twenty is
+ * already more than anyone will read.
+ */
+export const RUN_QUARANTINE_CAP = 20;
+
+export const RUN_RESUME_EVENT_TYPES = [
+  'run-resumed',
+  'run-resume-declined-orphan-alive',
+  'run-invocation-aborted-on-supersession'
+] as const;
+export type RunResumeEventType = (typeof RUN_RESUME_EVENT_TYPES)[number];
+
+/**
+ * The payload for all three.
+ *
+ * `liveness` is carried on the declined and resumed arms because it is the reason for the
+ * decision, and an operator reading `run-resumed` on a Run whose previous tree could not be
+ * checked should be able to see that `unanswerable` — not infer it from an ordinary-looking
+ * resume. Absent on the supersession arm, where no liveness question was asked.
+ */
+export interface RunResumePayload {
+  readonly queueId: string;
+  readonly runId: string;
+  readonly liveness?: 'alive' | 'dead' | 'unrecorded' | 'unanswerable' | 'orphaned-group';
+}
+
+/**
+ * A non-terminal Run whose Task row no longer exists in any queue, ended at
+ * load.
+ *
+ * WHY THERE IS AN EVENT AT ALL. This is a repair the operator did not ask for,
+ * made to state they can no longer see — the row that named the Run is gone, so
+ * nothing on any surface says the Run was ever there. A repair nobody can read
+ * about is indistinguishable from the deadlock it fixes, which is the whole
+ * complaint the `run-record-quarantined` family answers one key over.
+ *
+ * PAYLOAD DISCIPLINE. Queue id, run id, and the closed status the Run carried
+ * before it was ended. No task description, no feature directory, no phase
+ * name: the first is operator-authored and the other two can carry a path.
+ * `priorStatus` is a `WorkflowRunStatus` literal, so it is a closed code by
+ * construction rather than by review.
+ *
+ * A DISTINCT TYPE, not `run-record-repaired` with a widened reason — the same
+ * choice, for the same stated reason, as `history-record-repaired` below: one
+ * type covering both repairs would make "which half of the pair was missing" a
+ * question the payload could not answer. That is also why there is no `reason`
+ * field here; its only value would repeat the event type.
+ */
+export const RUN_RECONCILIATION_EVENT_TYPES = ['run-canceled-task-row-removed'] as const;
+export type RunReconciliationEventType = (typeof RUN_RECONCILIATION_EVENT_TYPES)[number];
+
+export interface RunCanceledTaskRowRemovedPayload {
+  readonly queueId: string;
+  readonly runId: string;
+  readonly priorStatus: 'running' | 'paused';
+}
+
+export const MIGRATION_V10_EVENT_TYPES = [
+  'state-migrated-v9-to-v10'
+] as const;
+
 export const MIGRATION_V11_EVENT_TYPES = [
   'state-migrated-v10-to-v11',
   'run-reassigned-to-default-queue',
   'run-record-repaired'
+] as const;
+
+export const MIGRATION_V13_EVENT_TYPES = [
+  'state-migrated-v12-to-v13',
+  'queue-pause-divergence-resolved'
 ] as const;
 
 // FR-R3-010 — emitted by `WorkspaceStateStore.initialize()` (via
@@ -404,6 +641,280 @@ export const BACKEND_PING_EVENT_TYPES = ['backend-ping'] as const;
 // `AUDIT_SCHEMA_VERSION` bump.
 export const METRICS_EVENT_TYPES = ['metrics-view-opened'] as const;
 
+// FR-R3-064 — the per-run record of which backend a run was admitted to and
+// under what containment posture. Additive — no `AUDIT_SCHEMA_VERSION` bump
+// (follows the 028 / 030 / 031 / 032 precedent recorded above). Historical logs
+// lack the event entirely, which the warn-and-preserve parser already tolerates.
+//
+// WHY THIS EXISTS
+//
+// `schegent.backend.allowUncontainedBackends`' shipped description promised that
+// "every run that uses an uncontained backend records the fact in the audit log"
+// and nothing recorded it. FR-R3-056 shipped the refusal at
+// `createBackendRunner` and filed the missing per-run record as outstanding in
+// `docs/architecture/agent-capability-posture.md`; this closes it (shape B).
+//
+// WHAT IT IS NOT
+//
+// It is not the enforcement. `createBackendRunner` still refuses at the last
+// point before an uncontained backend exists as an object, and this event does
+// not move, weaken, or duplicate that. It is not a consent *prompt* either — the
+// setting is the consent surface, which is shape 3's recorded decision.
+//
+// ONE EVENT, BOTH CLASSIFICATIONS
+//
+// A `codex` run records `containment: 'os-enforced'`. That is deliberate: the
+// absence of an entry has to mean "not recorded", so the contained case is
+// recorded evidence rather than silence. Consent is the `containment: 'none'`
+// case, which is a property of the payload rather than of a second event type.
+export const BACKEND_POSTURE_EVENT_TYPES = ['backend-posture-admitted'] as const;
+
+// Feature 318 (FR-R7-04, FR-005) — per-workspace repository agent configuration acknowledgement decision.
+export const AGENT_CONFIG_ACK_EVENT_TYPES = ['agent-config-acknowledged'] as const;
+
+/**
+ * FR-R3-086 (H-01 / SEC-08) — a phase refused because its declared capability
+ * set cannot be enforced.
+ *
+ * DECLARED HERE BEFORE ANY OPERATOR-FACING TEXT CLAIMS IT. `D2` exists because a
+ * manifest promised a record the contract did not declare, and
+ * `tests/lint/capability-text-contract-parity.test.ts` fails when a document
+ * names an event this contract does not carry. The order is the point: contract
+ * first, prose second.
+ *
+ * WHAT THIS IS NOT. It is not a tool-call denial. The host does not observe tool
+ * calls — it narrows the authority the backend grants itself and the backend's
+ * own permission engine refuses at the attempt. This event records the case where
+ * the backend has NO surface that can express a withheld capability, so the phase
+ * is refused before it starts rather than run with the declared set ignored.
+ *
+ * That distinction is the honest half of this mechanism and it is repeated in
+ * `docs/security/threat-model.md` in the same section that states what the
+ * mechanism does bound.
+ */
+export const CAPABILITY_REFUSAL_EVENT_TYPES = [
+  'capability-refused',
+  // FR-R3-086 — the OTHER half, and it was missing.
+  //
+  // The refusal was recorded and the grant was not, so a Run whose phase declared
+  // a narrowed set and ran successfully left nothing in evidence saying which
+  // bound applied. Argv is where the bound actually lives and argv is an OMITTED
+  // key in `audit-payload.ts` — deliberately, because it carries paths — so there
+  // was no second place to look either.
+  //
+  // The point of this mechanism is a bound an operator approved, and evidence is
+  // where approval gets checked after the fact. A control whose effect cannot be
+  // observed is the exact shape this round exists to refuse, so the applied set
+  // is recorded with the same closed-union payload discipline as the refusal.
+  'capability-applied'
+] as const;
+export type CapabilityRefusalEventType = (typeof CAPABILITY_REFUSAL_EVENT_TYPES)[number];
+
+/**
+ * The payload, and every field is a closed union, a number, or an array of
+ * closed-union members.
+ *
+ * NO PATHS, no task description, no operator-authored content — the standing
+ * rules for every audit payload in this contract. `phaseIndex` addresses the
+ * phase by position because a sequence may repeat a phase, which is the same
+ * reason pipeline bindings address by index rather than by id.
+ */
+export interface CapabilityRefusedPayload {
+  readonly kind: BackendRunnerKind;
+  readonly unenforceable: readonly PhaseCapability[];
+  /** FR-R4-F06 (K3) -- the subset whose flag exists in the planner but no capture confirmed. */
+  readonly unqualified: readonly PhaseCapability[];
+  readonly phaseIndex: number;
+}
+
+/**
+ * The set a phase actually ran under, recorded only when the phase DECLARED one.
+ *
+ * A phase that declares nothing runs with today's argv byte for byte, and
+ * recording a default that changed nothing would put a line in every Run's
+ * evidence that says only "unchanged". The event exists to make a NARROWING
+ * observable, so it is emitted exactly when there is a narrowing to observe.
+ *
+ * Same payload discipline as the refusal above: a closed union, an array of
+ * closed-union members, and a number. No paths, no operator-authored content.
+ */
+export interface CapabilityAppliedPayload {
+  readonly kind: BackendRunnerKind;
+  readonly granted: readonly PhaseCapability[];
+  readonly phaseIndex: number;
+  /** FR-R4-F06 (K5) -- how the withheld capabilities are enforced. */
+  readonly enforcement: CapabilityEnforcement;
+  /** FR-R4-F06 (K5) -- what the restriction still leaves open. Sorted; empty when nothing is. */
+  readonly residuals: readonly CapabilityResidual[];
+  /**
+   * FR-R3-105 (FR-066) — what the backend's own configuration said, observed.
+   *
+   * WHY EVIDENCE OF A BOUND IS NOT ENOUGH WITHOUT THIS. A narrowed argv defers to
+   * whatever the CLI's ambient configuration says. The host does not pin that file,
+   * so `granted` above answered "which bound did the host apply" while `PhaseRunner`
+   * wires `observeHostAmbientConfig` (`src/services/ambient-config-observer.ts`) to
+   * record the user-level config digest. The threat model discloses the trust anchor
+   * and that a *local config file* can widen a narrowed set with every flag honoured.
+   *
+   * `null` when no configuration was found, which is itself an answer.
+   *
+   * NO PATH, deliberately, and this is the hard rule rather than a preference:
+   * workspace paths may not be serialized into the structured audit log, and a
+   * home-directory path is worse — it carries the operator's username. So the
+   * observation is a digest of the values plus the NAMES of the keys read. A
+   * reader comparing two Runs can tell whether the ambient configuration changed
+   * between them, which is the question evidence needs to answer, without the log
+   * carrying the configuration itself.
+   */
+  readonly ambientConfig: AmbientConfigObservation | null;
+}
+
+/**
+ * An observation of the backend CLI's own configuration at the moment a bound was
+ * applied.
+ *
+ * Deliberately not the configuration. `digest` is a hex digest over the observed
+ * values, so two Runs can be compared for sameness; `keysObserved` names which keys
+ * were read, so a reader knows the digest's scope rather than trusting it. Neither
+ * carries a path, a value, or anything operator-authored.
+ */
+export interface AmbientConfigObservation {
+  readonly digest: string;
+  readonly keysObserved: readonly string[];
+}
+
+/**
+ * FR-R3-083 / FR-R3-054 §5 — a terminal state that does not lie, in EVIDENCE.
+ *
+ * When the backend's process group cannot be proven gone within the grace window
+ * after SIGKILL, the runner logs a warning. `FR-R3-054`'s acceptance asks for the
+ * degraded path to be "visibly recorded in evidence", and a runtime-log line is not
+ * evidence: it is not in the audit record, so an operator reconstructing why a
+ * later phase saw foreign writes has nothing to read.
+ *
+ * SIGKILL is not catchable, so a group that survives it is a group Schegent does
+ * not own. That is a fact about a Run and belongs in the Run's record.
+ *
+ * WHY AN EVENT AND NOT A `TerminationReason`
+ *
+ * `FR-R3-054` §5 named the reason it did not ship one: that union is closed and
+ * persisted in `WorkflowRun`, so extending it is a state-schema change with its own
+ * migration story. `FR-R3-064` established the shape used instead — an audit event
+ * carrying the Run's identity, needing no migration — and this follows it.
+ *
+ * ABSENCE IS THE SIGNAL. No event is emitted when the tree is confirmed gone, so a
+ * Run with no such entry is a Run whose descendants were accounted for.
+ */
+export const PROCESS_TREE_EVENT_TYPES = ['process-tree-unconfirmed'] as const;
+
+/**
+ * The closed payload for a `process-tree-unconfirmed` entry.
+ *
+ * Identifiers and a bounded classification, and nothing else. No path, no argv, no
+ * operator-authored content, no message — the same discipline
+ * `BackendPostureAdmittedPayload` states for itself, and for the same reason: a
+ * payload with nowhere to put a secret needs no redaction to be safe.
+ *
+ * `pid` is the direct child's, and is present because an operator with a surviving
+ * process to find needs somewhere to start. It is a runtime identifier of a process
+ * this product spawned, not a property of the workspace.
+ */
+export interface ProcessTreeUnconfirmedPayload {
+  /**
+   * Which adapter's tree it was. A closed union, so this payload's "nowhere to put
+   * a secret" claim is enforced by the type rather than asserted by a comment.
+   */
+  readonly runner: RunnerLabel;
+  /** The direct child's pid, or `null` when the child never had one. */
+  readonly pid: number | null;
+  /**
+   * WHICH RUNGS ACTUALLY RAN before the group was found alive.
+   *
+   * One member today — `sigterm-then-sigkill` — because the ladder escalates on the
+   * GROUP, so a report is only reachable after a delivered SIGKILL. See
+   * `TreeEscalation` for the arm that existed briefly and was removed, and why.
+   *
+   * Carried from the runner rather than stamped here: if a rung is ever added, it
+   * reaches the audit record without an edit to the recorder.
+   */
+  readonly escalation: TreeEscalation;
+}
+
+/**
+ * FR-R4-F06 (FR-023) -- shutdown released ownership with a tree it could not answer for. Its own
+ * family rather than a member of `PROCESS_TREE_EVENT_TYPES`: that event means a delivered SIGKILL and
+ * a surviving group, which neither Windows nor a ladder cut off by the bound is.
+ */
+export const HOST_TEARDOWN_EVENT_TYPES = ['host-teardown-unconfirmed'] as const;
+
+/**
+ * FR-R4-F06 (FR-023) -- the closed payload for a `host-teardown-unconfirmed` entry: shutdown released
+ * ownership while a tree could not be confirmed gone. `platform-unanswerable` is Windows (`taskkill`
+ * was sent, no tree can be confirmed); `bound-elapsed` is a ladder still pending at the teardown
+ * bound, which `boundMs` records. Run, phase and iteration ride on the entry's envelope. Identifiers
+ * and a bounded class only: no path, argv, environment value or message (hard rule 22).
+ */
+export interface HostTeardownUnconfirmedPayload {
+  readonly runner: RunnerLabel;
+  /** The direct child's pid, or `null` when the child never had one. */
+  readonly pid: number | null;
+  readonly result: 'platform-unanswerable' | 'bound-elapsed';
+  readonly boundMs: number;
+  /** FR-R6-F09 (FR-009, research R12) -- `result` in the qualification vocabulary. */
+  readonly teardownOutcome: TeardownOutcome;
+  readonly residuals: readonly TeardownResidual[];
+}
+
+/**
+ * FR-R3-064 — the closed payload for a backend-posture audit entry.
+ *
+ * Three bounded primitives and nothing else. No argv, no CLI path, no cwd, no
+ * workspace root, no message, no free-form text. `SECRET_PATTERNS` is unchanged
+ * because the payload has nowhere to put a secret — the same discipline
+ * `ProcessExchangePayload` states for itself, and for the same reason: keeping
+ * a value out is more reliable than filtering it on the way through.
+ */
+export interface BackendPostureAdmittedPayload {
+  /** The backend this run was admitted to. */
+  readonly runner: BackendRunnerKind;
+  /**
+   * The classification that backend's own argv carries, from
+   * `services/backend-containment-policy`. Derived at emission from the runner
+   * kind — never passed in, so it cannot disagree with the policy.
+   */
+  readonly containment: BackendContainment;
+  /**
+   * FR-R3-125 (FR-002) — WHICH boundary, where `containment` says only whether
+   * there is one.
+   *
+   * ADDITIVE. No `AUDIT_SCHEMA_VERSION` bump, on the same reasoning FR-R3-064
+   * recorded for this payload's original three fields: the warn-and-preserve
+   * parser tolerates a payload without it, and a historical entry that lacks it is
+   * a pre-FR-R3-125 log rather than a malformed one.
+   *
+   * `'none'` IS A VALUE. An absent field means "not recorded"; `'none'` means
+   * "recorded, and there was no boundary". Collapsing the two would make the
+   * uncontained case indistinguishable from the un-instrumented one, which is the
+   * distinction FR-R3-064 built this event to preserve.
+   *
+   * The value set is closed and comes from one table in
+   * `services/backend-containment-policy`, which `containmentOf` also derives
+   * from; `tests/lint/containment-qualification-parity.test.ts` asserts the
+   * qualification record names the same mechanism for every backend.
+   */
+  readonly containmentMechanism: BackendContainmentMechanism;
+  /**
+   * Whether `schegent.backend.uncontainedBackends` named THIS backend at THIS
+   * emission.
+   *
+   * Never a cached value. `extension.ts` reads the setting once at activation
+   * for the registry's construction-time refusal; reusing that would record an
+   * activation-time posture for a run happening now, which is the cached-verdict
+   * defect FR-R3-056 finding 1 removed.
+   */
+  readonly uncontainedAllowed: boolean;
+}
+
 // Feature 084 — Phase exchange (FR-047, FR-049). The payload records the
 // operation, the resource ids, the scope, the per-resource outcomes, and the
 // counts, and nothing else. Document contents, instruction or skill text, file
@@ -440,6 +951,23 @@ export const PROCESS_EXCHANGE_EVENT_TYPES = [
 // ids to names at display time.
 export const CONCURRENCY_EVENT_TYPES = ['runs-overlapped'] as const;
 
+// FR-R3-077 / FR-R3-079 (feature 153) — the two point-of-effect refusals this
+// round added, as evidence rather than as log lines.
+//
+// `run-snapshot-declined` is the read side of the execution fence: a driver
+// loaded a Run record stamped at a generation the ownership registry has since
+// superseded, and refused to act on it. `output-target-refused-at-dispatch` is
+// the output target's second verdict, taken immediately before the frozen plan
+// reaches the runner, when a component of the target's path stopped resolving
+// inside the workspace after the operator confirmed it.
+//
+// Both record a refusal (`failure` in the three-arm outcome vocabulary) and both are additive — no `AUDIT_SCHEMA_VERSION`
+// bump. A refusal nobody can see afterwards is a refusal nobody can act on.
+export const POINT_OF_EFFECT_EVENT_TYPES = [
+  'run-snapshot-declined',
+  'output-target-refused-at-dispatch'
+] as const;
+
 // Feature 100 (T513, FR-052, FR-053, FR-054, FR-055) — the three catalog
 // lifecycle transitions that move a definition's pointers. Three event types
 // rather than one with an `operation` field, because FR-052 asks for exactly
@@ -465,6 +993,54 @@ export const CATALOG_LIFECYCLE_EVENT_TYPES = [
   'definition-restored'
 ] as const;
 
+/**
+ * FR-R3-127 (FR-006) — an operator removed or exported evidence.
+ *
+ * ADDITIVE. No `AUDIT_SCHEMA_VERSION` bump, on the FR-R3-064 precedent: the
+ * warn-and-preserve parser tolerates an unknown type, and no historical log
+ * contains these.
+ *
+ * WHY THEY ARE AUDITED AT ALL, since `FR-R3-085` shipped the services without an
+ * audit dependency. Deleting a Run's evidence removes the artifacts an
+ * investigation would read. It does NOT remove `.schegent/audit.log` — that is a
+ * different artifact with its own retention — so a record of the removal survives
+ * the removal, which is the only arrangement under which "evidence was deleted" is
+ * answerable later. An operator action on evidence that leaves no trace is the gap,
+ * not the audit.
+ *
+ * WHAT THE PAYLOADS MAY NOT CARRY: a path inside the evidence store, a run id
+ * beyond the envelope's own, an artifact name, or a destination directory. The
+ * envelope already names the run; a destination is an operator's filesystem layout
+ * and is not this log's business. Counts and a refusal reason are the whole
+ * payload, on the `CATALOG_LIFECYCLE` closure discipline.
+ */
+export const EVIDENCE_LIFECYCLE_EVENT_TYPES = ['evidence-deleted', 'evidence-exported'] as const;
+
+/** FR-R4-F04 (FR-028) — the operator reset their attribution pseudonym; the row carries neither value. */
+export const OPERATOR_ATTRIBUTION_EVENT_TYPES = ['operator-pseudonym-reset'] as const;
+
+/** FR-R6-F05 (FR-022) — one artifact lifecycle mutation: kind, operation id, counts and result only. */
+export const ARTIFACT_LIFECYCLE_EVENT_TYPES = ['artifact-lifecycle-mutation'] as const;
+
+/** FR-R7-03 (FR-004, FR-005) — metadata-only SQLite backup and restore events; zero raw paths. */
+export const STORE_BACKUP_RESTORE_EVENT_TYPES = ['store-backup', 'store-restore'] as const;
+
+/** Principal Review F5/F6 — metadata-only standalone scanner consent and telemetry credential events. */
+export const OPERATOR_SECURITY_EVENT_TYPES = [
+  'scanner-consent-changed',
+  'telemetry-credential-changed'
+] as const;
+
+/** FR-R5-F30 (SPEC-08, D7) — metadata-only workflow control-flow events (IDs, enums, counts, generation, timestamps only). */
+export const CONTROL_FLOW_EVENT_TYPES = [
+  'control-decision',
+  'control-attempt-admitted',
+  'control-wait',
+  'control-return',
+  'control-notice',
+  'control-command'
+] as const;
+
 export const ALL_AUDIT_EVENT_TYPES = [
   ...PHASE_EVENT_TYPES,
   ...RUNNER_EVENT_TYPES,
@@ -486,18 +1062,48 @@ export const ALL_AUDIT_EVENT_TYPES = [
   ...WORKSPACE_LIFECYCLE_EVENT_TYPES,
   ...TRUST_GATE_EVENT_TYPES,
   ...QUEUE_FULL_RESET_EVENT_TYPES,
+  ...QUEUE_SCOPED_RESET_EVENT_TYPES,
   ...RESET_TRANSACTION_EVENT_TYPES,
   ...SCHEDULE_EVENT_TYPES,
   ...MIGRATION_V7_EVENT_TYPES,
+  ...MIGRATION_V10_EVENT_TYPES,
   ...MIGRATION_V11_EVENT_TYPES,
   ...MIGRATION_V12_EVENT_TYPES,
+  ...MIGRATION_V13_EVENT_TYPES,
   ...TASK_EXECUTION_EVENT_TYPES,
   ...OPTIONAL_PHASE_EVENT_TYPES,
   ...BACKEND_PING_EVENT_TYPES,
+  ...BACKEND_POSTURE_EVENT_TYPES,
+  ...CAPABILITY_REFUSAL_EVENT_TYPES,
+  // FR-R3-103 — activation's resume decision and the supersession abort.
+  ...RUN_RESUME_EVENT_TYPES,
+  // FR-R3-111 — a corrupt Run record preserved rather than destroyed.
+  ...RUN_QUARANTINE_EVENT_TYPES,
+  // A Run whose Task row was deleted out from under it, ended at load.
+  ...RUN_RECONCILIATION_EVENT_TYPES,
+  ...PROCESS_TREE_EVENT_TYPES,
+  ...HOST_TEARDOWN_EVENT_TYPES,
   ...METRICS_EVENT_TYPES,
   ...PROCESS_EXCHANGE_EVENT_TYPES,
   ...CONCURRENCY_EVENT_TYPES,
-  ...CATALOG_LIFECYCLE_EVENT_TYPES
+  ...POINT_OF_EFFECT_EVENT_TYPES,
+  ...CATALOG_LIFECYCLE_EVENT_TYPES,
+  // FR-R3-127 — an operator removed or exported a Run's evidence.
+  ...EVIDENCE_LIFECYCLE_EVENT_TYPES,
+  // FR-R4-F03 — the audit writer's own record of a damaged tail or a history reset.
+  'audit-integrity-condition',
+  // FR-R4-F04 — the operator reset their attribution pseudonym.
+  ...OPERATOR_ATTRIBUTION_EVENT_TYPES,
+  // FR-R5-F30 — metadata-only workflow control-flow events.
+  ...CONTROL_FLOW_EVENT_TYPES,
+  // FR-R6-F05 — an artifact lifecycle mutation (deletion, quarantine, archival, policy adoption).
+  ...ARTIFACT_LIFECYCLE_EVENT_TYPES,
+  // FR-R7-04 — per-workspace repository agent config acknowledgement (backend, fileCount, decision).
+  ...AGENT_CONFIG_ACK_EVENT_TYPES,
+  // FR-R7-03 — SQLite store backup and restore operator actions (metadata-only, zero paths).
+  ...STORE_BACKUP_RESTORE_EVENT_TYPES,
+  // Principal Review F5/F6 — standalone scanner consent and OTLP credential actions (metadata-only).
+  ...OPERATOR_SECURITY_EVENT_TYPES
 ] as const;
 
 export type PhaseEventType = (typeof PHASE_EVENT_TYPES)[number];
@@ -520,17 +1126,54 @@ export type StateMigrationEventType = (typeof STATE_MIGRATION_EVENT_TYPES)[numbe
 export type WorkspaceLifecycleEventType = (typeof WORKSPACE_LIFECYCLE_EVENT_TYPES)[number];
 export type TrustGateEventType = (typeof TRUST_GATE_EVENT_TYPES)[number];
 export type QueueFullResetEventType = (typeof QUEUE_FULL_RESET_EVENT_TYPES)[number];
+export type QueueScopedResetEventType = (typeof QUEUE_SCOPED_RESET_EVENT_TYPES)[number];
 export type ResetTransactionEventType = (typeof RESET_TRANSACTION_EVENT_TYPES)[number];
 export type ScheduleAuditEventType = (typeof SCHEDULE_EVENT_TYPES)[number];
 export type MigrationV7EventType = (typeof MIGRATION_V7_EVENT_TYPES)[number];
+export type MigrationV10EventType = (typeof MIGRATION_V10_EVENT_TYPES)[number];
 export type MigrationV11EventType = (typeof MIGRATION_V11_EVENT_TYPES)[number];
 export type MigrationV12EventType = (typeof MIGRATION_V12_EVENT_TYPES)[number];
+export type MigrationV13EventType = (typeof MIGRATION_V13_EVENT_TYPES)[number];
 export type TaskExecutionEventType = (typeof TASK_EXECUTION_EVENT_TYPES)[number];
 export type BackendPingEventType = (typeof BACKEND_PING_EVENT_TYPES)[number];
+export type BackendPostureEventType = (typeof BACKEND_POSTURE_EVENT_TYPES)[number];
+export type ProcessTreeEventType = (typeof PROCESS_TREE_EVENT_TYPES)[number];
 export type OptionalPhaseEventType = (typeof OPTIONAL_PHASE_EVENT_TYPES)[number];
 export type MetricsEventType = (typeof METRICS_EVENT_TYPES)[number];
 export type ProcessExchangeEventType = (typeof PROCESS_EXCHANGE_EVENT_TYPES)[number];
 export type CatalogLifecycleEventType = (typeof CATALOG_LIFECYCLE_EVENT_TYPES)[number];
+export type EvidenceLifecycleEventType = (typeof EVIDENCE_LIFECYCLE_EVENT_TYPES)[number];
+export type ControlFlowEventType = (typeof CONTROL_FLOW_EVENT_TYPES)[number];
+
+export interface ControlFlowAuditPayload {
+  readonly rootRunId: string;
+  readonly invocationId: string;
+  readonly frameKey?: string;
+  readonly generation: number;
+  readonly candidateId?: string;
+  readonly attemptId?: string;
+  readonly attemptOrdinal?: number;
+  readonly backend?: BackendRunnerKind;
+  readonly reasonCode?: string;
+  readonly commandKind?: string;
+  readonly returnCommitId?: string;
+  readonly timestampMs: number;
+}
+
+/**
+ * FR-R3-127 — the closed payload for both evidence-lifecycle events.
+ *
+ * Counts and one refusal reason. No path, no artifact name, no destination: see the
+ * docblock on `EVIDENCE_LIFECYCLE_EVENT_TYPES` for why each is absent, and note
+ * that the way to keep them out is to give the payload nowhere to put them.
+ */
+export interface EvidenceLifecyclePayload {
+  /** Artifacts removed or carried. */
+  readonly artifacts: number;
+  /** Artifacts the operation could not touch, and why it stopped, if it did. */
+  readonly retained?: number;
+  readonly refusedReason?: string;
+}
 
 /**
  * Feature 084 — the closed payload for a process exchange audit entry, widened
@@ -625,6 +1268,29 @@ export interface CatalogLifecyclePayload {
 
 export type AuditEventType = (typeof ALL_AUDIT_EVENT_TYPES)[number];
 
+/**
+ * FR-R3-077 (T1040) — both generations, never a bare "declined".
+ *
+ * An operator reading this needs to know which generation wrote the record and
+ * which one is live; the difference between them is the whole finding.
+ */
+export interface RunSnapshotDeclinedPayload {
+  readonly runId: string;
+  readonly writtenAtFence: number;
+  readonly liveFence: number;
+}
+
+/**
+ * FR-R3-079 (T1058) — which output port was refused, and what the checked walk
+ * refused it for. The path itself is deliberately absent: workspace paths are
+ * not serialized into the structured audit log.
+ */
+export interface OutputTargetRefusedAtDispatchPayload {
+  readonly runId: string;
+  readonly portId: string;
+  readonly reason: string;
+}
+
 export interface OptionalPhaseFailureContinuedPayload {
   readonly runId: string;
   readonly pipelineId?: string;
@@ -652,7 +1318,7 @@ export interface TaskExecutionStartedPayload {
 // `terminalStatus` mirrors `HistoryEntry.terminalStatus`. `durationMs` is
 // wall-clock time: `Date.now() - WorkflowRun.startedAt`, consistent with
 // `buildHistoryEntry()`. `lastErrorSummary` is already sanitized by
-// `SanitizedFailureMetadata`.
+// `SanitizedFailureMetadata`. Feature 242: `failureCause` is copied from the Run, for `failed` only.
 export interface TaskExecutionEndedPayload {
   readonly taskId: string;
   readonly runId: string;
@@ -662,6 +1328,7 @@ export interface TaskExecutionEndedPayload {
   readonly phasesCompleted: number;
   readonly phasesSkipped: number;
   readonly lastErrorSummary?: string;
+  readonly failureCause?: FailureCause;
 }
 
 // Emitted by `WorkflowController.pauseActivePhase()` when a task stops
@@ -754,6 +1421,30 @@ export interface QueueClearedAllPayload {
   readonly pauseStateCleared: boolean;
   readonly runnerState: 'acked' | 'timed-out' | 'no-active-run';
   readonly watchdogBackoffCleared: boolean;
+  // FR-R3-150 (T1619c) — `true` when the reset disarmed at least one queue's
+  // scheduled start. Additive and boolean: it names no queue, because this
+  // event is the workspace-wide one and the per-queue record is
+  // `scheduled-start-canceled`, which the coordinator's own `cancel()` emits
+  // per id. FR-009 requires the recorded history to state what this action
+  // affected, and before this field a disarmed timer left no trace here at all.
+  readonly scheduleCleared: boolean;
+}
+
+// FR-R3-150 (T1620) — payload for the queue-scoped `queue-cleared` audit
+// event. Bounded to the addressed `queueId` plus structural counts and
+// closed-enum literals, mirroring `QueueClearedAllPayload` above. NEVER
+// includes operator descriptions, task ids, or queue names — only the id,
+// which is the same shape `queue-created`/`queue-deleted` already carry.
+export interface QueueClearedPayload {
+  readonly queueId: string;
+  readonly removedPending: number;
+  readonly removedCompleted: number;
+  readonly removedFailed: number;
+  readonly removedCanceled: number;
+  readonly removedInFlight: number;
+  readonly pauseCleared: boolean;
+  readonly scheduleCleared: boolean;
+  readonly runnerState: 'acked' | 'timed-out' | 'no-active-run';
 }
 
 // Feature FR-R3-006 (T348) — payload for `workspace-state-reset`. Five fields,
@@ -853,15 +1544,28 @@ export interface TaskReorderedPayload {
   readonly cause?: TaskReorderedRejectCause;
 }
 
-export interface PhaseEndCauseExtension {
-  readonly cause?: string;
-}
+// Feature 194 code review (FR-004, 2026-09-04) — `PhaseEndCauseExtension
+// { readonly cause?: string }` stood here with zero readers repo-wide, and
+// feature 194 is what made it contradictory: `PhaseEndPayloadV3` — re-exported
+// from THIS module at the top of the file — now declares the same field on the
+// same event as a closed set of code-resident literals, and the whole delta rests
+// on that vocabulary being closed to it. A consumer reaching for the type named
+// after the field got `string` and could write a fatal-signature branch the
+// projection guarantees is dead. Nothing referenced it and no gate compared the
+// two, so it is deleted rather than narrowed: one declaration, in the module
+// that owns the projection.
+//
+// Feature 212 (FR-004, 2026-09-13) — that set gains a second member,
+// `pre_spawn_refusal`, and the re-export is what keeps this module in step: the
+// vocabulary is widened once, where the projection matches it by identity against
+// an exported constant. Closed is the property that matters here, not the count;
+// a passthrough would break the argument above whatever its arity.
 
-// Feature 073 — payload for `metrics-view-opened` (FR-022 adoption
-// tracking). Bounded to a single session identifier — no workspace root
-// path, no operator-authored content (contracts/metrics-view-opened-event.md).
+// Feature 073 — payload for `metrics-view-opened` (FR-022 adoption tracking): one session id, no
+// workspace root path, no operator-authored content (contracts/metrics-view-opened-event.md).
+// Not `sessionId` since 284: the FR-R5-F14 sanitizer redacts that key, so the writer refused it.
 export interface MetricsViewOpenedPayload {
-  readonly sessionId: string;
+  readonly viewCorrelationId: string;
 }
 
 export type AuditOutcome = 'success' | 'failure' | 'info';
@@ -889,6 +1593,7 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
   new Set<AuditEventType>([
     // Queue mutation
     'queue-cleared-all',
+    'queue-cleared',
     'queue-created',
     'queue-renamed',
     'queue-deleted',
@@ -918,10 +1623,25 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'audit-hydration-warning',
     'audit-schema-warning',
     'session-retention-applied',
+    // FR-R4-F03 — run-independent: the writer's own record about the history, with no run.
+    'audit-integrity-condition',
+    // FR-R4-F04 — run-independent: an operator act on this workspace's attribution, with no run.
+    'operator-pseudonym-reset',
+    // FR-R6-F05 — a lifecycle mutation has no run; it belongs on the System tab.
+    'artifact-lifecycle-mutation',
+    // FR-R7-03 — workspace SQLite store backup/restore has no run; System tab only.
+    'store-backup',
+    'store-restore',
+    // Principal Review F5/F6 — installation/workspace security & credential changes have no run; System tab only.
+    'scanner-consent-changed',
+    'telemetry-credential-changed',
     // State migration / repair
     'state-migrated',
     'workflow-run-repaired',
     'state-migrated-v6-to-v7',
+    'state-migrated-v9-to-v10',
+    'state-migrated-v12-to-v13',
+    'queue-pause-divergence-resolved',
     // Feature FR-R3-006 — the reset transaction. System-scoped without
     // qualification: it is the one event whose subject is the whole workspace
     // state rather than any Run, and it carries no runId to resolve against a
@@ -941,6 +1661,11 @@ export const SYSTEM_SCOPED_EVENT_TYPES: ReadonlySet<AuditEventType> = Object.fre
     'state-migrated-v11-to-v12',
     'history-entries-unattributed',
     'history-record-repaired',
+    // A Run ended at load because its Task row was gone. System-scoped on the
+    // same reasoning as `run-reassigned-to-default-queue` above, and with one
+    // more besides: the Task this Run named has been deleted, so the Activity
+    // Feed has no row to file the entry against even after Runs start.
+    'run-canceled-task-row-removed',
     // Feature 065 — scheduled-start lifecycle / idle-pending transitions
     'scheduled-start-armed',
     'scheduled-start-fired',

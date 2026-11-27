@@ -1,0 +1,362 @@
+// FR-R6-F11 T012 — the run snapshot capture (research R1, R12).
+//
+// WHAT THIS PINS:
+//   - roots are selected by `created_at_ms` in `[start, min(end, cutoff))`, in one workspace;
+//   - each filter narrows the roots, and the attempts follow their roots;
+//   - `terminal_reason` maps to a failure cause, and free text is never kept;
+//   - more than `cap` roots or attempts gives `snapshot-rows`;
+//   - the read is one transaction, rolled back on a failure, and writes nothing.
+
+import { describe, expect, it } from 'vitest';
+import type { ReportFilters } from '../../../src/contracts/reporting/report-query';
+import {
+  captureRunSnapshot,
+  type CaptureConnection,
+  type CaptureRequest,
+  type CapturedRuns
+} from '../../../src/services/reporting/snapshot-capture';
+import type { NodeSqliteConnection } from '../../../src/services/sqlite-store';
+import { FIXTURE_WORKSPACE, seedAttempt, seedRun, withStore } from './report-fixture';
+
+const CAP = 100;
+
+function request(overrides: Partial<CaptureRequest> = {}): CaptureRequest {
+  return {
+    workspaceId: FIXTURE_WORKSPACE,
+    range: { startMs: 1_000, endMs: 5_000 },
+    cutoffMs: 10_000,
+    filters: {},
+    cap: CAP,
+    ...overrides
+  };
+}
+
+function captured(conn: CaptureConnection, req: CaptureRequest): CapturedRuns {
+  const result = captureRunSnapshot(conn, req);
+  if (!result.ok) {
+    throw new Error(`expected a capture, got ${result.outcome}`);
+  }
+  return result.value;
+}
+
+function rootIds(conn: CaptureConnection, req: CaptureRequest): readonly string[] {
+  return captured(conn, req).roots.map((root) => root.rootId);
+}
+
+function seedFilterFixture(conn: NodeSqliteConnection): void {
+  seedRun(conn, { runId: 'r1', createdAtMs: 1_100, workflowId: 'wf-a', frozenClosureId: 'fz-1', status: 'failed' });
+  seedRun(conn, { runId: 'r2', createdAtMs: 1_200, workflowId: 'wf-b', frozenClosureId: 'fz-2', status: 'succeeded' });
+  seedRun(conn, { runId: 'r3', createdAtMs: 1_300, workflowId: 'wf-a', frozenClosureId: 'fz-2', status: 'succeeded' });
+  seedAttempt(conn, { attemptId: 'a1', runId: 'r1', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_110 });
+  seedAttempt(conn, { attemptId: 'a2', runId: 'r2', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_210 });
+  seedAttempt(conn, { attemptId: 'a3', runId: 'r3', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_310 });
+}
+
+function recording(conn: NodeSqliteConnection, failOn?: string): { conn: CaptureConnection; execs: string[] } {
+  const execs: string[] = [];
+  const wrapped: CaptureConnection = {
+    exec: (sql) => {
+      execs.push(sql);
+      conn.exec(sql);
+    },
+    all: <T>(sql: string, ...params: (string | number)[]): T[] => {
+      if (failOn !== undefined && sql.includes(failOn)) {
+        throw new Error('simulated read failure');
+      }
+      return conn.all<T>(sql, ...params);
+    }
+  };
+  return { conn: wrapped, execs };
+}
+
+describe('FR-R6-F11 T012 — run snapshot capture', () => {
+  it('selects roots created in [start, min(end, cutoff)) in its own workspace, oldest first', () => {
+    withStore((conn) => {
+      seedRun(conn, { runId: 'before', createdAtMs: 999 });
+      seedRun(conn, { runId: 'at-start', createdAtMs: 1_000 });
+      seedRun(conn, { runId: 'mid', createdAtMs: 2_999 });
+      seedRun(conn, { runId: 'at-cutoff', createdAtMs: 3_000 });
+      seedRun(conn, { runId: 'late', createdAtMs: 4_000 });
+      seedRun(conn, { runId: 'other-ws', createdAtMs: 1_500, workspaceId: 'ws-2' });
+      expect(rootIds(conn, request({ cutoffMs: 3_000 }))).toEqual(['at-start', 'mid']);
+      expect(rootIds(conn, request({ range: { startMs: 1_000, endMs: 3_000 } }))).toEqual(['at-start', 'mid']);
+      expect(rootIds(conn, request())).toEqual(['at-start', 'mid', 'at-cutoff', 'late']);
+    });
+  });
+
+  it('breaks a created-time tie by root identity', () => {
+    withStore((conn) => {
+      seedRun(conn, { runId: 'r-b', createdAtMs: 2_000 });
+      seedRun(conn, { runId: 'r-a', createdAtMs: 2_000 });
+      expect(rootIds(conn, request())).toEqual(['r-a', 'r-b']);
+    });
+  });
+
+  it.each<[string, ReportFilters, readonly string[]]>([
+    ['workflowId', { workflowId: ['wf-a'] }, ['r1', 'r3']],
+    ['frozenDefinitionId', { frozenDefinitionId: ['fz-2'] }, ['r2', 'r3']],
+    ['outcome', { outcome: ['failed'] }, ['r1']],
+    ['rootId', { rootId: ['r2', 'r3'] }, ['r2', 'r3']],
+    ['two filters together', { workflowId: ['wf-a'], frozenDefinitionId: ['fz-2'] }, ['r3']],
+    ['several values of one filter', { workflowId: ['wf-a', 'wf-b'] }, ['r1', 'r2', 'r3']]
+  ])('narrows roots and their attempts by %s', (_name, filters, expected) => {
+    withStore((conn) => {
+      seedFilterFixture(conn);
+      const result = captured(conn, request({ filters }));
+      expect(result.roots.map((root) => root.rootId)).toEqual([...expected]);
+      expect([...new Set(result.attempts.map((attempt) => attempt.rootId))]).toEqual([...expected]);
+    });
+  });
+
+  it('copies the root and attempt fields, with attempts in root, step and attempt order', () => {
+    withStore((conn) => {
+      seedRun(conn, {
+        runId: 'r1',
+        createdAtMs: 1_100,
+        workflowId: 'wf-a',
+        frozenClosureId: 'fz-1',
+        status: 'failed',
+        startedAtMs: 1_150,
+        completedAtMs: 1_900,
+        terminalReason: 'phase_timeout'
+      });
+      seedAttempt(conn, { attemptId: 'a-s1', runId: 'r1', stepIndex: 1, attemptNumber: 1, startedAtMs: 1_500, phaseId: 'plan' });
+      seedAttempt(conn, {
+        attemptId: 'a-s0-2',
+        runId: 'r1',
+        stepIndex: 0,
+        attemptNumber: 2,
+        startedAtMs: 1_300,
+        status: 'failed',
+        exitCode: 3,
+        completedAtMs: 1_400
+      });
+      seedAttempt(conn, { attemptId: 'a-s0-1', runId: 'r1', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_200, phaseId: 'phase-0' });
+      const result = captured(conn, request());
+      expect(result.roots).toEqual([
+        {
+          rootId: 'r1',
+          workflowId: 'wf-a',
+          frozenDefinitionId: 'fz-1',
+          status: 'failed',
+          startedAtMs: 1_150,
+          completedAtMs: 1_900,
+          createdAtMs: 1_100,
+          failureCause: 'phase_timeout'
+        }
+      ]);
+      expect(result.attempts.map((attempt) => attempt.attemptId)).toEqual(['a-s0-1', 'a-s0-2', 'a-s1']);
+      expect(result.attempts.at(1)).toEqual({
+        attemptId: 'a-s0-2',
+        rootId: 'r1',
+        stepIndex: 0,
+        phaseId: 'phase-0',
+        attemptNumber: 2,
+        status: 'failed',
+        exitCode: 3,
+        startedAtMs: 1_300,
+        completedAtMs: 1_400
+      });
+      expect(result.attempts.at(2)?.phaseId).toBe('plan');
+      expect(Object.isFrozen(result.roots)).toBe(true);
+      expect(Object.isFrozen(result.attempts.at(0))).toBe(true);
+    });
+  });
+
+  it('maps a recorded cause to itself, null to not-recorded and free text to other, keeping no text', () => {
+    withStore((conn) => {
+      const freeText = 'disk full at /Users/someone/secret-project';
+      seedRun(conn, { runId: 'known', createdAtMs: 1_100, status: 'failed', terminalReason: 'cap_exhausted' });
+      seedRun(conn, { runId: 'unset', createdAtMs: 1_200, status: 'aborted', terminalReason: null });
+      seedRun(conn, { runId: 'free', createdAtMs: 1_300, status: 'cancelled', terminalReason: freeText });
+      const result = captured(conn, request());
+      expect(result.roots.map((root) => root.failureCause)).toEqual(['cap_exhausted', 'not-recorded', 'other']);
+      expect(JSON.stringify(result)).not.toContain('secret-project');
+    });
+  });
+
+  it('gives snapshot-rows when roots or attempts exceed the cap, and captures at the cap', () => {
+    withStore((conn) => {
+      seedRun(conn, { runId: 'r1', createdAtMs: 1_100 });
+      seedRun(conn, { runId: 'r2', createdAtMs: 1_200 });
+      seedRun(conn, { runId: 'r3', createdAtMs: 1_300 });
+      expect(captureRunSnapshot(conn, request({ cap: 2 }))).toEqual({
+        ok: false,
+        outcome: 'limited',
+        limit: 'snapshot-rows'
+      });
+      expect(captured(conn, request({ cap: 3 })).roots).toHaveLength(3);
+      for (const attemptNumber of [1, 2, 3, 4]) {
+        seedAttempt(conn, { attemptId: `a${String(attemptNumber)}`, runId: 'r1', stepIndex: 0, attemptNumber, startedAtMs: 1_100 });
+      }
+      expect(captureRunSnapshot(conn, request({ cap: 3 }))).toEqual({
+        ok: false,
+        outcome: 'limited',
+        limit: 'snapshot-rows'
+      });
+      expect(captured(conn, request({ cap: 4 })).attempts).toHaveLength(4);
+    });
+  });
+
+  it('reads in one transaction and writes nothing', () => {
+    withStore((conn) => {
+      seedFilterFixture(conn);
+      const before = conn.scalar<number>('SELECT total_changes()');
+      const probe = recording(conn);
+      captured(probe.conn, request());
+      expect(probe.execs).toEqual(['BEGIN', 'COMMIT']);
+      expect(conn.scalar<number>('SELECT total_changes()')).toBe(before);
+    });
+  });
+
+  it('rolls the transaction back and rethrows when a read fails', () => {
+    withStore((conn) => {
+      seedFilterFixture(conn);
+      const probe = recording(conn, 'JOIN attempts');
+      expect(() => captureRunSnapshot(probe.conn, request())).toThrow('simulated read failure');
+      expect(probe.execs).toEqual(['BEGIN', 'ROLLBACK']);
+      expect(conn.scalar<number>('SELECT 1')).toBe(1);
+    });
+  });
+
+  it('captures ACP attributions for populated observation ledgers without scanning out-of-window attempts', () => {
+    withStore((conn) => {
+      seedRun(conn, { runId: 'r-in', createdAtMs: 1_500 });
+      seedRun(conn, { runId: 'r-out', createdAtMs: 500 });
+      seedAttempt(conn, { attemptId: 'a-live', runId: 'r-in', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_510 });
+      seedAttempt(conn, { attemptId: 'a-meta', runId: 'r-in', stepIndex: 1, attemptNumber: 1, startedAtMs: 1_520 });
+      seedAttempt(conn, { attemptId: 'a-empty', runId: 'r-in', stepIndex: 2, attemptNumber: 1, startedAtMs: 1_530 });
+      seedAttempt(conn, { attemptId: 'a-out', runId: 'r-out', stepIndex: 0, attemptNumber: 1, startedAtMs: 510 });
+      conn.run(`UPDATE attempts SET backend_kind = 'claude', model_id = 'claude-sonnet' WHERE attempt_id = ?`, 'a-meta');
+
+      const sha = 'a'.repeat(64);
+      const insertObs = (key: string, attemptId: string, origin: 'live' | 'history', observedAtMs: number, seq: number) => {
+        conn.run(
+          `INSERT INTO acp_observation_ledger (
+             observation_key, profile_id, connection_generation, host_receive_seq,
+             acp_session_id, turn_id, attempt_id, origin, kind, payload_sha256, observed_at_ms
+           ) VALUES (?, 'prof-1', 1, ?, 'sess-1', 'turn-1', ?, ?, 'agent_message_chunk', ?, ?)`,
+          key,
+          seq,
+          attemptId,
+          origin,
+          sha,
+          observedAtMs
+        );
+      };
+      // Two live in-window observations + one history + one after cutoff on a-live.
+      insertObs('k1', 'a-live', 'live', 1_600, 1);
+      insertObs('k2', 'a-live', 'live', 1_700, 2);
+      insertObs('k3', 'a-live', 'history', 1_800, 3);
+      insertObs('k4', 'a-live', 'live', 6_000, 4);
+      // Out-of-window attempt observations must be ignored.
+      insertObs('k5', 'a-out', 'live', 600, 5);
+
+      const result = captured(conn, request({ range: { startMs: 1_000, endMs: 5_000 }, cutoffMs: 5_000 }));
+      expect(result.acpAttributions).toEqual([
+        {
+          attemptId: 'a-live',
+          rootId: 'r-in',
+          backendKind: null,
+          modelId: null,
+          profileId: null,
+          laneId: null,
+          liveObservations: 2
+        },
+        {
+          attemptId: 'a-meta',
+          rootId: 'r-in',
+          backendKind: 'claude',
+          modelId: 'claude-sonnet',
+          profileId: null,
+          laneId: null,
+          liveObservations: 0
+        }
+      ]);
+    });
+  });
+
+  it('records explicit snapshot-rows-truncated omissions whenever auxiliary lists overflow the cap (Post-merge Finding 4)', () => {
+    withStore((conn) => {
+      seedRun(conn, { runId: 'r-1', createdAtMs: 1_500 });
+      seedRun(conn, { runId: 'r-2', createdAtMs: 1_600 });
+      seedAttempt(conn, { attemptId: 'a-1', runId: 'r-1', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_510 });
+      seedAttempt(conn, { attemptId: 'a-2', runId: 'r-2', stepIndex: 0, attemptNumber: 1, startedAtMs: 1_610 });
+
+      for (const [id, runId, attemptId] of [
+        ['art-1', 'r-1', 'a-1'],
+        ['art-2', 'r-1', 'a-1'],
+        ['art-3', 'r-2', 'a-2']
+      ] as const) {
+        conn.run(
+          `INSERT INTO artifacts (artifact_id, content_sha256, byte_length, media_type, kind, created_by_run_id, created_by_attempt_id, created_at_ms)
+           VALUES (?, ?, 128, 'application/json', 'diagnostic', ?, ?, 1550)`,
+          id,
+          'd'.repeat(64),
+          runId,
+          attemptId
+        );
+        conn.run(
+          `INSERT INTO artifact_lifecycle (
+             artifact_id, lifecycle_revision, owner_run_id, owner_attempt_id, sensitivity,
+             retention_class, store_kind, immutability, digest_algorithm, digest_value,
+             generation, extent_bytes, byte_size, availability, producer_identity,
+             display_name, created_at_ms, terminal_settled_at_ms, expires_at_ms, updated_at_ms
+           ) VALUES (
+             ?, 1, ?, ?, 'metadata',
+             'transcripts-diagnostics-checkpoints-audit-catalog', 'diagnostic', 'immutable', 'sha256', ?,
+             NULL, NULL, 128, 'present', 'runner', 'diag.json', 1550, 1550, NULL, 1550
+           )`,
+          id,
+          runId,
+          attemptId,
+          'd'.repeat(64)
+        );
+      }
+      for (const [id, runId, attemptId] of [
+        ['ho-1', 'r-1', 'a-1'],
+        ['ho-2', 'r-1', 'a-1'],
+        ['ho-3', 'r-2', 'a-2']
+      ] as const) {
+        conn.run(
+          `INSERT INTO phase_handoff_records (
+             handoff_id, run_id, source_attempt_id, target_phase_id, revision, status, record_json, record_bytes, created_at_ms, updated_at_ms
+           ) VALUES (?, ?, ?, 'verify', 1, 'ready', '{}', 2, 1550, 1550)`,
+          id,
+          runId,
+          attemptId
+        );
+      }
+      for (const [id, runId] of [
+        ['loop-1', 'r-1'],
+        ['loop-2', 'r-1'],
+        ['loop-3', 'r-2']
+      ] as const) {
+        conn.run(
+          `INSERT INTO phase_review_loop_ledgers (loop_id, run_id, node_id, iteration, verdict, ledger_json, updated_at_ms)
+           VALUES (?, ?, 'review', 1, 'approved', '{}', 1550)`,
+          id,
+          runId
+        );
+      }
+
+      // With cap=2, roots (2) and attempts (2) fit, while all three auxiliary lists (3 each) overflow.
+      const truncated = captured(conn, request({ cap: 2 }));
+      expect(truncated.evidenceRefs).toHaveLength(2);
+      expect(truncated.handoffSummaries).toHaveLength(2);
+      expect(truncated.reviewSummaries).toHaveLength(2);
+      expect(truncated.omissions).toEqual([
+        { what: 'evidenceRefs', reason: 'snapshot-rows-truncated' },
+        { what: 'handoffSummaries', reason: 'snapshot-rows-truncated' },
+        { what: 'reviewSummaries', reason: 'snapshot-rows-truncated' }
+      ]);
+
+      // Raising cap to 3 returns all rows with no auxiliary omissions.
+      const complete = captured(conn, request({ cap: 3 }));
+      expect(complete.evidenceRefs).toHaveLength(3);
+      expect(complete.handoffSummaries).toHaveLength(3);
+      expect(complete.reviewSummaries).toHaveLength(3);
+      expect(complete.omissions).toBeUndefined();
+    });
+  });
+});

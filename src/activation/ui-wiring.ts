@@ -1,11 +1,18 @@
+// FR-R3-136 (T1525a) — TRUST CLASSIFICATION: NO PRODUCER ACT.
+// Command registrations, all through `registerGuardedCommand`. A registration
+// performs nothing; each mutating handler re-checks trust at the point of effect,
+// which is the programmatic-invocation case VS Code's guidance warns about.
+
 import * as vscode from 'vscode';
 
 import type { AuditLogWriter } from '../audit/audit-log-writer';
-import { runAuto } from '../commands/auto';
+import { runAuto, type AutoCommandArgs } from '../commands/auto';
 import { runCancel } from '../commands/cancel';
 import { runClearAll } from '../commands/clear-all';
+import { runClearQueue } from '../commands/clear-queue';
 import { runEnqueue, type EnqueueCommandArgs } from '../commands/enqueue';
-import { runExportAuditLog } from '../commands/export-audit';
+import { runGitApprovals, type GitApprovalItem } from '../commands/git-approvals';
+import { registerAgentConfigCommands } from './agent-config-commands-wiring';
 import { runOpenDashboard } from '../commands/open-dashboard';
 import {
   runClearCompleted,
@@ -13,31 +20,76 @@ import {
   runMoveQueuedItemDown,
   runMoveQueuedItemUp,
   runPauseQueue,
-  runResumeQueue,
-  runRetryQueuedItem
+  runResumeQueue
 } from '../commands/queue-ops';
+import { resumePausedQueueExecution } from '../commands/resume-queue-execution';
 import { runRerunFromHistory } from '../commands/rerun-from-history';
+import {
+  runReportFailedRowExits,
+  type ReportFailedRowExitsDeps
+} from '../commands/report-failed-row-exits';
 import { runRestartCanceledTask } from '../commands/restart-canceled-task';
 import { runResume } from '../commands/resume';
 import { runRetryActiveRun } from '../commands/retry-active-run';
+import {
+  runPausePhase,
+  runRestartPhase,
+  runResumePhase,
+  type PhaseControlCommandDeps
+} from '../commands/phase-control-commands';
 import { runRetryPhaseNow } from '../commands/retry-phase-now';
-import { runSchedule } from '../commands/schedule';
+import { runSchedule, type ScheduleCommandArgs } from '../commands/schedule';
 import { runShowActiveRun } from '../commands/show-active-run';
 import { runShowAuditLog } from '../commands/show-audit';
 import {
   runStartQueueCommand,
   type StartQueueCommandArg
 } from '../commands/start-queue';
-import type { PipelineCatalog } from '../config/pipeline-config';
+import { registerQueueFailurePolicyCommand } from './queue-failure-policy-wiring';
+import { registerAuditChainCommands } from './audit-commands-wiring';
+import { registerEvidenceCommands } from './evidence-commands-wiring';
+import { registerSqliteBackupCommands } from './sqlite-backup-commands-wiring';
+import { registerLaneRecoveryCommands } from './lane-recovery-commands-wiring';
+import {
+  registerOperatorSecurityCommands,
+  type OperatorSecurityCommandsWiringDeps
+} from './operator-security-commands-wiring';
+import type { TransportRouter } from '../monitor/transport/transport-router';
+import type { OperatorAttribution } from '../lib/operator-attribution';
+import type { RuntimeLogAccessor } from '../lib/runtime-log/runtime-log-settings';
+import { registerQueueItemExitCommands } from './queue-item-exit-wiring';
+import { readQueueFailurePolicyDefault } from './uncached-settings-accessors';
 import type { SchegentWorkflowController } from '../controller/workflow-controller';
-import type { SanitizedLogger } from '../lib/logger';
+import { errorMessage } from '../lib/errors';
+import { SanitizedLogger } from '../lib/logger';
+import {
+  isPlainRecord,
+  isSafeEntityKey,
+  setOwnProp
+} from '../lib/operational-value-helpers';
+import {
+  registerGuardedCommand,
+  type GuardedCommandDeps
+} from './guarded-command-registration';
 import type { QueueManager } from '../queue/queue-manager';
+import type { ExecutionLeasePort } from '../services/auto-drain-coordinator';
+import type { QueueStartFailureRegistry } from '../services/queue-start-failure-registry';
 import type { GuardedRunService } from '../services/guarded-run-service';
+import type { ConnectedWorkflowRun } from '../state/connected-workflow-run';
 import type { HistoryStore } from '../state/history-store';
 import type { WorkspaceLockManager } from '../state/lock';
 import type { WorkspaceStateStore } from '../state/workspace-state';
-import type { ConnectedRunProjection } from '../contracts/sidebar-ipc';
+import type { ConnectedRunProjection, ControlProjection } from '../contracts/sidebar-ipc';
+import {
+  CONTROL_LEDGER_VERSION,
+  type ControlFrame,
+  type ControlLedger,
+  type RootControlState
+} from '../contracts/control-ledger';
+import { buildControlProjection } from '../services/workflow-execution/control-command-service';
+import { lookupRecord } from '../services/workflow-execution/control-ledger-store';
 import { DashboardBridge } from '../ui/dashboard/dashboard-bridge';
+import { HistoryDescriptionStore } from '../services/history/history-description-store';
 import type { Notifier } from '../ui/notifications';
 import {
   projectConnectedRun,
@@ -50,18 +102,41 @@ interface Stage2UiWiringDeps {
   readonly extensionRoot: string;
   readonly workspaceRoot: string;
   readonly projector: StateProjector;
+  readonly refreshCatalog: () => Promise<void>;
   readonly dispatch: ConstructorParameters<typeof DashboardBridge>[0]['dispatch'];
   readonly guardedRunService: GuardedRunService;
   readonly store: WorkspaceStateStore;
   readonly auditWriter: AuditLogWriter;
   readonly notifier: Notifier;
   readonly logger: SanitizedLogger;
-  readonly getCatalog: () => PipelineCatalog;
   readonly controller: SchegentWorkflowController;
   readonly queue: QueueManager;
   readonly lock: WorkspaceLockManager;
+  // FR-R3-150 (T1620) — the queue-scoped Clean All orchestrator releases a
+  // queue's execution lease directly by id (D5); this is the same manager
+  // instance the controller and the deactivate path share (one window, one
+  // set of leases, per `extension.ts`'s own note at its `executionLease` wire).
+  readonly executionLease: ExecutionLeasePort;
   readonly historyStore: HistoryStore;
   readonly getWorkspaceFolders: () => readonly vscode.WorkspaceFolder[] | undefined;
+  /**
+   * Feature 195 (T018, FR-021) — the same registry `AutoDrainCoordinator`
+   * writes to at step 2a, read here so an explicit Start Queue can report a
+   * halt as a refusal naming the failed task, rather than the pre-feature
+   * asynchronous `accepted`.
+   */
+  readonly queueStartFailures: Pick<QueueStartFailureRegistry, 'get'>;
+  /** FR-R4-F04 (D4) — private storage, where the deletion removes a Run's recovery checkpoint. */
+  readonly globalStorageRoot: string;
+  /** FR-R4-F04 (D5) — asked when the shared legacy transport ages out. */
+  readonly transportRouter: Pick<TransportRouter, 'legacyAgesOutBy' | 'measure'>;
+  /** FR-R4-F04 (P4) — the operator attribution the reset command replaces. */
+  readonly operatorAttribution: Pick<OperatorAttribution, 'reset'>;
+  /** FR-R4-F04 (B3) — where the runtime log is, for the diagnostics bundle's lines for one Run. */
+  readonly runtimeLogAccessor: Pick<RuntimeLogAccessor, 'read'>;
+  /** Principal Review F5/F6 — SecretStorage and standalone scanner consent seam for operator commands. */
+  readonly secrets: OperatorSecurityCommandsWiringDeps['secrets'];
+  readonly scannerConsent: OperatorSecurityCommandsWiringDeps['scannerConsent'];
 }
 
 export interface Stage2UiWiring {
@@ -80,6 +155,7 @@ export interface Stage2UiWiring {
  * router (which mutates) and the projector (which reads).
  */
 export interface ConnectedRunService extends ConnectedRunPort {
+  getConnectedRun?(connectedRunId: string): ConnectedWorkflowRun | null;
   /** Every connected run, already folded to the shape the snapshot carries. */
   listProjections(): readonly ConnectedRunProjection[];
 }
@@ -87,7 +163,8 @@ export interface ConnectedRunService extends ConnectedRunPort {
 type ConnectedRunStore = Pick<
   WorkspaceStateStore,
   'getRequest' | 'getConnectedRun' | 'getConnectedRuns' | 'compareAndSetConnectedRun'
->;
+> &
+  Partial<Pick<WorkspaceStateStore, 'getRawControlLedger'>>;
 
 /**
  * One child Pipeline Run's state, read from the queue and then from history.
@@ -129,22 +206,140 @@ function readChildState(
   return history.list().find((entry) => entry.featureId === queueItemId)?.terminalStatus ?? null;
 }
 
+const FALLBACK_SANITIZER = new SanitizedLogger();
+
+function controlProjectionsForRun(
+  store: ConnectedRunStore,
+  run: ConnectedWorkflowRun,
+  logger?: Pick<SanitizedLogger, 'warn' | 'sanitize'>
+): Readonly<Record<string, ControlProjection>> | undefined {
+  if (run.controlState === undefined || store.getRawControlLedger === undefined) {
+    return undefined;
+  }
+  try {
+    const raw = store.getRawControlLedger();
+    if (
+      !isPlainRecord(raw) ||
+      raw.version !== CONTROL_LEDGER_VERSION ||
+      !isPlainRecord(raw.roots) ||
+      !isPlainRecord(raw.quotaObservations) ||
+      !isPlainRecord(raw.checks) ||
+      !isPlainRecord(raw.permits)
+    ) {
+      return undefined;
+    }
+    const ledger = raw as unknown as ControlLedger;
+    const rootCandidate: unknown = lookupRecord(ledger.roots, run.controlState.ledgerRunId);
+    if (
+      !isPlainRecord(rootCandidate) ||
+      rootCandidate.version !== CONTROL_LEDGER_VERSION ||
+      rootCandidate.connectedRunId !== run.connectedRunId ||
+      !isPlainRecord(rootCandidate.fence) ||
+      !isPlainRecord(rootCandidate.rootBudget) ||
+      !isPlainRecord(rootCandidate.framesByKey)
+    ) {
+      return undefined;
+    }
+    const root = rootCandidate as unknown as RootControlState;
+    const nowWallMs = Date.now();
+    const sanitize = (value: string): string => (logger ?? FALLBACK_SANITIZER).sanitize(value);
+    const byInv: Record<string, ControlProjection> = {};
+    for (const frameCandidate of Object.values(rootCandidate.framesByKey)) {
+      if (!isPlainRecord(frameCandidate) || frameCandidate.kind !== 'candidate-block') continue;
+      if (
+        typeof frameCandidate.invocationId !== 'string' ||
+        !isSafeEntityKey(frameCandidate.invocationId)
+      ) {
+        continue;
+      }
+      const frame = frameCandidate as unknown as ControlFrame;
+      setOwnProp(
+        byInv,
+        frame.invocationId,
+        buildControlProjection({
+          root,
+          frame,
+          ledger,
+          nowWallMs,
+          isTrusted: vscode.workspace.isTrusted,
+          sanitize
+        })
+      );
+    }
+    return Object.keys(byInv).length > 0 ? Object.freeze(byInv) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Constructs the facade above. Pure composition — no VS Code API is touched. */
 export function createConnectedRunService(
   store: ConnectedRunStore,
-  history: Pick<HistoryStore, 'list'>
+  history: Pick<HistoryStore, 'list'>,
+  logger?: Pick<SanitizedLogger, 'warn' | 'sanitize'>
 ): ConnectedRunService {
   const reader = (queueItemId: string): ConnectedChildState | null =>
     readChildState(store, history, queueItemId);
   return {
     get: (connectedRunId) => store.getConnectedRun(connectedRunId),
+    getConnectedRun: (connectedRunId) => store.getConnectedRun(connectedRunId),
     compareAndSetConnectedRun: (next, expectedRevision) =>
       store.compareAndSetConnectedRun(next, expectedRevision),
     readChildState: reader,
-    listProjections: () =>
-      Object.freeze(
-        Object.values(store.getConnectedRuns()).map((run) => projectConnectedRun(run, reader))
-      )
+    listProjections: () => {
+      const projections: ConnectedRunProjection[] = [];
+      for (const run of Object.values(store.getConnectedRuns())) {
+        try {
+          projections.push(
+            projectConnectedRun(run, reader, controlProjectionsForRun(store, run, logger))
+          );
+        } catch (err) {
+          const safeRunId = (logger ?? FALLBACK_SANITIZER)
+            .sanitize(run.connectedRunId)
+            .slice(0, 128);
+          const errorCode = err instanceof Error ? err.name : 'unknown-error';
+          logger?.warn('connected-run: skipped malformed run during sidebar projection', {
+            runId: safeRunId,
+            errorCode
+          });
+        }
+      }
+      return Object.freeze(projections);
+    }
+  };
+}
+
+/** What the failed-row report writes when the extension's version cannot be read as a version. */
+const UNKNOWN_VERSION = 'unknown';
+const EXTENSION_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,64})?$/;
+
+/**
+ * FR-R4-F16 (feature 244, contract M2.3) — the ports of "Schegent: Report Failed-Row Exits".
+ *
+ * Read-only by construction: it is handed the clock, two reads of queue state, the version, a way to
+ * open an unsaved document, and the logger and notifier, and no audit writer, queue manager, controller
+ * or lock, so the command cannot append, start work or take a lease. The workspace root is
+ * `deps.workspaceRoot`, never the first workspace folder read directly (hard rule 31). The policy
+ * default is read on call, through the uncached accessor, because an operator who changes the setting
+ * means it.
+ */
+function failedRowCensusPorts(deps: Stage2UiWiringDeps): ReportFailedRowExitsDeps {
+  return {
+    workspaceRoot: deps.workspaceRoot,
+    now: Date.now,
+    readQueueStates: () => deps.store.getQueueStates(),
+    readPolicyDefault: () => readQueueFailurePolicyDefault(deps.workspaceRoot),
+    // The version is shown in the report, so it is accepted by pattern and nothing else.
+    extensionVersion: () => {
+      const version: unknown = vscode.extensions.getExtension('schegent.schegent')?.packageJSON?.version;
+      return typeof version === 'string' && EXTENSION_VERSION_PATTERN.test(version) ? version : UNKNOWN_VERSION;
+    },
+    openReport: async (content) => {
+      const document = await vscode.workspace.openTextDocument({ language: 'markdown', content });
+      await vscode.window.showTextDocument(document, { preview: false });
+    },
+    logger: deps.logger,
+    notifier: deps.notifier
   };
 }
 
@@ -160,14 +355,59 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     dispatch: deps.dispatch,
     logger: deps.logger
   });
+  // FR-R3-071 — one store instance for the sidecar READ half, shared by both
+  // replay commands. The write half lives on the recorder's own instance
+  // (createHistoryRecorder); the two address the same files by construction,
+  // because refs are derived from run ids alone.
+  const historyDescriptions = new HistoryDescriptionStore({
+    workspaceRoot: deps.workspaceRoot,
+    logger: deps.logger
+  });
   const queueOpsCtx = {
     queue: deps.queue,
     lock: deps.lock,
     notifier: deps.notifier,
-    logger: deps.logger
+    logger: deps.logger,
+    onQueueResumed: async (queueId: string) => {
+      await resumePausedQueueExecution(queueId, {
+        store: deps.store,
+        guardedRunService: deps.guardedRunService,
+        controller: deps.controller,
+        logger: deps.logger
+      });
+    }
   };
+  /**
+   * FR-R3-154 (T1645) — the three Phase controls take the same three
+   * dependencies, named once so the registrations below stay one line each.
+   */
+  const phaseControlCommandDeps = (d: typeof deps): PhaseControlCommandDeps => ({
+    controller: d.controller,
+    notifier: d.notifier,
+    logger: d.logger,
+    store: d.store
+  });
+
+  // FR-R3-136 (FR-005, FR-006) — the trust guard every registration below goes
+  // through. `isWorkspaceTrusted` is a thunk, not a captured boolean: a command
+  // outlives its registration and can be invoked programmatically at any later
+  // time, including after `onDidGrantWorkspaceTrust` has fired. Reading vscode
+  // directly here matches `sidebar-router-wiring.ts`, which passes the same shape
+  // to the message router — one idiom for this in the codebase, not two.
+  const guard: GuardedCommandDeps = {
+    isWorkspaceTrusted: () => vscode.workspace.isTrusted,
+    notifier: deps.notifier,
+    logger: deps.logger,
+    isOwner: () => deps.lock.hasPrimacy()
+  };
+
   const commands: vscode.Disposable[] = [
-    vscode.commands.registerCommand('schegent.auto', (args) =>
+    // The argument annotations on the handlers below are new with the guard, and
+    // they are a tightening rather than noise: `vscode.commands.registerCommand`
+    // types its handler as `(...args: any[]) => any`, so every one of these
+    // parameters was implicitly `any` and the palette could hand a command the
+    // wrong shape without a compile error.
+    registerGuardedCommand(guard, 'schegent.auto', (args: AutoCommandArgs | undefined) =>
       runAuto(args, {
         guardedRunService: deps.guardedRunService,
         store: deps.store,
@@ -176,7 +416,7 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.enqueue', async (args: EnqueueCommandArgs) => {
+    registerGuardedCommand(guard, 'schegent.enqueue', async (args: EnqueueCommandArgs) => {
       const result = await runEnqueue(args, {
         guardedRunService: deps.guardedRunService,
         store: deps.store,
@@ -197,15 +437,14 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
       }
       return result;
     }),
-    vscode.commands.registerCommand('schegent.schedule', (args) =>
+    registerGuardedCommand(guard, 'schegent.schedule', (args: ScheduleCommandArgs | undefined) =>
       runSchedule(args, {
         guardedRunService: deps.guardedRunService,
-        getCatalog: deps.getCatalog,
         notifier: deps.notifier,
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.resume', (prompt?: string) =>
+    registerGuardedCommand(guard, 'schegent.resume', (prompt?: string) =>
       runResume({
         store: deps.store,
         controller: deps.controller,
@@ -215,16 +454,17 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         prompt
       })
     ),
-    vscode.commands.registerCommand(
+    registerGuardedCommand(guard, 
       'schegent.startQueue',
       (arg?: StartQueueCommandArg) =>
         runStartQueueCommand(arg, {
           guardedRunService: deps.guardedRunService,
           controller: deps.controller,
-          logger: deps.logger
+          logger: deps.logger,
+          startFailures: deps.queueStartFailures
         })
     ),
-    vscode.commands.registerCommand('schegent.cancel', (arg?: { taskId?: string }) =>
+    registerGuardedCommand(guard, 'schegent.cancel', (arg?: { taskId?: string }) =>
       runCancel({
         controller: deps.controller,
         store: deps.store,
@@ -235,34 +475,125 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         taskId: typeof arg?.taskId === 'string' ? arg.taskId : undefined
       })
     ),
-    vscode.commands.registerCommand(
+    registerGuardedCommand(guard,
       'schegent.restartCanceledTask',
-      (arg?: { taskId?: string }) =>
-        runRestartCanceledTask({
+      async (arg?: { taskId?: string }) => {
+        const result = await runRestartCanceledTask({
           store: deps.store,
           queue: deps.queue,
           audit: deps.auditWriter,
           notifier: deps.notifier,
           logger: deps.logger,
           taskId: typeof arg?.taskId === 'string' ? arg.taskId : ''
-        })
+        });
+        if (result.ok) {
+          // Restoring a row to `pending` is the same state transition
+          // `schegent.enqueue` performs above, and needs the same trigger: the
+          // drain coordinator is edge-triggered, so without this the restarted
+          // Task waits for an unrelated event. `result.queueId` is the queue the
+          // row actually landed on, never a defaulted sweep of Default.
+          void deps.controller.drainQueuedWork(result.queueId).catch((err) =>
+            deps.logger.warn(
+              `restartCanceledTask: auto-drain failed: ${errorMessage(err)}`
+            )
+          );
+        }
+        return result;
+      }
     ),
-    vscode.commands.registerCommand('schegent.showAuditLog', () =>
+    registerGuardedCommand(guard, 'schegent.showAuditLog', () =>
       runShowAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
     ),
-    vscode.commands.registerCommand('schegent.exportAuditLog', () =>
-      runExportAuditLog({ workspaceRoot: deps.workspaceRoot, notifier: deps.notifier })
+    registerGuardedCommand(guard, 'schegent.reportFailedRowExits', () =>
+      runReportFailedRowExits(failedRowCensusPorts(deps))
     ),
-    vscode.commands.registerCommand('schegent.retryQueuedItem', (arg) =>
-      runRetryQueuedItem(arg, queueOpsCtx)
+    // FR-R3-146 (FR-012, SC-005) — the observe-and-withdraw surface for the
+    // durable Git grants. Both thunks read the store when the command runs, not
+    // when the wiring is built: the rule `run-safety-wiring.ts:204-206` states for
+    // the grant lookup itself, and for the same reason — an operator who clears
+    // state mid-session means it.
+    registerGuardedCommand(guard, 'schegent.gitApprovals', () =>
+      runGitApprovals({
+        grants: () => deps.store.getGitPlanGrants(),
+        forget: (fingerprint) => deps.store.forgetGitPlanGrant(fingerprint),
+        forgetAll: () => deps.store.forgetAllGitPlanGrants(),
+        pick: (items) =>
+          Promise.resolve(
+            vscode.window.showQuickPick<GitApprovalItem & vscode.QuickPickItem>(
+              items as (GitApprovalItem & vscode.QuickPickItem)[],
+              {
+                title: 'Schegent: Git Approvals',
+                placeHolder: 'Plans this workspace approves without asking. Pick one to withdraw it.',
+                // The detail line carries the phases and the fingerprint, and it
+                // is the reason this list answers "what did I grant" at all.
+                matchOnDetail: true
+              }
+            )
+          ),
+        // `modal: true`, like both consent modals: withdrawing a security decision
+        // is answered, not dismissed past.
+        confirm: (message, detail, approveLabel) =>
+          Promise.resolve(
+            vscode.window.showWarningMessage(message, { modal: true, detail }, approveLabel)
+          ),
+        info: (message) => deps.notifier.info(message)
+      })
     ),
-    vscode.commands.registerCommand('schegent.moveQueuedItemUp', (arg) =>
+    ...registerAgentConfigCommands(guard, { store: deps.store, notifier: deps.notifier }),
+    // FR-R3-112 — the chain verification, from the surface rather than only from a shell. FR-R4-F03 (TA3):
+    // registered with the reset command in `audit-commands-wiring.ts`, because this function is at its bound.
+    ...registerAuditChainCommands(guard, {
+      workspaceRoot: deps.workspaceRoot,
+      notifier: deps.notifier,
+      logger: deps.logger,
+      auditWriter: deps.auditWriter
+    }),
+    // FR-R4-F04 (TA4) — export audit log, export Run evidence and delete Run evidence, registered
+    // together in `evidence-commands-wiring.ts` because this function is at its bound.
+    ...registerEvidenceCommands(guard, {
+      workspaceRoot: deps.workspaceRoot,
+      store: deps.store, historyStore: deps.historyStore,
+      auditWriter: deps.auditWriter,
+      notifier: deps.notifier,
+      logger: deps.logger,
+      globalStorageRoot: deps.globalStorageRoot,
+      transportRouter: deps.transportRouter,
+      operatorAttribution: deps.operatorAttribution,
+      runtimeLogAccessor: deps.runtimeLogAccessor
+    }),
+    // FR-R7-03 — SQLite store backup, verify, and restore commands, registered in their own module.
+    ...registerSqliteBackupCommands(guard, {
+      workspaceRoot: deps.workspaceRoot, globalStorageRoot: deps.globalStorageRoot,
+      store: deps.store, controller: deps.controller, lock: deps.lock,
+      auditWriter: deps.auditWriter, notifier: deps.notifier, projector: deps.projector, refreshCatalog: deps.refreshCatalog, logger: deps.logger
+    }),
+    // FR-R8-01 (01-07) — Guarded installed-editor execution lane inspection and recovery commands.
+    ...registerLaneRecoveryCommands(guard, {
+      workspaceRoot: deps.workspaceRoot,
+      globalStorageRoot: deps.globalStorageRoot,
+      store: deps.store,
+      notifier: deps.notifier,
+      logger: deps.logger
+    }),
+    // Principal Review F5/F6 — Standalone native scanner consent/revocation & OTLP SecretStorage commands.
+    ...registerOperatorSecurityCommands(guard, {
+      store: deps.store, secrets: deps.secrets, scannerConsent: deps.scannerConsent, auditWriter: deps.auditWriter, notifier: deps.notifier, logger: deps.logger
+    }),
+    // Feature 195 (T064) — retry and attested completion, the two queue-item
+    // exits that must offer the queue a drain; extracted together for the
+    // reason `queue-item-exit-wiring.ts` records.
+    ...registerQueueItemExitCommands(guard, {
+      queueOps: queueOpsCtx,
+      controller: deps.controller,
+      logger: deps.logger
+    }),
+    registerGuardedCommand(guard, 'schegent.moveQueuedItemUp', (arg) =>
       runMoveQueuedItemUp(arg, queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.moveQueuedItemDown', (arg) =>
+    registerGuardedCommand(guard, 'schegent.moveQueuedItemDown', (arg) =>
       runMoveQueuedItemDown(arg, queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.clearAll', () =>
+    registerGuardedCommand(guard, 'schegent.clearAll', () =>
       runClearAll({
         controller: deps.controller,
         store: deps.store,
@@ -273,31 +604,45 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.clearCompleted', () =>
+    // FR-R3-150 (T1618/T1620) — the queue-scoped Clean All, addressed by
+    // `queueId`; registered-only (no palette entry), called only from
+    // `cmd-clear-queue.ts`. `schegent.clearAll` above stays workspace-wide.
+    registerGuardedCommand(guard, 'schegent.clearQueue', (queueId: string) =>
+      runClearQueue(
+        {
+          controller: deps.controller, queue: deps.queue, executionLease: deps.executionLease,
+          audit: deps.auditWriter, lock: deps.lock, notifier: deps.notifier, logger: deps.logger
+        },
+        queueId
+      )
+    ),
+    registerGuardedCommand(guard, 'schegent.clearCompleted', () =>
       runClearCompleted(queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.clearFailed', () =>
+    registerGuardedCommand(guard, 'schegent.clearFailed', () =>
       runClearFailed(queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.pauseQueue', (arg) =>
+    registerGuardedCommand(guard, 'schegent.pauseQueue', (arg) =>
       runPauseQueue(arg, queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.resumeQueue', () =>
+    registerGuardedCommand(guard, 'schegent.resumeQueue', () =>
       runResumeQueue(queueOpsCtx)
     ),
-    vscode.commands.registerCommand('schegent.rerunFromHistory', (arg) =>
+    registerQueueFailurePolicyCommand(guard, { queue: deps.queue, logger: deps.logger }), // T037
+    registerGuardedCommand(guard, 'schegent.rerunFromHistory', (arg) =>
       runRerunFromHistory(arg, {
         guarded: deps.guardedRunService,
         history: deps.historyStore,
+        descriptions: historyDescriptions,
         lock: deps.lock,
         notifier: deps.notifier,
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.showActiveRun', (arg) =>
+    registerGuardedCommand(guard, 'schegent.showActiveRun', (arg) =>
       runShowActiveRun(arg, { notifier: deps.notifier, logger: deps.logger })
     ),
-    vscode.commands.registerCommand('schegent.openDashboard', (arg) =>
+    registerGuardedCommand(guard, 'schegent.openDashboard', (arg) =>
       runOpenDashboard(arg, {
         bridge: dashboardBridge,
         notifier: deps.notifier,
@@ -305,19 +650,20 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
         getWorkspaceFolders: deps.getWorkspaceFolders
       })
     ),
-    vscode.commands.registerCommand('schegent.retryActiveRun', (arg) =>
+    registerGuardedCommand(guard, 'schegent.retryActiveRun', (arg) =>
       runRetryActiveRun(arg, {
         store: deps.store,
         controller: deps.controller,
         queue: deps.queue,
         history: deps.historyStore,
+        descriptions: historyDescriptions,
         lock: deps.lock,
         guarded: deps.guardedRunService,
         notifier: deps.notifier,
         logger: deps.logger
       })
     ),
-    vscode.commands.registerCommand('schegent.retryPhaseNow', (arg) =>
+    registerGuardedCommand(guard, 'schegent.retryPhaseNow', (arg) =>
       runRetryPhaseNow(arg, {
         controller: deps.controller,
         lock: deps.lock,
@@ -328,34 +674,29 @@ export function registerStage2Ui(deps: Stage2UiWiringDeps): Stage2UiWiring {
     // Feature 093 (FR-018 / T080) — the sidebar always passes the addressed
     // queue; a human invoking these from the palette passes nothing and the
     // controller resolves a sole Run, refusing when N are in flight.
-    vscode.commands.registerCommand('schegent.pausePhase', async (queueId?: string) => {
-      const result = await deps.controller.pauseActivePhase(queueId);
-      if (!result.ok) {
-        deps.notifier.warn(`Schegent: pause phase rejected (${result.reason}).`);
-      }
-    }),
-    vscode.commands.registerCommand(
-      'schegent.resumePhase',
-      async (prompt?: string, queueId?: string) => {
-        const result = await deps.controller.resumeActivePhase(prompt, queueId);
-        if (!result.ok) {
-          deps.notifier.warn(`Schegent: resume phase rejected (${result.reason}).`);
-        }
-      }
+    //
+    // FR-R3-154 (T1645) — the three bodies moved to
+    // `src/commands/phase-control-commands.ts` so their `MutationResult` is
+    // returned instead of warned about and dropped. `registerGuardedCommand`
+    // preserves a handler's return value, which is what carries the outcome
+    // back through `executeCommand` to the sidebar route.
+    registerGuardedCommand(guard, 'schegent.pausePhase', (queueId?: string) =>
+      runPausePhase(queueId, phaseControlCommandDeps(deps))
     ),
-    vscode.commands.registerCommand('schegent.restartPhase', async (queueId?: string) => {
-      const result = await deps.controller.restartActivePhase(queueId);
-      if (!result.ok) {
-        deps.notifier.warn(`Schegent: restart phase rejected (${result.reason}).`);
-      }
-    }),
-    vscode.commands.registerCommand('schegent.redetectClaudeTransport', () => {
+    registerGuardedCommand(guard,
+      'schegent.resumePhase',
+      (prompt?: string, queueId?: string) =>
+        runResumePhase(prompt, queueId, phaseControlCommandDeps(deps))
+    ),
+    registerGuardedCommand(guard, 'schegent.restartPhase', (queueId?: string) =>
+      runRestartPhase(queueId, phaseControlCommandDeps(deps))
+    ),
+    registerGuardedCommand(guard, 'schegent.redetectClaudeTransport', () => {
       deps.notifier.info(
         'Schegent: Claude CLI now natively streams prompts over stdin. No transport redetection is necessary.'
       );
     })
   ];
-
   return {
     dashboardBridge,
     dispose(): void {

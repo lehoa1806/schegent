@@ -16,7 +16,9 @@ import { render, cleanup } from '@testing-library/svelte';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ChangedFieldSummary from '../ChangedFieldSummary.svelte';
-import DefinitionLifecycleRow from '../DefinitionLifecycleRow.svelte';
+// Feature 186 (D-1) — the row mounted this beside Publish until the split; the
+// panel is where both now live, on the surface that shows the open definition.
+import DefinitionLifecyclePanel from '../DefinitionLifecyclePanel.svelte';
 import type {
   BuilderLifecycle,
   ChangedCollectionField,
@@ -180,14 +182,13 @@ describe('ChangedFieldSummary — it never blocks the publish (US5, T059, FR-026
     expect(container.querySelectorAll('button')).toHaveLength(0);
   });
 
-  it('leaves Publish present and enabled on the row it is mounted beside', () => {
-    const { container } = render(DefinitionLifecycleRow, {
+  it('leaves Publish present and enabled on the panel it is mounted beside', () => {
+    const { container } = render(DefinitionLifecyclePanel, {
       props: {
         kind: 'phase' as const,
         definitionId: DEFINITION_ID,
         definitionName: 'Specify',
         lifecycle: lifecycleWithSummary({ kind: 'changed', fields: [scalar('instruction')] }),
-        validity: 'effective' as const,
         defects: []
       }
     });
@@ -202,7 +203,7 @@ describe('ChangedFieldSummary — it never blocks the publish (US5, T059, FR-026
   });
 });
 
-describe('ChangedFieldSummary — where the row mounts it (US5, T061)', () => {
+describe('ChangedFieldSummary — where the panel mounts it (US5, T061)', () => {
   it('shows it on a definition whose draft has a projected summary', () => {
     const { container } = renderRow(lifecycleWithSummary({ kind: 'unchanged' }));
     expect(
@@ -251,13 +252,12 @@ function lifecycleWithSummary(
 }
 
 function renderRow(lifecycle: BuilderLifecycle) {
-  return render(DefinitionLifecycleRow, {
+  return render(DefinitionLifecyclePanel, {
     props: {
       kind: 'phase' as const,
       definitionId: DEFINITION_ID,
       definitionName: 'Specify',
       lifecycle,
-      validity: 'effective' as const,
       defects: []
     }
   });

@@ -10,6 +10,7 @@
 //   5. In-flight task — cancel runs before cleanup.
 
 import * as fs from 'node:fs/promises';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,7 +26,7 @@ import type { WorkspaceLockManager } from '../../../src/state/lock';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import type { SessionCleanupRunner } from '../../../src/controller/workflow-controller';
 import type { SessionCleanupOutcome } from '../../../src/services/session-cleanup/session-cleanup-service';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { removeTempRoot } from '../../temp-root-cleanup';
 
 class FakeMemento implements Memento {
@@ -77,7 +78,7 @@ beforeEach(async () => {
   store = new WorkspaceStateStore(memento);
   await store.initialize();
   queue = new QueueManager(store);
-  phaseRunner = { run: vi.fn() } as unknown as PhaseRunner;
+  phaseRunner = { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner;
   lockManager = makeLock();
   logger = new SanitizedLogger([]);
   warnSpy = vi.spyOn(logger, 'warn');
@@ -148,7 +149,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
   it('null runId (pending task) → ok:true, sessionCleaned:false, no fs syscall', async () => {
     const feature = await queue.enqueue('pending feature');
     // No markInFlight — runId stays null.
-    expect(queue.findById(feature.id)?.runId).toBeNull();
+    expect(queue.findById(feature.id)?.runId).toBeNull(); // 2026-09-06 coincidental: a queue task, not the audit envelope
 
     const cleanupSpy = vi.fn<
       (input: {
@@ -224,7 +225,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
       phaseBreakpoints: [],
       resumeTargetPhaseId: null
     };
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     await seedSessionArtifacts(runId);
 
     // Order tracking: cancel → setRun(canceled) → cleanup.
@@ -233,7 +234,7 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
     // the ordering anchor the cleanup was asserted to follow. It is gone from
     // `deleteTask`: deleting one Task cancels one queue's Run, and primacy
     // belongs to the window whose other Runs are still executing under it. The
-    // ordering claim survives on `setRun:canceled`, which is the step that
+    // ordering claim survives on `updateRun:canceled`, which is the step that
     // actually has to precede the cleanup — the cleanup deletes the session
     // tree for a Run the store must already show as terminal.
     const order: string[] = [];
@@ -248,22 +249,232 @@ describe('Feature 034 T005 — WorkflowController.deleteTask cleanup wiring', ()
       .mockImplementation(() => {
         order.push('cancel');
       });
-    const origSetRun = store.setRun.bind(store);
-    const setRunSpy = vi.spyOn(store, 'setRun').mockImplementation(async (queueId, r) => {
-      if (r && r.status === 'canceled') order.push('setRun:canceled');
-      return origSetRun(queueId, r);
-    });
+    const origUpdateRun = store.updateRun.bind(store);
+    const updateRunSpy = vi
+      .spyOn(store, 'updateRun')
+      .mockImplementation(async (queueId, update, claim) => {
+        if (update.label === 'cancel') order.push('updateRun:canceled');
+        return origUpdateRun(queueId, update, claim);
+      });
     const result = await controller.deleteTask(feature.id);
 
     expect(result.ok).toBe(true);
     expect(cancelSpy).toHaveBeenCalledTimes(1);
-    // Cancel-then-setRun MUST precede the cleanup invocation.
+    // Cancel-then-updateRun MUST precede the cleanup invocation.
     expect(order[0]).toBe('cancel');
-    expect(order.indexOf('setRun:canceled')).toBeGreaterThanOrEqual(0);
-    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('setRun:canceled'));
+    expect(order.indexOf('updateRun:canceled')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('updateRun:canceled'));
     // And primacy is not a `deleteTask` concern at all.
     expect(lockManager.release).not.toHaveBeenCalled();
 
-    setRunSpy.mockRestore();
+    updateRunSpy.mockRestore();
   });
+
+  // FR-R4-F01 (FR-008) — the driver `cancelActive` aborts writes its own `canceled`
+  // transition, and it can reach the chain before the deletion's cancel update. The
+  // Run is then terminal, which is what the deletion needed; refusing the deletion as
+  // `run-cancel-not-committed` would report a cancel that did happen as one that did not.
+  it('in-flight task — still deletes when the aborted driver commits its own cancel first', async () => {
+    const runId = 'R3-race';
+    const feature = await queue.enqueue('in-flight feature');
+    await queue.markInFlight(feature.id, runId);
+    const now = Date.now();
+    const run: WorkflowRun = {
+      id: runId,
+      featureId: feature.id,
+      featureDir: 'specs/000',
+      status: 'running',
+      currentPhase: 'speckit-plan',
+      currentIteration: 1,
+      startedAt: now,
+      lastTransitionAt: now,
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    const controller = makeController(vi.fn(async () => ({ cleaned: true })));
+    vi.spyOn(controller, 'cancelActive').mockImplementation(() => {
+      void store.setRun(
+        DEFAULT_QUEUE_ID,
+        { ...run, status: 'canceled', lastTransitionAt: now + 1 },
+        unfencedCommit('test-fixture')
+      );
+    });
+
+    const result = await controller.deleteTask(feature.id);
+
+    expect(result.ok).toBe(true);
+    expect(queue.findById(feature.id)).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('canceled');
+  });
+
+  // FR-R3-153 (T1640, spec FR-013/FR-018, research.md R6) — the confirmed
+  // gap: a delayed-retry countdown (`RetryHandler#handleDelayedRetry`, e.g.
+  // after a rate limit) sets the Run's own `status: 'paused'` (with
+  // `pendingRetryAt` armed) WITHOUT ever calling `QueueManager.pause` on
+  // the task row — the row stays `in-flight` the whole time the Run waits
+  // to auto-resume. `deleteTaskWithSessionCleanup`'s guard used to only
+  // recognize `run.status === 'running'`, so deleting the task mid-countdown
+  // skipped `cancelActive`/lease release entirely and fell through to
+  // `removeTask`'s own (now-removed) weaker fallback. This must go through
+  // the identical cancel → setRun(canceled) → release sequence the
+  // 'running' case above already proves.
+  it('in-flight task whose Run is mid delayed-retry countdown (paused) — cancel and release still run BEFORE cleanup', async () => {
+    const runId = 'R4';
+    const feature = await queue.enqueue('in-flight, Run mid-retry-countdown');
+    await queue.markInFlight(feature.id, runId);
+    expect(queue.findById(feature.id)?.status).toBe('in-flight');
+
+    const now = Date.now();
+    const run: WorkflowRun = {
+      id: runId,
+      featureId: feature.id,
+      featureDir: 'specs/000',
+      status: 'paused',
+      currentPhase: 'speckit-plan',
+      currentIteration: 1,
+      startedAt: now,
+      lastTransitionAt: now,
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 1,
+      pendingRetryAt: now + 60_000,
+      pendingRetryCause: 'rate_limit',
+      phaseOverrides: [],
+      manualPauseAt: null,
+      manualPauseCause: null,
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    await seedSessionArtifacts(runId);
+
+    const order: string[] = [];
+    const cleanupSpy = vi.fn(async () => {
+      order.push('cleanup');
+      return { cleaned: true };
+    });
+    const controller = makeController(cleanupSpy);
+    const cancelSpy = vi.spyOn(controller, 'cancelActive').mockImplementation(() => {
+      order.push('cancel');
+    });
+    const origUpdateRun = store.updateRun.bind(store);
+    const updateRunSpy = vi
+      .spyOn(store, 'updateRun')
+      .mockImplementation(async (queueId, update, claim) => {
+        if (update.label === 'cancel') order.push('updateRun:canceled');
+        return origUpdateRun(queueId, update, claim);
+      });
+
+    const result = await controller.deleteTask(feature.id);
+
+    expect(result.ok).toBe(true);
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(order[0]).toBe('cancel');
+    expect(order.indexOf('updateRun:canceled')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('cleanup')).toBeGreaterThan(order.indexOf('updateRun:canceled'));
+
+    updateRunSpy.mockRestore();
+  });
+
+  // The deleted-paused-task defect, through the product's real route.
+  // See docs/features/bugs/DONE_a-deleted-paused-task-strands-its-run-and-
+  // deadlocks-its-queue.md.
+  //
+  // The `it.each` below already deletes a `paused` task, and passed throughout
+  // the whole life of the bug, because it seeds no Run — so nothing it asserts
+  // can reach the guard. The row and the Run TOGETHER are the case: the row
+  // reads `paused` (the operator paused the phase), the Run reads `paused` and
+  // is still holding the queue.
+  it('paused task whose Run is still paused — cancel and terminal persist run BEFORE cleanup', async () => {
+    const runId = 'R5';
+    const feature = await queue.enqueue('operator-paused mid-phase');
+    await queue.markInFlight(feature.id, runId);
+    await queue.pause(feature.id);
+    expect(queue.findById(feature.id)?.status).toBe('paused');
+
+    const now = Date.now();
+    const run: WorkflowRun = {
+      id: runId,
+      featureId: feature.id,
+      featureDir: 'specs/000',
+      status: 'paused',
+      currentPhase: 'speckit-analyze',
+      currentIteration: 1,
+      startedAt: now,
+      lastTransitionAt: now,
+      phasesCompleted: [],
+      lastError: null,
+      delayedRetryCount: 0,
+      pendingRetryAt: null,
+      pendingRetryCause: null,
+      phaseOverrides: [],
+      manualPauseAt: now,
+      manualPauseCause: 'operator-paused',
+      phaseBreakpoints: [],
+      resumeTargetPhaseId: null
+    };
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
+    await seedSessionArtifacts(runId);
+
+    const order: string[] = [];
+    const cleanupSpy = vi.fn(async () => {
+      order.push('cleanup');
+      return { cleaned: true };
+    });
+    const controller = makeController(cleanupSpy);
+    const cancelSpy = vi.spyOn(controller, 'cancelActive').mockImplementation(() => {
+      order.push('cancel');
+    });
+
+    const result = await controller.deleteTask(feature.id);
+
+    expect(result.ok).toBe(true);
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['cancel', 'cleanup']);
+    // No Run outlives its row. This is the assertion the bug is about: the
+    // record left behind was non-terminal, so drain step 3 read the queue as
+    // occupied forever while `findById` refused every route that could have
+    // ended it.
+    expect(queue.findById(feature.id)).toBeNull();
+    expect(store.getRun(DEFAULT_QUEUE_ID)?.status).toBe('canceled');
+  });
+
+  // FR-R3-153 (T1640, spec FR-014) — deletion completes correctly for every
+  // one of the six visible statuses, not only the two already exercised
+  // above (pending via the null-runId case, completed via seedTerminalTask).
+  it.each(['paused', 'failed', 'canceled'] as const)(
+    'deletes a %s task cleanly, leaving siblings in the same and another queue untouched',
+    async (status) => {
+      const sibling = await queue.enqueue('sibling in the same queue');
+      const otherQueueId = (await queue.createQueue('Queue B')).queueId as string;
+      const otherQueueSibling = await queue.enqueue('sibling in another queue', { queueId: otherQueueId });
+
+      const runId = `R-${status}`;
+      const feature = await queue.enqueue(`${status} feature`);
+      await queue.markInFlight(feature.id, runId);
+      if (status === 'paused') {
+        await queue.pause(feature.id);
+      } else {
+        await queue.finish(feature.id, status);
+      }
+
+      const controller = makeController(async () => ({ cleaned: true }));
+      const result = await controller.deleteTask(feature.id);
+
+      expect(result.ok).toBe(true);
+      expect(result.priorStatus).toBe(status);
+      expect(queue.findById(feature.id)).toBeNull();
+      expect(queue.findById(sibling.id)).not.toBeNull();
+      expect(queue.findById(otherQueueSibling.id)).not.toBeNull();
+    }
+  );
 });

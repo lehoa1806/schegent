@@ -15,7 +15,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolve } from 'node:path';
-import { filesMatching } from './source-scan';
+import { matchingRelativePaths } from './source-scan';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const SCAN_ROOT = resolve(REPO_ROOT, 'webview-ui', 'src');
@@ -37,29 +37,13 @@ const ALLOWED_FILES: ReadonlySet<string> = new Set([
   'webview-ui/src/components/drilldown/__tests__/QueueDetailTier.test.ts'
 ]);
 
-function listMatchingFiles(pattern: string): readonly string[] {
-  let out: string;
-  try {
-    out = filesMatching(SCAN_ROOT, pattern, { fixed: true }).join('\n');
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string };
-    if (e.status === 1 && (!e.stdout || e.stdout.trim() === '')) {
-      return [];
-    }
-    throw err;
-  }
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((abs) =>
-      abs.startsWith(REPO_ROOT + '/') ? abs.slice(REPO_ROOT.length + 1) : abs
-    );
-}
+
+const matchRel = (pattern: string): readonly string[] =>
+  matchingRelativePaths(REPO_ROOT, SCAN_ROOT, pattern, { fixed: true });
 
 describe('Feature 030 T030 — no inline reorder IPC references', () => {
   it('only the allowlisted files reference CMD_REORDER_TASK', () => {
-    const matched = listMatchingFiles('CMD_REORDER_TASK');
+    const matched = matchRel('CMD_REORDER_TASK');
     const offenders = matched.filter((rel) => !ALLOWED_FILES.has(rel));
     expect(
       offenders,
@@ -68,7 +52,7 @@ describe('Feature 030 T030 — no inline reorder IPC references', () => {
   });
 
   it('only the allowlisted files reference CMD_MOVE_QUEUE_ITEM_UP', () => {
-    const matched = listMatchingFiles('CMD_MOVE_QUEUE_ITEM_UP');
+    const matched = matchRel('CMD_MOVE_QUEUE_ITEM_UP');
     const offenders = matched.filter((rel) => !ALLOWED_FILES.has(rel));
     expect(
       offenders,
@@ -77,7 +61,7 @@ describe('Feature 030 T030 — no inline reorder IPC references', () => {
   });
 
   it('only the allowlisted files reference CMD_MOVE_QUEUE_ITEM_DOWN', () => {
-    const matched = listMatchingFiles('CMD_MOVE_QUEUE_ITEM_DOWN');
+    const matched = matchRel('CMD_MOVE_QUEUE_ITEM_DOWN');
     const offenders = matched.filter((rel) => !ALLOWED_FILES.has(rel));
     expect(
       offenders,
@@ -86,7 +70,7 @@ describe('Feature 030 T030 — no inline reorder IPC references', () => {
   });
 
   it('the shared helper file exists and is in the allowlist', () => {
-    const matched = listMatchingFiles('CMD_REORDER_TASK');
+    const matched = matchRel('CMD_REORDER_TASK');
     expect(matched).toContain('webview-ui/src/lib/reorder-task.ts');
   });
 
@@ -94,7 +78,7 @@ describe('Feature 030 T030 — no inline reorder IPC references', () => {
     // Specifically scan for the postCommand(CMD_REORDER_TASK call pattern in
     // any component file (excluding __tests__/). The helper is the ONLY
     // permitted call site.
-    const matched = listMatchingFiles('postCommand(CMD_REORDER_TASK');
+    const matched = matchRel('postCommand(CMD_REORDER_TASK');
     const componentOffenders = matched.filter(
       (rel) =>
         rel.startsWith('webview-ui/src/components/') && !rel.includes('__tests__')
@@ -103,7 +87,7 @@ describe('Feature 030 T030 — no inline reorder IPC references', () => {
   });
 
   it('no component file invokes postCommand(CMD_MOVE_QUEUE_ITEM_UP, ...) inline', () => {
-    const matched = listMatchingFiles('postCommand(CMD_MOVE_QUEUE_ITEM_UP');
+    const matched = matchRel('postCommand(CMD_MOVE_QUEUE_ITEM_UP');
     const componentOffenders = matched.filter(
       (rel) =>
         rel.startsWith('webview-ui/src/components/') && !rel.includes('__tests__')
@@ -112,7 +96,7 @@ describe('Feature 030 T030 — no inline reorder IPC references', () => {
   });
 
   it('no component file invokes postCommand(CMD_MOVE_QUEUE_ITEM_DOWN, ...) inline', () => {
-    const matched = listMatchingFiles('postCommand(CMD_MOVE_QUEUE_ITEM_DOWN');
+    const matched = matchRel('postCommand(CMD_MOVE_QUEUE_ITEM_DOWN');
     const componentOffenders = matched.filter(
       (rel) =>
         rel.startsWith('webview-ui/src/components/') && !rel.includes('__tests__')

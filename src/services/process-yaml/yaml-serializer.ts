@@ -19,12 +19,30 @@
 // lives in this file (contracts/yaml-grammar.md "Determinism"), so determinism
 // is one file's property rather than a convention several modules follow.
 
-import { chooseScalarStyle, quoteDouble } from './scalar-style';
+import { chooseScalarStyle, quoteDouble, type ScalarPosition } from './scalar-style';
 import {
   PHASE_YAML_INDENT,
   type PhaseYamlDocument,
-  type PhaseYamlDocumentBody
+  type PhaseYamlDocumentBody,
+  type PhaseYamlSpec
 } from './types';
+import {
+  isTypedLeafTest,
+  type DecisionField,
+  type ResultContract,
+  type TypedCondition,
+  type TypedLeaf
+} from '../../contracts/decision-results';
+import type {
+  CandidateBlockControl,
+  CandidateSpec,
+  DecisionResultBinding,
+  RepeatCarryMapping,
+  WorkflowDecisionResultField,
+  WorkflowDecisionResults,
+  WorkflowNodeControl
+} from '../../contracts/workflow-controls';
+import type { ContextSelector, HandoffPolicy } from '../../contracts/phase-context/context-policy';
 
 export const DOCUMENT_KEY_ORDER = Object.freeze([
   'apiVersion',
@@ -56,94 +74,94 @@ export const SPEC_KEY_ORDER = Object.freeze([
   'runner',
   'sideEffects',
   'evidencePolicy',
+  // FR-R3-058 — beside `evidencePolicy` because they are the two evidence axes:
+  // whether a record is required, and who is believed when the host and the model
+  // disagree. Without this key the field would be unauthorable in the shipped
+  // format, which would make the whole marking unreachable.
+  'hostVerification',
+  // FR-R3-086 — a SET of enum members, which this format has no other example of
+  // and cannot carry as a list. Its one list convention is that an absent key
+  // reads back as `[]` (types.ts `YamlSequenceNode`), and for this field that
+  // convention is exactly inverted: absent must mean the UNBOUNDED default, and
+  // the empty set must mean nothing granted. A block sequence cannot write the
+  // empty set at all, so a list-shaped key would turn the most restrictive
+  // declaration into the least — a silent widening, in the one field where
+  // widening is the whole risk.
+  //
+  // So it is written as a scalar holding the members joined by `,`: absent is
+  // the default, `""` is the empty set, `"a,b"` is that set. The members are a
+  // closed union and the reader checks each against it, so this is a typed field
+  // whose text the validator turns back into values -- the same thing this
+  // format already does for integers and booleans, not free-form text.
+  //
+  // Member order is the document's own, not canonicalized, so the round trip is
+  // byte-exact (FR-017). Order carries no meaning: `declaredCapabilitySet`
+  // filters to a canonical order at the point of use.
+  'capabilities',
   'model',
   'effort',
   'timeoutSeconds',
+  // FR-R3-112 — the per-phase spend bound, beside the other authored bound. Both denominations,
+  // because a document that carried only one would come back with the other silently cleared —
+  // and a bound that vanishes through a round trip is the widening this format's key order
+  // exists to prevent.
+  'spendBoundUsd',
+  'spendBoundTokens',
   'loopable',
   'isRequired',
   'forceContinueOnRetryCap',
-  'retryCondition'
+  // FR-R3-157 — the three-valued cap outcome, immediately after the boolean it
+  // supersedes. A document may carry both (contract V2) and this order is what
+  // makes that legible: consecutive lines, deprecated first, so an author
+  // reading their own file sees the pair as one decision rather than two
+  // unrelated settings pages apart. Neither is dropped on save — dropping the
+  // boolean breaks a reader that predates this key, dropping `onRetryCap`
+  // silently reverts the author's decision to the boolean's two-valued answer.
+  'onRetryCap',
+  'retryCondition',
+  'nativeReview',
+  'resultContract'
 ] as const);
 
-// --- package document orders (data-model.md §2) -----------------------------
-
-export const PACKAGE_DOCUMENT_KEY_ORDER = Object.freeze([
-  'apiVersion',
-  'kind',
-  'metadata',
-  'spec',
-  'included'
-] as const);
-
-export const PIPELINE_METADATA_KEY_ORDER = Object.freeze([
-  'id',
-  'name',
+export const RESULT_CONTRACT_KEY_ORDER = Object.freeze([
   'version',
-  'description'
+  'operator',
+  'operatorVersion',
+  'fields',
+  'source',
+  'completion'
 ] as const);
 
-export const PIPELINE_SPEC_KEY_ORDER = Object.freeze([
-  'phaseIds',
-  'inputs',
-  'outputs',
-  'bindings',
-  'executionDefaults',
-  'recommendedNext'
+export const RESULT_CONTRACT_SOURCE_KEY_ORDER = Object.freeze([
+  'kind',
+  'outputKey',
+  'recordType'
 ] as const);
 
-export const INPUT_PORT_KEY_ORDER = Object.freeze([
-  'portId',
-  'label',
+export const DECISION_FIELD_KEY_ORDER = Object.freeze([
+  'fieldId',
   'type',
   'required',
-  'description'
+  'selector'
 ] as const);
 
-export const OUTPUT_PORT_KEY_ORDER = Object.freeze([
-  'portId',
-  'label',
-  'type',
-  'description'
+export const TYPED_OPERAND_KEY_ORDER = Object.freeze([
+  'source',
+  'nodeId',
+  'fieldId'
 ] as const);
 
-export const INPUT_BINDING_KEY_ORDER = Object.freeze([
-  'kind',
-  'phaseIndex',
-  'inputKey',
-  'source'
-] as const);
-
-export const OUTPUT_BINDING_KEY_ORDER = Object.freeze([
-  'kind',
-  'phaseIndex',
-  'portId',
-  'outputKey'
-] as const);
-
-export const BINDING_SOURCE_KEY_ORDER = Object.freeze([
-  'from',
-  'phaseIndex',
-  'portId'
-] as const);
-
-export const EXECUTION_DEFAULTS_KEY_ORDER = Object.freeze([
-  'runner',
-  'model',
-  'effort',
-  'timeoutSeconds'
+export const TYPED_LEAF_KEY_ORDER = Object.freeze([
+  'left',
+  'operator',
+  'right'
 ] as const);
 
 // --- Workflow package document orders (contracts/workflow-yaml-grammar.md §2) -
 //
-// Feature 086 adds orders, not productions. A Workflow document is written with
-// the same emitters as a Pipeline one — the grammar does not move — so what is
-// new here is nine declarations and nothing else.
-//
-// Each of these is also the unknown-key oracle on read, as `PACKAGE_TOP_LEVEL_KEYS`
-// already is: a key absent from the order is a key this format does not have.
-// That is why the document order below duplicates `PACKAGE_DOCUMENT_KEY_ORDER`
-// key for key rather than aliasing it — the two documents are free to diverge,
-// and an alias would silently accept the other's shape if either ever did.
+// Feature 086 / Feature 263 (FR-R5-F04) — every mapping key order in a
+// composable Workflow package is declared here and serves as both the
+// deterministic emission order and the unknown-key oracle on read.
 
 export const WORKFLOW_PACKAGE_DOCUMENT_KEY_ORDER = Object.freeze([
   'apiVersion',
@@ -161,29 +179,147 @@ export const WORKFLOW_METADATA_KEY_ORDER = Object.freeze([
 ] as const);
 
 export const WORKFLOW_SPEC_KEY_ORDER = Object.freeze([
+  'inputs',
+  'outputs',
   'nodes',
   'connections',
-  'startNodeIds'
+  'bindings',
+  'startNodeIds',
+  'executionDefaults',
+  'recommendedNext',
+  'control',
+  'decisionResults'
+] as const);
+
+export const WORKFLOW_PORT_KEY_ORDER = Object.freeze([
+  'portId',
+  'label',
+  'type',
+  'required',
+  'description'
 ] as const);
 
 export const WORKFLOW_NODE_KEY_ORDER = Object.freeze([
   'nodeId',
-  'pipelineId',
-  'label'
+  'kind',
+  'phaseId',
+  'workflowId',
+  'label',
+  'control'
+] as const);
+
+export const CANDIDATE_BLOCK_CONTROL_KEY_ORDER = Object.freeze([
+  'version',
+  'kind',
+  'candidates',
+  'availabilityPolicy',
+  'maxDispatches',
+  'monitoringWindowMs',
+  'budget'
+] as const);
+
+export const CANDIDATE_SPEC_KEY_ORDER = Object.freeze([
+  'candidateId',
+  'nodeId',
+  'priority',
+  'maxAttempts',
+  'retry',
+  'allowUnverifiedTrial'
+] as const);
+
+export const CANDIDATE_RETRY_KEY_ORDER = Object.freeze([
+  'initialDelayMs',
+  'multiplier',
+  'maxDelayMs'
+] as const);
+
+export const CANDIDATE_BUDGET_KEY_ORDER = Object.freeze([
+  'mode',
+  'limitMicrousd'
+] as const);
+
+export const WORKFLOW_DECISION_RESULTS_KEY_ORDER = Object.freeze([
+  'version',
+  'fields',
+  'bindings'
+] as const);
+
+export const WORKFLOW_DECISION_FIELD_KEY_ORDER = Object.freeze([
+  'fieldId',
+  'type',
+  'required'
+] as const);
+
+export const WORKFLOW_DECISION_BINDING_KEY_ORDER = Object.freeze([
+  'fieldId',
+  'source'
+] as const);
+
+export const WORKFLOW_DECISION_BINDING_SOURCE_KEY_ORDER = Object.freeze([
+  'kind',
+  'nodeId',
+  'fieldId'
+] as const);
+
+export const REPEAT_CONTROL_KEY_ORDER = Object.freeze([
+  'version',
+  'kind',
+  'maxIterations',
+  'until',
+  'carry',
+  'onExhausted'
+] as const);
+
+export const REPEAT_CARRY_MAPPING_KEY_ORDER = Object.freeze([
+  'fieldId',
+  'inputPortId'
+] as const);
+
+export const FOR_EACH_CONTROL_KEY_ORDER = Object.freeze([
+  'version',
+  'kind',
+  'collection',
+  'itemKeyField',
+  'itemInputPortId',
+  'maxItems',
+  'onItemError'
+] as const);
+
+export const FOR_EACH_COLLECTION_SOURCE_KEY_ORDER = Object.freeze([
+  'source',
+  'nodeId',
+  'portId'
 ] as const);
 
 export const WORKFLOW_CONNECTION_KEY_ORDER = Object.freeze([
   'from',
   'to',
+  'handoff',
   'condition',
   'priority',
   'isDefault',
-  'selection'
+  'selection',
+  'contextPolicy'
+] as const);
+
+export const HANDOFF_POLICY_KEY_ORDER = Object.freeze([
+  'version',
+  'approval',
+  'session',
+  'selectors'
+] as const);
+
+export const CONTEXT_SELECTOR_KEY_ORDER = Object.freeze([
+  'selectorId',
+  'sourceNodePath',
+  'required',
+  'priority'
 ] as const);
 
 export const WORKFLOW_ENDPOINT_KEY_ORDER = Object.freeze([
   'nodeId',
-  'portId'
+  'portId',
+  'kind'
 ] as const);
 
 /**
@@ -203,8 +339,35 @@ export const WORKFLOW_OPERAND_KEY_ORDER = Object.freeze([
   'field'
 ] as const);
 
+export const WORKFLOW_BINDING_KEY_ORDER = Object.freeze([
+  'kind',
+  'nodeId',
+  'inputKey',
+  'portId',
+  'outputKey',
+  'sourcePortId',
+  'type',
+  'required',
+  'label',
+  'source',
+  'selection'
+] as const);
+
+export const WORKFLOW_BINDING_SOURCE_KEY_ORDER = Object.freeze([
+  'from',
+  'nodeId',
+  'portId'
+] as const);
+
+export const EXECUTION_DEFAULTS_KEY_ORDER = Object.freeze([
+  'runner',
+  'model',
+  'effort',
+  'timeoutSeconds'
+] as const);
+
 export const WORKFLOW_INCLUDED_KEY_ORDER = Object.freeze([
-  'pipelines',
+  'workflows',
   'phases'
 ] as const);
 
@@ -234,11 +397,15 @@ export type ScalarValue = string | number | boolean;
  * sequence entry it is the dash's indent plus one level, because the dash
  * occupies exactly one level.
  */
-function renderScalar(ownerIndent: string, value: ScalarValue): string {
+function renderScalar(
+  ownerIndent: string,
+  value: ScalarValue,
+  position: ScalarPosition = 'value'
+): string {
   if (typeof value !== 'string') {
     return String(value);
   }
-  const style = chooseScalarStyle(value);
+  const style = chooseScalarStyle(value, position);
   if (style === 'block') {
     const contentIndent = `${ownerIndent}${PHASE_YAML_INDENT}`;
     const body = value
@@ -278,7 +445,9 @@ export function emitMapping(indent: string, order: readonly string[], section: o
 
 /** One `- scalar` entry. `indent` is the dash's own indent. */
 export function emitScalarItem(indent: string, value: ScalarValue): string {
-  return `${indent}- ${renderScalar(`${indent}${PHASE_YAML_INDENT}`, value)}\n`;
+  // The only `'item'` caller (feature 254, FR-009): a sequence item the scanner would read as a
+  // mapping entry, such as `ollama:llama3`, is written quoted.
+  return `${indent}- ${renderScalar(`${indent}${PHASE_YAML_INDENT}`, value, 'item')}\n`;
 }
 
 /**
@@ -333,6 +502,243 @@ export function emitMappingSequence<T>(
   return out;
 }
 
+function emitTypedLeaf(indent: string, leaf: TypedLeaf): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = emitKey(indent, 'left');
+  out += emitMapping(nestedIndent, TYPED_OPERAND_KEY_ORDER, leaf.left);
+  out += emitEntry(indent, 'operator', leaf.operator);
+  if (leaf.right !== undefined) {
+    out += Array.isArray(leaf.right)
+      ? emitSequence(indent, 'right', leaf.right as readonly ScalarValue[])
+      : emitEntry(indent, 'right', leaf.right as ScalarValue);
+  }
+  return out;
+}
+
+export function emitTypedCondition(indent: string, condition: TypedCondition): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = emitEntry(indent, 'version', condition.version);
+  out += emitEntry(indent, 'kind', condition.kind);
+  out += emitKey(indent, 'test');
+  const { test } = condition;
+  if (isTypedLeafTest(test)) {
+    out += emitTypedLeaf(nestedIndent, test);
+  } else if ('all' in test) {
+    out += emitMappingSequence(nestedIndent, 'all', test.all, emitTypedLeaf);
+  } else {
+    out += emitMappingSequence(nestedIndent, 'any', test.any, emitTypedLeaf);
+  }
+  return out;
+}
+
+function renderDecisionField(bodyIndent: string, field: DecisionField): string {
+  let out = '';
+  for (const key of DECISION_FIELD_KEY_ORDER) {
+    if (key === 'selector') {
+      out += emitSequence(bodyIndent, 'selector', field.selector);
+      continue;
+    }
+    out += emitMapping(bodyIndent, [key], field);
+  }
+  return out;
+}
+
+export function emitResultContract(indent: string, contract: ResultContract): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of RESULT_CONTRACT_KEY_ORDER) {
+    switch (key) {
+      case 'version':
+      case 'operator':
+      case 'operatorVersion':
+        out += emitMapping(indent, [key], contract);
+        break;
+      case 'fields':
+        out += emitMappingSequence(indent, 'fields', contract.fields, renderDecisionField);
+        break;
+      case 'source':
+        out += emitKey(indent, 'source');
+        out += emitMapping(nestedIndent, RESULT_CONTRACT_SOURCE_KEY_ORDER, contract.source);
+        break;
+      case 'completion':
+        out += emitKey(indent, 'completion');
+        out += emitTypedCondition(nestedIndent, contract.completion);
+        break;
+    }
+  }
+  return out;
+}
+
+function renderCandidateSpec(bodyIndent: string, candidate: CandidateSpec): string {
+  const nestedIndent = `${bodyIndent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of CANDIDATE_SPEC_KEY_ORDER) {
+    if (key === 'retry') {
+      if (candidate.retry !== undefined) {
+        const retryBody = emitMapping(nestedIndent, CANDIDATE_RETRY_KEY_ORDER, candidate.retry);
+        if (retryBody.length > 0) {
+          out += emitKey(bodyIndent, 'retry') + retryBody;
+        }
+      }
+      continue;
+    }
+    out += emitMapping(bodyIndent, [key], candidate);
+  }
+  return out;
+}
+
+export function emitCandidateBlockControl(
+  indent: string,
+  control: CandidateBlockControl
+): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of CANDIDATE_BLOCK_CONTROL_KEY_ORDER) {
+    switch (key) {
+      case 'candidates':
+        out += emitMappingSequence(indent, 'candidates', control.candidates, renderCandidateSpec);
+        break;
+      case 'budget':
+        if (control.budget !== undefined) {
+          out += emitKey(indent, 'budget');
+          out += emitMapping(nestedIndent, CANDIDATE_BUDGET_KEY_ORDER, control.budget);
+        }
+        break;
+      case 'version':
+      case 'kind':
+      case 'availabilityPolicy':
+      case 'maxDispatches':
+      case 'monitoringWindowMs':
+        out += emitMapping(indent, [key], control);
+        break;
+    }
+  }
+  return out;
+}
+
+function renderWorkflowDecisionField(
+  bodyIndent: string,
+  field: WorkflowDecisionResultField
+): string {
+  return emitMapping(bodyIndent, WORKFLOW_DECISION_FIELD_KEY_ORDER, field);
+}
+
+function renderWorkflowDecisionBinding(
+  bodyIndent: string,
+  binding: DecisionResultBinding
+): string {
+  const nestedIndent = `${bodyIndent}${PHASE_YAML_INDENT}`;
+  let out = '';
+  for (const key of WORKFLOW_DECISION_BINDING_KEY_ORDER) {
+    if (key === 'source') {
+      out += emitKey(bodyIndent, 'source');
+      out += emitMapping(
+        nestedIndent,
+        WORKFLOW_DECISION_BINDING_SOURCE_KEY_ORDER,
+        binding.source
+      );
+      continue;
+    }
+    out += emitMapping(bodyIndent, [key], binding);
+  }
+  return out;
+}
+
+export function emitWorkflowDecisionResults(
+  indent: string,
+  decisionResults: WorkflowDecisionResults
+): string {
+  let out = '';
+  for (const key of WORKFLOW_DECISION_RESULTS_KEY_ORDER) {
+    switch (key) {
+      case 'version':
+        out += emitMapping(indent, [key], decisionResults);
+        break;
+      case 'fields':
+        out += emitMappingSequence(
+          indent,
+          'fields',
+          decisionResults.fields,
+          renderWorkflowDecisionField
+        );
+        break;
+      case 'bindings':
+        out += emitMappingSequence(
+          indent,
+          'bindings',
+          decisionResults.bindings,
+          renderWorkflowDecisionBinding
+        );
+        break;
+    }
+  }
+  return out;
+}
+
+function renderRepeatCarryMapping(bodyIndent: string, mapping: RepeatCarryMapping): string {
+  return emitMapping(bodyIndent, REPEAT_CARRY_MAPPING_KEY_ORDER, mapping);
+}
+
+export function emitWorkflowNodeControl(indent: string, control: WorkflowNodeControl): string {
+  const nestedIndent = `${indent}${PHASE_YAML_INDENT}`;
+  if (control.kind === 'repeat') {
+    let out = '';
+    for (const key of REPEAT_CONTROL_KEY_ORDER) {
+      switch (key) {
+        case 'until':
+          out += emitKey(indent, 'until');
+          out += emitTypedCondition(nestedIndent, control.until);
+          break;
+        case 'carry':
+          out += emitMappingSequence(indent, 'carry', control.carry, renderRepeatCarryMapping);
+          break;
+        case 'version':
+        case 'kind':
+        case 'maxIterations':
+        case 'onExhausted':
+          out += emitMapping(indent, [key], control);
+          break;
+      }
+    }
+    return out;
+  }
+
+  let out = '';
+  for (const key of FOR_EACH_CONTROL_KEY_ORDER) {
+    switch (key) {
+      case 'collection':
+        out += emitKey(indent, 'collection');
+        out += emitMapping(nestedIndent, FOR_EACH_COLLECTION_SOURCE_KEY_ORDER, control.collection);
+        break;
+      case 'version':
+      case 'kind':
+      case 'itemKeyField':
+      case 'itemInputPortId':
+      case 'maxItems':
+      case 'onItemError':
+        out += emitMapping(indent, [key], control);
+        break;
+    }
+  }
+  return out;
+}
+
+function renderContextSelector(bodyIndent: string, selector: ContextSelector): string {
+  return emitMapping(bodyIndent, CONTEXT_SELECTOR_KEY_ORDER, selector);
+}
+
+export function emitHandoffPolicy(indent: string, policy: HandoffPolicy): string {
+  let out = '';
+  for (const key of HANDOFF_POLICY_KEY_ORDER) {
+    if (key === 'selectors') {
+      out += emitMappingSequence(indent, 'selectors', policy.selectors, renderContextSelector);
+      continue;
+    }
+    out += emitMapping(indent, [key], policy);
+  }
+  return out;
+}
+
 /**
  * A Phase's two body mappings, at any indent.
  *
@@ -344,12 +750,39 @@ export function emitMappingSequence<T>(
  */
 export function emitPhaseDocumentBody(indent: string, body: PhaseYamlDocumentBody): string {
   const fieldIndent = `${indent}${PHASE_YAML_INDENT}`;
+  const resultContractBlock =
+    body.spec.resultContract !== undefined
+      ? emitKey(fieldIndent, 'resultContract') +
+        emitResultContract(`${fieldIndent}${PHASE_YAML_INDENT}`, body.spec.resultContract)
+      : '';
   return (
     emitKey(indent, 'metadata') +
     emitMapping(fieldIndent, METADATA_KEY_ORDER, body.metadata) +
     emitKey(indent, 'spec') +
-    emitMapping(fieldIndent, SPEC_KEY_ORDER, body.spec)
+    emitMapping(fieldIndent, SPEC_KEY_ORDER, scalarSpecView(body.spec)) +
+    resultContractBlock
   );
+}
+
+/** The separator between capability members. One character, not in any member. */
+export const CAPABILITY_SEPARATOR = ',';
+
+/**
+ * The spec as `emitMapping` needs it: every value a scalar.
+ *
+ * `capabilities` is the only field of the Phase spec that is not already one,
+ * and it is encoded here rather than in `phase-yaml-mapper.ts` so that module
+ * keeps the property it declares -- a rename and a regrouping, every value
+ * carried verbatim. Encoding is a writer concern and lives with the writer.
+ */
+function scalarSpecView(spec: PhaseYamlSpec): object {
+  const { capabilities, resultContract } = spec;
+  if (capabilities === undefined && resultContract === undefined) return spec;
+  return {
+    ...spec,
+    ...(capabilities !== undefined ? { capabilities: capabilities.join(CAPABILITY_SEPARATOR) } : {}),
+    resultContract: undefined
+  };
 }
 
 /**

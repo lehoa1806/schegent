@@ -215,6 +215,6 @@ describe('contract shapes are structurally assignable', () => {
       recommendedNext: []
     };
     expect(definition.executionDefaults).toBeUndefined();
-    expect(definition.description).toBeUndefined();
+    expect(definition.description).toBeUndefined(); // 2026-09-06 coincidental: a pipeline definition, not the CmdStart IPC command
   });
 });

@@ -13,6 +13,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import { readMetrics } from '../../../src/metrics/metrics-service';
+import { AuditLogWriter } from '../../../src/audit/audit-log-writer';
+import { SanitizedLogger } from '../../../src/lib/logger';
+import { createSpendBoundWatcher } from '../../../src/services/spend-bound-watcher';
+import type { WorkflowRun } from '../../../src/state/workflow-run';
 
 function baseEntry(overrides: Partial<AuditEntry> = {}): AuditEntry {
   return {
@@ -572,7 +576,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
       await writeFile(auditLog, lines.join('\n') + '\n', 'utf8');
       const result = await readMetrics(workspaceRoot);
       const phase = findPhase(result, 'run-1', 'speckit-plan', 1);
-      expect(phase.outcome).toBeUndefined();
+      expect(phase.outcome).toBeUndefined(); // 2026-09-06 coincidental: a metrics phase record, not the audit envelope
       expect(phase.endTime).toBeUndefined();
       expect(phase.durationMs).toBeUndefined();
     });
@@ -811,7 +815,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(result.oldestIncludedTimestamp).toBe('2026-05-20T09:00:00.000Z');
   });
 
-  it('does not scan archived files when includeArchived is false (default)', async () => {
+  it('does not scan archived files when includeArchives is false (default)', async () => {
     await mkdir(auditDir, { recursive: true });
     await writeFile(auditLog, taskStarted({ id: 'e-1', timestamp: '2026-05-23T12:00:00.000Z', runId: 'run-1' }) + '\n', 'utf8');
     await writeFile(
@@ -826,7 +830,7 @@ describe('readMetrics (Feature 073 Phase 2 Foundational)', () => {
     expect(result.tasks.find((t) => t.runId === 'run-old')).toBeUndefined();
   });
 
-  it('scans timestamped audit archives when includeArchived is true', async () => {
+  it('scans timestamped audit archives when includeArchives is true', async () => {
     await mkdir(auditDir, { recursive: true });
     await writeFile(auditLog, taskStarted({ id: 'e-1', timestamp: '2026-05-23T12:00:00.000Z', runId: 'run-1' }) + '\n', 'utf8');
     await writeFile(
@@ -1610,3 +1614,148 @@ function findPhase(
   if (!found) throw new Error(`no phase record found for (${runId}, ${phase}, ${iteration})`);
   return found;
 }
+
+// FR-R4-F02 (spec 240, US3; contract S5 G18, G19; FR-028) — the rollup reads usage the way the spend
+// bound does: nested `metrics` first, flat legacy second, absent never zero.
+describe('FR-R4-F02 — the metrics rollup reads usage through the one reader', () => {
+  let workspaceRoot: string;
+  let auditLog: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'schegent-metrics-usage-'));
+    await mkdir(join(workspaceRoot, '.schegent'), { recursive: true });
+    auditLog = join(workspaceRoot, '.schegent', 'audit.log');
+  });
+
+  afterEach(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  function nestedEnd(id: string, runId: string, metrics: Record<string, unknown>, extra: Partial<AuditEntry> = {}): string {
+    return line({
+      id,
+      timestamp: '2026-05-23T12:01:00.000Z',
+      runId,
+      phase: 'speckit-plan',
+      iteration: 1,
+      eventType: 'phase-end',
+      outcome: 'success',
+      payload: { pipelineId: 'default', phaseId: 'speckit-plan', outcome: 'clean', metrics },
+      ...extra
+    });
+  }
+
+  const start = (id: string, runId: string): string =>
+    line({ id, timestamp: '2026-05-23T12:00:00.000Z', runId, phase: 'speckit-plan', iteration: 1, eventType: 'phase-start' });
+
+  it('sums the nested metrics.totalCostUsd of every phase-end of a group', async () => {
+    await writeFile(
+      auditLog,
+      [
+        start('s-1', 'run-n'),
+        nestedEnd('e-1', 'run-n', { totalCostUsd: 1.25 }),
+        nestedEnd('e-2', 'run-n', { totalCostUsd: 0.75 })
+      ].join('\n') + '\n',
+      'utf8'
+    );
+
+    const result = await readMetrics(workspaceRoot);
+
+    expect(result.costTimeline).toHaveLength(1);
+    expect(result.costTimeline[0]!.dailyCostUsd).toBeCloseTo(2);
+  });
+
+  it('reads a nested cost and a flat legacy cost alike, and nested wins when a row carries both', async () => {
+    const both = line({
+      id: 'e-3',
+      timestamp: '2026-05-23T12:01:00.000Z',
+      runId: 'run-b',
+      phase: 'speckit-plan',
+      iteration: 1,
+      eventType: 'phase-end',
+      outcome: 'success',
+      payload: { outcome: 'clean', metrics: { totalCostUsd: 3 }, totalCostUsd: 99 }
+    });
+    const flat = line({
+      id: 'e-4',
+      timestamp: '2026-05-23T12:01:00.000Z',
+      runId: 'run-f',
+      phase: 'speckit-plan',
+      iteration: 1,
+      eventType: 'phase-end',
+      outcome: 'success',
+      payload: { outcome: 'clean', totalCostUsd: 2 }
+    });
+    await writeFile(auditLog, [start('s-2', 'run-b'), both, start('s-3', 'run-f'), flat].join('\n') + '\n', 'utf8');
+
+    const result = await readMetrics(workspaceRoot);
+
+    expect(result.costTimeline[0]!.dailyCostUsd).toBeCloseTo(5);
+  });
+
+  it('with no present cost the rollup is undefined, never 0', async () => {
+    await writeFile(
+      auditLog,
+      [
+        start('s-4', 'run-t'),
+        nestedEnd('e-5', 'run-t', { inputTokens: 100, outputTokens: 20 }),
+        start('s-5', 'run-r'),
+        nestedEnd('e-6', 'run-r', { totalCostUsd: -4 })
+      ].join('\n') + '\n',
+      'utf8'
+    );
+
+    const result = await readMetrics(workspaceRoot);
+
+    expect(result.costTimeline).toEqual([]);
+    for (const task of result.tasks) expect(task.totalCostUsd).toBeUndefined();
+  });
+
+  it('for the same real-writer rows, the rollup equals the spend bound\'s cost', async () => {
+    const logger = new SanitizedLogger();
+    const writer = new AuditLogWriter({ workspaceRoot }, logger);
+    const run = {
+      id: 'run-w',
+      featureId: 'task-w',
+      status: 'running',
+      currentPhase: 'speckit-plan',
+      manualPauseAt: null,
+      manualPauseCause: null,
+      pipeline: { id: 'p', name: 'P', phases: [{ id: 'speckit-plan', name: 'Plan', instruction: 'x' }] }
+    } as unknown as WorkflowRun;
+    const watcher = createSpendBoundWatcher({
+      config: () => ({ limitUsd: null, limitTokens: null }),
+      findRunById: (runId) => (runId === run.id ? { queueId: 'default', run } : null),
+      pause: async () => undefined,
+      notify: () => undefined,
+      logger,
+      now: () => 1
+    });
+    writer.subscribe(watcher.onAuditEntry);
+
+    for (const [index, cost] of [0.4, 1.1, 0.25].entries()) {
+      await writer.append({
+        runId: run.id,
+        phase: 'speckit-plan',
+        iteration: index + 1,
+        eventType: 'phase-start',
+        outcome: 'info',
+        payload: { pipelineId: 'default', phaseId: 'speckit-plan', isContinue: false }
+      });
+      await writer.append({
+        runId: run.id,
+        phase: 'speckit-plan',
+        iteration: index + 1,
+        eventType: 'phase-end',
+        outcome: 'success',
+        payload: { outcome: 'clean', exitCode: 0, terminationReason: 'token', metrics: { totalCostUsd: cost } }
+      });
+    }
+
+    const result = await readMetrics(workspaceRoot);
+    const rolledUp = result.costTimeline.reduce((sum, point) => sum + point.dailyCostUsd, 0);
+    expect(watcher.observedFor(run.id).costUsd).toBeCloseTo(1.75);
+    expect(rolledUp).toBeCloseTo(watcher.observedFor(run.id).costUsd as number);
+  });
+});
+

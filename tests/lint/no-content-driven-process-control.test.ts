@@ -136,8 +136,10 @@ describe('no caller can supply a control sentinel (FR-020)', () => {
   });
 
   it('nothing in the tree still passes a completion marker to the runner', () => {
-    // The dead argument at phase-runner.ts:444 read as a live coupling for five
-    // months and is what sent FR-R3-023's author looking for a reader.
+    // The dead argument — `completionMarker: AUDIT_LOG_CLOSE_MARKER` in
+    // `phase-runner.ts`, deleted in 90189b72 — read as a live coupling for five
+    // months and is what sent FR-R3-023's author looking for a reader. No line
+    // number: the code is gone, so every current line makes the sentence false.
     const runner = readFileSync(join(REPO_ROOT, 'src', 'controller', 'phase-runner.ts'), 'utf8');
     expect(codeLines(runner).filter((line) => /completionMarker\s*:/.test(line))).toEqual([]);
   });

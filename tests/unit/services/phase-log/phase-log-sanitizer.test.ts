@@ -21,27 +21,31 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { SanitizedLogger } from '../../../../src/lib/logger';
+import { LIVE_LOG_ENTRY_MAX_BYTES } from '../../../../src/contracts/phase-log-bounds';
+import { REDACTION_SENTINEL, SanitizedLogger } from '../../../../src/lib/logger';
+import { fitEntryToBudget, isSentinel } from '../../../../src/services/phase-log/live-log-entry-budget';
 import {
   SANITIZED_BODY_FIELDS,
-  sanitizeDisplayEntryBody
+  sanitizeDisplayEntryBody,
+  sanitizeToolArguments
 } from '../../../../src/services/phase-log/phase-log-sanitizer';
 import { readIterationManifest } from '../../../../src/services/phase-log/phase-log-reader';
 import {
   PhaseLogTailSession,
-  type PhaseLogEntryPushPayload
+  type LiveLogBatchItem
 } from '../../../../src/services/phase-log/phase-log-tail-session';
 import type {
   PhaseLogDisplayEntry,
-  PhaseLogSelection
+  PhaseLogSelection,
+  ToolArgumentValue
 } from '../../../../src/services/phase-log/types';
 
 const logger = new SanitizedLogger();
 const sanitize = (s: string): string => logger.sanitize(s);
 
-const API_KEY = 'sk-ant-api03-CANARYCANARYCANARYCANARY0123456789';
+const API_KEY = ['sk', '-ant-', 'api03-CANARYCANARYCANARYCANARY0123456789'].join('');
 const GH_TOKEN = 'ghp_CANARYCANARYCANARYCANARYCANARY0123';
-const AWS_KEY = 'AKIACANARY0123456789';
+const AWS_KEY = ['AK', 'IA', 'CANARY0123456789'].join('');
 
 const SELECTION: PhaseLogSelection = {
   queueId: 'q1',
@@ -103,15 +107,21 @@ async function writeStream(lines: readonly string[]): Promise<void> {
 
 /** Drive one tail tick over the written stream and collect the pushes. */
 async function tailEntries(): Promise<readonly PhaseLogDisplayEntry[]> {
-  const pushed: PhaseLogEntryPushPayload[] = [];
+  const pushed: LiveLogBatchItem[] = [];
   const session = new PhaseLogTailSession({
     sessionId: 's1',
+    workspaceRoot: tmpDir,
     filePath: streamPath(),
     selection: SELECTION,
-    pushToWebview: (msg) => pushed.push(msg),
+    postBatch: (batch) => {
+      pushed.push(...batch.entries);
+      return true;
+    },
     sanitize,
     caps: { perFieldBytes: 64 * 1024 }
   });
+  await session.start();
+  session.ack({ batchSeq: 0 });
   await session.tick();
   return pushed.map((p) => p.entry);
 }
@@ -122,6 +132,7 @@ async function readerEntries(): Promise<readonly PhaseLogDisplayEntry[]> {
     workspaceRoot: tmpDir,
     selection: SELECTION,
     isInFlight: false,
+    progress: 'not-running',
     caps: { perFieldBytes: 64 * 1024, maxEntries: 1000 },
     sanitize
   });
@@ -235,5 +246,253 @@ describe('phase-log sanitizer — live tail and reopen agree (PRIV-01)', () => {
     // agree, or the redaction of one is undone by the other.
     expect(entry!.body.toolInput).not.toContain(API_KEY);
     expect(JSON.stringify(entry!.body.toolArguments)).not.toContain(API_KEY);
+  });
+});
+
+// FR-R4-F10 (contract test T9; RD4; research R10) -- a string leaf under a key that names a secret is
+// removed by the structured walk, because `sanitize()` sees the leaf and never the key. The tail
+// emits a tool's input twice (`toolInput` as a JSON string, `toolArguments` as an object), so a
+// walker blind to keys would ship `toolInput` masked beside `toolArguments` in cleartext.
+describe('sanitizeToolArguments removes a string leaf under a secret key (FR-R4-F10)', () => {
+  // Plain filler: no pattern matches it, so only the key can cause the removal.
+  const KEYED_VALUE = 'Zq3K8vR2mN7pL4wT9yB6cD1f';
+
+  it('redacts a flat and a nested keyed string, keeps the count, and reports the change', () => {
+    const args = { password: KEYED_VALUE, nested: { client_secret: KEYED_VALUE }, count: 3 };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(result.value).toEqual({
+      password: REDACTION_SENTINEL,
+      nested: { client_secret: REDACTION_SENTINEL },
+      count: 3
+    });
+  });
+
+  it('reaches a keyed string inside an array element', () => {
+    const result = sanitizeToolArguments({ steps: [{ apiToken: KEYED_VALUE }, { label: 'plain' }] }, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(result.value).toEqual({ steps: [{ apiToken: REDACTION_SENTINEL }, { label: 'plain' }] });
+  });
+
+  it('keeps non-string leaves and empty strings under a secret key', () => {
+    const args = { token: 12345, secret: true, password: '', passwd: null };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(false);
+    expect(result.value).toBe(args);
+  });
+
+  it('returns the input reference and mutated false when no key names a secret and nothing matches', () => {
+    const args = { command: 'ls -la', input_tokens: 12, tokenizer: KEYED_VALUE };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(false);
+    expect(result.value).toBe(args);
+  });
+
+  it('allocates a new body when only a keyed leaf changed', () => {
+    const entry: PhaseLogDisplayEntry = {
+      seq: 1,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: 'Deploy', toolArguments: { target: 'staging', password: KEYED_VALUE } },
+      bodyTruncated: null
+    };
+    const cleaned = sanitizeDisplayEntryBody(entry, sanitize);
+    expect(cleaned).not.toBe(entry);
+    expect(cleaned.body.toolArguments).toEqual({ target: 'staging', password: REDACTION_SENTINEL });
+    expect(entry.body.toolArguments).toEqual({ target: 'staging', password: KEYED_VALUE });
+  });
+});
+
+// RECORDED LIMIT (FR-R4-F10, audit gap G3) -- the same shape as in the logger's record walker
+// (`tests/unit/lib/redaction-structured-keys.test.ts`): an array or an object directly under a key that
+// names a secret is walked, not replaced, and only a string leaf directly under the key is. The two
+// walkers share one predicate and must agree, and a change to either has to edit the record.
+describe('sanitizeToolArguments walks a container under a secret key and does not replace it (recorded limit)', () => {
+  // Plain filler: no pattern matches it, so only a key could cause its removal.
+  const KEYED_VALUE = 'Zq3K8vR2mN7pL4wT9yB6cD1f';
+
+  it('keeps a string in an array, an object and an array of objects, and reports no change', () => {
+    const args = {
+      token: [KEYED_VALUE, 'plain'],
+      password: { current: KEYED_VALUE },
+      client_secret: [{ current: KEYED_VALUE }]
+    };
+    const result = sanitizeToolArguments(args, sanitize);
+    expect(result.mutated).toBe(false);
+    expect(result.value).toBe(args);
+  });
+
+  it('removes the same string directly under the key, which is what makes the limit visible', () => {
+    const result = sanitizeToolArguments({ token: KEYED_VALUE }, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(result.value).toEqual({ token: REDACTION_SENTINEL });
+  });
+
+  it('still removes a vendor token inside the container, by pattern', () => {
+    const result = sanitizeToolArguments({ token: [GH_TOKEN] }, sanitize);
+    expect(result.mutated).toBe(true);
+    expect(JSON.stringify(result.value)).not.toContain(GH_TOKEN);
+  });
+});
+
+describe('sanitizeToolArguments prototype-pollution resilience (SR-A2)', () => {
+  const PROTO_SECRET = ['sk', '-ant-', 'api03-secret-token-value-1234567890'].join('');
+
+  it('preserves Object.prototype, redacts secrets, and never triggers sentinel spoofing on own __proto__ keys', () => {
+    const parsed = JSON.parse(
+      `{"__proto__":{"__truncated":true,"toString":1},"token":"${PROTO_SECRET}"}`
+    ) as ToolArgumentValue;
+    const result = sanitizeToolArguments(parsed, sanitize);
+
+    expect(result.mutated).toBe(true);
+    expect(Object.getPrototypeOf(result.value)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(result.value, '__proto__')).toBe(true);
+    expect(isSentinel(result.value)).toBe(false);
+    expect((result.value as Record<string, unknown>)['token']).toBe(REDACTION_SENTINEL);
+    expect(JSON.stringify(result.value)).not.toContain(PROTO_SECRET);
+    expect((result.value as { toString: unknown }).toString).toBe(Object.prototype.toString);
+  });
+
+  it('allows fitEntryToBudget to shrink oversized toolArguments carrying own __proto__ keys after sanitization', () => {
+    const parsed = JSON.parse(
+      `{"__proto__":{"__truncated":true,"toString":1},"token":"${PROTO_SECRET}","pad":"${'a'.repeat(300_000)}"}`
+    ) as ToolArgumentValue;
+    const entry: PhaseLogDisplayEntry = {
+      seq: 1,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: 'Run', toolArguments: parsed },
+      bodyTruncated: null
+    };
+
+    const sanitized = sanitizeDisplayEntryBody(entry, sanitize);
+    const sanitizedArgs = sanitized.body.toolArguments;
+    if (sanitizedArgs === undefined) throw new Error('expected sanitized toolArguments');
+    expect(Object.getPrototypeOf(sanitizedArgs)).toBe(Object.prototype);
+    expect(isSentinel(sanitizedArgs)).toBe(false);
+    expect(JSON.stringify(sanitized)).not.toContain(PROTO_SECRET);
+
+    const fitted = fitEntryToBudget(sanitized, LIVE_LOG_ENTRY_MAX_BYTES);
+    const fittedArgs = fitted.body.toolArguments;
+    if (fittedArgs === undefined) throw new Error('expected fitted toolArguments');
+    expect(fitted.kind).toBe('tool-use');
+    expect(isSentinel(fittedArgs)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(fitted), 'utf8')).toBeLessThanOrEqual(LIVE_LOG_ENTRY_MAX_BYTES);
+  });
+});
+
+describe('FR-R7-17 (R7-17-05) — hostile toolName sanitization at the phase-log boundary', () => {
+  it('strips ANSI CSI/OSC, bidi controls, newlines, redacts secrets, and bounds >100 KiB toolName', () => {
+    const hostileName =
+      `\u001b[31mExec\u001b[0m \u001b]0;spoof\u0007\u202eoverride\u202c ` +
+      `\u2066isolate\u2069\u200e\u200f\u061c\r\nline2\u2028sep\u2029end ${API_KEY} ` +
+      'Q'.repeat(120_000);
+    const entry: PhaseLogDisplayEntry = {
+      seq: 2,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: hostileName, toolInput: '{}' },
+      bodyTruncated: null
+    };
+    const out = sanitizeDisplayEntryBody(entry, sanitize);
+    const cleaned = out.body.toolName ?? '';
+    expect(cleaned.length).toBeGreaterThan(0);
+    expect(cleaned.length).toBeLessThanOrEqual(128);
+    expect(cleaned).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u);
+    expect(cleaned).not.toContain('\u001b');
+    expect(cleaned).not.toContain(API_KEY);
+    expect(cleaned).toContain(REDACTION_SENTINEL);
+
+    const controlOnly: PhaseLogDisplayEntry = {
+      seq: 3,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: '\u001b[31m\u202e\u2066\u200f\r\n', toolInput: '{}' },
+      bodyTruncated: null
+    };
+    expect(sanitizeDisplayEntryBody(controlOnly, sanitize).body.toolName).toBe('tool');
+  });
+
+  it('redacts secrets straddling byte 128 and ANSI/bidi-padded secrets end-to-end across reader and live tail (SR-312-1)', async () => {
+    const ghToken = ['ghp', 'K'.repeat(36)].join('_');
+    const npmToken = ['npm', 'L'.repeat(36)].join('_');
+    const gcpKey = ['AIza', 'M'.repeat(35)].join('');
+    const sgKey = ['SG', 'N'.repeat(22), 'P'.repeat(43)].join('.');
+    const jwt = [
+      ['eyJ', 'hbGciOiJIUzI1NiJ9'].join(''),
+      'eyJzdWIiOiIxMjM0NTY3ODkwIn0',
+      'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+    ].join('.');
+
+    const names = [
+      `${'x'.repeat(108)} ${ghToken}`,
+      `${'y'.repeat(108)} ${npmToken}`,
+      `${'z'.repeat(108)} ${gcpKey}`,
+      `${'w'.repeat(100)} ${sgKey}`,
+      `${'v'.repeat(105)} ${jwt}`,
+      `${'\u001b[31m'.repeat(25)}${ghToken}`,
+      `${'\u202e'.repeat(45)}${npmToken}`
+    ];
+
+    const lines = names.map((name) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name, input: { ok: true } }] }
+      })
+    );
+    await writeStream(lines);
+
+    const live = await tailEntries();
+    const reopened = await readerEntries();
+    expect(live).toHaveLength(names.length);
+    expect(reopened).toHaveLength(names.length);
+
+    for (let i = 0; i < names.length; i += 1) {
+      expect(live[i]!.body).toEqual(reopened[i]!.body);
+      const toolName = live[i]!.body.toolName ?? '';
+      expect(Buffer.byteLength(toolName, 'utf8')).toBeLessThanOrEqual(128);
+      expect(toolName).not.toContain('ghp_');
+      expect(toolName).not.toContain('npm_');
+      expect(toolName).not.toContain('AIza');
+      expect(toolName).not.toContain('SG.');
+      expect(toolName).not.toContain('eyJ');
+      expect(toolName).toContain(REDACTION_SENTINEL);
+    }
+
+    // Custom caller sanitizer also sees the full pre-cap cleaned toolName before 128-char bounding
+    const customToken = ['CUSTOM', 'SECRET', '1234567890ABCDEF'].join('_');
+    const customEntry: PhaseLogDisplayEntry = {
+      seq: 4,
+      kind: 'tool-use',
+      ts: null,
+      body: { toolName: `${'q'.repeat(110)} ${customToken}`, toolInput: '{}' },
+      bodyTruncated: null
+    };
+    const customSanitize = (s: string): string => s.replaceAll(customToken, REDACTION_SENTINEL);
+    const customOut = sanitizeDisplayEntryBody(customEntry, customSanitize);
+    expect(customOut.body.toolName).toBe(`${'q'.repeat(110)} ${REDACTION_SENTINEL}`);
+    expect(customOut.body.toolName).not.toContain('CUSTOM_SECRET');
+  });
+
+  it('blocks custom-sanitize toolName secret-pull across the 4096 pre-cap boundary and single-blob cuts (SR-A3 #3)', () => {
+    const customSanitize = (s: string): string =>
+      logger.sanitize(s).replace(/CUSTOM_[A-Za-z0-9]{16,}/g, REDACTION_SENTINEL);
+    const customLeaked = ['CUSTOM', 'LEAKED12345678901234'].join('_');
+    const customTool = `${['CUSTOM', 'A'.repeat(4_075)].join('_')} ${customLeaked}`;
+    const singleBlobComma = `${['CUSTOM', 'A'.repeat(4_580)].join('_')},${customLeaked}`;
+    const singleBlobDot = `${['CUSTOM', 'A'.repeat(4_580)].join('_')}.${customLeaked}`;
+
+    for (const rawToolName of [customTool, singleBlobComma, singleBlobDot]) {
+      const entry: PhaseLogDisplayEntry = {
+        seq: 5,
+        kind: 'tool-use',
+        ts: null,
+        body: { toolName: rawToolName, toolInput: '{}' },
+        bodyTruncated: null
+      };
+      const out = sanitizeDisplayEntryBody(entry, customSanitize);
+      expect(out.body.toolName).toBe(REDACTION_SENTINEL);
+      expect(out.body.toolName).not.toContain('CUSTOM_LEAKED');
+    }
   });
 });

@@ -43,7 +43,7 @@ function captureSpawn(child: FakeChild, capture: SpawnCapture): SpawnFn {
     capture.command = command;
     capture.args = args;
     capture.options = options;
-    setImmediate(() => child.emit('exit', 0, null));
+    setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
     return child as unknown as ChildProcess;
   };
 }

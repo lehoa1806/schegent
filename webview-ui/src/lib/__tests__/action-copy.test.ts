@@ -19,6 +19,11 @@ import {
   renderActionBody,
   type ActionKey
 } from '../action-copy';
+// Feature 193 (T034, FR-001/FR-009) — the generated mirror of the host's
+// canonical `ACTION_KEYS` tuple. `ActionKey`/`ACTION_COPY` above must derive
+// from this, not from a second hand-written union — the test below fails if
+// a key exists in one but not the other.
+import { ACTION_KEYS as GENERATED_ACTION_KEYS } from '../generated/action-keys';
 
 const EXPECTED_KEYS: readonly ActionKey[] = [
   // Feature 100 (T509a, FR-049) — two keys where features 082/083 had four. The
@@ -51,8 +56,40 @@ const EXPECTED_KEYS: readonly ActionKey[] = [
   'run.overwrite-output',
   // Feature 095 (FR-003) — deleting a queue drops its pending Tasks with no
   // undo, and the queue-scoped analogue of `queue.clean-all`.
-  'queue.delete'
+  'queue.delete',
+  // FR-R3-143 (T042) — the one key whose action is not itself destructive: it
+  // turns every other prompt in this table off. Confirming on the way out only,
+  // never on the way back in, which is why the module short-circuits on
+  // `snapshot.confirmationsEnabled` rather than branching per direction.
+  'settings.disable-confirmations',
+  // FR-R3-144 (T034) — granting a backend permission to run with no sandbox. It
+  // is in this table, and not a bare toggle, because it widens what an unattended
+  // run may do on the machine: the enforcement refuses the spawn today, and after
+  // this write it does not. The body is the refusal's own sentence, carried in as
+  // a placeholder, so the prompt cannot describe a rule the runner no longer has.
+  'backend.grant-uncontained',
+  // Feature 195 (T064, FR-025) — asserting that a failed task's work happened
+  // outside the tool. In this table because it is the one exit from a halt that
+  // is not undoable: `completed` is a status no transition returns from, so the
+  // prompt is where the operator learns that choosing it spends the retry.
+  'queue.attest-completed'
 ];
+
+describe('ActionKey — derived from the generated host mirror (T193 US2, FR-001/FR-009)', () => {
+  it('ACTION_COPY has exactly one entry per generated ActionKey — none missing, none extra', () => {
+    expect(Object.keys(ACTION_COPY).sort()).toEqual([...GENERATED_ACTION_KEYS].sort());
+  });
+
+  it('the generated mirror declares a non-empty set of canonical keys', () => {
+    // Non-emptiness, not cardinality. `:75` above asserts the real property —
+    // set equality between the copy table and the generated mirror — and that
+    // assertion passes when BOTH sides are empty. These two floors are what
+    // stop it: one per side, because a floor on the mirror alone leaves the
+    // copy-table side unchecked (FR-021, SC-009).
+    expect(GENERATED_ACTION_KEYS.length).toBeGreaterThan(0);
+    expect(Object.keys(ACTION_COPY).length).toBeGreaterThan(0);
+  });
+});
 
 describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
   it('contains every contractual ActionKey entry', () => {
@@ -72,6 +109,13 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
   it('destructive severity covers irreversible catalog and workspace actions', () => {
     const destructive = EXPECTED_KEYS.filter((k) => ACTION_COPY[k].severity === 'destructive');
     expect(destructive.sort()).toEqual([
+      // FR-R3-144 (T034) — the one destructive key that deletes nothing, and the
+      // reason the assertion's name is about irreversibility rather than deletion.
+      // Granting is undoable from the same control; what it enables is not, because
+      // it is not state — it is model-generated actions running with the operator's
+      // local authority, for as long as the grant stands. The strongest
+      // presentation in the dialog belongs to the widest permission on the tab.
+      'backend.grant-uncontained',
       // Feature 100 — both remain destructive, for two different reasons. A
       // deactivation drops the definition from the launchable catalog; a discard
       // drops an edit that was never published, and of a never-published
@@ -79,6 +123,12 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
       // interrupt, and neither of these does.
       'catalog.deactivate-definition',
       'catalog.discard-draft',
+      // Feature 195 (T064, FR-025) — sorts first among the `queue.` keys.
+      // Destructive on the same basis as `backend.grant-uncontained` above:
+      // nothing is deleted, and nothing can be undone either. A task recorded
+      // as completed cannot be returned to `failed`, so the retry the operator
+      // still had before the prompt is gone after it.
+      'queue.attest-completed',
       'queue.clean-all',
       // Feature 095 — dropping a queue drops the pending Tasks on it. Sorts
       // after `queue.clean-all` and before `run.overwrite-output`.
@@ -99,61 +149,257 @@ describe('ACTION_COPY exhaustiveness (FR-022b)', () => {
 });
 
 describe('renderActionBody — placeholder resolution', () => {
-  it('queue.clean-all: full populated context renders all four summaries', () => {
+  it('queue.clean-all: full populated context renders all summaries', () => {
     const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
       pendingCount: 3,
       completedCount: 5,
       failedCount: 1,
       canceledCount: 2,
       inflightTitle: 'speckit-plan',
       pauseSource: 'operator',
-      hasActiveRun: true
+      hasActiveRun: true,
+      hasSchedule: true
     });
     expect(body).toContain('**3** pending');
     expect(body).toContain('**5** completed');
     expect(body).toContain('**1** failed');
     expect(body).toContain('**2** canceled');
+    expect(body).toContain('from **nightly**');
     expect(body).toContain('abort the running task ("speckit-plan")');
     expect(body).toContain('clear the operator pause');
-    expect(body).toContain('clear the active workflow run');
+    expect(body).toContain('cancel the scheduled start');
+    expect(body).toContain('clear the active Workflow run');
   });
 
   it('queue.clean-all: pendingCount=0 still renders sensibly', () => {
     const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
       pendingCount: 0,
       completedCount: 0,
       failedCount: 0,
       canceledCount: 0,
       inflightTitle: null,
       pauseSource: null,
-      hasActiveRun: false
+      hasActiveRun: false,
+      hasSchedule: false
     });
     expect(body).toContain('**0** pending');
+    expect(body).toContain('from **nightly**');
     expect(body).not.toContain('abort the running task');
     expect(body).not.toContain('clear the');
+    expect(body).not.toContain('cancel the scheduled start');
   });
 
   it('queue.clean-all: cascade pause source renders the cascade summary', () => {
     const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
       pendingCount: 1,
       completedCount: 0,
       failedCount: 0,
       canceledCount: 0,
       inflightTitle: null,
       pauseSource: 'cascade',
-      hasActiveRun: false
+      hasActiveRun: false,
+      hasSchedule: false
     });
     expect(body).toContain('clear the cascade pause');
   });
 
-  it('queue.clear-done: substitutes the completedCount', () => {
-    const body = renderActionBody('queue.clear-done', { completedCount: 7 });
-    expect(body).toContain('**7** completed tasks');
+  it('queue.clean-all: an armed schedule with nothing else to reset still names it (LC-Q-05)', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: null,
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: true
+    });
+    expect(body).toContain('cancel the scheduled start');
   });
 
-  it('queue.remove-item: substitutes the taskTitle', () => {
-    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task' });
+  it('queue.clear-done: substitutes the completedCount and queue name', () => {
+    const body = renderActionBody('queue.clear-done', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      completedCount: 7
+    });
+    expect(body).toContain('**7** completed tasks');
+    expect(body).toContain('from **nightly**');
+  });
+
+  // Code-review finding — `String.prototype.replace` interprets `$`-prefixed
+  // sequences in a STRING replacement even when the search pattern is a plain
+  // string, not a RegExp. Queue names are operator-authored with no character
+  // restriction, so a name built from one of those sequences must render
+  // literally, not be swallowed as a substitution directive.
+  it('renders a queueName containing $-substitution sequences literally, for both templates', () => {
+    const cleanAllBody = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'Prod $&',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: null,
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: false
+    });
+    expect(cleanAllBody).toContain('from **Prod $&**');
+
+    const clearDoneBody = renderActionBody('queue.clear-done', {
+      queueId: 'q-beta',
+      queueName: 'Prod $$',
+      completedCount: 1
+    });
+    expect(clearDoneBody).toContain('from **Prod $$**');
+  });
+
+  // Code-review finding — the same `$`-substitution risk as `queueName` above,
+  // for `inflightTitle`: it is an operator-authored task title with no
+  // character restriction, substituted into the same STRING-replacement
+  // chain. A task named e.g. "Fix $&" must render literally, not have `$&`
+  // expanded to the matched `{inflightSummary}` placeholder text.
+  it('renders an inflightTitle containing $-substitution sequences literally', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: 'Fix $&',
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: false
+    });
+    expect(body).toContain('abort the running task ("Fix $&")');
+  });
+
+  // Code-review finding (iteration 4) — a queue named or a task titled
+  // exactly like a LATER placeholder token in the chain used to get
+  // re-matched and corrupted by that later `.replace()` call, since each
+  // call in a chain re-scans the whole accumulated string rather than only
+  // the original template. The single-pass substitution fixes this
+  // regardless of which placeholder the operator-authored text collides
+  // with, or which order the chain used to run in.
+  it('renders a queueName matching a later placeholder token literally, not re-substituted', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: '{pauseSummary}',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: null,
+      pauseSource: 'operator',
+      hasActiveRun: false,
+      hasSchedule: false
+    });
+    expect(body).toContain('from **{pauseSummary}**');
+    expect(body).toContain(', and clear the operator pause');
+  });
+
+  it('renders an inflightTitle matching a later placeholder token literally, not re-substituted', () => {
+    const body = renderActionBody('queue.clean-all', {
+      queueId: 'q-beta',
+      queueName: 'nightly',
+      pendingCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      canceledCount: 0,
+      inflightTitle: '{scheduleSummary}',
+      pauseSource: null,
+      hasActiveRun: false,
+      hasSchedule: true
+    });
+    expect(body).toContain('abort the running task ("{scheduleSummary}")');
+    expect(body).toContain(', and cancel the scheduled start');
+  });
+
+  // Code-review finding (iteration 5) — the two cases above were the only two
+  // moved onto the single pass; every other templated body still chained
+  // `.replace(string, value)`, so both hazards were live everywhere else. These
+  // cover the three remaining shapes: a value colliding with a LATER token, a
+  // value containing a `$`-sequence, and a template whose placeholder set the
+  // case did not fully cover.
+  it('renders a definitionName matching a later placeholder token literally', () => {
+    const body = renderActionBody('catalog.deactivate-definition', {
+      definitionId: 'phase-plan',
+      definitionName: '{kindLabel}',
+      kindLabel: 'phase'
+    });
+    expect(body).toContain('Removes **{kindLabel}** (`phase-plan`)');
+    expect(body).toContain('from the active phase catalog');
+  });
+
+  it('renders a taskTitle containing $-substitution sequences literally', () => {
+    expect(renderActionBody('run.modify-task', { taskTitle: '$&' })).toBe(
+      'Saves the edited payload for **$&**.'
+    );
+    expect(renderActionBody('history.rerun', { taskTitle: 'Ship $`v2' })).toBe(
+      'Re-enqueues **Ship $`v2** as a new run.'
+    );
+  });
+
+  it('names the queue in the delete confirmation instead of leaving the token', () => {
+    const body = renderActionBody('queue.delete', {
+      queueName: 'nightly',
+      pendingTaskCount: 2,
+      connectedRunCount: 0
+    });
+    expect(body).toBe(
+      'Deletes **nightly**, along with **2** pending tasks. This cannot be undone.'
+    );
+  });
+
+  // FR-R3-153 (FR-011, T1639) — one case per status; the wording must name
+  // that status's real consequence, not a generic one.
+  it('queue.remove-item (pending): names simple removal, no session-data consequence', () => {
+    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status: 'pending' });
     expect(body).toContain('**My task**');
+    expect(body).not.toMatch(/session data/);
+  });
+
+  it('queue.remove-item (in-flight): names stopping the active task and session-data deletion', () => {
+    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status: 'in-flight' });
+    expect(body).toContain('Stops the active task **My task**');
+    expect(body).toContain('session data (logs, diagnostics)');
+  });
+
+  it('queue.remove-item (paused): names losing resumable state and session-data deletion', () => {
+    const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status: 'paused' });
+    expect(body).toContain('paused task **My task**');
+    expect(body).toContain('session data');
+  });
+
+  it.each(['completed', 'failed', 'canceled'] as const)(
+    'queue.remove-item (%s): names permanent removal and session-data deletion, sharing one branch',
+    (status) => {
+      const body = renderActionBody('queue.remove-item', { taskTitle: 'My task', status });
+      expect(body).toContain('Permanently removes **My task**');
+      expect(body).toContain('session data (logs, diagnostics)');
+    }
+  );
+
+  // Code-review fix (2026-09-03) — regression test. The now-retired
+  // `taskDeleteConfirmation` always truncated a long label to 45 chars +
+  // "..." (see the deleted deletion-confirmation.test.ts); this branch
+  // reproduced its wording without carrying that truncation over.
+  it('queue.remove-item: truncates a long taskTitle to 45 chars + "..." like the retired taskDeleteConfirmation did', () => {
+    const long = 'a'.repeat(60);
+    const expected = 'a'.repeat(45) + '...';
+    const body = renderActionBody('queue.remove-item', { taskTitle: long, status: 'paused' });
+    expect(body).toContain(`**${expected}**`);
+    expect(body).not.toContain(long);
   });
 
   it('queue.cancel-item: omits running suffix when isRunning=false', () => {
@@ -263,5 +509,51 @@ describe('renderActionBody — placeholder resolution', () => {
       target: 'out/nested/report.md'
     });
     expect(body).toContain('`out/nested/report.md`');
+  });
+});
+
+// FR-R4-F15 (feature 243, contract K3.2, K6.10; FR-018, D11) — what Remove says stays behind.
+//
+// Remove deletes the session tree and nothing else, and a failed Run's retained failure record and the
+// audit log are outside it. The confirmation says so for the three statuses whose Remove ends a Run
+// that is over, and only for those: a pending row has no record yet, and an in-flight or paused row's
+// Run is still live, so a sentence about retention there would promise a record that does not exist.
+// The other three bodies are pinned byte for byte, so this feature cannot reword them by accident.
+describe('queue.remove-item says what stays (K6.10, D11)', () => {
+  const KEPT = 'Its failure diagnostics, if any, and the audit log are kept until retention removes them.';
+  const BODIES = {
+    pending: 'Removes **My task** from the queue.',
+    'in-flight':
+      'Stops the active task **My task** and permanently deletes its session data (logs, diagnostics) from disk.',
+    paused: 'Removes the paused task **My task** and permanently deletes its session data from disk.',
+    completed:
+      'Permanently removes **My task** and its session data (logs, diagnostics) from disk. ' + KEPT,
+    failed: 'Permanently removes **My task** and its session data (logs, diagnostics) from disk. ' + KEPT,
+    canceled: 'Permanently removes **My task** and its session data (logs, diagnostics) from disk. ' + KEPT
+  } as const;
+
+  it.each(Object.entries(BODIES))('%s has exactly the text of contract K3.2', (status, expected) => {
+    const body = renderActionBody('queue.remove-item', {
+      taskTitle: 'My task',
+      status: status as keyof typeof BODIES
+    });
+    expect(body).toBe(expected);
+  });
+
+  it('puts the sentence in the completed, failed and canceled bodies and in no other', () => {
+    for (const [status, expected] of Object.entries(BODIES)) {
+      const body = renderActionBody('queue.remove-item', {
+        taskTitle: 'My task',
+        status: status as keyof typeof BODIES
+      });
+      expect(body.includes(KEPT), status).toBe(['completed', 'failed', 'canceled'].includes(status));
+      expect(expected.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('covers every QueueItemStatus, so a seventh status cannot pass unreviewed', () => {
+    expect(Object.keys(BODIES).sort()).toEqual(
+      ['canceled', 'completed', 'failed', 'in-flight', 'paused', 'pending']
+    );
   });
 });

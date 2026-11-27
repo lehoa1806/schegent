@@ -1,96 +1,56 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import * as path from 'node:path';
 import { WorkspaceStateStore } from './state/workspace-state';
-import { WorkspaceLockManager } from './state/lock';
-import { ExecutionLeaseManager } from './state/execution-lease';
-import { createDiskOwnershipFs } from './state/ownership-fs';
-import {
-  getCanonicalWorkspaceRoot,
-  disposeWorkspaceFolderPicker
-} from './state/workspace-folder-picker';
+import { createSwitchableOperationalMemento } from './state/sqlite-operational-backing';
+import { disposeCutoverStore, getOperationalMementoForStore, initializeStoreForActivation, registerOperationalMementoForStore } from './activation/sqlite-cutover-wiring';
+import { getCanonicalWorkspaceRoot, disposeWorkspaceFolderPicker } from './state/workspace-folder-picker';
 import { resolveCliPath } from './config/cli-path-accessor';
-import { maybeShowMultiRootWarning } from './state/multi-root-warning';
-import { initCapabilityTrustResolver } from './state/capability-trust-resolver';
-import { QueueManager } from './queue/queue-manager';
-import { DEFAULT_QUEUE_ID } from './queue/queue-registry';
-import { resolveBackendKind } from './runner/backend-runner-factory';
-import { BackendRunnerRegistry } from './runner/backend-runner-registry';
-import { resolveProcessEnvironmentPolicy } from './runner/spawn-env';
-import { PromptBuilder } from './runner/prompt-builder';
-import { PhaseRunner } from './controller/phase-runner';
 import { SchegentWorkflowController } from './controller/workflow-controller';
-import { QueueScheduleWatchdog } from './controller/schedule-watchdog';
-import { CreditWatchdog } from './watchdog/credit-watchdog';
-import { AuditLogWriter } from './audit/audit-log-writer';
-import { RawTranscriptWriter } from './audit/raw-transcript-writer';
-import { SessionArtifactRetentionService } from './services/session-retention/session-artifact-retention-service';
 import { SanitizedLogger } from './lib/logger';
-import {
-  createRuntimeEvidenceWiring,
-  createBackendDiagnosticsWiring,
-  warnIfEnvironmentIsUnrestricted,
-  type RuntimeEvidenceWiring
-} from './activation/backend-wiring';
-import { warnIfScaffoldingMissing } from './activation/workspace-scaffolding';
-import { createConnectedRunService, registerStage2Ui } from './activation/ui-wiring';
-import { SchegentOutputChannel } from './ui/output-channel';
-import { SchegentStatusBar } from './ui/status-bar';
+import { singleFlight } from './lib/single-flight';
+import { createRuntimeEvidenceWiring, type RuntimeEvidenceWiring } from './activation/backend-wiring';
+import { registerStage2Ui } from './activation/ui-wiring';
+import { registerGuardedCommand } from './activation/guarded-command-registration';
 import { Notifier } from './ui/notifications';
-import { forwardMigrationAuditEvents } from './state/migration-audit-forwarder';
+import { SchegentOutputChannel } from './ui/output-channel';
 import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
-import {
-  completeInterruptedResetOnActivation,
-  createResetStageSupport,
-  recordCompletedInterruptedReset
-} from './commands/reset-wiring';
+import { createResetStageSupport } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
-import { buildBuilderLifecycleByKind } from './ui/sidebar/builder-lifecycle';
-import { createWorkflowPipelineRefReader } from './ui/sidebar/workflow-pipeline-ref-source';
-import {
-  readGeneralSettings,
-  writeGeneralSettings,
-  readFatalSignaturesSetting,
-  type GeneralSettingsConfig
-} from './config/general-settings';
-import { validateWorkspaceSettings } from './config/settings-schema-validator';
-import { createAutoCompactOverrideAccessor } from './lib/auto-compact-override';
-import { createPhaseBreakpointAccessor } from './controller/breakpoint-accessor';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
-import { MessageRouter } from './ui/sidebar/message-router';
-import { PlaceholderProjector } from './ui/sidebar/placeholder-projector';
-import { ClaudeCliMonitor } from './monitor/claude-cli-monitor';
-import { createCliTransportSink } from './monitor/cli-transport-sink';
-import type { RunActivityObservation } from './monitor/activity-coalescer';
-import { TelemetrySamplerImpl } from './telemetry/telemetry-sampler';
-import { psShellOut } from './telemetry/platform/platform-ps';
-import { windowsShellOut } from './telemetry/platform/platform-windows';
-import type { TelemetrySnapshot } from './telemetry/telemetry-snapshot';
-import { RATE_LIMIT_MATCHERS } from './parser/credit-error-detector';
-import { HistoryStore } from './state/history-store';
-import { createRunSafetyWiring } from './activation/run-safety-wiring';
-import { isConfirmationsEnabled } from './state/confirmations-config';
-import { coerceModels } from './config/pipeline-config-loader';
-import type { CatalogConfigReader } from './config/pipeline-config-loader';
-import { CatalogSession, storedLayerReaders } from './activation/catalog-loading';
-import {
-  createCatalogReader,
-  createCatalogSettingsWriter
-} from './activation/catalog-settings-wiring';
-import {
-  createHostCatalogLifecycle,
-  createHostCatalogStore,
-  nodeDigest
-} from './activation/catalog-store-wiring';
-import { liveRunPlans, retainedHistoryPlans } from './activation/run-provenance-enumeration';
+import { PlaceholderProjector, type PlaceholderReason } from './ui/sidebar/placeholder-projector';
 import { GuardedRunService } from './services/guarded-run-service';
-import { ScheduledStartCoordinator } from './services/scheduled-start-coordinator';
-import { readMetrics } from './metrics/metrics-service';
-import { AuditPointerResolver } from './services/history/audit-pointer-resolver';
-import { HistoryEvidenceService } from './services/history/history-evidence-service';
-import { createPhaseLogService } from './services/phase-log';
-import { resolveRunOrigin } from './services/run-origin-resolver';
-import { createPhaseLogTailWiring } from './activation/phase-log-tail-wiring';
+import { createWorkflowLeafEnd } from './controller/workflow-leaf-end';
+import { createSidebarRouter } from './activation/sidebar-router-wiring';
+import { wireBackendExecution } from './activation/backend-execution-wiring';
+import { resolveWorkspaceSettings } from './activation/workspace-settings';
+import { openWorkspaceSession } from './activation/workspace-session';
+import { wireScheduledWork } from './activation/scheduled-work-wiring';
+import { wireEvidence } from './activation/evidence-wiring';
+import { wireLivePicture } from './activation/live-picture-wiring';
+import { wirePhaseExecution } from './activation/phase-execution-wiring';
+import { createStage2Producers, type Stage2Producers } from './activation/stage2-producers';
+import { wireTrustGrant } from './activation/trust-grant-wiring';
+import { wirePrimacyGain } from './activation/primacy-gain-wiring';
+import { wireEvidenceMaintenance } from './activation/evidence-maintenance-wiring';
+import { closeStage2Resources } from './activation/stage2-teardown';
+import { pauseQueuesAtLifecycleBoundary } from './activation/queue-lifecycle-boundary';
+import {
+  readForceContinueOnRetryCap,
+  readMaxUnchangedComparisons,
+  readQueueFailurePolicyDefault,
+  readRetryCap,
+  readRawTranscriptMode
+} from './activation/uncached-settings-accessors';
+
+/**
+ * FR-R3-136 (FR-005) — the one live read of Workspace Trust in this file, and a
+ * function rather than a value so every taker re-decides when it acts. Four
+ * inline copies were four places for one to become a captured boolean.
+ */
+const isWorkspaceTrusted = (): boolean => vscode.workspace.isTrusted;
+
+// FR-R3-137 (FR-010) — the host teardown, module-scoped so `deactivate()` can await it.
+let hostTeardown: (() => Promise<void>) | null = null;
 
 interface Stage2Wiring {
   readonly disposables: readonly vscode.Disposable[];
@@ -101,9 +61,14 @@ interface Stage2Wiring {
    * talks to whichever stage 2 is current.
    */
   readonly reset: ResetStageSupport;
+  /**
+   * FR-R3-136 (FR-010) — what a later trust grant calls. On the wiring for the
+   * same reason `reset` is: a reload replaces the graph, and a grant arriving
+   * after one must reach the CURRENT producers, not a disposed lock.
+   */
+  readonly producers: Stage2Producers;
   dispose(): Promise<void>;
 }
-
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const logger = new SanitizedLogger();
@@ -130,14 +95,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     { dispose: () => placeholder.dispose() }
   );
 
-  const store = new WorkspaceStateStore({
-    get: <T>(key: string) => context.workspaceState.get<T>(key),
-    update: (key, value) => context.workspaceState.update(key, value)
-  }, logger);
+  const operationalMemento = createSwitchableOperationalMemento(context.workspaceState, logger, { requireDurableBatch: true });
+  const store = new WorkspaceStateStore(operationalMemento, logger);
+  registerOperationalMementoForStore(store, operationalMemento, { strictOrder: true });
 
   let stage2: Stage2Wiring | null = null;
   let activeOutput: SchegentOutputChannel | null = null;
-  let activePlaceholder: PlaceholderProjector = placeholder;
+  let activePlaceholder = placeholder;
+  const showPlaceholder = (reason: PlaceholderReason): void => {
+    activePlaceholder.dispose();
+    activePlaceholder = new PlaceholderProjector({ reason });
+    sidebarProvider.setProjector(activePlaceholder);
+  };
+  let hostStopping = false;
+  // A folder removal or reset clears Stage 2 before its disposal ends.
+  const stage2Disposals = new Set<Promise<void>>();
 
   // Feature 058 — pre-warm the canonical-folder picker so its
   // `onDidChangeWorkspaceFolders` cache-invalidator is registered BEFORE
@@ -146,46 +118,51 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // and the extension's listener observes a fresh canonical folder when
   // it calls `getCanonicalWorkspaceRoot()` via `ensureStage2()`.
   void getCanonicalWorkspaceRoot();
+  const currentStage2Root = (): string | undefined =>
+    hostStopping ? undefined : getCanonicalWorkspaceRoot()?.uri.fsPath;
 
-  const ensureStage2 = async (): Promise<void> => {
-    if (stage2) return;
-    const folder = getCanonicalWorkspaceRoot();
-    if (!folder) return;
-    const wiring = await wireStage2({
-      context,
-      logger,
-      ownerId,
-      workspaceRoot: folder.uri.fsPath,
-      store,
-      onInitFailure: () => {
-        const replacement = new PlaceholderProjector({ reason: 'init-failed' });
-        activePlaceholder.dispose();
-        activePlaceholder = replacement;
-        sidebarProvider.setProjector(replacement);
-      },
-      runtimeLogSink,
-      runtimeLogAccessor,
-      evidenceHealth,
-      webviewLogSink
-    });
-    if (!wiring) return;
-    stage2 = wiring.stage2;
-    sidebarProvider.setProjector(wiring.projector);
-    sidebarProvider.setDispatch(wiring.dispatch);
-    activeOutput = wiring.output;
-  };
+  const ensureStage2 = singleFlight(async (): Promise<void> => {
+    if (stage2Disposals.size > 0) await Promise.allSettled(stage2Disposals);
+    while (!stage2) {
+      const workspaceRoot = currentStage2Root();
+      if (!workspaceRoot) return;
+      const wiring = await wireStage2({
+        context,
+        logger,
+        ownerId,
+        workspaceRoot,
+        store,
+        onInitFailure: () => showPlaceholder('init-failed'),
+        runtimeLogSink,
+        runtimeLogAccessor,
+        evidenceHealth,
+        webviewLogSink
+      });
+      const workspaceStillCurrent = currentStage2Root() === workspaceRoot;
+      if (!wiring && workspaceStillCurrent) return;
+      if (!wiring) continue;
+      stage2 = wiring.stage2;
+      if (!workspaceStillCurrent) {
+        await tearDownStage2();
+        continue;
+      }
+      sidebarProvider.setProjector(wiring.projector);
+      sidebarProvider.setDispatch(wiring.dispatch);
+      activeOutput = wiring.output;
+      return;
+    }
+  });
 
   const tearDownStage2 = async (): Promise<void> => {
     if (!stage2) return;
     const previous = stage2;
     stage2 = null;
     sidebarProvider.setDispatch(null);
-    const replacement = new PlaceholderProjector({ reason: 'no-workspace' });
-    activePlaceholder.dispose();
-    activePlaceholder = replacement;
-    sidebarProvider.setProjector(replacement);
+    showPlaceholder('no-workspace');
     activeOutput = null;
-    await previous.dispose();
+    const disposal = previous.dispose();
+    stage2Disposals.add(disposal);
+    await disposal.finally(() => stage2Disposals.delete(disposal));
   };
 
   // Feature FR-R3-006 — the reset transaction's host seam. Registered here
@@ -200,30 +177,73 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reload: ensureStage2
   };
 
+  // FR-R3-136 — why the guard helper depends on nothing from Stage 2.
+  // `schegent.reset` is registered here and stays reachable with no folder open,
+  // so a guard needing a store or a lock could not be applied to it. This
+  // `Notifier` is not a second notification path: it is a stateless wrapper over
+  // three `vscode.window.show*Message` calls, available before `wireStage2`.
+  // FR-R4-F03 — the reset records an audit event, so it is owner-only; its predicate asks the live
+  // Stage 2, and with no Stage 2 there is no lock, writer or log, so it answers owner.
+  const stage1Notifier = new Notifier(vscode.window);
+
   context.subscriptions.push(
-    vscode.commands.registerCommand('schegent.reset', () =>
-      runReset({ store, logger, host: resetHost })
+    registerGuardedCommand(
+      {
+        isWorkspaceTrusted,
+        notifier: stage1Notifier,
+        logger,
+        isOwner: () => resetHost.support()?.isOwner() ?? Promise.resolve(true)
+      },
+      'schegent.reset',
+      () => runReset({ store, logger, host: resetHost })
     )
+  );
+
+  // FR-R3-136 (FR-010) — a later grant reaches the CURRENT producers, which is
+  // why the thunk and not the value: `wireTrustGrant` carries the rest.
+  context.subscriptions.push(
+    wireTrustGrant({ logger, getProducers: () => stage2?.producers ?? null })
   );
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(async () => {
       const hasFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
-      if (hasFolder && !stage2) {
+      if (hasFolder || !stage2) {
         await ensureStage2();
-      } else if (!hasFolder && stage2) {
+      } else {
         await tearDownStage2();
       }
     })
   );
 
-  context.subscriptions.push({
-    dispose() {
-      void stage2?.dispose();
-      activeOutput?.dispose();
-      activePlaceholder.dispose();
+  // FR-R3-137 (FR-010) — published so `deactivate()` can AWAIT it. This entry
+  // opened `void stage2?.dispose()`, and VS Code disposes `context.subscriptions`
+  // synchronously: the promise carrying the transport flush, the lease release and
+  // the lock release was discarded at the one moment the three had to finish.
+  // Feature 218 (FR-011, FR-013) — it runs once per activation, so whichever of the
+  // two paths fires second awaits the same run, and it releases the runtime log
+  // writer once the Stage 2 teardown has settled, resolved or rejected. The
+  // subscription calls this activation's `teardownOnce`, never the module's.
+  let hostTeardownRun: Promise<void> | null = null;
+  const runHostTeardown = async (): Promise<void> => {
+    hostStopping = true;
+    const output = activeOutput; // read first: `tearDownStage2` clears it
+    try {
+      await Promise.allSettled([ensureStage2()]);
+      await tearDownStage2();
+    } finally {
+      // F6 — settled, never rethrown: a failure belongs to the path that began it.
+      await Promise.allSettled(stage2Disposals);
+      disposeCutoverStore(store);
+      await runtimeLogSink.flushAndDispose(); // never rejects
+      if (hostTeardown === teardownOnce) hostTeardown = null;
     }
-  });
+    output?.dispose();
+    activePlaceholder.dispose();
+  };
+  const teardownOnce = (): Promise<void> => (hostTeardownRun ??= runHostTeardown());
+  hostTeardown = teardownOnce;
+  context.subscriptions.push({ dispose: () => void teardownOnce() });
 
   // Stage 2 — workspace-bound wiring. Only proceeds when a workspace folder is open.
   await ensureStage2();
@@ -269,35 +289,16 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const disposables: vscode.Disposable[] = [];
 
   const channel = vscode.window.createOutputChannel('Schegent');
-  disposables.push(channel);
   const output = new SchegentOutputChannel(channel, logger);
+  disposables.push(output);
 
-  // Feature FR-R3-006 (T346) — finish a reset the previous host did not survive,
-  // *before* `initialize()`, so the migration chain sees the state the operator
-  // asked for rather than a half-cleared one. Reasoning in `reset-wiring.ts`.
-  const completedResetGeneration = await completeInterruptedResetOnActivation(store, logger);
-
-  // Feature 030 — `initialize()` returns the v5 → v6 migration audit events;
-  // they are forwarded through `auditWriter.append` once the writer exists
-  // (constructed below). Empty array when no migration occurred.
-  let v6MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV5ToV6AuditEvent[] = [];
-  // Feature 065 — v6 → v7 migration audit events; same forwarding contract.
-  let v7MigrationEvents: readonly import('./state/queue-state-migrator').StateMigratedV6ToV7AuditEvent[] = [];
-  // Feature 093 — v10 → v11 per-queue Run-record reshape; same forwarding
-  // contract, and destructured here rather than left on the result object,
-  // which is how feature 092's v10 events went unaudited.
-  let v11MigrationEvents: readonly import('./state/run-state-migrator').RunStateMigrationAuditEvent[] = [];
-  // FR-R3-010 — v11 → v12 per-queue history partition; same forwarding contract,
-  // and destructured here for the same reason.
-  let v12MigrationEvents: readonly import('./state/history-state-migrator').HistoryStateMigrationAuditEvent[] = [];
-  let runRepairEvents: readonly import('./state/workflow-run-migrator').WorkflowRunRepairedAuditEvent[] = [];
+  // Feature FR-R3-006 (T346) & F-02 — probe post-cutover SQLite snapshot before
+  // completing an interrupted reset and invoking `store.initialize()`, so load-time
+  // migrations and reconcilers act on SQLite state instead of drifted legacy Memento.
+  let completedResetGeneration: number | null;
+  let migrationEvents: import('./state/workspace-state').InitializeResult;
   try {
-    const initResult = await store.initialize();
-    v6MigrationEvents = initResult.v6MigrationEvents;
-    v7MigrationEvents = initResult.v7MigrationEvents;
-    v11MigrationEvents = initResult.v11MigrationEvents;
-    v12MigrationEvents = initResult.v12MigrationEvents;
-    runRepairEvents = initResult.runRepairEvents;
+    ({ completedResetGeneration, migrationEvents } = await initializeStoreForActivation({ context, workspaceRoot, store, logger }));
   } catch (err) {
     void vscode.window.showErrorMessage(
       `Schegent: ${(err as Error).message}`,
@@ -312,338 +313,108 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     return null;
   }
 
-  const config = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
-  // Feature 056 follow-on — one-shot drift guard. Compares every layer
-  // (workspace folder / workspace / global) against SETTINGS_SCHEMA and
-  // emits a sanitized warn per finding. Operator typos (e.g. a hand-set
-  // `loop.maxIterations: 0`) surface in the runtime log at activation
-  // instead of producing a confusing downstream reject. Sync, no I/O.
-  validateWorkspaceSettings(config, logger, new Set());
-  const cliPath = config.get<string>('cli.path', 'claude');
-  const processEnvironmentPolicy = resolveProcessEnvironmentPolicy({
-    inheritEnvironment: config.get<boolean>('cli.inheritEnvironment', true),
-    // Feature 098 (PRIV-02) — fallback mirrors the manifest default, which
-    // moved `inherit` -> `allowlist`. An absent contribution must not
-    // silently restore full ambient-environment forwarding.
-    mode: config.get<unknown>('cli.environmentMode', 'allowlist'),
-    allowlist: config.get<unknown>('cli.environmentAllowlist', [])
-  });
-  const iterationCap = config.get<number>('loop.maxIterations', 10);
-  const pollIntervalMinutes = config.get<number>('watchdog.pollIntervalMinutes', 30);
-  const timeoutSeconds = config.get<number>('invocation.timeoutSeconds', 5400);
-  const rotationSizeMB = config.get<number>('audit.rotation.sizeMB', 5);
-  const rotationMaxAgeDays = config.get<number>('audit.rotation.maxAgeDays', 30);
-  const catalogReader: CatalogConfigReader = createCatalogReader(workspaceRoot);
-  // Feature 099 (T493b, FR-051, FR-052) — `null` in an untrusted workspace, where
-  // no catalog activates at all. The snapshot still has to exist for the resolvers,
-  // so the two facts stay apart: no store, and the empty catalog it resolves to.
-  // Feature 102 (T051, FR-037) and 103 (T078, FR-040, FR-042) — the store is built
-  // here, `queue` below it and `historyStore` further down still, so both enumerators
-  // close over their sources and re-read per question; `createHostCatalogStore`
-  // documents why each `list()` has to stay inside its thunk.
-  const catalogStore = createHostCatalogStore(
-    () => liveRunPlans(queue.listAll(), Object.values(store.getRunMap())),
-    () => retainedHistoryPlans(historyStore.list())
-  );
-  // Feature 099 (T493b, T496f, FR-027a, FR-042) — the store is read once, here,
-  // before anything is composed, and the session owns that snapshot together with
-  // everything resolved from it. See `CatalogSession` for why the five bindings
-  // this replaced are one fact.
-  const catalogSession = await CatalogSession.open({
-    store: catalogStore,
-    reader: catalogReader,
-    digest: nodeDigest,
-    logger
-  });
-  // Feature 100 (T509c, FR-047) — the six lifecycle commands' one dependency,
-  // built once beside the store it operates on. The default is read through the
-  // session rather than captured, so the FR-059 advisory sees the value in force
-  // at the moment of a deactivation; `refreshCatalog` already re-resolves the
-  // session when `schegent.defaultPipelineId` changes.
-  const catalogLifecycle = createHostCatalogLifecycle(
-    catalogStore,
-    () => catalogSession.catalog.defaultPipelineId
-  );
-  // Feature FR-R3-003 (T295) — point both leases at storage two extension hosts
-  // can both see, now that the workspace root is known. Until this call the store
-  // arbitrates through a `Memento`-backed adapter, which is correct for one host
-  // and is exactly the assumption finding REL-01 was about. `.schegent/` is
-  // covered by its own `.gitignore` (`*`), and an ownership record carries owner
-  // ids and timestamps only — never a workspace path.
-  // Feature FR-R3-005 (T330) — one expression, read twice: the adapter's
-  // containment root and the registry's directory are the same path by
-  // construction, so they cannot drift into a guard that proves membership of
-  // a tree the registry does not write to.
-  const ownershipDir = path.join(workspaceRoot, '.schegent', 'ownership');
-  store.useOwnershipStorage(createDiskOwnershipFs(ownershipDir), ownershipDir);
-  const lock = new WorkspaceLockManager(store, ownerId);
-  // Feature 092 (T049, FR-031) — the execution half of the lock split. Same
-  // owner id as the workspace lock so a crash strands both together, but a
-  // separate manager over a separate key: holding a queue's execution lease
-  // must never make this window primary.
-  const executionLeases = new ExecutionLeaseManager(store, ownerId);
-  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  disposables.push(statusBarItem);
-  const statusBar = new SchegentStatusBar(statusBarItem);
-  const notifier = new Notifier({
-    showInformationMessage: (m) => vscode.window.showInformationMessage(m),
-    showWarningMessage: (m) => vscode.window.showWarningMessage(m),
-    showErrorMessage: (m) => vscode.window.showErrorMessage(m)
-  });
-  warnIfEnvironmentIsUnrestricted(processEnvironmentPolicy, workspaceRoot, logger);
-  // The extension also activates via the implicit `onView:schegent.sidebar` event,
-  // so `workspaceContains:.specify/` does not imply the directory is there.
-  warnIfScaffoldingMissing(workspaceRoot, logger, notifier);
-
-  const queue = new QueueManager(store, logger);
-  // Feature 083 (US6, FR-041) — the single source of "which Workflows consume a
-  // Pipeline?" for both the Library list (FR-002) and gate 13 (FR-022a). The
-  // callbacks re-read on every call so a Workflow catalog reload, which
-  // reassigns `catalogSession.workflowCatalog`, reaches the next gate decision.
-  const collectAllWorkflowPipelineRefs = createWorkflowPipelineRefReader({
-    listRequests: () => queue.list(),
-    listWorkflowRecords: () => catalogSession.workflowCatalog.records
-  });
-  const auditWriter = new AuditLogWriter(
-    {
-      workspaceRoot,
-      rotationSizeBytes: rotationSizeMB * 1024 * 1024,
-      rotationMaxAgeMs: rotationMaxAgeDays * 24 * 60 * 60 * 1000
-    },
+  // FR-R3-119 — extracted to `src/activation/workspace-settings.ts`.
+  const {
+    cliPath,
+    processEnvironmentPolicy,
+    iterationCap,
+    pollIntervalMinutes,
+    timeoutSeconds,
+    maxDurationSeconds,
+    rotationSizeMB,
+    rotationMaxAgeDays,
+    limits
+  } = resolveWorkspaceSettings({ workspaceRoot, logger });
+  // FR-R3-119 — extracted to `src/activation/workspace-session.ts`.
+  // `getHistoryStore` is a getter because `catalogStore`'s retained-history
+  // enumerator reads it inside a thunk and the store is built below.
+  const session = await openWorkspaceSession({
+    workspaceRoot,
+    ownerId,
     logger,
-    evidenceHealth
-  );
-
-  // Forward all state-migration audit events (v5→v6, v6→v7, v10→v11, v11→v12,
-  // workflow-run repair) through the sanitized audit writer. Helper preserves
-  // the append-error best-effort semantics — never blocks activation.
-  await forwardMigrationAuditEvents(
-    {
-      v6MigrationEvents,
-      v7MigrationEvents,
-      v11MigrationEvents,
-      v12MigrationEvents,
-      runRepairEvents
-    },
+    store,
+    disposables,
+    processEnvironmentPolicy,
+    getHistoryStore: () => historyStore
+  });
+  const { catalogReader, catalogStore, catalogSession, catalogLifecycle, lock,
+    executionLeases, queueStartFailures, statusBar, notifier, queue, startMountProbe } = session;
+  // FR-R3-119 — extracted to `src/activation/evidence-wiring.ts`.
+  // Migration events are passed rather than re-derived so `initialize()` runs once.
+  const {
     auditWriter,
-    logger
-  );
-
-  // Feature FR-R3-006 (T346, T348) — record the interrupted reset this
-  // activation finished, now that there is a writer to record it with.
-  if (completedResetGeneration !== null) {
-    await recordCompletedInterruptedReset(auditWriter, logger, completedResetGeneration);
-  }
-
-  const sessionRetention = new SessionArtifactRetentionService({
+    sessionRetention,
+    collectAllWorkflowPipelineRefs,
+    protectedSessionRunIds,
+    replayEvidenceBacklog,
+    operatorAttribution
+  } = await wireEvidence({
     workspaceRoot,
+    lock,
+    globalStorageRoot: context.globalStorageUri.fsPath,
     logger,
-    audit: auditWriter,
-    policy: () => {
-      const settings = readGeneralSettings(
-        vscode.workspace.getConfiguration(
-          'schegent',
-          vscode.Uri.file(workspaceRoot)
-        ) as unknown as GeneralSettingsConfig
-      );
-      return {
-        maxAgeMs: settings.sessionRetentionMaxAgeDays * 24 * 60 * 60 * 1000,
-        maxBytes: settings.sessionRetentionMaxBytes
-      };
-    }
-  });
-  const protectedSessionRunIds = (): ReadonlySet<string> => {
-    // Feature 093 (T037/T039) — C-4 aggregate. Retention protects the session
-    // directory of *every* Run still in flight, which is what the sweep needed
-    // all along; the ambient read could only ever name one, so under N Runs it
-    // would have left N-1 session groups eligible for deletion while their Runs
-    // were still writing into them.
-    const protectedIds = new Set<string>();
-    for (const run of Object.values(store.getRunMap())) {
-      if (run.status === 'running' || run.status === 'paused') protectedIds.add(run.id);
-    }
-    return protectedIds;
-  };
-  // Sweep once at activation. The service is fail-soft and restricts deletion
-  // to exact inactive run groups below `.schegent/sessions`; `audit.log` lives
-  // outside that root and is never a candidate.
-  await sessionRetention.sweep(protectedSessionRunIds());
-
-  // Feature 058 — one-shot activation guard for multi-root workspaces.
-  // Emits `multi-root.warning-shown` (folder count + canonical folder
-  // NAME only, NEVER fsPath) and a non-blocking informational toast.
-  // The helper is internally one-shot per activation and respects
-  // `schegent.multiRoot.suppressWarning` (window-scope). Window-scope
-  // reads omit the resource URI so VS Code resolves the value from
-  // the active `.code-workspace`.
-  void maybeShowMultiRootWarning({
-    workspaceFolders: vscode.workspace.workspaceFolders,
-    canonicalFolder: getCanonicalWorkspaceRoot(),
-    suppressWarning: vscode.workspace
-      .getConfiguration('schegent')
-      .get<boolean>('multiRoot.suppressWarning', false),
-    auditWriter,
-    notifier
-  });
-  // FR-R3-008 (T377) — the monitor observes activity long before the controller
-  // that persists it exists, so the recorder is late-bound in the same shape as
-  // `telemetryProjector` below. Until the controller is constructed there is no
-  // Run to stamp, and a dropped observation costs at most one coalescing
-  // interval of resolution.
-  let livenessRecorder: { recordRunActivity: (o: RunActivityObservation) => void } | null = null;
-  const monitor = new ClaudeCliMonitor({
-    stallThresholdMs: 90_000,
-    rateLimitMatchers: RATE_LIMIT_MATCHERS,
-    monotonicNow: () => {
-      const perf = (globalThis as { performance?: { now: () => number } }).performance;
-      return perf ? perf.now() : Date.now();
-    },
-    now: () => new Date(),
-    audit: auditWriter,
-    // Feature FR-R3-007 — CLI output goes to the bounded sink, not `audit.log`.
-    // The root is re-read per emit rather than closed over: a host outlives one
-    // folder, and the destination and its containment root are derived together
-    // so the two cannot disagree.
-    transport: createCliTransportSink(
-      () => getCanonicalWorkspaceRoot()?.uri.fsPath ?? null,
-      logger
-    ),
-    activity: {
-      record: (observation) => {
-        livenessRecorder?.recordRunActivity(observation);
-      }
-    },
-    logger
-  });
-  // Sampler is created before its late-bound projector and runner hooks.
-  const telemetryShellOut =
-    process.platform === 'win32' ? windowsShellOut : psShellOut;
-  let telemetryProjector: { updateTelemetry: (snap: TelemetrySnapshot | null) => void } | null =
-    null;
-  const sampler = new TelemetrySamplerImpl({
-    shellOutFn: telemetryShellOut,
-    logger,
-    onSample: (snap) => {
-      telemetryProjector?.updateTelemetry(snap);
-    }
-  });
-  disposables.push({ dispose: () => sampler.dispose() });
-  // Invocation runners are lazy and share one monitor hook.
-  const backendKind = resolveBackendKind(
-    vscode.workspace.getConfiguration('schegent.backend').get<string>('runner'),
-    logger
-  );
-  const runnerRegistry = new BackendRunnerRegistry({
-    // Feature 093 (T046) — forward each event to the Run that produced it.
-    // The hook stays one window-level function; only the addressing changes.
-    monitorHook: (event) => {
-      if (event.kind === 'started') {
-        monitor.onSpawnPid(event.runId, event.pid);
-        if (event.pid !== null) {
-          sampler.start(event.pid, Date.now());
-        }
-      } else if (event.kind === 'stdout-chunk') {
-        monitor.onStdoutChunk(event.runId, event.chunk);
-      } else if (event.kind === 'stderr-chunk') {
-        monitor.onStderrChunk(event.runId, event.chunk);
-      } else if (event.kind === 'exited') {
-        monitor.onExit(event.runId, {
-          exitCode: event.exitCode,
-          signal: event.signal,
-          killed: event.killed,
-          timedOut: event.timedOut
-        });
-        sampler.stop({ signal: event.signal as NodeJS.Signals | null });
-      }
-    },
-    probeTransport: true,
-    logger
-  }, backendKind);
-  // Stage 2 teardown cancels workspace-bound subprocesses.
-  disposables.push({ dispose: () => runnerRegistry.cancelAll() });
-  let capabilityProjector: Pick<StateProjector, 'kick'> | null = null;
-  const backendDiagnostics = createBackendDiagnosticsWiring({
-    workspaceRoot,
-    claudePath: cliPath,
-    environmentPolicy: processEnvironmentPolicy,
-    audit: auditWriter,
-    logger,
-    onDidChange: () => capabilityProjector?.kick()
-  });
-  const backendCapabilities = backendDiagnostics.capabilities;
-  const backendPing = backendDiagnostics.ping;
-  disposables.push(backendDiagnostics);
-  const historyStore = new HistoryStore(store);
-  const promptBuilder = new PromptBuilder();
-  const rawTranscript = new RawTranscriptWriter(
-    workspaceRoot,
-    logger,
-    undefined,
-    evidenceHealth
-  );
-  const verboseAccessor = {
-    isVerboseDiagnosticsEnabled: () =>
-      vscode.workspace
-        .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-        .get<boolean>('logging.verbose', false)
-  };
-  const fatalSignaturesAccessor = {
-    readOperatorAdditions: () =>
-      readFatalSignaturesSetting(
-        vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-      )
-  };
-  const autoCompactOverrideAccessor = createAutoCompactOverrideAccessor(
-    () => vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)),
-    logger
-  );
-  // Feature 093 (T037) — C-3, bind at construction. The accessor is handed a
-  // resolver rather than an ambient thunk: its own method names the Run by id,
-  // and this binding answers that id from the whole record — the C-4 aggregate
-  // SC-012 exempts, not a Run reached without a queue. T041 rebinds the same
-  // resolver per session, where the queue is known and only that queue is read.
-  const phaseBreakpointAccessor = createPhaseBreakpointAccessor(
-    (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
-  );
-  const lastRetryDecisionSink = async (
-    runId: string,
-    decision: import('./state/workflow-run').LastRetryDecision
-  ) => {
-    // Feature 093 (T047) — the decision names its Run, so the write names that
-    // Run's queue. T037's interim binding had no identity to work from and so
-    // declined whenever more than one Run existed, which is the same defect
-    // read defensively: a decision that belonged to a real Run went nowhere.
-    // Run ids are unique across queues, so this resolves to exactly one entry —
-    // the C-4 aggregate read SC-012 exempts, not a Run reached without a queue.
-    const entry = Object.entries(store.getRunMap()).find(([, run]) => run.id === runId);
-    if (entry === undefined) return;
-    const [queueId, current] = entry;
-    await store.setRun(queueId, { ...current, lastRetryDecision: decision });
-  };
-  const phaseRunner = new PhaseRunner(
-    runnerRegistry,
-    promptBuilder,
-    auditWriter,
-    logger,
-    rawTranscript,
-    verboseAccessor,
-    fatalSignaturesAccessor,
-    autoCompactOverrideAccessor,
-    null,
-    phaseBreakpointAccessor,
-    lastRetryDecisionSink
-  );
-  const runSafety = await createRunSafetyWiring({
-    context,
-    workspaceRoot,
     store,
     queue,
-    historyStore,
+    notifier,
+    evidenceHealth,
+    catalogSession,
+    rotationSizeMB,
+    rotationMaxAgeDays,
+    completedResetGeneration,
+    // FR-R5-F09 — spread the full `InitializeResult` bundle so `v10MigrationEvents`
+    // and `v13MigrationEvents` (along with v6, v7, v11, v12, v14, orphaned-run, and
+    // run-repair events) reach `wireEvidence` without per-field omission drift.
+    // Keeping this comment block preserves `wireStage2` within its ratchet window.
+    // Every field of `InitializeResult` matches `EvidenceWiringDeps`.
+    // See `src/state/migration-audit-forwarder.ts`.
+    ...migrationEvents
+  });
+  // FR-R3-119 — extracted to `src/activation/backend-execution-wiring.ts`.
+  // The `bind*` setters replace `let x = null` closures so late bindings are
+  // explicit at both ends.
+  const backend = wireBackendExecution({
+    workspaceRoot,
+    cliPath,
     logger,
+    store,
+    auditWriter,
+    disposables,
+    hostSubscriptions: context.subscriptions,
+    evidenceHealth,
+    processEnvironmentPolicy,
+    memento: getOperationalMementoForStore(store) ?? context.workspaceState,
+    isWorkspaceTrusted,
+    hasPrimacy: () => lock.hasPrimacy(),
+    onFenceLost: (listener) => lock.onFenceLost(listener)
+  });
+  const {
+    monitor,
+    runnerRegistry,
+    historyStore,
+    promptBuilder,
     rawTranscript,
+    backendKind,
+    backendCapabilities,
+    backendPing
+  } = backend;
+  // FR-R3-119 — extracted to `src/activation/phase-execution-wiring.ts`: the
+  // call-time setting accessors, retry-decision sink, phase runner, and run-safety net.
+  const { phaseRunner, runSafety } = await wirePhaseExecution({
+    context,
+    workspaceRoot,
+    logger,
+    store,
+    queue,
+    notifier,
+    auditWriter,
+    historyStore,
+    rawTranscript,
+    promptBuilder,
+    runnerRegistry,
+    evidenceHealth,
     sessionRetention,
     protectedSessionRunIds,
-    evidenceHealth
+    backend
   });
 
   const controller = new SchegentWorkflowController(
@@ -659,21 +430,20 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       cwd: workspaceRoot,
       iterationCap,
       timeoutMs: timeoutSeconds * 1000,
+      maxDurationMs: maxDurationSeconds * 1000,
       inheritProcessEnv: processEnvironmentPolicy.inheritProcessEnv,
       processEnvAllowlist: processEnvironmentPolicy.processEnvAllowlist,
       defaultRunnerKind: backendKind,
-      isAuditEvidenceAvailable: () =>
-        evidenceHealth.getSnapshot().audit.status !== 'unavailable',
-      // Read per phase invocation, never cached at activation, so flipping the
-      // setting mid-run takes effect on the next phase.
-      getForceContinueOnRetryCap: () =>
-        vscode.workspace
-          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-          .get<boolean>('retry.forceContinueOnCap', false) === true,
+      requireProbe: true, // GC-07 follow-up: a lost probe service fails the Run, never skips the probe
+      isAuditEvidenceAvailable: () => evidenceHealth.getSnapshot().audit.status !== 'unavailable',
+      // FR-R3-119 — the never-cached settings reads live together in
+      // `src/activation/uncached-settings-accessors.ts`, which says why they are closures.
+      getForceContinueOnRetryCap: () => readForceContinueOnRetryCap(workspaceRoot),
+      getMaxUnchangedComparisons: () => readMaxUnchangedComparisons(workspaceRoot),
       // Feature 074 — resolve CLI binary path per-runner-kind. Reads the
       // setting per-invocation (never cached at activation) so the operator
       // can change `schegent.agy.path` without restarting VS Code.
-      cliPathResolver: (runnerKind: string) => resolveCliPath(runnerKind, workspaceRoot, cliPath)
+      cliPathResolver: (runnerKind) => resolveCliPath(runnerKind, workspaceRoot, cliPath)
     },
     {
       monitor,
@@ -685,38 +455,23 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
       // so one window holds one set of leases regardless of which seam
       // claimed them.
       executionLease: executionLeases,
+      startFailures: queueStartFailures,
+      // FR-R3-119 — see the note on `getForceContinueOnRetryCap` above; these
+      // three join the two readers there in the same set.
+      getQueueFailurePolicyDefault: () => readQueueFailurePolicyDefault(workspaceRoot),
       ...runSafety,
-      getRetryCap: () => {
-        // Feature 056 Track 4 (FR-023..FR-026) — the configured retry
-        // cap shares the same window as `DELAYED_RETRY_CAP = 5`. Earlier
-        // versions advertised [1, 20] but silently saturated; now the
-        // package contribution, host validator, and accessor agree on
-        // [1, 5] so the operator-facing knob and the persistence
-        // invariant are honest.
-        const cfg = vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot));
-        const value = cfg.get<number>('retry.maxAttempts', 5);
-        return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 5
-          ? value
-          : 5;
-      },
-      getRawTranscriptMode: () => {
-        // Feature 098 (PRIV-02) — both the fallback and the invalid-value
-        // landing spot mirror the manifest default, which moved `always` ->
-        // `errors-only`. A raw transcript is unredacted prompt, source and
-        // model output; an unreadable setting must not resolve to retaining
-        // one for every successful run.
-        const value = vscode.workspace
-          .getConfiguration('schegent', vscode.Uri.file(workspaceRoot))
-          .get<string>('logging.rawTranscriptMode', 'errors-only');
-        return value === 'always' || value === 'off' ? value : 'errors-only';
-      }
+      getRetryCap: () => readRetryCap(workspaceRoot),
+      getRawTranscriptMode: () => readRawTranscriptMode(workspaceRoot)
     }
   );
 
   // FR-R3-008 (T377) — close the late binding opened above the monitor.
-  livenessRecorder = controller;
+  backend.bindLivenessRecorder(controller);
 
   const guardedRunService = new GuardedRunService({
+    // FR-R3-136 (FR-008) — admission is re-decided at the moment of the write,
+    // not at the moment this service was built.
+    isWorkspaceTrusted,
     lock,
     queue,
     controller,
@@ -724,586 +479,178 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
     audit: auditWriter,
     store
   });
+  runSafety.bindGuardedRun(guardedRunService, backendKind, createWorkflowLeafEnd({ logger, queue, store, controller, executionLease: executionLeases, terminalTransitions: runSafety.terminalTransitions, audit: auditWriter }));
 
-  // Feature 065 (T009, T011) — the scheduled-start coordinator owns the
-  // single in-process `setTimeout` driving `idle-pending → running`
-  // transitions. `reArm()` runs once at activation (after the v7 lift)
-  // to re-arm any persisted future schedule or, if the target moment has
-  // already elapsed while the host was offline, fire the FR-012 transition
-  // immediately. `onFire` clears the persisted schedule fields and invokes
-  // the existing auto-drain path so promotion goes through the normal
-  // lock-acquire route.
-  // FR-R3-002 (T282/T285) — the one promotion path a scheduled start takes,
-  // addressed by queue. Both the coordinator's `onFire` and the watchdog's
-  // recovery sweep call this, so there is exactly one place that clears a
-  // queue's schedule fields and exactly one that asks the drain gate to
-  // promote it. The watchdog does not become a second idle-pending gate;
-  // `AutoDrainCoordinator.drainIfIdle(queueId)` stays the only enforcement
-  // site and this hop is how the watchdog *asks* it.
-  const promoteScheduledQueue = async (queueId: string): Promise<void> => {
-    await store.updateQueue(
-      (queueState) => ({
-        queue: {
-          ...queueState,
-          queueLifecycle: 'active-empty',
-          scheduledStartAt: null,
-          scheduledStartSource: null,
-          updatedAt: Date.now()
-        },
-        result: undefined
-      }),
-      queueId
-    );
-    await controller.drainQueuedWork(queueId);
-  };
-
-  const scheduledStartCoordinator = new ScheduledStartCoordinator({
+  // FR-R3-119 — extracted to `src/activation/scheduled-work-wiring.ts`: the three
+  // things that act on a clock. 168 lines for seventeen bindings in and three out.
+  const {
+    watchdog,
+    queueScheduleWatchdog,
+    scheduledStartCoordinator
+  } = wireScheduledWork({
+    workspaceRoot,
+    cliPath,
+    logger,
     store,
+    queue,
+    controller,
     auditWriter,
-    logger,
-    onFire: promoteScheduledQueue,
-    // Feature 065 (T049b) — surface the transient FR-017a / SC-009 hint
-    // on the status bar when a scheduled start fires. 4000 ms is the
-    // mid-point of the 3000..5000 ms window mandated by FR-017a.
-    onFiredObserver: () => {
-      statusBar.showTransient('schegent: scheduled start fired', 4000);
-    },
-    // Feature 065 (T053 / FR-014) — at fire time, probe whether the
-    // workspace lock is held by a competing process. When true, the
-    // coordinator emits `scheduled-start-superseded { lock-unavailable }`
-    // and leaves the armed deadline persisted; `QueueScheduleWatchdog` below
-    // retries it once this window is primary. The operator is NOT prompted.
-    isForeignLockHeld: () => lock.isForeignLockHeld(),
-    // Feature 098 (T058 / FR-031a) — a schedule that comes due with nothing
-    // imported meets the refusal a manual launch meets, and the operator is
-    // told in the same words. Read through `catalogSession.catalog` rather than
-    // captured, so a catalog imported into after the coordinator was built is
-    // the one the gate sees.
-    emptyCatalogGate: {
-      isCatalogEmpty: () => catalogSession.catalog.pipelinesById.size === 0,
-      onRefused: (refusal) => void notifier.warn(refusal.message) // advisory
-    }
-  });
-  try {
-    await scheduledStartCoordinator.reArm();
-  } catch (err) {
-    logger.warn(`scheduled-start re-arm failed: ${(err as Error).message}`);
-  }
-
-  // Feature 065 (T036/T037) — late-wire the pause/resume cancel + audit
-  // hooks so QueueManager.setQueuePausedState can clear an outstanding
-  // schedule and emit the lifecycle audit trail without taking a
-  // construction-time dependency on the coordinator.
-  queue.setScheduledStartCancelHook({
-    cancel: (queueId, reason) => scheduledStartCoordinator.cancel(queueId, reason)
-  });
-  queue.setLifecycleAuditHook({
-    append: (entry) =>
-      auditWriter.append({
-        runId: entry.runId,
-        phase: entry.phase,
-        iteration: entry.iteration,
-        eventType: entry.eventType,
-        outcome: entry.outcome,
-        payload: entry.payload
-      } as never)
-  });
-
-  const watchdog = new CreditWatchdog(
-    runnerRegistry.getOrCreate(),
-    store,
+    notifier,
     statusBar,
-    logger,
-    {
-      pollIntervalMs: pollIntervalMinutes * 60 * 1000,
-      cliPath: resolveCliPath(backendKind, workspaceRoot, cliPath),
-      cwd: workspaceRoot,
-      timeoutMs: 60 * 1000
-    },
-    async () => {
-      // Feature 093 (T037/T039) — C-4 aggregate. Credits returning un-blocks
-      // every Run that was waiting on them; the watchdog is per window because
-      // the credit balance is, but the resume it triggers is per queue.
-      //
-      // Feature 093 (T045) — the window has one timer and N queues can be in
-      // backoff, so the fire is claimed first: elapsed deadlines are consumed
-      // and the next-earliest is re-armed. A queue whose own backoff is still
-      // running is then skipped, because `resumeExisting` does not consult
-      // `pendingRetryAt` and would otherwise resume it early on a sibling's
-      // shorter deadline. A queue with no deadline at all is not in a delayed
-      // retry — that is the credit-poll arm, and it resumes as it always did.
-      controller.claimElapsedDelayedRetries();
-      for (const queueId of Object.keys(store.getRunMap())) {
-        if (controller.hasPendingDelayedRetry(queueId)) continue;
-        await controller.resumeExisting(queueId);
-      }
-    }
-  );
-
-  // Feature 011 — late-inject the watchdog now that both are constructed.
-  // The watchdog's resume callback closes over `controller`, so it has to
-  // be built after the controller; the controller's delayed-retry path
-  // calls `watchdog.pauseAndPoll(...)` so we wire it back here.
-  controller.setWatchdog(watchdog);
-
-  // BUG-006 — late-inject the guarded-run service so the retry handler can
-  // convert a retry-cap-exhausted rate-limit pause into a system-armed
-  // scheduled restore (FR-026). `GuardedRunService` is constructed earlier
-  // in this activate path (search for `new GuardedRunService`).
-  controller.setGuardedRunService(guardedRunService);
-
-  const queueScheduleWatchdog = new QueueScheduleWatchdog({
-    getQueueStates: () => store.getQueueStates(),
-    hasArmedTimer: (queueId) => scheduledStartCoordinator.hasActiveTimer(queueId),
-    promote: promoteScheduledQueue,
-    isPrimary: () => lock.hasPrimacy(),
-    // Feature 098 (FR-031a) — the same gate the coordinator's `emptyCatalogGate`
-    // reads, for the same reason. `refuseOnEmptyCatalog` leaves the queue
-    // `idle-pending` with its deadline persisted and its timer dropped, which is
-    // precisely what this sweep recovers; without the gate here the watchdog
-    // would undo that refusal on its next tick. Read through `catalogSession.catalog`
-    // rather than captured, so an import lifts the hold.
-    isCatalogEmpty: () => catalogSession.catalog.pipelinesById.size === 0,
-    logger,
-    audit: auditWriter
-  });
-  queueScheduleWatchdog.start();
-
-  controller.setRateLimitHandler(async (cause) => {
-    notifier.info(`Schegent: paused (${cause}). Watchdog will poll every ${pollIntervalMinutes} min.`);
-    await watchdog.pauseAndPoll(cause);
+    lock,
+    guardedRunService,
+    runnerRegistry,
+    catalogSession,
+    backendKind,
+    pollIntervalMinutes,
+    processEnvironmentPolicy
   });
 
-  const connectedRuns = createConnectedRunService(store, historyStore);
-  const projector = new StateProjector({
-    store,
-    audit: auditWriter,
+  // FR-R3-136 — the four recovery landmarks moved to `stage2-producers.ts` with
+  // the election gating them; `elect-before-recovering` reads them there now.
+  // FR-R3-119 — extracted to `src/activation/live-picture-wiring.ts`: the state
+  // projector, the connected-run service it reads, and the phase-log tail.
+  //
+  // The first region taken from the coupled core rather than the edges, and the
+  // binding count says so — 22, where every earlier region ran nine to eighteen.
+  // Two of them are `backend`'s setters passed individually rather than the whole
+  // bundle: the projector is built in there, so the calls that bind it belong
+  // there too, and naming the two functions is narrower than handing over an
+  // object to reach them.
+  const { projector, connectedRuns, phaseLogTail, refreshCatalog } = wireLivePicture({
+    context,
+    workspaceRoot,
     ownerId,
     logger,
-    monitor,
-    history: historyStore,
-    getCatalog: () => catalogSession.catalog,
-    defaultRunnerKind: backendKind,
-    // Re-read scalar settings on each projection.
-    getGeneralSettings: () =>
-      readGeneralSettings(
-        vscode.workspace.getConfiguration('schegent', vscode.Uri.file(workspaceRoot)) as unknown as GeneralSettingsConfig
-      ),
-    getSessionArtifacts: () => sessionRetention.getUsage(),
-    getEvidenceHealth: () => evidenceHealth.getSnapshot(),
-    getPhaseCatalog: () => catalogSession.phaseCatalog,
-    // Feature 082 — authoritative Pipeline catalog for the Library and Builder.
-    getPipelineCatalog: () => catalogSession.pipelineCatalog,
-    // Feature 082 (FR-002) — the Workflows each Pipeline still resolves for,
-    // so the Library can show what a change would affect. Feature 100 (T513b)
-    // left this as the collector's only consumer: the Pipeline removal gate it
-    // used to share went with the whole-array save, and the deactivate blocker
-    // that replaced it reads active stored definitions instead (FR-025b).
-    getWorkflowPipelineRefs: collectAllWorkflowPipelineRefs,
-    // Feature 083 — authoritative Workflow catalog (the definition sense) for
-    // the Library and Builder. Re-resolved with the Pipeline catalog it was
-    // validated against, so a Pipeline catalog change refreshes both.
-    getWorkflowCatalog: () => catalogSession.workflowCatalog,
-    // Feature 101 (FR-005, FR-007) — the lifecycle facts behind those three
-    // resolutions. Rebuilt on every compose from the session's current snapshot,
-    // which is the same read the resolutions came from, so a row and its badge
-    // cannot describe two different states of the store.
-    getBuilderLifecycle: () => buildBuilderLifecycleByKind(catalogSession.definitions),
-    // Feature 063 — surface `schegent.ui.confirmations.enable` into the
-    // snapshot so the webview's `useConfirm` helper can short-circuit
-    // without an IPC round-trip. Re-read on every projection; the
-    // `onDidChangeConfiguration` listener below already kicks the
-    // projector for any `schegent.*` change.
-    getConfirmationsEnabled: () => isConfirmationsEnabled(),
-    getDebugLogTail: () => webviewLogSink.getEntries(),
-    getAvailableModels: () => backendCapabilities.getAvailableModels(),
-    getAvailableBackends: () => backendCapabilities.getAvailableBackends(),
-    getBackendPingState: () => backendPing.getState(),
-    getConnectedRuns: () => connectedRuns.listProjections(),
-    // Feature 103 (T031, FR-003) — both callers and both cadences: see `resolveRunOrigin`.
-    getRunOrigin: (taskId) => resolveRunOrigin(store.getConnectedRuns(), taskId)
-  });
-  capabilityProjector = projector;
-  projector.start();
-  // Background-only: activation is not blocked on installed CLI processes.
-  void backendCapabilities.scan();
-  disposables.push(evidenceHealth.subscribe((health) => {
-    statusBar.setEvidenceHealth(health.overall);
-    projector.kick();
-  }));
-  webviewLogSink.setOnAppend(() => projector.kick());
-  // Feature 033 — bind the deferred telemetry projector reference now that
-  // the projector exists. The sampler's `onSample` closure consults this
-  // pointer on every emission (and is a no-op until binding).
-  telemetryProjector = projector;
-
-  // Feature 059 (US1, T012) — wire the per-capability trust resolver. The
-  // resolver re-reads `workspace.isTrusted` + the three `schegent.trust.*`
-  // settings on every call (no cache); its only stateful surface is a
-  // pair of disposables that fire `projector.kick()` when the operator
-  // grants workspace trust or edits any of the three trust keys.
-  // Contract: specs/059-fine-grained-trust-scopes/contracts/
-  // capability-trust-resolver-contract.md.
-  initCapabilityTrustResolver(context, () => projector.kick());
-
-  /**
-   * Re-read the store, re-resolve, and tell the two consumers that cache it.
-   *
-   * Feature 099 (T493b, FR-054) — wired in as `refreshCatalog` on the save router;
-   * `CatalogSession.refresh` carries why a store write is what triggers it.
-   */
-  async function refreshCatalog(): Promise<void> {
-    await catalogSession.refresh();
-    controller.setCatalog(catalogSession.catalog);
-    projector.kick();
-  }
-
-  if (typeof vscode.workspace.onDidChangeConfiguration === 'function') {
-    disposables.push(
-      vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('schegent.watchdog.pollIntervalMinutes')) {
-          const updatedConfig = vscode.workspace.getConfiguration(
-            'schegent',
-            vscode.Uri.file(workspaceRoot)
-          );
-          const updatedMinutes = updatedConfig.get<number>('watchdog.pollIntervalMinutes', 30);
-          watchdog.setPollInterval(updatedMinutes * 60 * 1000, 'config-change');
-        }
-        if (
-          event.affectsConfiguration('schegent.logging.sessionRetentionMaxAgeDays') ||
-          event.affectsConfiguration('schegent.logging.sessionRetentionMaxBytes')
-        ) {
-          void sessionRetention.sweep(protectedSessionRunIds()).then(() => projector.kick());
-        }
-        // Feature 099 (T493b, FR-054) — the three retired definition settings
-        // keys are gone, so the three arms that reloaded on
-        // them are gone with them; a definition change now arrives as a store
-        // write and re-resolves through `refreshCatalog` below. The two survivors
-        // are still configuration and still reload here.
-        if (
-          event.affectsConfiguration('schegent.defaultPipelineId') ||
-          event.affectsConfiguration('schegent.models') // 096 — reload models
-        ) {
-          void refreshCatalog();
-        }
-        if (
-          event.affectsConfiguration('schegent.cli.path') ||
-          event.affectsConfiguration('schegent.codex.path') ||
-          event.affectsConfiguration('schegent.agy.path') ||
-          event.affectsConfiguration('schegent.backend.probeTimeoutSeconds')
-        ) {
-          void backendCapabilities.scan();
-        }
-        // Feature 011 — any schegent.* change triggers a re-projection
-        // so the Settings surface reflects the new value within FR-017.
-        if (event.affectsConfiguration('schegent')) {
-          projector.kick();
-        }
-      })
-    );
-  }
-
-  // Feature 020 — phase-log tail wiring (T049). Registry, task-leave
-  // subscription and snapshot-validating adapter all live in the wiring module;
-  // the reasoning for each is recorded there.
-  const phaseLogTail = createPhaseLogTailWiring({
-    workspaceRoot,
-    projector,
+    isWorkspaceTrusted,
+    store,
     queue,
+    controller,
+    historyStore,
     auditWriter,
-    logger
+    statusBar,
+    monitor,
+    watchdog,
+    catalogSession,
+    evidenceHealth,
+    sessionRetention,
+    webviewLogSink,
+    disposables,
+    backendKind,
+    backendCapabilities,
+    backendPing,
+    backendQualification: backend.backendQualification,
+    protectedSessionRunIds,
+    queueStartFailures,
+    collectAllWorkflowPipelineRefs,
+    effectiveLimitSources: { limits, spendTrust: runSafety.spendWatcher.trustFor },
+    bindCapabilityProjector: backend.bindCapabilityProjector,
+    bindTelemetryProjector: backend.bindTelemetryProjector,
+    transportUsage: () => backend.transportRouter.usage()
   });
-  disposables.push(phaseLogTail);
 
   // Feature 073 — constructed once per activation so its lifetime matches
   // "session" per contracts/metrics-view-opened-event.md.
   const metricsViewOpenedState = { emitted: false };
 
-  const sidebarRouter = new MessageRouter({
-    executeCommand: (id, ...args) => vscode.commands.executeCommand(id, ...args),
-    queueRemover: queue,
-    queueOps: queue,
-    phaseOps: controller,
-    // Feature FR-R3-003 (T300) — the fenced record, not the mirror. `Memento` is
-    // per extension host, so `!isForeignLockHeld()` could only ever read a lock
-    // this window wrote: a reclaimed window kept answering `true` and kept
-    // admitting mutating commands. `hasPrimacy()` carries the fencing token
-    // issued at acquisition and fails closed.
-    isPrimary: () => lock.hasPrimacy(),
-    // Workspace-trust gate (defense-in-depth alongside the primary-host
-    // gate). Mutating IPC is rejected when VS Code reports the workspace
-    // is not trusted, blocking malicious workspaces from triggering
-    // `CMD_SAVE_*` even if the operator clicks through the sidebar.
-    isTrusted: () => vscode.workspace.isTrusted,
-    notifyWarning: (message) => void notifier.warn(`Schegent: ${message}.`), // advisory
+  // FR-R3-119 — extracted to `src/activation/sidebar-router-wiring.ts`. This was
+  // the largest independent span in `wireStage2`: 240 lines constructing one
+  // collaborator. `context`, `output` and `config` are not passed because the
+  // router reads none of them — they were in scope, which is not the same thing.
+  const sidebarRouter = createSidebarRouter({
     logger,
-    audit: auditWriter,
-    // Feature 099 (T494, FR-056) — the Model Catalog is the only
-    // configuration-backed catalog left; `createCatalogSettingsWriter` carries
-    // why the scope argument this port used to take is gone.
-    updateConfig: createCatalogSettingsWriter(workspaceRoot),
-    // Feature 099 (T493d, FR-042a, FR-051) — the write side of the store, or
-    // `null` in an untrusted workspace, where a save has nowhere legitimate to
-    // land and is refused by name rather than silently doing nothing.
-    catalogStore,
-    // Feature 100 (T509c, FR-047) — the lifecycle service, `null` on exactly the
-    // condition the store is. Separate from `catalogStore` because building it
-    // needs a configuration read the handlers must not perform themselves.
-    catalogLifecycle,
-    // Feature 099 (T493b, T493d, FR-042a, FR-044) — served from the snapshot this
-    // window last read, not from a fresh read per call: the store's own
-    // compare-and-swap is the authoritative gate (FR-030a), so these three feed the
-    // early-out that spares an operator a pointless write, and a save that races
-    // past them is still refused `stale` by the store itself. Same snapshot the
-    // catalogs resolved from, so a gate and the Library it defends cannot disagree.
-    ...storedLayerReaders(catalogSession),
-    // Feature 099 (T493b, FR-054) — the one signal that a definition changed. No
-    // configuration event announces a store write, so the window that wrote is the
-    // window that says so.
-    refreshCatalog,
-    // Feature 096 — Model Catalog's one writable layer is 'workspace' (research.md
-    // Decision 6), so this reads that scope only, fresh per call, same reason as
-    // readWorkflowConfig above — not catalogSession.catalog.models, which is the merged
-    // user+workspace view and would let the revision gate react to a layer this
-    // command never writes.
-    readModelsConfig: () => coerceModels(catalogReader.getModels('workspace')),
-    getCatalog: () => catalogSession.catalog,
-    // Feature 102 (T038, FR-022) — the version behind the line above, read
-    // through the same session so a freeze cannot pair one window's body with
-    // another read's version. `'pipeline'` is named here and only here: this
-    // seam starts Pipelines, and a Workflow's own version is a question it has
-    // no way to ask (FR-026).
-    resolveCatalogVersion: (pipelineId) => catalogSession.activeVersion('pipeline', pipelineId),
-    guardedRun: guardedRunService,
-    defaultRunnerKind: backendKind,
-    // Feature 091 (T014, FR-010/FR-011) — the supply the command router was
-    // declared to take and never received, so every `prior-output` reference
-    // refused as `prior-run-not-found` regardless of what the Run recorded.
-    //
-    // `outputsFor` keeps the two FR-011 answers apart: `null` for a Run this
-    // host cannot find, `[]` for a Run it found that recorded nothing. The
-    // distinction lives in the store rather than in this expression precisely
-    // because a `?.`-and-`?? null` written here is one edit away from
-    // collapsing it.
-    readPriorRunOutputs: (runId) => historyStore.outputsFor(runId),
-    connectedRuns,
-    // Feature 011 — typed transactional writer used by CMD_SAVE_GENERAL_SETTINGS.
-    // Feature 019 — on success that touches a runtime-log key, clear
-    // the sink's suppression for both the previous and the new
-    // resolved paths so an operator's correction unlocks the next emit
-    // without extension reload.
-    writeGeneralSettings: async (updates) => {
-      const config = vscode.workspace.getConfiguration(
-        'schegent',
-        vscode.Uri.file(workspaceRoot)
-      );
-      const previousPath = runtimeLogAccessor.read()?.path ?? null;
-      return writeGeneralSettings(
-        config as unknown as GeneralSettingsConfig,
-        updates,
-        {
-          onRuntimeLogSettingChanged: () => {
-            // Feature 056 Track 9 — clear ALL tracked paths so a save
-            // of `logging.runtimeLogMaxBytes` /
-            // `logging.runtimeLogMaxGenerations` also drops the lazy
-            // `bytesOnDisk` seed for every path; the next emit
-            // re-stats the file under the new policy. Safe because
-            // the only state we drop is recoverable on the next emit.
-            runtimeLogSink.clearAllSuppression();
-            // Belt-and-suspenders: clear the previous path even if the
-            // save changed only the path key. clearAllSuppression()
-            // above already cleared everything, but the explicit calls
-            // are kept for clarity should the all-clear be narrowed
-            // again in a future refactor.
-            runtimeLogSink.clearSuppression(previousPath);
-            const nextPath = runtimeLogAccessor.read()?.path ?? null;
-            if (nextPath && nextPath !== previousPath) {
-              runtimeLogSink.clearSuppression(nextPath);
-            }
-          }
-        }
-      );
-    },
-    // Feature 063 — `CMD_SET_CONFIRM_SUPPRESSION` persistence. The
-    // handler validates the action key against `KNOWN_ACTION_KEYS`
-    // before calling this; we just write through to the memento and
-    // let the projector pick up the change on its next push.
-    setConfirmSuppression: async (actionKey, suppressed) => {
-      await store.setConfirmSuppression(actionKey, suppressed);
-      projector.kick();
-    },
-    dismissMigrationNotice: async () => {
-      // FR-R3-002 (T280) — named explicitly. `composeWorkflowSnapshot` reads
-      // `migrationNotice` off the Default queue, so the dismissal has to write
-      // the entry the notice is rendered from or the banner never clears.
-      const changed = await store.updateQueue((cur) => ({
-        queue: cur.migrationNotice === 'pending'
-          ? { ...cur, migrationNotice: 'dismissed', updatedAt: Date.now() }
-          : cur,
-        result: cur.migrationNotice === 'pending'
-      }), DEFAULT_QUEUE_ID);
-      if (!changed) return;
-      projector.kick();
-    },
-    // Feature 020 — phase-log read adapter. Resolves the selection
-    // tuple against the projector snapshot, threads sanitize +
-    // verbose-setting reader, returns the typed wire-format response.
-    // Sanitization happens once at the IPC boundary inside
-    // `readIterationManifest`; on-disk bytes are never altered (010
-    // T10). Caps default to 4 KiB per field / 500 entries (T029).
-    phaseLogService: createPhaseLogService({
-      workspaceRoot,
-      sanitize: (s) => logger.sanitize(s),
-      readVerboseSetting: () =>
-        vscode.workspace
-          .getConfiguration('schegent.logging', vscode.Uri.file(workspaceRoot))
-          .get<boolean>('verbose') === true,
-      getSnapshot: () => projector.getCurrentSnapshot(),
-      // Feature 020 BUG-001 — resolve FeatureRequest.id (the task id
-      // visible in the webview) to FeatureRequest.runId (the UUID that
-      // names the .schegent/sessions/<runId>/ directory on disk). These
-      // are distinct UUIDs: the former is generated at enqueue time,
-      // the latter at workflow-start time (WorkflowRun.id).
-      resolveRunId: (taskId) => queue.findById(taskId)?.runId ?? null
-    }),
-    // Feature 020 — phase-log tail adapter (T049). Validates the
-    // selection against the current snapshot (`not-in-flight` if the
-    // task or phase has moved on) before delegating to the registry.
-    phaseLogTailService: phaseLogTail.phaseLogTailService,
-    // Feature 084 — Phase export adapter (FR-018, FR-019, research R3).
-    // Mirrors `src/commands/export-audit.ts`: the host owns the dialog and the
-    // write, so no location crosses the IPC boundary in either direction. The
-    // dialog seeds its name field from the workspace root and the suggested
-    // name; where the operator actually saves is never returned, logged, or
-    // audited. Overwrite consent is the dialog's own (FR-018).
-    saveProcessYamlDocument: async ({ suggestedFileName, text }) => {
-      try {
-        const target = await vscode.window.showSaveDialog({
-          defaultUri: vscode.Uri.file(path.join(workspaceRoot, suggestedFileName)),
-          filters: { YAML: ['yaml', 'yml'] },
-          saveLabel: 'Export document'
-        });
-        if (!target) return { outcome: 'canceled' as const };
-        await vscode.workspace.fs.writeFile(target, Buffer.from(text, 'utf8'));
-        return { outcome: 'saved' as const };
-      } catch (err) {
-        logger.warn(
-          `extension: phase export write failed: ${logger.sanitize(
-            (err as Error).message ?? 'unknown error'
-          )}`
-        );
-        return { outcome: 'failed' as const, message: 'Could not write the document.' };
-      }
-    },
-    // Feature 084 — Phase import preflight adapter (FR-020, FR-020a, R3).
-    // The host owns the dialog and the read; the webview supplies no location
-    // and is told none. Reads the chosen file exactly once and returns the raw
-    // bytes: decoding is the parser's job, because invalid UTF-8 and a leading
-    // byte-order mark are refusals this format states rather than repairs.
-    // Nothing is locked, watched, copied, or retained past this call (FR-031).
-    openProcessYamlDocument: async () => {
-      try {
-        const picked = await vscode.window.showOpenDialog({
-          canSelectMany: false,
-          defaultUri: vscode.Uri.file(workspaceRoot),
-          filters: { YAML: ['yaml', 'yml'] },
-          openLabel: 'Inspect document'
-        });
-        const target = picked?.[0];
-        if (!target) return { outcome: 'canceled' as const };
-        const bytes = await vscode.workspace.fs.readFile(target);
-        return { outcome: 'read' as const, bytes };
-      } catch (err) {
-        logger.warn(
-          `extension: phase import read failed: ${logger.sanitize(
-            (err as Error).message ?? 'unknown error'
-          )}`
-        );
-        return { outcome: 'failed' as const, message: 'Could not read the document.' };
-      }
-    },
-    // Feature 073 — metrics read adapter. Full-file scan of
-    // `.schegent/audit.log` on every CMD_READ_METRICS call (T009/T010).
-    // Workspace root reaches the reader only via this closure — the
-    // handler never resolves it directly.
-    metricsService: {
-      read: (req) => readMetrics(workspaceRoot, req, logger)
-    },
-    // FR-R3-010 — history evidence drill-down. Same shape as the metrics
-    // adapter above and for the same reason: the workspace root reaches the
-    // corpus reader through this closure and nowhere else.
-    historyEvidenceService: new HistoryEvidenceService({
-      historyStore,
-      resolver: new AuditPointerResolver({ workspaceRoot, logger }),
-      evidenceHealth
-    }),
-    // Feature 073 — existing session-scoped correlation id, reused (not
-    // newly minted) for the metrics-view-opened audit payload
-    // (contracts/metrics-view-opened-event.md).
-    sessionId: ownerId,
+    ownerId,
+    workspaceRoot,
+    store,
+    queue,
+    controller,
+    terminalTransitions: runSafety.terminalTransitions,
+    lock,
+    executionLease: executionLeases,
+    notifier,
+    auditWriter,
+    historyStore,
+    guardedRunService,
+    backendKind,
     metricsViewOpenedState,
-    backendPingService: backendPing
+    projector,
+    catalogStore,
+    catalogReader,
+    catalogSession,
+    catalogLifecycle,
+    connectedRuns,
+    backendPing,
+    evidenceHealth,
+    phaseLogTail,
+    runtimeLogSink,
+    runtimeLogAccessor,
+    refreshCatalog, registerDisposable: (disposable) => disposables.push(disposable) // GC-03: Stage 2's own
   });
 
   const uiWiring = registerStage2Ui({
     extensionRoot: context.extensionUri.fsPath,
+    globalStorageRoot: context.globalStorageUri.fsPath,
     workspaceRoot,
-    projector,
+    projector, refreshCatalog,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     guardedRunService,
     store,
     auditWriter,
+    operatorAttribution,
     notifier,
     logger,
-    getCatalog: () => catalogSession.catalog,
     controller,
     queue,
     lock,
+    executionLease: executionLeases, // FR-R3-150 — direct per-queue lease release (D5).
     historyStore,
-    getWorkspaceFolders: () => vscode.workspace.workspaceFolders
+    runtimeLogAccessor, // FR-R4-F04 (T171): the diagnostics bundle reads the runtime log
+    getWorkspaceFolders: () => vscode.workspace.workspaceFolders,
+    queueStartFailures,
+    transportRouter: backend.transportRouter,
+    secrets: context.secrets,
+    scannerConsent: backend.scannerConsent
   });
   phaseLogTail.bindDashboardBridge(uiWiring.dashboardBridge);
   output.log(`activated; cli=${cliPath}, cap=${iterationCap}, pollIntervalMin=${pollIntervalMinutes}`);
 
-  await watchdog.reattachOnActivation();
+  // FR-R3-103 (FR-046) — a lost fence terminates this window's children.
+  disposables.push(lock.onFenceLost(() => controller.abortOnSupersession())); // GC-03: disposed with Stage 2
 
-  // Feature 011 FR-013 — restart handshake. If the persisted run has a
-  // pending delayed-retry deadline, re-arm the watchdog (or resume
-  // immediately if it has already elapsed).
-  await controller.resumeExistingFromActivation();
-
-  // Stage 2 always reclaims the workspace lock if the prior holder is gone or the lock is
-  // stale. This decouples primary-window status from run-resumption: even when no run is
-  // persisted, this window must be primary so the sidebar mounts as enabled. See plan.md
-  // "Activation Lifecycle" rule and FR-041(c).
-  const lockResult = await lock.tryAcquire();
-  // Feature 093 (T037/T039) — C-4 aggregate. A window that crashed mid-
-  // concurrency persisted several Runs, and each is re-armed on the queue that
-  // owns it. With one entry this is the previous behavior exactly.
-  if (lockResult.acquired) {
-    for (const [queueId, persistedRun] of Object.entries(store.getRunMap())) {
-      if (persistedRun.status !== 'running') continue;
-      logger.info(`activation: resuming run ${persistedRun.id} at ${persistedRun.currentPhase}`);
-      void controller.resumeExisting(queueId);
-    }
-  }
+  // FR-R3-136 (FR-009…FR-012) — THE TRUST GATE. Everything above constructs or
+  // subscribes and writes nothing, which is why the fence line stays on this side;
+  // `stage2-producers.ts` carries why the split falls on the act, not construction.
+  const pauseQueues = () => pauseQueuesAtLifecycleBoundary({ store, queue, lock, scheduledStartCoordinator, logger });
+  const producers = createStage2Producers({
+    isWorkspaceTrusted,
+    logger,
+    store,
+    auditWriter,
+    lock,
+    controller,
+    operatorAttribution,
+    watchdog, scheduledStartCoordinator,
+    replayEvidenceBacklog,
+    runSafety,
+    backendCapabilities,
+    startMountProbe, refreshCatalog,
+    pauseQueuesOnStartup: pauseQueues
+  });
+  disposables.push(wirePrimacyGain({ logger, lock, producers }));
+  await producers.run();
+  disposables.push(wireEvidenceMaintenance({ logger, isWorkspaceTrusted, lock, protectedSessionRunIds, transportRouter: backend.transportRouter, sessionRetention })); // FR-R4-F04 (FR-031, G7): after the election; why in that module.
 
   const dispose = async (): Promise<void> => {
-    uiWiring.dispose();
-    projector.dispose();
-    watchdog.dispose();
-    queueScheduleWatchdog.dispose();
-    statusBar.dispose();
-    for (const d of disposables) {
-      try {
-        d.dispose();
-      } catch {
-        // ignore disposal errors
-      }
-    }
-    // Feature 092 (T049) — drop every queue lease this window holds before the
-    // workspace lock, so a window that is shutting down never leaves a queue
-    // claimed while advertising itself as no longer primary.
+    controller.closeAutoDrain(); // FR-R3-205 first, then FR-R3-137 (T1530c); why in each callee.
+    await closeStage2Resources({
+      sync: [uiWiring, projector, watchdog, queueScheduleWatchdog, statusBar],
+      disposables,
+      transport: backend.transport,
+      teardown: backend.teardown, pauseQueues // FR-R4-F06 (S5) + BUG-001 (FR-015): teardown, then pause before releases
+    });
+    // Feature 092 (T049) — drop every queue lease this window holds before the workspace
+    // lock, so a shutting-down window never leaves a queue claimed while advertising itself
+    // as no longer primary. Both releases stay in THIS file: AGENTS.md rule 4 (`dispose()` here).
     await executionLeases.releaseAll();
     await lock.release();
   };
@@ -1312,20 +659,23 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   // stage-2 half. `dispose()` above is the rest of it.
   const resetSupport: ResetStageSupport = createResetStageSupport({
     controller,
+    lock,
     auditWriter,
     logger
   });
 
   return {
-    stage2: { disposables, reset: resetSupport, dispose },
+    stage2: { disposables, reset: resetSupport, producers, dispose },
     projector,
     dispatch: (cmd, ack) => sidebarRouter.dispatch(cmd, ack),
     output
   };
 }
 
-export function deactivate(): void {
-  // disposables registered to context.subscriptions will run automatically.
+export async function deactivate(): Promise<void> {
+  // FR-R3-137 (FR-010) — awaited, which is the whole point: VS Code awaits a
+  // `Thenable` returned from `deactivate`, and does not await a `Disposable`.
+  await hostTeardown?.();
   // Feature 058 — release the workspace-folder-picker subscription and clear
   // its memoized canonical folder so a fresh activation rebuilds from a clean
   // state. Idempotent and never throws.

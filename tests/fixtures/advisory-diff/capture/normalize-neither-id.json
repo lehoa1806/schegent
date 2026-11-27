@@ -1,0 +1,82 @@
+{
+  "declares": {
+    "description": "An advisory with neither a GHSA id nor an integer source",
+    "rejected": {
+      "reason": "malformed"
+    }
+  },
+  "rootManifest": {
+    "dependencies": {
+      "lib-h": "^1.0.0"
+    }
+  },
+  "lockfile": {
+    "name": "fixture-tree",
+    "version": "1.0.0",
+    "lockfileVersion": 3,
+    "requires": true,
+    "packages": {
+      "": {
+        "name": "fixture-tree",
+        "version": "1.0.0",
+        "dependencies": {
+          "lib-h": "^1.0.0"
+        }
+      },
+      "node_modules/lib-h": {
+        "version": "1.0.0",
+        "resolved": "https://registry.example.test/pkg/-/pkg-1.0.0.tgz"
+      }
+    }
+  },
+  "report": {
+    "auditReportVersion": 2,
+    "vulnerabilities": {
+      "lib-h": {
+        "name": "lib-h",
+        "severity": "high",
+        "isDirect": true,
+        "via": [
+          {
+            "source": "not-a-number",
+            "name": "lib-h",
+            "dependency": "lib-h",
+            "title": "Fixture advisory not-a-number",
+            "url": "https://example.test/advisories/not-a-number",
+            "severity": "high",
+            "cwe": [],
+            "cvss": {
+              "score": 0,
+              "vectorString": null
+            },
+            "range": "<1.0.0"
+          }
+        ],
+        "effects": [],
+        "range": "*",
+        "nodes": [
+          "node_modules/lib-h"
+        ],
+        "fixAvailable": false
+      }
+    },
+    "metadata": {
+      "vulnerabilities": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 1,
+        "critical": 0,
+        "total": 1
+      },
+      "dependencies": {
+        "prod": 0,
+        "dev": 0,
+        "optional": 0,
+        "peer": 0,
+        "peerOptional": 0,
+        "total": 0
+      }
+    }
+  }
+}

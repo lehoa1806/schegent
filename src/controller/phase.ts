@@ -1,5 +1,17 @@
 import { validate as parseRetryCondition, evaluate as evalRetryCondition } from '../lib/retry-condition';
-import { PHASE_RETRY_CONDITION_MAX_LEN } from '../contracts/process-definitions';
+import {
+  PHASE_RETRY_CONDITION_MAX_LEN,
+  type RetryCapOutcome
+} from '../contracts/process-definitions';
+import type { DegradedPhaseEntry } from '../contracts/snapshot-projections';
+import { CAP_EXHAUSTED_CAUSE } from '../audit/audit-payload';
+import { stopsOnUnchangedMetrics } from '../contracts/unchanged-comparison-bound';
+import {
+  EXECUTION_DECISION_OBSERVATION_VERSION,
+  type ExecutionDecisionExitReason,
+  type ExecutionDecisionObservation,
+  type ExecutionDecisionSettingSources
+} from '../contracts/execution-decision-observation';
 
 /**
  * Prefix on the system-log line emitted when a phase is forced past its
@@ -10,6 +22,39 @@ import { PHASE_RETRY_CONDITION_MAX_LEN } from '../contracts/process-definitions'
  * Bracketed-lowercase to match the existing `[constitution]` convention.
  */
 export const FORCE_CONTINUE_NOTIFY_TAG = '[notify] forced-continue';
+
+/**
+ * FR-R3-157 — the same line for `'continue-degraded'`, under a tag of its own.
+ *
+ * A DISTINCT tag, not a suffix on the one above, because the two outcomes differ
+ * in exactly the thing a log reader is looking for: whether a durable record was
+ * written. Sharing the tag would make `continue` and `continue-degraded`
+ * indistinguishable to anyone grepping the log — and "a degraded run is never
+ * indistinguishable from a clean one" is the whole point of the third outcome
+ * (FR-006). It also keeps `FORCE_CONTINUE_NOTIFY_TAG`'s meaning exactly what it
+ * was, which contract C2.4 requires.
+ */
+export const DEGRADED_CONTINUE_NOTIFY_TAG = '[notify] continued-degraded';
+
+/**
+ * FR-R3-199 — the halt cause when a required last phase ends `issues_remain`.
+ * Exported because the sequencer reads it: the bugfix pipeline ends on a verify
+ * phase, whose pause keeps precedence over this halt.
+ */
+export const LAST_PHASE_ISSUES_REMAIN_CAUSE = 'last_phase_issues_remain';
+
+/**
+ * FR-R3-198 — the halt cause when a phase's turn is still unfinished after the
+ * dispatch's immediate resumes. Exported because the sequencer gives it its
+ * message.
+ */
+export const INCOMPLETE_TURN_UNRESOLVED_CAUSE = 'incomplete_turn_unresolved';
+
+/**
+ * FR-R4-F17 — the halt cause when a looping phase's judged metrics were unchanged for the configured
+ * number of comparisons, below the cap. Exported because the sequencer gives it its message.
+ */
+export const JUDGED_METRICS_UNCHANGED_CAUSE = 'judged_metrics_unchanged';
 
 // Feature 098 (T038, FR-019, FR-021) — this module's second copy of the
 // built-in Phase ids is gone, along with the `BuiltInPhaseId` type derived from
@@ -38,7 +83,10 @@ export type PhaseOutcome =
   // recorded `PhaseResult` carries `exitCode: null` and synthesized
   // stdout/stderr summaries. Transition logic treats this as a halt to
   // paused with cause `'breakpoint'`.
-  | 'paused-at-breakpoint';
+  | 'paused-at-breakpoint'
+  // FR-R3-198 — the turn ended unfinished, and the dispatch's immediate
+  // resumes did not finish it. Transition logic halts the Run as failed.
+  | 'incomplete_turn';
 
 export interface PipelineLike {
   /**
@@ -50,25 +98,22 @@ export interface PipelineLike {
   readonly phases: ReadonlyArray<{ readonly id: string; readonly retryCondition?: string }>;
 }
 
+/**
+ * What `transition()` needs to know about a Phase — and, since FR-R3-157,
+ * deliberately nothing about what it does at the retry cap.
+ *
+ * The cap outcome used to be read from a boolean on this interface. It is now
+ * resolved before the call, by `contracts/retry-cap-outcome.ts`, and arrives as
+ * `TransitionInput.capOutcome`. Removing the field from here is the substance of
+ * that rule rather than a tidy-up: while the field remained, a later edit could
+ * consult it "just this once" beside the resolved value, and the two would agree
+ * on every input except a Phase carrying both authored forms.
+ * `tests/lint/retry-cap-resolution-site.test.ts` asserts this file names it nowhere.
+ */
 export interface PhaseDefLike {
   readonly id: string;
   readonly retryCondition?: string;
   readonly isRequired?: boolean;
-  /**
-   * When the `retryCondition` is STILL truthy at the iteration cap, advance
-   * with a `[notify]` warning instead of halting `failed`.
-   *
-   * Scoped deliberately to the cap. A phase whose condition can never go
-   * falsy — one gated on a step no headless run can perform — otherwise
-   * burns every iteration and then fails the whole task, and the only ways
-   * out were to leave it failing or to record work that did not happen.
-   *
-   * This is NOT a way past a `failed` or `timeout` outcome: those are
-   * terminal and never reach the retryCondition branch at all. Forcing past
-   * a fatal-signature match is a different decision on different evidence,
-   * and `isRequired: false` is the field that already makes it.
-   */
-  readonly forceContinueOnRetryCap?: boolean;
 }
 
 export type TransitionInput = {
@@ -82,15 +127,59 @@ export type TransitionInput = {
   // SCHEGENT AUDIT LOG metrics map. Optional; absent for legacy callers.
   metrics?: Readonly<Record<string, number>>;
   /**
-   * Workspace-level default for `PhaseDefLike.forceContinueOnRetryCap`,
-   * read fresh per phase invocation from `schegent.retry.forceContinueOnCap`.
-   * The phase field overrides it; absent on both sides means `false`.
+   * FR-R3-157 (contract C2) — what this Phase does if `retryCondition` is still
+   * truthy at the cap, ALREADY RESOLVED by `contracts/retry-cap-outcome.ts` from
+   * the Phase's own fields and the workspace default.
+   *
+   * It arrives resolved rather than as the ingredients because resolution has one
+   * home (FR-007), and an input this branch could re-derive is an invitation to
+   * re-derive it slightly differently. The caller that owns both ingredients —
+   * `phase-sequencer.ts` — is the one that calls the resolver.
+   *
+   * `undefined` means `'fail'`, which is not a fourth state: it is what a caller
+   * that passes nothing has always meant, and what a workspace that configured
+   * none of this has always done.
    */
-  forceContinueOnRetryCapDefault?: boolean;
+  capOutcome?: RetryCapOutcome;
+  /**
+   * Feature 194 (FR-010, contract C3.3) — the consecutive-unchanged-iterations
+   * count computed once by `PhaseRetryEvaluator` and surfaced on
+   * `PhaseRunOutput`. Threaded here so both cap warnings render the SAME
+   * number from the ONE computation, rather than a second one that could
+   * disagree with it. `undefined` when no count was computed (rule does not
+   * apply, or no prior comparable iteration exists) — a distinct state from
+   * `1`, which is a real count that simply does not clear the `> 1` threshold.
+   */
+  stalledCount?: number;
+  /**
+   * FR-R4-F17 (contract D1) — the unchanged-comparison bound, read live by the caller at this
+   * decision and passed as it was read. Normalization is `stopsOnUnchangedMetrics`'s: an absent, zero,
+   * out-of-range or non-integer value leaves the bound off, so a caller that passes nothing gets
+   * exactly the behavior this function had before the field existed.
+   */
+  maxUnchangedComparisons?: number;
+  /**
+   * FR-R5-F30 (SPEC-08, D5) — when true, this leaf Phase run is owned by a
+   * Candidate block coordinator; `rate_limited` and `transient_error` outcomes
+   * return immediately as classified halts without scheduling inner delayed retries.
+   */
+  blockOwnedRetry?: boolean;
 };
 
 export type TransitionResult =
-  | { kind: 'advance'; nextPhase: Phase; nextIteration: number; warnings: string[] }
+  | {
+      kind: 'advance';
+      nextPhase: Phase;
+      nextIteration: number;
+      warnings: string[];
+      /**
+       * FR-R3-157 — set only when this advance came from a `'continue-degraded'`
+       * cap exhaustion (contract C2.5). Its ABSENCE is meaningful and is the
+       * common case: every other advance leaves it undefined, and the caller
+       * reads that as "not degraded" rather than as "unknown".
+       */
+      degraded?: DegradedPhaseEntry;
+    }
   | { kind: 'loop'; nextPhase: Phase; nextIteration: number; warnings: string[] }
   | { kind: 'halt'; status: 'failed' | 'paused'; warnings: string[]; cause?: string };
 
@@ -161,6 +250,24 @@ function successorIteration(next: Phase, pipeline?: PipelineLike): number {
   return isLoopPhase(next, def) ? 1 : 0;
 }
 
+/**
+ * FR-R4-F17 (contract D3, FR-024) — the one fixed line the stop adds to the iteration's warnings. The
+ * inputs are the Phase id and three integers; no metric name, metric value, condition text or agent
+ * warning is interpolated, so nothing the agent wrote can reach the runtime log through it.
+ */
+function judgedMetricsUnchangedWarning(
+  phase: Phase,
+  count: number,
+  iteration: number,
+  cap: number
+): string {
+  return (
+    `retryCondition still truthy on ${phase} at iteration ${iteration} of cap ${cap}; judged ` +
+    `metrics unchanged across the last ${count} comparison${count === 1 ? '' : 's'}, so the run ` +
+    `stops before the cap`
+  );
+}
+
 export function transition(input: TransitionInput): TransitionResult {
   const {
     phase,
@@ -170,7 +277,9 @@ export function transition(input: TransitionInput): TransitionResult {
     pipeline,
     phaseDef,
     metrics,
-    forceContinueOnRetryCapDefault
+    capOutcome,
+    stalledCount,
+    maxUnchangedComparisons
   } = input;
   const warnings: string[] = [];
 
@@ -190,6 +299,11 @@ export function transition(input: TransitionInput): TransitionResult {
   if (outcome === 'paused-at-breakpoint') {
     return { kind: 'halt', status: 'paused', warnings, cause: 'breakpoint' };
   }
+  // FR-R3-198 — ahead of the `isRequired` branches below: an unfinished phase
+  // never reported anything, so even an optional one does not advance.
+  if (outcome === 'incomplete_turn') {
+    return { kind: 'halt', status: 'failed', warnings, cause: INCOMPLETE_TURN_UNRESOLVED_CAUSE };
+  }
   if (outcome === 'failed' || outcome === 'timeout') {
     if (phaseDef?.isRequired === false) {
       const next = nextSuccessor(phase, pipeline);
@@ -204,11 +318,17 @@ export function transition(input: TransitionInput): TransitionResult {
     return { kind: 'halt', status: 'failed', warnings };
   }
   if (outcome === 'rate_limited') {
+    if (input.blockOwnedRetry === true) {
+      return { kind: 'halt', status: 'failed', warnings, cause: 'rate_limit' };
+    }
     // Feature 011 — FR-003: rate-limit halts to paused with explicit cause so
     // the controller can schedule a 60-min delayed retry.
     return { kind: 'halt', status: 'paused', warnings, cause: 'rate_limit' };
   }
   if (outcome === 'transient_error') {
+    if (input.blockOwnedRetry === true) {
+      return { kind: 'halt', status: 'failed', warnings, cause: 'transient_error' };
+    }
     // Feature 011 — FR-002: non-zero exit with no fatal-signature and no
     // rate-limit match halts to paused with explicit cause so the controller
     // can schedule a 15-min delayed retry.
@@ -223,28 +343,109 @@ export function transition(input: TransitionInput): TransitionResult {
     const truthy = evaluateRetryCondition(retrySource, metrics ?? {}, warnings);
     if (truthy) {
       if (iteration >= iterationCap) {
-        // Phase field wins over the workspace default; absent on both is `false`,
-        // which is the pre-existing halt.
-        const forceContinue =
-          phaseDef?.forceContinueOnRetryCap ?? forceContinueOnRetryCapDefault ?? false;
-        if (forceContinue) {
-          const next = nextSuccessor(phase, pipeline);
-          warnings.push(
-            `${FORCE_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
-              `(${iterationCap}) — forced continue to ${next}. The condition was never ` +
-              'satisfied, so whatever it gates is UNVERIFIED.'
-          );
-          return {
-            kind: 'advance',
-            nextPhase: next,
-            nextIteration: successorIteration(next, pipeline),
-            warnings
-          };
+        // Feature 194 (contract C3.1, C3.2) — threshold is strictly > 1. A count
+        // of exactly 1 is a real, computed count that simply does not clear it:
+        // the clause's presence always means "more than one consecutive
+        // comparison went nowhere", so its absence stays informative on its own.
+        //
+        // "comparisons", not "iterations" (C3.1a): C2.2 defines the value as
+        // comparisons and rules out the iteration reading, and n comparisons span
+        // n + 1 iterations. Rendering the same number under the wrong noun would
+        // report one fewer iteration than actually went nowhere; rendering n + 1
+        // would break C3.3's one-computation-two-renderings. The noun moved.
+        //
+        // Declared HERE, not at the top of `transition()`: this branch and the
+        // two warnings inside it are the clause's only readers, and every other
+        // return — a skip, a breakpoint pause, a terminal failure, an optional
+        // phase advancing, a loop under the cap — used to build and discard it.
+        const stagnationClause =
+          stalledCount !== undefined && stalledCount > 1
+            ? `; metrics unchanged across the last ${stalledCount} comparisons`
+            : '';
+        // The clause opens with `; `, which reads correctly appended to the
+        // terminal warning (it ends on `${phase}`) but not to the forced-continue
+        // one, whose last sentence ends in a full stop — that rendered
+        // `UNVERIFIED.; metrics unchanged …`. C3.4 forbids rewording either
+        // warning, so the stop MOVES to the end of the appended clause rather
+        // than the clause being reworded: the words on both sides are untouched,
+        // the clause is appended and not substituted, and the sentence keeps a
+        // terminator either way. An earlier draft dropped the stop instead, which
+        // left the stalled rendering ending mid-thought on `… comparisons` while
+        // claiming in this comment that it did not — the two renderings of one
+        // warning must not differ in punctuation.
+        //
+        // FR-R3-157 (contract C2) — this branch RESOLVES NOTHING. The outcome was
+        // resolved by `contracts/retry-cap-outcome.ts` before the call, from the
+        // Phase's own fields and the workspace default; here it is only acted on.
+        // The switch replaced a `?? ?? false` coalesce of those same two inputs,
+        // and the two arms below produce byte-identical warnings, cause and result
+        // to what that coalesce produced for `true` and `false` respectively
+        // (FR-002, FR-003) — the text inside them is untouched, not re-derived.
+        switch (capOutcome) {
+          case 'continue': {
+            const next = nextSuccessor(phase, pipeline);
+            // Feature 194 (contract C3.4) — the clause is APPENDED, never
+            // substituted: the existing text, including the UNVERIFIED
+            // declaration, is retained unchanged.
+            warnings.push(
+              `${FORCE_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
+                `(${iterationCap}) — forced continue to ${next}. The condition was never ` +
+                `satisfied, so whatever it gates is UNVERIFIED${stagnationClause}.`
+            );
+            return {
+              kind: 'advance',
+              nextPhase: next,
+              nextIteration: successorIteration(next, pipeline),
+              warnings
+            };
+          }
+          case 'continue-degraded': {
+            // FR-R3-157 (C2.3) — the same advance as `'continue'`, computed the
+            // same way. `nextSuccessor` and `successorIteration` are called
+            // here rather than shared with the arm above deliberately: the two
+            // arms must agree on WHERE the run goes, and the way to guarantee
+            // that is for both to ask the same two functions, not for one to
+            // inherit a value the other happened to compute.
+            const next = nextSuccessor(phase, pipeline);
+            // Two claims in one sentence, per C2.3: what is unverified, and that
+            // the run now carries a durable record of it. The second half is
+            // what tells a log reader there is something to go and look at —
+            // `retrySource` is non-empty here by the branch's own guard.
+            warnings.push(
+              `${DEGRADED_CONTINUE_NOTIFY_TAG} ${phase}: retryCondition still truthy at cap ` +
+                `(${iterationCap}) — continued to ${next} and RECORDED as degraded. The ` +
+                `condition was never satisfied, so whatever it gates is ` +
+                `UNVERIFIED${stagnationClause}.`
+            );
+            return {
+              kind: 'advance',
+              nextPhase: next,
+              nextIteration: successorIteration(next, pipeline),
+              warnings,
+              // The condition AS AUTHORED, untrimmed and unnormalized (FR-009).
+              // An operator reading the mark has to be able to match it against
+              // the line in their own pipeline file.
+              degraded: { phaseId: phase, condition: retrySource }
+            };
+          }
+          case 'fail':
+          case undefined:
+            break;
         }
         // FR-010 / SC-009: cap reached + truthy condition → terminal failure
         // with a redacted cause string distinct from the fatal-CLI cause.
-        warnings.push(`retryCondition still truthy at cap (${iterationCap}) on ${phase}`);
-        return { kind: 'halt', status: 'failed', warnings, cause: 'cap_exhausted' };
+        warnings.push(
+          `retryCondition still truthy at cap (${iterationCap}) on ${phase}${stagnationClause}`
+        );
+        return { kind: 'halt', status: 'failed', warnings, cause: CAP_EXHAUSTED_CAUSE };
+      }
+      // FR-R4-F17 (contract D1) — below the cap, a truthy condition whose judged figures have been
+      // unchanged for the configured number of comparisons fails the Run early. Positioned after the
+      // cap block, so at the cap the cap outcome still decides; the predicate applies only where that
+      // outcome is to fail, so a Phase that continues at its cap is never stopped here.
+      if (stopsOnUnchangedMetrics({ bound: maxUnchangedComparisons, capOutcome, stalledCount })) {
+        warnings.push(judgedMetricsUnchangedWarning(phase, stalledCount ?? 0, iteration, iterationCap));
+        return { kind: 'halt', status: 'failed', warnings, cause: JUDGED_METRICS_UNCHANGED_CAUSE };
       }
       return { kind: 'loop', nextPhase: phase, nextIteration: iteration + 1, warnings };
     }
@@ -273,6 +474,14 @@ export function transition(input: TransitionInput): TransitionResult {
   }
 
   const next = nextSuccessor(phase, pipeline);
+  // FR-R3-199 — advancing to `done` here completed the Run, so a last phase that
+  // reported it was not finished started the queue's next task and lost its
+  // transcript to `errors-only` retention. Halting leaves `currentPhase` on the
+  // phase, where a resume re-runs it. Mid-pipeline the next phase still runs.
+  if (outcome === 'issues_remain' && next === 'done' && phaseDef?.isRequired !== false) {
+    warnings.push(`last phase ${phase} ended with remaining issues; the run halts instead of completing`);
+    return { kind: 'halt', status: 'failed', warnings, cause: LAST_PHASE_ISSUES_REMAIN_CAUSE };
+  }
   return {
     kind: 'advance',
     nextPhase: next,
@@ -302,4 +511,125 @@ function evaluateRetryCondition(
     );
   }
   return result.evaluation.value;
+}
+
+export interface PhaseTransitionObservationInput extends TransitionInput {
+  readonly runId: string;
+  readonly evaluatedAt: number;
+  readonly decisionId?: string;
+  readonly attemptId?: string;
+  readonly settingSources?: ExecutionDecisionSettingSources;
+}
+
+export interface PhaseTransitionWithObservation {
+  readonly decision: TransitionResult;
+  readonly observation: ExecutionDecisionObservation;
+}
+
+function derivePhaseExitReason(
+  decision: TransitionResult
+): ExecutionDecisionExitReason {
+  if (decision.kind === 'loop') {
+    return 'repeat';
+  }
+  if (decision.kind === 'advance') {
+    if (decision.degraded !== undefined) {
+      return 'cap-degraded';
+    }
+    if (
+      decision.warnings.some(
+        (warning) =>
+          warning.startsWith(FORCE_CONTINUE_NOTIFY_TAG) ||
+          warning.includes('force-advancing')
+      )
+    ) {
+      return 'cap-continued';
+    }
+    return 'condition-cleared';
+  }
+  if (decision.cause === CAP_EXHAUSTED_CAUSE) {
+    return 'cap-failed';
+  }
+  if (decision.cause === JUDGED_METRICS_UNCHANGED_CAUSE) {
+    return 'no-progress';
+  }
+  if (
+    decision.cause === LAST_PHASE_ISSUES_REMAIN_CAUSE ||
+    decision.cause === INCOMPLETE_TURN_UNRESOLVED_CAUSE
+  ) {
+    return 'missing-evidence';
+  }
+  return 'host-control';
+}
+
+/**
+ * FR-R5-F23 (F23-T02, D1) — construct a deterministic `ExecutionDecisionObservation`
+ * alongside `transition(input)` so Phase repetition provenance (`iteration`,
+ * `maxIterations`, `retryCondition`, `capOutcome`, `noProgressThreshold`,
+ * `settingSources`, `observedValues`, `exitReason`) is inspectable without
+ * mutating `transition()` return semantics.
+ */
+export function buildPhaseTransitionObservation(
+  input: PhaseTransitionObservationInput,
+  precomputedDecision?: TransitionResult
+): PhaseTransitionWithObservation {
+  const decision = precomputedDecision ?? transition(input);
+  const retrySource = input.phaseDef?.retryCondition?.trim() ?? '';
+  const retryCondition =
+    retrySource.length > 0
+      ? retrySource
+      : isLoopPhase(input.phase, input.phaseDef)
+        ? 'outcome == issues_remain'
+        : 'single-pass';
+
+  const observedValues: Record<string, string | number | boolean> = {
+    outcome: input.outcome
+  };
+  if (input.stalledCount !== undefined && Number.isFinite(input.stalledCount)) {
+    observedValues.stalledCount = input.stalledCount;
+  }
+  if (input.metrics !== undefined) {
+    for (const [key, val] of Object.entries(input.metrics)) {
+      if (Object.keys(observedValues).length >= 32) break;
+      if (typeof val === 'number' && Number.isFinite(val)) {
+        observedValues[key] = val;
+      }
+    }
+  }
+
+  const hasThreshold =
+    input.maxUnchangedComparisons !== undefined &&
+    Number.isInteger(input.maxUnchangedComparisons) &&
+    input.maxUnchangedComparisons >= 0;
+
+  const settingSources: ExecutionDecisionSettingSources =
+    input.settingSources ?? {
+      maxIterations: 'default',
+      capOutcome: 'default',
+      ...(hasThreshold ? { noProgressThreshold: 'default' } : {})
+    };
+
+  const observation: ExecutionDecisionObservation = Object.freeze({
+    version: EXECUTION_DECISION_OBSERVATION_VERSION,
+    decisionId:
+      input.decisionId ??
+      `${input.runId}:${input.phase}:iter-${input.iteration}:${input.evaluatedAt}`,
+    runId: input.runId,
+    nodeId: input.phase,
+    ...(input.attemptId !== undefined ? { attemptId: input.attemptId } : {}),
+    evaluatedAt: input.evaluatedAt,
+    iteration: Math.max(1, input.iteration),
+    maxIterations: Math.max(1, input.iterationCap),
+    retryCondition,
+    capOutcome: input.capOutcome ?? 'fail',
+    ...(hasThreshold && input.maxUnchangedComparisons !== undefined
+      ? { noProgressThreshold: input.maxUnchangedComparisons }
+      : {}),
+    settingSources: Object.freeze({ ...settingSources }),
+    observedValues: Object.freeze(observedValues),
+    exitReason: derivePhaseExitReason(decision),
+    branches: Object.freeze([])
+  });
+
+  return { decision, observation };
 }

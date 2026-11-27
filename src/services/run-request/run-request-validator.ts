@@ -29,23 +29,33 @@
 
 import type {
   FrozenInputBinding,
+  FrozenPhaseHandoffDelivery,
   FrozenSupplementalInput,
+  FrozenWorkflowClosure,
   RunInputValue,
   RunRequest,
   RunRequestErrorCode,
   RunRequestFieldError,
   SupplementalInput,
-  ValidationOutcome
+  ValidationOutcome,
+  WorkflowRunRequest
 } from '../../contracts/run-request';
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import type {
   PipelineInputPort,
-  PipelineInputPortType
+  PipelineInputPortType,
+  PipelineOutputPort
 } from '../../contracts/pipeline-definitions';
+import type { PhaseDefinition } from '../../contracts/process-definitions';
+import type { WorkflowDefinition } from '../../contracts/workflow-definitions';
 import type { PhaseDef, PipelineDef } from '../../config/pipeline-config';
-import { snapshotPhaseDef, snapshotPipelineContract } from '../../config/pipeline-snapshot';
+import {
+  createFrozenWorkflowClosure,
+  snapshotPhaseDef,
+  snapshotPipelineContract
+} from '../../config/pipeline-snapshot';
 import { MAX_DESCRIPTION_LENGTH } from '../../queue/feature-request';
-import type { BackendRunnerKind } from '../../runner/backend-runner-factory';
+import type { BackendRunnerKind } from '../../contracts/backend-kinds';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
 import {
   FOLDER_MAX_BYTES,
@@ -60,6 +70,7 @@ import {
   resolvePriorOutput,
   type PriorRunOutputSource
 } from './output-reference-resolver';
+import { runRequestBudgetViolations } from '../../contracts/validators/run-request-budgets';
 
 /**
  * The filesystem half of the local-reference gate, injected rather than imported
@@ -92,11 +103,26 @@ export interface EffectivePipelineSource {
 }
 
 /**
+ * FR-R5-F02 — the composable Workflow the request names, together with the
+ * resolved Workflow and Phase definitions needed to freeze its transitive closure.
+ */
+export interface EffectiveWorkflowSource {
+  readonly rootWorkflow: WorkflowDefinition;
+  readonly workflows?: readonly WorkflowDefinition[];
+  readonly phases?: readonly PhaseDefinition[];
+  readonly invalidWorkflows?: ReadonlyMap<string, string>;
+  readonly invalidPhases?: ReadonlyMap<string, string>;
+  readonly defaultRunnerKind?: BackendRunnerKind;
+  readonly catalogVersionsById?: Readonly<Record<string, CatalogVersionRef>>;
+}
+
+/**
  * Everything validation needs about the world, passed in rather than reached
  * for.
  */
 export interface RunRequestValidationContext {
-  readonly pipeline: EffectivePipelineSource;
+  readonly pipeline?: EffectivePipelineSource;
+  readonly workflow?: EffectiveWorkflowSource;
   /** `null` when no folder is open; every path-bearing field then refuses. */
   readonly workspaceRoot: string | null;
   /** Injected so the frozen plan's `frozenAt` is deterministic under test. */
@@ -119,6 +145,7 @@ export interface RunRequestValidationContext {
    * none (FR-021, FR-027). This module never substitutes one.
    */
   readonly catalogVersion?: CatalogVersionRef;
+  readonly phaseHandoff?: FrozenPhaseHandoffDelivery;
 }
 
 /**
@@ -358,6 +385,27 @@ export function validateUrlReference(value: string): LocalCheckResult {
   return { ok: true };
 }
 
+/**
+ * FR-R3-057 — the budget violations, mapped to field errors.
+ *
+ * The message names the field and the two numbers and nothing else: no value
+ * excerpt, no resolved path (FR-020). An operator who pasted 4 MiB needs to know
+ * which field and by how much.
+ */
+function validateBudgets(
+  request: RunRequest | WorkflowRunRequest
+): readonly RunRequestFieldError[] {
+  return runRequestBudgetViolations(request).map((violation) =>
+    error(
+      violation.field,
+      violation.code,
+      `${violation.field} exceeds its budget of ${violation.limit} ` +
+        `(actual ${violation.actual}).`,
+      { limit: violation.limit, actual: violation.actual }
+    )
+  );
+}
+
 function validateInstructions(instructions: string | undefined): readonly RunRequestFieldError[] {
   if (instructions === undefined || instructions.length <= MAX_DESCRIPTION_LENGTH) return [];
   // The limit is the existing host bound on a queue item's description, imported
@@ -446,7 +494,7 @@ function checkLocalReference(
  * for all of them — the operator sees it on the fields it applies to.
  */
 function refuseOutputsWithoutRoot(
-  request: RunRequest,
+  request: RunRequest | WorkflowRunRequest,
   ports: readonly { readonly portId: string }[]
 ): readonly RunRequestFieldError[] {
   const portIds = new Set<string>(ports.map((port) => port.portId));
@@ -476,10 +524,57 @@ function freezePipeline(source: EffectivePipelineSource): WorkflowRunPipeline {
   );
 }
 
+function synthesizeWorkflowEnvelopePipeline(
+  source: EffectiveWorkflowSource
+): WorkflowRunPipeline {
+  const root = source.rootWorkflow;
+  const inputs: PipelineInputPort[] | undefined =
+    root.inputs === undefined
+      ? undefined
+      : root.inputs.map((port) => ({
+          portId: port.portId,
+          label: port.label,
+          type: port.type,
+          ...(port.required !== undefined ? { required: port.required } : {}),
+          ...(port.description !== undefined ? { description: port.description } : {})
+        }));
+  const outputs: PipelineOutputPort[] | undefined =
+    root.outputs === undefined
+      ? undefined
+      : root.outputs.map((port) => ({
+          portId: port.portId,
+          label: port.label,
+          type: port.type,
+          ...(port.description !== undefined ? { description: port.description } : {})
+        }));
+  const rawPhases = source.phases ?? [];
+  const frozenPhases = rawPhases.map((phase) =>
+    snapshotPhaseDef(
+      {
+        ...phase,
+        id: phase.phaseId
+      },
+      source.defaultRunnerKind
+    )
+  );
+  return snapshotPipelineContract(
+    {
+      id: root.workflowId,
+      name: root.name,
+      phases: frozenPhases.map((phase) => phase.id),
+      ...(root.description !== undefined ? { description: root.description } : {}),
+      ...(root.version !== undefined ? { version: root.version } : {}),
+      ...(inputs !== undefined ? { inputs } : {}),
+      ...(outputs !== undefined ? { outputs } : {})
+    },
+    frozenPhases
+  );
+}
+
 /**
- * Validate `request` against the Pipeline snapshot in `context` and, on
- * success, produce the `ExecutionEnvelope` the enqueue path persists and the
- * execution path runs from.
+ * Validate `request` against the Pipeline or composable Workflow snapshot in
+ * `context` and, on success, produce the `ExecutionEnvelope` the enqueue path
+ * persists and the execution path runs from.
  *
  * This is the only construction site of an envelope in the codebase (T257).
  * Asynchronous because the local-reference and output-target gates reach the
@@ -487,13 +582,59 @@ function freezePipeline(source: EffectivePipelineSource): WorkflowRunPipeline {
  * `{ ok: false }`, never a rejection.
  */
 export async function validateRunRequest(
-  request: RunRequest,
+  request: RunRequest | WorkflowRunRequest,
   context: RunRequestValidationContext
 ): Promise<ValidationOutcome> {
   // The freeze happens first, and everything below validates against it. A
   // request checked against the authored row and frozen from the snapshot could
   // be checked against ports the snapshot does not carry.
-  const frozenPipeline = freezePipeline(context.pipeline);
+  const closureErrors: RunRequestFieldError[] = [];
+  let frozenClosure: FrozenWorkflowClosure | undefined;
+
+  if (context.workflow !== undefined) {
+    const closureOutcome = createFrozenWorkflowClosure({
+      rootWorkflow: context.workflow.rootWorkflow,
+      ...(request.entryNodeId !== undefined ? { entryNodeId: request.entryNodeId } : {}),
+      effectiveWorkflows: context.workflow.workflows ?? [],
+      effectivePhases: context.workflow.phases ?? [],
+      ...(context.workflow.invalidWorkflows !== undefined
+        ? { invalidWorkflows: context.workflow.invalidWorkflows }
+        : {}),
+      ...(context.workflow.invalidPhases !== undefined
+        ? { invalidPhases: context.workflow.invalidPhases }
+        : {}),
+      ...(context.workflow.defaultRunnerKind !== undefined
+        ? { defaultRunnerKind: context.workflow.defaultRunnerKind }
+        : {})
+    });
+    if (!closureOutcome.ok) {
+      closureErrors.push(
+        error(
+          closureOutcome.code === 'invalid-entry-node'
+            ? 'entryNodeId'
+            : (closureOutcome.errors[0]?.field ?? 'workflowId'),
+          closureOutcome.code,
+          closureOutcome.message
+        )
+      );
+    } else {
+      frozenClosure =
+        context.workflow.catalogVersionsById === undefined
+          ? closureOutcome.closure
+          : Object.freeze({
+              ...closureOutcome.closure,
+              catalogVersionsById: Object.freeze({ ...context.workflow.catalogVersionsById })
+            });
+    }
+  }
+
+  const frozenPipeline =
+    context.pipeline !== undefined
+      ? freezePipeline(context.pipeline)
+      : context.workflow !== undefined
+        ? synthesizeWorkflowEnvelopePipeline(context.workflow)
+        : snapshotPipelineContract({ id: request.pipelineId ?? '', name: '', phases: [] }, []);
+
   const inputPorts = frozenPipeline.inputs ?? [];
   const outputPorts = frozenPipeline.outputs ?? [];
 
@@ -510,10 +651,15 @@ export async function validateRunRequest(
         });
 
   const errors = [
+    ...closureErrors,
     ...contract.errors,
     ...supplemental.errors,
     ...outputs.errors,
-    ...validateInstructions(request.instructions)
+    ...validateInstructions(request.instructions),
+    // FR-R3-057 — budgets before persistence. Placed with the other field
+    // errors so a rejected request mutates nothing (FR-R3-001's envelope
+    // discipline) and the operator sees every violation at once.
+    ...validateBudgets(request)
   ];
 
   if (errors.length > 0) return { ok: false, errors };
@@ -525,6 +671,13 @@ export async function validateRunRequest(
     ok: true,
     plan: {
       pipeline: frozenPipeline,
+      ...(frozenClosure === undefined
+        ? {}
+        : {
+            workflowId: frozenClosure.rootWorkflowId,
+            entryNodeId: frozenClosure.entryNodeId,
+            frozenClosure
+          }),
       inputs: contract.bindings,
       supplemental: supplemental.frozen,
       outputs: outputs.outputs,
@@ -533,7 +686,8 @@ export async function validateRunRequest(
       // Feature 102 (T036, FR-021, FR-027). Stamped, not resolved: whatever the
       // caller resolved is what the plan records, and an absent value records
       // absence rather than becoming `''` or a guess.
-      ...(context.catalogVersion === undefined ? {} : { catalogVersion: context.catalogVersion })
+      ...(context.catalogVersion === undefined ? {} : { catalogVersion: context.catalogVersion }),
+      ...(context.phaseHandoff === undefined ? {} : { phaseHandoff: context.phaseHandoff })
     }
   };
 }

@@ -1,77 +1,123 @@
-// Feature 020 T017 — `detectVerboseDiagnosticsState`: 3 banner kinds
-// resolved correctly from setting × phaseDir existence permutations.
-// See specs/020-phase-level-logs/contracts/phase-log-service.md §8.
+// Feature 020 T017 — the banner kinds resolved from the setting and what the
+// phase directory holds. See
+// specs/020-phase-level-logs/contracts/phase-log-service.md §8.
+//
+// Feature 203 (D5, FR-006, SC-008) — the module stopped touching the
+// filesystem. It used to `stat` the phase directory itself, which was a SECOND
+// observation of a directory the reader had already listed: two answers that
+// could disagree, with a race window between them, and a label chosen by
+// directory existence alone. The cases below are the same four cases; each
+// creates no directories and passes the one observation in instead.
+//
+// The fourth case keeps its intent exactly (Q2): a record present with the
+// setting off must NOT be reported as `diagnostics-disabled`. Only its inputs
+// move — what "a record is present" means is now an iteration that exists,
+// rather than a directory that exists.
 
-import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
-import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { detectVerboseDiagnosticsState } from '../../../../src/services/phase-log/verbose-diagnostics-detector';
+import { describe, expect, it } from 'vitest';
+import type { IterationDiscovery } from '../../../../src/services/phase-log/phase-log-iteration-discovery';
+import { classifyEmptyKind } from '../../../../src/services/phase-log/verbose-diagnostics-detector';
 
-let tmpDir: string;
+const ABSENT: IterationDiscovery = { outcome: 'directory-absent' };
+const EMPTY: IterationDiscovery = { outcome: 'listed', iterations: [] };
+const ONE_RECORD: IterationDiscovery = { outcome: 'listed', iterations: [1] };
 
-beforeEach(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'phase-log-vdd-'));
-});
-
-afterEach(async () => {
-  await fs.rm(tmpDir, { recursive: true, force: true });
-});
-
-const SELECTION = {
-  queueId: 'q1',
-  taskId: 'run-1',
-  pipelineId: 'pipe-1',
-  phaseId: 'phase-1'
-} as const;
-
-async function makePhaseDir(): Promise<void> {
-  await fs.mkdir(
-    path.join(tmpDir, '.schegent', 'sessions', 'run-1', 'diagnostics', 'pipe-1', 'phase-1'),
-    { recursive: true }
-  );
-}
-
-describe('Feature 020 T017 — detectVerboseDiagnosticsState', () => {
-  it('returns enabled-with-sessions when setting=true AND phase dir exists', async () => {
-    await makePhaseDir();
-    const banner = await detectVerboseDiagnosticsState({
-      workspaceRoot: tmpDir,
-      selection: SELECTION,
-      readSetting: () => true
+describe('Feature 020 T017 — classifyEmptyKind', () => {
+  it('reports no iteration recorded when the directory is listed but holds none', async () => {
+    const banner = classifyEmptyKind({
+      discovery: EMPTY,
+      settingOn: true,
+      progress: 'not-running',
+      entryCount: 0
     });
-    expect(banner).toEqual({ kind: 'enabled-with-sessions' });
+    expect(banner).toEqual({ kind: 'no-iteration-recorded' });
   });
 
-  it('returns enabled-no-sessions-for-tuple when setting=true AND phase dir missing', async () => {
-    const banner = await detectVerboseDiagnosticsState({
-      workspaceRoot: tmpDir,
-      selection: SELECTION,
-      readSetting: () => true
+  it('reports the phase not recorded when the directory is absent and the setting is on', async () => {
+    const banner = classifyEmptyKind({
+      discovery: ABSENT,
+      settingOn: true,
+      progress: 'not-running',
+      entryCount: 0
     });
-    expect(banner).toEqual({ kind: 'enabled-no-sessions-for-tuple' });
+    expect(banner).toEqual({ kind: 'phase-not-recorded' });
   });
 
-  it('returns disabled-no-sessions with settingKey when setting=false AND phase dir missing', async () => {
-    const banner = await detectVerboseDiagnosticsState({
-      workspaceRoot: tmpDir,
-      selection: SELECTION,
-      readSetting: () => false
+  it('reports diagnostics disabled with settingKey when the setting is off and nothing is recorded', async () => {
+    const banner = classifyEmptyKind({
+      discovery: ABSENT,
+      settingOn: false,
+      progress: 'not-running',
+      entryCount: 0
     });
     expect(banner).toEqual({
-      kind: 'disabled-no-sessions',
+      kind: 'diagnostics-disabled',
       settingKey: 'schegent.logging.verbose'
     });
   });
 
-  it('returns enabled-with-sessions when setting=false but historical phase dir still exists', async () => {
-    // Operator toggled the setting off but kept old runs on disk.
-    await makePhaseDir();
-    const banner = await detectVerboseDiagnosticsState({
-      workspaceRoot: tmpDir,
-      selection: SELECTION,
-      readSetting: () => false
+  it('does not report diagnostics disabled when the setting is off but historical records still exist', async () => {
+    // Operator toggled the setting off but kept old runs on disk. Telling them
+    // to switch on a setting would be wrong twice over: the records are right
+    // there, and switching it on would not produce the ones they are looking at.
+    const banner = classifyEmptyKind({
+      discovery: ONE_RECORD,
+      settingOn: false,
+      progress: 'not-running',
+      entryCount: 0
     });
-    expect(banner).toEqual({ kind: 'enabled-with-sessions' });
+    expect(banner).not.toEqual(
+      expect.objectContaining({ kind: 'diagnostics-disabled' })
+    );
+    expect(banner).toEqual({ kind: 'nothing-displayable' });
+  });
+});
+
+describe('Feature 203 — the precedence the four cases above do not reach', () => {
+  it('reports entries present whenever any displayable entry survived the read', () => {
+    const banner = classifyEmptyKind({
+      discovery: ONE_RECORD,
+      settingOn: false,
+      progress: 'running',
+      entryCount: 3
+    });
+    expect(banner).toEqual({ kind: 'entries-present' });
+  });
+
+  it('claims the phase is running only when it is known to be running', () => {
+    // FR-017 — `unknown` means the task is in flight between phases and the
+    // phase cannot be named. It is treated as not-running rather than rendered
+    // as a progress claim, because "wait, output is coming" is a promise this
+    // reader is in no position to make.
+    const running = classifyEmptyKind({
+      discovery: EMPTY,
+      settingOn: true,
+      progress: 'running',
+      entryCount: 0
+    });
+    const cannotTell = classifyEmptyKind({
+      discovery: EMPTY,
+      settingOn: true,
+      progress: 'unknown',
+      entryCount: 0
+    });
+    expect(running).toEqual({ kind: 'phase-running-no-output' });
+    expect(cannotTell).toEqual({ kind: 'no-iteration-recorded' });
+    expect(running).not.toEqual(cannotTell);
+  });
+
+  it('lets the setting outrank progress, because waiting cannot falsify it', () => {
+    // D2 — of the available true statements this is the one whose advice a
+    // wait cannot repair: nothing will ever appear while the setting is off.
+    const banner = classifyEmptyKind({
+      discovery: ABSENT,
+      settingOn: false,
+      progress: 'running',
+      entryCount: 0
+    });
+    expect(banner).toEqual({
+      kind: 'diagnostics-disabled',
+      settingKey: 'schegent.logging.verbose'
+    });
   });
 });

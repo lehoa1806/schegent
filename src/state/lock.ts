@@ -1,6 +1,7 @@
 import type { OwnershipClaim, WorkspaceStateStore } from './workspace-state';
 import type { WorkspaceLock } from './workflow-run';
-import { PRIMACY_RESOURCE } from './ownership-registry';
+import { PRIMACY_RESOURCE, releaseOutcomeOf } from './ownership-registry';
+import type { SanitizedLogger } from '../lib/logger';
 
 export const HEARTBEAT_INTERVAL_MS = 5_000;
 export const STALENESS_THRESHOLD_MS = 15_000;
@@ -31,9 +32,17 @@ export const systemScheduler: Scheduler = {
 };
 
 /**
- * The per-workspace window-primacy lease. Its tenure is activation-to-disposal:
- * acquired in `extension.ts` at activation, released at `dispose()`, and nowhere
- * else (feature 093, FR-028 / FR-032a).
+ * The per-workspace window-primacy lease. Its tenure ends at disposal: first
+ * claimed from `extension.ts` at activation, released at `dispose()`, and
+ * released nowhere else (feature 093, FR-028 / FR-032a).
+ *
+ * FR-032 (BUG-001) amends the START of that tenure and nothing else. A window
+ * that loses the activation election keeps contesting on its own interval and
+ * may become primary later, so acquisition is no longer a single moment —
+ * `tick()` carries why, and `onPrimacyGained` is how anyone finds out. The
+ * release side is untouched: there is still exactly one release site, and a
+ * contending window's interval is stopped by the same `release()` that stops a
+ * primary window's heartbeat.
  *
  * Deliberately **no** scope wrapper. Feature 034's `withLock(scope, fn)` released
  * in a `finally`, which made a window-scoped lease end at a Run-scoped moment:
@@ -80,7 +89,7 @@ export const systemScheduler: Scheduler = {
  * a default to inherit.
  *
  * Why reading the mirror is safe at all: `heartbeat()` writes it through
- * `writeGuarded`, which refreshes the ownership record *before* the mirror write
+ * `refreshLockMirrorGuarded`, which refreshes the ownership record *before* the mirror write
  * and returns *before* it on a refused or unanswerable refresh, and
  * `tryAcquire()` writes it only after `acquire` returned. So the mirror can
  * never be fresher than the record, and because the reclaim rule in
@@ -91,6 +100,14 @@ export const systemScheduler: Scheduler = {
  * `tests/unit/state/mirror-write-ordering.test.ts` fails if it is reordered.
  */
 export class WorkspaceLockManager {
+  /** FR-R3-103 — listeners for fence loss; see `onFenceLost`. */
+  private readonly fenceLostListeners = new Set<() => void>();
+
+  /** FR-032 — listeners for a primacy gain won on a tick; see `onPrimacyGained`. */
+  private readonly primacyGainedListeners = new Set<
+    (result: { acquired: boolean; ownerId: string }) => void
+  >();
+
   private readonly store: WorkspaceStateStore;
   private readonly ownerId: string;
   private readonly clock: Clock;
@@ -101,17 +118,28 @@ export class WorkspaceLockManager {
    * claim. Guarded operations carry it; a rejected check clears it.
    */
   private fence: number | null = null;
+  /**
+   * FR-R5-F08 — whether this window has participated in a primacy election via
+   * `tryAcquire()`. Once true, connected-run writes and recovery sweeps require
+   * authoritative primacy (`hasPrimacy()`).
+   */
+  private electionAttempted = false;
 
   constructor(
     store: WorkspaceStateStore,
     ownerId: string,
     clock: Clock = systemClock,
-    scheduler: Scheduler = systemScheduler
+    scheduler: Scheduler = systemScheduler,
+    /** FR-R4-F01 (FR-033) — where a release that did not go is said; absent in the doubles. */
+    private readonly logger?: Pick<SanitizedLogger, 'warn'>
   ) {
     this.store = store;
     this.ownerId = ownerId;
     this.clock = clock;
     this.scheduler = scheduler;
+    if ('bindPrimacyClaimSource' in this.store) {
+      this.store.bindPrimacyClaimSource(this);
+    }
   }
 
   public get id(): string {
@@ -127,8 +155,23 @@ export class WorkspaceLockManager {
    * every caller does the same thing with both — `commands/resume.ts` raises
    * `LockHeldError` and the schedule path defers to the watchdog's next tick —
    * and a third arm would be a distinction no caller acts on.
+   *
+   * FR-032 (BUG-001) — THE INTERVAL IS ARMED ON BOTH BRANCHES. It used to be
+   * armed only where the claim succeeded, which gave a refused window no clock
+   * of its own: it asked once, at activation, inside the fifteen seconds during
+   * which a dead host's lease still reads fresh, lost correctly, and never asked
+   * again. `tick()` is what the interval runs, and it is the branch that turns
+   * this from a heartbeat into a heartbeat-or-contest.
+   *
+   * This method stays SILENT about the outcome either way. Its first caller is
+   * activation, which reads the returned result directly and has no subscriber
+   * yet, and its second is `heartbeat()`'s inline re-acquisition, which is a
+   * window regaining a fence it never stopped driving under. Announcing either
+   * would install recovery over a window that already has it. `tick()` owns the
+   * notification because `tick()` is the only site where a gain is news.
    */
   public async tryAcquire(): Promise<{ acquired: boolean; ownerId: string }> {
+    this.electionAttempted = true;
     const now = this.clock.now();
     const outcome = await this.store.ownership.acquire(
       PRIMACY_RESOURCE,
@@ -139,6 +182,7 @@ export class WorkspaceLockManager {
     if (outcome.outcome !== 'acquired') {
       this.fence = null;
       const recorded = outcome.outcome === 'held' ? outcome.ownerId : this.ownerOfRecord();
+      this.startHeartbeat();
       return { acquired: false, ownerId: recorded ?? this.ownerId };
     }
     this.fence = outcome.fence;
@@ -190,6 +234,23 @@ export class WorkspaceLockManager {
     return verdict.outcome === 'valid';
   }
 
+  /**
+   * FR-R5-F08 — whether this window is authorized to commit or recover
+   * connected workflow runs. Before any election attempt (single-window test
+   * harnesses that never elect), connected-run writes stay allowed; once an
+   * election has been attempted via `tryAcquire()`, authoritative primacy is
+   * required.
+   */
+  public canCommitConnectedRun(): Promise<boolean> {
+    if (!this.electionAttempted) return Promise.resolve(true);
+    return this.hasPrimacy();
+  }
+
+  /** FR-R8-01 (01-03) — expose this window's primacy claim + monotonic generation for live fencing. */
+  public primacyClaim(): OwnershipClaim | null {
+    return this.claim();
+  }
+
   /** This window's claim, or `null` when it holds none. */
   private claim(): OwnershipClaim | null {
     if (this.fence === null) return null;
@@ -207,26 +268,28 @@ export class WorkspaceLockManager {
    * until the rival goes away; if it does not, this window is primary again within
    * one beat, at a new generation.
    *
-   * The mirror refresh goes through `writeGuarded` (T302) rather than being
-   * written after a separate check, because the mirror is what every synchronous
-   * reader trusts: a beat that lost the resource must not leave a *fresh*
-   * `KEYS.lock` entry behind it. `refreshHeartbeatAt` folds the record's own
-   * liveness refresh into the same call, so this costs one storage round trip and
-   * not two.
+   * The mirror refresh goes through `refreshLockMirrorGuarded` (T302, reshaped by
+   * FR-R3-077 T1041) rather than being written after a separate check, because
+   * the mirror is what every synchronous reader trusts: a beat that lost the
+   * resource must not leave a *fresh* `KEYS.lock` entry behind it.
+   * `refreshHeartbeatAt` folds the record's own liveness refresh into the same
+   * call, so this costs one storage round trip and not two.
+   *
+   * What changed in T1041 is the shape, not the protocol: the verify used to
+   * happen and then a callback was awaited — two operations — and it now happens
+   * inside the same serialized link that writes the mirror.
    */
   public async heartbeat(): Promise<void> {
     const claim = this.claim();
     if (claim === null) return;
     const now = this.clock.now();
-    const outcome = await this.store.writeGuarded(
+    const lock = this.store.getLock();
+    const outcome = await this.store.refreshLockMirrorGuarded(
       claim,
-      () => {
-        const lock = this.store.getLock();
-        return this.store.setLock({
-          ownerId: this.ownerId,
-          acquiredAt: lock?.ownerId === this.ownerId ? lock.acquiredAt : now,
-          heartbeatAt: now
-        });
+      {
+        ownerId: this.ownerId,
+        acquiredAt: lock?.ownerId === this.ownerId ? lock.acquiredAt : now,
+        heartbeatAt: now
       },
       { refreshHeartbeatAt: now }
     );
@@ -235,7 +298,127 @@ export class WorkspaceLockManager {
     // surrendering a claim that may well still be ours.
     if (outcome.outcome === 'unavailable') return;
     this.fence = null;
-    await this.tryAcquire();
+    // FR-R3-103 (FR-046) — tell someone the fence is gone.
+    //
+    // THE HALF THIS CLOSES. Losing the fence stopped the STATE STORE from committing — the
+    // beat nulls the fence and re-acquires, and the commit-point check refuses writes in
+    // between. It did nothing about the CHILD. No path from fence loss reached an
+    // `AbortController` or a process tree, so a superseded window's subprocess went on
+    // mutating the shared checkout for as long as it liked: fencing turned its *state* writes
+    // into refusals while its *file* writes landed. Attribution and checkpoints detect that;
+    // nothing prevented it.
+    //
+    // A CALLBACK, not a direct abort. This class knows about leases and storage, and giving it
+    // a reference to a driver or a process tree would make the lock manager the place where
+    // "what does supersession mean" is decided. The driver registers what it wants done; this
+    // reports the fact.
+    //
+    // Fired BEFORE `tryAcquire()`. Re-acquisition may succeed within the same beat, and a
+    // window that is primary again must not have swallowed the fact that it briefly was not —
+    // its child ran unfenced for that interval either way.
+    //
+    // Errors are swallowed deliberately: a listener that throws must not prevent the
+    // re-acquisition below, or one bad callback would leave the window permanently
+    // non-primary.
+    for (const listener of this.fenceLostListeners) {
+      try {
+        listener();
+      } catch {
+        /* a listener must not be able to stop the re-acquisition */
+      }
+    }
+    const reacquired = await this.tryAcquire();
+    // Because `onFenceLost` above demoted SQLite, cleared `installedRecovery`, and cancelled
+    // watchdog timers, a successful inline re-acquisition MUST notify `onPrimacyGained` so
+    // SQLite primary authority and recovery producers are restored instead of staying stuck
+    // demoted until restart.
+    if (reacquired.acquired) {
+      this.notifyPrimacyGained(reacquired);
+    }
+  }
+
+  /**
+   * What the interval runs: beat if this window is primary, contest if it is not.
+   *
+   * FR-032 (BUG-001) — THE ELECTION HAS A LIFETIME. Primacy used to be decided
+   * once, at activation, and a window that lost it stayed non-primary until VS
+   * Code restarted. The losing case is not rare and not benign: an incumbent
+   * host that dies without releasing leaves a lease that reads fresh for
+   * `STALENESS_THRESHOLD_MS`, so a replacement window opened inside that window
+   * contests, loses *correctly*, and then never asks again — the reported
+   * instance sat there for 6h28m with persisted Runs nobody was driving.
+   *
+   * BRANCHING ON THE FENCE, not on a remembered verdict. `fence === null` is the
+   * authoritative statement "this window holds no claim", maintained by every
+   * path that can end one — the refused acquire, the rejected beat — so the
+   * branch cannot disagree with the record the way a cached boolean could.
+   *
+   * The contest costs one `ownership.acquire` per beat from a non-primary
+   * window, at exactly the rate a primary window already writes its heartbeat.
+   * That symmetry is the point: the protocol's write rate is unchanged by who
+   * wins, so a workspace with two windows open costs what a workspace with one
+   * window and one crashed host has always cost.
+   *
+   * Listener errors are swallowed for the reason `heartbeat()` gives for its
+   * own: one bad callback must not leave the window permanently non-primary.
+   */
+  public async tick(): Promise<void> {
+    if (this.fence !== null) {
+      await this.heartbeat();
+      return;
+    }
+    const result = await this.tryAcquire();
+    if (!result.acquired) return;
+    this.notifyPrimacyGained(result);
+  }
+
+  private notifyPrimacyGained(result: { acquired: boolean; ownerId: string }): void {
+    for (const listener of this.primacyGainedListeners) {
+      try {
+        listener(result);
+      } catch {
+        /* a listener must not be able to undo a win this window already holds */
+      }
+    }
+  }
+
+  /**
+   * Register a callback for the moment this window loses its fence.
+   *
+   * FR-R3-103 (FR-046). The driver uses it to run the same abort ladder an operator cancel
+   * uses. Returns a disposer, because a window that registered and then disposed must not keep
+   * a dead driver reachable from a long-lived lock manager.
+   */
+  public onFenceLost(listener: () => void): { dispose: () => void } {
+    this.fenceLostListeners.add(listener);
+    return { dispose: () => this.fenceLostListeners.delete(listener) };
+  }
+
+  /**
+   * Register a callback for the moment this window WINS primacy on a tick.
+   *
+   * FR-032 (BUG-001). `stage2-producers.ts` uses it to install the five recovery
+   * producers it declined to install at activation, and `primacy-gain-wiring.ts`
+   * is the one subscriber.
+   *
+   * IT CARRIES THE RESULT, where `onFenceLost` carries nothing. That asymmetry is
+   * deliberate rather than an inconsistency: a fence loss is a fact with no
+   * payload — the window is no longer primary and every subscriber does the same
+   * thing about it — whereas every recovery installer is gated on the election
+   * result, so a subscriber handed nothing would have to re-read a verdict from
+   * somewhere, and the only verdict in scope at the producers is the one
+   * activation recorded, which reads `acquired: false` in precisely the case
+   * this event exists to repair.
+   *
+   * Returns a disposer, for `onFenceLost`'s stated reason: a window that
+   * registered and then disposed must not keep a dead graph reachable from a
+   * long-lived lock manager.
+   */
+  public onPrimacyGained(
+    listener: (result: { acquired: boolean; ownerId: string }) => void
+  ): { dispose: () => void } {
+    this.primacyGainedListeners.add(listener);
+    return { dispose: () => this.primacyGainedListeners.delete(listener) };
   }
 
   public async release(): Promise<void> {
@@ -243,7 +426,13 @@ export class WorkspaceLockManager {
     const fence = this.fence;
     this.fence = null;
     if (fence !== null) {
-      await this.store.ownership.release(PRIMACY_RESOURCE, this.ownerId, fence);
+      const outcome = releaseOutcomeOf(
+        await this.store.ownership.release(PRIMACY_RESOURCE, this.ownerId, fence)
+      );
+      // FR-R4-F01 (FR-033) — the verdict used to be discarded. Primacy's tenure is unchanged
+      // (hard rule 4): the lock mirror below is cleared either way, and the line names the
+      // outcome only, never the owner id.
+      if (outcome !== 'released') this.logger?.warn('workspace lock release failed', { outcome });
     }
     const lock = this.store.getLock();
     if (lock && lock.ownerId === this.ownerId) {
@@ -251,10 +440,29 @@ export class WorkspaceLockManager {
     }
   }
 
+  /** FR-R4-F01 (probe P1) — whether the interval's previous tick has yet to settle. */
+  private tickInFlight = false;
+
   private startHeartbeat(): void {
     if (this.heartbeatHandle) return;
     this.heartbeatHandle = this.scheduler.setInterval(() => {
-      void this.heartbeat();
+      // FR-R4-F01 (FR-024, probe P1) — skip while the previous tick is pending. Two overlapping
+      // ticks from a non-primary window each reached `tryAcquire()`; the second came back
+      // `acquired` through the registry's same-owner arm, and `primacyGainedListeners` fired
+      // twice for one transition. A skipped beat costs one interval out of three before
+      // staleness, which the interval already tolerates; queueing it instead would run it late
+      // against a clock that has moved on (research R7, alternatives).
+      if (this.tickInFlight) return;
+      this.tickInFlight = true;
+      // Review gap GC-02 — a rejected beat is said, not leaked as an unhandled rejection. The
+      // line names the error class only; staleness then decides primacy, as for a skipped beat.
+      void this.tick()
+        .catch((err: unknown) => {
+          this.logger?.warn('workspace lock heartbeat tick failed', { error: errorClassOf(err) });
+        })
+        .finally(() => {
+          this.tickInFlight = false;
+        });
     }, HEARTBEAT_INTERVAL_MS);
   }
 
@@ -262,4 +470,9 @@ export class WorkspaceLockManager {
     this.heartbeatHandle?.clear();
     this.heartbeatHandle = null;
   }
+}
+
+/** Review gap GC-02 — the class of a thrown value, never its message or payload. */
+function errorClassOf(err: unknown): string {
+  return err instanceof Error ? err.name : typeof err;
 }

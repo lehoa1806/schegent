@@ -62,7 +62,7 @@ async function host(): Promise<WorkspaceStateStore> {
   const memento: Memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
-  store.useOwnershipStorage(createDiskOwnershipFs(ownershipDir), ownershipDir);
+  store.useOwnershipStorage(createDiskOwnershipFs({ workspaceRoot, ownershipDir }), ownershipDir);
   return store;
 }
 

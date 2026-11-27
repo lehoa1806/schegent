@@ -15,13 +15,14 @@
 // clobber that drain step 4b was refusing second starts to avoid.
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import {
   KEYS,
   QueueMutationRejected,
   WorkspaceStateStore,
   type Memento
 } from '../../../src/state/workspace-state';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { migrateV10ToV11 } from '../../../src/state/run-state-migrator';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { buildQueueRegistry, buildWorkflowRun, fixtureQueueId } from '../../fixtures/state/queue-fixtures';
@@ -73,21 +74,21 @@ describe('getRun / setRun are addressed by queue (G-1)', () => {
   it('round-trips a Run under the queue it was written for', async () => {
     const run = buildWorkflowRun({ id: 'run-a' });
 
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
 
     expect(store.getRun(DEFAULT_QUEUE_ID)).toEqual(run);
   });
 
   it('does not leak one queue\'s Run to another', async () => {
-    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-other' }));
+    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-other' }), unfencedCommit('test-fixture'));
 
     expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
     expect(store.getRun(OTHER_QUEUE)?.id).toBe('run-other');
   });
 
   it('holds one Run per queue at the same time — the point of the feature', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }));
-    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }));
+    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }), unfencedCommit('test-fixture'));
+    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }), unfencedCommit('test-fixture'));
 
     expect(store.getRun(DEFAULT_QUEUE_ID)?.id).toBe('run-1');
     expect(store.getRun(OTHER_QUEUE)?.id).toBe('run-2');
@@ -107,11 +108,11 @@ describe('getRun / setRun are addressed by queue (G-1)', () => {
  */
 describe('an unknown queue id is refused, not created (G-6, RM-1)', () => {
   it('refuses a write for a queue absent from the registry', () => {
-    expect(() => store.setRun(UNKNOWN_QUEUE, buildWorkflowRun())).toThrow(QueueMutationRejected);
+    expect(() => store.setRun(UNKNOWN_QUEUE, buildWorkflowRun(), unfencedCommit('test-fixture'))).toThrow(QueueMutationRejected);
   });
 
   it('persists nothing when it refuses', () => {
-    expect(() => store.setRun(UNKNOWN_QUEUE, buildWorkflowRun())).toThrow();
+    expect(() => store.setRun(UNKNOWN_QUEUE, buildWorkflowRun(), unfencedCommit('test-fixture'))).toThrow();
 
     expect(store.getRunMap()).toEqual({});
   });
@@ -122,7 +123,7 @@ describe('an unknown queue id is refused, not created (G-6, RM-1)', () => {
    * would strand the deleted queue's Run record permanently.
    */
   it('allows clearing an id the registry no longer knows', async () => {
-    await expect(store.setRun(UNKNOWN_QUEUE, null)).resolves.toBeUndefined();
+    await expect(store.setRun(UNKNOWN_QUEUE, null, unfencedCommit('test-fixture'))).resolves.toBeUndefined();
   });
 
   /**
@@ -138,9 +139,9 @@ describe('an unknown queue id is refused, not created (G-6, RM-1)', () => {
 
 describe('clearing removes the key (G-5)', () => {
   it('drops the entry rather than storing a null under it', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-a' }));
+    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-a' }), unfencedCommit('test-fixture'));
 
-    await store.setRun(DEFAULT_QUEUE_ID, null);
+    await store.setRun(DEFAULT_QUEUE_ID, null, unfencedCommit('test-fixture'));
 
     expect(store.getRun(DEFAULT_QUEUE_ID)).toBeNull();
     expect(Object.keys(store.getRunMap())).toEqual([]);
@@ -148,16 +149,16 @@ describe('clearing removes the key (G-5)', () => {
   });
 
   it('leaves sibling queues untouched when one is cleared', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }));
-    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }));
+    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }), unfencedCommit('test-fixture'));
+    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }), unfencedCommit('test-fixture'));
 
-    await store.setRun(DEFAULT_QUEUE_ID, null);
+    await store.setRun(DEFAULT_QUEUE_ID, null, unfencedCommit('test-fixture'));
 
     expect(Object.keys(store.getRunMap())).toEqual([OTHER_QUEUE]);
   });
 
   it('is a no-op when the queue already has no Run', async () => {
-    await expect(store.setRun(OTHER_QUEUE, null)).resolves.toBeUndefined();
+    await expect(store.setRun(OTHER_QUEUE, null, unfencedCommit('test-fixture'))).resolves.toBeUndefined();
 
     expect(store.getRunMap()).toEqual({});
   });
@@ -168,9 +169,9 @@ describe('clearing removes the key (G-5)', () => {
    * inflate the in-flight tally and make an idle workspace look saturated.
    */
   it('keeps the key set equal to the set of queues actually running', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }));
-    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }));
-    await store.setRun(OTHER_QUEUE, null);
+    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }), unfencedCommit('test-fixture'));
+    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }), unfencedCommit('test-fixture'));
+    await store.setRun(OTHER_QUEUE, null, unfencedCommit('test-fixture'));
 
     expect(Object.keys(store.getRunMap())).toEqual([DEFAULT_QUEUE_ID]);
   });
@@ -178,7 +179,7 @@ describe('clearing removes the key (G-5)', () => {
 
 describe('getRunMap is a read-only projection (G-4)', () => {
   it('does not write through to stored state when mutated', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-a' }));
+    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-a' }), unfencedCommit('test-fixture'));
 
     const projection = store.getRunMap() as Record<string, WorkflowRun>;
     delete projection[DEFAULT_QUEUE_ID];
@@ -257,20 +258,20 @@ describe('a record the migrator would repair reads as empty, not as junk', () =>
 describe('findRunByTask resolves a Run together with its queue (G-1)', () => {
   it('returns the queue alongside the Run, never the Run alone', async () => {
     const run = buildWorkflowRun({ id: 'run-a', featureId: 'task-a' });
-    await store.setRun(OTHER_QUEUE, run);
+    await store.setRun(OTHER_QUEUE, run, unfencedCommit('test-fixture'));
 
     expect(store.findRunByTask('task-a')).toEqual({ queueId: OTHER_QUEUE, run });
   });
 
   it('returns null for a task no active Run is executing', async () => {
-    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ featureId: 'task-a' }));
+    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ featureId: 'task-a' }), unfencedCommit('test-fixture'));
 
     expect(store.findRunByTask('task-b')).toBeNull();
   });
 
   it('finds the right Run when several queues are running at once', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1', featureId: 'task-1' }));
-    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2', featureId: 'task-2' }));
+    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1', featureId: 'task-1' }), unfencedCommit('test-fixture'));
+    await store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2', featureId: 'task-2' }), unfencedCommit('test-fixture'));
 
     expect(store.findRunByTask('task-2')?.queueId).toBe(OTHER_QUEUE);
     expect(store.findRunByTask('task-1')?.queueId).toBe(DEFAULT_QUEUE_ID);
@@ -281,13 +282,13 @@ describe('run invariants are validated on every write path (G-2)', () => {
   it('refuses a half-set retry pair', () => {
     const invalid = { ...buildWorkflowRun(), pendingRetryAt: 1234, pendingRetryCause: null };
 
-    expect(() => store.setRun(DEFAULT_QUEUE_ID, invalid)).toThrow(/invariant violation/i);
+    expect(() => store.setRun(DEFAULT_QUEUE_ID, invalid, unfencedCommit('test-fixture'))).toThrow(/invariant violation/i);
   });
 
   it('persists nothing when the invariant check refuses', () => {
     const invalid = { ...buildWorkflowRun(), pendingRetryAt: 1234, pendingRetryCause: null };
 
-    expect(() => store.setRun(DEFAULT_QUEUE_ID, invalid)).toThrow();
+    expect(() => store.setRun(DEFAULT_QUEUE_ID, invalid, unfencedCommit('test-fixture'))).toThrow();
 
     expect(store.getRunMap()).toEqual({});
   });
@@ -307,8 +308,8 @@ describe('concurrent single-queue writes preserve both entries (G-3)', () => {
       release = resolve;
     });
 
-    const first = store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }));
-    const second = store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }));
+    const first = store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }), unfencedCommit('test-fixture'));
+    const second = store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }), unfencedCommit('test-fixture'));
     release();
     memento.gate = null;
     await Promise.all([first, second]);
@@ -321,7 +322,7 @@ describe('concurrent single-queue writes preserve both entries (G-3)', () => {
     const writes: Promise<void>[] = [];
     for (let index = 0; index < 8; index += 1) {
       const queueId = index % 2 === 0 ? DEFAULT_QUEUE_ID : OTHER_QUEUE;
-      writes.push(store.setRun(queueId, buildWorkflowRun({ id: `run-${index}` })));
+      writes.push(store.setRun(queueId, buildWorkflowRun({ id: `run-${index}` }), unfencedCommit('test-fixture')));
     }
 
     await Promise.all(writes);
@@ -332,11 +333,11 @@ describe('concurrent single-queue writes preserve both entries (G-3)', () => {
   });
 
   it('clears one queue without dropping a concurrent sibling write', async () => {
-    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }));
+    await store.setRun(DEFAULT_QUEUE_ID, buildWorkflowRun({ id: 'run-1' }), unfencedCommit('test-fixture'));
 
     await Promise.all([
-      store.setRun(DEFAULT_QUEUE_ID, null),
-      store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }))
+      store.setRun(DEFAULT_QUEUE_ID, null, unfencedCommit('test-fixture')),
+      store.setRun(OTHER_QUEUE, buildWorkflowRun({ id: 'run-2' }), unfencedCommit('test-fixture'))
     ]);
 
     expect(Object.keys(store.getRunMap())).toEqual([OTHER_QUEUE]);
@@ -393,5 +394,57 @@ describe('terminal transition journal (Feature 093 T048)', () => {
     ]);
 
     expect(Object.keys(store.getTerminalTransitionIntents()).sort()).toEqual(['run-a', 'run-b']);
+  });
+
+  it('preserves unsupported future-version sibling entries across healthy saves, clears, and removeTerminalIntentIfOwn (Post-merge Finding 3)', async () => {
+    const futureEntry = { schemaVersion: 2, run: { id: 'run-future' }, createdAt: 99, futureField: 'keep-me' };
+    memento.seed(KEYS.terminalTransitionIntent, {
+      'run-a': intentFor('run-a', 'task-a'),
+      'run-future': futureEntry
+    });
+
+    expect(Object.keys(store.getTerminalTransitionIntents())).toEqual(['run-a']);
+    expect(store.inspectTerminalTransitionJournal()).toMatchObject({
+      status: 'degraded',
+      readableCount: 1,
+      preservedCount: 1,
+      preservedRunIds: ['run-future'],
+      diagnostics: [{ runId: 'run-future', reason: 'unsupported-schema-version' }]
+    });
+
+    // Healthy sibling save and clear must preserve `run-future` verbatim.
+    await store.setTerminalTransitionIntent('run-b', intentFor('run-b', 'task-b'));
+    await store.setTerminalTransitionIntent('run-a', null);
+    expect(await store.removeTerminalIntentIfOwn('run-b', 1)).toBe(true);
+
+    const persisted = memento.get<Record<string, unknown>>(KEYS.terminalTransitionIntent);
+    expect(persisted).toEqual({ 'run-future': futureEntry });
+
+    // Attempting to overwrite or clear the preserved unreadable runId itself is refused.
+    await expect(
+      store.setTerminalTransitionIntent('run-future', intentFor('run-future', 'task-future'))
+    ).rejects.toMatchObject({ reason: 'terminal-journal-corrupt' });
+    await expect(store.setTerminalTransitionIntent('run-future', null)).rejects.toMatchObject({
+      reason: 'terminal-journal-corrupt'
+    });
+    expect(memento.get<Record<string, unknown>>(KEYS.terminalTransitionIntent)).toEqual({
+      'run-future': futureEntry
+    });
+  });
+
+  it('refuses whole-document writes when the terminal journal envelope itself is unreadable (Post-merge Finding 3)', async () => {
+    for (const badEnvelope of [null, ['unexpected'], 'corrupt', { schemaVersion: 2, run: { id: 'r1' }, createdAt: 1 }]) {
+      memento.seed(KEYS.terminalTransitionIntent, badEnvelope);
+      expect(store.getTerminalTransitionIntents()).toEqual({});
+      expect(store.inspectTerminalTransitionJournal().status).toBe('unreadable-envelope');
+
+      await expect(
+        store.setTerminalTransitionIntent('run-new', intentFor('run-new', 'task-new'))
+      ).rejects.toMatchObject({ reason: 'terminal-journal-corrupt' });
+      await expect(store.removeTerminalIntentIfOwn('run-new', 1)).rejects.toMatchObject({
+        reason: 'terminal-journal-corrupt'
+      });
+      expect(memento.get<unknown>(KEYS.terminalTransitionIntent)).toEqual(badEnvelope);
+    }
   });
 });

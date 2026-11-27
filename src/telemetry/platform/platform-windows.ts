@@ -9,6 +9,7 @@
 
 import type { TelemetrySnapshot } from '../telemetry-snapshot';
 import type { ShellOutFn } from './platform-ps';
+import { spawnCommandFor } from '../../lib/spawn-command';
 
 const SPAWN_TIMEOUT_MS = 1000;
 
@@ -97,8 +98,11 @@ export function createWindowsShellOut(startedAt: number): ShellOutFn {
         resolve(value);
       };
       try {
+        // Review gap GC-24 & FR-R7-18 (N10): resolve `powershell.exe` along strictly absolute
+        // PATH entries only so libuv/CreateProcessW never searches cwd on Windows.
+        const command = spawnCommandFor('powershell.exe', process.env, 'win32');
         child = spawn(
-          'powershell.exe',
+          command,
           [
             '-NoProfile',
             '-Command',

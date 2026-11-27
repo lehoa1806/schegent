@@ -26,12 +26,12 @@ import {
   NONE_ACTIVE_GUIDANCE
 } from '../../../../../src/contracts/empty-catalog-guidance';
 import LaunchableSection from '../LaunchableSection.svelte';
-import RunsSurface from '../../RunsSurface.svelte';
+import QueueTaskComposer from '../../QueueTaskComposer.svelte';
 import { ANALYSIS, buildSnapshot, entries, projection } from './launch-fixture';
 import type { LaunchSection } from '../../../lib/snapshot-types';
 
 const SECTION_SOURCE = resolve(__dirname, '../LaunchableSection.svelte');
-const SURFACE_SOURCE = resolve(__dirname, '../../RunsSurface.svelte');
+const SURFACE_SOURCE = resolve(__dirname, '../../QueueTaskComposer.svelte');
 
 afterEach(() => cleanup());
 
@@ -130,42 +130,45 @@ describe('LaunchableSection — loading is neither empty arm (FR-006)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// FR-031 — the two sections conclude independently
+// FR-031 — the Workflows section concludes on its own state
 // ---------------------------------------------------------------------------
+//
+// Feature 285 (OD-2, FR-001): the composer renders no Pipelines section, so an offered Pipeline
+// neither lists nor stands in for an empty Workflows section.
 
-describe('RunsSurface — one section may list while the other explains (FR-031)', () => {
-  it('lists Pipelines while Workflows shows the publish guidance', () => {
-    const { container } = render(RunsSurface, {
+describe('QueueTaskComposer — the Workflows section concludes on its own state (FR-031)', () => {
+  it('shows the Workflows publish guidance and no Pipelines section while Pipelines are offered', () => {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         launchables: projection(entries(ANALYSIS), { state: 'none-active' })
       })
     });
 
-    expect(testid(container, 'launch-section-list-pipeline')).not.toBeNull();
     expect(testid(container, 'launch-section-none-active-workflow')).not.toBeNull();
-    expect(testid(container, 'launch-section-none-active-pipeline')).toBeNull();
+    expect(testid(container, 'launch-section-pipeline')).toBeNull();
+    expect(testid(container, 'launch-section-list-pipeline')).toBeNull();
   });
 
-  it('lists Workflows while Pipelines shows the import guidance', () => {
-    const { container } = render(RunsSurface, {
+  it('lists Workflows while omitting empty Pipelines', () => {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         launchables: projection({ state: 'no-definitions' }, entries({ ...ANALYSIS, kind: 'workflow' }))
       })
     });
 
     expect(testid(container, 'launch-section-list-workflow')).not.toBeNull();
-    expect(testid(container, 'launch-section-no-definitions-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-no-definitions-pipeline')).toBeNull();
     expect(testid(container, 'launch-section-no-definitions-workflow')).toBeNull();
   });
 
-  it('lets the two sections show different empty reasons at the same time', () => {
-    const { container } = render(RunsSurface, {
+  it('shows Workflows empty reason while omitting empty Pipelines', () => {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         launchables: projection({ state: 'no-definitions' }, { state: 'none-active' })
       })
     });
 
-    expect(testid(container, 'launch-section-no-definitions-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-no-definitions-pipeline')).toBeNull();
     expect(testid(container, 'launch-section-none-active-workflow')).not.toBeNull();
   });
 });
@@ -174,13 +177,13 @@ describe('RunsSurface — one section may list while the other explains (FR-031)
 // FR-032 — an untrusted workspace is told about trust, not about the catalog
 // ---------------------------------------------------------------------------
 
-describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-032)', () => {
+describe('QueueTaskComposer — an untrusted workspace gets the trust explanation (FR-032)', () => {
   it('shows the trust explanation instead of either guidance', () => {
     // No catalog activates in an untrusted workspace, so "import a process
     // document" names an action that cannot succeed and "publish one" names a
     // surface that will refuse. Neither is the operator's next step; granting
     // trust is.
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         workspaceTrust: false,
         launchables: projection({ state: 'no-definitions' }, { state: 'no-definitions' })
@@ -193,7 +196,7 @@ describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-
   });
 
   it('suppresses the sections rather than leaving them empty beneath the banner', () => {
-    const { container } = render(RunsSurface, {
+    const { container } = render(QueueTaskComposer, {
       snapshot: buildSnapshot({
         workspaceTrust: false,
         launchables: projection({ state: 'none-active' }, { state: 'none-active' })
@@ -205,10 +208,10 @@ describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-
   });
 
   it('leaves a trusted workspace alone', () => {
-    const { container } = render(RunsSurface, { snapshot: buildSnapshot({ workspaceTrust: true }) });
+    const { container } = render(QueueTaskComposer, { snapshot: buildSnapshot({ workspaceTrust: true }) });
 
     expect(testid(container, 'trust-banner-workspace-trust')).toBeNull();
-    expect(testid(container, 'launch-section-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-workflow')).not.toBeNull();
   });
 
   it('treats an absent trust field as trusted, not as untrusted', () => {
@@ -219,10 +222,10 @@ describe('RunsSurface — an untrusted workspace gets the trust explanation (FR-
     const snapshot = buildSnapshot();
     delete (snapshot as { workspaceTrust?: boolean }).workspaceTrust;
 
-    const { container } = render(RunsSurface, { snapshot });
+    const { container } = render(QueueTaskComposer, { snapshot });
 
     expect(testid(container, 'trust-banner-workspace-trust')).toBeNull();
-    expect(testid(container, 'launch-section-pipeline')).not.toBeNull();
+    expect(testid(container, 'launch-section-workflow')).not.toBeNull();
   });
 });
 

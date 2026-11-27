@@ -1,0 +1,138 @@
+# Product workflows
+
+These workflows use only operator surfaces that are registered by the extension host. Perform mutations in the VS Code window whose Schegent dashboard says **Workspace Connected**; other windows are intentionally read-only.
+<!-- Source: src/activation/ui-wiring.ts -->
+<!-- Source: webview-ui/src/dashboard/App.svelte -->
+
+## 1. Add work, then choose when its queue starts
+
+Use this path when you want enqueueing and execution to be separate decisions. If the catalog has no Workflow yet, import one of the `.workflow.yaml` packages in [`examples/`](../../examples/README.md) first: each package is one import and includes the Phases it needs, and [the quickstart](../tutorials/user-quickstart.md) walks the whole path.
+
+1. Open the dashboard, select **Queues**, then select the target queue's name.
+2. Select **Add work**.
+3. Under **Workflows**, the workspace's default Workflow is preselected when launchable, or select another published Workflow to open its compact summary and start form in one step. Enter **Instructions** (and any declared inputs, optional attachments, or output targets), then select **Add task**.
+   - To enqueue multiple tasks in one submission, place `---schegent-task---` on its own line between task instructions. The submit button updates to **Add N tasks** and dispatches each segment sequentially with the same Workflow, start node, declared inputs, attachments, and output targets. If any task in the batch is refused or times out, the batch halts, removes the already-accepted segments from **Instructions**, and leaves the remaining segments in place so you can fix the issue and resubmit without duplicating earlier tasks.
+4. Wait for `Added task to queue. Run <run-id>.` (or `Added N of N tasks to queue.` for a batch).
+5. If the queue was empty, use the inline **Start the queue** chooser. Choose one of:
+
+   - **Start now**.
+   - **Start in HH:MM**, entering whole hours and minutes.
+   - **Start at HH:MM**, entering the host's local 24-hour clock time.
+   - **Close**, which changes nothing.
+
+An enqueued task does not itself carry a start intent. On an otherwise empty active queue, the host leaves it `idle-pending` for this separate choice. A scheduled start must be no more than seven days away.
+<!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
+<!-- Source: webview-ui/src/components/QueueTaskComposer.svelte -->
+<!-- Source: webview-ui/src/components/Runs/LaunchableDetail.svelte -->
+<!-- Source: webview-ui/src/components/Runs/WorkflowTriggerForm.svelte -->
+<!-- Source: webview-ui/src/lib/task-batch.ts -->
+<!-- Source: webview-ui/src/components/drilldown/QueueIdlePendingPanel.svelte -->
+<!-- Source: webview-ui/src/components/StartModeChooser.svelte -->
+<!-- Source: src/commands/start-queue.ts -->
+<!-- Source: examples/README.md -->
+
+After scheduling, the queue shows its resolved local fire time. Use **Cancel** to remove the schedule while retaining the pending work, **Change** to replace it, or **Start now** to run immediately.
+<!-- Source: webview-ui/src/components/ScheduledStartIndicator.svelte -->
+
+## 2. Create and configure parallel queues
+
+1. On **Queues**, select **New queue**, enter a name, and select **Create**.
+2. Select **Queue defaults**. **Settings** opens on its **Queues** section, where you set:
+
+   - **Runs at the same time**: an integer from `1` through `20`, across all queues.
+   - **Default queue**: the queue that receives an otherwise unaddressed task.
+   - **When a task fails**: for each queue, **Stop the queue**, **Continue with the next task**, or the workspace default.
+
+   Nothing is written until you select **Save** at the top of the page. **Revert** discards the changes.
+
+3. To rename a queue, open it, open **More queue actions**, and select **Rename…**.
+4. For a pending task, use **Move to…** to transfer it to another queue. To change its order within the queue, drag its handle, or open the task's actions menu and select **Move up** or **Move down**.
+
+There may be at most 20 queues. A queue name is 1–64 characters after trimming and must be unique case-insensitively. Queue positions are contiguous, and pending work is processed in ascending position order.
+<!-- Source: webview-ui/src/components/drilldown/QueuesTier.svelte -->
+<!-- Source: webview-ui/src/components/settings/QueueDefaultsSection.svelte -->
+<!-- Source: webview-ui/src/components/settings/QueueFailurePolicyTable.svelte -->
+<!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
+<!-- Source: webview-ui/src/components/drilldown/QueueDetailRows.svelte -->
+<!-- Source: src/queue/queue-registry.ts -->
+<!-- Source: src/queue/queue-manager.ts -->
+
+To delete a queue, open it, open **More queue actions**, and select **Delete queue…**. The host first calculates the impact and the confirmation names its pending-task and connected-run counts. The default queue cannot be deleted, and no queue with an in-flight task can be deleted. To delete the current default, first make a different queue the default in the **Queues** section of **Settings**.
+<!-- Source: webview-ui/src/components/drilldown/QueueDetailTier.svelte -->
+<!-- Source: webview-ui/src/lib/queue-control-ipc.ts -->
+<!-- Source: src/ui/sidebar/commands/cmd-delete-queue.ts -->
+<!-- Source: src/queue/queue-manager.ts -->
+
+The concurrency cap is workspace-wide while each individual queue still runs at most one task. Multiple runs share one working tree; increasing the cap does not create isolated checkouts.
+<!-- Source: package.json -->
+<!-- Source: src/services/auto-drain-coordinator.ts -->
+
+## 3. Pause, resume, or restart a phase
+
+1. On **Queues**, open the queue, then select its executing task. For a
+   Workflow, the queue lists the whole run as one row: open it, then select
+   the running node to open its Task.
+2. In run detail, select the active phase.
+3. Use **Pause** to request a pause at the active phase.
+4. When paused, optionally enter a **Resume prompt**, then select **Resume**.
+5. Use **Restart** when the active phase should be invoked again from its start.
+
+The controls are enabled only in the primary window and only when the detail view describes the run actually executing on that queue. The host addresses lifecycle commands by queue so a control cannot silently operate on a sibling run.
+<!-- Source: webview-ui/src/components/drilldown/RunDetailTier.svelte -->
+<!-- Source: webview-ui/src/components/PhaseControlMenu.svelte -->
+<!-- Source: webview-ui/src/lib/phase-control.ts -->
+<!-- Source: src/controller/workflow-controller.ts -->
+
+For a workspace with exactly one paused or failed run, the Command Palette action **Schegent: Resume Paused or Failed Workflow** is a shortcut. With several resumable runs it refuses and directs you to resume a specific run from the UI; it never guesses a target.
+<!-- Source: package.json -->
+<!-- Source: src/commands/resume.ts -->
+<!-- Source: src/controller/sole-run-resolver.ts -->
+
+When a run fails, its notice names a cause and the action worth taking. What each cause means, and how Resume, Retry and Restart differ, is in [When a run fails: its cause and what to do next](../operations/retry-contract.md#when-a-run-fails-its-cause-and-what-to-do-next).
+
+## 4. Repeat a historical run with current definitions
+
+1. Open **History**.
+2. Locate a terminal run, open its actions menu, and select **Run again…**. Alternatively, select the run's name to open its detail, then select **Run again…** at the foot of the detail.
+3. Read the **Repeat this run** notices before editing the form. The panel explicitly reports:
+
+   - when the Active version differs from the version frozen by the old run;
+   - when the old run was one step inside a Workflow, so only that step is repeated and the Workflow is not restarted;
+   - whether the same queue will be used or the deleted queue was replaced by the default.
+
+4. Review the pre-filled **Instructions**, provide any required inputs and outputs, then select **Run Workflow**.
+
+The repeat form uses the recorded description preview and has no prior input-port values to restore. Only that preview is pre-filled; if it was truncated, the panel reports the retained and original character counts. A repeat always passes through the current launch form and host validation, and it resolves the currently Active definition rather than resurrecting an inactive catalog body.
+<!-- Source: webview-ui/src/components/HistoryDashboard.svelte -->
+<!-- Source: webview-ui/src/components/HistorySection.svelte -->
+<!-- Source: webview-ui/src/components/HistoryRunDetail.svelte -->
+<!-- Source: webview-ui/src/components/HistoryRerunPanel.svelte -->
+<!-- Source: webview-ui/src/lib/history-rerun.ts -->
+<!-- Source: webview-ui/src/components/RunLauncher/RunLauncher.svelte -->
+
+## 5. Inspect or export audit evidence
+
+Use **Schegent: Show Audit Log** in the Command Palette to open `.schegent/audit.log` as a preview editor. If the file does not exist, Schegent reports `Schegent: no audit log yet.`
+<!-- Source: package.json -->
+<!-- Source: src/commands/show-audit.ts -->
+
+Use **Schegent: Export Metadata-Only Audit** when the recipient should not receive full payload text:
+
+1. Run the command from the Command Palette.
+2. The save dialog opens in your home directory with the default filename `schegent-audit-v3.jsonl`; accept or replace it.
+3. Save the JSON Lines file. It is written with mode `0600`, and only to a local file outside `.schegent/`: a remote destination or one that resolves into the evidence store is refused, and the refusal is recorded.
+
+The export includes only parseable schema-v3 entries. It retains the entry identity, timestamp, event type, phase, iteration, outcome, and schema version, plus only the allowlisted count, process-authority, stream-pressure, and security-lifecycle payload keys enforced in `src/services/audit-export/counts-only-export.ts`: `action`, `attemptId`, `cause`, `clearedBinding`, `containmentPosture`, `executableTarget`, `exitCode`, `failureCause`, `fileChangeCounts`, `fingerprintDigestPrefix`, `matchesConfiguredKey`, `metrics`, `omittedFileEvidenceCount`, `omittedToolEvidenceCount`, `outcome`, `permissionMode`, `removedSetting`, `resultEnvelope`, `scanner`, `secretKeyDigestPrefix`, `stalled`, `streamHighWaterBytes`, `streamObservedBytes`, `streamPendingHighWaterBytes`, `streamTruncated`, `terminationReason`, and `toolCategoryCounts`. Guarded fields are additionally value-checked by event type, since the export reads the bytes on disk rather than what the current writer produces: on `phase-end` only the literals `cap_exhausted` and `pre_spawn_refusal` survive as a `cause`, other event families keep their own `cause` vocabularies (admitted by shape, as a short lowercase token), `stalled` must be a positive whole number, `attemptId` must be the UUID shape the writer mints, `resultEnvelope` must be `received` or `absent`, `failureCause` must be one of the ten closed codes and survives only on `task-execution-ended`, and a rejected value exports as `null` rather than being dropped. It is a filtered export; the original audit log is unchanged.
+<!-- Source: package.json -->
+<!-- Source: src/services/audit-export/counts-only-export.ts -->
+<!-- Source: src/commands/export-audit.ts -->
+<!-- Source: src/parser/audit-log-parser.ts -->
+
+## 6. Recover from storage, writer, or execution-lane incidents
+
+When an extension upgrade refuses to open the operational SQLite database, workspace state writes time out and enter writer quarantine, or an isolated execution lane stops mid-flight:
+
+- Start with the rehearsed, symptom-first [Incident recovery guide](../operations/incident-recovery-guide.md) for exact diagnostics, non-destructive recovery steps, surviving files, and resumption checks.
+- Use the [SQLite rollback runbook](../operations/sqlite-rollback-runbook.md) before upgrading Schegent (to take and verify a pre-upgrade backup) or when executing an online restore or cross-version downgrade rollback.
+<!-- Source: docs/operations/incident-recovery-guide.md -->
+<!-- Source: docs/operations/sqlite-rollback-runbook.md -->

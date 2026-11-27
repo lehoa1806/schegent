@@ -14,7 +14,7 @@
  * That is unobservable from behaviour, so it is measured (T622, SC-004).
  */
 import { describe, it, expect } from 'vitest';
-import { parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
+import { NO_REGION, parseAuditLogBlock } from '../../../src/parser/audit-log-parser';
 import { parseInvocation, type InvocationResult, type ParseInputs } from '../../../src/parser/stdout-parser';
 
 const OPEN = '=== SCHEGENT AUDIT LOG ===';
@@ -127,6 +127,20 @@ describe('region edges (T621)', () => {
     expect(warningsOf(result)).toEqual([]);
   });
 
+  it('records a fence directly above the block on the region, and nothing else about the head', () => {
+    // FR-R4-F12: the one fact read from before the block is whether the line directly above its open
+    // marker is a fence delimiter. A fence further up is the head, which is not read (plan D4), and a
+    // region of an unfenced block is the object it was before the flag existed, key and all.
+    const fenced = parseAuditLogBlock([FENCE, ...block(), FENCE, TOKEN].join('\n')).region;
+    const apart = parseAuditLogBlock([FENCE, 'a line between', ...block(), FENCE, TOKEN].join('\n')).region;
+    const bare = parseAuditLogBlock([...block(), TOKEN].join('\n')).region;
+
+    expect(fenced.blockFenced).toBe(true);
+    expect('blockFenced' in apart).toBe(false);
+    expect('blockFenced' in bare).toBe(false);
+    expect(bare).toEqual({ text: [CLOSE, TOKEN].join('\n'), present: true });
+  });
+
   it('does not resolve a region that contains only its close marker', () => {
     // The block closed and the run stopped. There is a region, it is one line
     // long, and it holds no verdict — so the phase did not report one.
@@ -151,6 +165,51 @@ describe('region edges (T621)', () => {
     const audit = parseAuditLogBlock('');
     expect(audit.region).toEqual({ text: '', present: false });
     expect(parse('').kind).not.toBe('clean');
+  });
+});
+
+describe('the region is required (FR-R3-199)', () => {
+  it('cannot be omitted, because the region decides which tokens the host reads', () => {
+    // A token printed before the block. phase-runner.ts forwards the region, so
+    // the host ignores it. FR-R3-199: while the field was optional, omitting it
+    // meant a whole-stdout scan that accepted the token, and the evals corpus
+    // omitted it so every clean case passed that way. FR-R4-F12: omitted, the
+    // region now reads as "no block", which refuses a token the host would
+    // accept, so an omission is no longer silent: it stops every compliant Phase.
+    const stdout = [TOKEN, ...block()].join('\n');
+    const audit = parseAuditLogBlock(stdout);
+    // @ts-expect-error — `region` is required. tsc enforces it, not the
+    // assertions below: made optional again, this directive goes unused and
+    // `typecheck:tests` fails.
+    const withoutRegion: ParseInputs = {
+      stdout,
+      stderr: '',
+      exitCode: 0,
+      rateLimit: { matched: false, cause: '' },
+      auditEntry: audit.entry,
+      auditWarnings: audit.warnings
+    };
+    expect(parseInvocation({ ...withoutRegion, region: NO_REGION }).kind).not.toBe('clean');
+    expect(parseInvocation({ ...withoutRegion, region: audit.region }).kind).not.toBe('clean');
+
+    // The other direction, which is what makes the omission loud: a compliant stream that the
+    // real region accepts is refused when the region is dropped.
+    const compliant = [...block(), TOKEN].join('\n');
+    const compliantAudit = parseAuditLogBlock(compliant);
+    const compliantInputs = {
+      ...withoutRegion,
+      stdout: compliant,
+      auditEntry: compliantAudit.entry,
+      auditWarnings: compliantAudit.warnings
+    };
+    expect(parseInvocation({ ...compliantInputs, region: compliantAudit.region }).kind).toBe('clean');
+    expect(parseInvocation({ ...compliantInputs, region: NO_REGION }).kind).not.toBe('clean');
+  });
+
+  it('is NO_REGION for a stream with no complete block', () => {
+    // What a caller with no block passes is what the audit parser returns for one.
+    expect(parseAuditLogBlock('').region).toBe(NO_REGION);
+    expect(parseAuditLogBlock([OPEN, 'notes: cut off'].join('\n')).region).toBe(NO_REGION);
   });
 });
 

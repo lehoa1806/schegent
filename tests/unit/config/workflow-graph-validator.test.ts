@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import type { PipelineDefinition } from '../../../src/contracts/pipeline-definitions';
+import type { PhaseDefinition } from '../../../src/contracts/process-definitions';
 import type {
   WorkflowCondition,
   WorkflowConnection,
@@ -722,10 +723,10 @@ describe('dependency closure (US3, T042)', () => {
     );
     const invalid = only(errors, 'pipeline-invalid');
     expect(invalid).toHaveLength(1);
-    expect(invalid[0].field).toBe('nodes[1].pipelineId');
+    expect(invalid[0]?.field).toBe('nodes[1].pipelineId');
     // The operator has to be able to act on this: the failing Phase is named,
     // two levels down from the Workflow they were editing.
-    expect(invalid[0].message).toContain('review');
+    expect(invalid[0]?.message).toContain('review');
     expect(codes(errors)).not.toContain('unknown-pipeline');
   });
 
@@ -738,8 +739,8 @@ describe('dependency closure (US3, T042)', () => {
       causes
     );
     // Two different repairs: fix the Pipeline, versus author or import it.
-    expect(only(errors, 'pipeline-invalid')[0].field).toBe('nodes[0].pipelineId');
-    expect(only(errors, 'unknown-pipeline')[0].field).toBe('nodes[1].pipelineId');
+    expect(only(errors, 'pipeline-invalid')[0]?.field).toBe('nodes[0].pipelineId');
+    expect(only(errors, 'unknown-pipeline')[0]?.field).toBe('nodes[1].pipelineId');
   });
 
   // US3 scenario 3, in the two directions the shipped resolution rule produces.
@@ -982,5 +983,640 @@ describe('validation latency (SC-009)', () => {
       median,
       `SC-009: median ${median.toFixed(3)} ms, worst ${worst.toFixed(3)} ms over ${samples.length} runs`
     ).toBeLessThanOrEqual(SC009_BUDGET_MS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 254 (FR-R4-F07, C-T2; contract C1, C3; data-model §7; FR-026, FR-028) — a condition whose
+// outcome v1 operand semantics fix in advance is refused
+// ---------------------------------------------------------------------------
+//
+// Operands are text in v1: a node status, or the location reference an output is recorded as. The
+// evaluator compares only values of the same type, and the ordering operators need numbers, so a
+// condition that asks a text operand about a number, a boolean or an ordering can never match. It used
+// to load, validate and silently send every Run down the default route. The graph validator now refuses
+// it with one distinct code, `condition-comparison-unsupported`, at `connections[<i>].condition`.
+//
+// The rule runs AFTER the shape guard and the right-operand check find nothing, so an unknown operator
+// keeps `unsupported-condition` and a malformed `right` keeps `condition-right-invalid`, each with no
+// second defect. For a node-status operand the existing right-operand check already refuses anything
+// but a terminal status, so the new code covers only an ordering operator against a status there.
+//
+// The message carries no authored value: it names the operator (a closed set) and the literal's type.
+// For `equals`, `notEquals` and the ordering operators the fixed outcome is that the condition can
+// never match, so the default route is always taken. For `in` the list holds a non-text member that can
+// never match, but a list that also holds text can still match through it, so that message never says
+// the default route would always be taken (FR-028).
+
+describe('condition-comparison-unsupported (C-T2, FR-026, FR-028)', () => {
+  const left = { source: 'node-output', nodeId: 'a', field: 'verdict' } as const;
+  const statusLeft = { source: 'node-status', nodeId: 'a' } as const;
+  const UNSUPPORTED = 'condition-comparison-unsupported';
+
+  const verdictOf = (condition: unknown): readonly WorkflowFieldError[] =>
+    validateWorkflowGraph(
+      graph(
+        [node('a'), node('b')],
+        [link('a', 'plan', 'b', 'brief', { condition: condition as WorkflowCondition })]
+      ),
+      CATALOG
+    );
+
+  const unsupportedOf = (condition: unknown): WorkflowFieldError[] =>
+    only(verdictOf(condition), UNSUPPORTED);
+
+  describe('is silent for the conditions that can match (a control per valid row)', () => {
+    it.each([
+      ['exists, no right', { left, operator: 'exists' }],
+      ['equals a string', { left, operator: 'equals', right: 'ship' }],
+      ['notEquals a string', { left, operator: 'notEquals', right: 'ship' }],
+      ['in a list of strings', { left, operator: 'in', right: ['ship', 'hold'] }],
+      ['a node status equals a terminal status', { left: statusLeft, operator: 'equals', right: 'completed' }],
+      ['a node status in terminal statuses', { left: statusLeft, operator: 'in', right: ['failed', 'canceled'] }]
+    ])('%s', (_label, condition) => {
+      expect(verdictOf(condition)).toEqual([]);
+    });
+  });
+
+  describe('refuses a non-text literal under equals and notEquals', () => {
+    it.each([
+      ['equals a number', { left, operator: 'equals', right: 5 }, 'number'],
+      ['equals a boolean', { left, operator: 'equals', right: true }, 'boolean'],
+      ['notEquals a number', { left, operator: 'notEquals', right: 5 }, 'number'],
+      ['notEquals a boolean', { left, operator: 'notEquals', right: false }, 'boolean']
+    ])('%s', (_label, condition, kind) => {
+      const defects = unsupportedOf(condition);
+      expect(defects).toHaveLength(1);
+      expect(defects.at(0)).toMatchObject({
+        workflowId: 'wf',
+        field: 'connections[0].condition',
+        code: UNSUPPORTED
+      });
+      expect(defects.at(0)?.message).toContain(kind);
+    });
+  });
+
+  describe('refuses a non-text member of an in list', () => {
+    it.each([
+      ['a number among strings', ['ship', 5]],
+      ['only numbers', [5, 6]],
+      ['a boolean among strings', [true, 'ship']],
+      ['a number and a boolean', [5, false]]
+    ])('%s', (_label, right) => {
+      const defects = unsupportedOf({ left, operator: 'in', right });
+      expect(defects).toHaveLength(1);
+      expect(defects.at(0)?.field).toBe('connections[0].condition');
+    });
+  });
+
+  describe('refuses every ordering operator, whatever the literal', () => {
+    it.each(['greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual'])('%s', (operator) => {
+      for (const right of [3, 'text', true]) {
+        const defects = unsupportedOf({ left, operator, right });
+        expect(defects, `${operator} ${typeof right}`).toHaveLength(1);
+        expect(defects.at(0)?.field).toBe('connections[0].condition');
+      }
+    });
+
+    it('covers a node-status operand under an ordering operator against a status', () => {
+      const defects = unsupportedOf({ left: statusLeft, operator: 'greaterThan', right: 'completed' });
+      expect(defects).toHaveLength(1);
+      expect(defects.at(0)?.field).toBe('connections[0].condition');
+    });
+  });
+
+  describe('leaves the existing defects to the existing checks', () => {
+    it('keeps unsupported-condition for an unknown operator, with no second defect', () => {
+      const errors = verdictOf({ left, operator: 'matches', right: 'ship' });
+      expect(codes(errors)).toContain('unsupported-condition');
+      expect(codes(errors)).not.toContain(UNSUPPORTED);
+    });
+
+    it('keeps condition-right-invalid for a malformed right, with no second defect', () => {
+      for (const condition of [
+        { left, operator: 'equals' },
+        { left, operator: 'equals', right: { nested: 1 } },
+        { left, operator: 'in', right: 'ship' },
+        { left, operator: 'in', right: [] },
+        { left, operator: 'exists', right: 'ship' }
+      ]) {
+        const errors = verdictOf(condition);
+        expect(codes(errors), JSON.stringify(condition)).toContain('condition-right-invalid');
+        expect(codes(errors), JSON.stringify(condition)).not.toContain(UNSUPPORTED);
+      }
+    });
+
+    it('keeps condition-right-invalid for a node status compared with a number, with no second defect (TA14)', () => {
+      const errors = verdictOf({ left: statusLeft, operator: 'equals', right: 5 });
+      const invalid = only(errors, 'condition-right-invalid');
+      expect(invalid).toHaveLength(1);
+      expect(invalid.at(0)?.field).toBe('connections[0].condition.right');
+      expect(codes(errors)).not.toContain(UNSUPPORTED);
+    });
+
+    it('keeps condition-right-invalid for a node status in a list holding a number', () => {
+      const errors = verdictOf({ left: statusLeft, operator: 'in', right: ['completed', 5] });
+      expect(codes(errors)).toContain('condition-right-invalid');
+      expect(codes(errors)).not.toContain(UNSUPPORTED);
+    });
+  });
+
+  it('reports one defect per connection, each at its own index', () => {
+    const errors = validateWorkflowGraph(
+      graph(
+        [node('a'), node('b')],
+        [
+          link('a', 'plan', 'b', 'brief', { condition: { left, operator: 'equals', right: 5 } as WorkflowCondition }),
+          link('a', 'data', 'b', 'list', { condition: { left, operator: 'lessThan', right: 9 } as WorkflowCondition })
+        ]
+      ),
+      CATALOG
+    );
+    expect(only(errors, UNSUPPORTED).map((defect) => defect.field)).toEqual([
+      'connections[0].condition',
+      'connections[1].condition'
+    ]);
+  });
+
+  describe('the message (FR-028)', () => {
+    it('states that v1 compares text and names only the operator and the literal type', () => {
+      const message = unsupportedOf({ left, operator: 'equals', right: 987654 }).at(0)?.message ?? '';
+      expect(message).toMatch(/compare text/);
+      expect(message).toContain('equals');
+      expect(message).toContain('number');
+      // The authored value never reaches the message.
+      expect(message).not.toContain('987654');
+    });
+
+    it('does not echo an authored in-list member', () => {
+      const message = unsupportedOf({ left, operator: 'in', right: ['secret-text', 424242] }).at(0)?.message ?? '';
+      expect(message).not.toContain('424242');
+      expect(message).not.toContain('secret-text');
+    });
+
+    it.each([
+      ['equals', { left, operator: 'equals', right: 5 }],
+      ['notEquals', { left, operator: 'notEquals', right: true }],
+      ['greaterThan', { left, operator: 'greaterThan', right: 3 }],
+      ['lessThanOrEqual', { left, operator: 'lessThanOrEqual', right: 'x' }]
+    ])('says the default route would always be taken for %s', (_label, condition) => {
+      const message = unsupportedOf(condition).at(0)?.message ?? '';
+      expect(message).toMatch(/can never match/);
+      expect(message).toMatch(/default route would always be taken/);
+    });
+
+    it('says an in-list non-text member can never match, and never that the default route is always taken', () => {
+      // `['ship', 5]` can still match through 'ship', so "the default route would always be taken"
+      // would be false of it. The message states what is true: the number member can never match.
+      const message = unsupportedOf({ left, operator: 'in', right: ['ship', 5] }).at(0)?.message ?? '';
+      expect(message).toMatch(/compare text/);
+      expect(message).toMatch(/can never match/);
+      expect(message).toContain('number');
+      expect(message).not.toMatch(/default route/);
+    });
+
+    it('names both literal types when an in list holds both', () => {
+      const message = unsupportedOf({ left, operator: 'in', right: [5, false] }).at(0)?.message ?? '';
+      expect(message).toContain('number');
+      expect(message).toContain('boolean');
+    });
+  });
+});
+
+describe('unified Phase and child-Workflow graph validation (FR-R5-F01-T03, T04)', () => {
+  const effectivePhases = [
+    { phaseId: 'specify', name: 'Specify', version: 1, instruction: 'Specify' },
+    { phaseId: 'plan', name: 'Plan', version: 1, instruction: 'Plan' },
+    { phaseId: 'implement', name: 'Implement', version: 1, instruction: 'Implement' }
+  ];
+
+  const childWorkflow: WorkflowDefinition = {
+    workflowId: 'child-review',
+    name: 'Child Review',
+    version: 1,
+    inputs: [{ portId: 'draft-plan', label: 'Draft Plan', type: 'text', required: true }],
+    outputs: [{ portId: 'approved-plan', label: 'Approved Plan', type: 'markdown', required: true }],
+    nodes: [{ nodeId: 'p1', kind: 'phase', phaseId: 'plan' }],
+    connections: [],
+    startNodeIds: ['p1']
+  };
+
+  it('accepts a pure Phase control sequence with zero data bindings', () => {
+    const wf: WorkflowDefinition = {
+      workflowId: 'linear-phases',
+      name: 'Linear Phases',
+      version: 1,
+      nodes: [
+        { nodeId: 'step-1', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'step-2', kind: 'phase', phaseId: 'plan' }
+      ],
+      connections: [{ from: { nodeId: 'step-1' }, to: { nodeId: 'step-2' } }],
+      startNodeIds: ['step-1']
+    };
+
+    const errors = validateWorkflowGraph(wf, [], new Map(), { effectivePhases });
+    expect(errors).toEqual([]);
+  });
+
+  it('validates child-Workflow node bindings and reports missing-required-input when unbound', () => {
+    const wfMissingInput: WorkflowDefinition = {
+      workflowId: 'parent-missing-input',
+      name: 'Parent Missing Input',
+      version: 1,
+      nodes: [{ nodeId: 'review', kind: 'workflow', workflowId: 'child-review' }],
+      connections: [],
+      bindings: [],
+      startNodeIds: ['review']
+    };
+
+    const missingErrors = validateWorkflowGraph(wfMissingInput, [], new Map(), {
+      effectivePhases,
+      effectiveWorkflows: [childWorkflow]
+    });
+    expect(codes(missingErrors)).toContain('missing-required-input');
+
+    const wfBoundInput: WorkflowDefinition = {
+      ...wfMissingInput,
+      inputs: [{ portId: 'spec', label: 'Spec', type: 'text' }],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'review',
+          inputKey: 'draft-plan',
+          source: { from: 'workflow-input', portId: 'spec' }
+        }
+      ]
+    };
+    const cleanErrors = validateWorkflowGraph(wfBoundInput, [], new Map(), {
+      effectivePhases,
+      effectiveWorkflows: [childWorkflow]
+    });
+    expect(cleanErrors).toEqual([]);
+  });
+
+  it('reports binding-source-not-ancestor when a binding reads from a downstream or sibling node', () => {
+    const wf: WorkflowDefinition = {
+      workflowId: 'bad-ancestor',
+      name: 'Bad Ancestor',
+      version: 1,
+      nodes: [
+        { nodeId: 'first', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'second', kind: 'workflow', workflowId: 'child-review' }
+      ],
+      connections: [{ from: { nodeId: 'first' }, to: { nodeId: 'second' } }],
+      bindings: [
+        {
+          kind: 'input',
+          nodeId: 'first',
+          inputKey: 'brief',
+          source: { from: 'node-output', nodeId: 'second', portId: 'approved-plan' }
+        },
+        {
+          kind: 'input',
+          nodeId: 'second',
+          inputKey: 'draft-plan',
+          source: { from: 'node-output', nodeId: 'first', portId: 'spec' }
+        }
+      ],
+      startNodeIds: ['first']
+    };
+
+    const errors = validateWorkflowGraph(wf, [], new Map(), {
+      effectivePhases,
+      effectiveWorkflows: [childWorkflow]
+    });
+    expect(codes(errors)).toContain('binding-source-not-ancestor');
+  });
+
+  it('enforces required output coverage on all return branches while allowing optional (required: false) branch outputs', () => {
+    const branchingWf = (requiredOutput: boolean): WorkflowDefinition => ({
+      workflowId: 'branching-outputs',
+      name: 'Branching Outputs',
+      version: 1,
+      outputs: [
+        {
+          portId: 'branch-report',
+          label: 'Branch Report',
+          type: 'markdown',
+          required: requiredOutput
+        }
+      ],
+      nodes: [
+        { nodeId: 'gate', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'left', kind: 'phase', phaseId: 'plan' },
+        { nodeId: 'right', kind: 'phase', phaseId: 'implement' }
+      ],
+      connections: [
+        {
+          from: { nodeId: 'gate' },
+          to: { nodeId: 'left' },
+          priority: 10,
+          condition: {
+            left: { source: 'node-status', nodeId: 'gate' },
+            operator: 'equals',
+            right: 'completed'
+          }
+        },
+        {
+          from: { nodeId: 'gate' },
+          to: { nodeId: 'right' },
+          priority: 1,
+          isDefault: true
+        }
+      ],
+      bindings: [
+        {
+          kind: 'output',
+          nodeId: 'left',
+          portId: 'branch-report',
+          outputKey: 'plan-doc'
+        }
+      ],
+      startNodeIds: ['gate']
+    });
+
+    const requiredErrors = validateWorkflowGraph(branchingWf(true), [], new Map(), {
+      effectivePhases
+    });
+    expect(codes(requiredErrors)).toContain('missing-required-output-on-branch');
+
+    const optionalErrors = validateWorkflowGraph(branchingWf(false), [], new Map(), {
+      effectivePhases
+    });
+    expect(optionalErrors).toEqual([]);
+  });
+
+  describe('required-output coverage stays linear in the size of the graph', () => {
+    // Every diamond doubles the number of start-to-return routes, so 18 stacked diamonds hold
+    // 2^18 of them in 54 nodes. Listing the routes took the better part of a second and about a
+    // gigabyte; walking the graph once per required output takes well under a millisecond.
+    const DIAMOND_COUNT = 18;
+    const BRANCH_COVERAGE_BUDGET_MS = 250;
+
+    const nodeIdOf = (role: string, index: number): string => `${role}-${String(index)}`;
+
+    /**
+     * `fork-i` splits into `left-i` and `right-i`, which rejoin at `join-i`, which feeds
+     * `fork-(i+1)`. The last join is the only node without an outgoing connection.
+     */
+    const stackedDiamonds = (diamondCount: number, producerNodeId: string): WorkflowDefinition => {
+      const nodes: WorkflowNode[] = [];
+      const connections: WorkflowConnection[] = [];
+      for (let index = 0; index < diamondCount; index += 1) {
+        const fork = nodeIdOf('fork', index);
+        const left = nodeIdOf('left', index);
+        const right = nodeIdOf('right', index);
+        const join = nodeIdOf('join', index);
+        for (const nodeId of [fork, left, right, join]) {
+          nodes.push({ nodeId, kind: 'phase', phaseId: 'plan' });
+        }
+        connections.push(
+          { from: { nodeId: fork }, to: { nodeId: left } },
+          { from: { nodeId: fork }, to: { nodeId: right } },
+          { from: { nodeId: left }, to: { nodeId: join } },
+          { from: { nodeId: right }, to: { nodeId: join } }
+        );
+        if (index + 1 < diamondCount) {
+          connections.push({ from: { nodeId: join }, to: { nodeId: nodeIdOf('fork', index + 1) } });
+        }
+      }
+      return {
+        workflowId: 'stacked-diamonds',
+        name: 'Stacked Diamonds',
+        version: 1,
+        outputs: [{ portId: 'final-report', label: 'Final Report', type: 'markdown', required: true }],
+        nodes,
+        connections,
+        bindings: [{ kind: 'output', nodeId: producerNodeId, portId: 'final-report', outputKey: 'report' }],
+        startNodeIds: [nodeIdOf('fork', 0)]
+      };
+    };
+
+    const validateTimed = (
+      definition: WorkflowDefinition
+    ): { readonly errors: readonly WorkflowFieldError[]; readonly elapsedMs: number } => {
+      // Warm the validator on a small graph so the budget measures the algorithm, not the JIT.
+      validateWorkflowGraph(stackedDiamonds(2, nodeIdOf('join', 1)), [], new Map(), { effectivePhases });
+      const started = performance.now();
+      const errors = validateWorkflowGraph(definition, [], new Map(), { effectivePhases });
+      return { errors, elapsedMs: performance.now() - started };
+    };
+
+    it('accepts a required output produced after every branch rejoins, within the time budget', () => {
+      const lastJoin = nodeIdOf('join', DIAMOND_COUNT - 1);
+      const { errors, elapsedMs } = validateTimed(stackedDiamonds(DIAMOND_COUNT, lastJoin));
+
+      expect(errors).toEqual([]);
+      expect(
+        elapsedMs,
+        `${String(DIAMOND_COUNT)} stacked diamonds took ${elapsedMs.toFixed(1)} ms`
+      ).toBeLessThan(BRANCH_COVERAGE_BUDGET_MS);
+    });
+
+    it('refuses a required output produced on one side of the first diamond, within the time budget', () => {
+      const { errors, elapsedMs } = validateTimed(
+        stackedDiamonds(DIAMOND_COUNT, nodeIdOf('left', 0))
+      );
+
+      expect(codes(errors)).toEqual(['missing-required-output-on-branch']);
+      expect(
+        elapsedMs,
+        `${String(DIAMOND_COUNT)} stacked diamonds took ${elapsedMs.toFixed(1)} ms`
+      ).toBeLessThan(BRANCH_COVERAGE_BUDGET_MS);
+    });
+
+    it('treats a node with a Return connection as a terminal branch even when it also has onward connections', () => {
+      const earlyReturn = (producerNodeId: string): WorkflowDefinition => ({
+        workflowId: 'early-return',
+        name: 'Early Return',
+        version: 1,
+        outputs: [{ portId: 'final-report', label: 'Final Report', type: 'markdown', required: true }],
+        nodes: [
+          { nodeId: 'gate', kind: 'phase', phaseId: 'specify' },
+          { nodeId: 'finish', kind: 'phase', phaseId: 'plan' }
+        ],
+        connections: [
+          { from: { nodeId: 'gate' }, to: { nodeId: 'return', kind: 'return' } },
+          { from: { nodeId: 'gate' }, to: { nodeId: 'finish' } }
+        ],
+        bindings: [{ kind: 'output', nodeId: producerNodeId, portId: 'final-report', outputKey: 'report' }],
+        startNodeIds: ['gate']
+      });
+
+      const onlyAfterTheGate = validateWorkflowGraph(earlyReturn('finish'), [], new Map(), { effectivePhases });
+      expect(codes(onlyAfterTheGate)).toEqual(['missing-required-output-on-branch']);
+
+      const atTheGate = validateWorkflowGraph(earlyReturn('gate'), [], new Map(), { effectivePhases });
+      expect(atTheGate).toEqual([]);
+    });
+  });
+
+  it('reads a return from the mark alone, never from a step named return', () => {
+    // The run engine returns on `to.kind: 'return'` and sends every other arm to the
+    // step it names. An unmarked arm naming an undeclared `return` step therefore names
+    // a missing step, and a marked arm returns whatever step it still names.
+    const withEnd = (to: WorkflowConnection['to']): WorkflowDefinition => ({
+      workflowId: 'return-mark',
+      name: 'Return Mark',
+      version: 1,
+      nodes: [
+        { nodeId: 'gate', kind: 'phase', phaseId: 'specify' },
+        { nodeId: 'finish', kind: 'phase', phaseId: 'plan' }
+      ],
+      connections: [
+        { from: { nodeId: 'gate' }, to },
+        { from: { nodeId: 'gate' }, to: { nodeId: 'finish' } }
+      ],
+      startNodeIds: ['gate']
+    });
+
+    const unmarked = validateWorkflowGraph(withEnd({ nodeId: 'return' }), [], new Map(), { effectivePhases });
+    expect(unmarked.map((e) => [e.field, e.code])).toEqual([['connections[0].to', 'unresolved-endpoint']]);
+
+    const marked = validateWorkflowGraph(withEnd({ nodeId: 'finish', kind: 'return' }), [], new Map(), {
+      effectivePhases
+    });
+    expect(marked).toEqual([]);
+  });
+
+  describe('FR-R5-F24 (D2) — TypedCondition node-result and dominance validation', () => {
+    const phaseWithResult: PhaseDefinition = {
+      phaseId: 'verify-phase',
+      name: 'Verify Phase',
+      version: 1,
+      instruction: 'Run verification.',
+      resultContract: {
+        version: 1,
+        operator: 'structured-result',
+        operatorVersion: 1,
+        fields: [
+          {
+            fieldId: 'verdict',
+            type: 'string',
+            required: true,
+            selector: ['verdict']
+          },
+          {
+            fieldId: 'open_issues',
+            type: 'number',
+            required: true,
+            selector: ['openIssues']
+          }
+        ],
+        source: {
+          kind: 'declared-output',
+          outputKey: '.schegent/results/verify.json'
+        },
+        completion: {
+          version: 1,
+          kind: 'typed',
+          test: {
+            left: { source: 'result-field', fieldId: 'verdict' },
+            operator: 'equals',
+            right: 'pass'
+          }
+        }
+      }
+    };
+
+    const shipPhase: PhaseDefinition = {
+      phaseId: 'ship-phase',
+      name: 'Ship Phase',
+      version: 1,
+      instruction: 'Ship.'
+    };
+
+    it('accepts a valid TypedCondition referencing a declared DecisionField on a dominating Phase node', () => {
+      const wf: WorkflowDefinition = {
+        workflowId: 'wf-typed-valid',
+        name: 'Typed Valid',
+        version: 1,
+        nodes: [
+          { nodeId: 'verify', kind: 'phase', phaseId: 'verify-phase' },
+          { nodeId: 'ship', kind: 'phase', phaseId: 'ship-phase' }
+        ],
+        connections: [
+          {
+            from: { nodeId: 'verify' },
+            to: { nodeId: 'ship' },
+            condition: {
+              version: 1,
+              kind: 'typed',
+              test: {
+                all: [
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'verdict' },
+                    operator: 'equals',
+                    right: 'pass'
+                  },
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'open_issues' },
+                    operator: 'lessThanOrEqual',
+                    right: 0
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        startNodeIds: ['verify']
+      };
+      const errors = validateWorkflowGraph(wf, [], new Map(), {
+        effectivePhases: [phaseWithResult, shipPhase]
+      });
+      expect(errors).toEqual([]);
+    });
+
+    it('refuses a TypedCondition referencing an undeclared DecisionField or incompatible operator/right literal', () => {
+      const wf: WorkflowDefinition = {
+        workflowId: 'wf-typed-invalid',
+        name: 'Typed Invalid',
+        version: 1,
+        nodes: [
+          { nodeId: 'verify', kind: 'phase', phaseId: 'verify-phase' },
+          { nodeId: 'ship', kind: 'phase', phaseId: 'ship-phase' }
+        ],
+        connections: [
+          {
+            from: { nodeId: 'verify' },
+            to: { nodeId: 'ship' },
+            condition: {
+              version: 1,
+              kind: 'typed',
+              test: {
+                all: [
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'unknown_field' },
+                    operator: 'equals',
+                    right: 'pass'
+                  },
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'verdict' },
+                    operator: 'greaterThan',
+                    right: 1
+                  },
+                  {
+                    left: { source: 'node-result', nodeId: 'verify', fieldId: 'verdict' },
+                    operator: 'equals',
+                    right: 42
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        startNodeIds: ['verify']
+      };
+      const errors = validateWorkflowGraph(wf, [], new Map(), {
+        effectivePhases: [phaseWithResult, shipPhase]
+      });
+      expect(codes(errors)).toEqual(
+        expect.arrayContaining([
+          'condition-operand-unknown',
+          'condition-comparison-unsupported',
+          'condition-right-invalid'
+        ])
+      );
+    });
   });
 });

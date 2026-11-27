@@ -19,6 +19,8 @@ import { buildQueueRuntime } from '../../../lib/__tests__/queue-runtime-fixture'
 import { IDLE_DELAYED_RETRY, IDLE_GENERAL_SETTINGS } from '../../../lib/snapshot-types';
 import type {
   ConnectedRunProjection,
+  CreditPollingProjection,
+  DelayedRetryState,
   PhaseTile,
   QueueItem,
   RunOutputRecord,
@@ -47,7 +49,8 @@ vi.mock('../../../lib/phase-log-ipc', () => ({
   readPhaseLog: (req: unknown) => readPhaseLogSpy(req),
   startPhaseLogTail: vi.fn(),
   stopPhaseLogTail: vi.fn(),
-  subscribePhaseLogPush: () => () => {},
+  subscribePhaseLogBatch: () => () => {},
+  ackPhaseLogTail: vi.fn(),
   openVerboseSetting: vi.fn()
 }));
 
@@ -65,6 +68,7 @@ function task(id: string, overrides: Partial<QueueItem> = {}): QueueItem {
     pausedReason: null,
     currentPhase: null,
     position: 0,
+    phaseProgress: null,
     ...overrides
   };
 }
@@ -92,6 +96,8 @@ function buildSnapshot(overrides: {
   readonly liveSummary?: string;
   readonly inFlightTaskId?: string;
   readonly outputs?: readonly RunOutputRecord[];
+  readonly delayedRetry?: DelayedRetryState;
+  readonly creditPolling?: CreditPollingProjection | null;
 }): WorkflowSnapshot {
   const tasks = overrides.tasks ?? [];
   return Object.freeze({
@@ -131,9 +137,10 @@ function buildSnapshot(overrides: {
                   freshness: 'live' as const,
                   staleSeconds: 0
                 },
-                delayedRetry: IDLE_DELAYED_RETRY,
+                delayedRetry: overrides.delayedRetry ?? IDLE_DELAYED_RETRY,
                 resumeTargetPhaseId: null,
-                outputs: overrides.outputs ?? []
+                outputs: overrides.outputs ?? [],
+                ...(overrides.creditPolling !== undefined ? { creditPolling: overrides.creditPolling } : {})
               }
             }
           : {})
@@ -211,7 +218,7 @@ beforeEach(() => {
       entries: [],
       skippedLines: 0,
       truncatedCount: 0,
-      verboseDiagnosticsState: { kind: 'enabled-with-sessions' },
+      verboseDiagnosticsState: { kind: 'no-iteration-recorded' },
       isInFlight: false
     }
   });
@@ -314,12 +321,71 @@ describe('RunDetailTier — Pipeline-backed rendering (FR-058)', () => {
     expect(getByTestId('phase-control-restart').getAttribute('aria-disabled')).toBe('false');
   });
 
-  it('offers the Task’s lifecycle controls', () => {
+  // FR-R4-F20 (FR-010, FR-011, US4-1, US4-2) — the derivation `PhaseControlMenu.test.ts` cannot see.
+  // This tier reads "the displayed task failed" off the row it is showing and hands it down through
+  // `PhaseProgression`. A failed row is never the executing one, so its strip is off target by
+  // construction, and without the derivation its disabled Skip would explain a refusal for failing as
+  // "showing another task". The last case is the control: a prop that was always `true` would pass the
+  // first two and fail it.
+  describe('the disabled Skip says why', () => {
+    const FAILED_SKIP = 'A failed task cannot be skipped: retry it, mark it completed, or remove it.';
+    const OFF_TARGET =
+      'Unavailable while this view is showing a task other than the run executing on this queue.';
+    const skip = (view: ReturnType<typeof mount>) => view.getByTestId('phase-control-skip');
+
+    it('explains a failed task whose queue is not executing anything', () => {
+      const view = mount(buildSnapshot({ tasks: [task('r-1', { status: 'failed' })] }));
+
+      expect(skip(view).getAttribute('aria-disabled')).toBe('true');
+      expect(skip(view).getAttribute('title')).toBe(FAILED_SKIP);
+    });
+
+    it('explains an earlier failed task while another task executes (Clarify Q2)', () => {
+      const view = mount(
+        buildSnapshot({
+          tasks: [task('r-1', { status: 'failed' }), task('sibling', { status: 'in-flight' })],
+          inFlightTaskId: 'sibling'
+        })
+      );
+
+      expect(skip(view).getAttribute('aria-disabled')).toBe('true');
+      expect(skip(view).getAttribute('title')).toBe(FAILED_SKIP);
+    });
+
+    it('keeps the off-target text for a task that has not failed', () => {
+      const view = mount(
+        buildSnapshot({
+          tasks: [task('r-1'), task('sibling', { status: 'in-flight' })],
+          inFlightTaskId: 'sibling'
+        })
+      );
+
+      expect(skip(view).getAttribute('title')).toBe(OFF_TARGET);
+    });
+
+    it('control: the executing task keeps Skip live under its own label', () => {
+      const view = mount(
+        buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })], inFlightTaskId: 'r-1' })
+      );
+
+      expect(skip(view).getAttribute('aria-disabled')).toBe('false');
+      expect(skip(view).getAttribute('title')).toBe('Skip active phase');
+    });
+  });
+
+  it('offers the Task’s lifecycle controls in header mode (contextual button + SgMenu)', () => {
     const { getByTestId } = mount(
       buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })] })
     );
 
-    expect(getByTestId('run-detail-controls')).not.toBeNull();
+    const controls = getByTestId('run-detail-controls');
+    expect(controls).not.toBeNull();
+    const cancel = getByTestId('queue-item-cancel-r-1');
+    expect(cancel.classList.contains('btn')).toBe(true);
+    expect(cancel.classList.contains('btn-secondary')).toBe(true);
+    expect(cancel.textContent.trim()).toBe('Cancel…');
+    expect(getByTestId('queue-item-menu-r-1')).not.toBeNull();
+    expect(controls.textContent).not.toMatch(/[⏹✎✖↻✓⟲]/u);
   });
 
   it('does not mount the topology view for a Pipeline-backed Run', () => {
@@ -347,7 +413,7 @@ describe('RunDetailTier — pipeline name (T010, T011, FR-010, SC-003)', () => {
     );
 
     const text = getByTestId('run-detail-pipeline').textContent ?? '';
-    expect(text).toMatch(/unknown pipeline/i);
+    expect(text).toMatch(/unknown workflow/i);
     expect(text).not.toContain('ghost-pipeline');
   });
 });
@@ -479,6 +545,50 @@ describe('RunDetailTier — Activity Feed and outputs (T006, FR-007)', () => {
     expect(getByTestId('run-outputs').textContent).toContain('summary');
   });
 
+  // FR-R4-F02 (US6, TA3) — the credit-polling notice belongs to the Run this tier shows and is not
+  // gated on the Run executing: a Run paused for credits is the one that needs it.
+  it('mounts the credit-polling notice for this Run, with Resume once polling stopped', () => {
+    const { getByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1',
+        creditPolling: { state: 'stopped', windowEndsAt: 1_700_000_000_000 }
+      })
+    );
+
+    expect(getByTestId('credit-polling-stopped-q-beta').textContent).toContain('Credit polling stopped');
+    expect(getByTestId('credit-polling-resume-q-beta')).toBeTruthy();
+  });
+
+  it.each([
+    ['null creditPolling', null],
+    ['an absent creditPolling', undefined],
+    ['a polling one', { state: 'polling' as const, windowEndsAt: 1 }]
+  ])('shows no credit-polling notice for %s', (_name, creditPolling) => {
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1',
+        ...(creditPolling === undefined ? {} : { creditPolling })
+      })
+    );
+
+    expect(queryByTestId('credit-polling-stopped-q-beta')).toBeNull();
+    expect(queryByTestId('credit-polling-unreachable-q-beta')).toBeNull();
+  });
+
+  it('does not show a sibling Run’s credit-polling notice on this Run’s detail', () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1'), task('sibling', { status: 'in-flight' })],
+        inFlightTaskId: 'sibling',
+        creditPolling: { state: 'stopped', windowEndsAt: 1 }
+      })
+    );
+
+    expect(queryByTestId('credit-polling-stopped-q-beta')).toBeNull();
+  });
+
   it('shows no outputs section when the Run has recorded none', async () => {
     const { getByTestId, queryByTestId } = mount(
       buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })], inFlightTaskId: 'r-1' })
@@ -533,4 +643,730 @@ describe('RunDetailTier — navigation and primacy (FR-059, FR-060, FR-065)', ()
     // Reading the Run is still allowed.
     expect(getByTestId('run-detail-prompt')).not.toBeNull();
   });
+});
+
+// Lifecycle round-check finding C — the wiring gap under it.
+//
+// `PhaseProgression` has declared a `delayedRetry` prop since the countdown
+// badge was built, and this tier — its only wiring site — never passed one. The
+// component's own tests supplied the prop directly and passed; the shipping
+// build rendered a permanently-false `isWaitingRetry`, so the badge never
+// appeared and the Retry now control it gates had nowhere to appear either.
+//
+// These assert through the mounted tier rather than against `PhaseProgression`
+// in isolation, because isolation is exactly what hid the defect.
+describe('RunDetailTier — delayed-retry countdown reaches the phase strip', () => {
+  const WAITING = Object.freeze({
+    pendingRetryAt: '2026-08-12T00:10:00.000Z',
+    pendingRetryCause: 'rate_limit' as const,
+    delayedRetryCount: 2
+  });
+
+  it('renders the countdown and the Retry now control while a backoff is armed', () => {
+    const { getByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1',
+        delayedRetry: WAITING
+      })
+    );
+
+    expect(getByTestId('phase-retry-badge-speckit-plan').textContent).toContain(
+      'Waiting to retry'
+    );
+    expect(getByTestId('phase-control-retry-now').getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it('shows neither when no backoff is armed', () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1', { status: 'in-flight' })],
+        inFlightTaskId: 'r-1'
+      })
+    );
+
+    expect(queryByTestId('phase-retry-badge-speckit-plan')).toBeNull();
+    expect(queryByTestId('phase-control-retry-now')).toBeNull();
+  });
+
+  it('withholds both on a surface showing a task other than the executing run', () => {
+    // The queue is counting down a retry on `live-one`; the operator is looking
+    // at `r-1`. A countdown drawn here would describe a Run this view is not
+    // about, and the button under it is addressed by queue — it would shortcut
+    // the other Run's backoff.
+    const { queryByTestId } = mount(
+      buildSnapshot({
+        tasks: [task('r-1'), task('live-one', { status: 'in-flight' })],
+        inFlightTaskId: 'live-one',
+        delayedRetry: WAITING
+      })
+    );
+
+    expect(queryByTestId('phase-retry-badge-speckit-plan')).toBeNull();
+    expect(queryByTestId('phase-control-retry-now')).toBeNull();
+  });
+});
+
+// The same wiring gap as finding C above, on the pair of props beside it.
+//
+// `PhaseProgression` has declared `onSelectPhase` and `selectedPhaseId` since
+// the strip was built, and this tier — its only wiring site since the Dashboard
+// embed was removed — passed neither. Every tile was a button whose click
+// handler resolved to `undefined`, so the Activity Feed beside it only ever
+// showed the phase the Run happened to be on: Live worked, the tiles did not.
+//
+// Asserted through the mounted tier rather than against `PhaseProgression`,
+// because the component's own tests pass the callback and so cannot see this.
+describe('RunDetailTier — a phase tile navigates the Activity Feed', () => {
+  const RUNNING = Object.freeze({
+    tasks: [
+      task('r-1', {
+        status: 'in-flight' as const,
+        currentPipelineId: 'standard',
+        currentPhase: 'speckit-plan'
+      })
+    ],
+    inFlightTaskId: 'r-1'
+  });
+
+  it('reads the clicked phase’s log, not the phase the Run is on', async () => {
+    const { getByTestId } = mount(buildSnapshot(RUNNING));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'r-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: null
+      }
+    });
+  });
+
+  it('marks the clicked tile as the selected one', async () => {
+    const { getByTestId } = mount(buildSnapshot(RUNNING));
+
+    const tile = getByTestId('phase-progression-speckit-specify');
+    expect(tile.getAttribute('aria-pressed')).toBe('false');
+
+    await fireEvent.click(tile);
+
+    expect(tile.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('keeps the operator’s pinned phase when the Run advances to the next one', async () => {
+    // A click is an operator selection, which turns Live Mode off (Feature
+    // 067). Without that gate the tier's own pin re-fires on the next snapshot
+    // that moves `currentPhase` and yanks the feed off the phase they chose —
+    // which would make the tile click work for exactly as long as the Run
+    // stayed still.
+    const { getByTestId, rerender } = mount(buildSnapshot(RUNNING));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    const advanced = buildSnapshot({
+      ...RUNNING,
+      tasks: [
+        task('r-1', {
+          status: 'in-flight',
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-tasks'
+        })
+      ]
+    });
+    await rerender({
+      snapshot: advanced,
+      queueId: 'q-beta',
+      runId: 'r-1',
+      isPrimary: true,
+      onBack: () => {}
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).not.toHaveBeenCalled();
+    expect(getByTestId('phase-progression-speckit-specify').getAttribute('aria-pressed')).toBe(
+      'true'
+    );
+  });
+});
+
+// The Live button is the other half of the same navigation, and it read the
+// wrong Run: `PhaseLogFeed` resolves "currently executing" from
+// `snapshot.queue.inFlight`, the *default* queue's singular, so on a tier
+// showing a Run on any other queue the button either sat disabled (in-flight
+// null, as in this fixture) or jumped the feed to an unrelated queue's Run —
+// the cross-queue bleed FR-051/FR-052 forbid. `liveTarget` overrides it with
+// this tier's own Run.
+describe('RunDetailTier — Live targets this Run, not the default queue', () => {
+  const RUNNING = Object.freeze({
+    tasks: [
+      task('r-1', {
+        status: 'in-flight' as const,
+        currentPipelineId: 'standard',
+        currentPhase: 'speckit-plan'
+      })
+    ],
+    inFlightTaskId: 'r-1'
+  });
+
+  /** The default queue running something unrelated, as it usually is. */
+  function withDefaultQueueInFlight(snapshot: WorkflowSnapshot): WorkflowSnapshot {
+    return {
+      ...snapshot,
+      queue: {
+        ...snapshot.queue,
+        inFlight: {
+          ...task('other-queue-task'),
+          status: 'in-flight',
+          queueId: 'default',
+          currentPipelineId: 'standard',
+          currentPhase: 'speckit-specify'
+        }
+      }
+    } as unknown as WorkflowSnapshot;
+  }
+
+  it('offers Live while this Run executes, even though the default queue has nothing in flight', () => {
+    const { getByTestId } = mount(buildSnapshot(RUNNING));
+
+    const live = getByTestId('phase-log-jump-current');
+    expect(live.getAttribute('aria-disabled')).toBe('false');
+    expect(live.getAttribute('title')).toBe('Jump to the currently executing Phase');
+  });
+
+  it('withholds Live when this Run is not the one executing', () => {
+    // A finished or pending Run has no "currently executing Phase" of its own
+    // to jump to. Borrowing the default queue's would be the same bleed.
+    const { getByTestId } = mount(
+      withDefaultQueueInFlight(buildSnapshot({ tasks: [task('r-1', { status: 'completed' })] }))
+    );
+
+    const live = getByTestId('phase-log-jump-current');
+    expect(live.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('jumps to this Run’s current phase, not the default queue’s', async () => {
+    const { getByTestId } = mount(withDefaultQueueInFlight(buildSnapshot(RUNNING)));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Pin somewhere else first, so the jump has an observable destination to
+    // move back to rather than landing on the phase already selected.
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId('phase-log-jump-current'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'r-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-plan',
+        iterationN: null
+      }
+    });
+    expect(readPhaseLogSpy).not.toHaveBeenCalledWith({
+      selection: expect.objectContaining({ queueId: 'default' })
+    });
+  });
+});
+
+// Bug "the phase log that asked for a phase named done" (2026-09-02).
+//
+// `'done'` is a terminal *state* of the phase state machine, not a Phase
+// definition: no log is ever written under that name, `availablePhases` never
+// lists it, and `phase-log-service.ts` refuses a tuple naming it with
+// `unknown-tuple`. The host composer now filters it out of the projection, so
+// `QueueItem.currentPhase` should not carry it — but the field's type still
+// admits any string, this tier copies it into a phase-log tuple verbatim, and
+// the refusal is silent. Observed in `.schegent/audit.log` on the two most
+// recent extension starts, twice each.
+//
+// The positive control lives above: 'asks the Activity Feed to load this Run's
+// own queue and phase' proves this tier does ask for a real phase, so the
+// first test here cannot pass merely by the tier having stopped pinning.
+describe('RunDetailTier — a finished Run does not name the terminal sentinel', () => {
+  const FINISHED = Object.freeze({
+    tasks: [
+      task('r-1', {
+        status: 'completed' as const,
+        currentPipelineId: 'standard',
+        currentPhase: 'done'
+      })
+    ]
+  });
+
+  it('never asks the host for a phase named `done`', async () => {
+    mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).not.toHaveBeenCalledWith({
+      selection: expect.objectContaining({ phaseId: 'done' })
+    });
+  });
+
+  it('still pins this Run, so a phase tile reads that phase’s log', async () => {
+    // The sentinel makes the phase unknown, not the Run. The tier keeps its
+    // pin on { queueId, taskId, pipelineId } so the operator's own tile click
+    // completes a readable tuple — and so `PhaseLogFeed`'s workspace-wide
+    // cold-start fallback, which fires only on a fully empty selection, cannot
+    // point this tier at some other queue's task.
+    const { getByTestId } = mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'r-1',
+        pipelineId: 'standard',
+        phaseId: 'speckit-specify',
+        iterationN: null
+      }
+    });
+  });
+
+  it('tells the operator to pick a phase instead of showing a blank pane', async () => {
+    // Second finding of the same bug. Pinning with `phaseId: null` is correct
+    // (see the test above), but it lands in a hole between two components:
+    // `PhaseLogEmptyStates` only renders cards the host's banner asks for, and
+    // the host sends no banner without a complete tuple; `PhaseLogReadingPane`
+    // renders nothing on zero entries and defers to those cards. The operator
+    // got an unexplained blank with the phase strip — the way in — unlabelled
+    // beside it.
+    const { getByTestId } = mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const card = getByTestId('phase-log-empty-no-phase');
+    expect(card.textContent).toMatch(/phase/i);
+  });
+
+  it('drops the guidance once a phase is picked', async () => {
+    // The negative control: the card must not outlive the state it describes,
+    // or it would sit on top of the log the operator just asked for.
+    const { getByTestId, queryByTestId } = mount(buildSnapshot(FINISHED));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await fireEvent.click(getByTestId('phase-progression-speckit-specify'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+  });
+});
+
+// FR-R4-F08 (K-T1, K-T2; FR-020, FR-021, SC-004) — the Run Detail tabs from the keyboard.
+//
+// The three tabs were buttons with `role="tab"` and no keyboard contract: every tab was in the
+// Tab order, no arrow key moved between them, and no tab named the panel it controls. These
+// cases drive real key events and read `document.activeElement` and ARIA attributes. No mouse
+// event is in the key sequence under test; a starting state is arranged by a click where the
+// case says so, and the real Enter or Space press on a button is a pending browser observation.
+describe('FR-R4-F08 K-T1 — arrow, Home and End keys move between the Run Detail tabs', () => {
+  const TAB_ORDER = ['log', 'outputs', 'context'] as const;
+  type TabName = (typeof TAB_ORDER)[number];
+
+  function mountOnTab() {
+    const rendered = mount(buildSnapshot({ tasks: [task('r-1')] }));
+    return { ...rendered, tab: (tabName: TabName) => rendered.getByTestId(`run-tab-${tabName}`) };
+  }
+
+  /** Dispatch a key on a tab and let the queued focus microtask run. */
+  async function press(element: HTMLElement, key: string): Promise<void> {
+    await fireEvent.keyDown(element, { key });
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  function selected(tab: (name: TabName) => HTMLElement): TabName | undefined {
+    return TAB_ORDER.find((name) => tab(name).getAttribute('aria-selected') === 'true');
+  }
+
+  it('Right on the last tab wraps to the first, and moves selection, focus and panel together', async () => {
+    const { tab, getByTestId, queryByTestId } = mountOnTab();
+    // The starting point is arranged with a click: this case is about the key that follows it.
+    await fireEvent.click(tab('context'));
+    expect(selected(tab), 'the control: context is selected before the key').toBe('context');
+    expect(queryByTestId('run-detail-live-feed')).not.toBeNull();
+
+    await press(tab('context'), 'ArrowRight');
+
+    expect(selected(tab)).toBe('log');
+    expect(document.activeElement).toBe(tab('log'));
+    expect(queryByTestId('run-detail-live-feed'), 'the Context panel is gone').toBeNull();
+    expect(getByTestId('phase-log-feed'), 'the Phase log panel is shown').toBeTruthy();
+  });
+
+  it('Left on the first tab wraps to the last', async () => {
+    const { tab, queryByTestId } = mountOnTab();
+    expect(selected(tab), 'the control: the first tab is selected on open').toBe('log');
+
+    await press(tab('log'), 'ArrowLeft');
+
+    expect(selected(tab)).toBe('context');
+    expect(document.activeElement).toBe(tab('context'));
+    expect(queryByTestId('run-detail-live-feed')).not.toBeNull();
+  });
+
+  it('Right and Left step through the middle tab', async () => {
+    const { tab } = mountOnTab();
+    await press(tab('log'), 'ArrowRight');
+    expect(selected(tab)).toBe('outputs');
+    expect(document.activeElement).toBe(tab('outputs'));
+    await press(tab('outputs'), 'ArrowRight');
+    expect(selected(tab)).toBe('context');
+    await press(tab('context'), 'ArrowLeft');
+    expect(selected(tab)).toBe('outputs');
+  });
+
+  it('Home goes to the first tab and End to the last', async () => {
+    const { tab } = mountOnTab();
+    await press(tab('log'), 'End');
+    expect(selected(tab)).toBe('context');
+    expect(document.activeElement).toBe(tab('context'));
+    await press(tab('context'), 'Home');
+    expect(selected(tab)).toBe('log');
+    expect(document.activeElement).toBe(tab('log'));
+  });
+
+  it('prevents the default of a handled key and leaves other keys alone', async () => {
+    const { tab } = mountOnTab();
+    const handled = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    tab('log').dispatchEvent(handled);
+    expect(handled.defaultPrevented, 'ArrowRight is handled').toBe(true);
+    await Promise.resolve();
+    const ignored = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+    tab('outputs').dispatchEvent(ignored);
+    expect(ignored.defaultPrevented, 'an unrelated key is not prevented').toBe(false);
+    expect(selected(tab), 'an unrelated key moves nothing').toBe('outputs');
+  });
+
+  // Like the Builder, System and Settings tab bars: the tablist is named, and the keys are handled
+  // on the tabs, so the list itself carries no handler and no Tab stop of its own.
+  it('names the tablist and handles the keys on the tabs, not on the list', () => {
+    const { tab } = mountOnTab();
+    const list = tab('log').closest('[role="tablist"]');
+    expect(list?.getAttribute('aria-label')).toBe('Run detail views');
+    const onList = new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true });
+    list?.dispatchEvent(onList);
+    expect(onList.defaultPrevented, 'a key on the list itself is not a tab key').toBe(false);
+  });
+});
+
+describe('FR-R4-F08 K-T2 — Run Detail tab roving focus and association', () => {
+  const NAMES = ['log', 'outputs', 'context'] as const;
+
+  it('exactly one tab is in the Tab order, and it is the selected one', async () => {
+    const { getByTestId } = mount(buildSnapshot({ tasks: [task('r-1')] }));
+    const tabindexes = () => NAMES.map((name) => getByTestId(`run-tab-${name}`).getAttribute('tabindex'));
+    expect(tabindexes()).toEqual(['0', '-1', '-1']);
+    await fireEvent.click(getByTestId('run-tab-outputs'));
+    expect(tabindexes()).toEqual(['-1', '0', '-1']);
+  });
+
+  it('every tab names a panel that exists, and the panel names the selected tab', async () => {
+    const { getByTestId } = mount(buildSnapshot({ tasks: [task('r-1')] }));
+    for (const name of NAMES) {
+      const tab = getByTestId(`run-tab-${name}`);
+      const controls = tab.getAttribute('aria-controls');
+      expect(controls, `${name}: aria-controls`).toBeTruthy();
+      expect(document.getElementById(controls ?? ''), `${name}: the panel it controls`).not.toBeNull();
+      expect(tab.id, `${name}: the tab has an id the panel can name`).toBe(`run-tab-${name}`);
+    }
+    const panel = document.getElementById('run-detail-panel');
+    expect(panel?.getAttribute('role')).toBe('tabpanel');
+    expect(panel?.getAttribute('aria-labelledby')).toBe('run-tab-log');
+    await fireEvent.click(getByTestId('run-tab-context'));
+    expect(panel?.getAttribute('aria-labelledby'), 'the panel follows the selection').toBe('run-tab-context');
+    expect(document.getElementById('run-tab-context')).not.toBeNull();
+  });
+
+  it('with the streaming badge shown, arrows move only among the three tabs', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [task('r-1', { status: 'in-flight' })], inFlightTaskId: 'r-1' })
+    );
+    expect(getByTestId('run-streaming-badge'), 'the control: the badge is shown').toBeTruthy();
+    const order: string[] = [];
+    let current = getByTestId('run-tab-log');
+    for (let step = 0; step < 4; step += 1) {
+      await fireEvent.keyDown(current, { key: 'ArrowRight' });
+      await Promise.resolve();
+      await Promise.resolve();
+      const active = document.activeElement;
+      expect(active?.getAttribute('role'), 'focus stays on a tab, never on the badge').toBe('tab');
+      order.push(active?.getAttribute('data-testid') ?? '');
+      current = active as HTMLElement;
+    }
+    expect(order).toEqual(['run-tab-outputs', 'run-tab-context', 'run-tab-log', 'run-tab-outputs']);
+  });
+});
+
+// Feature 265 BUG-001 (FR-011, T015) — a leaf member Task's strip is its own one Phase.
+//
+// A Workflow's leaf Task runs one Phase: its `currentPipelineId` is that Phase's id. The queue's
+// `runtime.phases` belongs to whatever the queue is executing, so a leaf member that is not the
+// one executing must not borrow it. Standalone Tasks keep `runtime.phases`; the
+// "phase named done" pins above are that control and stay unedited.
+describe('RunDetailTier — a leaf member Task shows its own Phase (Feature 265 BUG-001)', () => {
+  const LEAF_PHASE = 'speckit-tasks';
+
+  function leafRun(queueItemIds: readonly string[], nodeKind: 'phase' | 'workflow' = 'phase'): ConnectedRunProjection {
+    return {
+      connectedRunId: 'cr-leaf',
+      workflowId: 'wf-feature',
+      revision: 1,
+      hydrating: false,
+      queueId: 'q-beta',
+      status: 'in-flight',
+      rootInvocationId: 'inv-root',
+      activeInvocationId: 'inv-root',
+      nodes: [
+        { nodeId: LEAF_PHASE, pipelineId: LEAF_PHASE, nodeKind: 'phase', actions: [], state: 'completed', attemptCount: queueItemIds.length }
+      ],
+      invocations: [
+        {
+          invocationId: 'inv-root',
+          parentInvocationId: null,
+          workflowId: 'wf-feature',
+          workflowName: 'Feature',
+          depth: 0,
+          nodePath: '',
+          status: 'in-flight',
+          currentNodeId: LEAF_PHASE,
+          activeAttemptId: null,
+          activeAttemptIndex: null,
+          allowedActions: [],
+          waitingReason: null,
+          pauseCause: null,
+          failureReason: null,
+          pendingRetryAt: null,
+          pendingRetryCause: null,
+          outputPortIds: [],
+          attempts: queueItemIds.map((queueItemId, index) => ({
+            attemptId: `a-${queueItemId}`,
+            attemptIndex: index + 1,
+            nodeId: LEAF_PHASE,
+            nodeKind,
+            status: 'completed',
+            startedAt: index,
+            endedAt: index + 1,
+            queueItemId
+          }))
+        }
+      ]
+    } as unknown as ConnectedRunProjection;
+  }
+
+  function leafTask(status: QueueItem['status']): QueueItem {
+    return task('m-1', { status, currentPipelineId: LEAF_PHASE, currentPhase: null });
+  }
+
+  function tileNames(container: HTMLElement): readonly string[] {
+    return [...container.querySelectorAll('[data-testid^="phase-progression-"]')]
+      .map((el) => el.getAttribute('data-testid') ?? '')
+      .filter((id) => id !== 'phase-progression-list' && !id.startsWith('phase-progression-header'))
+      .map((id) => id.slice('phase-progression-'.length));
+  }
+
+  it('shows one tile for its own Phase, not the queue strip', () => {
+    const { container, getByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask('completed')], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual([LEAF_PHASE]);
+    expect(getByTestId(`phase-progression-${LEAF_PHASE}`).getAttribute('data-state')).toBe('completed');
+  });
+
+  it.each([
+    ['pending', 'not-started'],
+    ['paused', 'active'],
+    ['completed', 'completed'],
+    ['failed', 'completed'],
+    ['canceled', 'completed']
+  ] as const)('a %s leaf member reads its tile as %s', (status, state) => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask(status)], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+
+    expect(getByTestId(`phase-progression-${LEAF_PHASE}`).getAttribute('data-state')).toBe(state);
+  });
+
+  it('auto-selects its own Phase and requests its log immediately on mount without a second click (BUG-002)', async () => {
+    const { queryByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask('failed')], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'm-1',
+        pipelineId: LEAF_PHASE,
+        phaseId: LEAF_PHASE,
+        iterationN: null
+      }
+    });
+    expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+  });
+
+  it('activating the tile requests that Phase as both pipeline and phase', async () => {
+    const { getByTestId } = mount(
+      buildSnapshot({ tasks: [leafTask('failed')], connectedRuns: [leafRun(['m-1'])] }),
+      { runId: 'm-1' }
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    readPhaseLogSpy.mockClear();
+
+    await fireEvent.click(getByTestId(`phase-progression-${LEAF_PHASE}`));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(readPhaseLogSpy).toHaveBeenCalledWith({
+      selection: {
+        queueId: 'q-beta',
+        taskId: 'm-1',
+        pipelineId: LEAF_PHASE,
+        phaseId: LEAF_PHASE,
+        iterationN: null
+      }
+    });
+  });
+
+  it('an earlier attempt of a retried node is a leaf member too', () => {
+    const { container } = mount(
+      buildSnapshot({
+        tasks: [leafTask('failed'), task('m-2', { status: 'completed', currentPipelineId: LEAF_PHASE })],
+        connectedRuns: [leafRun(['m-1', 'm-2'])]
+      }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual([LEAF_PHASE]);
+  });
+
+  it('the executing leaf member keeps the live strip', () => {
+    const { container } = mount(
+      buildSnapshot({
+        tasks: [leafTask('in-flight')],
+        connectedRuns: [leafRun(['m-1'])],
+        inFlightTaskId: 'm-1'
+      }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual(PHASES.map((tile) => tile.name));
+  });
+
+  it('a standalone Task keeps the queue strip', () => {
+    const { container } = mount(
+      buildSnapshot({ tasks: [leafTask('completed')], connectedRuns: [leafRun(['someone-else'])] }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual(PHASES.map((tile) => tile.name));
+  });
+
+  it('a Task a workflow-kind attempt names keeps the queue strip', () => {
+    const { container } = mount(
+      buildSnapshot({ tasks: [leafTask('completed')], connectedRuns: [leafRun(['m-1'], 'workflow')] }),
+      { runId: 'm-1' }
+    );
+
+    expect(tileNames(container)).toEqual(PHASES.map((tile) => tile.name));
+  });
+});
+
+describe('Feature 020 BUG-004 (T090, FR-008) — standalone single-Phase Task tile synthesis and mount selection', () => {
+  const STANDALONE_PHASE = 'agy-speckit-auto';
+
+  function buildStandalonePhaseSnapshot(status: QueueItem['status']): WorkflowSnapshot {
+    const base = buildSnapshot({
+      tasks: [task('t-agy', { status, currentPipelineId: STANDALONE_PHASE, currentPhase: null })]
+    });
+    const emptyIdleQueues = base.queues.map((q) =>
+      q.queueId === 'q-beta'
+        ? { ...q, lifecycle: 'active-empty' as const, phases: Object.freeze([]), inFlightRun: null }
+        : q
+    );
+    return Object.freeze({
+      ...base,
+      queues: Object.freeze(emptyIdleQueues),
+      availablePipelines: Object.freeze([]),
+      availablePhases: Object.freeze([
+        Object.freeze({
+          id: STANDALONE_PHASE,
+          name: 'AGY Speckit Auto',
+          prompt: '/speckit-auto',
+          runner: 'agy' as const
+        })
+      ])
+    }) as unknown as WorkflowSnapshot;
+  }
+
+  it.each([
+    ['paused', 'active'],
+    ['completed', 'completed'],
+    ['failed', 'completed'],
+    ['canceled', 'completed']
+  ] as const)(
+    'synthesizes the single Phase tile (%s -> %s) and auto-selects it on mount when runtime.phases is empty',
+    async (status, expectedState) => {
+      const { container, getByTestId, queryByTestId } = mount(buildStandalonePhaseSnapshot(status), {
+        runId: 't-agy'
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const tiles = [...container.querySelectorAll('[data-testid^="phase-progression-"]')]
+        .map((el) => el.getAttribute('data-testid') ?? '')
+        .filter((id) => id !== 'phase-progression-list' && !id.startsWith('phase-progression-header'))
+        .map((id) => id.slice('phase-progression-'.length));
+
+      expect(tiles).toEqual([STANDALONE_PHASE]);
+      expect(getByTestId(`phase-progression-${STANDALONE_PHASE}`).getAttribute('data-state')).toBe(
+        expectedState
+      );
+      expect(readPhaseLogSpy).toHaveBeenCalledWith({
+        selection: {
+          queueId: 'q-beta',
+          taskId: 't-agy',
+          pipelineId: STANDALONE_PHASE,
+          phaseId: STANDALONE_PHASE,
+          iterationN: null
+        }
+      });
+      expect(queryByTestId('phase-log-empty-no-phase')).toBeNull();
+    }
+  );
 });

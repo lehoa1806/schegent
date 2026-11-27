@@ -6,6 +6,7 @@ import {
   ClaudeCliRunner,
   type SpawnFn
 } from '../../../src/runner/claude-cli';
+import { SanitizedLogger } from '../../../src/lib/logger';
 
 /**
  * Feature 032 — T011: defense-in-depth assertions on the argv-append
@@ -43,7 +44,7 @@ interface SpawnCapture {
 function captureSpawn(child: FakeChild, capture: SpawnCapture): SpawnFn {
   return (_command, args) => {
     capture.args = args;
-    setImmediate(() => child.emit('exit', 0, null));
+    setImmediate(() => { child.emit('exit', 0, null); child.emit('close', 0, null); });
     return child as unknown as ChildProcess;
   };
 }
@@ -168,7 +169,7 @@ describe('ClaudeCliRunner -c interaction with tail args (feature 032)', () => {
       timeoutMs: 5_000,
       cliPath: 'claude',
       cwd: '/repo',
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-5-5',
       effort: 'medium',
       isContinue: true
     });
@@ -177,7 +178,7 @@ describe('ClaudeCliRunner -c interaction with tail args (feature 032)', () => {
       '-c',
       '-p',
       '--model',
-      'claude-sonnet-4-6',
+      'claude-sonnet-5-5',
       '--effort',
       'medium',
       '--output-format',
@@ -185,4 +186,38 @@ describe('ClaudeCliRunner -c interaction with tail args (feature 032)', () => {
       '--verbose'
     ]);
   });
+});
+
+/**
+ * The feature-228 security review, S3: the spawn log printed the whole command
+ * line, and a resumed invocation's holds the session id after `--resume`. The
+ * log writes that argument as `<id>`; the CLI is still spawned with the id.
+ */
+describe('ClaudeCliRunner spawn log on a resumed invocation', () => {
+  const RESUMED_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+
+  for (const resumeBy of [{ isContinue: true }, { sessionReuse: true }]) {
+    it(`writes the id after --resume as <id> (${Object.keys(resumeBy)[0]})`, async () => {
+      const child = makeFakeChild();
+      const seen: SpawnCapture = { args: [] };
+      const lines: string[] = [];
+      const logger = new SanitizedLogger([{ appendLine: (line) => { lines.push(line); } }]);
+      const runner = new ClaudeCliRunner(captureSpawn(child, seen), null, {}, logger);
+      await runner.invoke({
+        phase: 'speckit-implement',
+        iteration: 1,
+        prompt: 'p',
+        timeoutMs: 5_000,
+        cliPath: 'claude',
+        cwd: '/repo',
+        resumeSessionId: RESUMED_ID,
+        ...resumeBy
+      });
+      const spawned = lines.filter((line) => line.includes('[ClaudeCliRunner] Spawned CLI:'));
+      expect(spawned).toHaveLength(1);
+      expect(spawned[0]).toContain('--resume <id> -p');
+      expect(lines.join('\n')).not.toContain(RESUMED_ID);
+      expect(seen.args).toContain(RESUMED_ID);
+    });
+  }
 });

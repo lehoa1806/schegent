@@ -99,7 +99,7 @@ import type { InvocationRequest, RawInvocationOutput } from '../../../src/runner
 import type { SchegentStatusBar } from '../../../src/ui/status-bar';
 import type { Notifier } from '../../../src/ui/notifications';
 import type { WorkspaceLockManager } from '../../../src/state/lock';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { removeTempRoot } from '../../temp-root-cleanup';
 
 class FakeMemento implements Memento {
@@ -282,7 +282,13 @@ async function makeHarness(
     cancelActive: vi.fn(() => { cliCancels += 1; return false; }),
     hasActiveProcess: false
   } as unknown as ClaudeCliRunner;
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger, transcript);
+  const phaseRunner = new PhaseRunner({
+    runner,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
+    logger,
+    rawTranscript: transcript
+  });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);
@@ -330,6 +336,9 @@ async function makeHarness(
  */
 async function startParityNode(harness: Harness): Promise<string> {
   const guardedRun = new GuardedRunService({
+    // FR-R3-136 (FR-008) — this suite exercises a trusted workspace; the
+    // untrusted rows live in the trust-specific describe block.
+    isWorkspaceTrusted: () => true,
     lock: harness.lock,
     queue: harness.queue,
     controller: harness.controller,

@@ -24,11 +24,12 @@
 // (changing the legacy serialized shape T267 pins).
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { SchegentWorkflowController } from '../../../src/controller/workflow-controller';
 import { WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { QueueManager } from '../../../src/queue/queue-manager';
 import { SanitizedLogger } from '../../../src/lib/logger';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 import { snapshotPhaseDef, snapshotPipelineContract } from '../../../src/config/pipeline-snapshot';
 import type { PhaseDef, PipelineDef } from '../../../src/config/pipeline-config';
 import type { FrozenRunPlan } from '../../../src/contracts/run-request';
@@ -82,7 +83,7 @@ function makeController(memento: FakeMemento): {
   const store = new WorkspaceStateStore(memento);
   const queue = new QueueManager(store);
   const controller = new SchegentWorkflowController(
-    { run: vi.fn() } as unknown as PhaseRunner,
+    { run: vi.fn(), evictStagnationTracker: vi.fn() } as unknown as PhaseRunner,
     store,
     queue,
     { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar,
@@ -125,7 +126,7 @@ async function resumeWith(options: {
     phaseBreakpoints: [], resumeTargetPhaseId: null,
     ...(options.runEnvelope ? { envelope: options.runEnvelope } : {})
   };
-  await store.setRun(DEFAULT_QUEUE_ID, persisted);
+  await store.setRun(DEFAULT_QUEUE_ID, persisted, unfencedCommit('test-fixture'));
 
   const admission = await controller.admitResume(DEFAULT_QUEUE_ID);
   // The drive is handed back rather than awaited by design; swallow it so a

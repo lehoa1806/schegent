@@ -1,3 +1,4 @@
+import type { SpawnIdentity } from '../contracts/spawn-identity';
 import type { Phase, PhaseOutcome } from '../controller/phase';
 import type { PhaseDef } from '../config/pipeline-config';
 import type { CatalogVersionRef } from '../contracts/catalog-version';
@@ -11,7 +12,9 @@ import type {
 // `WorkflowRunPipeline` from this file, so a value import either way would be a
 // real cycle. Both directions are erased at compile time.
 import type { ExecutionEnvelope, FrozenInputBinding } from '../contracts/run-request';
+import type { FailureCause } from '../contracts/failure-cause';
 import type { RunOutputRecord } from '../contracts/run-results';
+import type { DegradedPhaseEntry } from '../contracts/snapshot-projections';
 
 export interface WorkflowRunPipeline {
   readonly id: string;
@@ -86,9 +89,12 @@ export function isTerminalRunStatus(status: WorkflowRunStatus | string): boolean
  * point. Terminality answers "has execution ended, release the lease and the
  * session"; a failed Run has, and does. Operability answers "can the operator
  * still do something with this Run", and for a failed Run the answer is
- * emphatically yes — `skipPhase` advances past the failed phase and wakes the
- * pipeline, and retry re-admits it. Those two controls exist very largely *for*
- * failed Runs. Only `completed` and `canceled` are finished in both senses.
+ * emphatically yes — Retry re-admits it, and Restart and Resume put it back into
+ * motion. Those controls exist very largely *for* failed Runs.
+ * FR-R4-F20 (2026-10-29): Skip no longer acts on a failed Run. It is refused
+ * `run-failed`, before anything is written and again inside the update chain, and
+ * `failed` stays operable for Restart, Resume and Retry. Only `completed` and
+ * `canceled` are finished in both senses.
  *
  * Enumerated for the same reason as the list above, and negatively for a
  * further one: spelling the operable set positively would put the pinned
@@ -104,6 +110,105 @@ export function isOperableRunStatus(status: WorkflowRunStatus | string): boolean
   return !(UNCONTROLLABLE_RUN_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * FR-R4-F01 (data-model §2) — the statuses `updateRun` writers name in `allowedStatuses`.
+ * One definition each, so that "which Runs can this writer still act on" is read from one
+ * place and a stale update to a finished Run is refused the same way everywhere.
+ *
+ * - `LIVE_RUN_STATUSES`: a driver is running or a retry is counting down. Liveness, a retry
+ *   decision, a spawn identity, a cancel and a pause act on these and nothing else.
+ * - `OPERABLE_RUN_STATUSES`: everything an operator control can still act on. A `failed`
+ *   Run is operable (Retry, Restart and Resume exist largely for it; FR-R4-F20 retired Skip
+ *   there) but not live.
+ * - `ALL_RUN_STATUSES`: for a write that only REMOVES a field, where a finished Run must
+ *   still be reachable.
+ */
+export const LIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ['running', 'paused'];
+export const OPERABLE_RUN_STATUSES: readonly WorkflowRunStatus[] = ['running', 'paused', 'failed'];
+export const ALL_RUN_STATUSES: readonly WorkflowRunStatus[] = [
+  'running',
+  'paused',
+  'failed',
+  'completed',
+  'canceled'
+];
+
+/**
+ * FR-R4-F01 (contract C2) — what a field update patch may hold: any field of the Run, and
+ * `undefined` for a field to REMOVE. `Partial<WorkflowRun>` cannot say the second under
+ * `exactOptionalPropertyTypes`, and the removal is the point of an absent field such as
+ * `spawnIdentity`, so the patch has its own type rather than a cast at each writer.
+ */
+export type RunPatch = { [K in keyof WorkflowRun]?: WorkflowRun[K] | undefined };
+
+/**
+ * FR-R4-F01 (research R3 #3) — the top-level fields whose value differs between
+ * `prev` and `next`, compared by reference, as a PATCH for `updateRun`.
+ *
+ * This is the driver's patch. It still builds the whole `next` Run in its own code
+ * shape, and the store applies to the CURRENT Run only what the driver changed. A
+ * field the driver did not touch keeps whatever a concurrent operator, monitor or
+ * retry write left there. A field `next` dropped appears with the value
+ * `undefined`, which `updateRun` reads as "remove the key".
+ *
+ * One exception, and the reason it exists: {@link DRIVER_OWNED_RUN_FIELDS} are taken
+ * from `next` whether or not they changed. The driver records the backend's session
+ * on its in-memory Run when an invocation returns (`RunDriver`, after `dispatchObserved`)
+ * and lets the NEXT transition carry it to the store, so by the time `persist` is
+ * called `prev` already holds them and a diff against it would never write them. No
+ * concurrent writer touches these fields (`featureDir` is set once at admission and
+ * otherwise only by the driver), so writing them from `next` cannot clobber anything;
+ * every other field keeps the changed-since-`prev` rule.
+ */
+export function changedRunFields(prev: WorkflowRun, next: WorkflowRun): RunPatch {
+  const before = prev as unknown as Record<string, unknown>;
+  const after = next as unknown as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (before[key] !== after[key]) patch[key] = after[key];
+  }
+  for (const key of DRIVER_OWNED_RUN_FIELDS) patch[key] = after[key];
+  return patch as RunPatch;
+}
+
+/**
+ * FR-R4-F01 — the fields only the driver writes, and writes on its in-memory Run
+ * before the transition that persists them: the three CLI-session fields
+ * (`NO_CLI_SESSION` is the same trio, cleared together), and the feature directory a
+ * phase reported (spec 278, U1; `run-phase-facts.ts`).
+ */
+export const DRIVER_OWNED_RUN_FIELDS = [
+  'lastCliSessionId',
+  'lastCliSessionRunnerKind',
+  'lastCliSessionCostUsd',
+  'featureDir'
+] as const;
+
+/**
+ * FR-R4-F01 (FR-008) — what a cancel writes, as a PATCH for `updateRun`: the status
+ * and the stamp, and every pause and retry field cleared.
+ *
+ * The fields are cleared because a Run can be canceled while a pause was requested
+ * or a retry was counting down, and `validateRunInvariants` forbids the one-sided
+ * pair a half-cleared cancel would leave. `resumeTargetPhaseId` goes with the pause
+ * cause it is tied to. One definition, because the command and Task deletion both
+ * cancel a Run, and two copies of "what cancel writes" are how they come to differ.
+ */
+export function canceledRunPatch(now: number): RunPatch {
+  return {
+    status: 'canceled',
+    lastTransitionAt: now,
+    manualPauseAt: null,
+    manualPauseCause: null,
+    resumeTargetPhaseId: null,
+    pendingRetryAt: null,
+    pendingRetryCause: null,
+    creditPause: null,
+    // FR-R4-F14 — a failed Run can be canceled, and a failure cause beside `canceled` is refused.
+    failureCause: undefined
+  };
+}
+
 export interface GitApprovalReceipt {
   readonly approvedAt: number;
   readonly planFingerprint: string;
@@ -114,15 +219,70 @@ export interface MutationPlanSnapshot {
   readonly fingerprint: string;
   readonly gitCapablePhaseIds: readonly string[];
   readonly capturedAt: number;
+  /**
+   * FR-R3-146 (FR-012) — the pipeline the plan was built from, recorded rather
+   * than only hashed.
+   *
+   * `buildMutationPlan` has always fed `pipeline.id` into the fingerprint, so a
+   * snapshot could identify its plan but not name it. A durable Git grant is
+   * stored under the fingerprint and has to be legible to the operator who
+   * granted it, and a hex digest names nothing.
+   *
+   * Optional because a Run created before this field existed carries a snapshot
+   * without it, and `workflow-controller.ts:780` resumes such a Run from the
+   * persisted value rather than rebuilding. Absent means unrecorded, never
+   * "no pipeline"; see `UNRECORDED_PIPELINE_ID`.
+   */
+  readonly pipelineId?: string;
 }
 
 export interface TerminalTransitionIntent {
   readonly schemaVersion: 1;
   readonly run: WorkflowRun;
+  /**
+   * FR-R3-196 — when this transition was first journalled. Kept when a description is added
+   * later, and compared against the task row's `updatedAt` on replay.
+   */
   readonly createdAt: number;
+  /**
+   * FR-R3-071 — the sanitized description the terminal transition was
+   * completing with, journalled so crash-replay records the operator's text
+   * rather than substituting the feature id. Optional: intents written before
+   * this field (and the controller's early `begin`) carry none, and replay
+   * falls back with a warn. Transient — the intent clears at completion, or is
+   * dropped when its Run has moved on — so this does not re-grow the memento the
+   * sidecar move shrank.
+   */
+  readonly description?: string;
 }
 
+// FR-R3-075 — 'deadline' is the absolute wall-clock bound; 'timeout' remains
+// the idle stall. An operator reading a stopped phase needs to know whether it
+// went quiet or ran long, so the two are never collapsed.
+//
+// Feature 212 (FR-004) — 'pre_spawn_refusal' is the attempt refused before any
+// child process existed, distinct from 'error', which describes a child that ran
+// and went wrong. Spelled identically here and in the projected `phase-end`
+// cause, deliberately unlike the cap classification, which reaches the audit as
+// two spellings in ONE record: `cause: 'cap_exhausted'` and
+// `terminationReason: 'cap-exhausted'`. The hyphen form is not a member of this
+// union — `appendCapExhaustedPhaseEnd()` writes it into a payload typed
+// `Record<string, unknown>` (src/controller/phase-runner.ts), which is exactly how it
+// escaped this vocabulary. `projectPhaseEnd()` records the consequence
+// (audit-payload.ts, the `cause` field's docblock).
+//
+// FR-R3-172 (FR-013, FR-015, T1744, 2026-09-14) — AMENDED, not replaced: the
+// paragraph above is what was true, and it is how the escape is still found. The
+// seam it names is now shut. That payload is typed
+// `CapExhaustedPhaseEndPayload` (src/controller/cap-exhausted-payload.ts), which
+// admits this union plus one named constant for the hyphen form and nothing
+// else, so a second non-member cannot leave the same way unannounced. The VALUE
+// is unchanged and stays divergent on purpose — it is on disk in every
+// cap-exhaustion row already written, and the cost of renaming it is borne by
+// records nobody can go back and edit. This union was not widened to accommodate
+// it, and must not be: the exception is named at the one site that needs it.
 export type TerminationReason =
+  | 'deadline'
   | 'token'
   | 'open_questions'
   | 'remaining_issues'
@@ -130,7 +290,11 @@ export type TerminationReason =
   | 'error'
   | 'rate_limit'
   | 'timeout'
-  | 'cancel';
+  | 'cancel'
+  | 'pre_spawn_refusal'
+  // FR-R3-198 — the turn ended unfinished: work still open in the background,
+  // or no contract block. Decided from the runner's turn-end facts.
+  | 'incomplete_turn';
 
 export interface SanitizedError {
   code: string;
@@ -170,9 +334,60 @@ export interface PhaseResult {
   stdoutSummary: string;
   stderrSummary: string;
   auditEntryId: string | null;
+  /**
+   * Feature 212 (FR-006, FR-014) — whether the backend's end-of-invocation
+   * result envelope was received. Three-state by construction: 'received',
+   * 'absent', or the field missing, which means UNKNOWN and must never be read
+   * as either value. Records persisted before this feature carry no such field,
+   * permanently, and no migration can invent one.
+   */
+  resultEnvelope?: 'received' | 'absent';
 }
 
 export type DelayedRetryCause = 'transient_error' | 'rate_limit';
+
+/**
+ * FR-R4-F02 (data-model §3) — the persisted record of a credit pause.
+ *
+ * At `5d700407` a credit pause left the same persisted shape as a cap-exhausted pause (`paused`, no
+ * retry pair, no manual pair), so nothing could tell the two apart and an unattended sweep resumed
+ * whichever it found. This is one nullable object, written by the credit arm in the same
+ * transition as `status: 'paused'` and cleared by every write that leaves `paused`, so there is no
+ * half to leave behind (hard rule 28; `validateRunInvariants`).
+ *
+ * `windowStartedAt` is null until the first credit poll after the pause; `stoppedAt` is set when
+ * the 24-hour polling window ends, and the Run then waits for the operator's Resume.
+ */
+export interface CreditPause {
+  readonly pausedAt: number;
+  readonly windowStartedAt: number | null;
+  readonly stoppedAt: number | null;
+}
+
+/** The Run's credit pause, with an absent key read as `null` (the field is optional on the type). */
+export function creditPauseOf(run: Pick<WorkflowRun, 'creditPause'>): CreditPause | null {
+  return run.creditPause ?? null;
+}
+
+/**
+ * FR-R4-F02 (contract W5 G15) — the credit arm's pause, built as one Run: paused and naming its
+ * pause in the SAME value, so no write can leave a Run paused for credits that does not say so.
+ */
+export function creditPausedRun(
+  run: WorkflowRun,
+  iteration: number,
+  phaseResult: PhaseResult,
+  at: number
+): WorkflowRun {
+  return {
+    ...run,
+    status: 'paused',
+    currentIteration: iteration,
+    lastTransitionAt: at,
+    phasesCompleted: [...run.phasesCompleted, phaseResult],
+    creditPause: { pausedAt: at, windowStartedAt: null, stoppedAt: null }
+  };
+}
 
 /**
  * Feature 017 — per-run phase override action. `'skipped'` means the
@@ -226,7 +441,22 @@ export type ManualPauseCause =
   | 'operator-paused'
   | 'queue-paused-mid-run'
   | 'breakpoint-paused'
-  | 'verify-paused';
+  | 'verify-paused'
+  /**
+   * FR-R3-112 (FR-120, FR-120a, FR-121) — the run crossed its spend bound.
+   *
+   * A NEW CAUSE ON THE EXISTING PAUSE, not a new status. The bounds this product had were all time-
+   * and count-shaped — iteration cap 10, retry cap 5, idle 5400 s, absolute 21600 s — and **nothing
+   * bounded spend**. Cost was recorded (the rollup accumulates `costUsd` and validates
+   * non-negativity) and no code path in controller or services read it to refuse, pause or warn, so
+   * a pathological run burned budget at full speed inside every existing cap.
+   *
+   * IT PAUSES; IT NEVER DESTROYS. No terminal transition. An operator returning from lunch to a
+   * paused run has lost time; to a failed one, possibly work. This reuses the operator-resumable
+   * pause the rate-limit path already uses, so the existing resume works unchanged and no status
+   * literal is introduced — which the hard rules forbid outside the pinned projection paths.
+   */
+  | 'spend-bound-reached';
 
 /**
  * Feature 028 — future-phase breakpoint entry. Operator marks a pending
@@ -319,6 +549,33 @@ export interface RunPlannedTotal {
 }
 
 export interface WorkflowRun {
+  /**
+   * FR-R3-055 (H-06) — the execution-lease generation this record was last
+   * written under, when the writer supplied one.
+   *
+   * Stamped so a reader holding a NEWER generation can tell the record came from
+   * a superseded holder. That is the "fence-stamped snapshots" half of the
+   * protocol: the commit-point check refuses the write it can see, and the stamp
+   * lets a reader disbelieve one that slipped past.
+   *
+   * Optional and additive: a record written before this field deserializes
+   * unchanged, so no `STATE_SCHEMA_VERSION` moves.
+   */
+  writtenAtFence?: number;
+  /**
+   * FR-R3-103 (FR-041) — the process tree this Run last spawned, or absent.
+   *
+   * Written under the fence at spawn and cleared when the child is reaped, so its presence
+   * means a tree was running when this record was last written. Whether it is running NOW is
+   * what the liveness check asks, and activation asks it before resuming a persisted
+   * `running` Run — because before this field existed, activation resumed into whatever the
+   * previous host had left behind and the two raced in one worktree.
+   *
+   * Optional and additive: a Run persisted before this field deserializes unchanged and reads
+   * as `unrecorded`, which resumes exactly as it did before. So no `STATE_SCHEMA_VERSION`
+   * moves and no migrator is owed.
+   */
+  spawnIdentity?: SpawnIdentity;
   id: string;
   featureId: string;
   featureDir: string;
@@ -350,7 +607,39 @@ export interface WorkflowRun {
    */
   liveness?: RunLiveness;
   phasesCompleted: PhaseResult[];
+  /**
+   * FR-R3-157 — every phase this run carried past its retry cap under
+   * `onRetryCap: 'continue-degraded'`, in the order they happened.
+   *
+   * **Absence means NOT degraded**, and that is the opposite of the convention
+   * `plannedTotal` and `liveness` above follow, where absence means unknown. It
+   * has to be: a degraded run is one that recorded something, so a run with no
+   * record is a run that degraded nowhere. Reading absence as "unknown" would
+   * make every legacy record and every clean run alike look suspicious, which is
+   * exactly the indistinguishability FR-006 forbids — in the other direction.
+   *
+   * No migration is needed and none is written. The field is optional and
+   * additive: a record persisted before this feature reads back byte-identical,
+   * and the reader's answer for it (`not degraded`) is the true one.
+   */
+  degradedPhases?: readonly DegradedPhaseEntry[];
   lastError: SanitizedError | null;
+  /**
+   * FR-R4-F14 (spec 242, D5) — why this Run failed, one code from the closed vocabulary in
+   * `contracts/failure-cause.ts`. Present only while `status === 'failed'`, and set in the write
+   * that makes the Run `failed`, so the terminal audit event and the metrics rollup read it from
+   * the Run (a crash replay reads the journalled Run and records the same code).
+   *
+   * **Absent means "not recorded"**, for a Run that failed before this feature as for any other. It
+   * is optional and additive, as `degradedPhases` is: no migration, no `STATE_SCHEMA_VERSION` bump,
+   * and a record persisted before this feature reads back byte-identical.
+   *
+   * What keeps it one-sided-free: `validateRunInvariants` refuses it beside any other status, and
+   * `tests/lint/failure-cause-clear-census.test.ts` makes every writer that leaves `failed` name it.
+   * A writer that leaves `failed` writes `failureCause: undefined`, which `updateRun` reads as
+   * "remove the key".
+   */
+  failureCause?: FailureCause;
   /** Frozen at run creation; legacy records migrate to `always`. */
   rawTranscriptMode?: RawTranscriptMode;
   /** Frozen projection of phases that can mutate Git state. */
@@ -370,7 +659,7 @@ export interface WorkflowRun {
    * the stable fallback for partially migrated snapshots. Missing on records
    * created before runner pinning; those conservatively fall back to Claude.
    */
-  defaultRunnerKind?: import('../runner/backend-runner-factory').BackendRunnerKind;
+  defaultRunnerKind?: import('../contracts/backend-kinds').BackendRunnerKind;
   /**
    * Feature 011 — total delayed-retry attempts for this run. Starts at 0;
    * incremented per FR-002/FR-003; reset to 0 by FR-007/FR-009.
@@ -388,6 +677,20 @@ export interface WorkflowRun {
    * `pendingRetryAt` is non-null (invariant enforced by `setRun()`).
    */
   pendingRetryCause: DelayedRetryCause | null;
+  /**
+   * FR-R4-F02 (spec 240, data-model §3) — non-null iff the Run is paused for credits. The
+   * invariant `validateRunInvariants` enforces: `creditPause` set requires `status === 'paused'`,
+   * no pending retry pair and no manual-pause pair. Written `null` on every new Run and by the v15
+   * ladder step on every Run that lacked the key.
+   *
+   * OPTIONAL ON THE TYPE, NULL IN THE DATA. Absent reads as `null` everywhere (`creditPauseOf()`),
+   * and every writer stores an explicit `null`, so the persisted shape is the one the data model
+   * names. The type is optional only because a required key would have broken some fifty test
+   * fixtures that build a whole `WorkflowRun` for reasons unrelated to credits, and the additive
+   * convention (`lastCliSessionId?`, `runInputs?`) is how this file already carries a field a
+   * record written before it cannot have.
+   */
+  readonly creditPause?: CreditPause | null;
   /**
    * Feature 017/022 — per-run phase overrides (skip / disable / remove).
    * Per-run scope; a new run starts with `[]`. The pipeline snapshot is
@@ -442,7 +745,18 @@ export interface WorkflowRun {
    * effective backend of the next dispatch. Missing on legacy records; a
    * missing owner fails closed by starting a fresh backend session.
    */
-  lastCliSessionRunnerKind?: import('../runner/backend-runner-factory').BackendRunnerKind;
+  lastCliSessionRunnerKind?: import('../contracts/backend-kinds').BackendRunnerKind;
+  /**
+   * FR-R3-209 — the cumulative `total_cost_usd` the claude runner last recorded for the session
+   * `lastCliSessionId` names. A host restart empties the runner's own ledger, and this is what
+   * lets the first resume afterwards record only its own cost.
+   *
+   * Written, cleared and carried with the id (`NO_CLI_SESSION`, `cliSessionOf`), optional and
+   * additive like the id so it needs no migration, and never logged. `| undefined` is
+   * deliberate: the driver writes an invocation's figure, absent included, beside the id it
+   * reports.
+   */
+  lastCliSessionCostUsd?: number | undefined;
   /**
    * Feature 010 — BUG-001 (FR-028). Most recent `phase.retry_evaluated`
    * decision projected onto the operator-visible run. Absent until the
@@ -497,6 +811,36 @@ export interface WorkflowRun {
    * Absent until the Run completes, and on every Run that declared no outputs.
    */
   runOutputs?: readonly RunOutputRecord[];
+  /**
+   * FR-R6-F10 (F10-FR-02, F10-FR-04) — opaque lane identifier and storage-relative root reference
+   * (`lanes/<workspaceId>/<laneId>`) frozen when an isolated lane is provisioned for this Run.
+   * Never holds an absolute filesystem path; existing Runs without these fields execute in the
+   * primary workspace root.
+   */
+  readonly laneId?: string;
+  readonly laneRootRef?: string;
+}
+
+/** FR-R3-209 — the three session fields cleared together, for a Run that stops owning a session. */
+export const NO_CLI_SESSION = Object.freeze({
+  lastCliSessionId: undefined,
+  lastCliSessionRunnerKind: undefined,
+  lastCliSessionCostUsd: undefined
+});
+
+/** FR-R3-209 — the three session fields of a Run, carried together onto another record. */
+export function cliSessionOf(run: WorkflowRun): {
+  readonly lastCliSessionId: string | null | undefined;
+  readonly lastCliSessionRunnerKind:
+    | import('../contracts/backend-kinds').BackendRunnerKind
+    | undefined;
+  readonly lastCliSessionCostUsd: number | undefined;
+} {
+  return {
+    lastCliSessionId: run.lastCliSessionId,
+    lastCliSessionRunnerKind: run.lastCliSessionRunnerKind,
+    lastCliSessionCostUsd: run.lastCliSessionCostUsd
+  };
 }
 
 export interface RunPhaseStats {
@@ -545,5 +889,31 @@ export interface WatchdogState {
   nextPollAt: number | null;
   pollIntervalMs: number;
   lastStatusOk: boolean | null;
+  /**
+   * FR-R4-F02 (data-model §4) — what the last credit poll could say: `not-recovered` for an
+   * exit-zero poll whose text was negative or ambiguous, `unreachable` for a poll that threw, timed
+   * out, was killed or exited nonzero. `null` before any poll. Written by `CreditWatchdog` only.
+   * Optional on the type for the reason `WorkflowRun.creditPause` is: the v15 step writes `null`
+   * on an existing record and `getWatchdog()`'s fallback carries it, absent reads as `null`.
+   */
+  lastPollOutcome?: 'not-recovered' | 'unreachable' | null;
   cause: string | null;
+}
+
+/**
+ * FR-R3-055 (H-06) — is this record the work of a superseded holder?
+ *
+ * The read-time half of the protocol. The commit-point check in `setRun` refuses
+ * a write it can see; this lets a reader disbelieve one that slipped past —
+ * written by a holder whose lease had already moved on, in the window the check
+ * cannot cover because `Memento` has no conditional write.
+ *
+ * An unstamped record answers **false**. That is deliberate: records written
+ * before this field existed, and every write made without a claim, carry no
+ * generation to compare, and treating "no stamp" as "superseded" would reject
+ * the entire existing corpus. The stamp is evidence when present, not an absence
+ * to be read as guilt.
+ */
+export function isSupersededRun(run: WorkflowRun, liveFence: number): boolean {
+  return run.writtenAtFence !== undefined && run.writtenAtFence < liveFence;
 }

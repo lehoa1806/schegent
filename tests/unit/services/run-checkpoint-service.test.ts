@@ -1,7 +1,7 @@
 // Feature 093 (T053, T054, US1) — FR-022a / SC-015.
 //
 // A checkpoint is a `git diff --binary HEAD` of the one shared worktree, and
-// this project forbids `git worktree`. So the moment a second Run holds
+// Runs share one worktree today. So the moment a second Run holds
 // uncommitted work, a snapshot taken for Run A necessarily contains Run B's
 // in-progress edits, and applying it later reverts B's work. There is no
 // in-product restore path — an operator restores by applying the patch file by
@@ -20,8 +20,16 @@
 // residual unattributable case, so these Runs still decline; only the recorded
 // *reason* moved from `concurrent-runs-share-one-worktree` to
 // `attribution-evidence-incomplete`.
+//
+// FR-R3-124 (2026-08-27) — the header used to say "this project forbids
+// `git worktree`". That flat ban is gone: `AGENTS.md` now permits it narrowly, for
+// Schegent-provisioned per-Run execution roots only, and
+// `docs/architecture/run-isolation-decision.md` chose the per-Run worktree as the
+// shape of execution isolation. **The mechanism does not exist** — §9 of that
+// record gates building it — so every property below is unchanged and remains the
+// operative behaviour of a shared tree.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
@@ -29,6 +37,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { SanitizedLogger } from '../../../src/lib/logger';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
+import { EMPTY_TREE_SHA1 } from '../../../src/lib/git-diff-base';
 import { RunCheckpointService } from '../../../src/services/run-checkpoint-service';
 import { RunMutationLedger } from '../../../src/services/run-mutation-ledger';
 
@@ -124,6 +133,58 @@ describe('RunCheckpointService — sole in-flight Run (T053, FR-022a)', () => {
     expect(patch).toContain('edit by run-a');
     expect(warnings).toEqual([]);
   });
+
+  // Review gap closure (2026-11-12) -- a repository `diff.<driver>.textconv` ran inside the
+  // checkpoint's `git diff --binary`: a program the repository names executed on the host, and
+  // the patch carried its output instead of the file, so it no longer applied.
+  (process.platform === 'win32' ? it.skip : it)('runs no repository textconv and records the real content', async () => {
+    const marker = path.join(storageRoot, 'textconv-ran');
+    const textconv = path.join(storageRoot, 'textconv.sh');
+    await fs.writeFile(textconv, `#!/bin/sh\ntouch "${marker}"\necho converted\n`, { mode: 0o755 });
+    await run('git', ['config', 'diff.conv.textconv', textconv], { cwd: workspaceRoot });
+    await fs.writeFile(path.join(workspaceRoot, '.gitattributes'), '*.txt diff=conv\n');
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), 'edit by run-a\n');
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+
+    await service(() => 1).checkpoint(RUN, 'speckit-implement');
+
+    const patchName = (await artifacts()).find((name) => name.endsWith('.patch'));
+    expect(patchName).toBeDefined();
+    const patch = await fs.readFile(path.join(storageRoot, 'checkpoints', 'run-a', String(patchName)), 'utf8');
+    expect(patch).toContain('edit by run-a');
+    expect(patch).not.toContain('converted');
+    expect(await fs.access(marker).then(() => true, () => false)).toBe(false);
+  });
+});
+
+describe('RunCheckpointService — says what its artifact write narrowed (feature 217, FR-003)', () => {
+  /** POSIX-only: `mode` is not an enforceable concept on Windows. */
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+  /** What umask 022 and umask 027 leave a directory at. */
+  const WIDENED_DIR = 0o755;
+  const GROUP_READABLE_DIR = 0o750;
+
+  posixOnly('narrows the widened directories it writes through and says so, nearest the root first', async () => {
+    // `ensureRunRoot` creates owner-only and narrows nothing that already exists,
+    // so it is the artifact's open that reaches these two.
+    const checkpoints = path.join(storageRoot, 'checkpoints');
+    const runRoot = path.join(checkpoints, 'run-a');
+    await fs.mkdir(runRoot, { recursive: true });
+    await fs.chmod(checkpoints, WIDENED_DIR);
+    await fs.chmod(runRoot, GROUP_READABLE_DIR);
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), 'edit by run-a\n');
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+
+    await service(() => 1).checkpoint(RUN, 'speckit-implement');
+
+    const modeOf = async (p: string): Promise<number> => (await fs.lstat(p)).mode & 0o777;
+    expect(await modeOf(checkpoints)).toBe(0o700);
+    expect(await modeOf(runRoot)).toBe(0o700);
+    expect(warnings.filter((message) => message.startsWith('checkpoint:'))).toEqual([
+      'checkpoint: an evidence directory granted access beyond its owner (mode 755); narrowed to owner-only',
+      'checkpoint: an evidence directory granted access beyond its owner (mode 750); narrowed to owner-only'
+    ]);
+  });
 });
 
 describe('RunCheckpointService — concurrency (T053, T054, FR-022a, SC-015)', () => {
@@ -191,3 +252,182 @@ describe('RunCheckpointService — concurrency (T053, T054, FR-022a, SC-015)', (
     await fs.rm(outside, { recursive: true, force: true });
   });
 });
+
+describe('RunCheckpointService — a workspace whose branch has no commits', () => {
+  // A `git init`-ed workspace that has not been committed yet has an unborn
+  // HEAD, and every `HEAD`-relative command against it fails. `capture()` used
+  // to route that into the same `catch` as an unreadable tree, so the *first*
+  // Git-capable phase in a fresh workspace died on `checkpoint-unavailable`
+  // before it ran. The tree is perfectly readable; there is simply no commit to
+  // diff against, and git's own answer for that is the empty tree.
+  let unbornRoot: string;
+
+  beforeEach(async () => {
+    unbornRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'schegent-checkpoint-unborn-'));
+    await run('git', ['init', '-q'], { cwd: unbornRoot });
+    await run('git', ['config', 'user.email', 'test@example.com'], { cwd: unbornRoot });
+    await run('git', ['config', 'user.name', 'Test'], { cwd: unbornRoot });
+  });
+
+  afterEach(async () => {
+    await fs.rm(unbornRoot, { recursive: true, force: true });
+  });
+
+  function unborn(): RunCheckpointService {
+    return new RunCheckpointService(
+      storageRoot,
+      unbornRoot,
+      logger,
+      () => 1,
+      blindLedger(unbornRoot)
+    );
+  }
+
+  it('does not block the Git-capable phase', async () => {
+    // The reported failure, at its narrowest: nothing is staged, everything in
+    // the workspace is untracked, and the phase has to be allowed to run.
+    await expect(unborn().checkpoint(RUN, 'speckit-implement')).resolves.toBeUndefined();
+    expect(warnings).toEqual([]);
+  });
+
+  it('records a restorable snapshot of the content that is staged', async () => {
+    await fs.writeFile(path.join(unbornRoot, 'a.txt'), 'edit by run-a\n');
+    await run('git', ['add', '-A'], { cwd: unbornRoot });
+
+    await unborn().checkpoint(RUN, 'speckit-implement');
+
+    const files = await artifacts();
+    expect(files.filter((name) => name.endsWith('.declined.json'))).toHaveLength(0);
+    const patch = await fs.readFile(
+      path.join(storageRoot, 'checkpoints', 'run-a', files.find((n) => n.endsWith('.patch'))!),
+      'utf8'
+    );
+    expect(patch).toContain('edit by run-a');
+  });
+
+  it('names the empty tree as the base the patch applies to', async () => {
+    // `baseCommit` is what the runbook tells an operator to apply the patch
+    // against, so it must name the object actually diffed rather than be blank
+    // or carry a commit id that does not exist.
+    await unborn().checkpoint(RUN, 'speckit-implement');
+
+    const name = (await artifacts()).find((f) => f.endsWith('.json') && !f.endsWith('.declined.json'));
+    const recorded = JSON.parse(
+      await fs.readFile(path.join(storageRoot, 'checkpoints', 'run-a', name!), 'utf8')
+    );
+    expect(recorded.baseCommit).toBe(EMPTY_TREE_SHA1);
+  });
+});
+
+// FR-R4-F01 (spec 239, US6, T067, FR-030, contract K3, decision D4) — names never collide, and the
+// retention budget is shared.
+//
+// Artifacts are named `<ms>-<phase>`. Two captures of one Phase in the same millisecond wrote the
+// same names with `flags: 'w'`, so the second silently overwrote the first. The patch now opens
+// with exclusive create, and a collision takes `-1`, `-2` and so on. Decline markers and snapshots
+// share one budget of the newest 20 prefixes (D4), which this pins rather than leaves implicit.
+describe('RunCheckpointService — naming and retention (K3, FR-030, D4)', () => {
+  const FIXED_MS = 1_800_000_000_000;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function capture(content: string): Promise<void> {
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), content);
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+    await service(() => 1).checkpoint(RUN, 'speckit-implement');
+  }
+
+  const manifestOf = async (name: string): Promise<Record<string, unknown>> =>
+    JSON.parse(await fs.readFile(path.join(storageRoot, 'checkpoints', 'run-a', name), 'utf8'));
+
+  it('writes two prefixes, with matching manifests, for two captures in one millisecond', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(FIXED_MS);
+
+    await capture('first capture\n');
+    await capture('second capture\n');
+
+    const files = await artifacts();
+    expect(files).toEqual([
+      `${FIXED_MS}-speckit-implement-1.json`,
+      `${FIXED_MS}-speckit-implement-1.patch`,
+      `${FIXED_MS}-speckit-implement.json`,
+      `${FIXED_MS}-speckit-implement.patch`
+    ]);
+    // Neither capture overwrote the other: each patch holds its own bytes.
+    const first = await fs.readFile(
+      path.join(storageRoot, 'checkpoints', 'run-a', `${FIXED_MS}-speckit-implement.patch`),
+      'utf8'
+    );
+    const second = await fs.readFile(
+      path.join(storageRoot, 'checkpoints', 'run-a', `${FIXED_MS}-speckit-implement-1.patch`),
+      'utf8'
+    );
+    expect(first).toContain('first capture');
+    expect(second).toContain('second capture');
+    // The manifest of each capture sits under the SAME prefix as its patch.
+    expect(await manifestOf(`${FIXED_MS}-speckit-implement.json`)).toMatchObject({ runId: 'run-a' });
+    expect(await manifestOf(`${FIXED_MS}-speckit-implement-1.json`)).toMatchObject({ runId: 'run-a' });
+  });
+
+  it('takes the lowest free suffix for a third capture', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(FIXED_MS);
+
+    await capture('one\n');
+    await capture('two\n');
+    await capture('three\n');
+
+    expect((await artifacts()).filter((name) => name.endsWith('.patch'))).toEqual([
+      `${FIXED_MS}-speckit-implement-1.patch`,
+      `${FIXED_MS}-speckit-implement-2.patch`,
+      `${FIXED_MS}-speckit-implement.patch`
+    ]);
+  });
+
+  it('keeps the newest 20 prefixes with decline markers and snapshots counted together', async () => {
+    const dir = path.join(storageRoot, 'checkpoints', 'run-a');
+    await fs.mkdir(dir, { recursive: true });
+    const base = 1_700_000_000_000;
+    // 12 snapshots (oldest), then 10 decline markers (newer): 22 prefixes already.
+    for (let index = 0; index < 12; index += 1) {
+      await fs.writeFile(path.join(dir, `${base + index}-speckit-implement.patch`), '');
+      await fs.writeFile(path.join(dir, `${base + index}-speckit-implement.json`), '{}');
+    }
+    for (let index = 12; index < 22; index += 1) {
+      await fs.writeFile(path.join(dir, `${base + index}-speckit-implement.declined.json`), '{}');
+    }
+
+    await capture('newest\n');
+
+    const prefixes = new Set(
+      (await artifacts()).map((name) => name.replace(/\.(patch|json)$/, ''))
+    );
+    expect(prefixes.size).toBe(20);
+    // The newest 20 survive: the three oldest SNAPSHOTS were pushed out by the markers' budget.
+    expect([...prefixes].filter((prefix) => prefix.endsWith('.declined'))).toHaveLength(10);
+    expect(prefixes.has(`${base}-speckit-implement`)).toBe(false);
+    expect(prefixes.has(`${base + 2}-speckit-implement`)).toBe(false);
+    expect(prefixes.has(`${base + 3}-speckit-implement`)).toBe(true);
+  });
+
+  it('completes a finished checkpoint when post-write prune throws an I/O error (16-11)', async () => {
+    const svc = service(() => 1);
+    const pruneSpy = vi
+      .spyOn(svc as unknown as { prune: (dir: string) => Promise<void> }, 'prune')
+      .mockRejectedValueOnce(new Error('EACCES /private/run-a'));
+    await fs.writeFile(path.join(workspaceRoot, 'a.txt'), 'finished work\n');
+    await run('git', ['add', '-A'], { cwd: workspaceRoot });
+    try {
+      await expect(svc.checkpoint(RUN, 'speckit-implement')).resolves.toBeUndefined();
+    } finally {
+      pruneSpy.mockRestore();
+    }
+    const files = await artifacts();
+    expect(files.filter((name) => name.endsWith('.patch'))).toHaveLength(1);
+    expect(files.filter((name) => name.endsWith('.json'))).toHaveLength(1);
+    expect(warnings).toContain('checkpoint prune failed after checkpoint completed');
+    expect(warnings.some((message) => message.includes('/private/'))).toBe(false);
+  });
+});
+

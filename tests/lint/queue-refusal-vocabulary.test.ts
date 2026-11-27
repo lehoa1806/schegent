@@ -69,10 +69,42 @@ function codesIn(body: string): readonly string[] {
 }
 
 const QUEUE_MANAGER = read('src', 'queue', 'queue-manager.ts');
-const WORKSPACE_STATE = read('src', 'state', 'workspace-state.ts');
+const WORKSPACE_STATE_QUEUE = read('src', 'state', 'workspace-state-queue.ts');
 const SCHEDULE_PARSER = read('src', 'lib', 'schedule-parser.ts');
-const VALIDATORS = read('src', 'contracts', 'validators', 'queue-management.ts');
+const VALIDATORS = read('src', 'contracts', 'generated', 'validators', 'queue-management.ts');
 const IPC_MODULE = read('webview-ui', 'src', 'lib', 'queue-control-ipc.ts');
+/**
+ * FR-R3-150 (code-review finding) — the queue-scoped Clean All orchestrator is
+ * a sixth emitting layer this gate could not see. `cmd-clear-queue.ts` relays
+ * `runClearQueue`'s own `reason` verbatim over the ack, so `not-primary` and
+ * `persistence-error` reach `refusalText` exactly like a `QueueManager` refusal
+ * — and A1 was green with neither mapped, because the source was never read.
+ * Whole-file rather than by method slice: the module is one orchestrator
+ * function, so there is no unrelated command's vocabulary to over-read.
+ */
+const CLEAR_QUEUE_ORCHESTRATOR = read('src', 'commands', 'clear-queue.ts');
+/**
+ * The shared outcome vocabulary, reachable on this transport since
+ * `cmd-clear-queue.ts` relays through `execAndAck` rather than a hand-rolled
+ * `executeCommand` + `ackGenericResult` pair (code-review finding, iteration
+ * 5). Derived from the `*_REASON` declarations exactly as
+ * `lifecycle-refusal-vocabulary.test.ts` does — two files apart because the
+ * first three are decisions about a *result* and the fourth is a decision about
+ * the *dispatch*.
+ */
+const SHARED_OUTCOME_SOURCES: readonly string[] = [
+  read('src', 'contracts', 'command-outcome.ts'),
+  read('src', 'ui', 'sidebar', 'commands', 'handler-helpers.ts')
+];
+
+function sharedOutcomeCodes(): readonly string[] {
+  const found = new Set<string>();
+  for (const source of SHARED_OUTCOME_SOURCES) {
+    for (const match of source.matchAll(/_REASON = '([a-z][a-z0-9-]*)'/g)) found.add(match[1]);
+  }
+  expect(found.size, 'no *_REASON constants found — the derivation is broken').toBeGreaterThan(0);
+  return [...found];
+}
 
 /**
  * `taskErrorReason` renames exactly one code on its way out. Applied here so the
@@ -101,17 +133,31 @@ const WEBVIEW_SYNTHESISED: readonly string[] = ['timeout', 'unexpected-accept'];
  * this module does not post — `CMD_CREATE_QUEUE` and `CMD_RENAME_QUEUE` keep
  * their pre-existing call sites (see the module header). Named here so its
  * absence is a recorded decision rather than an oversight A1 has to allow.
+ *
+ * Feature 195 (T064, FR-025) — `missing-confirmation` joins it for the same
+ * reason. `validateAttestTaskCompleted` lives in the same validator file, so
+ * the whole-file scan below reaches it, but `CMD_ATTEST_TASK_COMPLETED` is
+ * posted from `QueueItemActions.svelte` beside the row's other five actions
+ * (retry, cancel, remove, restart, modify), all of which are fire-and-forget
+ * and surface a refusal through the host notifier rather than `refusalText`.
+ * Relocating it here to earn an entry would be the tidiness-only diff this
+ * module's own header declines to make for create and rename.
  */
-const NOT_POSTED_FROM_THIS_MODULE: readonly string[] = ['invalid-queue-name'];
+const NOT_POSTED_FROM_THIS_MODULE: readonly string[] = [
+  'invalid-queue-name',
+  'missing-confirmation'
+];
 
 function derivedCodes(): readonly string[] {
   const raw = [
     ...codesIn(methodBody(QUEUE_MANAGER, 'public queueDeletionImpact(')),
     ...codesIn(methodBody(QUEUE_MANAGER, 'public async moveTask(')),
     ...codesIn(methodBody(QUEUE_MANAGER, 'public async saveQueueSettings(')),
-    ...codesIn(methodBody(WORKSPACE_STATE, 'public async movePendingRequest(')),
+    ...codesIn(methodBody(WORKSPACE_STATE_QUEUE, 'export async function movePendingRequest(')),
     ...codesIn(SCHEDULE_PARSER),
     ...codesIn(VALIDATORS),
+    ...codesIn(CLEAR_QUEUE_ORCHESTRATOR),
+    ...sharedOutcomeCodes(),
     ...TRANSPORT_CODES
   ];
   const mapped = raw.map((code) => HOST_RENAMES[code] ?? code);

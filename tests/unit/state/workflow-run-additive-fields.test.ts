@@ -18,13 +18,14 @@
 // and a real captured memento is worth more than one hand-written to pass.
 
 import { readFileSync } from 'node:fs';
+import { unfencedCommit } from '../../../src/state/ownership-claim';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { FeatureRequest } from '../../../src/queue/feature-request';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
 import { KEYS, WorkspaceStateStore, type Memento } from '../../../src/state/workspace-state';
 import { STATE_SCHEMA_VERSION_V8 } from '../../../src/contracts/state-schema';
-import { DEFAULT_QUEUE_ID } from '../../../src/queue/queue-registry';
+import { DEFAULT_QUEUE_ID } from '../../../src/contracts/queue-identity';
 
 const FIXTURE_PATH = join(__dirname, '../../fixtures/state/pre-082-workspace-state.json');
 
@@ -94,9 +95,38 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     }
   });
 
+  // The fixture's Run addresses a Task that has no row in `requests` — this
+  // workspace was captured before the v6 → v7 enqueue/start separation, when the
+  // running Task lived in `inFlightId` alone. The migrator drops that dangling
+  // pointer and the load-time orphan reconciler then ends the Run, so `status`
+  // and `lastTransitionAt` are the two fields that legitimately differ from the
+  // captured bytes. Everything this test is actually about — that feature 087
+  // injects none of its three fields on a read or a write — is unaffected, and
+  // `expectedRun()` keeps that honest by spelling out the only permitted drift
+  // rather than loosening the comparison.
+  //
+  // FR-R4-F01 (spec 239, US4) adds the third: each frozen Phase that recorded neither verdict-basis
+  // field is made explicit with the basis it was frozen under (`model-token`, provenance `default`).
+  function expectedRun(fixture: Record<string, unknown>, actual: WorkflowRun | null): WorkflowRun {
+    const persisted = fixture[KEYS.run] as WorkflowRun;
+    const snapshot = persisted.pipeline as unknown as { phases: readonly Record<string, unknown>[] };
+    return {
+      ...persisted,
+      pipeline: {
+        ...snapshot,
+        phases: snapshot.phases.map((phase) => ({ ...phase, hostVerification: 'model-token', hostVerificationDeclaredAt: 'default' }))
+      } as unknown as WorkflowRun['pipeline'],
+      status: 'canceled',
+      lastTransitionAt: actual?.lastTransitionAt as number,
+      // FR-R4-F02 — the v15 step's default; the captured record predates the key.
+      creditPause: null
+    };
+  }
+
   it('returns the persisted Run and queue byte-for-byte', async () => {
     const { store, fixture } = await seededStore();
-    expect(store.getRun(DEFAULT_QUEUE_ID)).toEqual(fixture[KEYS.run]);
+    const run = store.getRun(DEFAULT_QUEUE_ID);
+    expect(run).toEqual(expectedRun(fixture, run));
     expect(store.getQueue(DEFAULT_QUEUE_ID).requests).toEqual(
       (fixture[KEYS.queue] as { requests: readonly unknown[] }).requests
     );
@@ -109,7 +139,7 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     const run = store.getRun(DEFAULT_QUEUE_ID);
     if (run === null) throw new Error('fixture must persist a Run');
 
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
 
     // Feature 093 (T027) — the byte comparison is against the Run under its
     // queue, because the record is now a map. Comparing the whole map to the
@@ -117,7 +147,14 @@ describe('a Run persisted before feature 087 reads back unchanged (T036)', () =>
     // `run-state-migrator-v10-to-v11.test.ts` already owns; the claim here is
     // that a write through the real setter adds no field to the Run itself.
     const persisted = memento.get<Record<string, unknown>>(KEYS.run);
-    expect(JSON.stringify(persisted?.[DEFAULT_QUEUE_ID])).toBe(JSON.stringify(fixture[KEYS.run]));
+    expect(persisted?.[DEFAULT_QUEUE_ID]).toEqual(expectedRun(fixture, run));
+    // The byte-level half of the claim, which deep equality alone would not
+    // make: no key is added, removed, or reordered by the round trip.
+    expect(Object.keys(persisted?.[DEFAULT_QUEUE_ID] as object)).toEqual([
+      ...Object.keys(fixture[KEYS.run] as object),
+      // FR-R4-F02 — the only key the round trip adds: the v15 step's `creditPause` default.
+      'creditPause'
+    ]);
   });
 
   it('re-persists every queue item with the same fields it was read with', async () => {
@@ -148,7 +185,7 @@ describe('a Run and a queue item built without the new fields serialize without 
     const run = store.getRun(DEFAULT_QUEUE_ID);
     if (run === null) throw new Error('fixture must persist a Run');
 
-    await store.setRun(DEFAULT_QUEUE_ID, run);
+    await store.setRun(DEFAULT_QUEUE_ID, run, unfencedCommit('test-fixture'));
     const stored = memento.get<WorkflowRun>(KEYS.run);
     if (stored === undefined) throw new Error('setRun must persist');
     for (const key of RUN_KEYS) {
