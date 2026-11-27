@@ -22,7 +22,7 @@ branch in lesson 5, then verify and hand off.
 
 ## 1. Build the checkout
 
-Use Node.js `24.19.0`, the version pinned by `.nvmrc`; Node 22 and 24 satisfy
+Use Node.js `24.19.0`, the version pinned by `.nvmrc`; Node 22.13.0 and later 22.x patches, and Node 24.x, satisfy
 the package engine constraint. From a fresh clone:
 
 ```bash

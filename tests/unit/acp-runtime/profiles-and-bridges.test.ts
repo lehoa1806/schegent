@@ -3,6 +3,7 @@
  * built-in ACP profiles (`agy-acp-native`, `claude-acp-bridge`, `codex-acp-bridge`), maintained
  * stdio bridges, and credential-free local binary handshake qualification on `darwin/arm64`.
  */
+import { executableFileStamp } from '../../../src/lib/spawn-command';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -51,7 +52,8 @@ afterEach(() => {
 function createInMemoryBridgeTransport(
   backend: 'claude' | 'codex',
   spawnChild: (input: StdioLaunch) => ManagedCliChild,
-  nativeReview?: NativeReviewInvocation
+  nativeReview?: NativeReviewInvocation,
+  executable?: { readonly cliPath: string; readonly executableFileStamp: string }
 ): AcpTransport {
   const stdoutListeners: ((chunk: Uint8Array) => void)[] = [];
   const stderrListeners: ((chunk: Uint8Array) => void)[] = [];
@@ -63,6 +65,7 @@ function createInMemoryBridgeTransport(
     {
       backend,
       cliPath: `/usr/local/bin/${backend}`,
+      ...executable,
       permissionFlags: backend === 'claude' ? ['--dangerously-skip-permissions'] : ['--sandbox', 'workspace-write'],
       model: `${backend}-test-model`,
       env: { PATH: '/usr/bin:/bin' },
@@ -230,6 +233,41 @@ describe('FR-R6-F13 (F13-B) — built-in ACP profiles and platform qualification
 });
 
 describe('FR-R6-F13 (F13-B) — maintained Claude and Codex ACP stdio bridges', () => {
+  it('refuses a replaced CLI between session creation and the provider turn', async () => {
+    const directory = makeTempDir('schegent-bridge-cli-upgrade-');
+    const cliPath = path.join(directory, 'provider');
+    fs.writeFileSync(cliPath, 'original');
+    const stamp = executableFileStamp(cliPath)!;
+    const spec = resolveAcpProfileLaunch({
+      kind: 'claude', resolvedCliPath: cliPath, executableFileStamp: stamp, cwd: directory, env: {}
+    });
+    const parsed = parseBridgeCliArgv(spec.args.slice(1), {});
+    expect(parsed?.executableFileStamp).toBe(stamp);
+    let spawns = 0;
+    const transport = createInMemoryBridgeTransport('claude', () => {
+      spawns++;
+      throw new Error('unexpected child');
+    }, undefined, { cliPath, executableFileStamp: parsed!.executableFileStamp! });
+    const opened = await openAcpConnection({
+      profile: getBuiltinAcpProfile('claude', { platform: { os: 'darwin', arch: 'arm64' } }),
+      generation: 1, launch: () => transport
+    });
+    if (!opened.ok) throw new Error('Bridge open failed');
+    try {
+      const session = await opened.connection.newSession(directory);
+      if (!session.ok) throw new Error('Session open failed');
+      fs.writeFileSync(cliPath + '.new', 'replacement');
+      fs.renameSync(cliPath + '.new', cliPath);
+      const outcome = await opened.connection.prompt({
+        sessionId: session.sessionId, attemptId: 'replacement', rootId: 'root', blocks: [{ type: 'text', text: 'hello' }]
+      });
+      expect(outcome.kind).not.toBe('completed');
+      expect(spawns).toBe(0);
+    } finally {
+      await opened.connection.close();
+    }
+  });
+
   it('streams Claude stream-json assistant/tool/usage events and preserves distinct providerSessionId across prompts', async () => {
     const capturedLaunches: { args: readonly string[]; stdin: string }[] = [];
     const observations: AcpObservation[] = [];

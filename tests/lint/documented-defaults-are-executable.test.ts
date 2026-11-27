@@ -46,7 +46,7 @@ import type * as vscode from 'vscode';
 
 import { readProcessEnvironmentPolicy } from '../../src/activation/uncached-settings-accessors';
 import { resolveHostVerification } from '../../src/config/phase-runner-policy';
-import { judgeBackendContainment } from '../../src/services/backend-containment-policy';
+import { judgeSpawnAdmission } from '../../src/services/containment-qualification/admission';
 import { resolveCapabilityDecision } from '../../src/state/capability-trust-decision';
 import { SETTINGS_SCHEMA } from '../../src/config/settings-schema';
 import type { BackendRunnerKind } from '../../src/contracts/backend-kinds';
@@ -183,17 +183,21 @@ describe('documented security-critical defaults are executable (FR-R3-126)', () 
     const rows = readBlock('docs/operations/untrusted-repositories.md', 'uncontained-grant-scope');
     const disagreements: string[] = [];
     for (const row of rows) {
-      const [backend, grantedCell, expected] = row.cells;
+      const [backend, versionMinor, grantedCell, expected] = row.cells;
       const granted = new Set<BackendRunnerKind>(
         grantedCell === '(none)'
           ? []
           : grantedCell!.split(',').map((id) => id.trim() as BackendRunnerKind)
       );
-      const actual = judgeBackendContainment(backend as BackendRunnerKind, granted).outcome;
+      const actual = judgeSpawnAdmission({
+        identity: { kind: backend as BackendRunnerKind, os: 'darwin', arch: 'arm64', versionMinor: versionMinor!,
+          executable: 'resolved', environmentPolicyDigest: 'example-policy' },
+        granted, binding: null
+      }).outcome;
       if (actual !== expected) {
         disagreements.push(
           `untrusted-repositories.md:${row.lineNumber}: the document says ` +
-            `(${backend}, granted=[${grantedCell}]) -> ${expected}; judgeBackendContainment ` +
+            `(${backend}, granted=[${grantedCell}]) -> ${expected}; judgeSpawnAdmission ` +
             `returns ${actual}`
         );
       }

@@ -472,10 +472,11 @@ const CORPUS: Readonly<Record<CommandType, readonly DifferentialCase[]>> = {
   CMD_SAVE_MODELS: [
     { label: 'valid manual', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] } }), expected: { ok: true, payload: { models: { claude: ['sonnet'] } } } },
     { label: 'valid manual-edit mutation', raw: msg('CMD_SAVE_MODELS', { models: { codex: ['gpt-5'] }, mutation: { kind: 'manual-edit' } }), expected: { ok: true, payload: { models: { codex: ['gpt-5'] }, mutation: { kind: 'manual-edit' } } } },
-    { label: 'valid import with revision & mutation', raw: msg('CMD_SAVE_MODELS', { models: { agy: ['m1'] }, expectedRevision: 'r1', mutation: { kind: 'import-package' } }), expected: { ok: true, payload: { models: { agy: ['m1'] }, expectedRevision: 'r1', mutation: { kind: 'import-package' } } } },
-    { label: 'ignoreInvalid non-string expectedRevision stripped', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] }, expectedRevision: 123 }), expected: { ok: true, payload: { models: { claude: ['sonnet'] } } } },
-    { label: 'ignoreInvalid non-object mutation stripped', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] }, mutation: 'bad' }), expected: { ok: true, payload: { models: { claude: ['sonnet'] } } } },
-    { label: 'ignoreInvalid unknown mutation.kind stripped', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] }, mutation: { kind: 'bogus' } }), expected: { ok: true, payload: { models: { claude: ['sonnet'] } } } },
+    { label: 'valid import with minimum-length revision', raw: msg('CMD_SAVE_MODELS', { models: { agy: ['m1'] }, expectedRevision: 'r', mutation: { kind: 'import-package' } }), expected: { ok: true, payload: { models: { agy: ['m1'] }, expectedRevision: 'r', mutation: { kind: 'import-package' } } } },
+    { label: 'empty expectedRevision rejected', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] }, expectedRevision: '' }), expected: { ok: false, reason: 'invalid-payload' } },
+    { label: 'non-string expectedRevision rejected', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] }, expectedRevision: 123 }), expected: { ok: false, reason: 'invalid-payload' } },
+    { label: 'non-object mutation rejected', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] }, mutation: 'bad' }), expected: { ok: false, reason: 'invalid-payload' } },
+    { label: 'unknown mutation.kind rejected', raw: msg('CMD_SAVE_MODELS', { models: { claude: ['sonnet'] }, mutation: { kind: 'bogus' } }), expected: { ok: false, reason: 'invalid-payload' } },
     { label: 'empty model string rejected', raw: msg('CMD_SAVE_MODELS', { models: { claude: [''] } }), expected: { ok: false, reason: 'invalid-payload' } },
     { label: 'array models rejected', raw: msg('CMD_SAVE_MODELS', { models: [] }), expected: { ok: false, reason: 'invalid-payload' } }
   ],

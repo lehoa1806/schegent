@@ -303,6 +303,12 @@ without unhandled Promise rejections or delivery wedging.
   batches are dropped at shutdown. A batch that exhausted its retries is spooled and replayed
   once at the next activation only while the persisted authorization fingerprint matches; any
   disable, trust revocation, content-policy refusal, or destination/credential change drops it.
+- **Replay integrity.** The exporter derives the spool filename from the batch ID and stores
+  the SHA-256 of the encoded metrics in SQLite. Before each replay it reads at most 1 MiB
+  from the expected private file and checks the size and digest of the bytes it sends.
+  Damaged batches and older batches that lack a digest receive a `rejected` drop on
+  authorized replay. The local usage records remain available. The digest detects a changed
+  copy while the SQLite record is intact. Both stores are writable by the local account.
 - **Direct-only transport; proxy environment variables are ignored.** Every request goes straight
   to the destination, bypassing `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`, including when Node
   is started with environment-proxy options. A network that reaches the destination only through

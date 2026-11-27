@@ -1,11 +1,15 @@
 # Node 22 floor record
 
 **What ran on the declared Node 22 floor, and what that does not show.** `package.json` declares
-Node `^22 || ^24`, and the repository pins 24.19.0 in `.nvmrc`. The hosted workflows that ran the
+Node `^22.13.0 || ^24`, and the repository pins 24.19.0 in `.nvmrc`. The hosted workflows that ran the
 floor were retired on 2026-08-26 (`FR-R3-099`). This page records the run that exercised the floor
 again (`FR-R5-F21`, FR-019). The next run replaces this record.
 
-## The run
+## Source-build minimum verified on 27 November 2026
+
+On macOS arm64, a clean export of execution revision `1e2b7d2a` used the official Node 22.13.0 release with its published SHA-256 verified. Both `npm ci --engine-strict` and `npm ci --prefix webview-ui --engine-strict` succeeded with the checked-in lifecycle-script settings. `npm run build` then produced the webviews, extension and ACP bridge. All dependency engine ranges in both lockfiles admit this patch. The extension-host test checks the bundled Node version against the complete manifest range, including its patch floor.
+
+## The historical 22.23.2 run
 
 - **Date**: 2026-11-06, from 17:41:52Z to 17:45:35Z.
 - **Runtime**: Node v22.23.2 with npm 10.9.8, installed and selected by `fnm`.
@@ -91,7 +95,7 @@ runtime-floor: vscode=1.107.0 electron=39.2.3 node=22.21.1
 runtime-floor: node:sqlite DatabaseSync opened a WAL file database, wrote and read in the extension host
 ```
 
-So VS Code 1.107.0 runs the extension on Node 22.21.1, inside `engines.node` (`^22 || ^24`), and
+So VS Code 1.107.0 runs the extension on Node 22.21.1, inside `engines.node` (`^22.13.0 || ^24`), and
 there `node:sqlite` opened a file database in WAL mode, created a `STRICT` table, and committed and read
 back a row. The module fails if the host's Node major falls outside `engines.node`, which it reads from
 the installed extension's manifest.

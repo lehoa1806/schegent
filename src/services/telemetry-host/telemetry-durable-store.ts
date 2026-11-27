@@ -6,6 +6,7 @@
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  * Zero network imports (`expansion-freeze.test.ts`).
  */
+import { createHash } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -19,6 +20,7 @@ import {
   type ResolvedDestination,
   type TelemetryLedgerPort
 } from '../../contracts/telemetry-export';
+import { readBoundedRange } from '../../lib/bounded-read';
 import { resolveContainedLink } from '../../lib/path-containment';
 import { openWithinRoot } from '../../lib/safe-open';
 import type { SqliteApplicationStore } from '../sqlite-store';
@@ -402,6 +404,7 @@ export function createSqliteTelemetryLedger(
 
 export interface SpooledBatchMeta {
   readonly relPath: string;
+  readonly sha256: string;
   readonly profileRevision: number;
   readonly authorizationGeneration: number;
 }
@@ -412,6 +415,7 @@ export interface SpooledBatchEntry {
   readonly profileRevision: number;
   readonly authorizationGeneration: number;
   readonly relPath: string;
+  readonly sha256: string | null;
   readonly payloadBytes: number;
   readonly attemptCount: number;
   readonly createdAtMs: number;
@@ -438,7 +442,9 @@ export interface TelemetrySpoolStore {
 const SPOOL_SUBDIR = 'telemetry-spool';
 const SAFE_BATCH_ID = /^[A-Za-z0-9._-]{1,128}$/;
 
-function parseSpoolMeta(raw: string): SpooledBatchMeta | null {
+type StoredSpoolMeta = Omit<SpooledBatchMeta, 'sha256'> & { readonly sha256?: string };
+
+function parseSpoolMeta(raw: string): StoredSpoolMeta | null {
   try {
     const parsed = JSON.parse(raw) as Partial<SpooledBatchMeta>;
     if (
@@ -448,6 +454,7 @@ function parseSpoolMeta(raw: string): SpooledBatchMeta | null {
     ) {
       return {
         relPath: parsed.relPath,
+        ...(typeof parsed.sha256 === 'string' ? { sha256: parsed.sha256 } : {}),
         profileRevision: parsed.profileRevision,
         authorizationGeneration: parsed.authorizationGeneration
       };
@@ -482,10 +489,12 @@ export function createTelemetrySpoolStore(params: {
   }
 
   async function unlinkQuietly(relPath: string): Promise<void> {
-    if (!relPath.startsWith(`${SPOOL_SUBDIR}/`) || relPath.includes('..')) return;
+    if (path.posix.dirname(relPath) !== SPOOL_SUBDIR || relPath.includes('\\') || relPath.includes('..')) return;
     try {
       const contained = await resolveContainedLink(path.join(storageRoot, relPath), [storageRoot]);
       if (contained.outcome !== 'contained') return;
+      const expected = path.join(await fsp.realpath(storageRoot), relPath);
+      if (contained.resolved !== expected) return;
       await fsp.unlink(contained.resolved);
     } catch {
       // Missing or already removed spool leaf.
@@ -508,16 +517,19 @@ export function createTelemetrySpoolStore(params: {
     const out: SpooledBatchEntry[] = [];
     for (const row of rows) {
       const meta = parseSpoolMeta(row.payload_json);
-      if (meta === null) {
-        conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, row.batch_id);
-        continue;
-      }
+      const relPath = `${SPOOL_SUBDIR}/${row.batch_id}.json`;
+      const validDigest =
+        SAFE_BATCH_ID.test(row.batch_id) &&
+        meta?.relPath === relPath &&
+        typeof meta.sha256 === 'string' &&
+        /^[0-9a-f]{64}$/.test(meta.sha256);
       out.push({
         batchId: row.batch_id,
         profileId: row.profile_id,
-        profileRevision: meta.profileRevision,
-        authorizationGeneration: meta.authorizationGeneration,
-        relPath: meta.relPath,
+        profileRevision: meta?.profileRevision ?? 0,
+        authorizationGeneration: meta?.authorizationGeneration ?? 0,
+        relPath,
+        sha256: validDigest ? meta.sha256 : null,
         payloadBytes: row.payload_bytes,
         attemptCount: row.attempt_count,
         createdAtMs: row.created_at_ms
@@ -609,6 +621,7 @@ export function createTelemetrySpoolStore(params: {
       const now = safeNowMs();
       const metaJson = JSON.stringify({
         relPath,
+        sha256: createHash('sha256').update(req.body).digest('hex'),
         profileRevision: req.destination.profileRevision,
         authorizationGeneration: req.authorizationGeneration
       } satisfies SpooledBatchMeta);
@@ -625,13 +638,24 @@ export function createTelemetrySpoolStore(params: {
     },
 
     async readSpooledPayload(entry) {
-      const opened = await openWithinRoot(storageRoot, entry.relPath.split('/'), {
+      if (
+        !SAFE_BATCH_ID.test(entry.batchId) ||
+        entry.sha256 === null ||
+        !Number.isSafeInteger(entry.payloadBytes) ||
+        entry.payloadBytes < 1 ||
+        entry.payloadBytes > TELEMETRY_EXPORT_BOUNDS.batchBytesMax
+      ) return null;
+      const opened = await openWithinRoot(storageRoot, [SPOOL_SUBDIR, `${entry.batchId}.json`], {
         flags: 'r'
       });
       if (opened.outcome !== 'opened') return null;
       try {
-        const buf = await opened.handle.readFile();
-        return new Uint8Array(buf);
+        const st = await opened.handle.stat();
+        if (!st.isFile() || st.size !== entry.payloadBytes) return null;
+        const { bytes } = await readBoundedRange(opened.handle, 0, st.size, TELEMETRY_EXPORT_BOUNDS.batchBytesMax);
+        if (bytes.byteLength !== st.size) return null;
+        if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) return null;
+        return bytes;
       } catch {
         return null;
       } finally {
@@ -686,9 +710,7 @@ export function createTelemetrySpoolStore(params: {
           }
           continue;
         }
-        const payload = await this.readSpooledPayload(entry);
-        if (conn.isClosed()) return [];
-        if (payload === null || payload.byteLength !== entry.payloadBytes) {
+        if (entry.sha256 === null) {
           const del = conn.run(`DELETE FROM telemetry_spool_batches WHERE batch_id = ?`, entry.batchId);
           if (del.changes > 0) {
             await unlinkQuietly(entry.relPath);

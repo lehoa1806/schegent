@@ -159,7 +159,7 @@ export function withModelsDetected(
  */
 export function formatModelCatalogSaveRejection(reason: string): string {
   if (reason === 'stale-catalog') {
-    return `${reason} — the catalog changed since this document was inspected; inspect it again`;
+    return `${reason} — the catalog changed. Revert the draft and reapply your edits, or inspect the import again`;
   }
   // FR-R4-F05 (O1) — a reason this function has no sentence for goes through the shared
   // boundary text (a timeout and a dispatch failure included), never raw.

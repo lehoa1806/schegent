@@ -73,14 +73,16 @@ If a change alters host structure or IPC contracts, update the architecture docu
 
 ## Prepare a checkout
 
-Use Node `24.19.0` for the repository's pinned development runtime. Node `^22` and `^24` are declared compatible in `package.json`. The job that used to exercise Node 22 was retired with the workflows on 2026-08-26 (`FR-R3-099`), `.npmrc` does not set `engine-strict`, and no gate reads `engines`, so a change that breaks Node 22 is caught only by running the floor by hand.
+Use Node `24.19.0` for the repository's pinned development runtime. Both package manifests declare `^22.13.0 || ^24`. Both lockfile installs and the source build are verified on 22.13.0. The hosted Node matrix was retired on 2026-08-26 (`FR-R3-099`).
 
 **The Node floor run.** At each held-major review and before each release, run these one after another, with no other test tier running, and replace the [Node 22 floor record](docs/release/node-floor-record.md) with the result:
 
 ```bash
-fnm exec --using=22 -- npm run test:host
-fnm exec --using=22 -- npm run build
-fnm exec --using=22 -- npm run sbom
+fnm exec --using=22.13.0 -- npm ci --engine-strict
+fnm exec --using=22.13.0 -- npm ci --prefix webview-ui --engine-strict
+fnm exec --using=22.13.0 -- npm run test:host
+fnm exec --using=22.13.0 -- npm run build
+fnm exec --using=22.13.0 -- npm run sbom
 ```
 
 Compare the failures against the record's tables: a failure that also fails under `24.19.0` is not about the floor. The macOS extension-host integration tier is not evidence for this floor: it runs inside the editor's bundled Node, not under Node 22.

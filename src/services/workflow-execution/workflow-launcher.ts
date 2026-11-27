@@ -30,7 +30,6 @@
 // No `vscode` import: the store and the child-status probe arrive as ports.
 
 import { randomUUID } from 'node:crypto';
-import * as fs from 'fs/promises';
 import type {
   ExecutionEnvelope,
   FrozenWorkflowClosure,
@@ -52,7 +51,7 @@ import {
   upsertInvocationFrame
 } from '../../state/connected-workflow-run';
 import type { ConnectedRunWriteResult } from '../../state/workspace-state';
-import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';
+import { runRequestProbes } from '../run-request/run-request-probes';
 import { validateRunRequest } from '../run-request/run-request-validator';
 import {
   createComposableWorkflowRunSnapshot,
@@ -350,18 +349,7 @@ export async function launchWorkflow(
         },
         workspaceRoot: input.workspaceRoot,
         now: input.startedAt,
-        localInputs: { checkFile: checkLocalFile, checkFolder: checkLocalFolder },
-        outputProbe: {
-          exists: async (absolutePath) => {
-            try {
-              await fs.lstat(absolutePath);
-              return true;
-            } catch {
-              return false;
-            }
-          }
-        },
-        priorOutputs: { outputsFor: (runId) => deps.readPriorRunOutputs?.(runId) ?? null }
+        ...runRequestProbes(deps.readPriorRunOutputs)
       }
     );
     if (!validated.ok) {

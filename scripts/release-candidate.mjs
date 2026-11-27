@@ -525,6 +525,7 @@ export function releaseCandidate(deps) {
     source: { commit: head, dirty: false },
     build: { mode: hostBuild.mode, webview: WEBVIEW_BUILD },
     sbom: { entry: SBOM_ENTRY, sha256: sbomSha256, ...sbomCounts },
+    distribution: 'private-to-author',
     advisory: {
       budgetDays: advisory.budgetDays,
       evaluatedAt: advisory.evaluatedAt,

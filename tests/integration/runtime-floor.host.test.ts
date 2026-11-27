@@ -1,5 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,10 +16,7 @@ import * as vscode from 'vscode';
 // fails here rather than at an operator's activation. The range is read from the installed
 // extension's own manifest, so this check follows `package.json` instead of a copy of it.
 const EXTENSION_ID = 'schegent.schegent';
-const DECIMAL_RADIX = 10;
-// The only shape the manifest uses: caret majors joined by `||`, e.g. `^22 || ^24`.
-const CARET_MAJORS_RANGE = /^\^\d+(\s*\|\|\s*\^\d+)*$/;
-const CARET_MAJOR = /\^(\d+)/g;
+const semver = createRequire(__filename)('semver') as { satisfies(version: string, range: string): boolean };
 
 function declaredNodeRange(): string {
   const manifest = vscode.extensions.getExtension(EXTENSION_ID)?.packageJSON as
@@ -29,23 +27,16 @@ function declaredNodeRange(): string {
   return range.trim();
 }
 
-function caretMajors(range: string): readonly number[] {
-  // A range of any other shape fails loudly rather than being half-read.
-  assert.match(range, CARET_MAJORS_RANGE, `engines.node ${JSON.stringify(range)} is not a list of ^N majors`);
-  return Array.from(range.matchAll(CARET_MAJOR), (m) => Number.parseInt(m.at(1) ?? '', DECIMAL_RADIX));
-}
-
 export async function run(): Promise<void> {
   const nodeVersion = process.versions.node;
   const electronVersion = process.versions.electron ?? 'none';
-  const major = Number.parseInt(nodeVersion.split('.').at(0) ?? '', DECIMAL_RADIX);
 
   // Printed before any assertion, so a failing host still leaves the versions in the log.
   console.log(`runtime-floor: vscode=${vscode.version} electron=${electronVersion} node=${nodeVersion}`);
 
   const range = declaredNodeRange();
   assert.ok(
-    caretMajors(range).includes(major),
+    semver.satisfies(nodeVersion, range),
     `extension host Node ${nodeVersion} is outside engines.node (${range})`
   );
 

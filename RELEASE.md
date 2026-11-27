@@ -522,6 +522,8 @@ reused, so a `dist/` copied in from another tree, output touched after the build
 before a configuration change cannot become the candidate, and the mtime freshness check is not
 consulted. A refusal prints `prepare-release: REFUSED (<reason>)`, names the remedy, writes no
 record, and leaves a failed staging file under its staging name, which is never a candidate.
+Every candidate record carries `distribution: "private-to-author"`, including candidates prepared with the local qualification override. The extension package is marked private for npm. The maintainer must obtain the evidence listed in [the preview release record](docs/release/preview-rc-evidence.md) before changing the distribution decision.
+
 Every outcome ends with `Nothing was tagged, published or uploaded.`
 
 **Advisory evidence.** The driver reads feature 249's captures and runs no audit itself. It refuses a
@@ -725,8 +727,8 @@ nobody has established that a screen-reader user can complete a single task.
 
 1. the automated scan clean and its baseline empty — **done**, and gated shrink-only by
    `repo/tests/lint/a11y-baseline-shrinks.test.ts`; and
-2. the macOS/VoiceOver rows of the matrix executed and dated — **not done**, reviewed on or before
-   2026-11-27, procedure written out in that document.
+2. a dated human macOS/VoiceOver run following the procedure in the matrix. This remains open
+   after the 2026-11-27 review. The next review is 2026-12-11 or before a pilot, whichever comes first.
 
 **What a release MAY say**, and this is the distinction the gate enforces: that the product is
 *built against* WCAG 2.1 Level AA, that the automated scan covers every shipped route and theme, and

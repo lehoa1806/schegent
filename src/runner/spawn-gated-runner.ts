@@ -184,6 +184,9 @@ export class SpawnGatedRunner implements BackendRunner {
         }
       };
     }
+    if (decision?.executableFileStamp !== undefined) {
+      request = { ...request, cliPath: decision.resolvedExecutablePath, executableFileStamp: decision.executableFileStamp };
+    }
     const raw = await this.inner.invoke(request, outputSink);
     return decision !== undefined ? { ...raw, admissionDecision: decision } : raw;
   }

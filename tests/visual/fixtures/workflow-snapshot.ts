@@ -898,6 +898,18 @@ export const workflowSnapshot = {
       "Gemini 3.1 Pro (High)"
     ]
   },
+  "workspaceModelCatalog": { "revision": "visual-models-v1", "models": {
+    "claude": [
+      "claude-sonnet-5-5",
+      "claude-opus-5-5"
+    ],
+    "codex": [
+      "gpt-5.6-codex"
+    ],
+    "agy": [
+      "Gemini 3.1 Pro (High)"
+    ]
+  } },
   "configuredModels": {
     "claude": [
       "claude-sonnet-5-5",
