@@ -59,6 +59,11 @@
       },
       "default": [
         {
+          "name": "executableFileStamp",
+          "optional": true,
+          "type": "string"
+        },
+        {
           "name": "phase",
           "optional": false,
           "type": "Phase"
