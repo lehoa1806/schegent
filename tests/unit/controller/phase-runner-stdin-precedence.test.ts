@@ -90,12 +90,12 @@ async function runWith(overrides: Partial<RawInvocationOutput>): Promise<{
   entries: Array<Omit<AuditEntry, 'id' | 'timestamp'>>;
 }> {
   const entries: Array<Omit<AuditEntry, 'id' | 'timestamp'>> = [];
-  const runner = new PhaseRunner(
-    makeFakeRunner(makeRawOutput(overrides)),
-    new PromptBuilder(),
-    makeFakeAuditWriter(entries),
-    new SanitizedLogger()
-  );
+  const runner = new PhaseRunner({
+    runner: makeFakeRunner(makeRawOutput(overrides)),
+    promptBuilder: new PromptBuilder(),
+    auditWriter: makeFakeAuditWriter(entries),
+    logger: new SanitizedLogger()
+  });
   return { output: await runner.run(baseInputs), entries };
 }
 describe('stdin delivery precedence', () => {

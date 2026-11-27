@@ -22,7 +22,6 @@
  * Zero raw `node:fs` write primitives (docs/hard-rules.md rule 69).
  */
 
-import { isBackendRunnerKind } from '../contracts/backend-kinds';
 import { ACCEPTANCE_BINDINGS_KEY } from '../contracts/containment-qualification';
 import type { AcceptanceMementoPort } from '../services/containment-qualification/acceptance-bindings';
 import type { SanitizedLogger } from '../lib/logger';
@@ -30,12 +29,7 @@ import {
   deepFreezeValue,
   freezeSnapshotWithStructuralSharing,
   hasOwnDefinedEntries,
-  isDeepEqualJsonValue,
-  isPlainRecord,
-  parseStrictSchemaMetaVersion,
-  setOwnProp,
-  toSafeIntOrDefault,
-  toStringOrNull
+  isPlainRecord
 } from '../lib/operational-value-helpers';
 import {
   openReadOnlySqliteConnection,
@@ -58,30 +52,50 @@ import {
   writeOperationalRunMapDiffInTx
 } from './sqlite-operational-rows';
 import {
-  SQLITE_SCHEMA_CURRENT_VERSION,
-  type RunStatus
-} from '../contracts/sqlite-store/schema-types';
-import {
   CONNECTED_RUNS_REFUSED_MAX_BYTES,
-  CONNECTED_RUNS_REFUSED_MAX_COUNT,
-  classifyConnectedRunEntry,
-  connectedRunLastUpdatedMs,
-  deepFreezeConnectedRunsDocument,
-  isConnectedRunTerminal,
-  migrateConnectedRuns,
-  selectPreservedRefusedEntries,
-  serializedConnectedRunBytes
+  CONNECTED_RUNS_REFUSED_MAX_COUNT
 } from './connected-run-migrator';
 export { CONNECTED_RUNS_REFUSED_MAX_BYTES, CONNECTED_RUNS_REFUSED_MAX_COUNT };
+import {
+  CONNECTED_RUNS_CACHE_MAX,
+  CONNECTED_RUNS_MAX_TOTAL_BYTES,
+  CONNECTED_RUNS_TERMINAL_RETENTION_MS,
+  projectRelationalStateInTx,
+  projectRunEntriesInTx,
+  pruneConnectedRunsMap,
+  type SqliteStatusProjectors
+} from './sqlite-operational-projections';
+import type { RunStatus } from '../contracts/sqlite-store/schema-types';
 import type { ConnectedWorkflowRun } from './connected-workflow-run';
-import { isTerminalRunStatus, type WorkflowRun } from './workflow-run';
+export {
+  CONNECTED_RUNS_CACHE_MAX,
+  CONNECTED_RUNS_MAX_TOTAL_BYTES,
+  CONNECTED_RUNS_TERMINAL_RETENTION_MS,
+  pruneConnectedRunsMap
+};
+import {
+  MixedOperationalBatchError,
+  buildDurableStoreUnavailableError,
+  isSameSerializedState,
+  parseAndFreezeKvDocument,
+  persistCutoverAuthorityTombstone,
+  readCutoverAuthorityTombstone,
+  readOperationalSnapshotFromConnection,
+  type CutoverAuthorityMode,
+  type CutoverAuthorityStatus,
+  type SqliteCutoverAuthorityTombstone
+} from './sqlite-cutover-authority';
+export {
+  MixedOperationalBatchError,
+  readCutoverAuthorityTombstone,
+  type CutoverAuthorityMode,
+  type CutoverAuthorityStatus,
+  type SqliteCutoverAuthorityTombstone
+};
+import { decodeTerminalTransitionJournal } from './terminal-transition-journal';
+import type { WorkflowRun } from './workflow-run';
 import type { MementoBatchEntry } from './memento-write-gate';
 import { KEYS, QueueMutationRejected, type Memento } from './workspace-state';
-
-/** F03 authority bound for `finding-persisted-connected-runs-map` (`target-sqlite-run-step-attempt-history`). */
-export const CONNECTED_RUNS_CACHE_MAX = 512;
-export const CONNECTED_RUNS_TERMINAL_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
-export const CONNECTED_RUNS_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 
 const EXTRA_IMPORTED_MEMENTO_KEYS: readonly string[] = Object.freeze([
   ACCEPTANCE_BINDINGS_KEY
@@ -143,87 +157,24 @@ function mapWorkflowStatusToSqlite(status: string | undefined): RunStatus {
   }
 }
 
-function collectActiveFeatureIds(
-  liveRunMap: Readonly<Record<string, WorkflowRun | undefined>> | unknown
-): ReadonlySet<string> {
-  const activeFeatureIds = new Set<string>();
-  if (liveRunMap === null || typeof liveRunMap !== 'object' || Array.isArray(liveRunMap)) return activeFeatureIds;
-  const rec = liveRunMap as Record<string, unknown>;
-  if (Object.hasOwn(rec, 'id') && typeof rec.id === 'string' && typeof rec.status === 'string' && typeof rec.featureId === 'string') {
-    if (!isTerminalRunStatus(rec.status as WorkflowRun['status'])) activeFeatureIds.add(rec.featureId);
-    return activeFeatureIds;
-  }
-  for (const live of Object.values(rec)) {
-    if (live === null || typeof live !== 'object' || Array.isArray(live)) continue;
-    const entry = live as Record<string, unknown>;
-    if (typeof entry.featureId === 'string' && typeof entry.status === 'string' && !isTerminalRunStatus(entry.status as WorkflowRun['status'])) {
-      activeFeatureIds.add(entry.featureId);
+function resolveConnectedRunSqliteStatus(wfRun: ConnectedWorkflowRun, isTerm: boolean): RunStatus {
+  let wfStatus: RunStatus = isTerm ? 'succeeded' : 'running';
+  if (wfRun.invocations !== undefined) {
+    const rootFrame = Object.values(wfRun.invocations).find((f) => f.parentInvocationId === null);
+    if (rootFrame !== undefined) {
+      if (rootFrame.status === 'failed') wfStatus = 'failed';
+      else if (rootFrame.status === 'canceled') wfStatus = 'cancelled';
+      else if (rootFrame.status === 'paused' || rootFrame.status === 'waiting-for-handoff') wfStatus = 'paused';
+      else if (rootFrame.status === 'completed') wfStatus = 'succeeded';
     }
   }
-  return activeFeatureIds;
+  return wfStatus;
 }
 
-export function pruneConnectedRunsMap(
-  rawValue: unknown,
-  liveRunMap: Readonly<Record<string, WorkflowRun | undefined>>,
-  nowMs: number,
-  logger?: SanitizedLogger
-): Record<string, unknown> | unknown {
-  if (!isPlainRecord(rawValue) || Object.keys(rawValue).length === 0) return rawValue;
-
-  const migrated = migrateConnectedRuns(rawValue);
-  const activeFeatureIds = collectActiveFeatureIds(liveRunMap);
-  const nonTerminal: Array<readonly [string, ConnectedWorkflowRun, number]> = [];
-  const terminal: Array<{
-    readonly id: string;
-    readonly run: ConnectedWorkflowRun;
-    readonly updatedAtMs: number;
-    readonly bytes: number;
-  }> = [];
-
-  for (const [id, run] of Object.entries(migrated.runs)) {
-    const bytes = serializedConnectedRunBytes(run);
-    if (!isConnectedRunTerminal(run, activeFeatureIds)) {
-      nonTerminal.push([id, run, bytes]);
-      continue;
-    }
-    const updatedAtMs = connectedRunLastUpdatedMs(run);
-    if (updatedAtMs > 0 && nowMs - updatedAtMs > CONNECTED_RUNS_TERMINAL_RETENTION_MS) continue;
-    terminal.push({ id, run, updatedAtMs, bytes });
-  }
-
-  // Sort terminal runs newest-first so we keep the most recent valid entries within count & byte caps.
-  terminal.sort((a, b) => b.updatedAtMs - a.updatedAtMs || b.id.localeCompare(a.id));
-
-  const maxTerminalCount = Math.max(0, CONNECTED_RUNS_CACHE_MAX - nonTerminal.length);
-  let totalBytes = nonTerminal.reduce((acc, item) => acc + item[2], 0);
-  const kept: Record<string, unknown> = {};
-  const refusedSelection = selectPreservedRefusedEntries(
-    migrated.refused,
-    Math.max(0, CONNECTED_RUNS_MAX_TOTAL_BYTES - totalBytes)
-  );
-  for (const [id, rawRefused] of refusedSelection.entries) setOwnProp(kept, id, rawRefused);
-  totalBytes += refusedSelection.totalBytes;
-  if (refusedSelection.quarantinedUnsafeCount + refusedSelection.quarantinedBudgetCount > 0) {
-    logger?.warn('quarantined refused connectedRuns entries during prune', {
-      unsafeCount: refusedSelection.quarantinedUnsafeCount,
-      budgetCount: refusedSelection.quarantinedBudgetCount,
-      keys: refusedSelection.quarantinedKeys
-    });
-  }
-  for (const [id, run] of nonTerminal) setOwnProp(kept, id, run);
-
-  let keptTerminal = 0;
-  for (const candidate of terminal) {
-    if (keptTerminal >= maxTerminalCount) break;
-    if (totalBytes + candidate.bytes > CONNECTED_RUNS_MAX_TOTAL_BYTES) continue;
-    setOwnProp(kept, candidate.id, candidate.run);
-    totalBytes += candidate.bytes;
-    keptTerminal += 1;
-  }
-
-  return kept;
-}
+const SQLITE_STATUS_PROJECTORS: SqliteStatusProjectors = Object.freeze({
+  mapWorkflowStatus: mapWorkflowStatusToSqlite,
+  resolveConnectedRunStatus: resolveConnectedRunSqliteStatus
+});
 
 export class SqliteOperationalBacking {
   private readonly cache = new Map<string, unknown>();
@@ -304,9 +255,16 @@ export class SqliteOperationalBacking {
     try {
       for (const { key, value: effectiveValue } of prepared) {
         const prevValue = txCache.get(key);
-        if ((key === KEYS.controlLedger || key === KEYS.connectedRuns) &&
-            prevValue !== undefined && !isPlainRecord(prevValue) && effectiveValue !== undefined) {
-          throw new Error(key === KEYS.controlLedger ? 'control-ledger-corrupt' : 'connected-run-refused');
+        if (
+          prevValue !== undefined &&
+          effectiveValue !== undefined &&
+          (((key === KEYS.controlLedger || key === KEYS.connectedRuns) && !isPlainRecord(prevValue)) ||
+            (key === KEYS.terminalTransitionIntent &&
+              decodeTerminalTransitionJournal(prevValue).status === 'unreadable-envelope'))
+        ) {
+          throw new Error(
+            key === KEYS.controlLedger ? 'control-ledger-corrupt' : key === KEYS.connectedRuns ? 'connected-run-refused' : 'terminal-journal-corrupt'
+          );
         }
         if (effectiveValue === undefined) {
           if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
@@ -341,14 +299,14 @@ export class SqliteOperationalBacking {
             this.deleteKvDocInTx(conn, key);
             txKvKeys.delete(key);
           }
-          this.projectRunEntriesInTx(conn, diff.changedRuns, now);
+          projectRunEntriesInTx(conn, this.scopeId, diff.changedRuns, now, mapWorkflowStatusToSqlite);
           txCache.set(key, effectiveValue);
         } else {
           if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
           else if (key === KEYS.run) deleteOperationalRunScopeInTx(conn, this.scopeId);
           this.upsertKvDocInTx(conn, key, effectiveValue, now);
           txKvKeys.add(key);
-          this.projectRelationalStateInTx(conn, key, effectiveValue, prevValue, now);
+          projectRelationalStateInTx(conn, this.scopeId, key, effectiveValue, prevValue, now, SQLITE_STATUS_PROJECTORS);
           txCache.set(key, effectiveValue);
         }
       }
@@ -377,6 +335,18 @@ export class SqliteOperationalBacking {
       return null;
     }
 
+    const tombstone = readCutoverAuthorityTombstone(legacyMemento);
+    if (tombstone !== null && tombstone.scopeId === this.scopeId) {
+      this.logger?.warn('sqlite cutover sentinel missing despite durable cutover tombstone; refusing legacy re-import', {
+        scopeId: this.scopeId
+      });
+      throw buildDurableStoreUnavailableError(
+        'sqlite-cutover-import',
+        this.scopeId,
+        'sqlite-sentinel-missing-after-cutover'
+      );
+    }
+
     const legacyRunRecords: LegacyRunRecordInputPort[] = [];
     const runMapRaw = legacyMemento.get<unknown>(KEYS.run);
     if (runMapRaw !== null && typeof runMapRaw === 'object' && !Array.isArray(runMapRaw)) {
@@ -402,7 +372,7 @@ export class SqliteOperationalBacking {
     }
 
     const allKeys = [...Object.values(KEYS), ...EXTRA_IMPORTED_MEMENTO_KEYS].filter(
-      (k) => !PASSTHROUGH_OWNERSHIP_KEYS.has(k)
+      (k) => !PASSTHROUGH_OWNERSHIP_KEYS.has(k) && k !== KEYS.sqliteCutoverAuthority
     );
     const liveRuns =
       runMapRaw !== null && typeof runMapRaw === 'object' && !Array.isArray(runMapRaw)
@@ -461,13 +431,13 @@ export class SqliteOperationalBacking {
         deleteOperationalRunScopeInTx(conn, this.scopeId);
         const diff = writeOperationalRunMapDiffInTx(conn, this.scopeId, {}, effectiveVal, now);
         this.deleteKvDocInTx(conn, key);
-        this.projectRunEntriesInTx(conn, diff.changedRuns, now);
+        projectRunEntriesInTx(conn, this.scopeId, diff.changedRuns, now, mapWorkflowStatusToSqlite);
         continue;
       }
       if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
       else if (key === KEYS.run) deleteOperationalRunScopeInTx(conn, this.scopeId);
       this.upsertKvDocInTx(conn, key, effectiveVal, now);
-      this.projectRelationalStateInTx(conn, key, effectiveVal, undefined, now);
+      projectRelationalStateInTx(conn, this.scopeId, key, effectiveVal, undefined, now, SQLITE_STATUS_PROJECTORS);
     }
   }
 
@@ -509,25 +479,8 @@ export class SqliteOperationalBacking {
       );
       for (const row of rows) {
         nextKvKeys.add(row.doc_key);
-        try {
-          const parsed: unknown = JSON.parse(row.payload_json);
-          if (row.doc_key === KEYS.connectedRuns) {
-            const frozen = deepFreezeConnectedRunsDocument(parsed);
-            nextCache.set(row.doc_key, frozen.value);
-            if (frozen.quarantinedCount > 0) {
-              this.logger?.warn('quarantined unfreezable connectedRuns entries on reload', {
-                count: frozen.quarantinedCount,
-                keys: frozen.quarantinedKeys
-              });
-            }
-          } else {
-            nextCache.set(row.doc_key, deepFreezeValue(parsed));
-          }
-        } catch {
-          // Keep presence distinct from absence without copying corrupt bytes into another sink.
-          if (row.doc_key === KEYS.connectedRuns || row.doc_key === KEYS.controlLedger) nextCache.set(row.doc_key, null);
-          this.logger?.warn('corrupt operational_kv_documents payload skipped', { key: row.doc_key });
-        }
+        const loaded = parseAndFreezeKvDocument(row.doc_key, row.payload_json, this.logger);
+        if (loaded.present) nextCache.set(row.doc_key, loaded.value);
       }
       const queueRes = readOperationalQueueMapFromDb(conn, this.scopeId, { onCorruptRow });
       if (queueRes.present) nextCache.set(KEYS.queue, deepFreezeValue(queueRes.map));
@@ -544,176 +497,6 @@ export class SqliteOperationalBacking {
     for (const [k, v] of nextCache) this.cache.set(k, v);
     this.kvDocKeysPresent.clear();
     for (const k of nextKvKeys) this.kvDocKeysPresent.add(k);
-  }
-
-  private projectRunEntriesInTx(
-    conn: SqliteConnectionPort,
-    entries: readonly (readonly [string, Record<string, unknown>])[],
-    now: number
-  ): void {
-    for (const [queueId, rawCandidate] of entries) {
-      const candidate = rawCandidate as unknown as WorkflowRun | undefined;
-      if (!candidate || typeof candidate.id !== 'string') continue;
-      const sqlStatus = mapWorkflowStatusToSqlite(candidate.status);
-      const workflowId = toStringOrNull(candidate.pipeline?.id) ?? 'default-pipeline';
-      const createdAt = toSafeIntOrDefault(candidate.startedAt, now);
-      const updatedAt = toSafeIntOrDefault(candidate.lastTransitionAt, now);
-      const completedAt = isTerminalRunStatus(candidate.status) ? updatedAt : null;
-      const invocationCount = Array.isArray(candidate.phasesCompleted) ? candidate.phasesCompleted.length : 0;
-
-      conn.run(
-        `INSERT INTO runs (
-          run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
-          current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms,
-          queue_id, invocation_count
-        ) VALUES (?, ?, ?, NULL, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(run_id) DO UPDATE SET
-          status = excluded.status,
-          revision = runs.revision + 1,
-          current_step_id = excluded.current_step_id,
-          completed_at_ms = excluded.completed_at_ms,
-          terminal_reason = excluded.terminal_reason,
-          updated_at_ms = excluded.updated_at_ms,
-          queue_id = excluded.queue_id,
-          invocation_count = excluded.invocation_count`,
-        candidate.id,
-        this.scopeId,
-        workflowId,
-        sqlStatus,
-        toStringOrNull(candidate.currentPhase),
-        createdAt,
-        completedAt,
-        toStringOrNull(candidate.failureCause),
-        createdAt,
-        updatedAt,
-        queueId,
-        invocationCount
-      );
-    }
-  }
-
-  private projectRelationalStateInTx(
-    conn: SqliteConnectionPort,
-    key: string,
-    value: unknown,
-    previousValue: unknown,
-    now: number
-  ): void {
-    if (key === KEYS.run && value !== null && typeof value === 'object' && !Array.isArray(value)) {
-      const rec = value as Record<string, unknown>;
-      if (
-        Object.hasOwn(rec, 'id') &&
-        Object.hasOwn(rec, 'status') &&
-        Object.hasOwn(rec, 'currentPhase') &&
-        typeof rec.id === 'string' &&
-        typeof rec.status === 'string' &&
-        typeof rec.currentPhase === 'string'
-      ) {
-        this.projectRunEntriesInTx(conn, [['default', rec]], now);
-      } else if (isOperationalRunMap(value)) {
-        const entries = Object.entries(value).filter(
-          (pair): pair is [string, Record<string, unknown>] => (pair[1] as unknown) !== undefined
-        );
-        this.projectRunEntriesInTx(conn, entries, now);
-      }
-    } else if (
-      key === KEYS.connectedRuns &&
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value)
-    ) {
-      const prevMap =
-        previousValue !== null && typeof previousValue === 'object' && !Array.isArray(previousValue)
-          ? (previousValue as Record<string, unknown>)
-          : undefined;
-      const emptyActive = new Set<string>();
-      for (const [id, rawWfRun] of Object.entries(value as Record<string, unknown>)) {
-        const prevEntry = prevMap && Object.hasOwn(prevMap, id) ? prevMap[id] : undefined;
-        if (
-          prevEntry !== undefined &&
-          (prevEntry === rawWfRun || isDeepEqualJsonValue(prevEntry, rawWfRun))
-        ) {
-          continue;
-        }
-        const classified = classifyConnectedRunEntry(id, rawWfRun);
-        if (!classified.ok) continue;
-        const wfRun = classified.run;
-        const isTerm = isConnectedRunTerminal(wfRun, emptyActive);
-        let wfStatus: RunStatus = isTerm ? 'succeeded' : 'running';
-        if (wfRun.invocations !== undefined) {
-          const rootFrame = Object.values(wfRun.invocations).find((f) => f.parentInvocationId === null);
-          if (rootFrame !== undefined) {
-            if (rootFrame.status === 'failed') wfStatus = 'failed';
-            else if (rootFrame.status === 'canceled') wfStatus = 'cancelled';
-            else if (rootFrame.status === 'paused' || rootFrame.status === 'waiting-for-handoff') wfStatus = 'paused';
-            else if (rootFrame.status === 'completed') wfStatus = 'succeeded';
-          }
-        }
-        const createdAt = toSafeIntOrDefault(wfRun.startedAt, now);
-        const updatedAt = Math.max(createdAt, connectedRunLastUpdatedMs(wfRun));
-        conn.run(
-          `INSERT INTO runs (
-            run_id, workspace_id, workflow_id, frozen_closure_id, status, revision,
-            current_step_id, started_at_ms, completed_at_ms, terminal_reason, created_at_ms, updated_at_ms,
-            queue_id
-          ) VALUES (?, ?, ?, NULL, ?, ?, NULL, ?, ?, NULL, ?, ?, ?)
-          ON CONFLICT(run_id) DO UPDATE SET
-            status = excluded.status,
-            revision = MAX(runs.revision, excluded.revision),
-            completed_at_ms = excluded.completed_at_ms,
-            updated_at_ms = excluded.updated_at_ms,
-            queue_id = COALESCE(excluded.queue_id, runs.queue_id)`,
-          wfRun.connectedRunId,
-          this.scopeId,
-          toStringOrNull(wfRun.workflowId) ?? 'default-workflow',
-          wfStatus,
-          Math.max(1, toSafeIntOrDefault(wfRun.revision, 1)),
-          createdAt,
-          isTerm ? updatedAt : null,
-          createdAt,
-          updatedAt,
-          toStringOrNull(wfRun.queueId)
-        );
-      }
-    } else if (
-      key === ACCEPTANCE_BINDINGS_KEY &&
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value)
-    ) {
-      const record = value as { bindings?: Record<string, unknown> };
-      if (record.bindings && typeof record.bindings === 'object') {
-        for (const [backendKind, entry] of Object.entries(record.bindings)) {
-          if (!isBackendRunnerKind(backendKind)) continue;
-          if (!entry || typeof entry !== 'object') continue;
-          const typed = entry as {
-            boundAt?: string;
-            origin?: string;
-            fingerprint?: { digest?: string };
-          };
-          const digest = typed.fingerprint?.digest;
-          if (typeof digest !== 'string' || digest.length !== 64) continue;
-          const origin = typed.origin === 'legacy-first-use' ? 'legacy-first-use' : 'consent';
-          conn.run(
-            `INSERT INTO containment_acceptance_bindings (
-              backend_kind, fingerprint_sha256, origin, fingerprint_json, bound_at_utc, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(backend_kind) DO UPDATE SET
-              fingerprint_sha256 = excluded.fingerprint_sha256,
-              origin = excluded.origin,
-              fingerprint_json = excluded.fingerprint_json,
-              bound_at_utc = excluded.bound_at_utc,
-              updated_at_ms = excluded.updated_at_ms`,
-            backendKind,
-            digest,
-            origin,
-            JSON.stringify(typed.fingerprint),
-            typeof typed.boundAt === 'string' ? typed.boundAt : new Date(now).toISOString(),
-            now
-          );
-        }
-      }
-    }
   }
 }
 
@@ -732,6 +515,7 @@ export interface SwitchableOperationalMemento extends Memento, AcceptanceMemento
     scopeId: string,
     nowMs?: () => number
   ): SqliteOperationalBacking;
+  flushCutoverAuthority(): Promise<void>;
   attachReadOnlySnapshotIfPresent(
     databasePath: string,
     scopeId: string,
@@ -739,6 +523,8 @@ export interface SwitchableOperationalMemento extends Memento, AcceptanceMemento
       | ((databasePath: string) => SqliteConnectionPort)
       | StrictReadOnlyContainment
   ): boolean;
+  /** True when the last `attachReadOnlySnapshotIfPresent` call saw a live `-wal` requiring async snapshot copy. */
+  lastSyncReadOnlyProbeNeededAsync(): boolean;
   attachReadOnlySnapshotIfPresentAsync(
     rootDir: string,
     relativeDirSegments: readonly string[],
@@ -750,75 +536,17 @@ export interface SwitchableOperationalMemento extends Memento, AcceptanceMemento
   reloadSqliteCache(): void;
   detachSqlite(expectedStore?: SqliteOperationalStorePort): void;
   isSqliteAttached(): boolean;
+  isReadOnlySnapshotAttached(): boolean;
   isPostCutoverAuthorityActive(): boolean;
-}
-
-function isSameSerializedState(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === undefined || b === undefined) return false;
-  try {
-    return isDeepEqualJsonValue(a, b);
-  } catch {
-    return false;
-  }
-}
-
-function readOperationalSnapshotFromConnection(
-  roConn: SqliteConnectionPort,
-  scopeId: string
-): Map<string, unknown> | null {
-  roConn.exec('BEGIN');
-  try {
-    const minReaderRow = roConn.get<{ meta_value: string }>(
-      `SELECT meta_value FROM schema_meta WHERE meta_key = 'min_reader_version'`
-    );
-    if (minReaderRow !== undefined) {
-      const floor = parseStrictSchemaMetaVersion(minReaderRow.meta_value);
-      if (floor === null || floor > SQLITE_SCHEMA_CURRENT_VERSION) return null;
-    }
-    const sentinel = roConn.get<{ authority: string }>(
-      `SELECT authority FROM cutover_sentinel WHERE scope_id = ?`,
-      scopeId
-    );
-    if (!sentinel || (sentinel.authority !== 'sqlite' && sentinel.authority !== 'retired_legacy')) {
-      return null;
-    }
-    const rows = roConn.all<{ doc_key: string; payload_json: string }>(
-      `SELECT doc_key, payload_json FROM operational_kv_documents WHERE doc_namespace = ?`,
-      scopeId
-    );
-    const snapshot = new Map<string, unknown>();
-    for (const row of rows) {
-      try {
-        const parsed: unknown = JSON.parse(row.payload_json);
-        const frozen =
-          row.doc_key === KEYS.connectedRuns
-            ? deepFreezeConnectedRunsDocument(parsed).value
-            : deepFreezeValue(parsed);
-        snapshot.set(row.doc_key, frozen);
-      } catch {
-        if (row.doc_key === KEYS.connectedRuns || row.doc_key === KEYS.controlLedger) snapshot.set(row.doc_key, null);
-      }
-    }
-    const hasEntityTables =
-      roConn.get<{ name: string }>(
-        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'operational_queue_meta'`
-      ) !== undefined;
-    if (hasEntityTables) {
-      const ignoreCorrupt = { onCorruptRow: () => undefined };
-      const queueRes = readOperationalQueueMapFromDb(roConn, scopeId, ignoreCorrupt);
-      if (queueRes.present) snapshot.set(KEYS.queue, deepFreezeValue(queueRes.map));
-      const runRes = readOperationalRunMapFromDb(roConn, scopeId, ignoreCorrupt);
-      if (runRes.present) snapshot.set(KEYS.run, deepFreezeValue(runRes.map));
-    }
-    return snapshot;
-  } finally {
-    try {
-      roConn.exec('COMMIT');
-    } catch {
-      // Ignore read-transaction close error.
-    }
-  }
+  hasCutoverAuthorityForScope(scopeId: string): boolean;
+  /**
+   * Aligns the switchable memento to the active workspace folder scope when Stage 2
+   * wires or rewires on folder change, dropping any detached snapshot cached from a
+   * different workspace scope so a new folder neither inherits a prior folder's cache
+   * nor mistakes that folder's tombstone for its own.
+   */
+  setActiveScope(scopeId: string): void;
+  getCutoverAuthorityStatus(): CutoverAuthorityStatus;
 }
 
 export function createSwitchableOperationalMemento(
@@ -829,12 +557,38 @@ export function createSwitchableOperationalMemento(
   let activeSqlite: SqliteOperationalBacking | null = null;
   let readOnlyCache: Map<string, unknown> | null = null;
   let postCutoverScopeId: string | null = null;
+  let expectedScopeId: string | null = null;
   let detachedWriter: DetachedSqliteWriterConfig | null = null;
   let durableBatchRequired = options?.requireDurableBatch === true;
   let durableBatchUnavailableReason: string | null = null;
+  let cutoverUnavailableWarned = false;
+  let lastSyncProbeNeededAsync = false;
+  let pendingTombstoneWrite: Promise<void> | null = null;
   let stateEpoch = 0;
 
   const currentActiveSqlite = (): SqliteOperationalBacking | null => activeSqlite;
+  const activeTombstone = (): SqliteCutoverAuthorityTombstone | null => {
+    const tombstone = readCutoverAuthorityTombstone(legacyMemento);
+    if (tombstone !== null && expectedScopeId !== null && tombstone.scopeId !== expectedScopeId) {
+      return null;
+    }
+    return tombstone;
+  };
+  const warnUnavailablePostCutoverOnce = (
+    tombstone: SqliteCutoverAuthorityTombstone,
+    keyLabel: string
+  ): void => {
+    if (cutoverUnavailableWarned) return;
+    cutoverUnavailableWarned = true;
+    logger?.warn(
+      'sqlite cutover authority active but durable store is unavailable; refusing legacy memento fallback',
+      {
+        scopeId: tombstone.scopeId,
+        key: keyLabel,
+        reason: durableBatchUnavailableReason ?? 'sqlite-unavailable'
+      }
+    );
+  };
   const canUseDetachedWriter = async (writer: DetachedSqliteWriterConfig): Promise<boolean> => {
     try {
       return (await writer.canWrite()) === true;
@@ -872,7 +626,7 @@ export function createSwitchableOperationalMemento(
 
   return {
     get<T>(key: string): T | undefined {
-      if (PASSTHROUGH_OWNERSHIP_KEYS.has(key)) {
+      if (key === KEYS.sqliteCutoverAuthority || PASSTHROUGH_OWNERSHIP_KEYS.has(key)) {
         return legacyMemento.get<T>(key);
       }
       if (activeSqlite !== null) {
@@ -881,10 +635,21 @@ export function createSwitchableOperationalMemento(
       if (readOnlyCache !== null) {
         return readOnlyCache.get(key) as T | undefined;
       }
+      const tombstone = activeTombstone();
+      if (tombstone !== null) {
+        warnUnavailablePostCutoverOnce(tombstone, key);
+        return undefined;
+      }
       return legacyMemento.get<T>(key);
     },
 
     async update(key: string, value: unknown): Promise<void> {
+      if (key === KEYS.sqliteCutoverAuthority) {
+        throw new PostCutoverMementoWriteForbiddenError(
+          key,
+          postCutoverScopeId ?? activeTombstone()?.scopeId ?? 'cutover-authority'
+        );
+      }
       if (PASSTHROUGH_OWNERSHIP_KEYS.has(key)) {
         await legacyMemento.update(key, value);
         return;
@@ -894,26 +659,45 @@ export function createSwitchableOperationalMemento(
         return;
       }
       if (postCutoverScopeId !== null) {
-        if (readOnlyCache !== null && isSameSerializedState(readOnlyCache.get(key), value)) {
+        // Pure read-only followers (no detached writer) allow identical no-op writes from
+        // idempotent load-time normalizers. Detached writers NEVER skip on stale readOnlyCache.
+        if (
+          detachedWriter === null &&
+          readOnlyCache !== null &&
+          isSameSerializedState(readOnlyCache.get(key), value)
+        ) {
           return;
         }
         await writeViaDetachedOrThrow(postCutoverScopeId, key, (b) => b.update(key, value));
         return;
       }
+      const tombstone = activeTombstone();
+      if (tombstone !== null) {
+        warnUnavailablePostCutoverOnce(tombstone, key);
+        throw buildDurableStoreUnavailableError(key, tombstone.scopeId, durableBatchUnavailableReason);
+      }
       if (durableBatchRequired && key === KEYS.controlLedger) {
-        const detail = durableBatchUnavailableReason ? ` (${durableBatchUnavailableReason})` : '';
-        throw new QueueMutationRejected(
-          'durable-store-unavailable',
-          `Refused operational write for ${key}: durable SQLite store is unavailable${detail}.`
-        );
+        throw buildDurableStoreUnavailableError(key, null, durableBatchUnavailableReason);
       }
       await legacyMemento.update(key, value);
     },
 
     async updateBatch(entries: readonly MementoBatchEntry[]): Promise<void> {
       if (entries.length === 0) return;
+      if (entries.some((entry) => entry.key === KEYS.sqliteCutoverAuthority)) {
+        throw new PostCutoverMementoWriteForbiddenError(
+          KEYS.sqliteCutoverAuthority,
+          postCutoverScopeId ?? activeTombstone()?.scopeId ?? 'cutover-authority'
+        );
+      }
       const passthroughEntries = entries.filter((entry) => PASSTHROUGH_OWNERSHIP_KEYS.has(entry.key));
       const operationalEntries = entries.filter((entry) => !PASSTHROUGH_OWNERSHIP_KEYS.has(entry.key));
+      if (passthroughEntries.length > 0 && operationalEntries.length > 0) {
+        throw new MixedOperationalBatchError(
+          passthroughEntries.map((entry) => entry.key),
+          operationalEntries.map((entry) => entry.key)
+        );
+      }
       const appliedLegacy: Array<{ readonly key: string; readonly previous: unknown }> = [];
       const applyLegacyWithRollback = async (batch: readonly MementoBatchEntry[]): Promise<void> => {
         for (const entry of batch) {
@@ -935,30 +719,41 @@ export function createSwitchableOperationalMemento(
         }
       };
       if (operationalEntries.length > 0) {
+        const keyLabel = operationalEntries.map((entry) => entry.key).join('+');
         if (activeSqlite !== null) {
           activeSqlite.updateBatch(operationalEntries);
         } else if (postCutoverScopeId !== null) {
-          const allUnchanged =
+          const allUnchangedReadOnly =
+            detachedWriter === null &&
             readOnlyCache !== null &&
             operationalEntries.every((entry) =>
               isSameSerializedState(readOnlyCache?.get(entry.key), entry.value)
             );
-          if (!allUnchanged) {
-            await writeViaDetachedOrThrow(
-              postCutoverScopeId,
-              operationalEntries.map((entry) => entry.key).join('+'),
-              (b) => b.updateBatch(operationalEntries)
+          if (!allUnchangedReadOnly) {
+            await writeViaDetachedOrThrow(postCutoverScopeId, keyLabel, (b) =>
+              b.updateBatch(operationalEntries)
             );
           }
-        } else if (durableBatchRequired) {
-          const detail = durableBatchUnavailableReason ? ` (${durableBatchUnavailableReason})` : '';
-          throw new QueueMutationRejected(
-            'durable-store-unavailable',
-            `Refused atomic operational batch write for ${operationalEntries.map((entry) => entry.key).join('+')}: durable SQLite store is unavailable${detail}.`
-          );
         } else {
+          const tombstone = activeTombstone();
+          if (tombstone !== null) {
+            warnUnavailablePostCutoverOnce(tombstone, keyLabel);
+            throw buildDurableStoreUnavailableError(
+              keyLabel,
+              tombstone.scopeId,
+              durableBatchUnavailableReason
+            );
+          }
+          if (durableBatchRequired) {
+            const detail = durableBatchUnavailableReason ? ` (${durableBatchUnavailableReason})` : '';
+            throw new QueueMutationRejected(
+              'durable-store-unavailable',
+              `Refused atomic operational batch write for ${keyLabel}: durable SQLite store is unavailable${detail}.`
+            );
+          }
           await applyLegacyWithRollback(operationalEntries);
         }
+        return;
       }
       if (passthroughEntries.length > 0) {
         await applyLegacyWithRollback(passthroughEntries);
@@ -982,6 +777,7 @@ export function createSwitchableOperationalMemento(
       nowMs: () => number = () => Date.now()
     ): SqliteOperationalBacking {
       if (activeSqlite !== null && activeSqlite.store === store && activeSqlite.scopeId === scopeId) {
+        pendingTombstoneWrite = persistCutoverAuthorityTombstone(legacyMemento, scopeId, nowMs(), logger);
         return activeSqlite;
       }
       const backing = new SqliteOperationalBacking(store, scopeId, legacyMemento, nowMs, logger);
@@ -994,7 +790,13 @@ export function createSwitchableOperationalMemento(
       activeSqlite = backing;
       postCutoverScopeId = scopeId;
       durableBatchUnavailableReason = null;
+      cutoverUnavailableWarned = false;
+      pendingTombstoneWrite = persistCutoverAuthorityTombstone(legacyMemento, scopeId, nowMs(), logger);
       return activeSqlite;
+    },
+
+    async flushCutoverAuthority(): Promise<void> {
+      await pendingTombstoneWrite;
     },
 
     attachReadOnlySnapshotIfPresent(
@@ -1004,6 +806,7 @@ export function createSwitchableOperationalMemento(
         | ((databasePath: string) => SqliteConnectionPort)
         | StrictReadOnlyContainment
     ): boolean {
+      lastSyncProbeNeededAsync = false;
       if (activeSqlite !== null) return true;
       let roConn: SqliteConnectionPort | null = null;
       try {
@@ -1016,12 +819,20 @@ export function createSwitchableOperationalMemento(
         stateEpoch += 1;
         readOnlyCache = snapshot;
         postCutoverScopeId = scopeId;
+        cutoverUnavailableWarned = false;
         return true;
-      } catch {
+      } catch (err) {
+        if (err instanceof Error && err.message === 'SQLITE_READONLY_WAL_PRESENT_REQUIRES_ASYNC') {
+          lastSyncProbeNeededAsync = true;
+        }
         return false;
       } finally {
         roConn?.close();
       }
+    },
+
+    lastSyncReadOnlyProbeNeededAsync(): boolean {
+      return lastSyncProbeNeededAsync;
     },
 
     async attachReadOnlySnapshotIfPresentAsync(
@@ -1050,6 +861,7 @@ export function createSwitchableOperationalMemento(
       stateEpoch += 1;
       readOnlyCache = result.value;
       postCutoverScopeId = scopeId;
+      cutoverUnavailableWarned = false;
       return true;
     },
 
@@ -1074,8 +886,64 @@ export function createSwitchableOperationalMemento(
       return activeSqlite !== null;
     },
 
+    isReadOnlySnapshotAttached(): boolean {
+      return activeSqlite === null && readOnlyCache !== null;
+    },
+
     isPostCutoverAuthorityActive(): boolean {
-      return activeSqlite !== null || postCutoverScopeId !== null;
+      return activeSqlite !== null || postCutoverScopeId !== null || activeTombstone() !== null;
+    },
+
+    hasCutoverAuthorityForScope(scopeId: string): boolean {
+      if (postCutoverScopeId === scopeId) return true;
+      const tombstone = activeTombstone();
+      return tombstone !== null && tombstone.scopeId === scopeId;
+    },
+
+    setActiveScope(scopeId: string): void {
+      expectedScopeId = scopeId;
+      if (activeSqlite === null && postCutoverScopeId !== null && postCutoverScopeId !== scopeId) {
+        stateEpoch += 1;
+        readOnlyCache = null;
+        postCutoverScopeId = null;
+        detachedWriter = null;
+        durableBatchUnavailableReason = null;
+        cutoverUnavailableWarned = false;
+      }
+    },
+
+    getCutoverAuthorityStatus(): CutoverAuthorityStatus {
+      const tombstone = activeTombstone();
+      if (activeSqlite !== null) {
+        return {
+          mode: 'sqlite-primary',
+          scopeId: activeSqlite.scopeId,
+          cutoverAt: tombstone?.cutoverAt ?? null,
+          reason: null
+        };
+      }
+      if (readOnlyCache !== null && postCutoverScopeId !== null) {
+        return {
+          mode: 'sqlite-readonly',
+          scopeId: postCutoverScopeId,
+          cutoverAt: tombstone?.cutoverAt ?? null,
+          reason: durableBatchUnavailableReason
+        };
+      }
+      if (tombstone !== null) {
+        return {
+          mode: 'sqlite-unavailable-post-cutover',
+          scopeId: tombstone.scopeId,
+          cutoverAt: tombstone.cutoverAt,
+          reason: durableBatchUnavailableReason ?? 'sqlite-unavailable'
+        };
+      }
+      return {
+        mode: 'pre-cutover',
+        scopeId: null,
+        cutoverAt: null,
+        reason: durableBatchUnavailableReason
+      };
     }
   };
 }

@@ -132,12 +132,22 @@ describe('FR-R6-F04 (US1): SQLite Engine Qualification, Pragmas & Trusted Storag
       expect(traversalRefusal.reason).toBe('escapes_trusted_root');
     }
 
+    const removedCliRefusal = await resolveTrustedSqliteLocation({
+      trustedRootDir: rootDir,
+      relativeSegments: ['state'],
+      sourceKind: 'cli_state_dir' as never
+    });
+    expect(removedCliRefusal.status).toBe('refused');
+    if (removedCliRefusal.status === 'refused') {
+      expect(removedCliRefusal.reason).toBe('untrusted_source');
+    }
+
     for (const fsKind of ['nfs', 'smb', 'cifs', 'afp', 'webdav', 'fuse.sshfs']) {
       expect(isNetworkFilesystem(fsKind)).toBe(true);
       const netRefusal = await resolveTrustedSqliteLocation({
         trustedRootDir: rootDir,
         relativeSegments: ['state'],
-        sourceKind: 'cli_state_dir',
+        sourceKind: 'host_global_storage_uri',
         filesystemType: fsKind,
         requestedJournalMode: 'wal'
       });

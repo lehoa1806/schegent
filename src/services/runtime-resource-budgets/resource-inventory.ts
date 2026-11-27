@@ -85,7 +85,7 @@ import {
   MAX_SETTLED_CHECK_SUMMARIES_PER_ROOT
 } from '../workflow-execution/control-notification-service';
 import { MAX_COMMAND_RECEIPTS } from '../../state/connected-workflow-run';
-import { CONNECTED_RUNS_CACHE_MAX } from '../../state/sqlite-operational-backing';
+import { CONNECTED_RUNS_CACHE_MAX } from '../../state/sqlite-operational-projections';
 import {
   HISTORY_CAP_PER_QUEUE,
   MAX_DELETED_HISTORY_PARTITIONS
@@ -278,7 +278,7 @@ export const AUTHORITATIVE_CONSTANT_VALUES: ReadonlyMap<string, number> = new Ma
     DIAGNOSTIC_WRITE_CHAIN_CONCURRENCY
   ],
   [
-    'src/state/sqlite-operational-backing.ts#CONNECTED_RUNS_CACHE_MAX',
+    'src/state/sqlite-operational-projections.ts#CONNECTED_RUNS_CACHE_MAX',
     CONNECTED_RUNS_CACHE_MAX
   ],
   [
@@ -797,7 +797,7 @@ export const RUNTIME_RESOURCE_INVENTORY: readonly InventoryEntry[] = Object.free
   {
     id: 'finding-persisted-connected-runs-map',
     category: 'snapshot', owner: 'src/state/sqlite-operational-backing.ts', lifetime: 'persisted', units: 'items',
-    limit: { kind: 'authority', module: 'src/state/sqlite-operational-backing.ts', symbol: 'CONNECTED_RUNS_CACHE_MAX', value: CONNECTED_RUNS_CACHE_MAX },
+    limit: { kind: 'authority', module: 'src/state/sqlite-operational-projections.ts', symbol: 'CONNECTED_RUNS_CACHE_MAX', value: CONNECTED_RUNS_CACHE_MAX },
     overflow: 'Sweep terminal runs past 512 entries, 90 days, or 256 MiB while preserving live runs.',
     architecture: 'current', consumers: ['F03', 'F04']
   },

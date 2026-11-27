@@ -445,9 +445,9 @@ describe('FR-R8-02 (02-05) — real-process E2E across all 3 packaged ACP profil
       };
 
       const phaseRunners: Record<BackendRunnerKind, PhaseRunner> = {
-        claude: new PhaseRunner(runners.claude, new PromptBuilder(), auditWriter, logger),
-        codex: new PhaseRunner(runners.codex, new PromptBuilder(), auditWriter, logger),
-        agy: new PhaseRunner(runners.agy, new PromptBuilder(), auditWriter, logger)
+        claude: new PhaseRunner({ runner: runners.claude, promptBuilder: new PromptBuilder(), auditWriter, logger }),
+        codex: new PhaseRunner({ runner: runners.codex, promptBuilder: new PromptBuilder(), auditWriter, logger }),
+        agy: new PhaseRunner({ runner: runners.agy, promptBuilder: new PromptBuilder(), auditWriter, logger })
       };
 
       // 1. All 3 advertised backends × all 4 representative tasks = 12 real-process packaged turns

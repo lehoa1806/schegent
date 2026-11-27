@@ -13,8 +13,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { exportRunEvidence, verifyExport } from '../../../src/services/evidence-export';
 import { SanitizedLogger } from '../../../src/lib/logger';
 import { createFailureRecorder } from '../../../src/services/failure-record/failure-record-service';
+import { allocateAttemptStagingPaths } from '../../../src/services/phase-context/attempt-result-publisher';
 
 const RUN = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+const RUN_B = '9b2e5f10-1c2d-4e3f-8a4b-5c6d7e8f9a0b';
 
 let workspace: string;
 let destination: string;
@@ -42,10 +44,12 @@ afterEach(async () => {
 });
 
 describe('FR-R3-085 — evidence export', () => {
-  it('exports a run and verifies clean against its own manifest', async () => {
+  it('exports a run into an isolated child directory and verifies clean against its own manifest', async () => {
     const result = await exportRunEvidence(workspace, RUN, destination);
     expect(result.outcome).toBe('exported');
-    const verdict = await verifyExport(destination);
+    if (result.outcome !== 'exported') throw new Error('expected an export');
+    expect(path.dirname(result.directory)).toBe(await fsp.realpath(destination));
+    const verdict = await verifyExport(result.directory);
     expect(verdict).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
   });
 
@@ -62,24 +66,25 @@ describe('FR-R3-085 — evidence export', () => {
   });
 
   it('NON-VACUITY: an unlisted file added to the artifact fails the check', async () => {
-    await exportRunEvidence(workspace, RUN, destination);
-    expect((await verifyExport(destination)).ok).toBe(true);
+    const result = await exportRunEvidence(workspace, RUN, destination);
+    if (result.outcome !== 'exported') throw new Error('expected an export');
+    expect((await verifyExport(result.directory)).ok).toBe(true);
 
-    await fsp.writeFile(path.join(destination, 'smuggled.txt'), 'not in the manifest\n');
-    const verdict = await verifyExport(destination);
+    await fsp.writeFile(path.join(result.directory, 'smuggled.txt'), 'not in the manifest\n');
+    const verdict = await verifyExport(result.directory);
     expect(verdict.ok).toBe(false);
     expect(verdict.unlisted).toEqual(['smuggled.txt']);
 
-    await fsp.rm(path.join(destination, 'smuggled.txt'));
-    expect((await verifyExport(destination)).ok).toBe(true);
+    await fsp.rm(path.join(result.directory, 'smuggled.txt'));
+    expect((await verifyExport(result.directory)).ok).toBe(true);
   });
 
   it('a listed file that is absent is reported separately from an unlisted one', async () => {
     const result = await exportRunEvidence(workspace, RUN, destination);
     if (result.outcome !== 'exported') throw new Error('expected an export');
     const victim = result.manifest.contents[0] as { path: string };
-    await fsp.rm(path.join(destination, victim.path));
-    const verdict = await verifyExport(destination);
+    await fsp.rm(path.join(result.directory, victim.path));
+    const verdict = await verifyExport(result.directory);
     expect(verdict.missing).toEqual([victim.path]);
     expect(verdict.unlisted).toEqual([]);
   });
@@ -88,12 +93,12 @@ describe('FR-R3-085 — evidence export', () => {
     const result = await exportRunEvidence(workspace, RUN, destination);
     if (result.outcome !== 'exported') throw new Error('expected an export');
     const victim = result.manifest.contents[0] as { path: string };
-    await fsp.appendFile(path.join(destination, victim.path), 'tampered\n');
-    const verdict = await verifyExport(destination);
+    await fsp.appendFile(path.join(result.directory, victim.path), 'tampered\n');
+    const verdict = await verifyExport(result.directory);
     expect(verdict.altered).toEqual([victim.path]);
   });
 
-  it('the chain links each entry to its predecessor, and a broken link is detected', async () => {
+  it('the chain links each entry to its predecessor, and a broken or truncated chain is detected', async () => {
     const result = await exportRunEvidence(workspace, RUN, destination);
     if (result.outcome !== 'exported') throw new Error('expected an export');
     const { chain } = result.manifest;
@@ -103,13 +108,20 @@ describe('FR-R3-085 — evidence export', () => {
       expect(chain[index]?.previousDigest).toBe(chain[index - 1]?.digest);
     }
 
-    const manifestPath = path.join(destination, 'manifest.json');
+    const manifestPath = path.join(result.directory, 'manifest.json');
     const tampered = JSON.parse(await fsp.readFile(manifestPath, 'utf8')) as {
       chain: { previousDigest: string | null }[];
     };
+    const originalFirst = tampered.chain[0];
     tampered.chain[0] = { ...tampered.chain[0], previousDigest: 'forged' } as never;
     await fsp.writeFile(manifestPath, JSON.stringify(tampered, null, 2));
-    expect((await verifyExport(destination)).chainBroken).toBe(true);
+    expect((await verifyExport(result.directory)).chainBroken).toBe(true);
+
+    // Truncating chain shorter than contents is also detected.
+    tampered.chain[0] = originalFirst as never;
+    tampered.chain.pop();
+    await fsp.writeFile(manifestPath, JSON.stringify(tampered, null, 2));
+    expect((await verifyExport(result.directory)).chainBroken).toBe(true);
   });
 
   it('redacts at least as much as the product redaction set', async () => {
@@ -118,14 +130,14 @@ describe('FR-R3-085 — evidence export', () => {
     const result = await exportRunEvidence(workspace, RUN, destination);
     if (result.outcome !== 'exported') throw new Error('expected an export');
     for (const entry of result.manifest.contents) {
-      const body = await fsp.readFile(path.join(destination, entry.path), 'utf8');
+      const body = await fsp.readFile(path.join(result.directory, entry.path), 'utf8');
       expect(body).not.toContain('sk-ant-secretvaluegoeshere0000000000');
     }
     // ...and the surrounding content still made it out, so redaction did not
     // simply drop the file.
     const transcript = result.manifest.contents.find((entry) => entry.path.includes('raw-'));
     expect(transcript).toBeDefined();
-    const body = await fsp.readFile(path.join(destination, (transcript as { path: string }).path), 'utf8');
+    const body = await fsp.readFile(path.join(result.directory, (transcript as { path: string }).path), 'utf8');
     expect(body).toContain('transcript line');
   });
 
@@ -137,28 +149,19 @@ describe('FR-R3-085 — evidence export', () => {
   });
 
   it('SECURITY: refuses a degenerate run id rather than matching by substring', async () => {
-    // `relative.includes(runId)` is how evidence is selected, so `.` or `log` is
-    // a substring of nearly every path — an unvalidated id turns a scoped export
-    // into one that hands over every Run's evidence. Validated at the boundary
-    // because "the caller passes a real id today" is an argument for the check
-    // being cheap, not for omitting it.
     for (const bad of ['.', '', 'log', 'raw', '../../etc', '%2e%2e']) {
       const result = await exportRunEvidence(workspace, bad, destination);
       expect(result.outcome, `run id ${JSON.stringify(bad)} must be refused`).toBe('refused');
       if (result.outcome !== 'refused') throw new Error('unreachable');
       expect(result.reason).toBe('invalid-run-id');
     }
-    // ...and a real UUID is still accepted, so the guard is not refusing everything.
     expect((await exportRunEvidence(workspace, RUN, destination)).outcome).toBe('exported');
   });
 
-  it('SECURITY: an oversized artifact is omitted WITH its reason, not read into memory', async () => {
-    // Retention caps each artifact, but rotated siblings accumulate and the
-    // export reads whole files — so without a bound the ceiling is "however much
-    // evidence has piled up", and the failure lands during an operator's privacy
-    // action. Skip-and-record rather than refuse: refusing the whole export
-    // because one artifact is large hands the operator nothing.
-    const huge = path.join(workspace, '.schegent', 'sessions', `raw-${RUN}-huge.log`);
+  it('SECURITY: an oversized eligible artifact is omitted WITH its reason, not read into memory', async () => {
+    const runSessionDir = path.join(workspace, '.schegent', 'sessions', RUN);
+    await fsp.mkdir(runSessionDir, { recursive: true });
+    const huge = path.join(runSessionDir, 'transport.log');
     await fsp.writeFile(huge, 'x'.repeat(17 * 1024 * 1024));
 
     const result = await exportRunEvidence(workspace, RUN, destination);
@@ -166,22 +169,163 @@ describe('FR-R3-085 — evidence export', () => {
     if (result.outcome !== 'exported') throw new Error('unreachable');
 
     const omission = result.manifest.deliberateOmissions.find((entry) =>
-      entry.path.includes('huge')
+      entry.path.includes('transport.log')
     );
     expect(omission, 'the oversized artifact must be enumerated as an omission').toBeDefined();
     expect(omission?.reason).toContain('MiB per-artifact');
-    // ...and the rest of the export still happened.
     expect(result.manifest.contents.length).toBeGreaterThan(0);
-    expect((await verifyExport(destination)).ok).toBe(true);
+    expect((await verifyExport(result.directory)).ok).toBe(true);
+  });
+});
+
+// Post-merge review Findings 1 & 2 — explicit eligible classes, real handoff staging exclusion,
+// isolated private per-invocation directory, exact membership verification, and unreadable-source refusal.
+describe('Post-merge review Findings 1 & 2 — explicit artifact eligibility, isolated bundle dir, and unreadable sources', () => {
+  const posixOnly = process.platform === 'win32' ? it.skip : it;
+
+  it('excludes real producer handoff staging paths, F05 external artifact dirs, and unclassified files even when their path contains the Run UUID', async () => {
+    // Seed real producer staging paths via `allocateAttemptStagingPaths` (Finding 1).
+    const staging = allocateAttemptStagingPaths(workspace, RUN, 'attempt-0001');
+    await fsp.mkdir(staging.stagingDirAbsPath, { recursive: true });
+    await fsp.writeFile(staging.contributionAbsPath, '{"summary":"proprietary confidential prose"}\n');
+    await fsp.writeFile(staging.reviewReportAbsPath, '{"findings":["internal security details"]}\n');
+    await fsp.writeFile(staging.fixClaimsAbsPath, '{"claims":["private patch explanation"]}\n');
+    await fsp.writeFile(staging.legacySidecarAbsPath, 'SUMMARY=confidential\n');
+
+    // Also seed sibling omitted subtrees + another Run's handoff + an unclassified path carrying RUN.
+    const otherStaging = allocateAttemptStagingPaths(workspace, RUN_B, 'attempt-0002');
+    await fsp.mkdir(otherStaging.stagingDirAbsPath, { recursive: true });
+    await fsp.writeFile(otherStaging.contributionAbsPath, '{"summary":"other run prose"}\n');
+
+    await fsp.mkdir(path.join(workspace, '.schegent', 'immutable-results', RUN), { recursive: true });
+    await fsp.writeFile(path.join(workspace, '.schegent', 'immutable-results', RUN, 'capture.json'), '{"secret":"no"}\n');
+    await fsp.mkdir(path.join(workspace, '.schegent', 'handoff-materialized', RUN), { recursive: true });
+    await fsp.writeFile(path.join(workspace, '.schegent', 'handoff-materialized', RUN, 'note.md'), 'private handoff\n');
+    await fsp.mkdir(path.join(workspace, '.schegent', 'transcripts'), { recursive: true });
+    await fsp.writeFile(path.join(workspace, '.schegent', 'transcripts', `${RUN}.log`), 'f05 external blob\n');
+    await fsp.writeFile(path.join(workspace, '.schegent', `unclassified-${RUN}.txt`), 'unknown class prose\n');
+    await fsp.writeFile(path.join(workspace, '.schegent', 'cli-transport.log'), 'legacy shared transport\n');
+
+    // Also seed eligible diagnostics tree, transport, and history description for RUN.
+    const diagDir = path.join(workspace, '.schegent', 'sessions', RUN, 'diagnostics', 'wf', 'plan', 'iter-1');
+    await fsp.mkdir(diagDir, { recursive: true });
+    await fsp.writeFile(path.join(diagDir, 'debug.json'), '{"ok":true}\n');
+    await fsp.writeFile(path.join(workspace, '.schegent', 'sessions', RUN, 'transport.log'), 'transport ok\n');
+    await fsp.mkdir(path.join(workspace, '.schegent', 'history'), { recursive: true });
+    await fsp.writeFile(path.join(workspace, '.schegent', 'history', `${RUN}.txt`), 'task description\n');
+
+    const result = await exportRunEvidence(workspace, RUN, destination);
+    expect(result.outcome).toBe('exported');
+    if (result.outcome !== 'exported') throw new Error('expected exported');
+
+    const exportedNames = result.manifest.contents.map((entry) => entry.path);
+    expect(exportedNames).toContain('.schegent__audit.log');
+    expect(exportedNames).toContain(`.schegent__sessions__raw-${RUN}.log`);
+    expect(exportedNames).toContain(`.schegent__sessions__${RUN}__transport.log`);
+    expect(exportedNames).toContain(`.schegent__sessions__${RUN}__diagnostics__wf__plan__iter-1__debug.json`);
+    expect(exportedNames).toContain(`.schegent__history__${RUN}.txt`);
+
+    // None of the omitted or unclassified files may appear in exported contents or on disk.
+    for (const forbidden of [
+      'results',
+      'immutable-results',
+      'handoff-materialized',
+      'transcripts',
+      'unclassified-',
+      'cli-transport.log',
+      'contribution.json',
+      'review-report.json',
+      'fix-claims.json'
+    ]) {
+      expect(exportedNames.some((name) => name.includes(forbidden)), `must not export ${forbidden}`).toBe(false);
+    }
+
+    // Disclosed omitted subtrees and the run-named unknown file are enumerated in deliberateOmissions,
+    // and RUN_B never leaks into RUN's manifest.
+    const omittedPaths = result.manifest.deliberateOmissions.map((o) => o.path);
+    expect(omittedPaths).toContain('.schegent/results');
+    expect(omittedPaths).toContain('.schegent/immutable-results');
+    expect(omittedPaths).toContain('.schegent/handoff-materialized');
+    expect(omittedPaths).toContain('.schegent/transcripts');
+    expect(omittedPaths).toContain('.schegent/cli-transport.log');
+    expect(omittedPaths).toContain(`.schegent/unclassified-${RUN}.txt`);
+    expect(JSON.stringify(result.manifest)).not.toContain(RUN_B);
+    expect((await verifyExport(result.directory)).ok).toBe(true);
+  });
+
+  it('refuses with no-evidence when only staged handoff files exist for the Run', async () => {
+    const onlyHandoffRun = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const staging = allocateAttemptStagingPaths(workspace, onlyHandoffRun, 'attempt-0001');
+    await fsp.mkdir(staging.stagingDirAbsPath, { recursive: true });
+    await fsp.writeFile(staging.contributionAbsPath, '{"summary":"private only"}\n');
+
+    const result = await exportRunEvidence(workspace, onlyHandoffRun, destination);
+    expect(result).toMatchObject({ outcome: 'refused', reason: 'no-evidence' });
+    expect(await fsp.readdir(destination)).toEqual([]);
+  });
+
+  it('publishes two exports to one selected parent into disjoint child directories, verifies exact membership, and preserves pre-existing operator files untouched', async () => {
+    // Seed a second Run's evidence too.
+    await fsp.writeFile(path.join(workspace, '.schegent', 'sessions', `raw-${RUN_B}.log`), 'run B transcript\n');
+
+    // Pre-existing operator files (including a pre-existing manifest.json!) in the selected parent folder.
+    const operatorNotes = path.join(destination, 'operator-notes.txt');
+    const preExistingManifest = path.join(destination, 'manifest.json');
+    await fsp.writeFile(operatorNotes, 'keep my notes untouched\n');
+    await fsp.writeFile(preExistingManifest, '{"owner":"operator-file"}\n');
+
+    const fixedNow = () => new Date('2026-11-27T13:00:00.000Z');
+    const exportA = await exportRunEvidence(workspace, RUN, destination, fixedNow);
+    const exportB = await exportRunEvidence(workspace, RUN_B, destination, fixedNow);
+    const exportA2 = await exportRunEvidence(workspace, RUN, destination, fixedNow);
+
+    expect(exportA.outcome).toBe('exported');
+    expect(exportB.outcome).toBe('exported');
+    expect(exportA2.outcome).toBe('exported');
+    if (exportA.outcome !== 'exported' || exportB.outcome !== 'exported' || exportA2.outcome !== 'exported') {
+      throw new Error('expected all exports to succeed');
+    }
+
+    // All three bundle directories are disjoint children of destination.
+    const dirs = new Set([exportA.directory, exportB.directory, exportA2.directory]);
+    expect(dirs.size).toBe(3);
+
+    // Every bundle verifies clean on its own with zero cross-run mixing.
+    expect(await verifyExport(exportA.directory)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
+    expect(await verifyExport(exportB.directory)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
+    expect(await verifyExport(exportA2.directory)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
+    expect(exportA.manifest.contents.some((e) => e.path.includes(RUN_B))).toBe(false);
+    expect(exportB.manifest.contents.some((e) => e.path.includes(RUN))).toBe(false);
+
+    // Pre-existing operator files in the selected parent remain untouched byte-for-byte.
+    expect(await fsp.readFile(operatorNotes, 'utf8')).toBe('keep my notes untouched\n');
+    expect(await fsp.readFile(preExistingManifest, 'utf8')).toBe('{"owner":"operator-file"}\n');
+  });
+
+  posixOnly('refuses explicitly with unreadable-source when an eligible evidence directory cannot be listed', async () => {
+    const unreadableDir = path.join(workspace, '.schegent', 'sessions', RUN, 'diagnostics');
+    await fsp.mkdir(unreadableDir, { recursive: true });
+    await fsp.writeFile(path.join(unreadableDir, 'verbose.log'), 'secret diag\n');
+    await fsp.chmod(unreadableDir, 0o000);
+    try {
+      const result = await exportRunEvidence(workspace, RUN, destination);
+      // Root users (uid 0) bypass POSIX mode 000; skip assertion only in that rare case.
+      if (process.getuid?.() !== 0) {
+        expect(result.outcome).toBe('refused');
+        if (result.outcome !== 'refused') throw new Error('expected refused');
+        expect(result.reason).toBe('unreadable-source');
+        expect(result.detail).toContain('diagnostics');
+        expect(await fsp.readdir(destination)).toEqual([]);
+      }
+    } finally {
+      await fsp.chmod(unreadableDir, 0o700);
+    }
   });
 });
 
 // FR-R4-F15 (feature 243, contract K4, K6.9; FR-017, D14) — the Run-scoped export carries a Run's
-// failure records and no other Run's. No code selects them: the export takes every file under
-// `.schegent/` whose path contains the Run id, and a record's name carries its Run id. This test pins
-// that, so a rename of the record's name that dropped the Run id would fail here and not in an audit.
+// failure records and no other Run's.
 describe('FR-R4-F15 K6.9 — the export includes one Run\'s failure records', () => {
-  const RUN_B = '9b2e5f10-1c2d-4e3f-8a4b-5c6d7e8f9a0b';
   const TASK_A = '11111111-1111-4111-8111-111111111111';
   const TASK_B = '22222222-2222-4222-8222-222222222222';
 
@@ -203,14 +347,12 @@ describe('FR-R4-F15 K6.9 — the export includes one Run\'s failure records', ()
     await writeRecord(RUN, TASK_A, 'run A first');
     await writeRecord(RUN, TASK_A, 'run A second');
     await writeRecord(RUN_B, TASK_B, 'run B only');
-    // Control: Run B's record is on disk, so its absence from the export is a selection and not a gap.
     const onDisk = await fsp.readdir(path.join(workspace, '.schegent', 'failure-records'));
     expect(onDisk.filter((name) => name.includes(`_${RUN_B}_`))).toHaveLength(1);
 
     const result = await exportRunEvidence(workspace, RUN, destination);
     if (result.outcome !== 'exported') throw new Error('expected an export');
 
-    // An exported file is named by its workspace path with `/` written as `__`.
     const exported = result.manifest.contents.map((entry) => entry.path);
     const records = exported.filter((entry) => entry.includes('failure-records__'));
     expect(records).toHaveLength(2);
@@ -220,7 +362,7 @@ describe('FR-R4-F15 K6.9 — the export includes one Run\'s failure records', ()
     }
     expect(exported.some((entry) => entry.includes(RUN_B))).toBe(false);
     expect(JSON.stringify(result.manifest)).not.toContain(RUN_B);
-    expect(await verifyExport(destination)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [] });
+    expect(await verifyExport(result.directory)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [] });
   });
 
   it('omits the records of a Run with none, and refuses a Run that has no evidence at all', async () => {
@@ -231,18 +373,6 @@ describe('FR-R4-F15 K6.9 — the export includes one Run\'s failure records', ()
   });
 });
 
-
-// Feature 251 (FR-R4-F04, contract T16; FR-023, FR-025, US3-5, US4-7; E5, E8) — outputs are owner-only, and
-// the manifest states what the audit history in an export is.
-//
-// What it pins: a destination file that already exists at `0644` ends `0600` (the helper narrows it, no
-// `chmod`); `sharedAuditHistory` is present with the data-model's statement verbatim and one `files` entry
-// per audit file the export includes; an audit fixture holding a retired stream row is labelled
-// `legacy-content` and a v3 history `metadata-only`; it is `null` when no audit file is included; and
-// `verifyExport` still passes, because the new field is additive and the manifest check never read it.
-//
-// Why: the filing's finding (R26) is that no written manifest told a recipient the audit history is shared
-// across Runs, and that an export's files took whatever mode the umask gave.
 describe('FR-R4-F04 T16 — owner-only outputs and the shared-audit statement', () => {
   const STATEMENT = "The audit history is shared: it holds every Run's metadata, not only this Run's.";
   const posixOnly = process.platform === 'win32' ? it.skip : it;
@@ -251,23 +381,28 @@ describe('FR-R4-F04 T16 — owner-only outputs and the shared-audit statement', 
     await fsp.writeFile(path.join(workspace, '.schegent', 'audit.log'), `${lines.join('\n')}\n`);
   }
 
-  posixOnly('narrows an existing 0644 destination file to 0600', async () => {
-    const flat = path.join(destination, `.schegent__sessions__raw-${RUN}.log`);
-    await fsp.writeFile(flat, 'older bytes\n');
-    await fsp.chmod(flat, 0o644);
+  posixOnly('writes bundle files 0600 inside a fresh 0700 child directory without touching pre-existing 0644 files in the parent', async () => {
+    const flatInParent = path.join(destination, `.schegent__sessions__raw-${RUN}.log`);
+    await fsp.writeFile(flatInParent, 'older bytes\n');
+    await fsp.chmod(flatInParent, 0o644);
 
     const result = await exportRunEvidence(workspace, RUN, destination);
 
     expect(result.outcome).toBe('exported');
-    expect((await fsp.stat(flat)).mode & 0o777).toBe(0o600);
-    expect((await fsp.stat(path.join(destination, 'manifest.json'))).mode & 0o777).toBe(0o600);
+    if (result.outcome !== 'exported') throw new Error('expected exported');
+    expect((await fsp.stat(result.directory)).mode & 0o777).toBe(0o700);
+    expect((await fsp.stat(path.join(result.directory, `.schegent__sessions__raw-${RUN}.log`))).mode & 0o777).toBe(0o600);
+    expect((await fsp.stat(path.join(result.directory, 'manifest.json'))).mode & 0o777).toBe(0o600);
+    expect(await fsp.readFile(flatInParent, 'utf8')).toBe('older bytes\n');
   });
 
-  posixOnly('creates a destination directory that does not exist owner-only', async () => {
+  posixOnly('creates a destination parent and child bundle directory owner-only when the parent does not exist', async () => {
     const nested = path.join(destination, 'made', 'here');
     const result = await exportRunEvidence(workspace, RUN, nested);
     expect(result.outcome).toBe('exported');
+    if (result.outcome !== 'exported') throw new Error('expected exported');
     expect((await fsp.stat(nested)).mode & 0o777).toBe(0o700);
+    expect((await fsp.stat(result.directory)).mode & 0o777).toBe(0o700);
   });
 
   it('states that the audit history is shared, once, with a file entry for each audit file included', async () => {
@@ -305,17 +440,17 @@ describe('FR-R4-F04 T16 — owner-only outputs and the shared-audit statement', 
   });
 
   it('is null when the Run has no evidence of its own, because nothing is exported', async () => {
-    const other = '9b2e5f10-1c2d-4e3f-8a4b-5c6d7e8f9a0b';
-    const result = await exportRunEvidence(workspace, other, destination);
+    const result = await exportRunEvidence(workspace, RUN_B, destination);
     expect(result.outcome).toBe('refused');
   });
 
   it('still verifies: the new field is additive', async () => {
-    await exportRunEvidence(workspace, RUN, destination);
-    expect(await verifyExport(destination)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
+    const result = await exportRunEvidence(workspace, RUN, destination);
+    if (result.outcome !== 'exported') throw new Error('expected an export');
+    expect(await verifyExport(result.directory)).toMatchObject({ ok: true, unlisted: [], missing: [], altered: [], chainBroken: false });
   });
 
-  it('rolls back partial export files and preserves pre-existing operator files when redaction or writing fails mid-export (FR-R5-F14, NS-08)', async () => {
+  it('rolls back the isolated bundle directory and preserves pre-existing operator files when redaction or writing fails mid-export (FR-R5-F14, NS-08)', async () => {
     const preExisting = path.join(destination, 'operator-notes.txt');
     await fsp.writeFile(preExisting, 'keep me intact\n');
 
@@ -339,7 +474,7 @@ describe('FR-R4-F04 T16 — owner-only outputs and the shared-audit statement', 
     expect(await fsp.readFile(preExisting, 'utf8')).toBe('keep me intact\n');
   });
 
-  it('restores a pre-existing target file and removes newly created subdirectories when a later artifact fails (FR-R5-F14)', async () => {
+  it('removes newly created parent and bundle directories when a later artifact fails mid-export (FR-R5-F14)', async () => {
     const priorAuditCopy = path.join(destination, '.schegent__audit.log');
     await fsp.writeFile(priorAuditCopy, 'prior exported audit bytes\n');
 

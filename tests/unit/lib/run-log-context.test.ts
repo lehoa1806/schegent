@@ -184,7 +184,12 @@ describe('a Run driven through the real phase runner (FR-033)', () => {
   it('writes lines whose JSON carries the Run and the phase, and the host line carries neither', async () => {
     const sink = recordingSink();
     const logger = new SanitizedLogger([sink]);
-    const runner = new PhaseRunner(fakeCliRunner(), new PromptBuilder(), fakeAuditWriter(), logger);
+    const runner = new PhaseRunner({
+      runner: fakeCliRunner(),
+      promptBuilder: new PromptBuilder(),
+      auditWriter: fakeAuditWriter(),
+      logger
+    });
 
     logger.info('activation: ready');
     const hostLines = sink.lines.length;
@@ -208,7 +213,12 @@ describe('a Run driven through the real phase runner (FR-033)', () => {
   it('keeps two Runs apart on one window logger', async () => {
     const sink = recordingSink();
     const logger = new SanitizedLogger([sink]);
-    const runner = new PhaseRunner(fakeCliRunner(), new PromptBuilder(), fakeAuditWriter(), logger);
+    const runner = new PhaseRunner({
+      runner: fakeCliRunner(),
+      promptBuilder: new PromptBuilder(),
+      auditWriter: fakeAuditWriter(),
+      logger
+    });
 
     await runner.run(INPUTS);
     const firstRunLines = sink.lines.length;

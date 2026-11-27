@@ -27,6 +27,7 @@ import {
 import { SqliteCutoverStoreRegistry, type CutoverRegistrationSlot } from './sqlite-cutover-registry';
 import { createDesktopOwnershipFenceForStore } from './workflow-ownership-fence';
 import {
+  abortIfPostCutoverDatabaseMissing,
   buildContainedProbeAndReader,
   buildDurableHandoffSeam,
   buildNodeLifecycleFs,
@@ -36,10 +37,12 @@ import {
   createDynamicStorageDetailsReader,
   createDynamicUsageAccountingReader,
   disposeSqliteRuntimeResources,
+  initializeOperationalStoreForActivation,
   isChildOfActiveComposableRun,
   isRecoveryEnvelopeProtectedForServices,
   isRecoveryRunProtectedForServices,
   ProtectedRunIdsUnavailableError,
+  querySqliteProtectedRunIds,
   replayTelemetrySpoolAfterSettling,
   reportRelocationOutcome,
   sweepWithReadableProtection
@@ -146,6 +149,22 @@ export function disposeCutoverStore(store: WorkspaceStateStore): readonly Cutove
   }
 }
 
+export function initializeStoreForActivation(input: {
+  readonly context: Pick<vscode.ExtensionContext, 'storageUri' | 'globalStorageUri'>;
+  readonly workspaceRoot: string;
+  readonly store: WorkspaceStateStore;
+  readonly logger: SanitizedLogger;
+}) {
+  return initializeOperationalStoreForActivation({
+    globalStorageRoot: input.context.globalStorageUri.fsPath,
+    legacyStorageRoot: input.context.storageUri?.fsPath,
+    scopeId: deriveWorkspaceScopeId(input.workspaceRoot),
+    operationalMemento: cutoverRegistry.getOperationalMemento(input.store),
+    store: input.store,
+    logger: input.logger
+  });
+}
+
 export function deriveWorkspaceScopeId(workspaceRoot: string): string {
   return createHash('sha256').update(workspaceRoot, 'utf8').digest('hex').slice(0, 16);
 }
@@ -234,6 +253,7 @@ export interface CreateSqliteCutoverCoordinatorDeps {
   readonly isWorkspaceTrusted: () => boolean;
   readonly hasPrimacy: () => Promise<boolean>;
   readonly subscribePrimacyLost?: (listener: () => void) => vscode.Disposable;
+  readonly subscribePrimacyGained?: ((listener: () => void) => vscode.Disposable) | undefined;
   readonly disposables: vscode.Disposable[];
   /** Optional operator notice callback (defaults to `vscode.window.showWarningMessage`). */
   readonly notifyOperator?: ((message: string) => void | Promise<void>) | undefined;
@@ -349,6 +369,7 @@ async function openPrimarySqliteServices(
   if (input.isClosed() || !(await deps.hasPrimacy()) || input.isClosed()) {
     return null;
   }
+  if (await abortIfPostCutoverDatabaseMissing({ operationalMemento: input.operationalMemento, scopeId, activeDatabasePath, logger: deps.logger, notify: (m) => emitOperatorNotice(deps, m) })) return null;
 
   let sqliteStore: SqliteApplicationStore;
   try {
@@ -367,7 +388,10 @@ async function openPrimarySqliteServices(
       detectFilesystemType: deps.detectFilesystemType
     }, undefined, (message, fields) => deps.logger.warn(message, fields));
   } catch (error) {
-    if (!input.isClosed()) input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-open-failed');
+    if (!input.isClosed()) {
+      input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-open-failed');
+      if (input.operationalMemento?.hasCutoverAuthorityForScope(scopeId)) emitOperatorNotice(deps, 'Schegent could not open the operational SQLite database after cutover. Operational writes are disabled; restore a backup or inspect the output log.');
+    }
     deps.logger.warn('sqlite cutover: failed to open application store', {
       reason: error instanceof Error ? error.name : 'unknown'
     });
@@ -413,6 +437,7 @@ async function openPrimarySqliteServices(
 
   try {
     input.operationalMemento?.attachSqlite(sqliteStore, scopeId);
+    await input.operationalMemento?.flushCutoverAuthority();
     if (input.catalogFs !== undefined) {
       await input.catalogFs.attachSqlite(sqliteStore, scopeId, undefined, () => !input.isClosed());
       if (input.isClosed()) {
@@ -820,6 +845,7 @@ export function createSqliteCutoverCoordinator(
       disposeTelemetryConfig: current.disposeTelemetryConfig,
       usageAccounting: current.usageAccounting,
       usageWiring: current.usageWiring,
+      reportingService: current.reportingService,
       workflowComposition: current.workflowComposition,
       telemetryHost: current.telemetryHost,
       sqliteStore: current.sqliteStore
@@ -1076,6 +1102,7 @@ export function createSqliteCutoverCoordinator(
     allowMissingCatalogFs: catalogFs === undefined && !deps.isWorkspaceTrusted()
   });
   if (deps.subscribePrimacyLost !== undefined) deps.disposables.push(deps.subscribePrimacyLost(demoteOnPrimacyLoss));
+  if (deps.subscribePrimacyGained !== undefined) deps.disposables.push(deps.subscribePrimacyGained(() => { if (!isInactive() && activeServices === null) void coordinator.activatePrimary().catch((err: unknown) => deps.logger.warn('sqlite cutover: primacy-regain activation failed', { reason: err instanceof Error ? err.name : typeof err })); }));
   deps.disposables.push({ dispose: close });
   return coordinator;
 }
@@ -1084,45 +1111,7 @@ export {
   createDynamicStorageDetailsReader,
   createDynamicUsageAccountingReader,
   ProtectedRunIdsUnavailableError,
+  querySqliteProtectedRunIds,
   replayTelemetrySpoolAfterSettling,
   sweepWithReadableProtection
 };
-
-/**
- * The run ids a sweep must spare: lane pins, export pins and active protective references.
- * Empty when SQLite is not open, since nothing can be pinned there. Throws
- * {@link ProtectedRunIdsUnavailableError}, after reporting, when the query fails.
- */
-export function querySqliteProtectedRunIds(
-  services: SqliteCutoverServices | null,
-  reportFailure: SideEffectFailureReport
-): ReadonlySet<string> {
-  const result = new Set<string>();
-  if (services === null) return result;
-  for (const lanePinnedRunId of services.runLaneCoordinator.getProtectedRunIds()) {
-    result.add(lanePinnedRunId);
-  }
-  for (const exportPinnedRunId of services.reportingService.activeExportRootIds()) {
-    result.add(exportPinnedRunId);
-  }
-  try {
-    const rows = services.sqliteStore.writerConnection.all<{ readonly run_id: string }>(
-      `SELECT DISTINCT al.owner_run_id AS run_id
-         FROM artifact_lifecycle al
-         JOIN artifact_references ar ON ar.artifact_id = al.artifact_id
-        WHERE ar.protective = 1 AND ar.released_revision IS NULL AND al.owner_run_id IS NOT NULL
-       UNION
-       SELECT DISTINCT ar.owner_id AS run_id
-         FROM artifact_references ar
-        WHERE ar.protective = 1 AND ar.released_revision IS NULL AND ar.owner_type = 'run'`
-    );
-    for (const row of rows) {
-      if (row.run_id) result.add(row.run_id);
-    }
-  } catch (err) {
-    // Fail closed: a partial set would expose the runs pinned only here.
-    reportFailure('sweep-protection-query', err);
-    throw new ProtectedRunIdsUnavailableError();
-  }
-  return result;
-}

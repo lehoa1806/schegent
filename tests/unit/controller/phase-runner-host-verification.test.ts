@@ -97,21 +97,21 @@ async function runWith(
   entries: Array<Omit<AuditEntry, 'id' | 'timestamp'>>;
 }> {
   const entries: Array<Omit<AuditEntry, 'id' | 'timestamp'>> = [];
-  const runner = new PhaseRunner(
-    {
+  const runner = new PhaseRunner({
+    runner: {
       invoke: vi.fn(async () => makeRawOutput(overrides)),
       cancelActive: vi.fn(() => false),
       hasActiveProcess: false
     } as unknown as ClaudeCliRunner,
-    new PromptBuilder(),
-    {
+    promptBuilder: new PromptBuilder(),
+    auditWriter: {
       append: vi.fn(async (entry: Omit<AuditEntry, 'id' | 'timestamp'>): Promise<AuditEntry> => {
         entries.push(entry);
         return { id: `audit-${entries.length}`, timestamp: '2026-08-24T00:00:00Z', ...entry };
       })
     } as unknown as AuditLogWriter,
-    new SanitizedLogger()
-  );
+    logger: new SanitizedLogger()
+  });
   const output = await runner.run({
     phase: 'speckit-specify' as const,
     iteration: 1,

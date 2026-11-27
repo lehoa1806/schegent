@@ -65,7 +65,9 @@ immediately before the frozen plan reaches the runner; a refusal fails the Run
 with a named cause recorded in evidence, before the child exists. The frozen
 plan is read, never rewritten.
 
-The production dependency direction is intentionally one-way:
+The production **runtime value-edge** dependency direction is intentionally one-way
+(enforced across the eight governed layers — `controller -> services -> {queue, runner, metrics} -> {parser, state} -> config -> {contracts, lib}` — by
+`tests/lint/layer-dependency-direction.test.ts`, with remaining legacy reverse value edges frozen under a shrink-only `LAYER_IMPORT_ALLOWLIST` and `contracts/` type-only reverse edges ratcheted under `CONTRACTS_REVERSE_TYPE_EDGE_CEILINGS`):
 
 ```text
 VS Code commands / sidebar / Dashboard
@@ -130,8 +132,11 @@ handoffs, `PhaseHandoffCoordinator`, and `post-cutover-strict` authority
 mandatory at compile time and runtime.
 
 `src/activation/` is the composition root, **together with `wireStage2()` in
-`src/extension.ts`, which is still part of it.** Domain modules do not construct VS
-Code adapters themselves.
+`src/extension.ts`, which is still part of it.** Late-bound `bind[A-Z]*` setters
+returned by `src/activation/` wiring modules are checked for live call sites in
+`src/extension.ts` / `src/activation/` by
+`tests/lint/activation-late-binding-wiring-census.test.ts`. Domain modules do not construct VS
+Code adapters themselves (the small `vscode` accessors still in `src/state/` — trust resolution, folder picking, and confirmation config — are tracked for relocation).
 
 That sentence used to stop at the first clause, and it overstated the shipped shape:
 `src/activation/` was twelve focused modules totalling ~2,200 lines while
@@ -216,7 +221,7 @@ subdirectories for larger subsystems. Features named `F<NN>` are Round 6 feature
 | `src/services/phase-log/` | Phase log selection, display projection, and the live-log batcher, cursor and segment index (F07). |
 | `src/services/process-yaml/` | Import, export and preflight of Phase, Workflow and model-catalog YAML packages. |
 | `src/services/recovery-handoff/` | Recovery handoff envelopes, identity, pins, and settlement (F08). |
-| `src/services/reporting/` | Report engine, saved reports, and the CSV and export pipeline over the run store (F11). |
+| `src/services/reporting/` | Report engine, saved reports, off-thread typed read-only SQLite snapshot worker (`dist/run-snapshot.worker.js`, bounded with V8 `resourceLimits`), and the CSV/JSON export pipeline over the run store (F11). |
 | `src/services/run-output/` | Resolves and probes the declared outputs of a Run, with a per-check time bound. |
 | `src/services/run-request/` | Validates Run request inputs, output targets, and workspace containment. |
 | `src/services/runtime-resource-budgets/` | Bounded-window primitive, resource inventory, and pressure status (F03). |
@@ -826,12 +831,10 @@ policy answers `undecided` and the ACP client falls back to the agent's
 every answer is `cancelled`. After a turn or a cancel the runner verifies that
 the agent's process group is gone.
 
-The legacy drain is the one path that bypasses ACP. An `InvocationRequest` with
-`legacyDrain: true`, honoured while `allowLegacyDrain` is not `false` (the
-wiring sets it `true`), is delegated to the inner CLI runner, so an attempt that
-was already in flight before the cutover can finish without a second live
-authority. No production source sets `legacyDrain` today, so every invocation
-that reaches the runner goes over ACP.
+The dormant pre-cutover `legacyDrain` bypass has been removed from
+`src/activation/acp-execution-wiring.ts` and `src/runner/acp-backed-runner.ts`;
+every invocation reaching `AcpBackedRunner` goes over ACP with no direct-CLI
+fallback.
 
 **Local evidence controls (FR-R3-085).** `services/retention-disclosure.ts` derives
 the operator-facing retention document from the constants that enforce it;
@@ -904,7 +907,12 @@ projections, and non-entity `operational_kv_documents` in direct serialized
 upserts under `WorkspaceStateStore`'s write chain and `.schegent/ownership/`
 primacy fence, while direct writes to legacy Memento keys are refused (Hard Rule
 58; only `KEYS.lock`, `KEYS.executionLeases`, and `KEYS.operatorPseudonym` pass
-through). SQLite-level `expectedRevision` Compare-And-Set fencing, `steps` /
+through). Once cutover completes, `KEYS.sqliteCutoverAuthority`
+(`src/state/sqlite-cutover-authority.ts`) persists a durable cutover tombstone in
+legacy Memento so a missing or corrupt database fails closed with
+`durable-store-unavailable` rather than silently resurrecting pre-cutover state;
+`src/state/terminal-transition-journal.ts` preserves opaque or future-version
+sibling journal entries across rewrites and refuses corrupt envelopes. SQLite-level `expectedRevision` Compare-And-Set fencing, `steps` /
 `attempts` rows, and bounded `WriterCoordinator` lanes live in
 `AtomicTransactionUnitsService` (`src/services/sqlite-store/transaction-units.ts`)
 and `WorkflowControlService`, not inside `SqliteOperationalBacking.updateBatch()`.
@@ -954,6 +962,8 @@ applied only below that ceiling.
 <!-- Source: src/state/workspace-state-connected.ts -->
 <!-- Source: src/state/mutation-plan.ts -->
 <!-- Source: src/state/sqlite-operational-backing.ts -->
+<!-- Source: src/state/sqlite-cutover-authority.ts -->
+<!-- Source: src/state/terminal-transition-journal.ts -->
 <!-- Source: src/state/sqlite-operational-port.ts -->
 <!-- Source: src/state/sqlite-operational-rows.ts -->
 <!-- Source: src/activation/sqlite-cutover-wiring.ts -->
@@ -1122,7 +1132,7 @@ their constant rows.
 | Store / Boundary | Constant | Current | Compatibility & Refusals |
 |---|---|---|---|
 | Sidebar IPC contract | `SIDEBAR_IPC_SCHEMA_VERSION` | `3` | Contract schema artifact version (`src/contracts/sidebar-ipc.ts`). Inbound wire messages may omit `schemaVersion` for backwards compatibility; any explicitly supplied mismatch is refused by `validateInboundMessage` with `unsupported-ipc-schema-version`. |
-| Sidebar / Dashboard snapshot body (`src/ui/sidebar/snapshot.ts`) | `SCHEMA_VERSION` | `4` | Carried on `WorkflowSnapshot`. Host `SnapshotTransport` refuses non-matching shapes via `isWorkflowSnapshot`; webview `reconcileSnapshotMessage` returns `unknown-schema` and renders `IncompatibleSnapshotNotice`. |
+| Sidebar / Dashboard snapshot body (`src/ui/sidebar/snapshot.ts`) | `SCHEMA_VERSION` | `4` | Carried on `WorkflowSnapshot`. Host `SnapshotTransport` (`src/ui/sidebar/snapshot-transport.ts`) uses `isWorkflowSnapshot` to skip delta encoding and forward non-matching shapes as full snapshots; the webview receiver (`reconcileSnapshotMessage` in `webview-ui/src/lib/snapshot-merge.ts`) validates the schema version, returns `unknown-schema`, and renders `IncompatibleSnapshotNotice`. |
 | Workspace state numeric (`schegent.schemaVersionNumeric`) | `STATE_SCHEMA_VERSION` | `15` | 1→2, 2→3, 3→4, 4→5, 5→6, 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13, 13→14, 14→15 (credit-pause default). Future or malformed numeric values throw `UnsupportedStateSchemaVersionError` (`UNSUPPORTED_NUMERIC_STATE_VERSION` / `MALFORMED_NUMERIC_STATE_VERSION`). |
 | Workspace state legacy string (`schegent.schemaVersion`, `src/state/workspace-state.ts`) | `SCHEMA_VERSION` | `1.0.0` | Same-major strings upgrade forward in place; incompatible major strings or corrupted non-string values throw `UnsupportedStateSchemaVersionError` (`UNSUPPORTED_LEGACY_STATE_VERSION` / `MALFORMED_LEGACY_STATE_VERSION`). |
 | SQLite operational store | `SQLITE_SCHEMA_CURRENT_VERSION` | `9` | Forward-only migrations 1 to 9 applied by `schema-bootstrap.ts`; Migration 9 (`009_fr_r7_02_operational_per_entity_rows`) is non-additive, a database written by a newer schema or unreadable version throws `SqliteUnsupportedSchemaError` (`UNSUPPORTED_FUTURE_SCHEMA_VERSION`), and rollback uses a verified pre-upgrade backup ([`docs/operations/sqlite-rollback-runbook.md`](docs/operations/sqlite-rollback-runbook.md)). |
@@ -1178,7 +1188,7 @@ requires an owner for every contract across four boundaries:
 
 1. **Transactions & concurrency** (`src/services/sqlite-store/transaction-units.ts`, `src/services/sqlite-store/writer-coordinator.ts`, `src/state/sqlite-operational-backing.ts`): single primary-window serialized writer fenced by `.schegent/ownership/`, atomic multi-entity commits (connected run + queue row + control root), and `expectedRevision` compare-and-set.
 2. **Forward-only migrations & reader floor** (`src/services/sqlite-store/schema-bootstrap.ts`, `src/contracts/sqlite-store/schema-types.ts`): monotonic schema upgrades (`SQLITE_SCHEMA_CURRENT_VERSION = 9`), fail-closed `SqliteUnsupportedSchemaError` when `min_reader_version` exceeds the running build with zero byte modifications, and untrusted/secondary read-only snapshot isolation (`withZeroMutationReadOnlySqliteConnection`).
-3. **Projections & bounded reads** (`src/state/workspace-state.ts`, `src/services/usage-accounting/accounting-query-worker.ts`, `src/services/reporting/`): opaque preservation of malformed or future records alongside healthy sibling writes (`01-08`), plus off-thread read-only snapshot reads meeting the `<= 50 ms p95` host-thread blocking target at retention limits (`03-03`).
+3. **Projections & bounded reads** (`src/state/workspace-state.ts`, `src/services/usage-accounting/accounting-query-worker.ts`, `src/services/reporting/run-snapshot-worker.ts`, `src/services/result-operator.ts`): opaque preservation of malformed or future records alongside healthy sibling writes (`01-08`), plus off-thread typed esbuild worker bundles (`dist/run-snapshot.worker.js`, `dist/accounting-query.worker.js`, `dist/result-operator.worker.js`) bounded by V8 `resourceLimits` and meeting the `<= 50 ms p95` host-thread blocking target at retention limits (`03-03`).
 4. **Backup, verification, and atomic restore** (`src/services/sqlite-store/backup-restore-service.ts`, `src/services/sqlite-store/backup-restore-executor.ts`, `src/headless/backup-restore-api.ts`): consistent online snapshot with SHA-256 manifest (`0600`/`0700`), read-only integrity/FK/schema pre-flight verification, refusal while any Run is non-terminal (`RUN_IN_FLIGHT`), atomic full-table replacement, and distinct `committed_refresh_failed` recovery reporting.
 
 ### Accidental coupling observed during extension exercise (`04-05`)

@@ -43,6 +43,10 @@ import {
   type RunStateMap,
   type RunStateMigrationAuditEvent
 } from './run-state-migrator';
+import {
+  buildPreservedTerminalJournalDocument,
+  decodeTerminalTransitionJournal
+} from './terminal-transition-journal';
 import type { TerminalTransitionIntent, WorkflowRun } from './workflow-run';
 import {
   migrateLegacyRun,
@@ -254,18 +258,26 @@ export async function migrateVerdictBasisIfNeeded(
     }
     if (changed) await ctx.memento.update(KEYS.run, next);
   }
-  const journal: Record<string, TerminalTransitionIntent> = {
-    ...ctx.getTerminalTransitionIntents()
-  };
-  let journalChanged = false;
-  for (const [runId, intent] of Object.entries(journal)) {
-    const result = migrateRunVerdictBasis(intent.run);
-    if (!result.changed) continue;
-    journalChanged = true;
-    journal[runId] = { ...intent, run: result.run };
-    events.push(...verdictBasisEvents(intent.run.id, null, result.counts));
+  const decodedJournal = decodeTerminalTransitionJournal(
+    ctx.memento.get<unknown>(KEYS.terminalTransitionIntent)
+  );
+  if (decodedJournal.status === 'ok') {
+    const journal: Record<string, TerminalTransitionIntent> = { ...decodedJournal.readable };
+    let journalChanged = false;
+    for (const [runId, intent] of Object.entries(journal)) {
+      const result = migrateRunVerdictBasis(intent.run);
+      if (!result.changed) continue;
+      journalChanged = true;
+      journal[runId] = { ...intent, run: result.run };
+      events.push(...verdictBasisEvents(intent.run.id, null, result.counts));
+    }
+    if (journalChanged) {
+      await ctx.memento.update(
+        KEYS.terminalTransitionIntent,
+        buildPreservedTerminalJournalDocument(decodedJournal, journal)
+      );
+    }
   }
-  if (journalChanged) await ctx.memento.update(KEYS.terminalTransitionIntent, journal);
   return events;
 }
 

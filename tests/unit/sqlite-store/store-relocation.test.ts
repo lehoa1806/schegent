@@ -843,19 +843,19 @@ describe('FR-R7-10 — relocateLegacySqliteStore', () => {
     expect(readOperationalRunIds(path.join(canonicalDir, 'schegent-state.db'))).toEqual(['run-clean']);
   });
 
-  it('keeps explicit CLI --state-dir resolution untouched', async () => {
-    const root = await makeTempDir('fr-r7-10-cli-');
+  it('refuses removed phantom cli_state_dir sourceKind as untrusted_source (D6)', async () => {
+    const root = await makeTempDir('fr-r7-10-cli-removed-');
     const cliDir = path.join(root, 'cli-state');
     await fsp.mkdir(cliDir, { recursive: true, mode: 0o700 });
-    const resolved = await resolveTrustedSqliteLocation({
+    const refused = await resolveTrustedSqliteLocation({
       trustedRootDir: cliDir,
       relativeSegments: ['sqlite', SCOPE_ID],
       databaseFileName: 'schegent-state.db',
-      sourceKind: 'cli_state_dir'
+      sourceKind: 'cli_state_dir' as never
     });
-    expect(resolved.status).toBe('resolved');
-    if (resolved.status !== 'resolved') throw new Error('expected resolved');
-    expect(resolved.databasePath).toBe(path.join(await fsp.realpath(cliDir), 'sqlite', SCOPE_ID, 'schegent-state.db'));
+    expect(refused.status).toBe('refused');
+    if (refused.status !== 'refused') throw new Error('expected refused');
+    expect(refused.reason).toBe('untrusted_source');
   });
 });
 
@@ -1052,7 +1052,7 @@ describe('FR-R7-11 (Tasks 16–19) — filesystem verdicts, exact winner rule, z
     const unknownLoc = await resolveTrustedSqliteLocation({
       trustedRootDir: unknownLocRoot,
       relativeSegments: ['sqlite', SCOPE_ID],
-      sourceKind: 'cli_state_dir',
+      sourceKind: 'host_global_storage_uri',
       filesystemClassification: 'unknown',
       requestedJournalMode: 'wal'
     });
@@ -1659,7 +1659,7 @@ describe('FR-R7-11 (Tasks 16–19) — filesystem verdicts, exact winner rule, z
     const bad = await resolveTrustedSqliteLocation({
       trustedRootDir: root,
       relativeSegments: ['..', 'escape'],
-      sourceKind: 'cli_state_dir',
+      sourceKind: 'host_global_storage_uri',
       detectFilesystemType: async (target) => {
         probed.push(target);
         return { classification: 'local', filesystemType: 'apfs' };
@@ -1672,7 +1672,7 @@ describe('FR-R7-11 (Tasks 16–19) — filesystem verdicts, exact winner rule, z
     const ok = await resolveTrustedSqliteLocation({
       trustedRootDir: root,
       relativeSegments: ['sqlite', SCOPE_ID],
-      sourceKind: 'cli_state_dir',
+      sourceKind: 'host_global_storage_uri',
       detectFilesystemType: async (target) => {
         probed.push(target);
         return { classification: 'local', filesystemType: 'apfs' };

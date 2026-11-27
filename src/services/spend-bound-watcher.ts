@@ -33,6 +33,7 @@
 // mid-turn, because no backend reports it until the turn ends.
 import type { AuditEntry } from '../audit/audit-entry';
 import { effectiveRunnerKindForPhase } from '../config/pipeline-snapshot';
+import type { BackendRunnerKind } from '../contracts/backend-kinds';
 import { spendDenominationOf } from '../contracts/backend-spend-denomination';
 import type { SanitizedLogger } from '../lib/logger';
 import { isOperableRunStatus, type WorkflowRun } from '../state/workflow-run';
@@ -105,6 +106,72 @@ export interface SpendBoundWatcher {
  * replay cannot bound comes back marked incomplete, with the reason (FR-R3-209, FR-R4-F02).
  */
 const MAX_TRACKED_RUNS = 64;
+const MAX_POSTURE_WARNED_RUNS = 256;
+
+export interface RunStartPostureWarning {
+  readonly message: string;
+  readonly unboundedBackends: readonly BackendRunnerKind[];
+  readonly unpinnedPhaseCount: number;
+  readonly totalPhaseCount: number;
+}
+
+/**
+ * Evaluate whether a starting Run lacks a spend bound for any of its backends and/or
+ * leaves models unpinned on phases. Returns `null` when every phase has both an
+ * effective spend bound (workspace or per-phase) and a pinned model.
+ */
+export function describeRunStartPostureWarning(
+  run: Pick<WorkflowRun, 'defaultRunnerKind' | 'pipeline'>,
+  workspaceSpend: SpendBoundConfig
+): RunStartPostureWarning | null {
+  const phases = run.pipeline?.phases ?? [];
+  const unboundedSet = new Set<BackendRunnerKind>();
+  let unpinnedPhaseCount = 0;
+
+  if (phases.length === 0) {
+    const backend = effectiveRunnerKindForPhase(undefined, run.defaultRunnerKind);
+    const denomination = spendDenominationOf(backend);
+    const bound = effectiveSpendBound(workspaceSpend, undefined);
+    const limit = denomination === 'usd' ? bound.limitUsd : bound.limitTokens;
+    if (limit === null) unboundedSet.add(backend);
+  } else {
+    for (const phase of phases) {
+      const backend = effectiveRunnerKindForPhase(phase, run.defaultRunnerKind);
+      const denomination = spendDenominationOf(backend);
+      const bound = effectiveSpendBound(workspaceSpend, phase);
+      const limit = denomination === 'usd' ? bound.limitUsd : bound.limitTokens;
+      if (limit === null) unboundedSet.add(backend);
+      if (typeof phase.model !== 'string' || phase.model.trim().length === 0) {
+        unpinnedPhaseCount += 1;
+      }
+    }
+  }
+
+  const unboundedBackends = [...unboundedSet].sort();
+  const hasUnpinnedModel = phases.length === 0 || unpinnedPhaseCount > 0;
+  if (unboundedBackends.length === 0 && !hasUnpinnedModel) return null;
+
+  const parts: string[] = [];
+  if (unboundedBackends.length > 0) {
+    parts.push(
+      `no spend bound configured for ${unboundedBackends.join(', ')} ` +
+        '(set schegent.spend.maxUsdPerRun / schegent.spend.maxTokensPerRun or per-phase spendBound*)'
+    );
+  }
+  if (hasUnpinnedModel) {
+    parts.push(
+      phases.length > 0
+        ? `no model pinned on ${unpinnedPhaseCount}/${phases.length} phase(s) (backend CLI default model may drift)`
+        : 'no model pinned (backend CLI default model may drift)'
+    );
+  }
+  return {
+    message: `run posture: ${parts.join('; ')}`,
+    unboundedBackends,
+    unpinnedPhaseCount,
+    totalPhaseCount: phases.length
+  };
+}
 
 /**
  * The separator of a notice key. A run id never contains it, so `${runId}${SEP}${denomination}`
@@ -147,6 +214,17 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
    * other state, when the run reaches `completed` or `canceled`.
    */
   const evicted = new Set<string>();
+  /** Runs for which the run-start unset spend-bound / unpinned-model posture warning was emitted. */
+  const postureWarned = new Set<string>();
+
+  const rememberPostureWarned = (runId: string): void => {
+    postureWarned.delete(runId);
+    postureWarned.add(runId);
+    if (postureWarned.size > MAX_POSTURE_WARNED_RUNS) {
+      const oldest = postureWarned.values().next().value;
+      if (oldest !== undefined) postureWarned.delete(oldest);
+    }
+  };
 
   const clearNotified = (runId: string): void => {
     const prefix = `${runId}${NOTICE_KEY_SEPARATOR}`;
@@ -165,6 +243,7 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
     observed.delete(runId);
     paused.delete(runId);
     evicted.delete(runId);
+    postureWarned.delete(runId);
     clearNotified(runId);
   };
 
@@ -254,6 +333,26 @@ export function createSpendBoundWatcher(deps: SpendBoundWatcherDeps): SpendBound
   };
 
   const onAuditEntry = (entry: AuditEntry): void => {
+    if (entry.eventType === 'task-execution-started') {
+      const runId = entry.runId;
+      if (runId !== '' && !postureWarned.has(runId)) {
+        const found = deps.findRunById(runId);
+        if (found !== null) {
+          rememberPostureWarned(runId);
+          const warning = describeRunStartPostureWarning(found.run, deps.config());
+          if (warning !== null) {
+            deps.logger.warn(warning.message, {
+              runId,
+              reasonCode: 'run-posture-defaults',
+              unboundedBackends: warning.unboundedBackends,
+              unpinnedPhaseCount: warning.unpinnedPhaseCount,
+              totalPhaseCount: warning.totalPhaseCount
+            });
+          }
+        }
+      }
+      return;
+    }
     if (entry.eventType === 'phase-resumed' || entry.eventType === 'phase-restarted') {
       onRunResumed(entry.runId);
       return;

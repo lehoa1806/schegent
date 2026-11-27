@@ -110,18 +110,13 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
   it('short-circuits BEFORE CLI invoke when breakpoint set contains the phase id', async () => {
     cliRunner = makeFakeRunner(async () => makeRawOutput());
     const accessor = makeBreakpointAccessor(() => new Set(['speckit-clarify']));
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
-      new SanitizedLogger(),
-      null,
-      null,
-      null,
-      null,
-      null,
-      accessor
-    );
+      logger: new SanitizedLogger(),
+      phaseBreakpointAccessor: accessor
+    });
 
     const out = await runner.run(baseInputs);
 
@@ -152,18 +147,13 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
   it('proceeds normally when the breakpoint set does NOT contain the phase id', async () => {
     cliRunner = makeFakeRunner(async () => makeRawOutput());
     const accessor = makeBreakpointAccessor(() => new Set(['speckit-implement']));
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
-      new SanitizedLogger(),
-      null,
-      null,
-      null,
-      null,
-      null,
-      accessor
-    );
+      logger: new SanitizedLogger(),
+      phaseBreakpointAccessor: accessor
+    });
 
     const out = await runner.run(baseInputs);
 
@@ -177,12 +167,12 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
 
   it('proceeds normally when no accessor is supplied (back-compat)', async () => {
     cliRunner = makeFakeRunner(async () => makeRawOutput());
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
-      new SanitizedLogger()
-    );
+      logger: new SanitizedLogger()
+    });
 
     const out = await runner.run(baseInputs);
 
@@ -193,18 +183,13 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
   it('proceeds normally when accessor returns an empty set', async () => {
     cliRunner = makeFakeRunner(async () => makeRawOutput());
     const accessor = makeBreakpointAccessor(() => new Set<string>());
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
-      new SanitizedLogger(),
-      null,
-      null,
-      null,
-      null,
-      null,
-      accessor
-    );
+      logger: new SanitizedLogger(),
+      phaseBreakpointAccessor: accessor
+    });
 
     const out = await runner.run(baseInputs);
 
@@ -219,18 +204,13 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
     // first run() must alter the second run()'s outcome with no runner re-init.
     let breakpoints = new Set<string>(['speckit-clarify']);
     const accessor = makeBreakpointAccessor(() => breakpoints);
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
-      new SanitizedLogger(),
-      null,
-      null,
-      null,
-      null,
-      null,
-      accessor
-    );
+      logger: new SanitizedLogger(),
+      phaseBreakpointAccessor: accessor
+    });
 
     // First call: breakpoint is armed → paused-at-breakpoint, no CLI spawn.
     const first = await runner.run(baseInputs);
@@ -253,18 +233,13 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
       return runId === 'run-bp-1' ? new Set(['speckit-clarify']) : new Set();
     });
     const accessor: PhaseBreakpointAccessor = { readBreakpointPhaseIds: readMock };
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
-      new SanitizedLogger(),
-      null,
-      null,
-      null,
-      null,
-      null,
-      accessor
-    );
+      logger: new SanitizedLogger(),
+      phaseBreakpointAccessor: accessor
+    });
 
     const haltOut = await runner.run({ ...baseInputs, runId: 'run-bp-1' });
     expect(haltOut.outcome).toBe('paused-at-breakpoint');
@@ -278,18 +253,13 @@ describe('PhaseRunner — phase-breakpoint dispatch (Feature 028, US2)', () => {
   it('uses phaseDef.id over the legacy phase enum when both are set', async () => {
     cliRunner = makeFakeRunner(async () => makeRawOutput());
     const accessor = makeBreakpointAccessor(() => new Set(['custom-review']));
-    const runner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
+    const runner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
       auditWriter,
-      new SanitizedLogger(),
-      null,
-      null,
-      null,
-      null,
-      null,
-      accessor
-    );
+      logger: new SanitizedLogger(),
+      phaseBreakpointAccessor: accessor
+    });
 
     const out = await runner.run({
       ...baseInputs,

@@ -17,6 +17,7 @@
 //   3. Modal text contains ONLY fixed relative names, byte sizes, short SHA-256
 //      digests, Claude hook event names / execution-relevant key names, and closed
 //      reason phrases — never raw configuration values or file contents.
+import { getBackendDescriptor } from '../contracts/backend-descriptors';
 import { errorMessage } from '../lib/errors';
 import type { SanitizedLogger } from '../lib/logger';
 import type { ModalChoice } from './git-approval';
@@ -33,6 +34,7 @@ export const AGENT_CONFIG_PERSIST_LABEL = 'Acknowledge for This Workspace';
 export type AgentConfigAckDecisionChoice = 'this-run' | 'persist' | 'denied';
 
 const SHORT_DIGEST_LEN = 12;
+const MAX_DISPLAYED_ENTRIES = 40;
 
 function shortDigest(digest: string): string {
   return digest.slice(0, SHORT_DIGEST_LEN);
@@ -46,6 +48,12 @@ function describeUnreadableReason(reason: AgentConfigUnreadableReason): string {
       return 'not a regular file';
     case 'size-limit-exceeded':
       return 'exceeds 256 KiB scan limit';
+    case 'depth-limit-exceeded':
+      return 'exceeds max directory walk depth (4)';
+    case 'file-count-limit-exceeded':
+      return 'exceeds max scanned file count (256)';
+    case 'total-bytes-limit-exceeded':
+      return 'exceeds 4 MiB total scan budget';
     case 'escapes-root':
       return 'path outside workspace root';
     case 'timeout':
@@ -63,6 +71,9 @@ function formatEntryLine(entry: ScannedAgentConfigEntry): string {
     `${entry.size} B`,
     `sha256:${shortDigest(entry.digest)}`
   ];
+  if (entry.hookScript === true) {
+    parts.push('hook script');
+  }
   if (entry.hookEvents && entry.hookEvents.length > 0) {
     parts.push(`hooks: ${entry.hookEvents.join(', ')}`);
   }
@@ -124,17 +135,30 @@ export function buildAgentConfigAckPrompt(
   const count = scan.entries.length;
   const noun = count === 1 ? 'file' : 'files';
   const hasChange = previousGrant !== undefined && previousGrant !== null;
+  const uncontained = getBackendDescriptor(scan.backend).containmentMechanism === 'none';
+  const backendPhrase = uncontained ? `uncontained '${scan.backend}'` : `'${scan.backend}'`;
   const message = scan.scanError
-    ? `Schegent could not finish scanning repository agent configuration for uncontained '${scan.backend}'.`
+    ? `Schegent could not finish scanning repository agent configuration for ${backendPhrase}.`
     : hasChange
-      ? `Repository agent configuration changed for uncontained '${scan.backend}' (${count} ${noun}).`
-      : `This repository defines agent configuration for uncontained '${scan.backend}' (${count} ${noun}).`;
+      ? `Repository agent configuration changed for ${backendPhrase} (${count} ${noun}).`
+      : `This repository defines agent configuration for ${backendPhrase} (${count} ${noun}).`;
 
   const lines: string[] = [];
   if (count > 0) {
     lines.push('Discovered repository configuration (metadata only — values are never shown):');
-    for (const entry of scan.entries) {
-      lines.push(formatEntryLine(entry));
+    if (count <= MAX_DISPLAYED_ENTRIES) {
+      for (const entry of scan.entries) {
+        lines.push(formatEntryLine(entry));
+      }
+    } else {
+      // Always display unreadable/overflow entries first so operators never miss a warning.
+      const unreadable = scan.entries.filter((e) => e.status === 'unreadable');
+      const present = scan.entries.filter((e) => e.status === 'present');
+      const shown = [...unreadable, ...present].slice(0, MAX_DISPLAYED_ENTRIES);
+      for (const entry of shown) {
+        lines.push(formatEntryLine(entry));
+      }
+      lines.push(`- … and ${count - shown.length} more entries (included in fingerprint)`);
     }
   }
   if (scan.scanError) {
@@ -147,13 +171,18 @@ export function buildAgentConfigAckPrompt(
     if (changes.length > 0) {
       lines.push('');
       lines.push('Changes since last acknowledgement:');
-      lines.push(...changes);
+      lines.push(...changes.slice(0, MAX_DISPLAYED_ENTRIES));
+      if (changes.length > MAX_DISPLAYED_ENTRIES) {
+        lines.push(`  … and ${changes.length - MAX_DISPLAYED_ENTRIES} more changes`);
+      }
     }
   }
 
   lines.push('');
   lines.push(
-    `Because '${scan.backend}' runs without an OS-enforced sandbox, it may execute hooks or follow instructions from this repository.`
+    uncontained
+      ? `Because '${scan.backend}' runs without an OS-enforced sandbox, it may execute hooks or follow instructions from this repository.`
+      : `Repository configuration for '${scan.backend}' can alter its sandbox or approval posture and steer its behaviour in this workspace.`
   );
   if (scan.persistable) {
     lines.push(

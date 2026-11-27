@@ -291,7 +291,7 @@ export async function driveEnvelopeRun(
   const liveCatalog = catalog();
 
   const controller = new SchegentWorkflowController(
-    new PhaseRunner(runner, new PromptBuilder(), audit, logger),
+    new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger }),
     store,
     queue,
     { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar,

@@ -195,7 +195,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
     const { runner, invocations } = makeCliRunner(new Set(['security-audit']));
-    const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);
@@ -271,7 +271,7 @@ describe('Dynamic pipelines end-to-end (T034, US2)', () => {
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
     const { runner, invocations } = makeCliRunner(new Set());
-    const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);
     await store.initialize();

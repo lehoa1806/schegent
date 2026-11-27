@@ -15,6 +15,7 @@ import type { OutcomeLineageEntry, RootDrillDown } from '../../contracts/reporti
 import { compareCodePoints, toAttemptRow, toRootRow } from './report-aggregates';
 import type { LiveReport } from './report-snapshots';
 import { readUsage, type AccountingPort } from './report-usage';
+import { AUXILIARY_TRUNCATION_REASON } from './snapshot-capture';
 
 const NO_USAGE = Object.freeze([Object.freeze({ what: 'usage', reason: 'accounting-unavailable' })]);
 
@@ -70,9 +71,16 @@ export function drillIntoRoot(
     frozenDefinitionId: root.frozenDefinitionId,
     ...extras
   };
+  const auxiliaryOmissions = report.omissions.filter(
+    (entry) => entry.reason === AUXILIARY_TRUNCATION_REASON
+  );
   const runStore: OutcomeLineageEntry = Object.freeze({ source: 'run-store', outcome: root.status });
   if (accounting === null || report.accountingRevision === null) {
-    return reportOk(Object.freeze({ ...base, outcomeLineage: Object.freeze([runStore]), usage: null, omissions: NO_USAGE }));
+    const omissions =
+      auxiliaryOmissions.length === 0
+        ? NO_USAGE
+        : Object.freeze([...NO_USAGE, ...auxiliaryOmissions]);
+    return reportOk(Object.freeze({ ...base, outcomeLineage: Object.freeze([runStore]), usage: null, omissions }));
   }
   const lineage = accountingOutcomes(accounting, rootId, report.accountingRevision, cap);
   if (!lineage.ok) {
@@ -91,7 +99,7 @@ export function drillIntoRoot(
       ...base,
       outcomeLineage: Object.freeze([runStore, ...lineage.value]),
       usage: usage.value.rows,
-      omissions: Object.freeze([])
+      omissions: auxiliaryOmissions.length === 0 ? Object.freeze([]) : Object.freeze([...auxiliaryOmissions])
     })
   );
 }

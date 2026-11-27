@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import { WorkspaceStateStore } from './state/workspace-state';
 import { createSwitchableOperationalMemento } from './state/sqlite-operational-backing';
-import { disposeCutoverStore, getOperationalMementoForStore, registerOperationalMementoForStore } from './activation/sqlite-cutover-wiring';
+import { disposeCutoverStore, getOperationalMementoForStore, initializeStoreForActivation, registerOperationalMementoForStore } from './activation/sqlite-cutover-wiring';
 import { getCanonicalWorkspaceRoot, disposeWorkspaceFolderPicker } from './state/workspace-folder-picker';
 import { resolveCliPath } from './config/cli-path-accessor';
 import { SchegentWorkflowController } from './controller/workflow-controller';
@@ -14,7 +14,7 @@ import { registerGuardedCommand } from './activation/guarded-command-registratio
 import { Notifier } from './ui/notifications';
 import { SchegentOutputChannel } from './ui/output-channel';
 import { runReset, type ResetHost, type ResetStageSupport } from './commands/reset';
-import { completeInterruptedResetOnActivation, createResetStageSupport } from './commands/reset-wiring';
+import { createResetStageSupport } from './commands/reset-wiring';
 import { StateProjector } from './ui/sidebar/state-projector';
 import { SidebarViewProvider } from './ui/sidebar/sidebar-view-provider';
 import { PlaceholderProjector, type PlaceholderReason } from './ui/sidebar/placeholder-projector';
@@ -292,20 +292,13 @@ async function wireStage2(inputs: Stage2Inputs): Promise<Stage2Result | null> {
   const output = new SchegentOutputChannel(channel, logger);
   disposables.push(output);
 
-  // Feature FR-R3-006 (T346) — finish a reset the previous host did not survive,
-  // *before* `initialize()`, so the migration chain sees the state the operator
-  // asked for rather than a half-cleared one. Reasoning in `reset-wiring.ts`.
-  const completedResetGeneration = await completeInterruptedResetOnActivation(store, logger);
-
-  // Features 030 / 065 / 093 and FR-R3-010 — `initialize()` reports the audit
-  // events its migration ladder produced, forwarded through `auditWriter.append`
-  // once the writer exists (constructed below). Held as ONE binding rather than
-  // one `let` per kind: the per-kind form cost three edits in three separate
-  // places for every new kind, and missing one of the three is how feature 092's
-  // v10 events shipped unaudited.
+  // Feature FR-R3-006 (T346) & F-02 — probe post-cutover SQLite snapshot before
+  // completing an interrupted reset and invoking `store.initialize()`, so load-time
+  // migrations and reconcilers act on SQLite state instead of drifted legacy Memento.
+  let completedResetGeneration: number | null;
   let migrationEvents: import('./state/workspace-state').InitializeResult;
   try {
-    migrationEvents = await store.initialize();
+    ({ completedResetGeneration, migrationEvents } = await initializeStoreForActivation({ context, workspaceRoot, store, logger }));
   } catch (err) {
     void vscode.window.showErrorMessage(
       `Schegent: ${(err as Error).message}`,

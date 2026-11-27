@@ -114,7 +114,7 @@ async function makeHarness(
 ): Promise<Harness> {
   const logger = new SanitizedLogger(logSinks);
   const audit = new AuditLogWriter({ workspaceRoot }, logger);
-  const phaseRunner = new PhaseRunner(cli, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner: cli, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);

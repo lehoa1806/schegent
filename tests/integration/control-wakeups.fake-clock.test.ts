@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { SanitizedLogger } from '../../src/lib/logger';
 import {
   CLOCK_DISCONTINUITY_THRESHOLD_MS,
   DEFAULT_MONITORING_WINDOW_MS,
@@ -664,5 +665,96 @@ describe('ControlWakeupPlanner fake-clock integration (FR-R5-F28 / SPEC-06; AC-2
       selectedCandidateId: 'cand-supported',
       generation: 1
     });
+  });
+
+  it('logs a sanitized warning instead of swallowing onWakeupDue callback errors', async () => {
+    const memento = new InMemoryMemento();
+    const ledgerStore = new ControlLedgerStore(memento);
+    const clock = new VirtualClockAndTimer();
+
+    await ledgerStore.mutate({}, () => ({
+      commit: true,
+      plan: {
+        nextLedger: {
+          ...createEmptyControlLedger(),
+          roots: { 'root-wakeup-err': makeSeededRoot('root-wakeup-err') }
+        },
+        result: undefined
+      }
+    }));
+
+    const service = new BackendAvailabilityService({
+      ledgerStore,
+      clock,
+      getAdapter: (kind) => ({
+        adapterId: `${kind}-adapter`,
+        adapterVersion: 1,
+        backend: kind,
+        statusCheck: 'supported',
+        resolveQuotaContext: (phase) => ({
+          version: 1,
+          adapterId: `${kind}-adapter`,
+          adapterVersion: 1,
+          quotaIds: [phase.quotaProfileId ?? 'quota-warn'],
+          identity: 'qualified',
+          statusCheck: 'supported',
+          capacity: 1
+        }),
+        checkAvailability: async (ctx) => ({
+          version: 1,
+          adapterId: ctx.adapterId,
+          outcomes: [{ quotaId: ctx.quotaIds.at(0)!, status: 'ready' }]
+        })
+      })
+    });
+
+    const warnings: string[] = [];
+    const logger = new SanitizedLogger([
+      {
+        appendLine: (line) => {
+          if (line.includes('WARN')) warnings.push(line);
+        }
+      }
+    ]);
+    const warnSpy = vi.spyOn(logger, 'warn');
+
+    const planner = new ControlWakeupPlanner({
+      ledgerStore,
+      availabilityService: service,
+      clock,
+      timer: clock,
+      logger,
+      onWakeupDue: async () => {
+        throw new Error('wakeup-dispatch-boom token=sk-ant-api03-secretwakeup1234567890123456789');
+      }
+    });
+
+    const initial = await planner.registerWaitingFrame({
+      rootRunId: 'root-wakeup-err',
+      frameKey: 'frame-review',
+      sequence: 1,
+      generation: 1,
+      candidates: [
+        {
+          candidateId: 'cand-1',
+          candidateOccurrenceId: 'occ-1',
+          frozenPhase: { id: 'p1', runner: 'claude', quotaProfileId: 'quota-warn' },
+          priority: 1
+        }
+      ]
+    });
+    expect(initial.status).toBe('waiting-availability');
+
+    clock.advanceBoth(65_001);
+    await clock.fireDueTimers();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnings.some((line) => line.includes('control-wakeup-planner: onWakeupDue failed'))).toBe(
+      true
+    );
+    for (const line of warnings) {
+      expect(line).not.toContain('sk-ant-api03-');
+    }
   });
 });

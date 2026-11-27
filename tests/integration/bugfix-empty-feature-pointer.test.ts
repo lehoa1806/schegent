@@ -152,7 +152,7 @@ async function buildHarness(opts: HarnessOpts): Promise<{
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: opts.workspaceRoot }, logger);
   const { runner, invocations } = makeFailFirstReportRunner();
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);

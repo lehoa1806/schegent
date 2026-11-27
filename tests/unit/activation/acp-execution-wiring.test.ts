@@ -1463,4 +1463,15 @@ describe('GC-08 — ACP authority gate primacy and receipt writer wiring', () =>
       registry.resolveHandoffContentDigest = undefined;
     }
   });
+
+  it('D4/S15: does not enable allowLegacyDrain in buildHostAcpDispatchOptions', () => {
+    const dispatch = buildHostAcpDispatchOptions({
+      workspaceRoot: '/workspace',
+      store: {} as WorkspaceStateStore,
+      logger: makeLogger() as never,
+      isWorkspaceTrusted: () => true,
+      hasPrimacy: () => Promise.resolve(true)
+    });
+    expect(dispatch.allowLegacyDrain).toBeUndefined();
+  });
 });

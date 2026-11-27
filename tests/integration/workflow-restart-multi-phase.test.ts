@@ -240,7 +240,7 @@ async function openRealSession(
     hasActiveProcess: false
   } as unknown as ClaudeCliRunner;
 
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
   const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
   const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
   const composition = createProductionWorkflowComposition({ store, workspaceRoot });

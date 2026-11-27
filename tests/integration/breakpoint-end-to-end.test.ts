@@ -143,18 +143,13 @@ describe('Feature 028 — Walkthrough 2 (future-phase breakpoint)', () => {
     } as unknown as ClaudeCliRunner;
 
     const phaseBreakpointAccessor = createPhaseBreakpointAccessor(() => store.getRun(DEFAULT_QUEUE_ID));
-    const phaseRunner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
-      audit,
+    const phaseRunner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: audit,
       logger,
-      null,
-      null,
-      null,
-      null,
-      null,
       phaseBreakpointAccessor
-    );
+    });
 
     const statusBar = { update: vi.fn(), dispose: vi.fn() } as unknown as SchegentStatusBar;
     const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;

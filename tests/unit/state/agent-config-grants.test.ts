@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   forgetAgentConfigGrant,
   latestGrantForBackend,
+  MAX_AGENT_CONFIG_GRANT_FILES,
   readAgentConfigGrants,
   writeAgentConfigGrant,
-  type AgentConfigGrant
+  type AgentConfigGrant,
+  type AgentConfigGrantFileSummary
 } from '../../../src/state/agent-config-grants';
+import { computeAgentConfigFingerprint } from '../../../src/contracts/agent-config-fingerprint';
 import { KEYS, WorkspaceStateStore } from '../../../src/state/workspace-state';
 
 // Fingerprints produced by the shipped scanner format for the fixture entries below.
@@ -123,5 +126,75 @@ describe('agent-config-grants total reader & writers (FR-R7-04, FR-003)', () => 
     expect(afterForget).not.toBeNull();
     expect(Object.keys(afterForget!)).toEqual([FP_1]);
     expect(latestGrantForBackend(afterForget!, 'claude')).toEqual(g1);
+  });
+
+  it('S3: accepts grants with declared directory-prefix entries, Claude hook-referenced scripts, codex/agy entries, and up to 256 files', () => {
+    const buildValid = (
+      backend: 'claude' | 'codex' | 'agy',
+      files: readonly AgentConfigGrantFileSummary[]
+    ): AgentConfigGrant => ({
+      fingerprint: computeAgentConfigFingerprint(
+        backend,
+        files.map((f) => ({ name: f.name, size: f.size, digest: f.digest, status: 'present' })),
+        false
+      ),
+      backend,
+      grantedAt: 1_700_000_000_000,
+      files
+    });
+
+    // 1. Claude directory prefix + hook-referenced script alongside .claude/settings.json
+    const claudeGrant = buildValid('claude', [
+      { name: '.claude/settings.json', size: 100, digest: DIGEST_1 },
+      { name: '.claude/skills/my-skill/SKILL.md', size: 50, digest: DIGEST_2 },
+      { name: 'scripts/pre-tool.sh', size: 40, digest: DIGEST_1, source: 'hook-script' }
+    ]);
+    const readClaude = readAgentConfigGrants({ [claudeGrant.fingerprint]: claudeGrant });
+    expect(readClaude.problems).toEqual([]);
+    expect(readClaude.grants[claudeGrant.fingerprint]).toEqual(claudeGrant);
+
+    // 2. Hook-referenced script without .claude/settings*.json or on non-claude backend is rejected
+    const orphanHook = buildValid('claude', [
+      { name: 'scripts/pre-tool.sh', size: 40, digest: DIGEST_1, source: 'hook-script' }
+    ]);
+    expect(readAgentConfigGrants({ [orphanHook.fingerprint]: orphanHook }).grants).toEqual({});
+
+    const codexHook = buildValid('codex', [
+      { name: '.codex/config.toml', size: 40, digest: DIGEST_1 },
+      { name: 'scripts/evil.sh', size: 20, digest: DIGEST_2, source: 'hook-script' }
+    ]);
+    expect(readAgentConfigGrants({ [codexHook.fingerprint]: codexHook }).grants).toEqual({});
+
+    // 3. Agy directory prefix + Codex config accepted
+    const agyGrant = buildValid('agy', [
+      { name: 'AGENTS.md', size: 10, digest: DIGEST_1 },
+      { name: '.agents/skills/s1/SKILL.md', size: 20, digest: DIGEST_2 }
+    ]);
+    expect(readAgentConfigGrants({ [agyGrant.fingerprint]: agyGrant }).problems).toEqual([]);
+
+    const codexGrant = buildValid('codex', [{ name: '.codex/config.toml', size: 32, digest: DIGEST_1 }]);
+    expect(readAgentConfigGrants({ [codexGrant.fingerprint]: codexGrant }).problems).toEqual([]);
+
+    // 4. Rejects depth > 4 under directory prefix and path traversal
+    const tooDeep = buildValid('claude', [
+      { name: '.claude/skills/a/b/c/d/e/f.md', size: 10, digest: DIGEST_1 }
+    ]);
+    expect(readAgentConfigGrants({ [tooDeep.fingerprint]: tooDeep }).grants).toEqual({});
+
+    // 5. Count cap matches walk cap (256 accepted, 257 rejected)
+    expect(MAX_AGENT_CONFIG_GRANT_FILES).toBe(256);
+    const maxFiles: AgentConfigGrantFileSummary[] = Array.from({ length: 256 }, (_, idx) => ({
+      name: `.claude/skills/skill-${idx}.md`,
+      size: 16,
+      digest: DIGEST_1
+    }));
+    const atCap = buildValid('claude', maxFiles);
+    expect(readAgentConfigGrants({ [atCap.fingerprint]: atCap }).problems).toEqual([]);
+
+    const overCap = buildValid('claude', [
+      ...maxFiles,
+      { name: '.claude/skills/skill-256.md', size: 16, digest: DIGEST_1 }
+    ]);
+    expect(readAgentConfigGrants({ [overCap.fingerprint]: overCap }).grants).toEqual({});
   });
 });

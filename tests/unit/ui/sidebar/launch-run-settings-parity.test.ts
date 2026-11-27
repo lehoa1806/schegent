@@ -132,7 +132,12 @@ async function executionOf(
 
   // The Phase as a Run carries it: frozen, with its backend resolved by the freeze's own function.
   const frozen = snapshotPhaseDef(phaseDefinitionToPhaseDef(definition), defaultRunner);
-  const phaseRunner = new PhaseRunner(registry, new PromptBuilder(), auditWriter(), new SanitizedLogger());
+  const phaseRunner = new PhaseRunner({
+    runner: registry,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: auditWriter(),
+    logger: new SanitizedLogger()
+  });
   await phaseRunner.run({
     phase: 'speckit-specify',
     phaseDef: frozen,

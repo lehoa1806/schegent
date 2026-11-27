@@ -35,7 +35,11 @@ import {
   spendPauseMessage,
   type RunSpendTotal
 } from '../../../src/services/spend-bound';
-import { createSpendBoundWatcher, spendSeedTargets } from '../../../src/services/spend-bound-watcher';
+import {
+  createSpendBoundWatcher,
+  describeRunStartPostureWarning,
+  spendSeedTargets
+} from '../../../src/services/spend-bound-watcher';
 import type { SpendReplay } from '../../../src/services/spend-bound-replay';
 import type { AuditEntry } from '../../../src/audit/audit-entry';
 import type { WorkflowRun } from '../../../src/state/workflow-run';
@@ -1379,6 +1383,130 @@ describe('FR-R5-F15 — post-resume spend bound evaluation and lifecycle state',
     watcher.forget('run-a');
     expect(watcher.observedFor('run-a')).toEqual(NO_SPEND_OBSERVED);
     expect(watcher.observedFor('run-b').totalTokens).toBe(2_100);
+  });
+});
+
+describe('run-start unset spend bound / unpinned model visibility warning', () => {
+  const startedEntry = (runId = 'run-1'): AuditEntry => ({
+    id: `start-${++rowCounter}`,
+    timestamp: '2026-11-27T00:00:00.000Z',
+    runId,
+    phase: 'queue-manager',
+    iteration: 0,
+    eventType: 'task-execution-started',
+    outcome: 'info',
+    payload: { taskId: 'task-1', runId, queueId: 'default', pipelineId: 'pipe-1', isResume: false }
+  });
+
+  it('emits ONE sanitized runtime-log warning per Run when spend bound is unset and/or model is unpinned, and stays silent when both are configured', () => {
+    const warn = vi.fn();
+    const recordingLogger = { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as SanitizedLogger;
+
+    const unboundedRun = runFixture({
+      id: 'run-unbounded',
+      defaultRunnerKind: 'claude',
+      pipeline: {
+        id: 'pipe-1',
+        name: 'Pipe',
+        phases: [
+          { id: 'specify', name: 'Specify', instruction: 'Specify.', runner: 'claude' },
+          { id: 'plan', name: 'Plan', instruction: 'Plan.', runner: 'codex', model: 'gpt-5-codex' }
+        ]
+      }
+    });
+    const boundedPinnedRun = runFixture({
+      id: 'run-pinned',
+      defaultRunnerKind: 'claude',
+      pipeline: {
+        id: 'pipe-2',
+        name: 'Pinned',
+        phases: [
+          {
+            id: 'specify',
+            name: 'Specify',
+            instruction: 'Specify.',
+            runner: 'claude',
+            model: 'claude-sonnet-4-5',
+            spendBoundUsd: 5
+          }
+        ]
+      }
+    });
+
+    const runs = new Map<string, WorkflowRun>([
+      [unboundedRun.id, unboundedRun],
+      [boundedPinnedRun.id, boundedPinnedRun]
+    ]);
+    const watcher = createSpendBoundWatcher({
+      config: () => ({ limitUsd: 10, limitTokens: null }),
+      findRunById: (runId) => {
+        const found = runs.get(runId);
+        return found ? { queueId: 'default', run: found } : null;
+      },
+      pause: async () => undefined,
+      notify: () => undefined,
+      logger: recordingLogger,
+      now: () => 1_700_000_000_000
+    });
+
+    // Multi-backend Run: claude has limitUsd=10 (bounded), codex has limitTokens=null (unbounded);
+    // 1 of 2 phases lacks a pinned model. Emits ONE combined warning.
+    watcher.onAuditEntry(startedEntry('run-unbounded'));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('no spend bound configured for codex'),
+      expect.objectContaining({
+        runId: 'run-unbounded',
+        reasonCode: 'run-posture-defaults',
+        unboundedBackends: ['codex'],
+        unpinnedPhaseCount: 1,
+        totalPhaseCount: 2
+      })
+    );
+    expect(warn.mock.calls[0]![0]).toContain('no model pinned on 1/2 phase(s)');
+
+    // Resume / duplicate start for the same Run within the activation does NOT warn again.
+    watcher.onRunResumed('run-unbounded');
+    watcher.onAuditEntry(startedEntry('run-unbounded'));
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // Fully spend-bounded (via per-phase spendBoundUsd) and model-pinned Run emits ZERO warnings.
+    watcher.onAuditEntry(startedEntry('run-pinned'));
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('pure helper returns null when workspace spend bound and phase models are set, and names only the missing half otherwise', () => {
+    const pinnedClaude = runFixture({
+      defaultRunnerKind: 'claude',
+      pipeline: {
+        id: 'p',
+        name: 'P',
+        phases: [{ id: 's', name: 'S', instruction: 'S.', runner: 'claude', model: 'claude-sonnet-4-5' }]
+      }
+    });
+    expect(describeRunStartPostureWarning(pinnedClaude, { limitUsd: 2, limitTokens: null })).toBeNull();
+
+    const spendOnly = describeRunStartPostureWarning(pinnedClaude, { limitUsd: null, limitTokens: null });
+    expect(spendOnly).not.toBeNull();
+    expect(spendOnly!.unboundedBackends).toEqual(['claude']);
+    expect(spendOnly!.unpinnedPhaseCount).toBe(0);
+    expect(spendOnly!.message).toContain('no spend bound configured for claude');
+    expect(spendOnly!.message).not.toContain('no model pinned');
+
+    const unpinnedClaude = runFixture({
+      defaultRunnerKind: 'claude',
+      pipeline: {
+        id: 'p',
+        name: 'P',
+        phases: [{ id: 's', name: 'S', instruction: 'S.', runner: 'claude' }]
+      }
+    });
+    const modelOnly = describeRunStartPostureWarning(unpinnedClaude, { limitUsd: 2, limitTokens: null });
+    expect(modelOnly).not.toBeNull();
+    expect(modelOnly!.unboundedBackends).toEqual([]);
+    expect(modelOnly!.unpinnedPhaseCount).toBe(1);
+    expect(modelOnly!.message).not.toContain('no spend bound');
+    expect(modelOnly!.message).toContain('no model pinned on 1/1 phase(s)');
   });
 });
 

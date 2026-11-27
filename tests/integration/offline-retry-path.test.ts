@@ -110,7 +110,12 @@ async function runScenario(scenario: Scenario): Promise<PhaseRunOutput> {
   };
   const logger = new SanitizedLogger();
   const cli = new ClaudeCliRunner(undefined, null, {}, logger);
-  return new PhaseRunner(cli, new PromptBuilder(), capturingAuditWriter(), logger).run(inputs);
+  return new PhaseRunner({
+    runner: cli,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: capturingAuditWriter(),
+    logger
+  }).run(inputs);
 }
 
 beforeAll(async () => {

@@ -395,4 +395,56 @@ describe('terminal transition journal (Feature 093 T048)', () => {
 
     expect(Object.keys(store.getTerminalTransitionIntents()).sort()).toEqual(['run-a', 'run-b']);
   });
+
+  it('preserves unsupported future-version sibling entries across healthy saves, clears, and removeTerminalIntentIfOwn (Post-merge Finding 3)', async () => {
+    const futureEntry = { schemaVersion: 2, run: { id: 'run-future' }, createdAt: 99, futureField: 'keep-me' };
+    memento.seed(KEYS.terminalTransitionIntent, {
+      'run-a': intentFor('run-a', 'task-a'),
+      'run-future': futureEntry
+    });
+
+    expect(Object.keys(store.getTerminalTransitionIntents())).toEqual(['run-a']);
+    expect(store.inspectTerminalTransitionJournal()).toMatchObject({
+      status: 'degraded',
+      readableCount: 1,
+      preservedCount: 1,
+      preservedRunIds: ['run-future'],
+      diagnostics: [{ runId: 'run-future', reason: 'unsupported-schema-version' }]
+    });
+
+    // Healthy sibling save and clear must preserve `run-future` verbatim.
+    await store.setTerminalTransitionIntent('run-b', intentFor('run-b', 'task-b'));
+    await store.setTerminalTransitionIntent('run-a', null);
+    expect(await store.removeTerminalIntentIfOwn('run-b', 1)).toBe(true);
+
+    const persisted = memento.get<Record<string, unknown>>(KEYS.terminalTransitionIntent);
+    expect(persisted).toEqual({ 'run-future': futureEntry });
+
+    // Attempting to overwrite or clear the preserved unreadable runId itself is refused.
+    await expect(
+      store.setTerminalTransitionIntent('run-future', intentFor('run-future', 'task-future'))
+    ).rejects.toMatchObject({ reason: 'terminal-journal-corrupt' });
+    await expect(store.setTerminalTransitionIntent('run-future', null)).rejects.toMatchObject({
+      reason: 'terminal-journal-corrupt'
+    });
+    expect(memento.get<Record<string, unknown>>(KEYS.terminalTransitionIntent)).toEqual({
+      'run-future': futureEntry
+    });
+  });
+
+  it('refuses whole-document writes when the terminal journal envelope itself is unreadable (Post-merge Finding 3)', async () => {
+    for (const badEnvelope of [null, ['unexpected'], 'corrupt', { schemaVersion: 2, run: { id: 'r1' }, createdAt: 1 }]) {
+      memento.seed(KEYS.terminalTransitionIntent, badEnvelope);
+      expect(store.getTerminalTransitionIntents()).toEqual({});
+      expect(store.inspectTerminalTransitionJournal().status).toBe('unreadable-envelope');
+
+      await expect(
+        store.setTerminalTransitionIntent('run-new', intentFor('run-new', 'task-new'))
+      ).rejects.toMatchObject({ reason: 'terminal-journal-corrupt' });
+      await expect(store.removeTerminalIntentIfOwn('run-new', 1)).rejects.toMatchObject({
+        reason: 'terminal-journal-corrupt'
+      });
+      expect(memento.get<unknown>(KEYS.terminalTransitionIntent)).toEqual(badEnvelope);
+    }
+  });
 });

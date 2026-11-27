@@ -69,7 +69,7 @@ Use this procedure after a failed migration or an undesirable upgrade where sche
    - Activation warning toast (`src/activation/sqlite-cutover-wiring.ts`):
      `Schegent refused to open or relocate the operational SQLite database (<reason>). Update Schegent before opening this workspace.`
 2. **Stop all Runs and close all VS Code windows for this workspace**:
-   Close every VS Code window that has this workspace open (and stop any headless reader/writer process using the same `--state-dir`) so no SQLite writer or read-pool handle remains open on `schegent-state.db`.
+   Close every VS Code window that has this workspace open so no SQLite writer or read-pool handle remains open on `schegent-state.db`.
 3. **Locate the store directory and pre-upgrade backup** (`<storageRoot>` is canonical `<globalStorageUri>`, or legacy `storageUri` only if the store remained on fallback):
    - Live database: `<storageRoot>/sqlite/<scopeId>/schegent-state.db`
    - Verified pre-upgrade backup: `<storageRoot>/sqlite/<scopeId>/backups/<backupId>.db`

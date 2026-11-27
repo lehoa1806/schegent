@@ -467,9 +467,9 @@ state:
 
 - **Mutating IPC** fails closed when the trust callback is missing, throws, or returns anything but
   `true`.
-- **Commands** (`FR-R3-136`). Every command id that `entry-point-dispositions.ts` classifies `mutating` is registered through
+- **Commands** (`FR-R3-136`). Every command id that `entry-point-dispositions.ts` classifies `mutating` (currently 40 commands, alongside 8 read-only commands) is registered through
   `registerGuardedCommand`, which re-reads `vscode.workspace.isTrusted` **at the point of effect**.
-  Until 2026-08-28 the 30 registrations were bare `vscode.commands.registerCommand` calls and the
+  Until 2026-08-28 the original 30 registrations were bare `vscode.commands.registerCommand` calls and the
   sidebar router was the only gate — so the palette, a task, and any other installed extension
   reached every mutation directly. Contributed visibility is not authorization, and this manifest
   has no `enablement` clauses that could have stood in for one.
@@ -503,16 +503,17 @@ does not run in an untrusted window, when it activates and serves reads delibera
 
 **Settings are the fourth surface** (`FR-R3-136`). A workspace `.vscode/settings.json` could vote on
 a capability, silence an operator signal, or redirect and truncate evidence without invoking
-anything. The 14 `restrictedConfigurations` entries are the properties where it could, derived from
-the sensitivity classes in `src/contracts/configuration-trust-dispositions.ts`; the nine
-executable-authority properties are `application`-scoped instead, which is stronger because it holds
-in a trusted window too.
+anything. The 15 `restrictedConfigurations` entries are the properties where it could, derived from
+the sensitivity classes in `src/contracts/configuration-trust-dispositions.ts`; the 18
+`application`-scoped properties (covering executable-authority and telemetry-export settings) hold
+at machine scope instead, which is stronger because it holds in a trusted window too.
 
-**What checks it.** `tests/integration/trust-untrusted-workspace.host.test.ts` drives 28 of the 30
-command ids through `executeCommand` in a real untrusted window and asserts one refusal each for the
-mutating ids, none for the read-only ones, no ownership generation file, and no spawn against a
-user-scope sentinel; `trust-granted-workspace.host.test.ts` is the same fixture with trust granted and
-turns every one of those absences into a presence.
+**What checks it.** `tests/integration/trust-untrusted-workspace.host.test.ts` exercises the registered
+command ids (40 mutating and 8 read-only commands in `entry-point-dispositions.ts`) through
+`executeCommand` in a real untrusted window and asserts one refusal each for the mutating ids, none
+for the read-only ones, no ownership generation file, and no spawn against a user-scope sentinel;
+`trust-granted-workspace.host.test.ts` is the same fixture with trust granted and turns every one of
+those absences into a presence.
 
 This paragraph previously claimed the check was "the VS Code 1.107 Electron integration suite — 13
 modules across two launches". **That claim was unsound, and worth recording rather than quietly
@@ -855,47 +856,86 @@ workspace and this exact plan**: editing the pipeline changes the fingerprint an
 another repository asks. Withdrawn from `Schegent: Git Approvals`, which lists what this workspace
 holds and withdraws one entry or all of them; resetting workspace state also clears them.
 
-**The per-workspace repository agent configuration acknowledgement (`FR-R7-04`, `FR-R7-11`, review R1).**
+**The per-workspace repository agent configuration acknowledgement (`FR-R7-04`, `FR-R7-11`, review R1 & R2 S3/S4).**
 Because `schegent.backend.uncontainedBackends` is installation-wide while repository-controlled agent
-configuration (`.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, `CLAUDE.md`,
-`.claude/CLAUDE.md`) travels with each repository, an uncontained Run runs a bounded, symlink-safe
-preflight scan before any uncontained backend subprocess starts (including pre-phase session compaction as
-well as phase invocation). When any listed file is present or unreadable and no matching workspace
-acknowledgement exists, a blocking modal discloses relative names, sizes, short SHA-256 digests, and
-Claude hook event / execution-relevant key names (never raw values, and `.mcp.json` is never parsed).
-`Approve This Run` approves once; `Acknowledge for This Workspace` stores a digest-bound grant under
-`schegent.consent.agentConfigGrants.v1` in this workspace's `workspaceState` memento (never persisted
-when any entry is unreadable or a scan error occurred). Any one-byte change re-prompts with a file-name
-and digest diff; every decision emits a closed `agent-config-acknowledged` audit event (`backend`,
-`fileCount`, `decision` only). Withdrawn from `Schegent: Agent Config Acknowledgements` or by resetting
-workspace state.
+configuration travels with each repository — and because project-level configuration can also alter
+sandbox/approval posture or steer contained backends such as `codex` — the preflight gate applies to
+every backend whose `BACKEND_DESCRIPTORS` entry declares `repoAgentConfigPaths` (`claude`, `codex`,
+and `agy`) before any backend subprocess starts (including pre-phase session compaction as well as
+every phase invocation):
+- **`claude`**: `.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`, `CLAUDE.md`,
+  `.claude/CLAUDE.md`, bounded recursive walks of `.claude/skills/`, `.claude/commands/`,
+  `.claude/agents/`, and `.claude/hooks/`, plus best-effort bounded hashing of workspace-internal
+  script files referenced by literal paths in hook commands inside `.claude/settings*.json`.
+- **`codex`**: `.codex/config.toml`, `AGENTS.md`, and `AGENTS.override.md`. The modal wording
+  distinguishes contained backends (`codex`) from uncontained backends (`claude`, `agy`), stating
+  that project configuration can alter sandbox/approval posture and steer behaviour rather than
+  describing `codex` as running without an OS-enforced sandbox.
+- **`agy`**: `AGENTS.md`, `GEMINI.md`, `.agents/skills/`, `.agents/rules/`, `.agents/workflows/`, and
+  `.gemini/settings.json`. *Evidence and uncertainty:* `.agents/skills/` is observed in workspace skill
+  loading; the remaining paths are included conservatively from Antigravity/Gemini conventions as risk
+  reduction because Agy's complete workspace discovery surface is not vendor-documented.
 
-**Scanner limits and re-acknowledgement policy (`FR-R7-11`):**
+When any declared file, walked file, or resolved hook script is present or unreadable and no matching
+workspace acknowledgement exists, a blocking modal discloses relative names, sizes, short SHA-256
+digests, and Claude hook event / execution-relevant key names (never raw values, and `.mcp.json` is
+never parsed). `Approve This Run` approves once; `Acknowledge for This Workspace` stores a
+digest-bound grant under `schegent.consent.agentConfigGrants.v1` in this workspace's `workspaceState`
+memento (never persisted when any entry is unreadable, a walk bound overflowed, or a scan error
+occurred). Any one-byte change re-prompts with a file-name and digest diff; every decision emits a
+closed `agent-config-acknowledged` audit event (`backend`, `fileCount`, `decision` only). Withdrawn
+from `Schegent: Agent Config Acknowledgements` or by resetting workspace state.
+
+**Scanner limits and per-Phase re-acknowledgement policy (`FR-R7-11`, S3/S4):**
 - **Per-file byte bound (`<= 256 KiB`)**: each file opened via `openWithinRoot` is checked with a pre-read
   `fstat`, read in chunks without ever requesting bytes past `262,144` bytes (`256 KiB`), and re-checked
   with a post-read `fstat` so concurrent growth past `256 KiB` fails closed as `size-limit-exceeded`.
+- **Recursive walk bounds (max depth `4`, max `256` files, max `4 MiB` total, symlinks never followed)**:
+  directory prefixes are validated with `lstat` (`walkDirectoriesWithinRoot` / `fsp.lstat`) without
+  following symlinks; any symlinked directory or leaf is recorded as `unreadable` (`symlink`). Exceeding
+  depth `4`, `256` files, or `4 MiB` total bytes records an unreadable overflow marker in `entries` and
+  the SHA-256 fingerprint (`persistable: false`), failing toward prompting rather than silently skipping
+  excess files. Persisted grants validate paths against exact entries, declared directory prefixes within
+  depth `4`, and Claude hook-referenced scripts (up to `256` files and `4 MiB` total).
 - **Scan deadline (`2,000 ms`, fail-closed)**: each scan enforces a `2,000 ms` monotonic deadline with an
-  `AbortSignal` threaded through file opens and chunk reads, failing closed as `timeout` and closing open
-  descriptors when settled without mutating returned entries. Because Node/libuv cannot preempt an
-  individual in-flight kernel `read` or `open` syscall mid-flight, the `AbortSignal` stops further I/O
-  immediately, races pending awaits so the scan returns fail-closed at the deadline, and closes the
-  descriptor once the single syscall settles.
-- **Re-acknowledgement cadence**: within one extension-host activation, the preflight is evaluated once
-  per `(runId, backend)` across subsequent phases, retries, and same-session resumes, with overlapping
-  concurrent checks for the same `(runId, backend)` coalesced into one scan, prompt, and audit entry.
-  Terminal Runs (`completed` or `canceled`) release their ledger keys via `forgetRun`, and the in-memory
-  ledger keeps a 512-pair LRU defensive bound whose eviction fails closed by re-running the preflight.
-  Across an extension-host reload, the in-memory ledger starts empty: matching persistent grants in
+  `AbortSignal` threaded through directory reads, file opens, and chunk reads, failing closed as `timeout`
+  and closing open descriptors when settled without mutating returned entries. Because Node/libuv cannot
+  preempt an individual in-flight kernel `read` or `open` syscall mid-flight, the `AbortSignal` stops
+  further I/O immediately, races pending awaits so the scan returns fail-closed at the deadline, and
+  closes the descriptor once the single syscall settles.
+- **Per-Phase re-check cadence (S4)**: before **every** phase spawn, `AgentConfigAckGate` recomputes
+  the bounded fingerprint and compares it against the acknowledged fingerprint stored for
+  `(runId, backend)` in its 512-pair LRU ledger. An unchanged fingerprint (with no scan error) refreshes
+  LRU order and proceeds silently with no duplicate prompt or audit row; any mid-Run modification,
+  addition (for example, a file written under `.claude/skills/` by an earlier Phase), removal, or scan
+  error invalidates the prior clearance and requires a fresh acknowledgement (or refuses spawn with
+  `AgentConfigAcknowledgementRefusedError`). Overlapping concurrent calls for the same `(runId, backend)`
+  coalesce; terminal Runs (`completed` or `canceled`) release their ledger entries via `forgetRun`, and
+  LRU eviction fails closed by re-checking. Across an extension-host reload, matching persistent grants in
   `schegent.consent.agentConfigGrants.v1` clear silently with audit decision `stored`, whereas one-Run
-  approvals, unreadable or timed-out scans, and modified configuration re-prompt before spawning.
+  approvals, unreadable/overflowed/timed-out scans, and modified configuration re-prompt before spawning.
 
 **Limits of the repository configuration preflight (risk reduction, not containment):**
 - Disclosure and consent only: it does not block, strip, or rewrite repository configuration and does
   not pin CLI settings flags.
-- Fixed path list: an attacker who controls the repository controls which files exist, so configuration
-  or execution mechanisms outside the fixed per-backend path list are not detected by this scan.
-- Contained (`os-enforced`) backends are excluded because the OS sandbox bounds them rather than an
-  uncontained consent waiver.
+- Hook command script resolution is static and best-effort: workspace-internal literal script paths
+  referenced in `.claude/settings*.json` hook commands are hashed (within scan bounds), whereas inline
+  shell code (e.g. `bash -c ...`, `python -c ...`), shell variable/command substitution, dynamically
+  constructed paths, and executables outside the workspace are not resolved.
+- Unlisted paths remain outside the scan: nested `CLAUDE.md` files outside the declared paths/trees,
+  undocumented vendor config paths (particularly for `agy`), and configurations outside the workspace
+  are not detected by this scan.
+- Within-phase TOCTOU remains open: per-Phase re-checking catches cross-Phase tampering before the next
+  Phase spawns, but cannot prevent a running agent from modifying and immediately executing a file during
+  the same Phase.
+
+**Run-start posture visibility (unset spend bounds and unpinned models):**
+Shipped defaults remain unchanged (spend bounds unset and phase models unpinned by default so upgrades
+do not break existing workflows). At Run admission/start (`task-execution-started`), `SpendBoundWatcher`
+evaluates the Run's phases against live spend-bound settings (`schegent.spend.maxUsdPerRun`,
+`schegent.spend.maxTokensPerRun`, and per-phase overrides) and pinned phase `model` fields, and emits
+**one** sanitized runtime-log warning per Run (no new audit event type) whenever any backend used by the
+Run lacks a spend bound and/or any phase leaves its model unpinned.
 
 For all three consent surfaces, cancelling or dismissing **denies**, and no value is written except by
 its own affirmative action. A failed write does not become a denial of the run just approved — for
@@ -998,8 +1038,7 @@ code-shaped unknown inside a fixed sentence, and shows nothing of any other stri
 
 After the one-time cutover (FR-R6-F04) and folder-keyed store unification (FR-R7-10), structured
 operational state lives in a `node:sqlite` database at
-`<globalStorageUri>/sqlite/<scope>/schegent-state.db`, with `-wal` and `-shm` sidecar files (or
-under an explicit CLI `--state-dir` in headless runs). `<scope>` hashes the workspace root, so
+`<globalStorageUri>/sqlite/<scope>/schegent-state.db`, with `-wal` and `-shm` sidecar files. `<scope>` hashes the workspace root, so
 distinct folders sharing an editor profile stay in separate directories while two windows opening
 the same folder directly and via `.code-workspace` share one canonical store serialized by the
 folder's `.schegent/ownership` fence.
@@ -1013,8 +1052,8 @@ What the store does:
 - The directories are created `0700` and the database file `0600`, so other local accounts cannot
   read it. This is the same boundary as the evidence files, and it has the same limit: it keeps out
   nothing that runs as the operator.
-- The location is resolved only from trusted roots (`globalStorageUri`, legacy `storageUri` for
-  one-time relocation or unwritable-target fallback, or explicit CLI `--state-dir`), so repository
+- The location is resolved only from trusted roots (`globalStorageUri`, or legacy `storageUri` for
+  one-time relocation or unwritable-target fallback), so repository
   text cannot point the host at a database elsewhere.
 - One-time relocation from legacy per-window `storageUri` roots runs only while the window is
   trusted and holds `.schegent/ownership`, stages inside the canonical anchor with symlink refusal
@@ -1071,8 +1110,10 @@ Stated limits:
   and the protected-database list (alongside awaited live primacy verification) on sensitive
   callbacks and prompt file links. Even so, the gate only intercepts callbacks and host-constructed
   links — an uncontained agent process still runs with the operator's OS permissions.
-- **The legacy drain bypasses the gate.** A request flagged `legacyDrain` is handed to the inner CLI
-  runner. No production source sets the flag today.
+- **No legacy-drain bypass.** The dormant pre-cutover `legacyDrain` delegation branch in
+  `AcpBackedRunner` and `allowLegacyDrain` wiring in `src/activation/acp-execution-wiring.ts` have been
+  removed; every invocation through `AcpBackedRunner` executes exclusively over ACP and
+  `AcpAuthorityGate`.
 - **The bridges forward to a model vendor.** What the vendor receives is the same class as in T10.
 
 <!-- Source: src/services/containment-qualification/acp-authority-gate.ts -->

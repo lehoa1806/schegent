@@ -160,7 +160,12 @@ describe('a start that fails before admission fails its task once (FR-R3-160)', 
 
     const logger = new SanitizedLogger();
     const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
-    const phaseRunner = new PhaseRunner(makeUnreachableCliRunner(), new PromptBuilder(), audit, logger);
+    const phaseRunner = new PhaseRunner({
+      runner: makeUnreachableCliRunner(),
+      promptBuilder: new PromptBuilder(),
+      auditWriter: audit,
+      logger
+    });
 
     const memento = new FakeMemento();
     const store = new WorkspaceStateStore(memento);

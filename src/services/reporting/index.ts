@@ -40,12 +40,19 @@ import { ExportStore } from './export-store';
 import type { ReportingLogger } from './report-capture';
 import { createReportEngine, type ReportEngineBounds } from './report-engine';
 import type { ReportResources } from './report-snapshots';
+import {
+  createRunSnapshotWorkerClient,
+  isFileBackedSqlitePath,
+  type RunSnapshotWorkerClient,
+  type RunSnapshotWorkerMetrics
+} from './run-snapshot-worker';
 import type { AccountingPort } from './report-usage';
 import { createSavedReports, type SavedReportPage } from './saved-reports';
 
 export type { ReportingLogger } from './report-capture';
 export type { ReportEngineBounds } from './report-engine';
 export type { ReportResources } from './report-snapshots';
+export type { RunSnapshotWorkerMetrics } from './run-snapshot-worker';
 export type { AccountingPort } from './report-usage';
 export type { SavedReportPage } from './saved-reports';
 
@@ -77,6 +84,13 @@ export interface ReportingServiceOptions {
   readonly exportFs?: ExportFs;
   readonly bounds?: ReportingServiceBounds;
   readonly logger?: ReportingLogger;
+  /**
+   * Offload file-backed run-snapshot capture to the read-only worker (default `true`
+   * when `conn.databasePath` is file-backed). Set `false` to compare synchronous capture.
+   */
+  readonly useSnapshotWorker?: boolean;
+  /** Optional observer for read-only snapshot worker timings (diagnostics/benchmarks). */
+  readonly onSnapshotWorkerMetrics?: (metrics: RunSnapshotWorkerMetrics) => void;
 }
 
 /** One export request, already shape-checked by the headless port. */
@@ -107,6 +121,8 @@ export interface ReportingService {
   /** F11-FR-18: root IDs held by an in-progress export so F05 retention preserves referenced detail until completion. */
   activeExportRootIds(): ReadonlySet<string>;
   resources(): ReportResources;
+  /** Releases any background read-only snapshot worker owned by this reporting service. */
+  close?(): Promise<void>;
 }
 
 function newExportId(): string {
@@ -121,8 +137,28 @@ export function createReportingService(options: ReportingServiceOptions): Report
   }
   const exportFs = options.exportFs ?? nodeExportFs;
   const store = new ExportStore(conn);
+  const snapshotWorker: RunSnapshotWorkerClient | null =
+    options.useSnapshotWorker !== false && isFileBackedSqlitePath(conn.databasePath)
+      ? createRunSnapshotWorkerClient(conn.databasePath, {
+          onErrorCode: () => {
+            logger?.warn('reporting: source read failed', {
+              operation: 'runReport',
+              reason: 'source-read-failed'
+            });
+          }
+        })
+      : null;
   const engine = createReportEngine({
     readSource: (read) => (readPool === undefined ? read(conn) : readPool.withReadConnection(conn, read)),
+    ...(snapshotWorker !== null
+      ? {
+          captureRunsAsync: (request, captureOptions) =>
+            snapshotWorker.capture(request, {
+              ...captureOptions,
+              onMetrics: options.onSnapshotWorkerMetrics
+            })
+        }
+      : {}),
     workspaceId,
     nowMs,
     monotonicMs,
@@ -216,6 +252,7 @@ export function createReportingService(options: ReportingServiceOptions): Report
     deleteSavedReport: (input) => saved.deleteSavedReport(input),
     reconcileExports: () => storeGuarded('reconcileExports', async () => reportOk(await reconcile())),
     activeExportRootIds: () => new Set(exportRootCounts.keys()),
-    resources: () => engine.resources()
+    resources: () => engine.resources(),
+    close: () => (snapshotWorker !== null ? snapshotWorker.close() : Promise.resolve())
   };
 }

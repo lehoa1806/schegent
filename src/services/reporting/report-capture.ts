@@ -27,6 +27,8 @@ import { readUsage, readUsageAsync, usageRequestOf, type AccountingPort, type Us
 import {
   captureRunSnapshot,
   type CaptureConnection,
+  type CaptureRequest,
+  type CapturedRuns,
   type SnapshotAttempt,
   type SnapshotRoot
 } from './snapshot-capture';
@@ -42,14 +44,25 @@ export interface ReportingLogger {
   warn(code: string, context: { readonly operation: string; readonly reason: string }): void;
 }
 
+export interface RunCaptureAsyncOptions {
+  readonly signal?: AbortSignal | undefined;
+  readonly deadlineMs?: number | undefined;
+}
+
 /** Where a report reads from. */
 export interface ReportSource {
   /** Runs `read` against the run store's read connection. */
   readonly readSource: <T>(read: (source: CaptureConnection) => T) => T;
+  /** Optional asynchronous read-only worker capture for file-backed stores. */
+  readonly captureRunsAsync?: (
+    request: CaptureRequest,
+    options?: RunCaptureAsyncOptions
+  ) => Promise<ReportResult<CapturedRuns>>;
   readonly workspaceId: string;
   readonly accounting: AccountingPort | null;
   /** The most roots, attempts or usage rows one snapshot may hold. */
   readonly snapshotCap: number;
+  readonly queryDeadlineMs?: number;
   readonly logger?: ReportingLogger;
 }
 
@@ -122,9 +135,15 @@ function captureRuns(source: ReportSource, query: ReportQuery, cutoffMs: number)
   if (!captured.ok) {
     return captured;
   }
+  const extraOmissions = captured.value.omissions;
+  const omissions =
+    extraOmissions === undefined || extraOmissions.length === 0
+      ? pinned.omissions
+      : Object.freeze([...pinned.omissions, ...extraOmissions]);
   return reportOk({
     ...captured.value,
-    ...pinned
+    accountingRevision: pinned.accountingRevision,
+    omissions
   });
 }
 
@@ -217,9 +236,55 @@ async function captureUsageAsync(
   });
 }
 
+async function captureRunsAsync(
+  source: ReportSource,
+  query: ReportQuery,
+  cutoffMs: number,
+  signal: AbortSignal | undefined
+): Promise<ReportResult<Capture>> {
+  if (source.captureRunsAsync === undefined) {
+    return captureRuns(source, query, cutoffMs);
+  }
+  const pinned = pinnedRevision(source.accounting, cutoffMs);
+  const request: CaptureRequest = {
+    workspaceId: source.workspaceId,
+    range: query.range,
+    cutoffMs,
+    filters: query.filters,
+    cap: source.snapshotCap
+  };
+  let captured: ReportResult<CapturedRuns>;
+  try {
+    captured = await source.captureRunsAsync(request, {
+      signal,
+      deadlineMs: source.queryDeadlineMs
+    });
+  } catch {
+    source.logger?.warn(SOURCE_READ_FAILED, { operation: 'runReport', reason: 'source-read-failed' });
+    return reportFailed('source-read-failed');
+  }
+  if (!captured.ok) {
+    if (captured.outcome === 'failed' && captured.reason === 'source-read-failed') {
+      source.logger?.warn(SOURCE_READ_FAILED, { operation: 'runReport', reason: 'source-read-failed' });
+    }
+    return captured;
+  }
+  const extraOmissions = captured.value.omissions;
+  const omissions =
+    extraOmissions === undefined || extraOmissions.length === 0
+      ? pinned.omissions
+      : Object.freeze([...pinned.omissions, ...extraOmissions]);
+  return reportOk({
+    ...captured.value,
+    accountingRevision: pinned.accountingRevision,
+    omissions
+  });
+}
+
 /**
- * FR-R8-03 (03-03) — async report source capture delegating usage views to `readUsageAsync`
- * (off-main-thread read-only worker when file-backed) without blocking the host event loop.
+ * FR-R8-03 (03-03) & Post-merge Finding 5 — async report source capture delegating
+ * usage views to `readUsageAsync` and file-backed run-derived views to the chunked
+ * read-only snapshot worker without blocking the host event loop.
  */
 export async function captureReportAsync(
   source: ReportSource,
@@ -230,5 +295,5 @@ export async function captureReportAsync(
 ): Promise<ReportResult<Capture>> {
   return query.view === 'usage'
     ? captureUsageAsync(source, query, signal, asOfRevision)
-    : captureRuns(source, query, cutoffMs);
+    : captureRunsAsync(source, query, cutoffMs, signal);
 }

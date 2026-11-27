@@ -19,6 +19,7 @@ import {
   renderRetentionDisclosure,
   retentionDisclosure
 } from '../../src/services/retention-disclosure';
+import { exportDispositionForWorkspaceLocation } from '../../src/services/evidence-artifact-policy';
 import { SUPPORTED_BACKENDS } from '../../src/contracts/backend-kinds';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -95,5 +96,22 @@ describe('FR-R3-085 — the retention disclosure derives from the retention cons
     const renderedBackend = renderBackendOwnedRetentionDisclosure();
     expect(document.includes(renderedBackend)).toBe(true);
     expect(document).toContain('Run-level `errors-only` across pause and resume');
+  });
+
+  it('every workspace .schegent/ row in retentionDisclosure matches the executable export policy in evidence-artifact-policy.ts', () => {
+    const sampleRunId = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+    const workspaceRows = retentionDisclosure().filter((row) =>
+      row.location.split(/\s+/).some((token) => token.startsWith('.schegent/'))
+    );
+    expect(workspaceRows.length).toBeGreaterThanOrEqual(15);
+    for (const row of workspaceRows) {
+      const tokens = row.location.split(/\s+/).filter((token) => token.startsWith('.schegent/'));
+      for (const token of tokens) {
+        expect(
+          exportDispositionForWorkspaceLocation(token, sampleRunId),
+          `disclosure row '${row.store}' (${token}) says onExport='${row.onExport}', which must match evidence-artifact-policy.ts`
+        ).toBe(row.onExport);
+      }
+    }
   });
 });

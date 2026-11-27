@@ -8,10 +8,12 @@ import {
   CONNECTED_RUNS_REFUSED_MAX_BYTES,
   CONNECTED_RUNS_REFUSED_MAX_COUNT,
   CONNECTED_RUNS_TERMINAL_RETENTION_MS,
+  MixedOperationalBatchError,
   PostCutoverMementoWriteForbiddenError,
   SqliteCutoverMigrationIncompleteError,
   createSwitchableOperationalMemento,
-  pruneConnectedRunsMap
+  pruneConnectedRunsMap,
+  readCutoverAuthorityTombstone
 } from '../../../src/state/sqlite-operational-backing';
 import { buildOwnerResolver } from '../../../src/activation/sqlite-cutover-helpers';
 import { CONNECTED_RUNS_TOMBSTONE_MAX_COUNT } from '../../../src/state/connected-run-migrator';
@@ -193,9 +195,15 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
       const sqliteStore = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
 
       const backing = switchable.attachSqlite(sqliteStore, 'scope-alpha', () => 1_700_000_100_000);
+      await switchable.flushCutoverAuthority();
       expect(backing.migrationOutcome?.completed).toBe(true);
       expect(sqliteStore.cutoverGuard.getSentinel('scope-alpha')?.authority).toBe('sqlite');
-      expect(legacy.writes).toBe(0);
+      // Only the one-time cutover authority tombstone is persisted on legacy Memento (0 operational key writes).
+      expect(legacy.writes).toBe(1);
+      expect(readCutoverAuthorityTombstone(legacy)).toEqual({
+        scopeId: 'scope-alpha',
+        cutoverAt: 1_700_000_100_000
+      });
 
       // Imported state is readable from SQLite
       const importedRuns = switchable.get<Record<string, { id: string } | undefined>>(KEYS.run);
@@ -210,7 +218,8 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
 
       // Post-cutover write commits to SQLite without touching legacy Memento
       await switchable.update(KEYS.queueDefaultId, 'alpha');
-      expect(legacy.writes).toBe(0);
+      expect(legacy.writes).toBe(1);
+      expect(legacy.get(KEYS.queueDefaultId)).toBeUndefined();
 
       // If detached after cutover (e.g., lost primacy), legacy Memento writes are strictly refused
       switchable.detachSqlite();
@@ -519,6 +528,10 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
     const sqliteStore = SqliteApplicationStore.openInMemory();
     try {
       switchable.attachSqlite(sqliteStore, 'scope-durable-ready', () => 1_800_000_000_000);
+      await switchable.flushCutoverAuthority();
+      const writesAfterAttach = legacy.writes;
+      expect(writesAfterAttach).toBe(1);
+      expect(readCutoverAuthorityTombstone(legacy)?.scopeId).toBe('scope-durable-ready');
       await switchable.updateBatch([
         {
           key: KEYS.run,
@@ -536,7 +549,7 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
         },
         { key: KEYS.queue, value: { default: { requests: [{ id: 'feat-1', status: 'in-flight' }], inFlightId: 'feat-1' } } }
       ]);
-      expect(legacy.writes).toBe(0);
+      expect(legacy.writes).toBe(writesAfterAttach);
       expect(switchable.get<Record<string, { id: string } | undefined>>(KEYS.run)?.default?.id).toBe('run-ready-1');
     } finally {
       sqliteStore.close();
@@ -1069,6 +1082,219 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
       expect(resolveOwner('run', 'constructor')).toBe('settled');
       expect(resolveOwner('run', 'toString')).toBe('settled');
       expect(resolveOwner('run', 'cr-healthy')).toBe('live');
+    } finally {
+      sqliteStore.close();
+    }
+  });
+
+  it('persists durable cutover tombstone, backfills already-cut-over workspaces, and fails closed without legacy fallback when SQLite is absent (F-02)', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'schegent-cutover-tombstone-'));
+    try {
+      const dbPath = join(tempDir, 'schegent-state.db');
+      const scopeId = 'scope-tombstone';
+
+      // Pre-cutover legacy memento has stale state.
+      const legacy = createMemoryMemento({
+        [KEYS.queueDefaultId]: 'stale-legacy-queue',
+        [KEYS.lock]: { ownerId: 'owner-1', acquiredAt: 100, heartbeatAt: 200 }
+      });
+
+      // Simulate an already-cut-over DB that predates the tombstone (legacy has no tombstone yet).
+      const sqlite1 = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      try {
+        const preBackfill = createSwitchableOperationalMemento(createMemoryMemento());
+        preBackfill.attachSqlite(sqlite1, scopeId, () => 1_700_000_000_000);
+        await preBackfill.update(KEYS.queueDefaultId, 'sqlite-live-queue');
+      } finally {
+        sqlite1.close();
+      }
+      expect(readCutoverAuthorityTombstone(legacy)).toBeNull();
+
+      // Re-attaching an already-cut-over DB backfills the tombstone idempotently onto legacyMemento.
+      const sqlite2 = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      try {
+        const switchable = createSwitchableOperationalMemento(legacy);
+        switchable.attachSqlite(sqlite2, scopeId, () => 1_700_000_500_000);
+        await switchable.flushCutoverAuthority();
+        expect(readCutoverAuthorityTombstone(legacy)).toEqual({
+          scopeId,
+          cutoverAt: 1_700_000_500_000
+        });
+        expect(legacy.writes).toBe(1);
+
+        // Re-attaching the same scope does not rewrite the tombstone.
+        switchable.attachSqlite(sqlite2, scopeId, () => 1_700_000_900_000);
+        await switchable.flushCutoverAuthority();
+        expect(legacy.writes).toBe(1);
+      } finally {
+        sqlite2.close();
+      }
+
+      // Simulate restart where DB is lost/unavailable: fresh SwitchableOperationalMemento sees tombstone!
+      const warn = vi.fn();
+      const logger = {
+        warn,
+        info: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn()
+      } as unknown as Parameters<typeof createSwitchableOperationalMemento>[1];
+      const postLoss = createSwitchableOperationalMemento(legacy, logger, { requireDurableBatch: true });
+      postLoss.setDurableBatchUnavailableReason('sqlite-database-missing-after-cutover');
+
+      expect(postLoss.isPostCutoverAuthorityActive()).toBe(true);
+      expect(postLoss.hasCutoverAuthorityForScope(scopeId)).toBe(true);
+      expect(postLoss.getCutoverAuthorityStatus()).toEqual({
+        mode: 'sqlite-unavailable-post-cutover',
+        scopeId,
+        cutoverAt: 1_700_000_500_000,
+        reason: 'sqlite-database-missing-after-cutover'
+      });
+
+      // Operational reads do NOT resurrect stale legacy state; passthrough keys still work.
+      expect(postLoss.get(KEYS.queueDefaultId)).toBeUndefined();
+      expect(postLoss.get(KEYS.lock)).toEqual({ ownerId: 'owner-1', acquiredAt: 100, heartbeatAt: 200 });
+      expect(postLoss.get(KEYS.sqliteCutoverAuthority)).toEqual({
+        scopeId,
+        cutoverAt: 1_700_000_500_000
+      });
+
+      const writesBeforeRefusal = legacy.writes;
+      // Single-key operational write refused with durable-store-unavailable.
+      await expect(postLoss.update(KEYS.queueDefaultId, 'new-val')).rejects.toMatchObject({
+        name: 'QueueMutationRejected',
+        reason: 'durable-store-unavailable'
+      });
+      // Batch operational write refused with durable-store-unavailable.
+      await expect(
+        postLoss.updateBatch([
+          { key: KEYS.queueDefaultId, value: 'new-val' },
+          { key: KEYS.queue, value: { default: { requests: [], inFlightId: null } } }
+        ])
+      ).rejects.toMatchObject({
+        name: 'QueueMutationRejected',
+        reason: 'durable-store-unavailable'
+      });
+      expect(legacy.writes).toBe(writesBeforeRefusal);
+      expect(legacy.get(KEYS.queueDefaultId)).toBe('stale-legacy-queue');
+
+      // Sanitized operator warning logged once for the unavailable post-cutover state.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('sqlite cutover authority active');
+
+      // Passthrough ownership writes remain allowed.
+      await postLoss.update(KEYS.lock, { ownerId: 'owner-2', acquiredAt: 300, heartbeatAt: 400 });
+      expect(legacy.get(KEYS.lock)).toEqual({ ownerId: 'owner-2', acquiredAt: 300, heartbeatAt: 400 });
+
+      // Attempting to attach a blank SQLite DB without a sentinel against a tombstoned legacy memento
+      // refuses to re-import stale legacy state.
+      const blankSqlite = SqliteApplicationStore.openInMemory();
+      try {
+        let attachErr: unknown;
+        try {
+          postLoss.attachSqlite(blankSqlite, scopeId, () => 1_700_001_000_000);
+        } catch (err) {
+          attachErr = err;
+        }
+        expect(attachErr).toBeInstanceOf(QueueMutationRejected);
+        expect((attachErr as QueueMutationRejected).reason).toBe('durable-store-unavailable');
+        expect(postLoss.isSqliteAttached()).toBe(false);
+      } finally {
+        blankSqlite.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not skip detached-writer updates that equal stale readOnlyCache when live SQLite diverged', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'schegent-detached-stale-cache-'));
+    try {
+      const dbPath = join(tempDir, 'schegent-state.db');
+      const scopeId = 'scope-detached-stale';
+      const legacy = createMemoryMemento();
+      const switchable = createSwitchableOperationalMemento(legacy);
+
+      const store1 = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      try {
+        switchable.attachSqlite(store1, scopeId, () => 1_800_000_000_000);
+        await switchable.update(KEYS.queueDefaultId, 'alpha');
+        switchable.configureDetachedTrustedSqliteWriter({
+          databasePath: dbPath,
+          scopeId,
+          canWrite: () => true,
+          openStore: (p) => new SqliteApplicationStore({ databasePath: p, journalMode: 'wal' })
+        });
+        // Detach snapshots `readOnlyCache` with `queueDefaultId = 'alpha'`.
+        switchable.detachSqlite();
+      } finally {
+        store1.close();
+      }
+
+      // Live SQLite diverges externally to 'beta' while readOnlyCache still holds 'alpha'.
+      const external = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      try {
+        const extMem = createSwitchableOperationalMemento(createMemoryMemento());
+        extMem.attachSqlite(external, scopeId, () => 1_800_000_005_000);
+        await extMem.update(KEYS.queueDefaultId, 'beta');
+      } finally {
+        external.close();
+      }
+
+      // Single-key detached write for 'alpha' (matching stale readOnlyCache!) MUST still write to live SQLite.
+      await switchable.update(KEYS.queueDefaultId, 'alpha');
+      const verify1 = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      try {
+        const check1 = createSwitchableOperationalMemento(createMemoryMemento());
+        check1.attachSqlite(verify1, scopeId, () => 1_800_000_010_000);
+        expect(check1.get(KEYS.queueDefaultId)).toBe('alpha');
+        // Mutate live DB to 'gamma' while detached readOnlyCache still holds 'alpha'.
+        await check1.update(KEYS.queueDefaultId, 'gamma');
+      } finally {
+        verify1.close();
+      }
+
+      // Batch detached write for 'alpha' (matching stale readOnlyCache!) MUST also write to live SQLite.
+      await switchable.updateBatch([{ key: KEYS.queueDefaultId, value: 'alpha' }]);
+      const verify2 = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      try {
+        const check2 = createSwitchableOperationalMemento(createMemoryMemento());
+        check2.attachSqlite(verify2, scopeId, () => 1_800_000_020_000);
+        expect(check2.get(KEYS.queueDefaultId)).toBe('alpha');
+      } finally {
+        verify2.close();
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses mixed passthrough and operational entries in updateBatch with MixedOperationalBatchError', async () => {
+    const legacy = createMemoryMemento();
+    const switchable = createSwitchableOperationalMemento(legacy);
+
+    // Pre-cutover refusal with zero writes.
+    await expect(
+      switchable.updateBatch([
+        { key: KEYS.lock, value: { ownerId: 'owner-1', acquiredAt: 1, heartbeatAt: 1 } },
+        { key: KEYS.queueDefaultId, value: 'alpha' }
+      ])
+    ).rejects.toBeInstanceOf(MixedOperationalBatchError);
+    expect(legacy.writes).toBe(0);
+
+    // Post-cutover refusal with zero writes to either store.
+    const sqliteStore = SqliteApplicationStore.openInMemory();
+    try {
+      switchable.attachSqlite(sqliteStore, 'scope-mixed-batch', () => 1_800_000_000_000);
+      await switchable.flushCutoverAuthority();
+      const writesAfterAttach = legacy.writes;
+      await expect(
+        switchable.updateBatch([
+          { key: KEYS.executionLeases, value: { default: { ownerId: 'owner-1', acquiredAt: 1, heartbeatAt: 1 } } },
+          { key: KEYS.queueDefaultId, value: 'beta' }
+        ])
+      ).rejects.toBeInstanceOf(MixedOperationalBatchError);
+      expect(legacy.writes).toBe(writesAfterAttach);
+      expect(switchable.get(KEYS.queueDefaultId)).toBeUndefined();
     } finally {
       sqliteStore.close();
     }

@@ -129,7 +129,12 @@ let priorStateDir: string | undefined;
 async function buildHost(root: string) {
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot: root }, logger);
-  const phaseRunner = new PhaseRunner(new ClaudeCliRunner(), new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({
+    runner: new ClaudeCliRunner(),
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
+    logger
+  });
   const store = new WorkspaceStateStore(new FakeMemento());
   await store.initialize();
   const queue = new QueueManager(store);

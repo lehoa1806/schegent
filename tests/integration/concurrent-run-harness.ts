@@ -370,20 +370,16 @@ export async function makeHarness(
   // The breakpoint accessor resolves by **run id** across the whole record, not
   // by a fixed queue: with N Runs, a queue-pinned accessor would answer every
   // Run with the default queue's breakpoints.
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
-    audit,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
     logger,
     rawTranscript,
-    null,
-    null,
-    null,
-    null,
-    createPhaseBreakpointAccessor(
+    phaseBreakpointAccessor: createPhaseBreakpointAccessor(
       (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
     )
-  );
+  });
 
   const queue = new QueueManager(store);
 

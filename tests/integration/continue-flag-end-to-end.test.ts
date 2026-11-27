@@ -147,7 +147,7 @@ async function makeHarness(memento: FakeMemento, workspaceRoot: string): Promise
   const logger = new SanitizedLogger();
   const audit = new AuditLogWriter({ workspaceRoot }, logger);
   const { runner, invocations, setOutcome } = makeScriptedCliRunner();
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
   const store = new WorkspaceStateStore(memento);
   await store.initialize();
   const queue = new QueueManager(store);

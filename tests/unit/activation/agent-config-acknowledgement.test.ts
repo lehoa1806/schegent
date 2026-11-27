@@ -179,4 +179,35 @@ describe('agent-config-acknowledgement modal requester (FR-R7-04, SC-001, SC-002
     expect(await throwing(scan)).toBe('denied');
     expect(warn).toHaveBeenCalledOnce();
   });
+
+  it('S3: uses contained-backend modal wording for codex (never claims no OS-enforced sandbox) and formats overflow/hook-script markers', () => {
+    const codexEntries: readonly ScannedAgentConfigEntry[] = [
+      { name: '.codex/config.toml', status: 'present', size: 64, digest: DIGEST_A },
+      { name: 'AGENTS.md', status: 'present', size: 128, digest: DIGEST_B }
+    ];
+    const codexScan: RepoAgentConfigScanResult = {
+      backend: 'codex',
+      entries: codexEntries,
+      fingerprint: computeAgentConfigFingerprint('codex', codexEntries, false),
+      persistable: true,
+      scanError: false
+    };
+    const codexPrompt = buildAgentConfigAckPrompt(codexScan);
+    expect(codexPrompt.message).not.toContain('uncontained');
+    expect(codexPrompt.detail).not.toContain('without an OS-enforced sandbox');
+    expect(codexPrompt.detail).toContain('sandbox or approval posture');
+
+    const overflowScan = makeScan([
+      { name: 'scripts/check.sh', status: 'present', size: 32, digest: DIGEST_A, hookScript: true },
+      { name: '.claude/skills/d1/d2/d3/d4/d5/', status: 'unreadable', unreadableReason: 'depth-limit-exceeded' },
+      { name: '.claude/skills/s257.md', status: 'unreadable', unreadableReason: 'file-count-limit-exceeded' },
+      { name: '.claude/skills/big.md', status: 'unreadable', unreadableReason: 'total-bytes-limit-exceeded' }
+    ]);
+    const overflowPrompt = buildAgentConfigAckPrompt(overflowScan);
+    expect(overflowPrompt.detail).toContain('hook script');
+    expect(overflowPrompt.detail).toContain('max directory walk depth (4)');
+    expect(overflowPrompt.detail).toContain('max scanned file count (256)');
+    expect(overflowPrompt.detail).toContain('4 MiB total scan budget');
+    expect(overflowPrompt.actions).toEqual([AGENT_CONFIG_APPROVE_ONCE_LABEL]);
+  });
 });

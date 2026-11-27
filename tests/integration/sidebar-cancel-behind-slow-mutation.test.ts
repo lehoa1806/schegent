@@ -249,20 +249,16 @@ async function createSystem(
     hasActiveProcess: false
   } as unknown as ClaudeCliRunner;
 
-  const phaseRunner = new PhaseRunner(
+  const phaseRunner = new PhaseRunner({
     runner,
-    new PromptBuilder(),
-    audit,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: audit,
     logger,
     rawTranscript,
-    null,
-    null,
-    null,
-    null,
-    createPhaseBreakpointAccessor(
+    phaseBreakpointAccessor: createPhaseBreakpointAccessor(
       (runId) => Object.values(store.getRunMap()).find((run) => run.id === runId) ?? null
     )
-  );
+  });
 
   const queue = new QueueManager(store);
   const clock = new FixedClock();

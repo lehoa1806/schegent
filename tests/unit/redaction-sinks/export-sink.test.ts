@@ -67,9 +67,9 @@ function artifactFor(cases: readonly RedactionCase[]): string {
     .join('\n');
 }
 
-async function destinationText(): Promise<string> {
-  const names = (await fsp.readdir(destination)).filter((name) => name !== 'manifest.json');
-  const parts = await Promise.all(names.map((name) => fsp.readFile(path.join(destination, name), 'utf8')));
+async function destinationText(bundleDir: string): Promise<string> {
+  const names = (await fsp.readdir(bundleDir)).filter((name) => name !== 'manifest.json');
+  const parts = await Promise.all(names.map((name) => fsp.readFile(path.join(bundleDir, name), 'utf8')));
   return parts.join('\n');
 }
 
@@ -82,7 +82,8 @@ describe('evidence export, a whole artifact in one call (SK2)', () => {
     await fsp.writeFile(path.join(workspace, '.schegent', 'audit.log'), artifact);
     const result = await exportRunEvidence(workspace, RUN, destination);
     expect(result.outcome).toBe('exported');
-    const text = await destinationText();
+    if (result.outcome !== 'exported') throw new Error('expected exported');
+    const text = await destinationText(result.directory);
     expect(text.length).toBeGreaterThan(artifact.length / 2);
     for (const testCase of cases) {
       if (testCase.expected === 'redacted' || testCase.expected === 'over-redacted') {
@@ -97,7 +98,8 @@ describe('evidence export, a whole artifact in one call (SK2)', () => {
     await fsp.writeFile(path.join(workspace, '.schegent', 'sessions', `raw-${RUN}.log`), cases.map((c) => `${ISO}\t${RUN}\tp\tstdout\t${c.build()}`).join('\n'));
     const result = await exportRunEvidence(workspace, RUN, destination);
     expect(result.outcome).toBe('exported');
-    const text = await destinationText();
+    if (result.outcome !== 'exported') throw new Error('expected exported');
+    const text = await destinationText(result.directory);
     for (const testCase of cases) {
       if (testCase.expected === 'preserved') assertOutcomeIn(text, testCase, 'evidence export');
     }

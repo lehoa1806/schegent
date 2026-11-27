@@ -257,9 +257,9 @@ describe('FR-R8-02 (02-04) — end-to-end terminal reconciliation in PhaseRunner
         primaryWorkspaceRoot: root,
         platform: QUALIFIED_PLATFORM
       });
-      const claudePhaseRunner = new PhaseRunner(claudeAcp, new PromptBuilder(), auditWriter, logger);
-      const codexPhaseRunner = new PhaseRunner(codexAcp, new PromptBuilder(), auditWriter, logger);
-      const agyPhaseRunner = new PhaseRunner(agyAcp, new PromptBuilder(), auditWriter, logger);
+      const claudePhaseRunner = new PhaseRunner({ runner: claudeAcp, promptBuilder: new PromptBuilder(), auditWriter, logger });
+      const codexPhaseRunner = new PhaseRunner({ runner: codexAcp, promptBuilder: new PromptBuilder(), auditWriter, logger });
+      const agyPhaseRunner = new PhaseRunner({ runner: agyAcp, promptBuilder: new PromptBuilder(), auditWriter, logger });
 
       const runCase = (
         runner: 'claude' | 'codex' | 'agy',

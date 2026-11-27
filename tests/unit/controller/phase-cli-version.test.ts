@@ -219,7 +219,12 @@ describe('SR-B8 -- PhaseRunner skips --version probe when pre-spawn containment 
       observedCliVersion
     } as unknown as BackendRunnerRegistry;
 
-    const runner = new PhaseRunner(registry, new PromptBuilder(), writer, makeSilentLogger());
+    const runner = new PhaseRunner({
+      runner: registry,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: makeSilentLogger()
+    });
     await expect(runner.run(baseInputs)).rejects.toBe(refusal);
 
     expect(observedCliVersion).not.toHaveBeenCalled();
@@ -269,23 +274,13 @@ describe('SR-B8 -- PhaseRunner skips --version probe when pre-spawn containment 
       logger: { warn: vi.fn() }
     });
 
-    const runner = new PhaseRunner(
-      registry,
-      new PromptBuilder(),
-      writer,
-      makeSilentLogger(),
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      null,
-      undefined,
-      ackGate
-    );
+    const runner = new PhaseRunner({
+      runner: registry,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: makeSilentLogger(),
+      agentConfigAckGate: ackGate
+    });
 
     await expect(runner.run(baseInputs)).rejects.toBeInstanceOf(
       AgentConfigAcknowledgementRefusedError
@@ -328,7 +323,12 @@ describe('SR-B8 -- PhaseRunner skips --version probe when pre-spawn containment 
       observedCliVersion
     } as unknown as BackendRunnerRegistry;
 
-    const runner = new PhaseRunner(registry, new PromptBuilder(), writer, makeSilentLogger());
+    const runner = new PhaseRunner({
+      runner: registry,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: makeSilentLogger()
+    });
     await runner.run(baseInputs);
 
     expect(observedCliVersion).toHaveBeenCalledTimes(1);

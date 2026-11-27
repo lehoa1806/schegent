@@ -99,12 +99,12 @@ async function runPhaseAndReadStartPayload(opts: {
   iteration?: number;
 }): Promise<{ isContinue: unknown; payload: Record<string, unknown> }> {
   const phase: Phase = 'speckit-implement';
-  const runner = new PhaseRunner(
-    makeStubRunner(),
-    makeStubPromptBuilder(),
-    opts.writer,
-    new SanitizedLogger()
-  );
+  const runner = new PhaseRunner({
+    runner: makeStubRunner(),
+    promptBuilder: makeStubPromptBuilder(),
+    auditWriter: opts.writer,
+    logger: new SanitizedLogger()
+  });
 
   // PhaseRunInputs.isContinue: explicitly threaded only when the caller
   // set it; matches the `...(isContinue === true ? {...} : {})` spread
@@ -235,12 +235,12 @@ describe('Feature 032 US4 — phase-start audit payload carries strict isContinu
     // append. A truthy-non-boolean value (e.g., a misconfigured upstream
     // caller passing `1` or a string) must NOT serialize as `true`.
     const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
-    const runner = new PhaseRunner(
-      makeStubRunner(),
-      makeStubPromptBuilder(),
-      writer,
-      new SanitizedLogger()
-    );
+    const runner = new PhaseRunner({
+      runner: makeStubRunner(),
+      promptBuilder: makeStubPromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     await runner.run({
       phase: 'speckit-implement' as Phase,
       pipelineId: 'standard',
@@ -267,12 +267,12 @@ describe('Feature 032 US4 — phase-start audit payload carries strict isContinu
 describe('Feature 032 US4 — isContinue passes the SECRET_PATTERNS sanitization pipeline unchanged', () => {
   it('serializes as a strict JSON boolean (no [REDACTED], no string coercion)', async () => {
     const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
-    const runner = new PhaseRunner(
-      makeStubRunner(),
-      makeStubPromptBuilder(),
-      writer,
-      new SanitizedLogger()
-    );
+    const runner = new PhaseRunner({
+      runner: makeStubRunner(),
+      promptBuilder: makeStubPromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     await runner.run({
       phase: 'speckit-implement' as Phase,
       pipelineId: 'standard',
@@ -297,12 +297,12 @@ describe('Feature 032 US4 — isContinue passes the SECRET_PATTERNS sanitization
 
   it('false value also serializes as a strict JSON boolean', async () => {
     const writer = new AuditLogWriter({ workspaceRoot: tmpRoot }, new SanitizedLogger());
-    const runner = new PhaseRunner(
-      makeStubRunner(),
-      makeStubPromptBuilder(),
-      writer,
-      new SanitizedLogger()
-    );
+    const runner = new PhaseRunner({
+      runner: makeStubRunner(),
+      promptBuilder: makeStubPromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     await runner.run({
       phase: 'speckit-implement' as Phase,
       pipelineId: 'standard',

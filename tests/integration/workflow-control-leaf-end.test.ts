@@ -269,7 +269,7 @@ async function makeWorkspace(
   };
 
   const controller = new SchegentWorkflowController(
-    new PhaseRunner(runner, new PromptBuilder(), audit, logger),
+    new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger }),
     store,
     queue,
     statusBar,

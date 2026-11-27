@@ -30,6 +30,7 @@ import { isRunId } from '../contracts/run-id';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { resolveContainedLink } from '../lib/path-containment';
+import { KEPT_SCHEGENT_SUBDIRS } from './evidence-artifact-policy';
 import { RUN_CHECKPOINT_DIRECTORY, safeRunSegment } from './run-checkpoint-paths';
 
 /** Why one entry was not removed. Bounded, and safe to show an operator. */
@@ -87,27 +88,6 @@ const PRIVATE_STORAGE_LABEL = '<private storage>';
 
 /** The directory under `.schegent/` that holds each Run's full history description. */
 const HISTORY_PREFIX = '.schegent/history/';
-
-/**
- * FR-R7-14 (14-14) — Top-level `.schegent/` subtrees explicitly declared as `kept` in
- * `retentionDisclosure()` and `keptStores()` (F05 artifact-lifecycle blobs/reports, F15
- * handoff staging/materialized outputs, catalog, ownership leases, telemetry spool, and SQLite).
- * `deleteRunEvidence` never walks or unlinks these directories so it cannot break disclosure
- * promises or remove SQLite-indexed external files without lifecycle tombstones.
- */
-const KEPT_SCHEGENT_SUBDIRS: ReadonlySet<string> = new Set([
-  'results',
-  'immutable-results',
-  'handoff-materialized',
-  'foreach-results',
-  'transcripts',
-  'diagnostics',
-  'reports',
-  'catalog',
-  'ownership',
-  'telemetry',
-  'sqlite'
-]);
 
 /** Anything under the in-flight spool is, by definition, being written. */
 const ACTIVE_MARKERS = [/(^|\/)\.pending(\/|$)/, /\.lock$/] as const;

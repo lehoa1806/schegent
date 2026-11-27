@@ -101,12 +101,12 @@ describe('Feature 030 BUG-002 — hung-but-successful task does not stall the qu
         stdoutBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(CLEAN_STDOUT); b.finalize(); return b; })(),
         stderrBuffer: (() => { const b = new ZippedStreamBuffer(); b.append(''); b.finalize(); return b; })()
     }));
-    const phaseRunner = new PhaseRunner(
-      cliRunner,
-      new PromptBuilder(),
-      makeFakeAuditWriter(),
-      new SanitizedLogger()
-    );
+    const phaseRunner = new PhaseRunner({
+      runner: cliRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: makeFakeAuditWriter(),
+      logger: new SanitizedLogger()
+    });
     const out = await phaseRunner.run({
       phase: 'speckit-implement',
       iteration: 1,

@@ -386,9 +386,10 @@ describe('FR-R4-F04 T8 — the Run export records one outcome', () => {
     );
 
     expect(result?.outcome, 'the export happened and its result is returned').toBe('exported');
+    if (result?.outcome !== 'exported') return;
     expect(warnings.join(' ')).toContain(EXPORT_TEXT.notRecorded);
     expect(warnings.join(' ')).not.toContain('disk full');
-    expect(existsSync(join(destination, 'manifest.json')), 'the output is not deleted').toBe(true);
+    expect(existsSync(join(result.directory, 'manifest.json')), 'the output is not deleted').toBe(true);
   });
 
   it('refuses cleanly, rolls back partial files, records write-failed, and warns when sanitization fails mid-export (FR-R5-F14, NU-10)', async () => {
@@ -425,5 +426,21 @@ describe('FR-R4-F04 T8 — the Run export records one outcome', () => {
     expect(warnings.join(' ')).toContain(EXPORT_TEXT.refusal['write-failed']);
     expect(existsSync(join(destination, '.schegent__audit.log'))).toBe(false);
     expect(existsSync(join(destination, 'manifest.json'))).toBe(false);
+  });
+
+  it('isolates repeated exports into disjoint child directories under the chosen parent without overwriting operator files', async () => {
+    seedEvidence();
+    writeFileSync(join(destination, 'operator-notes.txt'), 'keep untouched\n');
+
+    const first = await runExportRunEvidenceCommand(deps());
+    const second = await runExportRunEvidenceCommand(deps());
+
+    expect(first?.outcome).toBe('exported');
+    expect(second?.outcome).toBe('exported');
+    if (first?.outcome !== 'exported' || second?.outcome !== 'exported') return;
+    expect(first.directory).not.toBe(second.directory);
+    expect(existsSync(join(first.directory, 'manifest.json'))).toBe(true);
+    expect(existsSync(join(second.directory, 'manifest.json'))).toBe(true);
+    expect(existsSync(join(destination, 'operator-notes.txt'))).toBe(true);
   });
 });

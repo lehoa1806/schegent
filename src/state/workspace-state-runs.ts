@@ -46,27 +46,14 @@ import {
   type RunReadVerdict,
   type WorkspaceStateFamilyContext
 } from './workspace-state-types';
+import {
+  buildPreservedTerminalJournalDocument,
+  decodeTerminalTransitionJournal,
+  inspectDecodedTerminalJournal,
+  type TerminalTransitionJournalInspection
+} from './terminal-transition-journal';
 
 const DELAYED_RETRY_COUNT_PERSISTED_CEILING = 20;
-
-function asTerminalTransitionIntent(raw: unknown): TerminalTransitionIntent | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const intent = raw as Partial<TerminalTransitionIntent> & { description?: unknown };
-  if (
-    intent.schemaVersion !== 1 ||
-    intent.run === undefined ||
-    typeof intent.run !== 'object' ||
-    typeof (intent.run as WorkflowRun).id !== 'string' ||
-    typeof intent.createdAt !== 'number'
-  ) {
-    return null;
-  }
-  if (intent.description !== undefined && typeof intent.description !== 'string') {
-    const { description: _dropped, ...rest } = intent;
-    return rest as TerminalTransitionIntent;
-  }
-  return intent as TerminalTransitionIntent;
-}
 
 function assertRunStatusTransition(
   previous: WorkflowRun,
@@ -432,16 +419,16 @@ export function admitRunAtomically<T>(
 export function getTerminalTransitionIntents(
   ctx: WorkspaceStateFamilyContext
 ): Readonly<Record<string, TerminalTransitionIntent>> {
-  const value = ctx.memento.get<unknown>(KEYS.terminalTransitionIntent);
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const legacy = asTerminalTransitionIntent(value);
-  if (legacy) return { [legacy.run.id]: legacy };
-  const entries: Record<string, TerminalTransitionIntent> = {};
-  for (const [runId, raw] of Object.entries(value as Record<string, unknown>)) {
-    const intent = asTerminalTransitionIntent(raw);
-    if (intent) entries[runId] = intent;
-  }
-  return entries;
+  return decodeTerminalTransitionJournal(ctx.memento.get<unknown>(KEYS.terminalTransitionIntent))
+    .readable;
+}
+
+export function inspectTerminalTransitionJournal(
+  ctx: WorkspaceStateFamilyContext
+): TerminalTransitionJournalInspection {
+  return inspectDecodedTerminalJournal(
+    decodeTerminalTransitionJournal(ctx.memento.get<unknown>(KEYS.terminalTransitionIntent))
+  );
 }
 
 export function setTerminalTransitionIntent(
@@ -450,10 +437,26 @@ export function setTerminalTransitionIntent(
   intent: TerminalTransitionIntent | null
 ): Promise<void> {
   return ctx.serialize(KEYS.terminalTransitionIntent, () => {
-    const next = { ...getTerminalTransitionIntents(ctx) };
-    if (intent === null) delete next[runId];
-    else next[runId] = intent;
-    return ctx.memento.update(KEYS.terminalTransitionIntent, next);
+    const decoded = decodeTerminalTransitionJournal(
+      ctx.memento.get<unknown>(KEYS.terminalTransitionIntent)
+    );
+    if (decoded.status === 'unreadable-envelope') {
+      throw new QueueMutationRejected(
+        'terminal-journal-corrupt',
+        `Refused terminal transition journal write: stored journal envelope is unreadable (${decoded.reason}) and preserved in place.`
+      );
+    }
+    if (Object.hasOwn(decoded.preservedOpaque, runId)) {
+      throw new QueueMutationRejected(
+        'terminal-journal-corrupt',
+        `Refused terminal transition journal write for '${runId.slice(0, 64)}': an unreadable or unsupported entry for this run is preserved in place.`
+      );
+    }
+    const nextReadable: Record<string, TerminalTransitionIntent> = { ...decoded.readable };
+    if (intent === null) delete nextReadable[runId];
+    else nextReadable[runId] = intent;
+    const merged = buildPreservedTerminalJournalDocument(decoded, nextReadable);
+    return ctx.memento.update(KEYS.terminalTransitionIntent, merged);
   }).then(() => ctx.notify(KEYS.terminalTransitionIntent));
 }
 
@@ -464,13 +467,25 @@ export async function removeTerminalIntentIfOwn(
 ): Promise<boolean> {
   let removed = false as boolean;
   await ctx.serialize(KEYS.terminalTransitionIntent, () => {
-    const intents: Readonly<Partial<Record<string, TerminalTransitionIntent>>> =
-      getTerminalTransitionIntents(ctx);
+    const decoded = decodeTerminalTransitionJournal(
+      ctx.memento.get<unknown>(KEYS.terminalTransitionIntent)
+    );
+    if (decoded.status === 'unreadable-envelope') {
+      throw new QueueMutationRejected(
+        'terminal-journal-corrupt',
+        `Refused terminal transition journal clear: stored journal envelope is unreadable (${decoded.reason}) and preserved in place.`
+      );
+    }
+    if (Object.hasOwn(decoded.preservedOpaque, runId)) {
+      return Promise.resolve();
+    }
+    const intents: Readonly<Partial<Record<string, TerminalTransitionIntent>>> = decoded.readable;
     if (intents[runId]?.createdAt !== createdAt) return Promise.resolve();
-    const next = { ...intents };
-    delete next[runId];
+    const nextReadable: Record<string, TerminalTransitionIntent> = { ...decoded.readable };
+    delete nextReadable[runId];
     removed = true;
-    return ctx.memento.update(KEYS.terminalTransitionIntent, next);
+    const merged = buildPreservedTerminalJournalDocument(decoded, nextReadable);
+    return ctx.memento.update(KEYS.terminalTransitionIntent, merged);
   });
   if (removed) ctx.notify(KEYS.terminalTransitionIntent);
   return removed;

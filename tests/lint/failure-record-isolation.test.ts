@@ -61,7 +61,12 @@ const ALLOWED_IMPORTERS: ReadonlyArray<RegExp> = [
   // FR-R6-F03 (feature 302) — the runtime resource inventory imports only the record's bounds
   // (`FAILURE_RECORD_RETAINED_MAX` and `FAILURE_RECORD_MAX_BYTES`) so the inventory states them from
   // the constants that enforce them. It never reads a failure record and is not a decision site.
-  /^src\/services\/runtime-resource-budgets\/resource-inventory\.ts$/
+  /^src\/services\/runtime-resource-budgets\/resource-inventory\.ts$/,
+  // Post-merge Finding 1 — the evidence artifact policy imports only the record's directory and
+  // filename pattern (`FAILURE_RECORD_DIR`, `FAILURE_RECORD_NAME`) to allowlist eligible failure-record
+  // filenames during Run evidence export and retention-disclosure parity checks. It never reads a
+  // failure record's contents and is not a decision site (L4.2 still names none of the five areas).
+  /^src\/services\/evidence-artifact-policy\.ts$/
 ];
 
 /** L4.2 — the places a decision is made. A violation here is named as such. */

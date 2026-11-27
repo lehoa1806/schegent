@@ -43,6 +43,11 @@ const BACKDATED = SOURCE_TIME - 10;
 
 const HOST_OUTPUT = 'dist/extension.js';
 const BRIDGE_OUTPUT = 'dist/acp-stdio-bridge.js';
+const WORKER_OUTPUTS = [
+  'dist/run-snapshot.worker.js',
+  'dist/accounting-query.worker.js',
+  'dist/result-operator.worker.js'
+] as const;
 const WEBVIEW_OUTPUT = 'dist/webview/index.js';
 
 /**
@@ -112,6 +117,9 @@ beforeEach(() => {
   write(TEST_DIRECTORY_FILE, 'test file\n', SOURCE_TIME);
   write(HOST_OUTPUT, 'host bundle\n', BUILD_TIME);
   write(BRIDGE_OUTPUT, 'bridge bundle\n', BUILD_TIME);
+  for (const workerOutput of WORKER_OUTPUTS) {
+    write(workerOutput, 'worker bundle\n', BUILD_TIME);
+  }
   write(WEBVIEW_OUTPUT, 'webview bundle\n', BUILD_TIME);
   write('dist/webview/chunks/RunsSurface.js', 'chunk\n', BUILD_TIME);
 });
@@ -176,6 +184,21 @@ describe('each half is compared on its own (SC-011)', () => {
       'host build output is absent (dist/acp-stdio-bridge.js) — run npm run build:host'
     );
   });
+
+  it.each(WORKER_OUTPUTS)(
+    'refuses on a stale or absent worker bundle (%s) even when dist/extension.js is fresh',
+    (workerOutput) => {
+      touch(workerOutput, BACKDATED);
+      expect(stateOf('host')).toBe('stale');
+      expect(refusal()).toContain(workerOutput);
+
+      rmSync(join(root, workerOutput));
+      expect(stateOf('host')).toBe('absent');
+      expect(refusal()).toContain(
+        `host build output is absent (${workerOutput}) — run npm run build:host`
+      );
+    }
+  );
 
   it('refuses on a stale webview bundle while the host half is current', () => {
     // The webview build sets `emptyOutDir: true`, so the newest file under
@@ -250,7 +273,7 @@ describe('the refusal does not repair (FR-021, SC-012)', () => {
   it('leaves the output tree byte-for-byte and mtime-for-mtime unchanged', () => {
     touch(HOST_OUTPUT, BACKDATED);
     const before = snapshot('dist');
-    expect(before.size).toBe(4);
+    expect(before.size).toBe(4 + WORKER_OUTPUTS.length);
 
     expect(() => freshness.assertBuildOutputIsFresh(root)).toThrow(/refusing to package/);
 

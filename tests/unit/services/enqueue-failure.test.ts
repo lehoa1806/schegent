@@ -42,14 +42,18 @@ const REASONS: Readonly<Record<QueueMutationRejectReason, true>> = {
   'ownership-lost': true,
   'stale-run-id': true,
   'run-status-precondition': true,
-  'durable-store-unavailable': true
+  'durable-store-unavailable': true,
+  'terminal-journal-corrupt': true
 };
 
 const PATH = '/synthetic/home/user-252/secret.txt';
 
 describe('classifyEnqueueFailure (T13)', () => {
   const validationReasons = (Object.keys(REASONS) as QueueMutationRejectReason[]).filter(
-    (reason) => reason !== 'fence-unverifiable' && reason !== 'durable-store-unavailable'
+    (reason) =>
+      reason !== 'fence-unverifiable' &&
+      reason !== 'durable-store-unavailable' &&
+      reason !== 'terminal-journal-corrupt'
   );
 
   it('names the fixed storage code', () => {
@@ -57,7 +61,7 @@ describe('classifyEnqueueFailure (T13)', () => {
   });
 
   it('lists the whole reason union, so the table below is exhaustive', () => {
-    expect(Object.keys(REASONS)).toHaveLength(18);
+    expect(Object.keys(REASONS)).toHaveLength(19);
     expect(validationReasons).toHaveLength(16);
   });
 
@@ -78,6 +82,14 @@ describe('classifyEnqueueFailure (T13)', () => {
   it('classifies QueueMutationRejected(durable-store-unavailable) as a storage fault', () => {
     const outcome = classifyEnqueueFailure(
       new QueueMutationRejected('durable-store-unavailable', `store unavailable at ${PATH}`)
+    );
+
+    expect(outcome).toEqual({ outcome: 'failed-storage', reason: 'queue-state-unavailable' });
+  });
+
+  it('classifies QueueMutationRejected(terminal-journal-corrupt) as a storage fault', () => {
+    const outcome = classifyEnqueueFailure(
+      new QueueMutationRejected('terminal-journal-corrupt', `journal corrupt at ${PATH}`)
     );
 
     expect(outcome).toEqual({ outcome: 'failed-storage', reason: 'queue-state-unavailable' });

@@ -1221,4 +1221,78 @@ rl.on('line', (line) => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('D4/S15: ignores legacyDrain and never delegates to inner CLI runner even when allowLegacyDrain is passed', async () => {
+    const innerInvoke = vi.fn(async () => {
+      throw new Error('inner CLI runner must never be invoked via legacyDrain');
+    });
+    const inner: BackendRunner = {
+      ...makeDummyInnerRunner('agy'),
+      invoke: innerInvoke
+    };
+    const launchTransport = vi.fn(() => {
+      const stdoutListeners: Array<(chunk: Uint8Array) => void> = [];
+      const closeListeners: Array<() => void> = [];
+      const emit = (obj: unknown): void => {
+        const bytes = Buffer.from(`${JSON.stringify(obj)}\n`, 'utf8');
+        queueMicrotask(() => {
+          for (const listener of stdoutListeners) listener(bytes);
+        });
+      };
+      return {
+        pid: undefined,
+        write(line: string): void {
+          const msg = JSON.parse(line.trim()) as { id?: number; method?: string };
+          if (msg.method === 'initialize') {
+            emit({
+              jsonrpc: '2.0',
+              id: msg.id,
+              result: {
+                protocolVersion: 1,
+                agentInfo: { name: 'agy-fake', version: '1.5.5' },
+                agentCapabilities: { loadSession: true, promptCapabilities: { embeddedContext: true } }
+              }
+            });
+          } else if (msg.method === 'session/new') {
+            emit({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'sess-no-legacy-drain' } });
+          } else if (msg.method === 'session/prompt') {
+            emit({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+          }
+        },
+        onStdout(listener: (chunk: Uint8Array) => void) {
+          stdoutListeners.push(listener);
+        },
+        onStderr() {},
+        onClose(listener: () => void) {
+          closeListeners.push(listener);
+        },
+        async close() {
+          for (const listener of closeListeners) listener();
+        },
+        isProcessTreeGone: () => true
+      };
+    });
+
+    const runner = new AcpBackedRunner({
+      kind: 'agy',
+      inner,
+      allowLegacyDrain: true,
+      platform: QUALIFIED_PLATFORM,
+      launchTransport
+    });
+    const res = await runner.invoke({
+      cliPath: '/usr/bin/fake-agy',
+      cwd: process.cwd(),
+      prompt: 'Execute strictly over ACP',
+      phase: 'implement',
+      iteration: 1,
+      timeoutMs: 5_000,
+      legacyDrain: true
+    });
+
+    expect(innerInvoke).not.toHaveBeenCalled();
+    expect(launchTransport).toHaveBeenCalledTimes(1);
+    expect(res.exitCode).toBe(0);
+    expect(res.command).toBe('acp:agy-acp-native');
+  });
 });

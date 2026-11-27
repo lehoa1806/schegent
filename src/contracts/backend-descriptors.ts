@@ -173,7 +173,11 @@ export const BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, BackendDesc
         '.claude/settings.local.json',
         '.mcp.json',
         'CLAUDE.md',
-        '.claude/CLAUDE.md'
+        '.claude/CLAUDE.md',
+        '.claude/skills/',
+        '.claude/commands/',
+        '.claude/agents/',
+        '.claude/hooks/'
       ]),
       supportsGitSideEffects: true,
       supportsAutoCompactOverride: true,
@@ -244,7 +248,20 @@ export const BACKEND_DESCRIPTORS: Readonly<Record<BackendRunnerKind, BackendDesc
         nativeStdioArgs: Object.freeze(['acp', '--stdio', '--disable-telemetry'])
       }),
       ambientConfigSegments: null,
-      repoAgentConfigPaths: Object.freeze([]),
+      // Workspace-level Antigravity / Gemini-family config, rules, workflows, and skill trees.
+      // Evidence note: `.agents/skills/` is observed in workspace skill loading; `.agents/rules/`,
+      // `.agents/workflows/`, `AGENTS.md`, `GEMINI.md`, and `.gemini/settings.json` are included
+      // conservatively from Antigravity/Gemini CLI conventions as risk reduction. Agy's full
+      // workspace discovery surface is not vendor-documented, so unlisted paths remain a stated
+      // limit in `docs/security/threat-model.md`.
+      repoAgentConfigPaths: Object.freeze([
+        'AGENTS.md',
+        'GEMINI.md',
+        '.agents/skills/',
+        '.agents/rules/',
+        '.agents/workflows/',
+        '.gemini/settings.json'
+      ]),
       supportsGitSideEffects: true,
       supportsAutoCompactOverride: false,
       supportsSessionCompaction: false,

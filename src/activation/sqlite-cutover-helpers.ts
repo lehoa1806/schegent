@@ -47,9 +47,13 @@ import {
   type DurableArtifactHandoverSeam,
   type ProductionWorkflowComposition
 } from '../services/workflow-execution/production-workflow-composition';
-import type { SwitchableOperationalMemento } from '../state/sqlite-operational-backing';
+import {
+  PostCutoverMementoWriteForbiddenError,
+  type SwitchableOperationalMemento
+} from '../state/sqlite-operational-backing';
 import { isTerminalRunStatus } from '../state/workflow-run';
-import type { WorkspaceStateStore } from '../state/workspace-state';
+import type { InitializeResult, WorkspaceStateStore } from '../state/workspace-state';
+import { completeInterruptedResetOnActivation } from '../commands/reset-wiring';
 
 export function buildNodeLifecycleFs(
   allowedRoots: readonly string[],
@@ -418,6 +422,7 @@ export function disposeSqliteRuntimeResources(resources: {
   readonly disposeTelemetryConfig?: (() => void) | undefined;
   readonly usageAccounting?: UsageAccountingService | null | undefined;
   readonly usageWiring?: UsageAccountingWiring | null | undefined;
+  readonly reportingService?: { readonly close?: () => Promise<void> } | null | undefined;
   readonly workflowComposition?: ProductionWorkflowComposition | null | undefined;
   readonly telemetryHost?: TelemetryHostService | null | undefined;
   readonly sqliteStore: SqliteApplicationStore;
@@ -431,6 +436,9 @@ export function disposeSqliteRuntimeResources(resources: {
   runBestEffortDispose(() => resources.usageWiring?.dispose());
   runBestEffortDispose(() => {
     void resources.usageAccounting?.close().catch(() => undefined);
+  });
+  runBestEffortDispose(() => {
+    void resources.reportingService?.close?.().catch(() => undefined);
   });
   runBestEffortDispose(() => resources.workflowComposition?.dispose());
 
@@ -538,5 +546,218 @@ export function createDynamicUsageAccountingReader(
     readGaps: (req) => createUsageAccountingReader(getService()).readGaps(req),
     readQualifications: () => createUsageAccountingReader(getService()).readQualifications()
   };
+}
+
+export async function checkPostCutoverDatabasePresentOnDisk(databasePath: string): Promise<boolean> {
+  try {
+    const st = await fsp.lstat(databasePath);
+    return st.isFile();
+  } catch {
+    return false;
+  }
+}
+
+export async function abortIfPostCutoverDatabaseMissing(input: {
+  readonly operationalMemento: SwitchableOperationalMemento | undefined;
+  readonly scopeId: string;
+  readonly activeDatabasePath: string;
+  readonly logger: SanitizedLogger;
+  readonly notify: (message: string) => void;
+}): Promise<boolean> {
+  if (!input.operationalMemento?.hasCutoverAuthorityForScope(input.scopeId)) return false;
+  if (await checkPostCutoverDatabasePresentOnDisk(input.activeDatabasePath)) return false;
+  input.operationalMemento.setDurableBatchUnavailableReason('sqlite-database-missing-after-cutover');
+  input.logger.warn(
+    'sqlite cutover: authoritative database is missing after cutover; refusing fresh creation or legacy memento re-import',
+    { scopeId: input.scopeId }
+  );
+  input.notify(
+    'Schegent operational SQLite database is missing after cutover. Operational writes are disabled to prevent resurrecting stale state; restore a backup or reset workspace state.'
+  );
+  return true;
+}
+
+export function createEmptyInitializeResult(): InitializeResult {
+  return {
+    migrated: false,
+    v6MigrationEvents: [],
+    v7MigrationEvents: [],
+    v10MigrationEvents: [],
+    v11MigrationEvents: [],
+    v12MigrationEvents: [],
+    v13MigrationEvents: [],
+    v14MigrationEvents: [],
+    orphanedRunEvents: [],
+    runRepairEvents: []
+  };
+}
+
+export async function probeOperationalMementoSnapshotBeforeInitialize(input: {
+  readonly globalStorageRoot: string;
+  readonly legacyStorageRoot?: string | undefined;
+  readonly scopeId: string;
+  readonly operationalMemento: SwitchableOperationalMemento | undefined;
+  readonly logger: SanitizedLogger;
+}): Promise<boolean> {
+  const { globalStorageRoot, legacyStorageRoot, scopeId, operationalMemento, logger } = input;
+  if (operationalMemento === undefined) return false;
+  operationalMemento.setActiveScope(scopeId);
+  if (operationalMemento.isSqliteAttached()) return true;
+
+  const relSegments = ['sqlite', scopeId] as const;
+  const canonicalPath = path.join(globalStorageRoot, 'sqlite', scopeId, 'schegent-state.db');
+  const canonicalContainment = {
+    rootDir: globalStorageRoot,
+    relativeDirSegments: relSegments,
+    dbFileName: 'schegent-state.db'
+  };
+  const safeAsync = async (fn: () => Promise<boolean>): Promise<boolean> => {
+    try {
+      return await fn();
+    } catch {
+      return false;
+    }
+  };
+
+  let attached = operationalMemento.attachReadOnlySnapshotIfPresent(
+    canonicalPath,
+    scopeId,
+    canonicalContainment
+  );
+  if (!attached && operationalMemento.lastSyncReadOnlyProbeNeededAsync()) {
+    attached = await safeAsync(() =>
+      operationalMemento.attachReadOnlySnapshotIfPresentAsync(
+        globalStorageRoot,
+        relSegments,
+        'schegent-state.db',
+        scopeId
+      )
+    );
+  }
+  if (
+    !attached &&
+    legacyStorageRoot !== undefined &&
+    path.resolve(legacyStorageRoot) !== path.resolve(globalStorageRoot)
+  ) {
+    const legacyPath = path.join(legacyStorageRoot, 'sqlite', scopeId, 'schegent-state.db');
+    attached = operationalMemento.attachReadOnlySnapshotIfPresent(legacyPath, scopeId, {
+      rootDir: legacyStorageRoot,
+      relativeDirSegments: relSegments,
+      dbFileName: 'schegent-state.db'
+    });
+    if (!attached && operationalMemento.lastSyncReadOnlyProbeNeededAsync()) {
+      attached = await safeAsync(() =>
+        operationalMemento.attachReadOnlySnapshotIfPresentAsync(
+          legacyStorageRoot,
+          relSegments,
+          'schegent-state.db',
+          scopeId
+        )
+      );
+    }
+  }
+  if (!attached && operationalMemento.hasCutoverAuthorityForScope(scopeId)) {
+    operationalMemento.setDurableBatchUnavailableReason('sqlite-unavailable-post-cutover');
+    logger.warn(
+      'sqlite cutover: authoritative database is missing or unreadable at startup; refusing legacy memento fallback',
+      { scopeId }
+    );
+  }
+  return attached;
+}
+
+export async function initializeOperationalStoreForActivation(input: {
+  readonly globalStorageRoot: string;
+  readonly legacyStorageRoot?: string | undefined;
+  readonly scopeId: string;
+  readonly operationalMemento: SwitchableOperationalMemento | undefined;
+  readonly store: WorkspaceStateStore;
+  readonly logger: SanitizedLogger;
+}): Promise<{
+  readonly completedResetGeneration: number | null;
+  readonly migrationEvents: InitializeResult;
+}> {
+  await probeOperationalMementoSnapshotBeforeInitialize(input);
+  const completedResetGeneration = await completeInterruptedResetOnActivation(input.store, input.logger);
+  try {
+    const migrationEvents = await input.store.initialize();
+    return { completedResetGeneration, migrationEvents };
+  } catch (err) {
+    if (
+      err instanceof PostCutoverMementoWriteForbiddenError &&
+      input.operationalMemento?.isReadOnlySnapshotAttached() === true
+    ) {
+      input.logger.info('deferred load-time state repairs until primary SQLite attach', {
+        scopeId: input.scopeId
+      });
+      return { completedResetGeneration, migrationEvents: createEmptyInitializeResult() };
+    }
+    throw err;
+  }
+}
+
+export function extractPrimacyGainedSubscriber(
+  lock: object
+): ((listener: () => void) => { dispose: () => void }) | undefined {
+  if (
+    'onPrimacyGained' in lock &&
+    typeof (lock as { onPrimacyGained?: unknown }).onPrimacyGained === 'function'
+  ) {
+    const subscribe = (
+      lock as {
+        onPrimacyGained: (
+          cb: (result: { acquired: boolean; ownerId: string }) => void
+        ) => { dispose: () => void };
+      }
+    ).onPrimacyGained;
+    return (listener: () => void) =>
+      subscribe.call(lock, (result) => {
+        if (result.acquired) listener();
+      });
+  }
+  return undefined;
+}
+
+/**
+ * The run ids a sweep must spare: lane pins, export pins and active protective references.
+ * Empty when SQLite is not open, since nothing can be pinned there. Throws
+ * {@link ProtectedRunIdsUnavailableError}, after reporting, when the query fails.
+ */
+export function querySqliteProtectedRunIds(
+  services: {
+    readonly runLaneCoordinator: { getProtectedRunIds(): Iterable<string> };
+    readonly reportingService: { activeExportRootIds(): Iterable<string> };
+    readonly sqliteStore: SqliteApplicationStore;
+  } | null,
+  reportFailure: SideEffectFailureReport
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  if (services === null) return result;
+  for (const lanePinnedRunId of services.runLaneCoordinator.getProtectedRunIds()) {
+    result.add(lanePinnedRunId);
+  }
+  for (const exportPinnedRunId of services.reportingService.activeExportRootIds()) {
+    result.add(exportPinnedRunId);
+  }
+  try {
+    const rows = services.sqliteStore.writerConnection.all<{ readonly run_id: string }>(
+      `SELECT DISTINCT al.owner_run_id AS run_id
+         FROM artifact_lifecycle al
+         JOIN artifact_references ar ON ar.artifact_id = al.artifact_id
+        WHERE ar.protective = 1 AND ar.released_revision IS NULL AND al.owner_run_id IS NOT NULL
+       UNION
+       SELECT DISTINCT ar.owner_id AS run_id
+         FROM artifact_references ar
+        WHERE ar.protective = 1 AND ar.released_revision IS NULL AND ar.owner_type = 'run'`
+    );
+    for (const row of rows) {
+      if (row.run_id) result.add(row.run_id);
+    }
+  } catch (err) {
+    // Fail closed: a partial set would expose the runs pinned only here.
+    reportFailure('sweep-protection-query', err);
+    throw new ProtectedRunIdsUnavailableError();
+  }
+  return result;
 }
 

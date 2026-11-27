@@ -30,7 +30,13 @@ export const BUILD_HALVES = Object.freeze([
   Object.freeze({
     half: 'host',
     output: 'dist/extension.js',
-    outputs: Object.freeze(['dist/extension.js', 'dist/acp-stdio-bridge.js']),
+    outputs: Object.freeze([
+      'dist/extension.js',
+      'dist/acp-stdio-bridge.js',
+      'dist/run-snapshot.worker.js',
+      'dist/accounting-query.worker.js',
+      'dist/result-operator.worker.js'
+    ]),
     sources: Object.freeze(['src']),
     rebuild: 'npm run build:host'
   }),

@@ -200,10 +200,11 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
           }
         }
       };
-      const serviceWith = (queryDeadlineMs?: number): ReportingService =>
+      const serviceWith = (queryDeadlineMs?: number, useSnapshotWorker = false): ReportingService =>
         createReportingService({
           conn,
           readPool,
+          useSnapshotWorker,
           workspaceId: 'ws-1',
           workspaceRoot: os.tmpdir(),
           nowMs: () => NOW,
@@ -212,7 +213,7 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
           accounting: null,
           bounds: queryDeadlineMs === undefined ? {} : { queryDeadlineMs }
         });
-      const service = serviceWith();
+      const service = serviceWith(undefined, false);
 
       const firstPageMs: number[] = [];
       for (let sample = 0; sample < FIRST_PAGE_WARMUP + FIRST_PAGE_MEASURED; sample += 1) {
@@ -258,7 +259,7 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
       const cancelled = await service.runReport(QUERY, controller.signal);
       const cancelAckMs = performance.now() - abortedAt;
 
-      const deadlined = await serviceWith(1).runReport(QUERY);
+      const deadlined = await serviceWith(1, false).runReport(QUERY);
       const attemptDetail = await service.runReport({ ...QUERY, view: 'attempt-detail' });
 
       const { excludedIndex: captureGapIndex, slicedGaps } = excludeSingleCaptureGap(
@@ -355,7 +356,155 @@ describe('FR-R6-F11 historical reports at 25,000 roots and 100,000 attempts (NFR
       expect(attemptDetail).toEqual({ ok: false, outcome: 'limited', limit: 'working-data' });
       expect(service.resources()).toMatchObject({ executing: 0, waiting: 0, reservedBytes: 0, liveReports: 0 });
       expect(gaps.length).toBeGreaterThan(1);
+      await service.close?.();
       conn.close();
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it(
+    'offloads file-backed run capture to the chunked read-only worker with bounded end-to-end event-loop latency, RSS, cancellation, and WAL checkpoint freedom (Post-merge Finding 5)',
+    async () => {
+      const workerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'schegent-310-worker-perf-'));
+      const dbPath = path.join(workerDir, 'runs.sqlite');
+      const conn = new NodeSqliteConnection({ databasePath: dbPath });
+      try {
+        SchemaBootstrapService.bootstrapAndMigrate(conn, () => NOW);
+        seedFixture(conn);
+        // Checkpoint after seeding so WAL starts clean before comparing capture traffic.
+        conn.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+
+        const workerMetrics: { queueWaitMs: number; sqlReadMs: number; totalWorkerMs: number }[] = [];
+        const service = createReportingService({
+          conn,
+          workspaceId: 'ws-1',
+          workspaceRoot: os.tmpdir(),
+          nowMs: () => NOW,
+          monotonicMs: () => performance.now(),
+          hostTimezone: 'UTC',
+          accounting: null,
+          onSnapshotWorkerMetrics: (m) => workerMetrics.push(m)
+        });
+
+        const rssBeforeMiB = Number((process.memoryUsage().rss / (1024 * 1024)).toFixed(1));
+        const firstPageMs: number[] = [];
+        const allEndToEndMaxGaps: number[] = [];
+        const allEndToEndP95Gaps: number[] = [];
+        let peakRssBytes = process.memoryUsage().rss;
+
+        for (let sample = 0; sample < FIRST_PAGE_WARMUP + FIRST_PAGE_MEASURED; sample += 1) {
+          const probe = probeGaps();
+          const started = performance.now();
+          const page = pageOf(await service.runReport(QUERY));
+          const elapsed = performance.now() - started;
+          const gapSamples = probe.stop().map((s) => s.durationMs);
+          peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
+
+          expect(page.rowCount).toBe(ROOT_COUNT);
+          expect(service.closeReport({ reportId: page.reportId }).ok).toBe(true);
+          if (sample >= FIRST_PAGE_WARMUP) {
+            firstPageMs.push(elapsed);
+            allEndToEndMaxGaps.push(Math.max(...gapSamples));
+            allEndToEndP95Gaps.push(percentile(gapSamples, 0.95));
+          }
+        }
+
+        // Measure concurrent settlement writes and WAL checkpoint completion during a full worker capture.
+        const settlementWriteLatenciesMs: number[] = [];
+        let writeSeq = 0;
+        const writeInterval = setInterval(() => {
+          const wStart = performance.now();
+          writeSeq += 1;
+          seedRun(conn, {
+            runId: `settle-concurrent-${String(writeSeq)}`,
+            createdAtMs: NOW + writeSeq * 1_000,
+            workflowId: 'wf-live',
+            status: 'succeeded',
+            startedAtMs: NOW + writeSeq * 1_000,
+            completedAtMs: NOW + writeSeq * 1_000 + 50
+          });
+          settlementWriteLatenciesMs.push(performance.now() - wStart);
+        }, 15);
+        let concurrentPage: ReportPage;
+        try {
+          concurrentPage = pageOf(await service.runReport(QUERY));
+        } finally {
+          clearInterval(writeInterval);
+        }
+        expect(concurrentPage.rowCount).toBe(ROOT_COUNT);
+        expect(service.closeReport({ reportId: concurrentPage.reportId }).ok).toBe(true);
+
+        // Immediately after capture completes, the worker's read transaction is already closed so
+        // `PRAGMA wal_checkpoint(TRUNCATE)` completes with busy = 0 (no pinned WAL snapshot).
+        const checkpoint = conn.get<{ busy: number; log: number; checkpointed: number }>(
+          'PRAGMA wal_checkpoint(TRUNCATE)'
+        );
+        expect(checkpoint?.busy).toBe(0);
+
+        // Measure mid-capture cancellation acknowledgement from request start (aborting 20 ms in).
+        const cancelController = new AbortController();
+        let abortedAt = Number.NaN;
+        const abortTimer = setTimeout(() => {
+          abortedAt = performance.now();
+          cancelController.abort();
+        }, 20);
+        const cancelled = await service.runReport(QUERY, cancelController.signal);
+        clearTimeout(abortTimer);
+        const cancelAckMs = performance.now() - abortedAt;
+
+        const deadlinedService = createReportingService({
+          conn,
+          workspaceId: 'ws-1',
+          workspaceRoot: os.tmpdir(),
+          nowMs: () => NOW,
+          monotonicMs: () => performance.now(),
+          hostTimezone: 'UTC',
+          accounting: null,
+          bounds: { queryDeadlineMs: 1 }
+        });
+        const deadlined = await deadlinedService.runReport(QUERY);
+        await deadlinedService.close?.();
+
+        const rssPeakMiB = Number((peakRssBytes / (1024 * 1024)).toFixed(1));
+        const workerSummary = {
+          mode: 'read-only-chunked-worker',
+          firstPage: {
+            p50Ms: rounded(percentile(firstPageMs, 0.5)),
+            p95Ms: rounded(percentile(firstPageMs, 0.95)),
+            maxMs: rounded(Math.max(...firstPageMs))
+          },
+          endToEndHostGap: {
+            p95OfP95Ms: rounded(percentile(allEndToEndP95Gaps, 0.95)),
+            p95OfMaxMs: rounded(percentile(allEndToEndMaxGaps, 0.95)),
+            worstMaxMs: rounded(Math.max(...allEndToEndMaxGaps))
+          },
+          workerSqlReadP95Ms: rounded(percentile(workerMetrics.map((m) => m.sqlReadMs), 0.95)),
+          workerTotalP95Ms: rounded(percentile(workerMetrics.map((m) => m.totalWorkerMs), 0.95)),
+          rssBeforeMiB,
+          rssPeakMiB,
+          rssDeltaMiB: Number((rssPeakMiB - rssBeforeMiB).toFixed(1)),
+          concurrentSettlementWrites: {
+            count: settlementWriteLatenciesMs.length,
+            maxMs: settlementWriteLatenciesMs.length > 0 ? rounded(Math.max(...settlementWriteLatenciesMs)) : 0
+          },
+          walCheckpointBusyAfterCapture: checkpoint?.busy ?? -1,
+          cancelAckMs: rounded(cancelAckMs)
+        };
+        console.info('[Post-merge Finding 5 worker benchmark]', JSON.stringify(workerSummary));
+
+        expect(workerSummary.firstPage.p95Ms).toBeLessThanOrEqual(FIRST_PAGE_P95_BUDGET_MS);
+        // True end-to-end host event-loop blocking (INCLUDING capture) stays well under 50 ms p95!
+        expect(workerSummary.endToEndHostGap.p95OfP95Ms).toBeLessThanOrEqual(50);
+        expect(workerSummary.endToEndHostGap.p95OfMaxMs).toBeLessThanOrEqual(80);
+        expect(cancelled).toEqual({ ok: false, outcome: 'cancelled' });
+        expect(cancelAckMs).toBeLessThanOrEqual(CANCEL_ACK_BUDGET_MS);
+        expect(deadlined).toEqual({ ok: false, outcome: 'limited', limit: 'deadline-exceeded' });
+        expect(service.resources()).toMatchObject({ executing: 0, waiting: 0, reservedBytes: 0, liveReports: 0 });
+        await service.close?.();
+      } finally {
+        conn.close();
+        fs.rmSync(workerDir, { recursive: true, force: true });
+      }
     },
     TEST_TIMEOUT_MS
   );

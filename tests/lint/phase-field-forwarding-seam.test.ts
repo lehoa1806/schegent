@@ -132,12 +132,12 @@ async function captureRequest(): Promise<InvocationRequest> {
     append: vi.fn(async () => ({ id: 'a', timestamp: '2026-01-01T00:00:00.000Z' })),
     appendRequired: vi.fn(async () => ({ id: 'a', timestamp: '2026-01-01T00:00:00.000Z' }))
   };
-  const runner = new PhaseRunner(
-    fakeRunner as never,
-    new PromptBuilder(),
-    auditWriter as never,
-    new SanitizedLogger()
-  );
+  const runner = new PhaseRunner({
+    runner: fakeRunner as never,
+    promptBuilder: new PromptBuilder(),
+    auditWriter: auditWriter as never,
+    logger: new SanitizedLogger()
+  });
   const phaseDef: Record<string, unknown> = {
     id: 'speckit-specify',
     name: 'Specify',

@@ -327,7 +327,14 @@ export class WorkspaceLockManager {
         /* a listener must not be able to stop the re-acquisition */
       }
     }
-    await this.tryAcquire();
+    const reacquired = await this.tryAcquire();
+    // Because `onFenceLost` above demoted SQLite, cleared `installedRecovery`, and cancelled
+    // watchdog timers, a successful inline re-acquisition MUST notify `onPrimacyGained` so
+    // SQLite primary authority and recovery producers are restored instead of staying stuck
+    // demoted until restart.
+    if (reacquired.acquired) {
+      this.notifyPrimacyGained(reacquired);
+    }
   }
 
   /**
@@ -352,10 +359,6 @@ export class WorkspaceLockManager {
    * wins, so a workspace with two windows open costs what a workspace with one
    * window and one crashed host has always cost.
    *
-   * THE NOTIFICATION IS ONLY HERE. `tryAcquire()`'s other two callers are
-   * activation and the fence-loss path, and neither is a gain a subscriber
-   * should act on; SC-011 pins the count at exactly one across a gain → loss →
-   * gain cycle, which holds by construction because this is the only site.
    * Listener errors are swallowed for the reason `heartbeat()` gives for its
    * own: one bad callback must not leave the window permanently non-primary.
    */
@@ -366,6 +369,10 @@ export class WorkspaceLockManager {
     }
     const result = await this.tryAcquire();
     if (!result.acquired) return;
+    this.notifyPrimacyGained(result);
+  }
+
+  private notifyPrimacyGained(result: { acquired: boolean; ownerId: string }): void {
     for (const listener of this.primacyGainedListeners) {
       try {
         listener(result);

@@ -91,20 +91,13 @@ function makeRunner(
   writer: AuditLogWriter,
   accessor: BackendPostureAccessor | null
 ): PhaseRunner {
-  return new PhaseRunner(
-    makeFakeRunner(),
-    new PromptBuilder(),
-    writer,
-    new SanitizedLogger(),
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    accessor
-  );
+  return new PhaseRunner({
+    runner: makeFakeRunner(),
+    promptBuilder: new PromptBuilder(),
+    auditWriter: writer,
+    logger: new SanitizedLogger(),
+    backendPostureAccessor: accessor
+  });
 }
 
 const baseInputs = {
@@ -256,14 +249,13 @@ describe('PhaseRunner — backend posture record (FR-R3-064)', () => {
       if (entry.eventType === POSTURE) throw new Error('disk full');
     });
     const fakeRunner = makeFakeRunner();
-    const runner = new PhaseRunner(
-      fakeRunner,
-      new PromptBuilder(),
-      writer,
-      new SanitizedLogger(),
-      null, null, null, null, null, null, null,
-      postureAccessor(() => true)
-    );
+    const runner = new PhaseRunner({
+      runner: fakeRunner,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger(),
+      backendPostureAccessor: postureAccessor(() => true)
+    });
 
     await expect(runner.run(baseInputs)).rejects.toBeInstanceOf(RequiredEvidenceUnavailableError);
     // The point of "required": the backend was never reached.
@@ -379,12 +371,12 @@ describe('PhaseRunner — the pre-spawn refusal is recorded (feature 212)', () =
 
   async function driveRefusal(): Promise<{ written: AuditEntry[]; error: unknown }> {
     const { writer, written } = writtenRecordingWriter();
-    const runner = new PhaseRunner(
-      refusingRegistry() as never,
-      new PromptBuilder(),
-      writer,
-      new SanitizedLogger()
-    );
+    const runner = new PhaseRunner({
+      runner: refusingRegistry() as never,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     let error: unknown = null;
     try {
       await runner.run({ ...baseInputs, phaseDef: phaseDefFor('codex') });
@@ -466,12 +458,12 @@ describe('PhaseRunner — a throw out of invoke() (feature 212)', () => {
 
   async function drive(error: Error): Promise<{ written: Appended[]; thrown: unknown }> {
     const { writer, entries } = makeRecordingAuditWriter();
-    const runner = new PhaseRunner(
-      throwingRunner(error) as never,
-      new PromptBuilder(),
-      writer,
-      new SanitizedLogger()
-    );
+    const runner = new PhaseRunner({
+      runner: throwingRunner(error) as never,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     let thrown: unknown = null;
     try {
       await runner.run({ ...baseInputs, runId: 'run-invoke-throw' });
@@ -549,12 +541,12 @@ describe('PhaseRunner — a phase-end append that rejects (feature 212)', () => 
       logPath: '/tmp/.schegent/audit.log'
     } as unknown as AuditLogWriter;
 
-    const runner = new PhaseRunner(
-      makeFakeRunner() as never,
-      new PromptBuilder(),
-      writer,
-      new SanitizedLogger()
-    );
+    const runner = new PhaseRunner({
+      runner: makeFakeRunner() as never,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger()
+    });
     await expect(
       runner.run({ ...baseInputs, runId: 'run-phase-end-reject' })
     ).rejects.toBeInstanceOf(RequiredEvidenceUnavailableError);
@@ -606,16 +598,13 @@ describe('PhaseRunner — a pre-spawn throw that is not a refusal (feature 212)'
       logPath: '/tmp/.schegent/audit.log'
     } as unknown as AuditLogWriter;
 
-    const runner = new PhaseRunner(
-      makeFakeRunner() as never,
-      new PromptBuilder(),
-      writer,
-      new SanitizedLogger(),
-      null,
-      null,
-      null,
-      { readAutoCompactPctOverride: () => 80 }
-    );
+    const runner = new PhaseRunner({
+      runner: makeFakeRunner() as never,
+      promptBuilder: new PromptBuilder(),
+      auditWriter: writer,
+      logger: new SanitizedLogger(),
+      autoCompactOverrideAccessor: { readAutoCompactPctOverride: () => 80 }
+    });
     let thrown: unknown = null;
     try {
       await runner.run({ ...baseInputs, runId: 'run-pre-spawn-audit-failure' });

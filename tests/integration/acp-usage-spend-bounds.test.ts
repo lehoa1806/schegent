@@ -328,7 +328,7 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         primaryWorkspaceRoot: root,
         platform: QUALIFIED_PLATFORM
       });
-      const phaseRunner = new PhaseRunner(claudeAcp, new PromptBuilder(), auditWriter, logger);
+      const phaseRunner = new PhaseRunner({ runner: claudeAcp, promptBuilder: new PromptBuilder(), auditWriter, logger });
 
       const startedAt = Date.now() - 1_000;
       const runMeasured = makeRun('run-claude-measured', 'claude', startedAt);
@@ -530,8 +530,8 @@ describe('FR-R8-02 (02-01) — ACP billable usage propagation and spend-bound en
         primaryWorkspaceRoot: root,
         platform: QUALIFIED_PLATFORM
       });
-      const codexPhaseRunner = new PhaseRunner(codexAcp, new PromptBuilder(), auditWriter, logger);
-      const agyPhaseRunner = new PhaseRunner(agyAcp, new PromptBuilder(), auditWriter, logger);
+      const codexPhaseRunner = new PhaseRunner({ runner: codexAcp, promptBuilder: new PromptBuilder(), auditWriter, logger });
+      const agyPhaseRunner = new PhaseRunner({ runner: agyAcp, promptBuilder: new PromptBuilder(), auditWriter, logger });
 
       // Add an anchor entry BEFORE the run's startedAt so `readSpendReplay` bounds the run cleanly.
       await auditWriter.append({

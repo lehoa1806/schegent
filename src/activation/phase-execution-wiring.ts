@@ -177,8 +177,8 @@ const agentConfigAckGate = new AgentConfigAckGate({
   appendAudit: (entry) => auditWriter.append(entry),
   logger
 });
-const phaseRunner = new PhaseRunner(
-  runnerRegistry,
+const phaseRunner = new PhaseRunner({
+  runner: runnerRegistry,
   promptBuilder,
   auditWriter,
   logger,
@@ -186,16 +186,15 @@ const phaseRunner = new PhaseRunner(
   verboseAccessor,
   fatalSignaturesAccessor,
   autoCompactOverrideAccessor,
-  null,
   phaseBreakpointAccessor,
   lastRetryDecisionSink,
   backendPostureAccessor,
   // FR-R3-080 (T1075) — the refused-write drain. Without it a refusal reaches
   // the log and stops there, which is the state this item exists to leave.
-  evidenceHealth,
-  (kind) => observeHostAmbientConfig(kind),
+  evidenceHealthDrain: evidenceHealth,
+  ambientConfigObserver: (kind) => observeHostAmbientConfig(kind),
   agentConfigAckGate
-);
+});
 const runSafety = await createRunSafetyWiring({
   context,
   workspaceRoot,

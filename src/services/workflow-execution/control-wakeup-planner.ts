@@ -43,6 +43,8 @@ import type {
 } from '../backend-availability-service';
 import { fromObservationRecord } from '../backend-availability-service';
 import type { DeadlineTimer } from '../retry-coordinator';
+import { errorMessage } from '../../lib/errors';
+import type { SanitizedLogger } from '../../lib/logger';
 import {
   ControlLedgerStore,
   lookupRecord
@@ -125,6 +127,7 @@ export interface ControlWakeupPlannerDeps {
   readonly clock: AvailabilityClockPort;
   readonly timer?: DeadlineTimer | undefined;
   readonly onWakeupDue?: ((event: ControlWakeupEvent) => void | Promise<void>) | undefined;
+  readonly logger?: Pick<SanitizedLogger, 'warn' | 'sanitize'> | undefined;
 }
 
 interface ArmedFrameTimer {
@@ -155,6 +158,7 @@ export class ControlWakeupPlanner {
   private readonly onWakeupDue:
     | ((event: ControlWakeupEvent) => void | Promise<void>)
     | undefined;
+  private readonly logger: Pick<SanitizedLogger, 'warn' | 'sanitize'> | undefined;
   private readonly armedTimers = new Map<string, ArmedFrameTimer>();
   private readonly registeredFrames = new Map<string, RegisteredFrameConfig>();
 
@@ -164,6 +168,7 @@ export class ControlWakeupPlanner {
     this.clock = deps.clock;
     this.timer = deps.timer ?? defaultDeadlineTimer;
     this.onWakeupDue = deps.onWakeupDue;
+    this.logger = deps.logger;
   }
 
   public dispose(): void {
@@ -1258,15 +1263,19 @@ export class ControlWakeupPlanner {
     );
 
     if (this.onWakeupDue !== undefined) {
-      await Promise.resolve(
-        this.onWakeupDue({
+      try {
+        await this.onWakeupDue({
           rootRunId: input.rootRunId,
           frameKey: input.frameKey,
           generation: input.generation,
           firedAtWallMs: this.clock.nowWallMs(),
           reason: input.reason
-        })
-      ).catch(() => undefined);
+        });
+      } catch (err: unknown) {
+        this.logger?.warn(
+          `control-wakeup-planner: onWakeupDue failed for root=${this.logger.sanitize(input.rootRunId)} frame=${this.logger.sanitize(input.frameKey)} reason=${input.reason}: ${this.logger.sanitize(errorMessage(err))}`
+        );
+      }
     }
   }
 }

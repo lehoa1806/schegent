@@ -18,6 +18,8 @@ export interface AgentConfigGrantFileSummary {
   readonly name: string;
   readonly size: number;
   readonly digest: string;
+  /** Marks a workspace-internal script file resolved from a Claude settings hook command. */
+  readonly source?: 'hook-script';
 }
 
 export interface AgentConfigGrant {
@@ -38,6 +40,14 @@ export interface AgentConfigGrantsRead {
 const MAX_ECHOED_CHARS = 64;
 const MAX_REPORTED_PROBLEMS = 10;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+export const MAX_AGENT_CONFIG_GRANT_FILES = 256;
+const MAX_AGENT_CONFIG_GRANT_TOTAL_BYTES = 4 * 1024 * 1024;
+const MAX_AGENT_CONFIG_WALK_DEPTH = 4;
+const MAX_AGENT_CONFIG_PATH_CHARS = 512;
+const CLAUDE_SETTINGS_PATHS: ReadonlySet<string> = new Set([
+  '.claude/settings.json',
+  '.claude/settings.local.json'
+]);
 
 const EMPTY: AgentConfigGrantMap = Object.freeze({});
 
@@ -50,11 +60,24 @@ function describe(value: unknown): string {
   return `a ${typeof value}`;
 }
 
+function isSafeRelativePosixPath(name: string): boolean {
+  if (name.length === 0 || name.length > MAX_AGENT_CONFIG_PATH_CHARS) return false;
+  if (name.startsWith('/') || name.endsWith('/') || name.includes('\\')) return false;
+  for (let i = 0; i < name.length; i += 1) {
+    const code = name.charCodeAt(i);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return false;
+  }
+  const segments = name.split('/');
+  return segments.every((seg) => seg.length > 0 && seg !== '.' && seg !== '..');
+}
+
 function isValidFileSummary(raw: unknown): raw is AgentConfigGrantFileSummary {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return false;
   const rec = raw as Record<string, unknown>;
+  if (rec.source !== undefined && rec.source !== 'hook-script') return false;
   return (
     typeof rec.name === 'string' &&
+    isSafeRelativePosixPath(rec.name) &&
     typeof rec.size === 'number' &&
     Number.isSafeInteger(rec.size) &&
     rec.size >= 0 &&
@@ -62,6 +85,28 @@ function isValidFileSummary(raw: unknown): raw is AgentConfigGrantFileSummary {
     typeof rec.digest === 'string' &&
     SHA256_HEX_RE.test(rec.digest)
   );
+}
+
+function isAllowedGrantFile(
+  file: AgentConfigGrantFileSummary,
+  exactPaths: ReadonlySet<string>,
+  dirPrefixes: readonly string[],
+  hasSettingsForHooks: boolean
+): boolean {
+  if (file.source === 'hook-script') {
+    return hasSettingsForHooks;
+  }
+  if (exactPaths.has(file.name)) return true;
+  for (const prefix of dirPrefixes) {
+    if (!file.name.startsWith(prefix)) continue;
+    const remainder = file.name.slice(prefix.length);
+    const segments = remainder.split('/');
+    // Depth 0..MAX_AGENT_CONFIG_WALK_DEPTH directories + leaf filename => at most depth + 1 segments.
+    if (segments.length >= 1 && segments.length <= MAX_AGENT_CONFIG_WALK_DEPTH + 1) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function reject(key: string, value: unknown): string | null {
@@ -82,18 +127,38 @@ function reject(key: string, value: unknown): string | null {
     return '`grantedAt` is absent or is not a finite number';
   }
   const paths = getBackendDescriptor(entry.backend).repoAgentConfigPaths;
-  if (!Array.isArray(entry.files) || entry.files.length === 0 || entry.files.length > paths.length) {
+  if (
+    paths.length === 0 ||
+    !Array.isArray(entry.files) ||
+    entry.files.length === 0 ||
+    entry.files.length > MAX_AGENT_CONFIG_GRANT_FILES
+  ) {
     return '`files` is absent, empty, or contains an invalid file summary';
   }
   const files: unknown[] = [...entry.files];
   if (!files.every(isValidFileSummary)) return '`files` contains an invalid file summary';
+  let totalBytes = 0;
+  for (const file of files) {
+    totalBytes += file.size;
+    if (totalBytes > MAX_AGENT_CONFIG_GRANT_TOTAL_BYTES) {
+      return '`files` exceeds the total scanned byte limit';
+    }
+  }
+  const exactPaths = new Set(paths.filter((p) => !p.endsWith('/')));
+  const dirPrefixes = paths.filter((p) => p.endsWith('/'));
+  const hasSettingsForHooks = files.some(
+    (file) => CLAUDE_SETTINGS_PATHS.has(file.name) && exactPaths.has(file.name)
+  );
   const names = new Set(files.map((file) => file.name));
-  if (names.size !== files.length || [...names].some((name) => !paths.includes(name))) {
+  if (
+    names.size !== files.length ||
+    files.some((file) => !isAllowedGrantFile(file, exactPaths, dirPrefixes, hasSettingsForHooks))
+  ) {
     return '`files` contains an unexpected or duplicate file name';
   }
   const fingerprint = computeAgentConfigFingerprint(
     entry.backend,
-    files.map((file) => ({ ...file, status: 'present' })),
+    files.map((file) => ({ name: file.name, size: file.size, digest: file.digest, status: 'present' })),
     false
   );
   if (fingerprint !== key) return 'its fingerprint does not match the stored file summaries';
@@ -102,7 +167,12 @@ function reject(key: string, value: unknown): string | null {
 
 function narrow(key: string, entry: Record<string, unknown>): AgentConfigGrant {
   const files = (entry.files as AgentConfigGrantFileSummary[]).map((file) =>
-    Object.freeze({ name: file.name, size: file.size, digest: file.digest })
+    Object.freeze({
+      name: file.name,
+      size: file.size,
+      digest: file.digest,
+      ...(file.source === 'hook-script' ? { source: 'hook-script' as const } : {})
+    })
   );
   return Object.freeze({
     fingerprint: key,

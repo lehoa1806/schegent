@@ -277,13 +277,40 @@ export interface AutoCompactOverrideAccessor {
   readAutoCompactPctOverride(): number | undefined;
 }
 
-export interface ManualPauseAccessor {
+/**
+ * Named dependency options for `PhaseRunner` (principal-review-2026-11-27-r2 F-07).
+ *
+ * Replaces the 15-parameter positional constructor so callers name only the
+ * collaborators they supply instead of passing positional `null` placeholders.
+ */
+export interface PhaseRunnerOptions {
+  readonly runner: BackendRunner | BackendRunnerRegistry;
+  readonly promptBuilder: PromptBuilder;
+  readonly auditWriter: AuditLogWriter;
+  readonly logger: SanitizedLogger;
+  readonly rawTranscript?: RawTranscriptWriter | null;
+  readonly verboseAccessor?: VerboseDiagnosticsAccessor | null;
+  readonly fatalSignaturesAccessor?: FatalSignaturesAccessor | null;
+  readonly autoCompactOverrideAccessor?: AutoCompactOverrideAccessor | null;
+  readonly phaseBreakpointAccessor?: PhaseBreakpointAccessor | null;
+  readonly lastRetryDecisionSink?: LastRetryDecisionSink | null;
   /**
-   * Read at dispatch boundaries by controller-side tests and future runner
-   * integrations. Mirrors the non-cached settings accessor pattern: callers
-   * inject a live read function instead of caching pause state on the runner.
+   * FR-R3-064 — optional in the SIGNATURE, mandatory in PRODUCTION:
+   * `tests/lint/backend-posture-emission-funnel.test.ts` fails on any production
+   * `new PhaseRunner(` that omits `backendPostureAccessor`. Absent, nothing is
+   * recorded: writing `false` for a posture it cannot read would be a lie.
    */
-  isManualPauseRequested(): boolean;
+  readonly backendPostureAccessor?: BackendPostureAccessor | null;
+  /**
+   * FR-R3-080 (T1075) — where a refused evidence write becomes an
+   * operator-visible phase-end warning. Production wiring (`phase-execution-wiring.ts`)
+   * supplies both this drain and `ambientConfigObserver` (FR-R3-105).
+   */
+  readonly evidenceHealthDrain?: { drainPathRefusals(): readonly string[] } | null;
+  readonly ambientConfigObserver?: (
+    kind: BackendRunnerKind
+  ) => Promise<import('../contracts/audit-events').AmbientConfigObservation | null>;
+  readonly agentConfigAckGate?: AgentConfigAckGate | null;
 }
 
 /**
@@ -330,44 +357,19 @@ export class PhaseRunner {
   /** FR-R3-104 — version observed at the current phase's start; see `cli-version-probe.ts`. */
   private observedCliVersion: string | null = null;
   private readonly singleRunner: BackendRunner | null;
+  private readonly logger: SanitizedLogger;
+  private readonly rawTranscript: RawTranscriptWriter | null;
 
-  constructor(
-    runner: BackendRunner | BackendRunnerRegistry,
-    private readonly promptBuilder: PromptBuilder,
-    private readonly auditWriter: AuditLogWriter,
-    private readonly logger: SanitizedLogger,
-    private readonly rawTranscript: RawTranscriptWriter | null = null,
-    private readonly verboseAccessor: VerboseDiagnosticsAccessor | null = null,
-    private readonly fatalSignaturesAccessor: FatalSignaturesAccessor | null = null,
-    private readonly autoCompactOverrideAccessor: AutoCompactOverrideAccessor | null = null,
-    private readonly manualPauseAccessor: ManualPauseAccessor | null = null,
-    private readonly phaseBreakpointAccessor: PhaseBreakpointAccessor | null = null,
-    lastRetryDecisionSink: LastRetryDecisionSink | null = null,
-    /**
-     * FR-R3-064 — optional in the SIGNATURE, mandatory in PRODUCTION, and the
-     * difference is stated rather than implied. FR-R3-049/056 preferred a required
-     * option so `tsc` enumerates every construction site; that is the better
-     * mechanism and not available cheaply here, because 109 test harnesses
-     * construct this class positionally. Enforcement is therefore a gate —
-     * `tests/lint/backend-posture-emission-funnel.test.ts` fails on a production
-     * `new PhaseRunner(` that omits this. Absent, nothing is recorded: writing
-     * `false` for a posture it cannot read would be a lie.
-     */
-    backendPostureAccessor: BackendPostureAccessor | null = null,
-    /**
-     * FR-R3-080 (T1075) — where a refused evidence write becomes an
-     * operator-visible phase-end warning. Positional and defaulted for the
-     * same reason `backendPostureAccessor` above is: 109 test harnesses
-     * construct this class positionally. Absent, the phase-end record carries
-     * no refusal codes — production wiring (`phase-execution-wiring.ts`)
-     * supplies both this drain and `ambientConfigObserver` (FR-R3-105).
-     */
-    private readonly evidenceHealthDrain: { drainPathRefusals(): readonly string[] } | null = null,
-    private readonly ambientConfigObserver?: (
-      kind: BackendRunnerKind
-    ) => Promise<import('../contracts/audit-events').AmbientConfigObservation | null>,
-    private readonly agentConfigAckGate: AgentConfigAckGate | null = null
-  ) {
+  constructor(private readonly options: PhaseRunnerOptions) {
+    const {
+      runner,
+      auditWriter,
+      logger,
+      lastRetryDecisionSink = null,
+      backendPostureAccessor = null
+    } = options;
+    this.logger = logger;
+    this.rawTranscript = options.rawTranscript ?? null;
     // Feature 074 — accept either a BackendRunnerRegistry (per-phase
     // runner resolution) or a plain BackendRunner (backwards compat
     // with existing test mocks and construction sites).
@@ -407,10 +409,6 @@ export class PhaseRunner {
       return this.runnerRegistry.getOrCreate(inputs.phaseDef?.runner);
     }
     return this.singleRunner!;
-  }
-
-  public isManualPauseRequested(): boolean {
-    return this.manualPauseAccessor?.isManualPauseRequested() ?? false;
   }
 
   public async run(inputs: PhaseRunInputs): Promise<PhaseRunOutput> {
@@ -493,7 +491,7 @@ export class PhaseRunner {
     // `manualPauseCause: 'breakpoint-paused'` + `resumeTargetPhaseId`.
     const breakpointPhaseId = inputs.phaseDef?.id ?? inputs.phase;
     const breakpoints =
-      this.phaseBreakpointAccessor?.readBreakpointPhaseIds(inputs.runId) ??
+      this.options.phaseBreakpointAccessor?.readBreakpointPhaseIds(inputs.runId) ??
       new Set<string>();
     if (breakpoints.has(breakpointPhaseId)) {
       const firedAt = Date.now();
@@ -531,7 +529,7 @@ export class PhaseRunner {
     }
     const { text: prompt, identity: promptIdentity } = inputs.resumePrompt
       ? { text: inputs.resumePrompt, identity: RESUME_PROMPT_IDENTITY }
-      : this.promptBuilder.compose({
+      : this.options.promptBuilder.compose({
       phase: inputs.phase,
       phaseDef: inputs.phaseDef,
       iteration: inputs.iteration,
@@ -560,7 +558,7 @@ export class PhaseRunner {
     // method, which is why the record sits here; see `BackendPostureRecorder`.
     await this.postureRecorder.recordOnce(inputs, effectiveRunnerKind);
     // FR-R3-086 — refuse before `phase-start`; see `capability-decision-recorder`.
-    await recordCapabilityDecision(inputs, effectiveRunnerKind, this.appendAudit.bind(this), this.ambientConfigObserver);
+    await recordCapabilityDecision(inputs, effectiveRunnerKind, this.appendAudit.bind(this), this.options.ambientConfigObserver);
 
     const handoffAllowsReuse = inputs.envelope?.phaseHandoff?.sessionReusePermitted !== false;
     const startPayload: Record<string, unknown> = {
@@ -592,7 +590,7 @@ export class PhaseRunner {
     let preflightError: unknown;
     try {
       backendRunner = this.resolveRunner(inputs);
-      await this.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
+      await this.options.agentConfigAckGate?.ensureAcknowledged(inputs, effectiveRunnerKind);
     } catch (err) { preflightError = err; }
     // FR-R3-104 (FR-054) — which CLI this phase drives. A VERSION, never a path; the leaf owns
     // the probe, its TTL cache and its failure handling.
@@ -623,7 +621,7 @@ export class PhaseRunner {
     // undefined, the key MUST NOT appear in the env map (no empty-string
     // fallback, no "undefined" literal).
     const backendDescriptor = getBackendDescriptor(effectiveRunnerKind);
-    const autoCompactPct = this.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
+    const autoCompactPct = this.options.autoCompactOverrideAccessor?.readAutoCompactPctOverride();
     const env: Record<string, string> = { SCHEGENT_PHASE: inputs.phase, SCHEGENT_ITERATION: String(inputs.iteration) };
     if (backendDescriptor.supportsAutoCompactOverride && autoCompactPct !== undefined) {
       env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = String(autoCompactPct);
@@ -684,7 +682,7 @@ export class PhaseRunner {
     let rawTranscriptCapture: Awaited<ReturnType<RawTranscriptWriter['createInvocationCapture']>> | null = null;
     // FR-033 — one read per invocation (never cached), shared by both scans.
     const effectiveFatalSignatures =
-      getEffectiveSignatures(this.fatalSignaturesAccessor?.readOperatorAdditions() ?? []);
+      getEffectiveSignatures(this.options.fatalSignaturesAccessor?.readOperatorAdditions() ?? []);
     let raw: RawInvocationOutput;
     try {
       const invoke: BackendRunner['invoke'] = (invocation, capture) =>
@@ -1107,7 +1105,7 @@ export class PhaseRunner {
     // allowlist-filtered by the phase-end projection like every other warning
     // here, so only the code-resident literals survive — which is what keeps a
     // sink from putting a path in one.
-    combinedWarnings.push(...(this.evidenceHealthDrain?.drainPathRefusals() ?? []));
+    combinedWarnings.push(...(this.options.evidenceHealthDrain?.drainPathRefusals() ?? []));
 
     const auditEntry = await this.appendPhaseEnd(
       attemptRef,
@@ -1181,8 +1179,8 @@ export class PhaseRunner {
   // disables the verbose-diag opt-in for this invocation (one-shot
   // warning, no audit-pipeline impact). See specs/044-verbose-diag-path-defense.
   private buildVerboseTarget(inputs: PhaseRunInputs): VerboseDiagnosticTarget | undefined {
-    if (!this.verboseAccessor) return undefined;
-    if (!this.verboseAccessor.isVerboseDiagnosticsEnabled()) return undefined;
+    if (!this.options.verboseAccessor) return undefined;
+    if (!this.options.verboseAccessor.isVerboseDiagnosticsEnabled()) return undefined;
     // Feature 098 (T045, FR-034) — the Pipeline id is a directory name here, so
     // a substituted one would file a Run's diagnostics under a Pipeline that had
     // nothing to do with it. A path segment cannot be omitted; the whole opt-in
@@ -1422,7 +1420,7 @@ export class PhaseRunner {
     entry: Omit<AuditEntry, 'id' | 'timestamp'>
   ): Promise<AuditEntry> {
     try {
-      return await this.auditWriter.append(entry);
+      return await this.options.auditWriter.append(entry);
     } catch {
       phaseLogger(this.logger, entry).warn(
         `phase-runner: required audit evidence unavailable (${entry.eventType})`

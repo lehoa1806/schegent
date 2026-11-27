@@ -86,7 +86,9 @@ export const EXPORT_TEXT = {
     'no-evidence': 'No evidence found for that Run.',
     'invalid-run-id': 'That is not a Run id.',
     'write-failed': 'The export could not be written. Some files may remain at the destination.'
-  } satisfies Readonly<Record<ExportRefusalCode, string>>
+  } satisfies Readonly<Record<ExportRefusalCode, string>>,
+  unreadableSource:
+    'Some source evidence could not be read, so no partial bundle was exported.'
 } as const;
 
 /** The run-id shape both services already enforce; checked early so the prompt can. */
@@ -249,7 +251,11 @@ export async function runExportRunEvidenceCommand(
   } else {
     const refusal = refusalCodeFor(result.reason);
     const recorded = await recordExport(deps, runId, { kind: 'run-evidence', outcome: 'refused', included: 0, omitted: 0, refusal });
-    void deps.notifier.warn(`Schegent: export refused. ${EXPORT_TEXT.refusal[refusal]}`);
+    const message =
+      result.reason === 'unreadable-source'
+        ? EXPORT_TEXT.unreadableSource
+        : EXPORT_TEXT.refusal[refusal];
+    void deps.notifier.warn(`Schegent: export refused. ${message}`);
     if (!recorded) void deps.notifier.warn(EXPORT_TEXT.notRecorded);
   }
   deps.logger.info(`evidence export for ${runId}: ${result.outcome}`);

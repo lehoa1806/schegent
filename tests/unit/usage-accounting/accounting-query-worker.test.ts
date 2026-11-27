@@ -10,10 +10,14 @@ import { DEFAULT_ACCOUNTING_BOUNDS } from '../../../src/contracts/usage-accounti
 import { NodeSqliteConnection, SchemaBootstrapService } from '../../../src/services/sqlite-store';
 import { createUsageAccountingService } from '../../../src/services/usage-accounting/usage-accounting-service';
 import {
+  ACCOUNTING_QUERY_WORKER_FILENAME,
+  ACCOUNTING_QUERY_WORKER_RESOURCE_LIMITS,
   createAccountingQueryWorkerClient,
   isFileBackedSqlitePath,
+  resolveAccountingQueryWorkerPath,
   type AccountingWorkerQueryMetrics
 } from '../../../src/services/usage-accounting/accounting-query-worker';
+import { WORKER_OOM_ERROR_CODE } from '../../../src/services/worker-entry-path';
 import { createUsageAccountingReader, queryUsageAccountingAsync } from '../../../src/headless/usage-accounting-api';
 import { readUsage, readUsageAsync } from '../../../src/services/reporting/report-usage';
 
@@ -294,6 +298,80 @@ describe('FR-R8-03 (03-03) read-only usage-accounting query worker', () => {
       }
     } finally {
       await service.close();
+      conn.close();
+    }
+  });
+
+  it('resolves bundled vs source worker entry path and maps ERR_WORKER_OUT_OF_MEMORY cleanly to response-too-large', async () => {
+    const distDir = path.resolve('/app/dist');
+    const distBundle = path.join(distDir, ACCOUNTING_QUERY_WORKER_FILENAME);
+    expect(
+      resolveAccountingQueryWorkerPath({
+        callerDir: distDir,
+        callerFilename: path.join(distDir, 'extension.js'),
+        fileExists: (candidate) => candidate === distBundle
+      })
+    ).toBe(distBundle);
+    expect(
+      resolveAccountingQueryWorkerPath().endsWith(
+        path.join('usage-accounting', 'accounting-query-worker-entry.ts')
+      )
+    ).toBe(true);
+    expect(ACCOUNTING_QUERY_WORKER_RESOURCE_LIMITS.maxOldGenerationSizeMb).toBe(128);
+    expect(ACCOUNTING_QUERY_WORKER_RESOURCE_LIMITS.maxYoungGenerationSizeMb).toBe(16);
+
+    const dbPath = createTempDbPath();
+    const conn = new NodeSqliteConnection({ databasePath: dbPath });
+    SchemaBootstrapService.bootstrapAndMigrate(conn, () => Date.parse(NOW));
+    const scriptDir = path.dirname(dbPath);
+    const oomScript = path.join(scriptDir, 'oom-acct-worker.cjs');
+    fs.writeFileSync(
+      oomScript,
+      `const { parentPort } = require('node:worker_threads');
+       parentPort.on('message', () => {
+         const hold = [];
+         while (true) hold.push(new Array(1024 * 1024).fill(1));
+       });`,
+      'utf8'
+    );
+    const crashScript = path.join(scriptDir, 'crash-acct-worker.cjs');
+    fs.writeFileSync(
+      crashScript,
+      `const { parentPort } = require('node:worker_threads');
+       parentPort.on('message', () => {
+         throw new Error('simulated worker crash');
+       });`,
+      'utf8'
+    );
+
+    const oomCodes: string[] = [];
+    const oomClient = createAccountingQueryWorkerClient(dbPath, {
+      workerEntryPath: oomScript,
+      resourceLimits: { maxOldGenerationSizeMb: 16, maxYoungGenerationSizeMb: 4 },
+      onErrorCode: (code) => oomCodes.push(code)
+    });
+    const crashClient = createAccountingQueryWorkerClient(dbPath, {
+      workerEntryPath: crashScript
+    });
+    try {
+      const oomResult = await oomClient.query({ groupBy: [], limit: 10 }, DEFAULT_ACCOUNTING_BOUNDS);
+      expect(oomResult).toEqual({
+        ok: false,
+        refusal: { code: 'response-too-large', detail: 'worker-memory-limit' }
+      });
+      expect(oomCodes).toContain(WORKER_OOM_ERROR_CODE);
+
+      const crashResult = await crashClient.query(
+        { groupBy: [], limit: 10 },
+        DEFAULT_ACCOUNTING_BOUNDS
+      );
+      expect(crashResult).toEqual({
+        ok: false,
+        refusal: { code: 'store-error', detail: 'queryAsync' }
+      });
+    } finally {
+      await oomClient.close();
+      await crashClient.close();
       conn.close();
     }
   });

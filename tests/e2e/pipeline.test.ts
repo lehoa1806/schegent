@@ -63,7 +63,7 @@ async function buildHarness(tmpRoot: string) {
   const audit = new AuditLogWriter({ workspaceRoot: tmpRoot }, logger);
 
   const runner = new ClaudeCliRunner();
-  const phaseRunner = new PhaseRunner(runner, new PromptBuilder(), audit, logger);
+  const phaseRunner = new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger });
 
   const memento = new FakeMemento();
   const store = new WorkspaceStateStore(memento);

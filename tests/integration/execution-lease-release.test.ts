@@ -201,7 +201,7 @@ async function makeWorkspace(tmpRoot: string, mode: TerminalMode): Promise<Works
   const notifier = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Notifier;
 
   const controller = new SchegentWorkflowController(
-    new PhaseRunner(runner, new PromptBuilder(), audit, logger),
+    new PhaseRunner({ runner, promptBuilder: new PromptBuilder(), auditWriter: audit, logger }),
     store,
     queue,
     statusBar,
