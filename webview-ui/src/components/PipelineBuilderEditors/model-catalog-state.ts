@@ -157,9 +157,11 @@ export function withModelsDetected(
  * timeout, a persistence failure, the config API being unavailable) has no
  * extra detail to add beyond the code itself.
  */
-export function formatModelCatalogSaveRejection(reason: string): string {
+export function formatModelCatalogSaveRejection(reason: string, mutation: 'manual-edit' | 'import-package'): string {
   if (reason === 'stale-catalog') {
-    return `${reason} — the catalog changed. Revert the draft and reapply your edits, or inspect the import again`;
+    return mutation === 'import-package'
+      ? `${reason} — the catalog changed since this document was inspected. Open the import and inspect it again.`
+      : `${reason} — the catalog changed. Revert the draft and reapply your edits.`;
   }
   // FR-R4-F05 (O1) — a reason this function has no sentence for goes through the shared
   // boundary text (a timeout and a dispatch failure included), never raw.
