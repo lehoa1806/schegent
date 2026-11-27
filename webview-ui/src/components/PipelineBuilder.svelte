@@ -236,7 +236,7 @@
     try {
       const result = await saveModelsHelper(payload, modelBaseRevision);
       if (result.status === 'rejected') {
-        showModelsSaveError(formatModelCatalogSaveRejection(result.reason));
+        showModelsSaveError(formatModelCatalogSaveRejection(result.reason, 'manual-edit'));
         return;
       }
       clearModelsSaveError();

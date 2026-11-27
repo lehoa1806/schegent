@@ -1367,7 +1367,7 @@ describe('PipelineBuilder — Track 2 Builder UX unification (no Phase reorder, 
     vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'rejected', reason: 'stale-catalog' });
     await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
     await tick();
-    expect(container.querySelector('[data-testid="models-save-error-banner"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="models-save-error-banner"]')?.textContent).toContain('Revert the draft and reapply your edits');
 
     await switchTab(container, 'Phases');
     expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();

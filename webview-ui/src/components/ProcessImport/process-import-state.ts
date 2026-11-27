@@ -1187,7 +1187,7 @@ export function projectModelCatalogCommitResults(
   plan: ImportPlan,
   ack: SaveModelsImportResult
 ): readonly ImportResultRow[] {
-  const failure = ack.status === 'accepted' ? null : formatModelCatalogSaveRejection(ack.reason);
+  const failure = ack.status === 'accepted' ? null : formatModelCatalogSaveRejection(ack.reason, 'import-package');
   const timedOut = isTimedOut(ack);
   return plan.rows.map((row) => {
     if (row.outcome === 'skip') {
