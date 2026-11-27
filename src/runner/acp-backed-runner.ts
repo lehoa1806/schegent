@@ -79,7 +79,7 @@ import {
   type RawInvocationOutput
 } from './invocation-result';
 import { buildSpawnEnv } from './spawn-env';
-import { resolveExecutableCommand } from '../lib/spawn-command';
+import { assertExecutableUnchanged, resolveExecutableCommand } from '../lib/spawn-command';
 import { buildLaneGitEnv } from '../services/execution-lanes/git-runner';
 import {
   ACP_MIN_SINK_STALL_WATCHDOG_MS,
@@ -588,6 +588,7 @@ export class AcpBackedRunner implements BackendRunner {
         const launchSpec = resolveAcpProfileLaunch({
           kind: this.options.kind,
           resolvedCliPath: effectiveCliPath,
+          ...(request.executableFileStamp && { executableFileStamp: request.executableFileStamp }),
           cwd: request.cwd,
           env: spawnEnv,
           ...(request.capabilities !== undefined ? { capabilities: request.capabilities } : {}),
@@ -620,6 +621,7 @@ export class AcpBackedRunner implements BackendRunner {
           profile,
           generation,
           launch: (validatedProfile) => {
+            assertExecutableUnchanged(effectiveCliPath, request.executableFileStamp);
             const created = this.options.launchTransport
               ? this.options.launchTransport(validatedProfile, request, generation)
               : spawnStdioTransport(launchSpec);

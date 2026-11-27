@@ -178,20 +178,25 @@ async function commit(
   return { ack: acks[0]!, writes };
 }
 
-describe('Feature 096 — the manual add/remove call site keeps its unconditional write (contracts §4)', () => {
-  it('writes without checking a revision when expectedRevision and mutation are both omitted', async () => {
-    const inst = installation({ claude: ['claude-opus-5-5'] });
-    const command: SaveModelsCommand = {
-      type: CMD_SAVE_MODELS,
-      correlationId: 'manual-1',
-      payload: { models: { claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: [], agy: [] } }
-    };
-
-    const { ack, writes } = await commit(inst, command);
-
-    expect(ack).toMatchObject({ status: 'accepted' });
-    expect(writes).toBe(1);
-    expect(inst.workspace).toEqual({ claude: ['claude-opus-5-5', 'claude-sonnet-5-5'], codex: [], agy: [] });
+describe('manual workspace model replacement', () => {
+  it('refuses an unversioned client and a stale draft without writing either', async () => {
+    const inst = installation({ claude: ['initial'] });
+    const base = modelsLayerRevision(inst.workspace);
+    const models = { claude: ['draft'], codex: [], agy: [] };
+    const command: SaveModelsCommand = { type: CMD_SAVE_MODELS, correlationId: 'manual', payload: { models } };
+    const old = await commit(inst, command);
+    expect(old.ack.reason).toBe('stale-catalog');
+    expect(old.writes).toBe(0);
+    inst.workspace = { claude: ['outside-edit'], codex: [], agy: [] };
+    const stale = await commit(inst, { ...command, payload: { models, expectedRevision: base, mutation: { kind: 'manual-edit' } } });
+    expect(stale.ack.reason).toBe('stale-catalog');
+    expect(stale.writes).toBe(0);
+    expect(inst.workspace.claude).toEqual(['outside-edit']);
+    const current = await commit(inst, { ...command, payload: { models, expectedRevision: modelsLayerRevision(inst.workspace), mutation: { kind: 'manual-edit' } } });
+    expect(current.ack.status).toBe('accepted');
+    expect(current.ack.result).toEqual({ revision: modelsLayerRevision(models) });
+    expect(current.writes).toBe(1);
+    expect(inst.workspace).toEqual(models);
   });
 });
 

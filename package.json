@@ -1,5 +1,6 @@
 {
   "name": "schegent",
+  "private": true,
   "displayName": "Schegent",
   "description": "Orchestrates installed Claude, Codex, or Agy CLIs inside the workspace to drive the spec-driven development pipeline.",
   "version": "0.2.0",
@@ -8,7 +9,7 @@
   "license": "MIT",
   "engines": {
     "vscode": "^1.107.0",
-    "node": "^22 || ^24"
+    "node": "^22.13.0 || ^24"
   },
   "categories": [
     "Other"

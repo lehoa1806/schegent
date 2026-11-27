@@ -6,7 +6,7 @@ import type { BackendRunner, MonitorSidecarEvent, MonitorSidecarHook, TreeAttrib
 import { VerboseDiagnosticWriter } from '../audit/verbose-diagnostic-writer';
 import { SanitizedLogger } from '../lib/logger';
 import { buildSpawnEnv } from './spawn-env';
-import { isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
+import { assertExecutableUnchanged, isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
 import { planCapabilityEnforcement } from '../services/capability-enforcement-plan';
 import { CapabilityNotEnforceableError } from '../services/capability-refusal';
 import type { BackendRunnerKind } from '../contracts/backend-kinds';
@@ -482,6 +482,7 @@ export class ClaudeCliRunner implements BackendRunner {
       if (isAborted()) {
         return cancelledInvocationOutput(command, start);
       }
+      assertExecutableUnchanged(request.cliPath, request.executableFileStamp);
       const child = safeSpawn(this.spawnFn, request.cliPath, args, {
         stdio,
         shell: false,

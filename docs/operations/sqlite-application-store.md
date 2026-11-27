@@ -79,9 +79,9 @@ On trusted primary activation (holding `.schegent/ownership`), `relocateLegacySq
 - **Total Queue Capacity**: `64` requests or `16 MiB` (`16,777,216` bytes).
 - **Reserved Settlement Headroom**: `16` slots or `4 MiB` (`4,194,304` bytes) reserved exclusively for the `settlement` lane (`Terminal acceptance`, lock renewal/release, and durability flushes). Normal and background writes are capped at `48` requests or `12 MiB` and rejected with `QUEUE_SATURATED` above that threshold.
 - **WAL Checkpoint Escalation**:
-  - `PASSIVE`: Triggered at `1,000` accumulated WAL pages or `30,000 ms` since the last checkpoint.
-  - `TRUNCATE` / `RESTART`: Triggered when WAL size reaches `64 MiB` and read connections are idle.
-  - `WAL_BACKGROUND_PAUSED`: Triggered when WAL size reaches `128 MiB`, pausing `background` priority writes while keeping `settlement` and `standard` lanes operational.
+  - SQLite auto-checkpoints at 1,000 WAL pages on each writer connection. Operational and transaction-unit commits also check the live sidecar size and request a passive checkpoint after 30 seconds.
+  - At 64 MiB the coordinator checks its read pool and probes progress using a passive checkpoint. When all frames are checkpointed, it attempts truncation with zero lock wait and then restores the normal write timeout. An external reader may still pin the latest snapshot. A busy or incomplete checkpoint retains the measured size. Reattempts are spaced by 30 seconds.
+  - Background admission rechecks the sidecar before writing. A measured 128 MiB or an unreadable size gives `WAL_BACKGROUND_PAUSED`; settlement and standard writes stay available. The runtime log records pressure transitions and checkpoint results including bytes, busy status and frame counts.
 
 ---
 

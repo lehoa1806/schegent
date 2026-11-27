@@ -2154,6 +2154,65 @@ describe('FR-R7-17 (R7-17-06): refusal parity, metrics-only wire, dimension isol
     }
   );
 
+  it.each(['same-length edit', 'oversize', 'misdirected row', 'legacy batch without a digest'] as const)(
+    'drops a %s before any transport request and leaves unrelated storage alone',
+    async (scenario) => {
+      const storageRoot = await makeTempStorageRoot('spool-integrity');
+      const dbPath = path.join(storageRoot, 'state.sqlite');
+      const settings = {
+        enabled: true,
+        endpoint: 'http://127.0.0.1:4318/v1/metrics',
+        allowPlaintextLoopback: true,
+        protocol: 'otlp-http-json' as const,
+        credentialSecretKey: '',
+        credentialHeaderName: 'Authorization',
+        contentPolicy: 'metadata-only' as const,
+        profileRevision: 1
+      };
+      await spoolOneBatchAndShutdown({ storageRoot, dbPath, settings });
+      const leaf = (await spoolDirFiles(storageRoot)).at(0);
+      if (leaf === undefined) throw new Error('missing fixture batch');
+      const spoolPath = path.join(storageRoot, 'telemetry-spool', leaf);
+      const original = await fsp.readFile(spoolPath);
+      const unrelated = path.join(storageRoot, 'other-private.json');
+      await fsp.writeFile(unrelated, original);
+      const sqliteStore = new SqliteApplicationStore({ databasePath: dbPath, journalMode: 'wal' });
+      let sent = 0;
+      const host = createTelemetryHostService({
+        sqliteStore, storageRoot, secrets: null, isWorkspaceTrusted: () => true,
+        transport: { async send() { sent += 1; return { kind: 'failure', errorClass: 'network' }; } }
+      });
+      try {
+        switch (scenario) {
+          case 'same-length edit':
+            await fsp.writeFile(spoolPath, Buffer.alloc(original.length, 'x'));
+            break;
+          case 'oversize':
+            await fsp.truncate(spoolPath, TELEMETRY_EXPORT_BOUNDS.batchBytesMax + 1);
+            break;
+          case 'misdirected row':
+            sqliteStore.writerConnection.run(
+              "UPDATE telemetry_spool_batches SET payload_json = json_set(payload_json, '$.relPath', 'other-private.json')"
+            );
+            break;
+          case 'legacy batch without a digest':
+            sqliteStore.writerConnection.run(
+              "UPDATE telemetry_spool_batches SET payload_json = json_remove(payload_json, '$.sha256')"
+            );
+            break;
+        }
+        expect(host.configureFromUserSettings(settings).kind).toBe('authorized');
+        expect(await host.reconcileAndReplaySpool()).toMatchObject({ replayed: 0, dropped: 1 });
+        expect(sent).toBe(0);
+        expect(host.spool.stats().spooledBatches).toBe(0);
+        expect(await fsp.readFile(unrelated)).toEqual(original);
+      } finally {
+        await host.shutdown();
+        sqliteStore.close();
+      }
+    }
+  );
+
   it('SR-313-2: overlapping reconcileAndReplaySpool() calls deliver each spooled batch exactly once on success', async () => {
     const storageRoot = await makeTempStorageRoot('overlap-replay-ok');
     const dbPath = path.join(storageRoot, 'state.sqlite');

@@ -27,6 +27,7 @@ import type {
   SpawnAdmissionRequest,
   SpawnGate
 } from '../../contracts/containment-qualification';
+import { executableFileStamp } from '../../lib/spawn-command';
 import { judgeSpawnAdmission, versionIsIgnorable } from './admission';
 import { ContainmentAdmissionRefusedError } from './admission-refusal';
 import { diffFingerprint, versionMinorOf } from './fingerprint';
@@ -58,7 +59,9 @@ export interface SpawnAdmissionGateDeps {
   isTrusted(): boolean;
   /** The workspace lock's answer, which is asynchronous: it verifies the claim in storage. */
   hasPrimacy(): boolean | Promise<boolean>;
-  resolveExecutable(cliPath: string): Promise<'resolved' | ExecutableUnresolvedCause>;
+  resolveExecutable(cliPath: string, env?: Readonly<Record<string, string>>): Promise<
+    'resolved' | ExecutableUnresolvedCause | { readonly path: string; readonly stamp: string }
+  >;
   /** The registry's cached `--version` probe: the normalised line, or `null` when unreadable. */
   observeVersion(
     kind: BackendRunnerKind,
@@ -113,11 +116,13 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
 
   async function observe(
     kind: BackendRunnerKind,
-    cliPath: string,
-    signal?: AbortSignal
-  ): Promise<BackendIdentity> {
+    request: SpawnAdmissionRequest
+  ) {
+    const signal = request.cancellationSignal;
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
-    const executable = await deps.resolveExecutable(cliPath);
+    const target = await deps.resolveExecutable(request.cliPath, request.env);
+    const executable = typeof target === 'object' ? 'resolved' : target;
+    const cliPath = typeof target === 'object' ? target.path : request.cliPath;
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     const versionMinor =
       executable === 'resolved'
@@ -128,6 +133,9 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
           )
         : null;
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
+    if (typeof target === 'object' && executableFileStamp(target.path) !== target.stamp) {
+      throw refused(kind, { reason: 'configuration-changed-at-spawn' });
+    }
     const identity: BackendIdentity = {
       kind,
       executable,
@@ -137,7 +145,7 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
       environmentPolicyDigest: deps.environmentPolicyDigest()
     };
     deps.identityCache?.record(identity);
-    return identity;
+    return { identity, cliPath, stamp: typeof target === 'object' ? target.stamp : undefined };
   }
 
   async function admitWithDecision(
@@ -169,7 +177,7 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
       });
     }
 
-    const identity = await observe(kind, request.cliPath, signal);
+    const { identity, cliPath, stamp } = await observe(kind, request);
     if (signal?.aborted) throw new SpawnAdmissionCancelledError();
     const verdict = judgeSpawnAdmission({ identity, granted: deps.granted(), binding: deps.bindings.read(kind) });
     if (verdict.outcome === 'refused') {
@@ -191,7 +199,8 @@ export function createSpawnAdmissionGate(deps: SpawnAdmissionGateDeps): SpawnGat
     return Object.freeze({
       kind,
       executableTarget: kind,
-      resolvedExecutablePath: request.cliPath,
+      resolvedExecutablePath: cliPath,
+      ...(stamp === undefined ? {} : { executableFileStamp: stamp }),
       containmentPosture: verdict.containment,
       permissionMode,
       fingerprint

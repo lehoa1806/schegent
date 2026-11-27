@@ -27,7 +27,6 @@
 //   It does not fail open. An unknown Pipeline or a missing Phase is refused,
 //   never substituted (FR-033 of feature 087, carried forward here).
 
-import * as fs from 'fs/promises';
 import type { PhaseDef, PipelineCatalog } from '../../config/pipeline-config';
 import type { CatalogVersionRef } from '../../contracts/catalog-version';
 import { CATALOG_EMPTY_REASON, type CatalogEmptyReason } from '../../contracts/empty-catalog-guidance';
@@ -52,8 +51,7 @@ import {
 import { resolveCandidatePhaseDefinition } from '../../config/pipeline-snapshot';
 import type { SanitizedLogger } from '../../lib/logger';
 import type { WorkflowRunPipeline } from '../../state/workflow-run';
-import { checkLocalFile, checkLocalFolder } from '../run-request/local-input-validator';
-import type { OutputTargetProbe } from '../run-request/output-target-validator';
+import { runRequestProbes } from '../run-request/run-request-probes';
 import type { EffectivePipelineSource } from '../run-request/run-request-validator';
 import { validateRunRequest } from '../run-request/run-request-validator';
 import type {
@@ -65,22 +63,6 @@ import { synthesizePhasePipelineSnapshot } from './connected-run-factory';
 
 /** How much of a queue guard's own refusal text is echoed back to the caller. */
 const DETAIL_MAX = 120;
-
-/**
- * The filesystem half of the output gate. `lstat` rather than `stat` on purpose:
- * a dangling symlink still occupies the target, and writing through it is still
- * an overwrite the operator has not confirmed.
- */
-const OUTPUT_PROBE: OutputTargetProbe = {
-  exists: async (absolutePath) => {
-    try {
-      await fs.lstat(absolutePath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-};
 
 /**
  * Why a start was refused before any field was checked, in the vocabulary both
@@ -399,9 +381,7 @@ export async function startPipelineRun(
     pipeline: resolved.source,
     workspaceRoot: input.workspaceRoot,
     now: Date.now(),
-    localInputs: { checkFile: checkLocalFile, checkFolder: checkLocalFolder },
-    outputProbe: OUTPUT_PROBE,
-    priorOutputs: { outputsFor: (runId) => deps.readPriorRunOutputs?.(runId) ?? null },
+    ...runRequestProbes(deps.readPriorRunOutputs),
     // Carried, not re-resolved (FR-021). Gate 1 resolved it from the same read
     // that produced the body; asking again here would be a second oracle that
     // could answer for a different body than the one about to be frozen.

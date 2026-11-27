@@ -47,6 +47,7 @@ import {
   type PhaseAttemptDispatchResult
 } from '../services/workflow-execution/connected-run-coordinator';
 import { makeChildRunFactsReader } from '../services/workflow-execution/child-run-facts-reader';
+import { parseRawControlLedger } from '../services/workflow-execution/control-ledger-store';
 import type { NodeRunStartDeps } from '../services/workflow-execution/node-run-starter';
 import {
   phaseDispatchResultOf,
@@ -618,14 +619,12 @@ export async function reconcileComposableWorkflowRuns(input: {
       (run) => run.invocations !== undefined
     );
     const rawLedger = input.store.getRawControlLedger?.();
-    const hasLedgerRoots =
-      typeof rawLedger === 'object' &&
-      rawLedger !== null &&
-      'roots' in rawLedger &&
-      typeof (rawLedger as { roots?: unknown }).roots === 'object' &&
-      (rawLedger as { roots?: unknown }).roots !== null &&
-      Object.keys((rawLedger as { roots: Record<string, unknown> }).roots).length > 0;
-    if (allRuns.length === 0 && !hasLedgerRoots) return;
+    const ledgerRead = parseRawControlLedger(rawLedger);
+    if (!ledgerRead.ok) {
+      input.logger.warn(`run-safety-wiring: workflow recovery refused (${ledgerRead.code}). See the SQLite rollback runbook.`);
+      return;
+    }
+    if (allRuns.length === 0 && Object.keys(ledgerRead.ledger.roots).length === 0) return;
     if (input.capabilities !== undefined && 'getRawControlLedger' in input.store) {
       const availabilityWiring = createBackendAvailabilityWiring({
         store: input.store as WorkspaceStateStore,

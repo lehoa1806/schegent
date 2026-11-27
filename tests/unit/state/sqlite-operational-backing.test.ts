@@ -14,6 +14,7 @@ import {
   pruneConnectedRunsMap
 } from '../../../src/state/sqlite-operational-backing';
 import { buildOwnerResolver } from '../../../src/activation/sqlite-cutover-helpers';
+import { CONNECTED_RUNS_TOMBSTONE_MAX_COUNT } from '../../../src/state/connected-run-migrator';
 import {
   KEYS,
   QueueMutationRejected,
@@ -1034,7 +1035,10 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
 
       await switchable.update(KEYS.connectedRuns, rawMap);
       const stored = switchable.get<Record<string, unknown>>(KEYS.connectedRuns)!;
-      expect(Object.keys(stored).sort()).toEqual(['cr-future-keep', 'cr-healthy']);
+      expect(Object.keys(stored).sort()).toEqual(Object.keys(rawMap).sort());
+      for (const id of ['cr-cyclic', 'cr-bigint', 'cr-over-depth', 'cr-oversized']) {
+        expect(stored[id]).toBeNull();
+      }
       expect(warn).toHaveBeenCalledWith(
         'quarantined refused connectedRuns entries during prune',
         expect.objectContaining({ unsafeCount: 3, budgetCount: 1 })
@@ -1048,8 +1052,16 @@ describe('SQLite operational & catalog cutover backing (FR-R6-F04 & FR-R6-F03)',
         manyRefused[`refused-${i}`] = { schemaVersion: 99, index: i };
       }
       const prunedMany = pruneConnectedRunsMap(manyRefused, {}, now) as Record<string, unknown>;
-      expect(Object.keys(prunedMany)).toHaveLength(CONNECTED_RUNS_REFUSED_MAX_COUNT + 1);
+      expect(Object.keys(prunedMany)).toHaveLength(CONNECTED_RUNS_REFUSED_MAX_COUNT + 41);
+      expect(prunedMany[`refused-${CONNECTED_RUNS_REFUSED_MAX_COUNT}`]).toBeNull();
       expect(prunedMany['cr-healthy']).toBeDefined();
+
+      for (let i = 0; i <= CONNECTED_RUNS_TOMBSTONE_MAX_COUNT; i += 1) {
+        manyRefused[`opaque-${i}`] = null;
+      }
+      await expect(switchable.update(KEYS.connectedRuns, manyRefused)).rejects.toThrow('CONNECTED_RUN_QUARANTINE_FULL');
+      switchable.reloadSqliteCache();
+      expect(switchable.get(KEYS.connectedRuns)).toEqual(stored);
 
       // Prototype-safe owner resolver never treats Object.prototype keys as live connected runs
       const store = new WorkspaceStateStore(switchable);

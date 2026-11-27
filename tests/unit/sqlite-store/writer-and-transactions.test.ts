@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { describe, expect, it, vi } from 'vitest';
 import {
-  SQLITE_WAL_ESCALATION_BYTES,
+  SQLITE_WAL_PASSIVE_CHECKPOINT_PAGES,
   SQLITE_WAL_PAUSE_BACKGROUND_BYTES,
   SQLITE_WRITER_MAX_QUEUE_REQUESTS,
   SQLITE_WRITER_NORMAL_MAX_REQUESTS
@@ -8,8 +12,8 @@ import {
 import { SqliteApplicationStore, type WriterAdmissionResult } from '../../../src/services/sqlite-store';
 
 describe('FR-R6-F04 (US1 & US2): Bounded Writer Queue, WAL Checkpoints & Seven Atomic Transaction Units', () => {
-  it('enforces 48 normal request cap, reserves 16 slots for settlement up to 64, and pauses background writes at 128 MiB WAL (SC-005, SC-006)', () => {
-    let clock = 1_700_000_000_000;
+  it('enforces the 48 normal request cap and reserves 16 settlement slots (SC-005)', () => {
+    const clock = 1_700_000_000_000;
     const store = SqliteApplicationStore.openInMemory({ nowMs: () => clock });
     try {
       const heldStandard: Array<Extract<WriterAdmissionResult, { admitted: true }>> = [];
@@ -18,7 +22,6 @@ describe('FR-R6-F04 (US1 & US2): Bounded Writer Queue, WAL Checkpoints & Seven A
         expect(res.admitted).toBe(true);
         if (res.admitted) heldStandard.push(res);
       }
-
       // 49th normal or background request is rejected with QUEUE_SATURATED
       const rejectedNormal = store.writerCoordinator.tryAdmitWrite('standard', 1024);
       expect(rejectedNormal.admitted).toBe(false);
@@ -42,37 +45,101 @@ describe('FR-R6-F04 (US1 & US2): Bounded Writer Queue, WAL Checkpoints & Seven A
         h.release();
       }
 
-      // WAL checkpoint triggers: 1,000 pages -> PASSIVE, 64 MiB -> TRUNCATE, 128 MiB -> pause background
-      store.writerCoordinator.recordWalGrowth(1_000, 4 * 1024 * 1024);
-      const passive = store.writerCoordinator.evaluateCheckpointPolicy();
-      expect(passive?.mode).toBe('PASSIVE');
-      expect(passive?.triggeredBy).toBe('pages_threshold');
-
-      store.writerCoordinator.recordWalGrowth(10, SQLITE_WAL_ESCALATION_BYTES);
-      const escalated = store.writerCoordinator.evaluateCheckpointPolicy();
-      expect(escalated?.mode).toBe('TRUNCATE');
-      expect(escalated?.triggeredBy).toBe('size_escalation');
-
-      store.writerCoordinator.recordWalGrowth(50, SQLITE_WAL_PAUSE_BACKGROUND_BYTES);
-      const pausedBg = store.writerCoordinator.tryAdmitWrite('background', 512);
-      expect(pausedBg.admitted).toBe(false);
-      if (!pausedBg.admitted) {
-        expect(pausedBg.code).toBe('WAL_BACKGROUND_PAUSED');
-      }
-
-      // Settlement lane still admitted when WAL >= 128 MiB
-      const settleUnderWalPressure = store.writerCoordinator.tryAdmitWrite('settlement', 512);
-      expect(settleUnderWalPressure.admitted).toBe(true);
-      if (settleUnderWalPressure.admitted) settleUnderWalPressure.release();
-
-      // Time-based 30s passive checkpoint
-      clock += 31_000;
-      store.writerCoordinator.recordWalGrowth(5, 1024);
-      const intervalCheckpoint = store.writerCoordinator.evaluateCheckpointPolicy();
-      expect(intervalCheckpoint?.mode).toBe('PASSIVE');
-      expect(intervalCheckpoint?.triggeredBy).toBe('interval_threshold');
     } finally {
       store.close();
+    }
+  });
+
+  it('observes a pinned on-disk WAL, preserves settlement capacity and resumes background work after checkpoint', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'schegent-wal-pressure-'));
+    let clock = 1_700_000_000_000;
+    const store = new SqliteApplicationStore({ databasePath: join(directory, 'state.db'), nowMs: () => clock });
+    try {
+      const writer = store.writerConnection;
+      expect(writer.scalar('PRAGMA wal_autocheckpoint')).toBe(SQLITE_WAL_PASSIVE_CHECKPOINT_PAGES);
+      writer.exec('CREATE TABLE wal_pressure_fixture(payload BLOB)');
+      store.readPool.withReadConnection(writer, reader => {
+        reader.exec('BEGIN');
+        try {
+          reader.scalar('SELECT count(*) FROM wal_pressure_fixture');
+          // Reuse a small row in separate commits. The pinned reader keeps old frames on disk.
+          writer.exec('INSERT INTO wal_pressure_fixture VALUES (zeroblob(1048576))');
+          for (let i = 0; i < 132; i++) writer.run('UPDATE wal_pressure_fixture SET payload = randomblob(1048576)');
+          const retention = store.transactions.executeRetention({
+            cutoffTimestampMs: clock,
+            idempotency: { scopeKind: 'retention', scopeId: 'test', idempotencyKey: 'sweep', requestSha256: 'sweep' }
+          });
+          expect(retention).toMatchObject({ status: 'rejected', code: 'WAL_BACKGROUND_PAUSED' });
+          const admission = store.writerCoordinator.tryAdmitWrite('settlement', 512);
+          expect(admission.admitted).toBe(true);
+          if (admission.admitted) admission.release();
+          expect(store.writerCoordinator.getQueueMetrics().walBytes).toBeGreaterThanOrEqual(SQLITE_WAL_PAUSE_BACKGROUND_BYTES);
+        } finally {
+          reader.exec('ROLLBACK');
+        }
+      });
+      const external = new DatabaseSync(writer.databasePath, { readOnly: true });
+      try {
+        external.exec('BEGIN');
+        external.prepare('SELECT count(*) FROM wal_pressure_fixture').get();
+        const checkpointStatements = vi.spyOn(writer, 'exec');
+        try {
+          expect(store.writerCoordinator.tryAdmitWrite('background', 512)).toMatchObject({
+            admitted: false, code: 'WAL_BACKGROUND_PAUSED'
+          });
+          expect(store.writerCoordinator.getQueueMetrics().lastCheckpoint).toMatchObject({ mode: 'TRUNCATE', busy: 1 });
+          expect(checkpointStatements).toHaveBeenCalledWith('PRAGMA busy_timeout = 0');
+          expect(writer.scalar('PRAGMA busy_timeout')).toBe(writer.verifiedPragmas.busyTimeoutMs);
+          const count = store.writerCoordinator.getQueueMetrics().checkpointCount;
+          store.writerCoordinator.afterCommit();
+          expect(store.writerCoordinator.getQueueMetrics().checkpointCount).toBe(count);
+        } finally {
+          checkpointStatements.mockRestore();
+        }
+      } finally {
+        external.close();
+      }
+      clock += 31_000;
+      const resume = store.writerCoordinator.tryAdmitWrite('background', 512);
+      expect(resume.admitted).toBe(true);
+      if (resume.admitted) resume.release();
+      expect(store.writerCoordinator.getQueueMetrics()).toMatchObject({
+        walBytes: 0, pressure: 'normal', lastCheckpoint: { mode: 'TRUNCATE', busy: 0 }
+      });
+      writer.run('INSERT INTO wal_pressure_fixture VALUES (zeroblob(20))');
+      clock += 31_000;
+      store.writerCoordinator.afterCommit();
+      expect(store.writerCoordinator.getQueueMetrics().lastCheckpoint?.triggeredBy).toBe('interval_threshold');
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('returns committed and replays the receipt when both checkpoint maintenance and its health sink fail', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'schegent-wal-diagnostic-'));
+    let clock = 1_700_000_000_000;
+    const health = vi.fn(() => { throw new Error('detached diagnostic sink'); });
+    const store = new SqliteApplicationStore({
+      databasePath: join(directory, 'state.db'), nowMs: () => clock, onWalHealth: health
+    });
+    try {
+      clock += 31_000;
+      const checkpoint = vi.spyOn(store.writerCoordinator, 'runCheckpoint').mockImplementationOnce(() => {
+        throw new Error('checkpoint unavailable');
+      });
+      const request = {
+        cutoffTimestampMs: clock,
+        idempotency: { scopeKind: 'retention', scopeId: 'test', idempotencyKey: 'sweep', requestSha256: 'sweep' }
+      };
+      expect(store.transactions.executeRetention(request)).toMatchObject({ status: 'committed', replayed: false });
+      expect(checkpoint).toHaveBeenCalledOnce();
+      expect(health).toHaveBeenCalledWith('SQLite WAL checkpoint unavailable', expect.any(Object));
+      expect(store.transactions.executeRetention(request)).toMatchObject({ status: 'committed', replayed: true });
+      expect(checkpoint).toHaveBeenCalledOnce();
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 

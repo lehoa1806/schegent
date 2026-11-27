@@ -11,6 +11,7 @@
  *   `image: false`, `audio: false`).
  * - Zero `vscode` imports and zero direct `child_process` imports (spawns via `stdio-transport`).
  */
+import { assertExecutableUnchanged } from '../../../lib/spawn-command';
 import * as path from 'node:path';
 
 import {
@@ -71,6 +72,7 @@ export const ACP_STDIO_BRIDGE_VERSION = '1.0.0';
 export interface AcpBridgeLaunchConfig {
   readonly backend: BridgedBackendKind;
   readonly cliPath: string;
+  readonly executableFileStamp?: string;
   readonly permissionFlags: readonly string[];
   readonly model?: string;
   readonly effort?: string;
@@ -144,6 +146,7 @@ export function parseBridgeCliArgv(
 ): AcpBridgeLaunchConfig | null {
   let backend: BridgedBackendKind | null = null;
   let cliPath: string | null = null;
+  let executableFileStamp: string | undefined;
   let model: string | undefined;
   let effort: string | undefined;
   let nativeReview: NativeReviewKind | undefined;
@@ -161,6 +164,9 @@ export function parseBridgeCliArgv(
       idx += 1;
     } else if (flag === '--cli' && isNonEmptyString(next)) {
       cliPath = next;
+      idx += 1;
+    } else if (flag === '--cli-stamp' && typeof next === 'string' && /^-?\d+(?::-?\d+){4}$/.test(next)) {
+      executableFileStamp = next;
       idx += 1;
     } else if (flag === '--permission-flag' && typeof next === 'string' && next.length > 0) {
       permissionFlags.push(next);
@@ -220,6 +226,7 @@ export function parseBridgeCliArgv(
   return {
     backend,
     cliPath,
+    ...(executableFileStamp && { executableFileStamp }),
     permissionFlags,
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
@@ -623,6 +630,7 @@ export function startAcpStdioBridgeServer(
         args: buildCliArgs(config, config.nativeReview === undefined ? session.providerSessionId : null),
         env: config.env
       };
+      assertExecutableUnchanged(cli.command, config.executableFileStamp);
       child = spawnChild({ ...cli, cwd: session.cwd });
     } catch {
       void security?.cleanup().catch(() => undefined);

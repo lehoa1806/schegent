@@ -930,6 +930,13 @@ export const SNAPSHOT_DECLARATIONS = Object.freeze([
         }),
         { webviewOptional: true }
       ),
+      workspaceModelCatalog: d.field(d.obj({
+        revision: d.str(),
+        models: d.rec(d.arr(d.str()), {
+          readonly: false, keyType: 'BackendRunnerKind', webviewKeyType: 'BackendRunnerKind',
+          keyEnum: SUPPORTED_BACKENDS
+        })
+      }), { optional: true }),
       availableBackends: d.arr(
         d.enum(SUPPORTED_BACKENDS, {
           refName: 'BackendRunnerKind',

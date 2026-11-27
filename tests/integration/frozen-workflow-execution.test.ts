@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   continueComposableWorkflowHandoff,
@@ -10,10 +13,11 @@ import {
 } from '../../src/services/workflow-execution/connected-run-coordinator';
 import { continueWaitingHandoff } from '../../src/services/workflow-execution/continuation-service';
 import { startPhaseNodeRun } from '../../src/services/workflow-execution/node-run-starter';
-import { launchComposableWorkflow } from '../../src/services/workflow-execution/workflow-launcher';
+import { launchComposableWorkflow, launchWorkflow } from '../../src/services/workflow-execution/workflow-launcher';
 import type { ConnectedWorkflowRun, WorkflowInvocationFrame } from '../../src/state/connected-workflow-run';
 import type { PhaseDefinition } from '../../src/contracts/process-definitions';
 import type { ResolvedPortValue, RunRequest } from '../../src/contracts/run-request';
+import { EMPTY_CATALOG } from '../../src/config/pipeline-config';
 import type { WorkflowDefinition, WorkflowNode } from '../../src/contracts/workflow-definitions';
 
 const PHASE_SPEC: PhaseDefinition = {
@@ -361,6 +365,50 @@ async function executeFullScenario(mode: 'host' | 'headless') {
 }
 
 describe('integration — frozen composable Workflow execution & host/headless parity (FR-R5-F02)', () => {
+  it('uses real files, output occupancy and supplied history on both launch paths before storing a run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'schegent-launch-validation-'));
+    try {
+      await writeFile(join(root, 'existing.md'), 'existing');
+      const readPriorRunOutputs = vi.fn(() => [{ name: 'prior', status: 'resolved' as const, reference: 'existing.md' }]);
+      const deps = {
+        logger: { warn: vi.fn(), sanitize: (s: string) => s },
+        guardedRun: { scheduleOrEnqueue: vi.fn() },
+        connectedRuns: { compareAndSetConnectedRun: vi.fn() },
+        isChildSettled: () => true,
+        readPriorRunOutputs
+      };
+      const request = {
+        pipelineId: ROOT_WF.workflowId, workflowId: ROOT_WF.workflowId, entryNodeId: 'node-child',
+        inputs: [{ portId: 'featureDescription', type: 'text' as const, value: 'validate' }],
+        supplemental: [
+          { kind: 'local-file' as const, path: 'missing.md' },
+          { kind: 'local-folder' as const, path: 'existing.md' },
+          { kind: 'prior-output' as const, reference: { sourceRunId: 'prior-run', outputName: 'prior' } }
+        ],
+        outputs: [{ portId: 'finalPlan', target: 'existing.md' }]
+      };
+      const workflows = [ROOT_WF, CHILD_WF];
+      const phases = [PHASE_SPEC, PHASE_PLAN];
+      const common = { connectedRunId: 'parity-validation', request, workspaceRoot: root, startedAt: 123 };
+      const editor = await launchWorkflow(deps, {
+        ...common, workflow: ROOT_WF, startNodeId: 'node-child', catalog: EMPTY_CATALOG,
+        effectivePhases: phases, effectiveWorkflows: workflows
+      });
+      const headless = await launchComposableWorkflowRun(deps, {
+        ...common, workflowSource: { rootWorkflow: ROOT_WF, workflows, phases }
+      });
+      expect(headless).toEqual(editor);
+      expect(headless.outcome).toBe('rejected-validation');
+      if (headless.outcome !== 'rejected-validation') throw new Error('expected field refusals');
+      expect(headless.errors.map((e) => e.code).sort()).toEqual(['file-not-found', 'file-not-found', 'output-overwrite-unconfirmed']);
+      expect(readPriorRunOutputs.mock.calls).toEqual([['prior-run'], ['prior-run']]);
+      expect(deps.connectedRuns.compareAndSetConnectedRun).not.toHaveBeenCalled();
+      expect(deps.guardedRun.scheduleOrEnqueue).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('produces identical execution traces, frozen closure isolation, and single root queueId claims across host and headless entry points', async () => {
     const hostResult = await executeFullScenario('host');
     const headlessResult = await executeFullScenario('headless');

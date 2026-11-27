@@ -163,7 +163,7 @@ export class AtomicTransactionUnitsService {
       | { readonly ok: true; readonly revision: number; readonly value: T }
       | TransactionUnitOutcome<T>
   ): TransactionUnitOutcome<T> {
-    const writeOutcome = this.writer.executeSerializedWrite(lane, payloadBytes, 4, (conn) => {
+    const writeOutcome = this.writer.executeSerializedWrite(lane, payloadBytes, (conn) => {
       let txOpen = false;
       try {
         conn.exec('BEGIN IMMEDIATE');
@@ -237,6 +237,7 @@ export class AtomicTransactionUnitsService {
         status: 'rejected', commitUnit, code: writeOutcome.code, message: writeOutcome.message
       };
     }
+    if (writeOutcome.result.status === 'committed' && !writeOutcome.result.replayed) this.writer.afterCommit();
     return writeOutcome.result;
   }
 
