@@ -620,8 +620,10 @@ describe('FR-R6-F09 T036 -- containment admission acceptance', () => {
     const localSurfaces: string[] = [];
     const h = harness(SEEDED_POLICY);
 
-    // Prepare fake CLIs under `root` (which lives beneath `homedir()`) carrying `SEEDED_SECRET`.
-    const secretOnly = await writeFakeCli(`codex-${SEEDED_SECRET}`, `${SEEDED_SECRET} ${root}`, join(root, 'ac04-a.count'));
+    // Exercise both paths even when the checkout and its temporary directory live outside home.
+    const home = homedir();
+    expect(home.length).toBeGreaterThan(1);
+    const secretOnly = await writeFakeCli(`codex-${SEEDED_SECRET}`, `${SEEDED_SECRET} ${home} ${root}`, join(root, 'ac04-a.count'));
     const withVersion = await writeFakeCli(`agy-${SEEDED_SECRET}`, `agy ${SEEDED_SECRET} 1.1.20`, join(root, 'ac04-b.count'));
     const codexV170 = await writeFakeCli(`codex-v170-${SEEDED_SECRET}`, `codex-cli ${SEEDED_SECRET} 0.170.0`, join(root, 'ac04-c.count'));
     const nonExec = join(root, `noexec-${SEEDED_SECRET}`);
@@ -822,7 +824,7 @@ describe('FR-R6-F09 T036 -- containment admission acceptance', () => {
       connectionGeneration: 1,
       attemptId: 'att-ac04',
       mutating: false,
-      targetPath: join(homedir(), SEEDED_SECRET)
+      targetPath: join(home, SEEDED_SECRET)
     });
     acpTrusted = false;
     acpGate.authorize({
@@ -847,10 +849,6 @@ describe('FR-R6-F09 T036 -- containment admission acceptance', () => {
     localSurfaces.push(h.memento.serialized(), ...h.warnings);
 
     // Verify complete surface coverage AND zero secret / home-path leakage
-    const home = homedir();
-    expect(home.length).toBeGreaterThan(1);
-    expect(root.startsWith(home)).toBe(true);
-
     const combined = localSurfaces.join('\n');
     for (const reason of CONTAINMENT_REFUSAL_REASONS) {
       expect(combined, `missing refusal reason ${reason}`).toContain(reason);

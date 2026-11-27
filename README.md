@@ -13,7 +13,7 @@ Schegent is a local-first VS Code extension that queues development Tasks, execu
 
 - VS Code extension host, TypeScript, and one esbuild CommonJS bundle at `dist/extension.js`.
 - Svelte 5 webviews built with Vite 7 for the sidebar and dashboard.
-- Source builds use Node.js 22.13.0 or later in 22.x, or Node.js 24.x; installed VSIX builds require **VS Code 1.107 or newer**.
+- Source builds require Node.js 22.22.3 or newer in 22.x, or 24.15.0 or newer in 24.x. The VSIX requires **VS Code 1.125 or newer**.
   That floor is **qualified, not merely declared** (FR-R3-059): `@types/vscode` is pinned to it
   exactly with no range operator, the host compiles against that API surface, and the live
   extension-host integration leg **downloads and runs the declared floor binary** rather than

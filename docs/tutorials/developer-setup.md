@@ -9,8 +9,8 @@ This tutorial takes a fresh clone to a compiled Schegent extension and then runs
 Install these tools before cloning:
 
 - Node.js 22 or 24. The checked-in `.nvmrc` selects `24.19.0`.
-- VS Code 1.107.0 or newer within the 1.x release line — the floor the manifest's
-  `engines.vscode` (`^1.107.0`) declares, which is what this line is checked against.
+- VS Code 1.125.0 or newer within the 1.x release line — the floor the manifest's
+  `engines.vscode` (`^1.125.0`) declares, which is what this line is checked against.
 - npm, which is the only package runner used by the checked-in build scripts.
 
 <!-- Source: package.json -->

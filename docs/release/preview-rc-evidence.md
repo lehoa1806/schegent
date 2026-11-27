@@ -50,7 +50,7 @@ This record binds the latest Round 8 preview candidate artifact, verification po
 
 **27 November distribution decision.** Keep the intended audience to the author on the local macOS arm64 desktop. The packaged README states this scope, and new release records carry it alongside the artifact digest even when the local provider override is used. The npm package is marked private. Opening a pilot requires a fresh macOS candidate, live qualification of each advertised backend, a human VoiceOver recovery journey, an independent Criterion 8 review, and the recipient verification procedure from the [distribution decision](../architecture/distribution-posture.md). An external recipient or pilot remains blocked until those records exist.
 
-All three installed providers passed their shipped-transport canary on the remediation source at `6f8cace6`. A separate loopback check used Collector Core 0.166.0 and confirmed the received histogram count and sum. The human VoiceOver journey, independent review and recipient provenance remain open. [Provider versions and profiles](backend-qualification-log.md) · [Collector observation](../operations/telemetry-export.md#collector-verification)
+All three installed providers passed their shipped-transport canary at `6f8cace6` and again at `8306c78f` after release preflight detected a Codex CLI upgrade. A separate loopback check used Collector Core 0.166.0 and confirmed the received histogram count and sum. The human VoiceOver journey, independent review and recipient provenance remain open. [Provider versions and profiles](backend-qualification-log.md) · [Collector observation](../operations/telemetry-export.md#collector-verification)
 
 The Round 8 candidate carried the following open items:
 

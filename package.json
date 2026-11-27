@@ -8,8 +8,8 @@
   "publisher": "schegent",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.107.0",
-    "node": "^22.13.0 || ^24"
+    "vscode": "^1.125.0",
+    "node": "^22.22.3 || ^24.15.0"
   },
   "categories": [
     "Other"
@@ -736,7 +736,7 @@
     "@secretlint/node": "^10.2.2",
     "@secretlint/secretlint-rule-preset-recommend": "^10.2.2",
     "@types/node": "^22.20.1",
-    "@types/vscode": "1.107.0",
+    "@types/vscode": "1.125.0",
     "@vitest/coverage-v8": "^3.2.7",
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^3.9.2",

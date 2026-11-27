@@ -1,7 +1,7 @@
 # Qualification matrix
 
 **What was observed, on which platform and Node, and what was not.** The extension declares Node
-`^22.13.0 || ^24` and is built on macOS. A gate record says that `npm run gate` passed on one machine
+`^22.22.3 || ^24.15.0` and is built on macOS. A gate record says that `npm run gate` passed on one machine
 at one commit; it says nothing about the other five combinations below. This page keeps those
 five visible instead of letting one passing run stand for all six.
 
