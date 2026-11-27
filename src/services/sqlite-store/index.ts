@@ -34,6 +34,7 @@ import { WriterCoordinator } from './writer-coordinator';
 
 export interface SqliteApplicationStoreOptions {
   readonly databasePath: string;
+  readonly onWalHealth?: ((message: string, fields: Record<string, unknown>) => void) | undefined;
   readonly journalMode?: 'wal' | 'delete' | 'memory' | undefined;
   readonly nowMs?: (() => number) | undefined;
 }
@@ -77,7 +78,7 @@ export class SqliteApplicationStore {
       this.schemaVersion = bootstrap.schemaVersion;
       this.strictTableCount = bootstrap.strictTableCount;
 
-      this.writerCoordinator = new WriterCoordinator(this.writerConnection, this.readPool, nowMs);
+      this.writerCoordinator = new WriterCoordinator(this.writerConnection, this.readPool, nowMs, options.onWalHealth);
       this.transactions = new AtomicTransactionUnitsService(
         this.writerConnection,
         this.writerCoordinator,
@@ -121,7 +122,8 @@ export class SqliteApplicationStore {
 
   public static async openAtTrustedLocation(
     request: import('./storage-location-resolver').TrustedSqliteLocationRequest,
-    nowMs?: () => number
+    nowMs?: () => number,
+    onWalHealth?: SqliteApplicationStoreOptions['onWalHealth']
   ): Promise<SqliteApplicationStore> {
     const resolution = await resolveTrustedSqliteLocation(request);
     if (resolution.status === 'refused') {
@@ -130,6 +132,7 @@ export class SqliteApplicationStore {
     return new SqliteApplicationStore({
       databasePath: resolution.databasePath,
       journalMode: resolution.journalMode,
+      onWalHealth,
       nowMs
     });
   }

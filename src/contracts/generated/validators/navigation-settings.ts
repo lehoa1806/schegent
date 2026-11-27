@@ -140,18 +140,35 @@ export function validateSaveModels(
   }
   const validated_expectedRevisionRaw: unknown = validatedObj['expectedRevision'];
   let validated_expectedRevision: string | undefined;
-  if (typeof validated_expectedRevisionRaw === 'string') {
-    validated_expectedRevision = validated_expectedRevisionRaw;
+  if (validated_expectedRevisionRaw !== undefined) {
+    if (typeof validated_expectedRevisionRaw !== 'string') {
+      return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
+    }
+    if (validated_expectedRevisionRaw.length < 1) {
+      return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
+    }
+    const validated_expectedRevisionChecked: string = validated_expectedRevisionRaw;
+    validated_expectedRevision = validated_expectedRevisionChecked;
   }
   const validated_mutationRaw: unknown = validatedObj['mutation'];
   let validated_mutation: {
   readonly kind: 'manual-edit' | 'import-package';
 } | undefined;
-  if (validated_mutationRaw !== undefined && validated_mutationRaw !== null && typeof validated_mutationRaw === 'object') {
-    const validated_mutationKind = (validated_mutationRaw as { kind?: unknown }).kind;
-    if (validated_mutationKind === 'manual-edit' || validated_mutationKind === 'import-package') {
-      validated_mutation = { kind: validated_mutationKind };
+  if (validated_mutationRaw !== undefined) {
+    if (validated_mutationRaw === null || typeof validated_mutationRaw !== 'object' || Array.isArray(validated_mutationRaw)) {
+      return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
     }
+    const validated_mutationCheckedObj = validated_mutationRaw as Record<string, unknown>;
+    if (hasUnexpectedKeys(validated_mutationCheckedObj, ['kind'])) {
+      return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
+    }
+    const validated_mutationChecked_kindRaw: unknown = validated_mutationCheckedObj['kind'];
+    if (!(validated_mutationChecked_kindRaw === 'manual-edit' || validated_mutationChecked_kindRaw === 'import-package')) {
+      return fail('invalid-payload', { type: CMD_SAVE_MODELS, correlationId });
+    }
+    const validated_mutationChecked_kind: 'manual-edit' | 'import-package' = validated_mutationChecked_kindRaw;
+    const validated_mutationChecked = { kind: validated_mutationChecked_kind };
+    validated_mutation = validated_mutationChecked;
   }
   const validated = { models: validated_models, ...(validated_expectedRevision === undefined ? {} : { expectedRevision: validated_expectedRevision }), ...(validated_mutation === undefined ? {} : { mutation: validated_mutation }) };
   const command: SaveModelsCommand = { type: CMD_SAVE_MODELS, correlationId, payload: validated };

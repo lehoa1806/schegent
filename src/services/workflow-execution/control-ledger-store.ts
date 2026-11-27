@@ -149,8 +149,8 @@ function isTerminalRoot(root: RootControlState): boolean {
   );
 }
 
-function parseRawControlLedger(raw: unknown): ControlLedgerReadResult {
-  if (raw === undefined || raw === null) {
+export function parseRawControlLedger(raw: unknown): ControlLedgerReadResult {
+  if (raw === undefined) {
     return {
       ok: true,
       ledger: createEmptyControlLedger(),

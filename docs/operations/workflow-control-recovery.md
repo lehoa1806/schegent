@@ -97,3 +97,9 @@ When a Candidate Block or root Workflow configures `budget.mode: 'strict-usd'` (
 - **Evidence File Modes**: All frozen collections, ordered `ForEach` result indexes, `RecoveryEnvelope` artifacts, and structured result files are written inside contained workspace roots using narrow permissions (`0600` for files, `0700` for directories).
 - **Metadata-Only Audit by Default**: Ordinary audit events record occurrence IDs, workflow/node/candidate IDs, generation numbers, counters, and closed reason codes. Prompts, raw CLI transcripts, workspace file bodies, and raw error strings are excluded from ordinary audit payloads, and all operator-visible error summaries pass through `redactForAudit` with strict byte caps (`<= 512` UTF-8 bytes).
 
+## 7. Unreadable workflow records
+
+A stored control ledger with malformed JSON, excessive nesting, or a literal `null` blocks workflow admission and restart recovery with `control-ledger-corrupt`. Reopening the window leaves the SQLite row and its revision intact. Preserve a copy of the store before repair. Use a verified backup that predates the damage and follow the documented idle-workspace or offline procedure. [SQLite rollback runbook](sqlite-rollback-runbook.md)
+
+For an unreadable connected workflow, recovery keeps its root, permits, and waiters. Sibling writes preserve up to 256 opaque payloads within 16 MiB and keep the exact IDs of additional or oversized records as compact tombstones. The tombstones have a separate limit of 512 IDs and 64 KiB. If even the identities cannot fit, the entire write fails with `CONNECTED_RUN_QUARANTINE_FULL` and the preceding durable state remains available. A tombstone preserves ownership evidence. Recover the original payload from a pre-quarantine backup if it is needed.
+

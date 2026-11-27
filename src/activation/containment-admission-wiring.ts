@@ -22,7 +22,7 @@ import type {
   SpawnGate
 } from '../contracts/containment-qualification';
 import type { ProcessEnvironmentPolicy } from '../contracts/process-environment-policy';
-import { resolveExecutable } from '../runner/executable-identity';
+import { executableFileStamp, resolveExecutableCommand } from '../lib/spawn-command';
 import { createCliVersionProbe } from '../runner/cli-version-probe';
 import { resolveCodexSecurityExecutable } from '../runner/native-review-launch';
 import { buildSpawnEnv, policyRequestFields } from '../runner/spawn-env';
@@ -129,8 +129,12 @@ export function wireContainmentAdmission(deps: ContainmentAdmissionWiringDeps): 
   const spawnGate = createSpawnAdmissionGate({
     isTrusted: deps.isTrusted,
     hasPrimacy: deps.hasPrimacy,
-    resolveExecutable: (cliPath) =>
-      resolveExecutable(cliPath, spawnEnvOf(deps.environmentPolicy), process.platform),
+    resolveExecutable: async (cliPath, env) => {
+      const executable = resolveExecutableCommand(cliPath, spawnEnvOf(deps.environmentPolicy, env));
+      if (!executable.ok) return executable.cause === 'not-executable' ? 'not-executable' : 'not-found';
+      const stamp = executableFileStamp(executable.resolvedPath);
+      return stamp === null ? 'not-executable' : { path: executable.resolvedPath, stamp };
+    },
     observeVersion: (_kind, cliPath) => deps.observeVersion(cliPath),
     granted: deps.granted,
     bindings,

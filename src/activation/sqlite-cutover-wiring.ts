@@ -365,7 +365,7 @@ async function openPrimarySqliteServices(
           : deps.legacyFilesystemType),
       filesystemClassification: activeVerdict?.classification,
       detectFilesystemType: deps.detectFilesystemType
-    });
+    }, undefined, (message, fields) => deps.logger.warn(message, fields));
   } catch (error) {
     if (!input.isClosed()) input.operationalMemento?.setDurableBatchUnavailableReason('sqlite-open-failed');
     deps.logger.warn('sqlite cutover: failed to open application store', {
@@ -622,6 +622,7 @@ async function openPrimarySqliteServices(
       openStore: (databasePath) =>
         new SqliteApplicationStore({
           databasePath,
+          onWalHealth: (message, fields) => deps.logger.warn(message, fields),
           journalMode: 'wal'
         })
     });

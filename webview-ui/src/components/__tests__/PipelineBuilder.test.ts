@@ -150,6 +150,7 @@ function buildSnapshot(
     // same value here, because seeding the page from detection is the defect
     // that made a confirmed import invisible.
     availableModels: Object.freeze({ claude: [], codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
+    workspaceModelCatalog: { models: { claude: models, codex: [], agy: [] }, revision: models.join(',') || 'empty' },
     configuredModels: Object.freeze({ claude: models, codex: [], agy: [] }) as Record<BackendRunnerKind, readonly string[]>,
     availableBackends: Object.freeze(['claude', 'codex', 'agy']) as readonly BackendRunnerKind[],
     phaseCatalog: {
@@ -790,6 +791,21 @@ describe('PipelineBuilder — restored 3-tab design', () => {
       agy: []
     });
   });
+  it('keeps the dirty draft on its original revision and reverts to the latest workspace models', async () => {
+    const original = buildSnapshot([], [], ['old']);
+    const changed = buildSnapshot([], [], ['external']);
+    const { container, rerender } = render(PipelineBuilder, { props: { snapshot: original, initialTab: 'models' } });
+    const input = () => container.querySelector('.model-list-item input') as HTMLInputElement;
+    await fireEvent.input(input(), { target: { value: 'local' } });
+    await rerender({ snapshot: changed, initialTab: 'models' });
+    expect(input().value).toBe('local');
+    vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'rejected', reason: 'stale-catalog' });
+    await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
+    expect(saveModelsHelper).toHaveBeenLastCalledWith({ claude: ['local'], codex: [], agy: [] }, 'old');
+    await fireEvent.click(container.querySelector('[data-testid="models-revert"]')!);
+    expect(input().value).toBe('external');
+  });
+
   it('Workflows tab: Workflow Name field updates name and saves correctly (BUG-005)', async () => {
     vi.mocked(saveDraftHelper).mockClear();
     const phase: PhaseDefinition = Object.freeze({
@@ -1351,7 +1367,7 @@ describe('PipelineBuilder — Track 2 Builder UX unification (no Phase reorder, 
     vi.mocked(saveModelsHelper).mockResolvedValueOnce({ status: 'rejected', reason: 'stale-catalog' });
     await fireEvent.click(container.querySelector('[data-testid="models-save"]')!);
     await tick();
-    expect(container.querySelector('[data-testid="models-save-error-banner"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="models-save-error-banner"]')?.textContent).toContain('Revert the draft and reapply your edits');
 
     await switchTab(container, 'Phases');
     expect(container.querySelector('[data-testid="save-error-banner"]')).toBeNull();

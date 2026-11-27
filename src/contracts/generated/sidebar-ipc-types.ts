@@ -293,7 +293,7 @@ export interface SetConfirmSuppressionCommand extends GeneratedCommandBase<'CMD_
   };
 }
 
-/** Persist the Model Catalog with optional import revision and mutation tag. */
+/** Persist a revision-checked workspace model edit or additive import. */
 export interface SaveModelsCommand extends GeneratedCommandBase<'CMD_SAVE_MODELS'> {
   readonly payload: {
     readonly models: Record<string, readonly string[]>;

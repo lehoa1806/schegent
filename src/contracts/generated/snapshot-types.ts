@@ -289,6 +289,10 @@ export interface WorkflowSnapshot {
   readonly availablePhases: readonly PhaseDef[];
   readonly availableModels: Record<BackendRunnerKind, readonly string[]>;
   readonly configuredModels: Record<BackendRunnerKind, readonly string[]>;
+  readonly workspaceModelCatalog?: {
+    readonly revision: string;
+    readonly models: Record<BackendRunnerKind, readonly string[]>;
+  };
   readonly availableBackends: readonly BackendRunnerKind[];
   readonly backendPostures: readonly BackendPosture[];
   readonly backendGrantProblems: BackendGrantEntryProblems;

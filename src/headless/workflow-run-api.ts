@@ -74,6 +74,7 @@ import {
   validateRunRequest,
   type EffectiveWorkflowSource
 } from '../services/run-request/run-request-validator';
+import { runRequestProbes } from '../services/run-request/run-request-probes';
 import type { WorkflowRunRequest } from '../contracts/run-request';
 import type {
   ContinueWorkflowResult,
@@ -152,16 +153,7 @@ export async function launchComposableWorkflowRun(
     workflow: input.workflowSource,
     workspaceRoot: input.workspaceRoot,
     now: input.startedAt,
-    localInputs: {
-      checkFile: async () => ({ ok: true }),
-      checkFolder: async () => ({ ok: true })
-    },
-    outputProbe: {
-      exists: async () => false
-    },
-    priorOutputs: {
-      outputsFor: () => null
-    }
+    ...runRequestProbes(deps.readPriorRunOutputs)
   });
   if (!validation.ok) {
     if (input.releaseRootLease !== undefined) {

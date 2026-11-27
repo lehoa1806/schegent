@@ -1,37 +1,28 @@
+import { saveCatalogCommand } from './save-catalog-command';
 import { CMD_SAVE_MODELS } from './messages';
-import { saveCatalogCommand, type SaveCatalogResult } from './save-catalog-command';
 import { postCommand } from './vscode-api';
 import { sendIntent, type IntentWaitOptions } from './intent-ledger';
 import type { AckResult } from './snapshot-store.svelte';
 
-export type SaveModelsResult = SaveCatalogResult;
+export type SaveModelsResult =
+  | { readonly status: 'accepted'; readonly revision?: string }
+  | { readonly status: 'rejected'; readonly reason: string };
 
-export function saveModels(
+export async function saveModels(
   models: Record<string, readonly string[]>,
+  expectedRevision: string,
   postMessage?: (msg: unknown) => void
 ): Promise<SaveModelsResult> {
-  return saveCatalogCommand(CMD_SAVE_MODELS, { models }, postMessage);
+  const ack = await saveCatalogCommand(CMD_SAVE_MODELS, { models, expectedRevision, mutation: { kind: 'manual-edit' } }, postMessage);
+  if (ack.status === 'rejected') return ack;
+  const result = ack.result;
+  return typeof result === 'object' && result !== null && 'revision' in result && typeof result.revision === 'string'
+    ? { status: 'accepted', revision: result.revision }
+    : { status: 'accepted' };
 }
 
 const IMPORT_ACK_TIMEOUT_MS = 5000;
 
-/**
- * Feature 096 T023 — the import-confirm call site of `CMD_SAVE_MODELS`
- * (contracts/model-catalog-exchange.md §4). Kept separate from `saveModels`
- * above rather than widening that function's signature: the manual add/remove
- * path (its one production caller, `PipelineBuilder.svelte`) sends the whole
- * catalog unconditionally and reads nothing back, while this path sends only
- * the proposed delta, carries `expectedRevision`/`mutation`, and needs the
- * structured `ack.result` — `currentRevision` on a `stale-catalog` rejection,
- * `revision`/`mutation` on acceptance — that `saveCatalogCommand` discards.
- *
- * Structurally identical to the lifecycle senders in `catalog-lifecycle.ts` for
- * that reason: it sends through the intent ledger (an identical retry reuses its
- * identity), with a 5-second timeout so the caller can surface a recovery
- * affordance instead of hanging. It stays separate from them because the Model
- * Catalog is not a versioned catalog: it has no drafts, no versions, and no
- * lifecycle to run.
- */
 export interface SaveModelsImportRequest {
   readonly models: Record<string, readonly string[]>;
   readonly expectedRevision: string;

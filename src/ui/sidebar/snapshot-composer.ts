@@ -1,3 +1,4 @@
+import { modelsLayerRevision } from '../../config/model-catalog';
 import type { TelemetrySnapshot } from '../../telemetry/telemetry-snapshot';
 import { DEFAULT_BACKEND, type BackendRunnerKind } from '../../contracts/backend-kinds';
 import { emptyBackendModels, type BackendMap } from '../../contracts/backend-descriptors';
@@ -211,6 +212,7 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
   // reads, and it refreshes on the `schegent.models` reload already wired in
   // `extension.ts`.
   const configuredModels = catalog.models;
+  const workspaceModels = deps.getWorkspaceModels?.();
   const lifecycle = deps.getBuilderLifecycle?.() ?? NO_BUILDER_LIFECYCLE_BY_KIND;
   const phaseCatalogProjection = composePhaseCatalogProjection(phaseCatalog, {
     sanitize,
@@ -287,6 +289,9 @@ export function composeWorkflowSnapshot(ctx: SnapshotComposerContext): WorkflowS
     availablePipelines: Object.freeze([...catalog.pipelines]),
     availableModels: Object.freeze(availableModels),
     configuredModels: Object.freeze(configuredModels),
+    ...(workspaceModels === undefined ? {} : {
+      workspaceModelCatalog: { models: workspaceModels, revision: modelsLayerRevision(workspaceModels) }
+    }),
     availableBackends: Object.freeze(
       deps.getAvailableBackends?.() ?? ([DEFAULT_BACKEND] as readonly BackendRunnerKind[])
     ),

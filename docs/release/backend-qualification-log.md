@@ -70,6 +70,20 @@ three, so it is for regenerating fixtures, not for qualifying a release.
 
 ## Entries
 
+### 2026-11-27 · macOS 27.0 arm64, Node 24.22.2
+
+At execution commit `6f8cace621e3176ab7633cc43ebb17c785f2dd94`, one live turn per installed backend answered the fixed canary prompt from an empty temporary Git workspace. The command exited 0. The v2 qualification record carries source fingerprint `c8e9e317d00017383c9dbbff5067b594b428bec4e93ff014e9baadc749f511c7` at `2026-11-27T00:34:37.836Z`.
+
+| Backend | Installed version | Shipped transport | Result |
+|---|---|---|---|
+| Claude | `2.1.332` | ACP stdio bridge | Passed |
+| Codex | `0.169.0-alpha.11.1` | ACP stdio bridge | Passed |
+| Agy | `1.5.18` | Native ACP | Passed |
+
+Release preflight subsequently refused the candidate when the installed Codex CLI changed. At `8306c78f4985e90a66b0b22eae30757575262fed`, the live canary completed again at `2026-11-27T05:46:51.135Z`. Claude `2.1.332`, Codex `0.171.0-alpha.13.2` and Agy `1.5.18` each passed one turn on the transports above. Both rounds have the same source and bridge fingerprint. The canary and release preflight now compare the same complete version token, including prerelease and build identifiers.
+
+This run covers provider connectivity, the handshake and the reply through each transport. Containment evidence is maintained separately in the [backend qualification matrix](../architecture/backend-containment-qualification.md).
+
 ### 2026-08-26 · darwin (arm64, macOS 26.6.2, Node 24.19.0)
 
 First live result ever produced. `ok` was unreachable by construction until this date.

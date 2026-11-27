@@ -187,6 +187,7 @@ const projector = new StateProjector({
   monitor,
   history: historyStore,
   getCatalog: () => catalogSession.catalog,
+  getWorkspaceModels: () => catalogSession.workspaceModels,
   defaultRunnerKind: backendKind,
   // Re-read scalar settings on each projection.
   getGeneralSettings: () => {

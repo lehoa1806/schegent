@@ -22,8 +22,7 @@ branch in lesson 5, then verify and hand off.
 
 ## 1. Build the checkout
 
-Use Node.js `24.19.0`, the version pinned by `.nvmrc`; Node 22 and 24 satisfy
-the package engine constraint. From a fresh clone:
+Use Node.js `24.19.0`, the version pinned by `.nvmrc`. The supported ranges start at 22.22.3 in Node 22 and 24.15.0 in Node 24. From a fresh clone:
 
 ```bash
 git clone https://github.com/lehoa1806/schegent.git

@@ -65,6 +65,22 @@ function pathValueOf(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string 
   return key === undefined ? '' : (env[key] ?? '');
 }
 
+/** A local change detector for upgrades between observation and spawn. Never persisted or logged. */
+export function executableFileStamp(resolvedPath: string): string | null {
+  try {
+    const file = statSync(resolvedPath, { bigint: true });
+    return file.isFile() ? [file.dev, file.ino, file.size, file.mtimeNs, file.ctimeNs].join(':') : null;
+  } catch {
+    return null;
+  }
+}
+
+export function assertExecutableUnchanged(resolvedPath: string, expected: string | undefined): void {
+  if (expected !== undefined && executableFileStamp(resolvedPath) !== expected) {
+    throw new Error('Backend executable changed after admission. Retry to verify its version.');
+  }
+}
+
 function defaultAccessProbe(
   candidate: string,
   platform: NodeJS.Platform

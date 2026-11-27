@@ -498,8 +498,8 @@ const REGISTRY: readonly CountEntry[] = [
   },
   {
     document: 'repo/docs/tutorials/developer-setup.md',
-    claim: 'VS Code 1.107.0 or newer',
-    stated: 107,
+    claim: 'VS Code 1.125.0 or newer',
+    stated: 125,
     producer: 'engines.vscode in repo/package.json',
     derive: vscodeEngineFloorMinor,
     why:

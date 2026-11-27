@@ -79,11 +79,13 @@
   let pendingWorkflowId = $state<string | null>(persistedBuilder?.pendingWorkflowId ?? null);
   let phases = $state<MutablePhase[]>(initialPhaseSlice?.phases ?? []);
   // svelte-ignore state_referenced_locally
-  let adoptedModels = $state<Record<string, string[]>>(initialModels(snapshot.configuredModels));
+  let adoptedModels = $state<Record<string, string[]>>(initialModels(snapshot.workspaceModelCatalog?.models ?? snapshot.configuredModels));
   // svelte-ignore state_referenced_locally
-  let models = $state<Record<string, string[]>>(initialModels(snapshot.configuredModels));
+  let models = $state<Record<string, string[]>>(initialModels(snapshot.workspaceModelCatalog?.models ?? snapshot.configuredModels));
   // svelte-ignore state_referenced_locally
-  let lastAdoptedModelsRef: WorkflowSnapshot['configuredModels'] = snapshot.configuredModels;
+  let modelBaseRevision = $state(snapshot.workspaceModelCatalog?.revision);
+  // svelte-ignore state_referenced_locally
+  let lastModelRevision = snapshot.workspaceModelCatalog?.revision;
   let initialized = $state(initialPhaseSlice !== null);
   let saveError = $state<string | null>(null);
   let saveErrorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -145,12 +147,14 @@
   }
 
   $effect(() => {
-    if (snapshot.configuredModels !== lastAdoptedModelsRef) {
-      const wasDirty = !areModelsEqual(models, adoptedModels);
-      const nextBaseline = initialModels(snapshot.configuredModels);
-      lastAdoptedModelsRef = snapshot.configuredModels;
-      adoptedModels = nextBaseline;
-      if (!wasDirty) models = initialModels(snapshot.configuredModels);
+    const latestModels = snapshot.workspaceModelCatalog;
+    if (latestModels && latestModels.revision !== lastModelRevision) {
+      lastModelRevision = latestModels.revision;
+      if (!modelsDirty || areModelsEqual(models, latestModels.models)) {
+        adoptedModels = initialModels(latestModels.models);
+        models = initialModels(latestModels.models);
+        modelBaseRevision = latestModels.revision;
+      }
       initialized = true;
     }
     const catalog = snapshot.phaseCatalog;
@@ -226,24 +230,30 @@
   }
 
   async function saveModels(): Promise<void> {
-    if (!modelsDirty || modelsSavePending || !isPrimary) return;
+    if (!modelsDirty || modelsSavePending || !isPrimary || !modelBaseRevision) return;
     const payload = JSON.parse(JSON.stringify(models)) as Record<string, string[]>;
     modelsSavePending = true;
     try {
-      const result = await saveModelsHelper(payload);
+      const result = await saveModelsHelper(payload, modelBaseRevision);
       if (result.status === 'rejected') {
-        showModelsSaveError(formatModelCatalogSaveRejection(result.reason));
+        showModelsSaveError(formatModelCatalogSaveRejection(result.reason, 'manual-edit'));
         return;
       }
       clearModelsSaveError();
       adoptedModels = payload;
+      modelBaseRevision = result.revision ?? modelBaseRevision;
     } finally {
       modelsSavePending = false;
     }
   }
 
   function revertModels(): void {
-    models = JSON.parse(JSON.stringify(adoptedModels)) as Record<string, string[]>;
+    const latest = snapshot.workspaceModelCatalog;
+    if (latest) {
+      adoptedModels = initialModels(latest.models);
+      modelBaseRevision = latest.revision;
+    }
+    models = initialModels(adoptedModels);
     newModelInput = {};
   }
 
@@ -459,7 +469,7 @@
           {newModelInput}
           dirty={modelsDirty}
           savePending={modelsSavePending}
-          canSave={isPrimary}
+          canSave={isPrimary && modelBaseRevision !== undefined}
           onnewmodelinput={(backend, value) => {
             const updated = { ...newModelInput };
             updated[backend] = value;

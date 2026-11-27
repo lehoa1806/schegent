@@ -212,6 +212,11 @@
           "type": "Record<BackendRunnerKind, readonly string[]>"
         },
         {
+          "name": "workspaceModelCatalog",
+          "optional": true,
+          "type": "{ readonly revision: string; readonly models: Record<BackendRunnerKind, readonly string[]>; }"
+        },
+        {
           "name": "availableBackends",
           "optional": false,
           "type": "readonly BackendRunnerKind[]"
@@ -8790,6 +8795,48 @@
             }
           }
         },
+        "workspaceModelCatalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "revision": {
+              "type": "string"
+            },
+            "models": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "claude",
+                "codex",
+                "agy"
+              ],
+              "properties": {
+                "claude": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "codex": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "agy": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": [
+            "revision",
+            "models"
+          ]
+        },
         "availableBackends": {
           "type": "array",
           "items": {
@@ -9085,6 +9132,48 @@
               }
             }
           }
+        },
+        "workspaceModelCatalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "revision": {
+              "type": "string"
+            },
+            "models": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "claude",
+                "codex",
+                "agy"
+              ],
+              "properties": {
+                "claude": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "codex": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "agy": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "required": [
+            "revision",
+            "models"
+          ]
         },
         "availableBackends": {
           "type": "array",
@@ -10602,7 +10691,7 @@
       }
     },
     "Command_CMD_SAVE_MODELS": {
-      "description": "Persist the Model Catalog with optional import revision and mutation tag.",
+      "description": "Persist a revision-checked workspace model edit or additive import.",
       "type": "object",
       "additionalProperties": true,
       "required": [
@@ -10634,34 +10723,23 @@
               }
             },
             "expectedRevision": {
-              "description": "The host drops values that do not match the first schema.",
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {}
-              ]
+              "type": "string",
+              "minLength": 1
             },
             "mutation": {
-              "description": "The host drops values that do not match the first schema.",
-              "anyOf": [
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "kind": {
-                      "type": "string",
-                      "enum": [
-                        "manual-edit",
-                        "import-package"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "kind"
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "manual-edit",
+                    "import-package"
                   ]
-                },
-                {}
+                }
+              },
+              "required": [
+                "kind"
               ]
             }
           },

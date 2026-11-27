@@ -26,7 +26,8 @@ import {
   computeQualificationSourceFingerprint,
   readHeadCommit,
   recordFromCanaryResults,
-  summarizeBehaviorEvalManifest
+  summarizeBehaviorEvalManifest,
+  versionToken
 } from './backend-qualification.mjs';
 import {
   runnerBackendResult,
@@ -105,8 +106,7 @@ function versionProbe(command) {
   if (result.error || result.status !== 0) {
     return { ok: false, detail: result.error?.message ?? `exit ${result.status}` };
   }
-  const match = /\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/.exec(result.stdout ?? '');
-  return { ok: true, version: match?.[0] ?? 'unknown' };
+  return { ok: true, version: versionToken(result.stdout) ?? 'unknown' };
 }
 
 /**

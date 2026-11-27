@@ -93,7 +93,7 @@ const PINNED: ReadonlyMap<string, string> = new Map([
   // (`docs/release/held-major-upgrades.md`).
   ['@secretlint/node', '^10.2.2'],
   ['@types/node', '^22.20.1'],
-  ['@types/vscode', '1.107.0'],
+  ['@types/vscode', '1.125.0'],
   ['@vitest/coverage-v8', '^3.2.7'],
   ['@vscode/test-electron', '^2.3.9'],
   ['@vscode/vsce', '^3.9.2'],

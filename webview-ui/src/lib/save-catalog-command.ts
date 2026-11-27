@@ -5,7 +5,7 @@ import { postCommand } from './vscode-api';
 const ACK_TIMEOUT_MS = 5000;
 
 export type SaveCatalogResult =
-  | { readonly status: 'accepted' }
+  | { readonly status: 'accepted'; readonly result?: unknown }
   | { readonly status: 'rejected'; readonly reason: string };
 
 export function saveCatalogCommand<C extends SidebarCommand>(
@@ -27,7 +27,7 @@ export function saveCatalogCommand<C extends SidebarCommand>(
   }).then((result): SaveCatalogResult => {
     if (result.kind !== 'ack') return { status: 'rejected', reason: 'timeout' };
     return result.ack.status === 'accepted'
-      ? { status: 'accepted' }
+      ? { status: 'accepted', ...(result.ack.result === undefined ? {} : { result: result.ack.result }) }
       : { status: 'rejected', reason: result.ack.reason ?? 'rejected' };
   });
 }

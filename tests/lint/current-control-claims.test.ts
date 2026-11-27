@@ -607,12 +607,12 @@ describe('FR-R3-138 — live pages state the controls this repository actually h
     const PROBE_FILE = 'probe.mjs';
     const PROBE_ID = `scripts/${PROBE_FILE}`;
 
-    function treeWith(scriptSource: string): string {
+    function treeWith(scriptSource: string, node = '^22 || ^24'): string {
       const root = mkdtempSync(join(tmpdir(), 'control-facts-'));
       mkdirSync(join(root, 'scripts'));
       writeFileSync(
         join(root, 'package.json'),
-        JSON.stringify({ scripts: { release: 'echo release' }, engines: { node: '^22 || ^24' } })
+        JSON.stringify({ scripts: { release: 'echo release' }, engines: { node } })
       );
       writeFileSync(join(root, 'scripts', PROBE_FILE), scriptSource);
       return root;
@@ -631,11 +631,12 @@ describe('FR-R3-138 — live pages state the controls this repository actually h
       expect(facts.evidence.nodeFloor).toContain(PROBE_ID);
     });
 
-    it('reads the declared floor out of the range it was given', () => {
-      // `^22 || ^24` is 22, and `>=22.11.0` is 22 rather than the 0 a minimum over every
-      // digit in the string returns. The second is what the first implementation did.
-      const facts = controlFacts(treeWith('// nothing\n'));
-      expect(facts.nodeFloor).toBe('22');
+    it.each([
+      ['^22 || ^24', '22.0.0'],
+      ['^24 || ^22.13.0', '22.13.0'],
+      ['>=22.11.0', '22.11.0']
+    ])('reports the full minimum for %s', (range, floor) => {
+      expect(controlFacts(treeWith('// nothing\n', range)).nodeFloor).toBe(floor);
     });
   });
 });

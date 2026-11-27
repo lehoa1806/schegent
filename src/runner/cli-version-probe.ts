@@ -37,7 +37,7 @@ import {
 } from './process-tree';
 import { buildSpawnEnv, policyRequestFields } from './spawn-env';
 import { buildCodexSecurityEnv } from './native-review-launch';
-import { spawnCommandFor } from '../lib/spawn-command';
+import { executableFileStamp, resolveExecutableCommand, spawnCommandFor } from '../lib/spawn-command';
 
 /** How long an observed version stands before it is probed again. */
 export const CLI_VERSION_TTL_MS = 10 * 60 * 1000;
@@ -437,7 +437,16 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
   const observe = async (cliPath: string): Promise<string | null> => {
     if (deps.isTrusted?.() === false) return null;
     const policy = currentPolicy();
-    const key = cliVersionCacheKey(cliPath, policy);
+    let fileStamp = '';
+    if (injectedProbe === undefined) {
+      const executable = resolveExecutableCommand(cliPath, buildSpawnEnv(policyRequestFields(policy)));
+      if (!executable.ok) return null;
+      cliPath = executable.resolvedPath;
+      const observed = executableFileStamp(cliPath);
+      if (observed === null) return null;
+      fileStamp = observed;
+    }
+    const key = cliVersionCacheKey(cliPath, policy) + '\u0000' + fileStamp;
     const cached = cache.get(key);
     if (cached !== undefined && now() - cached.observedAtMs < CLI_VERSION_TTL_MS) {
       return cached.version;
@@ -459,6 +468,14 @@ export function createCliVersionProbe(deps: CliVersionProbeDeps = {}): CliVersio
         // slow would be probed again at every phase, turning one unanswerable question into a
         // per-phase cost. It is cached for its own key only: a failure under one policy says
         // nothing about another.
+        if (fileStamp && executableFileStamp(cliPath) !== fileStamp) {
+          inFlight.delete(key);
+          return null;
+        }
+        if (cache.size >= 256) {
+          const oldest = cache.keys().next();
+          if (!oldest.done) cache.delete(oldest.value);
+        }
         cache.set(key, { version, observedAtMs: now() });
         inFlight.delete(key);
         return version;

@@ -4,6 +4,8 @@
 
 This reference documents the embedded SQLite application store (`F04-A`), the versioned Round 6 domain store adapters (`F04-B` covering `F05`, `F06`, `F07`, `F08`, `F10`, `F11`, `F13`, `F14`, `F15`), and the catalog, policy, model catalog, and frozen execution closure store (`F04-C`).
 
+The operational store requires SQLite 3.51.3 or newer for its WAL fix. The macOS arm64 VS Code 1.125.0 binary bundles 3.51.3. The editor integration test reads the engine version from the database and checks transaction state on a file-backed WAL write. [Runtime qualification](../release/node-floor-record.md)
+
 Implemented in:
 - [`src/contracts/sqlite-store/schema-types.ts`](../../src/contracts/sqlite-store/schema-types.ts)
 - [`src/contracts/sqlite-store/domain-adapter-types.ts`](../../src/contracts/sqlite-store/domain-adapter-types.ts)
@@ -79,9 +81,9 @@ On trusted primary activation (holding `.schegent/ownership`), `relocateLegacySq
 - **Total Queue Capacity**: `64` requests or `16 MiB` (`16,777,216` bytes).
 - **Reserved Settlement Headroom**: `16` slots or `4 MiB` (`4,194,304` bytes) reserved exclusively for the `settlement` lane (`Terminal acceptance`, lock renewal/release, and durability flushes). Normal and background writes are capped at `48` requests or `12 MiB` and rejected with `QUEUE_SATURATED` above that threshold.
 - **WAL Checkpoint Escalation**:
-  - `PASSIVE`: Triggered at `1,000` accumulated WAL pages or `30,000 ms` since the last checkpoint.
-  - `TRUNCATE` / `RESTART`: Triggered when WAL size reaches `64 MiB` and read connections are idle.
-  - `WAL_BACKGROUND_PAUSED`: Triggered when WAL size reaches `128 MiB`, pausing `background` priority writes while keeping `settlement` and `standard` lanes operational.
+  - SQLite auto-checkpoints at 1,000 WAL pages on each writer connection. Operational and transaction-unit commits also check the live sidecar size and request a passive checkpoint after 30 seconds.
+  - At 64 MiB the coordinator checks its read pool and probes progress using a passive checkpoint. When all frames are checkpointed, it attempts truncation with zero lock wait and then restores the normal write timeout. An external reader may still pin the latest snapshot. A busy or incomplete checkpoint retains the measured size. Reattempts are spaced by 30 seconds.
+  - Background admission rechecks the sidecar before writing. A measured 128 MiB or an unreadable size gives `WAL_BACKGROUND_PAUSED`; settlement and standard writes stay available. The runtime log records pressure transitions and checkpoint results including bytes, busy status and frame counts.
 
 ---
 

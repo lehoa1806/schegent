@@ -14,10 +14,10 @@
  * Zero `vscode` imports (docs/hard-rules.md rule 13).
  */
 
+import { lstatSync } from 'node:fs';
 import {
   SQLITE_WAL_ESCALATION_BYTES,
   SQLITE_WAL_PASSIVE_CHECKPOINT_INTERVAL_MS,
-  SQLITE_WAL_PASSIVE_CHECKPOINT_PAGES,
   SQLITE_WAL_PAUSE_BACKGROUND_BYTES,
   SQLITE_WRITER_MAX_QUEUE_BYTES,
   SQLITE_WRITER_MAX_QUEUE_REQUESTS,
@@ -61,15 +61,18 @@ export class WriterCoordinator {
 
   private activeDepth = 0;
   private activeBytes = 0;
-  private accumulatedWalPages = 0;
-  private simulatedWalBytes = 0;
+  private walBytes: number | null = 0;
+  private pressure: 'normal' | 'elevated' | 'paused' | 'unknown' = 'normal';
+  private nextEscalationAtMs = 0;
+  private checkpointCount = 0;
   private lastCheckpointAtMs: number;
   private readonly checkpointHistory: WalCheckpointRecord[] = [];
 
   public constructor(
     conn: NodeSqliteConnection,
     readPool: BoundedReadConnectionPool,
-    nowMs: () => number = () => Date.now()
+    nowMs: () => number = () => Date.now(),
+    private readonly onHealth?: (message: string, fields: Record<string, unknown>) => void
   ) {
     this.conn = conn;
     this.readPool = readPool;
@@ -77,21 +80,16 @@ export class WriterCoordinator {
     this.lastCheckpointAtMs = this.nowMs();
   }
 
-  public getQueueMetrics(): {
-    readonly activeDepth: number;
-    readonly activeBytes: number;
-    readonly accumulatedWalPages: number;
-    readonly simulatedWalBytes: number;
-    readonly lastCheckpointAtMs: number;
-    readonly checkpointCount: number;
-  } {
+  public getQueueMetrics() {
+    this.measureWal();
     return {
       activeDepth: this.activeDepth,
       activeBytes: this.activeBytes,
-      accumulatedWalPages: this.accumulatedWalPages,
-      simulatedWalBytes: this.simulatedWalBytes,
+      walBytes: this.walBytes,
+      pressure: this.pressure,
+      lastCheckpoint: this.checkpointHistory.at(-1),
       lastCheckpointAtMs: this.lastCheckpointAtMs,
-      checkpointCount: this.checkpointHistory.length
+      checkpointCount: this.checkpointCount
     };
   }
 
@@ -99,12 +97,31 @@ export class WriterCoordinator {
     return this.checkpointHistory;
   }
 
-  /**
-   * Test and runtime hook to report current WAL state (pages and byte size).
-   */
-  public recordWalGrowth(addedPages: number, currentWalBytes: number): void {
-    this.accumulatedWalPages += Math.max(0, addedPages);
-    this.simulatedWalBytes = Math.max(0, currentWalBytes);
+  private reportHealth(message: string, fields: Record<string, unknown>): void {
+    try {
+      this.onHealth?.(message, fields);
+    } catch {
+      // A diagnostic sink cannot change a completed commit or a lane's admission.
+    }
+  }
+
+  private measureWal(): void {
+    let bytes: number | null = 0;
+    if (this.conn.verifiedPragmas.journalMode === 'wal') {
+      try {
+        const stat = lstatSync(this.conn.databasePath + '-wal', { throwIfNoEntry: false });
+        if (stat) bytes = stat.isFile() ? stat.size : null;
+      } catch {
+        bytes = null;
+      }
+    }
+    this.walBytes = bytes;
+    const pressure = bytes === null ? 'unknown' : bytes >= SQLITE_WAL_PAUSE_BACKGROUND_BYTES
+      ? 'paused' : bytes >= SQLITE_WAL_ESCALATION_BYTES ? 'elevated' : 'normal';
+    if (pressure !== this.pressure) {
+      this.pressure = pressure;
+      this.reportHealth('SQLite WAL pressure changed', { pressure, walBytes: bytes });
+    }
   }
 
   /**
@@ -114,11 +131,12 @@ export class WriterCoordinator {
   public tryAdmitWrite(lane: WriterPriorityLane, payloadBytes: number): WriterAdmissionResult {
     const normalizedBytes = Math.max(0, payloadBytes);
 
-    if (lane === 'background' && this.simulatedWalBytes >= SQLITE_WAL_PAUSE_BACKGROUND_BYTES) {
+    if (lane === 'background') this.maintainWal(false);
+    if (lane === 'background' && (this.pressure === 'paused' || this.pressure === 'unknown')) {
       return {
         admitted: false,
         code: 'WAL_BACKGROUND_PAUSED',
-        message: `Background write paused because WAL size (${this.simulatedWalBytes} B) reached 128 MiB ceiling`,
+        message: this.walBytes === null ? 'Background write paused because WAL size is unavailable' : 'Background write paused at the 128 MiB WAL ceiling',
         currentDepth: this.activeDepth,
         currentBytes: this.activeBytes
       };
@@ -162,14 +180,10 @@ export class WriterCoordinator {
     };
   }
 
-  /**
-   * Executes a synchronous write callback under admission control and evaluates
-   * WAL checkpoint policies after commit.
-   */
+  /** The caller reports a durable commit after distinguishing it from a replay or refusal. */
   public executeSerializedWrite<T>(
     lane: WriterPriorityLane,
     payloadBytes: number,
-    estimatedWalPages: number,
     fn: (conn: NodeSqliteConnection) => T
   ):
     | { readonly admitted: true; readonly result: T }
@@ -181,31 +195,49 @@ export class WriterCoordinator {
 
     try {
       const result = fn(this.conn);
-      this.accumulatedWalPages += Math.max(1, estimatedWalPages);
-      this.evaluateCheckpointPolicy();
       return { admitted: true, result };
     } finally {
       admission.release();
     }
   }
 
-  public evaluateCheckpointPolicy(): WalCheckpointRecord | null {
+  /** Observe successful commits from both operational state and transaction units. */
+  public afterCommit(): void {
+    this.maintainWal(true);
+  }
+
+  private maintainWal(committed: boolean): void {
+    if (this.conn.verifiedPragmas.journalMode !== 'wal') return;
     const now = this.nowMs();
-    const readersIdle = this.readPool.getActiveLeaseCount() === 0;
-
-    if (this.simulatedWalBytes >= SQLITE_WAL_ESCALATION_BYTES && readersIdle) {
-      return this.runCheckpoint('TRUNCATE', 'size_escalation', now);
+    try {
+      this.measureWal();
+      if (this.walBytes === null || this.walBytes === 0) return;
+      if (this.walBytes >= SQLITE_WAL_ESCALATION_BYTES &&
+          this.readPool.getActiveLeaseCount() === 0 && now >= this.nextEscalationAtMs) {
+        // Other connections (including reporting workers) can hold snapshots outside the pool.
+        // A passive checkpoint samples their progress without waiting for them.
+        this.nextEscalationAtMs = now + SQLITE_WAL_PASSIVE_CHECKPOINT_INTERVAL_MS;
+        const sampled = this.runCheckpoint('PASSIVE', 'size_escalation', now);
+        if (sampled.busy === 0 && sampled.logFrames >= 0 && sampled.logFrames === sampled.checkpointedFrames) {
+          // An external reader may still hold the last checkpointed frame. Attempt the
+          // exclusive lock once and restore the normal write timeout before returning.
+          this.conn.exec('PRAGMA busy_timeout = 0');
+          try {
+            this.runCheckpoint('TRUNCATE', 'size_escalation', now);
+          } finally {
+            this.conn.exec(`PRAGMA busy_timeout = ${this.conn.verifiedPragmas.busyTimeoutMs}`);
+          }
+        }
+        this.measureWal();
+        this.reportHealth('SQLite WAL checkpoint under pressure', { walBytes: this.walBytes, ...this.checkpointHistory.at(-1) });
+      } else if (committed && now - this.lastCheckpointAtMs >= SQLITE_WAL_PASSIVE_CHECKPOINT_INTERVAL_MS) {
+        this.runCheckpoint('PASSIVE', 'interval_threshold', now);
+      }
+    } catch {
+      // Maintenance is best effort. A completed write must never be reported as rolled back.
+      this.lastCheckpointAtMs = now;
+      this.reportHealth('SQLite WAL checkpoint unavailable', { walBytes: this.walBytes });
     }
-
-    if (this.accumulatedWalPages >= SQLITE_WAL_PASSIVE_CHECKPOINT_PAGES) {
-      return this.runCheckpoint('PASSIVE', 'pages_threshold', now);
-    }
-
-    if (now - this.lastCheckpointAtMs >= SQLITE_WAL_PASSIVE_CHECKPOINT_INTERVAL_MS && this.accumulatedWalPages > 0) {
-      return this.runCheckpoint('PASSIVE', 'interval_threshold', now);
-    }
-
-    return null;
   }
 
   public runCheckpoint(
@@ -224,12 +256,10 @@ export class WriterCoordinator {
       checkpointedFrames: Number(row?.checkpointed ?? 0),
       timestampMs
     };
+    this.checkpointCount += 1;
+    if (this.checkpointHistory.length >= 32) this.checkpointHistory.shift();
     this.checkpointHistory.push(record);
     this.lastCheckpointAtMs = timestampMs;
-    this.accumulatedWalPages = 0;
-    if (mode === 'TRUNCATE' || mode === 'RESTART') {
-      this.simulatedWalBytes = 0;
-    }
     return record;
   }
 }
