@@ -137,7 +137,7 @@ Feature 282 (`FR-R5-F21`) re-read this deferral ahead of its date.
 
 ### Decision on 2026-11-27
 
-The October live record discharges the original first-run obligation. It predates the November transport and admission changes and carries no qualification for them. Keep distribution private. Verify each advertised backend through the shipped transport on a candidate before any pilot. Reassess on 2026-12-11 or at the next candidate or backend upgrade, whichever comes first. The maintainer owns the evidence in [the backend qualification log](../release/backend-qualification-log.md).
+The October live record discharges the original first-run obligation. On 27 November all three installed backends passed a fresh live turn through their shipped transports at `6f8cace6`. Keep distribution private. Reassess on 2026-12-11 or at the next candidate or backend upgrade, whichever comes first. The maintainer owns the evidence in [the backend qualification log](../release/backend-qualification-log.md).
 
 ## 6. What this page does not claim
 

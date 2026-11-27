@@ -30,7 +30,7 @@ node scripts/current-control-facts.mjs --write
 | SBOM for a release | Produced. `npm run release` reaches `sbom` through the release driver, which builds, writes the SBOM from that build, and packages once, so a candidate cannot skip it. |
 | Checksums for the released artifact | Produced by `scripts/release-digest.mjs`. |
 | Independently verifiable build provenance | Not produced. The gate attestation records that a gate ran on the releasing machine; it is a local record, not a signature a third party can verify. |
-| Node version floor | Declared as `^22 \|\| ^24` (floor 22). Not enforced: no executed check reads it, and `.npmrc` does not set `engine-strict`, so a release built on an older Node is refused by nothing. |
+| Node version floor | Declared as `^22.13.0 \|\| ^24` (floor 22.13.0). Not enforced: no executed check reads it, and `.npmrc` does not set `engine-strict`, so a release built on an older Node is refused by nothing. |
 
 The two absence rows are measured over a stated candidate set — the 117 command bodies and files reachable from `npm run release` or living under `scripts/` — so adding a producer to either half changes the row rather than leaving it true by never having looked.
 

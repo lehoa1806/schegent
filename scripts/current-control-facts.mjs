@@ -35,6 +35,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import semver from 'semver';
 import { reachableScripts, GATE_SCRIPT } from './check-gate-coverage-parity.mjs';
 import { RELEASE_CHILD_SCRIPTS } from './release-candidate.mjs';
 import { invokedAsScript } from './invoked-as-script.mjs';
@@ -145,20 +146,10 @@ function workflowFiles(root) {
   }
 }
 
-/**
- * `^22 || ^24` → `22`. The lowest major any alternative in the range admits.
- *
- * Per alternative, and only the first number in it. Taking the minimum of every digit
- * in the string reads `^22 || ^24` correctly and `>=22.11.0` as **0** — an ordinary
- * range, and the page would have printed "floor 0" the day someone wrote one.
- */
+/** Retain the minimum patch when the toolchain excludes earlier patches of a supported major. */
 function floorFrom(range) {
-  const majors = String(range ?? '')
-    .split('||')
-    .map((clause) => clause.match(/(\d+)/)?.[1])
-    .filter((major) => major !== undefined)
-    .map(Number);
-  return majors.length === 0 ? null : String(Math.min(...majors));
+  if (typeof range !== 'string' || !range.trim() || !semver.validRange(range)) return null;
+  return semver.minVersion(range)?.version ?? null;
 }
 
 /**

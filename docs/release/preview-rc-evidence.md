@@ -50,6 +50,8 @@ This record binds the latest Round 8 preview candidate artifact, verification po
 
 **27 November distribution decision.** Keep the intended audience to the author on the local macOS arm64 desktop. The packaged README states this scope, and new release records carry it alongside the artifact digest even when the local provider override is used. The npm package is marked private. Opening a pilot requires a fresh macOS candidate, live qualification of each advertised backend, a human VoiceOver recovery journey, an independent Criterion 8 review, and the recipient verification procedure from the [distribution decision](../architecture/distribution-posture.md). An external recipient or pilot remains blocked until those records exist.
 
+All three installed providers passed their shipped-transport canary on the remediation source at `6f8cace6`. A separate loopback check used Collector Core 0.166.0 and confirmed the received histogram count and sum. The human VoiceOver journey, independent review and recipient provenance remain open. [Provider versions and profiles](backend-qualification-log.md) · [Collector observation](../operations/telemetry-export.md#collector-verification)
+
 The Round 8 candidate carried the following open items:
 
 1. **Live paid shipped-transport provider canary (`npm run canary`)**: **UNQUALIFIED** in this round (not executed against paid `claude`, `codex`, or `agy` live provider accounts during Round 8 autonomous execution). Release preparation (`npm run release`) refuses without fresh live `.backend-qualification.json` unless overridden via `SCHEGENT_RELEASE_UNQUALIFIED=1` and logged in [`backend-qualification-log.md`](backend-qualification-log.md).
