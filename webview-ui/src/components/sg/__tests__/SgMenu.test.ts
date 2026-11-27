@@ -172,11 +172,21 @@ describe('SgMenu', () => {
     expect(mounted.menu.hidden).toBe(true);
   });
 
-  it('closes when the page scrolls or the window is resized, since both move the button', async () => {
+  it('keeps keyboard focus after a queued scroll and closes when scrolling moves the button', async () => {
     const mounted = mount();
+    const bounds = vi.spyOn(mounted.trigger, 'getBoundingClientRect').mockReturnValue(new DOMRect(50, 80, 24, 24));
     await openMenu(mounted);
+    await fireEvent.keyDown(mounted.menu, { key: 'End' });
+    await fireEvent.scroll(document);
+    expect(mounted.menu.hidden).toBe(false);
+    expect(document.activeElement).toBe(mounted.item('Delete queue…'));
+    bounds.mockReturnValue(new DOMRect(50, 60, 24, 24));
     await fireEvent.scroll(document);
     expect(mounted.menu.hidden).toBe(true);
+  });
+
+  it('closes when the window is resized', async () => {
+    const mounted = mount();
     await openMenu(mounted);
     await fireEvent(window, new Event('resize'));
     expect(mounted.menu.hidden).toBe(true);
