@@ -15,7 +15,7 @@ import { ZippedStreamBuffer } from './zipped-stream-buffer';
 import { processTreeSpawnOptions, escalateAndReportTree, trackGroupAtExit } from './process-tree';
 import { nextInvocationId } from './invocation-identity';
 import { SpawnRefusedAfterCloseError } from './spawn-refused-after-close';
-import { isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
+import { assertExecutableUnchanged, isInvalidExecutablePath, spawnCommandFor } from '../lib/spawn-command';
 import { TeardownLedger } from './teardown-ledger';
 import type { EvidenceHealthReporter } from '../services/evidence-health/evidence-health-monitor';
 
@@ -169,6 +169,7 @@ export class ProcessLifecycleRunner {
     if (isAborted()) {
       return cancelledInvocationOutput(input.commandDisplay, start);
     }
+    assertExecutableUnchanged(resolvedCommand, request.executableFileStamp);
     const child = this.spawnFn(resolvedCommand, input.args, {
       stdio: ['pipe', 'pipe', 'pipe'], shell: false, cwd: request.cwd, env: input.env,
       // FR-R3-054 (H-05) — its own process group, so the ladder below can reach

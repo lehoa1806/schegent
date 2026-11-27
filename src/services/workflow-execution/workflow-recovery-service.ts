@@ -164,11 +164,28 @@ export interface WorkflowRecoveryServiceDeps {
 export interface ReconcileConnectedRunResult {
   readonly runId: string;
   readonly mutated: boolean;
+  readonly refusalCode?: 'control-ledger-corrupt' | 'unsupported-control-ledger-version';
   readonly disposition: RecoveryDispositionRecord | null;
   readonly run: ConnectedWorkflowRun;
   readonly projection: WorkflowRunControlProjection;
   readonly retainedUncertainPermits?: readonly QuotaPermit[] | undefined;
   readonly claimedNotificationIds?: readonly string[] | undefined;
+}
+
+function unchangedRunResult(
+  run: ConnectedWorkflowRun,
+  retainedUncertainPermits?: readonly QuotaPermit[],
+  claimedNotificationIds?: readonly string[]
+): ReconcileConnectedRunResult {
+  return {
+    runId: run.connectedRunId,
+    run,
+    mutated: false,
+    disposition: run.recoveryDisposition ?? null,
+    projection: buildWorkflowRunControlProjection(run),
+    ...(retainedUncertainPermits === undefined ? {} : { retainedUncertainPermits }),
+    ...(claimedNotificationIds === undefined ? {} : { claimedNotificationIds })
+  };
 }
 
 function createStagingWriter(initial: ConnectedWorkflowRun): {
@@ -310,10 +327,6 @@ export class WorkflowRecoveryService {
       return undefined;
     }
 
-    // R7-17-07 (Clarification Q3): transition unsettled `'intent'` handoff dispatches to `'uncertain'`
-    // BEFORE terminal pin release or any recovery dispatch so pins stay protected and duplicates refuse.
-    this.deps.phaseHandoffCoordinator?.reconcileInterruptedDispatches(run.connectedRunId);
-
     const queueId = resolveBoundQueueId(run);
     const rootId = resolveRootInvocationId(run);
     const rootFrame = run.invocations?.[rootId];
@@ -336,6 +349,11 @@ export class WorkflowRecoveryService {
           ? { processEvidencePort: this.deps.processEvidencePort }
           : {})
       });
+      if (!reconciledRoot.ok &&
+          (reconciledRoot.errorCode === 'control-ledger-corrupt' ||
+           reconciledRoot.errorCode === 'unsupported-control-ledger-version')) {
+        return { ...unchangedRunResult(run), refusalCode: reconciledRoot.errorCode };
+      }
       controlRootPausedUncertain = reconciledRoot.disposition === 'paused-uncertain-effect';
       if (reconciledRoot.ledger !== undefined) {
         const uncertainList: QuotaPermit[] = [];
@@ -362,6 +380,9 @@ export class WorkflowRecoveryService {
       }
     }
 
+    // Mark interrupted intent uncertain before terminal pin release or recovery dispatch.
+    this.deps.phaseHandoffCoordinator?.reconcileInterruptedDispatches(run.connectedRunId);
+
     // 1. Terminal runs: no-op, ensure ledger root, lease, and terminal handoff pins are finalized idempotently.
     if (
       rootFrame !== undefined &&
@@ -379,17 +400,7 @@ export class WorkflowRecoveryService {
       }
       releaseTerminalHandoffPinsIfConfirmed(this.deps.phaseHandoffCoordinator, run);
       await this.deps.releaseQueueLease?.(queueId, run.connectedRunId);
-      return {
-        runId: run.connectedRunId,
-        mutated: false,
-        disposition: run.recoveryDisposition ?? null,
-        run,
-        projection: buildWorkflowRunControlProjection(run),
-        ...(retainedUncertainPermits !== undefined
-          ? { retainedUncertainPermits }
-          : {}),
-        ...(claimedNotificationIds !== undefined ? { claimedNotificationIds } : {})
-      };
+      return unchangedRunResult(run, retainedUncertainPermits, claimedNotificationIds);
     }
 
     // 2. Orphaned runs (bound queue or backing task deleted): cancel only this run.
@@ -754,17 +765,7 @@ export class WorkflowRecoveryService {
         this.deps.isAttemptPendingInQueue !== undefined &&
         (await this.deps.isAttemptPendingInQueue(queueId, run, frame, attempt))
       ) {
-        return {
-          runId: run.connectedRunId,
-          mutated: false,
-          disposition: run.recoveryDisposition ?? null,
-          run,
-          projection: buildWorkflowRunControlProjection(run),
-          ...(retainedUncertainPermits !== undefined
-            ? { retainedUncertainPermits }
-            : {}),
-          ...(claimedNotificationIds !== undefined ? { claimedNotificationIds } : {})
-        };
+        return unchangedRunResult(run, retainedUncertainPermits, claimedNotificationIds);
       }
 
       // No durable completion evidence: transition to 'paused' with 'recovery-uncertain-effect'.
@@ -1143,16 +1144,7 @@ export class WorkflowRecoveryService {
       if (cbReconciled !== null) return cbReconciled;
     }
 
-    return {
-      runId: run.connectedRunId,
-      mutated: false,
-      disposition: run.recoveryDisposition ?? null,
-      run,
-      projection: buildWorkflowRunControlProjection(run),
-      ...(retainedUncertainPermits !== undefined
-        ? { retainedUncertainPermits }
-        : {})
-    };
+    return unchangedRunResult(run, retainedUncertainPermits);
   }
 
   private async commitRecoveredDisposition(

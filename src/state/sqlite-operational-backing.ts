@@ -304,6 +304,10 @@ export class SqliteOperationalBacking {
     try {
       for (const { key, value: effectiveValue } of prepared) {
         const prevValue = txCache.get(key);
+        if ((key === KEYS.controlLedger || key === KEYS.connectedRuns) &&
+            prevValue !== undefined && !isPlainRecord(prevValue) && effectiveValue !== undefined) {
+          throw new Error(key === KEYS.controlLedger ? 'control-ledger-corrupt' : 'connected-run-refused');
+        }
         if (effectiveValue === undefined) {
           if (key === KEYS.queue) deleteOperationalQueueScopeInTx(conn, this.scopeId);
           else if (key === KEYS.run) deleteOperationalRunScopeInTx(conn, this.scopeId);
@@ -364,6 +368,7 @@ export class SqliteOperationalBacking {
       if (frozenValue === undefined) this.cache.delete(key);
       else this.cache.set(key, frozenValue);
     }
+    this.store.writerCoordinator.afterCommit();
   }
 
   private importIfNeeded(legacyMemento: Memento): OperationalMigrationOutcomePort | null {
@@ -519,11 +524,8 @@ export class SqliteOperationalBacking {
             nextCache.set(row.doc_key, deepFreezeValue(parsed));
           }
         } catch {
-          if (row.doc_key === KEYS.connectedRuns) {
-            // Preserve a non-plain-object sentinel so `getConnectedRunPresence` fails closed as
-            // `'unreadable-refused'` instead of `'absent'` while keeping startup non-fatal.
-            nextCache.set(row.doc_key, '__schegent_corrupt_connected_runs_json__');
-          }
+          // Keep presence distinct from absence without copying corrupt bytes into another sink.
+          if (row.doc_key === KEYS.connectedRuns || row.doc_key === KEYS.controlLedger) nextCache.set(row.doc_key, null);
           this.logger?.warn('corrupt operational_kv_documents payload skipped', { key: row.doc_key });
         }
       }
@@ -795,7 +797,7 @@ function readOperationalSnapshotFromConnection(
             : deepFreezeValue(parsed);
         snapshot.set(row.doc_key, frozen);
       } catch {
-        // Skip malformed row in read-only view.
+        if (row.doc_key === KEYS.connectedRuns || row.doc_key === KEYS.controlLedger) snapshot.set(row.doc_key, null);
       }
     }
     const hasEntityTables =

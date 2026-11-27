@@ -268,6 +268,7 @@ export interface SpawnAdmissionDecision {
   readonly kind: BackendRunnerKind;
   readonly executableTarget: ExecutableTargetId;
   readonly resolvedExecutablePath: string;
+  readonly executableFileStamp?: string;
   /** Optional SHA-256 hex digest of the admitted standalone scanner binary (FR-R8-02 02-02). */
   readonly resolvedExecutableSha256?: string;
   readonly containmentPosture: ContainmentPosture;

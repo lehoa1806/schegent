@@ -11,6 +11,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import {
   SQLITE_BUSY_TIMEOUT_MS,
   SQLITE_MAX_READ_CONNECTIONS,
+  SQLITE_WAL_PASSIVE_CHECKPOINT_PAGES,
   type VerifiedPragmaState
 } from '../../contracts/sqlite-store/schema-types';
 
@@ -76,6 +77,7 @@ export class NodeSqliteConnection {
       if (!this.isReadOnly) {
         this.db.exec(`PRAGMA journal_mode = ${requestedJournalMode.toUpperCase()}`);
         this.db.exec('PRAGMA synchronous = FULL');
+        if (requestedJournalMode === 'wal') this.db.exec(`PRAGMA wal_autocheckpoint = ${SQLITE_WAL_PASSIVE_CHECKPOINT_PAGES}`);
       } else {
         this.db.exec('PRAGMA query_only = ON');
       }

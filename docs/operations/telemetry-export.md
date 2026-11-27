@@ -303,6 +303,12 @@ without unhandled Promise rejections or delivery wedging.
   batches are dropped at shutdown. A batch that exhausted its retries is spooled and replayed
   once at the next activation only while the persisted authorization fingerprint matches; any
   disable, trust revocation, content-policy refusal, or destination/credential change drops it.
+- **Replay integrity.** The exporter derives the spool filename from the batch ID and stores
+  the SHA-256 of the encoded metrics in SQLite. Before each replay it reads at most 1 MiB
+  from the expected private file and checks the size and digest of the bytes it sends.
+  Damaged batches and older batches that lack a digest receive a `rejected` drop on
+  authorized replay. The local usage records remain available. The digest detects a changed
+  copy while the SQLite record is intact. Both stores are writable by the local account.
 - **Direct-only transport; proxy environment variables are ignored.** Every request goes straight
   to the destination, bypassing `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY`, including when Node
   is started with environment-proxy options. A network that reaches the destination only through
@@ -311,22 +317,18 @@ without unhandled Promise rejections or delivery wedging.
   the error code alone. A peer that closes the connection during the handshake gives a
   connection error code, so the last error in `health()` is `network`, not `tls`.
 
-## What was not observed
+## Collector verification
 
-No live provider and no real external OpenTelemetry Collector was used. The request shape is checked
-against a committed fixture built from the published OTLP/HTTP JSON rules, and delivery is
-exercised against local loopback HTTP fixture servers — including the `FR-R8-03` (`03-02`)
-lifecycle drill (`repo/tests/integration/correlated-diagnostics-and-otlp.test.ts`, verified
-2026-11-24) covering:
+On 27 November 2026 the encoder and HTTP transport from `6f8cace6` sent two synthetic input-token observations, 512 and 1,024, to an official OpenTelemetry Collector Core 0.166.0 process on macOS arm64. The receiver bound to loopback and used only the local debug exporter. Schegent classified the 890-byte JSON request as acknowledged with HTTP 200 and zero rejected data points. The collector reported one `gen_ai.client.token.usage` histogram with count 2 and sum 1,536. The Darwin arm64 archive matched the release SHA-256, `9109647af93b40ed737d21c7f7e00d82abbf1726d73a53f1ce65411006648c79`. [Upstream release](https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.166.0)
+
+The committed fixture and the November 24 lifecycle drill exercise the following recovery and refusal paths. [Integration tests](../../tests/integration/correlated-diagnostics-and-otlp.test.ts)
 
 - **Disabled posture**: zero network calls and zero `telemetry-spool/` directory creation;
 - **Unapproved destinations**: pre-network refusal of non-loopback plaintext endpoints (`plaintext-not-loopback`), `content` policy (`content-export-unsupported`), and workspace-scoped profiles (`scope-not-authorized`);
 - **HTTP `3xx` redirect refusal**: redirected trap target receives zero metric payloads and zero credentials (`dropReasons['redirect-refused'] >= 1`);
 - **Collector unreachable → bounded redacted spool → recovery replay**: `503` + `Retry-After` exceeding the `30 s` retry budget spools one `0600` metadata-only batch (`<= 32 MiB`) with filesystem paths, source IDs, and bearer credentials absent on disk, and replays/acknowledges cleanly once the collector returns `200 OK`.
 
-External OpenTelemetry Collector interoperability remains **unqualified / unobserved**: no claim is
-made that any named external collector or vendor endpoint accepts these requests until qualified
-against a real collector deployment.
+Off-host deployments, vendor ingestion, collector authentication, and proxy-specific delivery remain unobserved.
 
 ## Deferred and expansion gate
 

@@ -10,7 +10,7 @@
 
 import type { ResolvedPipelineCatalog } from '../config/pipeline-catalog';
 import type { PipelineCatalog } from '../config/pipeline-config';
-import { loadCatalog, type CatalogConfigReader } from '../config/pipeline-config-loader';
+import { coerceModels, loadCatalog, type CatalogConfigReader } from '../config/pipeline-config-loader';
 import type { ResolvedPhaseCatalog } from '../config/process-catalog';
 import { resolveWorkflowCatalog } from '../config/workflow-catalog';
 import {
@@ -187,6 +187,10 @@ export class CatalogSession {
 
   get catalog(): PipelineCatalog {
     return this.loaded.catalog;
+  }
+
+  get workspaceModels(): PipelineCatalog['models'] {
+    return coerceModels(this.ports.reader?.getModels('workspace'));
   }
 
   get phaseCatalog(): ResolvedPhaseCatalog {

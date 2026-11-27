@@ -3,7 +3,7 @@
 **Captured**: 2026-08-25 · **Updated**: 2026-11-24 (`FR-R8-03`, `03-07`); 2026-11-23 (`FR-R7-17`, Features 310/311/331; `FR-R7-14`, 14-17); 2026-11-06 (`FR-R5-F20`) · **Target**: WCAG 2.1 Level AA (whole-app automated scan baseline); WCAG 2.2 Level AA (`F11-NFR-07` / `NFR-007` for Feature 310 and `F12-NFR-04` / `NFR-004` for Feature 311 operator journeys) · **Language scope**: English-only by product decision ([English-only is a product decision](../concepts/english-only-not-localizable.md))
 **Features**: 155 (`FR-R3-091`), 167 (`FR-R3-131`), 310 (`FR-R6-F11`), 311 (`FR-R6-F12`), 328 (`FR-R7-14`, 14-17), 331 (`FR-R7-17`, `R7-17-01` / `R7-17-03`), 335 (`FR-R8-03`, `03-07`)
 
-<!-- at-matrix-review-date: 2026-11-27 -->
+<!-- at-matrix-review-date: 2026-12-11 -->
 
 ## Why this file exists, and what it is not
 
@@ -21,7 +21,7 @@ looked**.
 
 | OS | Screen reader | Version | Exercised | Result | Trigger |
 |---|---|---|---|---|---|
-| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-24 (`FR-R8-03`, 03-07; `FR-R7-14`, 14-17; `FR-R7-17`, Features 310 & 311) | 2026-11-27, owner `maintainer`: run [the procedure below](#the-procedure) on a clean editor profile; see *Why it is untested* |
+| macOS | VoiceOver | — | **Nothing** | **UNTESTED**: **not observed** as of 2026-11-24 (`FR-R8-03`, 03-07; `FR-R7-14`, 14-17; `FR-R7-17`, Features 310 & 311) | Before any pilot or by the next review on 2026-12-11, owner `maintainer`: run [the procedure below](#the-procedure) on a clean editor profile; see *Why it is untested* |
 | Windows | NVDA | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Windows | Narrator | — | **Nothing** | **UNTESTED** | Windows platform verification (`FR-R3-129`) |
 | Linux | Orca | — | **Nothing** | **UNTESTED** | Linux platform verification (`FR-R3-129`) |
@@ -62,6 +62,12 @@ This is the same declination
 [`FR-R3-129`](../../../docs/features/round_3/DONE_129_FR-R3-129_qualification_residuals_with_dates.md)
 recorded for the live backend canary: the work is owed, the trigger is dated, and the procedure is
 written out so that executing it is a session's work rather than a design exercise.
+
+### Review 2026-11-27
+
+The release decision remains private to the author. This review checked the candidate evidence, the four platform rows and the recovery procedure below. The recorded browser accessibility checks cover keyboard, focus and automated rules. A human VoiceOver session on the candidate is still owed. Run it on a clean VS Code 1.125.0 profile on macOS arm64 and record the editor version with the results. The maintainer owns that observation before any pilot. The next status review is 2026-12-11, or immediately when a candidate and tester are available.
+
+A browser trace of the small-window, high-contrast saved-report journey showed a queued scroll event closing the action menu after End focused Delete. The button had stayed in the same place. The menu now checks whether the button actually moved before dismissing it, so Enter reaches the confirmation. The corrected journey passed 20 consecutive browser runs, followed by all 19 automated accessibility checks. [Keyboard regression test](../../webview-ui/src/components/sg/__tests__/SgMenu.test.ts)
 
 ### Review 2026-11-06
 

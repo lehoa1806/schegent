@@ -72,7 +72,7 @@ assert something, which is exactly when it should cost something.
 spends the operator's subscription quota; the repository audit of 2026-08-27 deliberately did not spend
 it, and this cycle did not either.
 
-<!-- canary-review-date: 2026-11-27 -->
+<!-- canary-review-date: 2026-12-11 -->
 
 **Trigger for the first run**: whichever of these comes first —
 
@@ -134,6 +134,10 @@ Feature 282 (`FR-R5-F21`) re-read this deferral ahead of its date.
   owner is the operator, who is the maintainer.
 - **The date stands at 2026-11-27.** The amendment above leaves the decision to the operator, and
   this review is not that decision, so it does not renew the date.
+
+### Decision on 2026-11-27
+
+The October live record discharges the original first-run obligation. On 27 November all three installed backends passed a fresh live turn through their shipped transports at `6f8cace6`. Keep distribution private. Reassess on 2026-12-11 or at the next candidate or backend upgrade, whichever comes first. The maintainer owns the evidence in [the backend qualification log](../release/backend-qualification-log.md).
 
 ## 6. What this page does not claim
 

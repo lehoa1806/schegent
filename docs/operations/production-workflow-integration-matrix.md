@@ -52,7 +52,7 @@ Every refusal produces a structured `WorkflowRefusalOutcome` with a bounded mess
 2. `unsupported-capability` — Backend capability is `unsupported`, `unavailable`, `unknown-identity`, fixture-only when live qualification is required, or F08/F13 authority is unavailable (`attemptsConsumed: 0`).
 3. `quota-deferred` — Shared quota permit is currently held by another attempt; execution waits for availability wakeup and scheduler pass (`attemptsConsumed: 0`).
 4. `stale-fence` — Window primacy or queue execution lease fence was lost before the effect boundary; refused with zero new children routed (`FR-012`).
-5. `corrupt-state` — Persisted workflow run or control ledger record is corrupt or carries an unknown future schema version; isolated and preserved without silent coercion or deletion (`FR-R8-01` `01-08`).
+5. `corrupt-state` — An unreadable control ledger refuses workflow admission and recovery with its original row intact. Unreadable connected parents retain their identity through unrelated writes and restart. Count and byte limits determine whether the opaque payload or an identity tombstone is retained. [Workflow control recovery](workflow-control-recovery.md#7-unreadable-workflow-records)
 6. `policy-refusal` — Workspace Trust or execution policy denies admission (`attemptsConsumed: 0`).
 7. `budget-exceeded` — Resource ceiling exceeded (`maxQueues = 5`, `MAX_LIVE_CONTROL_ROOTS = 20` live control-ledger active roots enforced at admission with terminal-root eviction; `PRODUCTION_RESOURCE_CEILINGS.maxActiveRootWorkflows = 25` outer matrix ceiling, `maxActiveFramesPerRoot = 16`, `maxForEachItems = 256`, or `minSettlementReserveSlots < 1`) (`SC-008`, `FR-R8-01` `01-01`).
 

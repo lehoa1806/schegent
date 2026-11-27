@@ -62,10 +62,10 @@ afterEach(() => {
 describe('save catalog helpers', () => {
   it('saveModels posts CMD_SAVE_MODELS and forwards rejection reasons', async () => {
     const posted: unknown[] = [];
-    const promise = saveModels({ claude: ['claude-sonnet-5-5'] }, (msg) => posted.push(msg));
+    const promise = saveModels({ claude: ['claude-sonnet-5-5'] }, 'base', (msg) => posted.push(msg));
     const env = posted[0] as { type: string; correlationId: string; payload: unknown };
     expect(env.type).toBe(CMD_SAVE_MODELS);
-    expect(env.payload).toEqual({ models: { claude: ['claude-sonnet-5-5'] } });
+    expect(env.payload).toEqual({ models: { claude: ['claude-sonnet-5-5'] }, expectedRevision: 'base', mutation: { kind: 'manual-edit' } });
     expect(pendingSet.has(env.correlationId)).toBe(true);
     fireAck(env.correlationId, 'rejected', 'models-validation');
     await expect(promise).resolves.toEqual({
@@ -75,7 +75,7 @@ describe('save catalog helpers', () => {
   });
 
   it('times out saves that never receive an ack', async () => {
-    const promise = saveModels({ claude: ['claude-sonnet-5-5'] }, vi.fn());
+    const promise = saveModels({ claude: ['claude-sonnet-5-5'] }, 'base', vi.fn());
     vi.advanceTimersByTime(5000);
     await expect(promise).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
   });
@@ -90,11 +90,11 @@ describe('retry identity (T17)', () => {
     const postMessage = (msg: unknown): void => {
       posted.push(msg as { correlationId: string; payload: unknown });
     };
-    const first = saveModels({ claude: ['claude-sonnet-5-5'] }, postMessage);
+    const first = saveModels({ claude: ['claude-sonnet-5-5'] }, 'base', postMessage);
     await vi.advanceTimersByTimeAsync(5000);
     await expect(first).resolves.toEqual({ status: 'rejected', reason: 'timeout' });
 
-    const retry = saveModels({ claude: ['claude-sonnet-5-5'] }, postMessage);
+    const retry = saveModels({ claude: ['claude-sonnet-5-5'] }, 'base', postMessage);
 
     expect(posted).toHaveLength(2);
     expect(posted[1]!.correlationId).toBe(posted[0]!.correlationId);

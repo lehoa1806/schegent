@@ -33,7 +33,11 @@ import {
 } from '../../src/services/workflow-execution/production-workflow-composition';
 import { WorkflowControlService } from '../../src/services/workflow-execution/workflow-control-service';
 import { WorkflowRecoveryService } from '../../src/services/workflow-execution/workflow-recovery-service';
-import { deepFreezeConnectedRunsDocument } from '../../src/state/connected-run-migrator';
+import {
+  CONNECTED_RUNS_REFUSED_MAX_BYTES,
+  CONNECTED_RUNS_REFUSED_MAX_COUNT,
+  deepFreezeConnectedRunsDocument
+} from '../../src/state/connected-run-migrator';
 import {
   appendCommandReceipt,
   createConnectedRun,
@@ -421,7 +425,71 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
     }
   });
 
-  it('Finding 2: double SQLite reopen preserves control ledger root, permits, and waiters for a refused/future parent while cleaning genuinely absent unstarted orphans and surfacing isolated failure diagnostics', async () => {
+  it.each(['invalid-json', 'null', 'depth'])('refuses the %s control ledger in both views and preserves its original SQLite row across two recoveries', async (caseName) => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-refused-ledger-'));
+    tempRoots.push(tmpRoot);
+    const original = caseName === 'depth' ? '['.repeat(150) + '0' + ']'.repeat(150)
+      : caseName === 'null' ? 'null' : '{broken failed write';
+    const seed = await openSqliteWorkspaceStore(tmpRoot, 'seed-owner');
+    const connected = makeConnectedRun('run-with-unreadable-ledger');
+    try {
+      const ledger = new ControlLedgerStore(seed.store);
+      expect(ledger.read()).toMatchObject({ ok: true, ledger: { revision: 0, roots: {} } });
+      expect((await seed.store.compareAndSetConnectedRun(connected, 0)).outcome).toBe('written');
+      await seed.store.transactControlLedger(async (_raw, write) => write(createEmptyControlLedger()));
+      seed.sqlite.writerConnection.run(
+        'UPDATE operational_kv_documents SET payload_json = ?, payload_bytes = ? WHERE doc_namespace = ? AND doc_key = ?',
+        original, Buffer.byteLength(original), 'ws-f1-f2', KEYS.controlLedger
+      );
+    } finally {
+      await seed.close();
+    }
+    for (const restart of [1, 2]) {
+      const host = await openSqliteWorkspaceStore(tmpRoot, `recovery-${restart}`);
+      try {
+        const follower = createSwitchableOperationalMemento(createMemoryMemento());
+        expect(follower.attachReadOnlySnapshotIfPresent(path.join(tmpRoot, 'state.db'), 'ws-f1-f2')).toBe(true);
+        expect(new ControlLedgerStore(follower).read()).toMatchObject({ ok: false, code: 'control-ledger-corrupt' });
+        const composition = createProductionWorkflowComposition({
+          store: host.store, workspaceRoot: tmpRoot, isWorkspaceTrusted: () => true,
+          ...createDesktopOwnershipFenceForStore(host.store), requireLiveFenceVerifier: true
+        });
+        const readRow = () => host.sqlite.writerConnection.get<{ revision: number; payload_json: string }>(
+          'SELECT revision, payload_json FROM operational_kv_documents WHERE doc_namespace = ? AND doc_key = ?',
+          'ws-f1-f2', KEYS.controlLedger
+        );
+        const before = readRow();
+        expect(before?.payload_json).toBe(original);
+        expect(composition.verifyPreAdmission({ entryPointId: 'ui.launchWorkflow' })).toMatchObject({
+          allowed: false, refusal: { category: 'corrupt-state', reasonCode: 'control-ledger-corrupt', attemptsConsumed: 0 }
+        });
+        expect(await composition.ledgerStore.mutate({}, () => {
+          throw new Error('unexpected mutation of refused ledger');
+        })).toMatchObject({ ok: false, code: 'control-ledger-corrupt' });
+        const directRecovery = composition.createRecoveryService({
+          connectedRuns: {
+            get: (id) => host.store.getConnectedRun(id),
+            list: () => Object.values(host.store.getConnectedRuns()),
+            compareAndSetConnectedRun: (next, rev) => host.store.compareAndSetConnectedRun(next, rev)
+          },
+          dispatchPhase: async () => { throw new Error('unexpected dispatch'); }
+        });
+        expect(await directRecovery.reconcileRun(connected.connectedRunId, Date.now())).toMatchObject({
+          mutated: false, refusalCode: 'control-ledger-corrupt'
+        });
+        await expect(host.memento.update(KEYS.controlLedger, createEmptyControlLedger())).rejects.toThrow('control-ledger-corrupt');
+        await reconcileComposableWorkflowRuns({
+          workspaceRoot: tmpRoot, store: host.store, logger: new SanitizedLogger(), productionComposition: composition
+        });
+        expect(host.store.getConnectedRun(connected.connectedRunId)?.revision).toBe(connected.revision);
+        expect(readRow()).toEqual(before);
+      } finally {
+        await host.close();
+      }
+    }
+  });
+
+  it.each(['future', 'byte-limit', 'count-limit'])('double SQLite reopen preserves control ledger root, permits, and waiters for a %s parent and cleans genuinely absent unstarted orphans', async (caseName) => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'schegent-f2-recovery-'));
     tempRoots.push(tmpRoot);
 
@@ -535,6 +603,9 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
       const healthyRun = makeConnectedRun(healthyRunId, 'default', 'waiting-for-handoff');
       const seeded = await seedHost.store.compareAndSetConnectedRun(healthyRun, 0);
       expect(seeded.outcome).toBe('written');
+      await seedHost.store.transactControlLedger(async (_raw, write) => {
+        await write(initialLedger);
+      });
 
       // Inject opaque future-schema parent directly alongside the healthy run in SQLite memento backing.
       const futureOpaqueParent = {
@@ -543,14 +614,27 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
         workflowId: 'wf-future',
         futurePayload: { opaqueToken: 'keep-me-intact' }
       };
-      const existingConnected = seedHost.store.getConnectedRuns();
-      await seedHost.memento.update(KEYS.connectedRuns, {
-        ...existingConnected,
-        [refusedRunId]: futureOpaqueParent
-      });
-      await seedHost.store.transactControlLedger(async (_raw, write) => {
-        await write(initialLedger);
-      });
+      const refusals: Record<string, unknown> = {};
+      if (caseName === 'count-limit') {
+        for (let index = 0; index < CONNECTED_RUNS_REFUSED_MAX_COUNT; index += 1) {
+          refusals[`opaque-${index}`] = { schemaVersion: 99 };
+        }
+      }
+      refusals[refusedRunId] = caseName === 'byte-limit'
+        ? { ...futureOpaqueParent, opaque: 'x'.repeat(CONNECTED_RUNS_REFUSED_MAX_BYTES) }
+        : futureOpaqueParent;
+      const raw = JSON.stringify({ ...seedHost.store.getConnectedRuns(), ...refusals });
+      seedHost.sqlite.writerConnection.run(
+        'UPDATE operational_kv_documents SET payload_json = ?, payload_bytes = ? WHERE doc_namespace = ? AND doc_key = ?',
+        raw, Buffer.byteLength(raw), 'ws-f1-f2', KEYS.connectedRuns
+      );
+      seedHost.memento.reloadSqliteCache();
+      const siblingWrite = await seedHost.store.compareAndSetConnectedRun(
+        { ...healthyRun, revision: healthyRun.revision + 1 }, healthyRun.revision
+      );
+      expect(siblingWrite.outcome).toBe('written');
+      const persisted = seedHost.memento.get<Record<string, unknown>>(KEYS.connectedRuns);
+      expect(persisted?.[refusedRunId]).toEqual(caseName === 'future' ? futureOpaqueParent : null);
     } finally {
       await seedHost.close();
     }
@@ -616,7 +700,9 @@ describe('Principal Review Findings 1 & 2 — Receipt Rollover & Tri-State Orpha
       }
     }
 
-    // Also verify metadata-only isolated failure diagnostics when one run throws during reconcileAllRuns.
+  });
+
+  it('isolates an unexpected per-run recovery failure and retains the identity of an over-depth parent', async () => {
     const isolatedFailures: Array<{ runId: string; reasonCode: string }> = [];
     const goodRun = makeConnectedRun('run-good-sibling', 'default', 'waiting-for-handoff');
     const throwingRun = makeConnectedRun('run-throws-in-reconcile', 'default', 'in-flight');

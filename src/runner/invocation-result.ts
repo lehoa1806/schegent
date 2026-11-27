@@ -41,6 +41,8 @@ export interface InvocationOutputSink {
 }
 
 export interface InvocationRequest {
+  /** Host-only executable identity carried from admission to the child-process boundary. */
+  readonly executableFileStamp?: string;
   phase: Phase;
   iteration: number;
   /**

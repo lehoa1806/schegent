@@ -166,6 +166,7 @@ export interface StateProjectorDeps {
    */
   readonly getDefaultWorkflowId?: () => string;
   readonly getDebugLogTail?: () => readonly DebugLogEntry[];
+  readonly getWorkspaceModels?: () => BackendMap<readonly string[]>;
   readonly getAvailableModels?: () => BackendMap<readonly string[]>;
   readonly getAvailableBackends?: () => readonly BackendRunnerKind[];
   readonly getBackendPingState?: () => BackendPingState;

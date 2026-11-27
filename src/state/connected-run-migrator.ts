@@ -29,6 +29,10 @@ import { MAX_COMMAND_RECEIPTS, type ConnectedWorkflowRun } from './connected-wor
 /** Dedicated upper bounds for preserved refused connected-run records (FR-R8-01). */
 export const CONNECTED_RUNS_REFUSED_MAX_COUNT = 256;
 export const CONNECTED_RUNS_REFUSED_MAX_BYTES = 16 * 1024 * 1024;
+// Beyond the opaque payload quota, keep exact parent ids as compact null entries.
+// If their own budget is full, preserve the previous document by refusing the entire write.
+export const CONNECTED_RUNS_TOMBSTONE_MAX_COUNT = 512;
+const CONNECTED_RUNS_TOMBSTONE_MAX_BYTES = 64 * 1024;
 
 export type ConnectedRunRefusalReason =
   | 'unsupported-run-schema-version'
@@ -257,6 +261,9 @@ export function selectPreservedRefusedEntries(
   const entries: Array<readonly [string, unknown]> = [];
   const quarantinedKeys: string[] = [];
   let refusedBytes = 0;
+  let payloadCount = 0;
+  let tombstoneCount = 0;
+  let tombstoneBytes = 0;
   let quarantinedUnsafeCount = 0;
   let quarantinedBudgetCount = 0;
   const noteKey = (key: string): void => {
@@ -266,26 +273,32 @@ export function selectPreservedRefusedEntries(
   };
   for (const [id, rawRefused] of Object.entries(refused)) {
     const measured = measureSafeRefusedEntry(rawRefused);
-    if (!measured.ok) {
-      quarantinedUnsafeCount += 1;
-      noteKey(id);
+    const keyBytes = Buffer.byteLength(JSON.stringify(id), 'utf8') + 2; // colon and delimiter
+    if (rawRefused !== null && measured.ok && payloadCount < CONNECTED_RUNS_REFUSED_MAX_COUNT &&
+        refusedBytes + keyBytes + measured.bytes <= CONNECTED_RUNS_REFUSED_MAX_BYTES &&
+        refusedBytes + tombstoneBytes + keyBytes + measured.bytes <= remainingTotalBytes) {
+      entries.push([id, rawRefused]);
+      payloadCount += 1;
+      refusedBytes += keyBytes + measured.bytes;
       continue;
     }
-    if (
-      entries.length >= CONNECTED_RUNS_REFUSED_MAX_COUNT ||
-      refusedBytes + measured.bytes > CONNECTED_RUNS_REFUSED_MAX_BYTES ||
-      refusedBytes + measured.bytes > remainingTotalBytes
-    ) {
-      quarantinedBudgetCount += 1;
-      noteKey(id);
-      continue;
+    tombstoneCount += 1;
+    tombstoneBytes += keyBytes + 4; // null is an unreadable parent for every supported reader
+    if (tombstoneCount > CONNECTED_RUNS_TOMBSTONE_MAX_COUNT ||
+        tombstoneBytes > CONNECTED_RUNS_TOMBSTONE_MAX_BYTES ||
+        refusedBytes + tombstoneBytes > remainingTotalBytes) {
+      throw new Error('CONNECTED_RUN_QUARANTINE_FULL: write refused to preserve unreadable parent identities');
     }
-    entries.push([id, rawRefused]);
-    refusedBytes += measured.bytes;
+    entries.push([id, null]);
+    if (rawRefused !== null) {
+      if (measured.ok) quarantinedBudgetCount += 1;
+      else quarantinedUnsafeCount += 1;
+      noteKey(id);
+    }
   }
   return {
     entries,
-    totalBytes: refusedBytes,
+    totalBytes: refusedBytes + tombstoneBytes,
     quarantinedUnsafeCount,
     quarantinedBudgetCount,
     quarantinedKeys

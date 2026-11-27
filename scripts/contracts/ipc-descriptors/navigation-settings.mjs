@@ -71,7 +71,7 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
     interfaceName: 'SaveModelsCommand',
     validatorName: 'validateSaveModels',
     family: 'navigation-settings',
-    doc: 'Persist the Model Catalog with optional import revision and mutation tag.',
+    doc: 'Persist a revision-checked workspace model edit or additive import.',
     payloadMode: 'required',
     payload: d.obj(
       {
@@ -80,10 +80,10 @@ export const NAVIGATION_SETTINGS_COMMANDS = Object.freeze([
           err: 'invalid-payload',
           valueErr: 'invalid-payload'
         }),
-        expectedRevision: d.field(d.str(), { optional: true, ignoreInvalid: true }),
+        expectedRevision: d.field(d.str({ minLen: 1, err: 'invalid-payload' }), { optional: true }),
         mutation: d.field(
-          d.obj({ kind: d.enum(['manual-edit', 'import-package']) }),
-          { optional: true, ignoreInvalid: true }
+          d.obj({ kind: d.enum(['manual-edit', 'import-package'], { err: 'invalid-payload' }) }, { collapseInvalidErr: 'invalid-payload', unexpectedErr: 'invalid-payload' }),
+          { optional: true, err: 'invalid-payload' }
         )
       },
       { closed: false, allowArray: true }

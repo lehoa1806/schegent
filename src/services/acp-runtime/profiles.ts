@@ -101,6 +101,7 @@ function resolvePermissionArgs(
 export interface ResolveAcpProfileLaunchInput {
   readonly kind: BackendRunnerKind;
   readonly resolvedCliPath: string;
+  readonly executableFileStamp?: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly capabilities?: DeclaredCapabilitySet;
@@ -139,6 +140,7 @@ export function resolveAcpProfileLaunch(input: ResolveAcpProfileLaunchInput): St
   const bridgeScript = input.bridgeScriptPath ?? defaultAcpBridgeScriptPath();
   const nodeExec = input.nodeExecPath ?? process.execPath;
   const args: string[] = [bridgeScript, '--backend', input.kind, '--cli', input.resolvedCliPath];
+  if (input.executableFileStamp) args.push('--cli-stamp', input.executableFileStamp);
   for (const flag of permissionArgs) {
     args.push('--permission-flag', flag);
   }

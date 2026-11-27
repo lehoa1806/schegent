@@ -16,10 +16,7 @@ Written 2026-08-27 for `FR-R3-125` (T1473), from do-not-ignore row 2 of the repo
 **Do not run `claude` or `agy` against a repository you do not trust, unless you have deliberately
 accepted full local-user authority in a disposable or restorable environment.**
 
-`codex` is the exception: it carries an OS-enforced `workspace-write` sandbox
-([the qualification record](../architecture/backend-containment-qualification.md)), so
-model-generated shell commands are bounded by the operating system rather than by the model's own
-judgement.
+Schegent observed Codex shell-child containment on macOS arm64 with version 0.163.x. For other Codex tuples, admission requires a named grant and a matching fingerprint binding. [Qualification record](../architecture/backend-containment-qualification.md)
 
 Schegent already enforces the first half of this by default: `claude` and `agy` are **refused**
 unless you name them in `schegent.backend.uncontainedBackends`. This page is about the decision you
@@ -28,23 +25,21 @@ are making when you do.
 <!-- executable-example: uncontained-grant-scope -->
 
 ```
-| backend | granted   | outcome  |
-|---------|-----------|----------|
-| claude  | (none)    | refused  |
-| agy     | (none)    | refused  |
-| codex   | (none)    | allowed  |
-| claude  | agy       | refused  |
-| agy     | agy       | allowed  |
-| claude  | claude    | allowed  |
-| agy     | claude    | refused  |
-| codex   | claude    | allowed  |
-| claude  | claude,agy| allowed  |
+| backend | version minor | granted    | outcome |
+|---------|---------------|------------|---------|
+| claude  | 2.1           | (none)     | refused |
+| agy     | 1.4           | (none)     | refused |
+| codex   | 0.163         | (none)     | admitted |
+| claude  | 2.1           | agy        | refused |
+| agy     | 1.4           | agy        | admitted |
+| claude  | 2.1           | claude     | admitted |
+| agy     | 1.4           | claude     | refused |
+| codex   | 0.164         | claude     | refused |
+| codex   | 0.164         | codex      | admitted |
+| claude  | 2.1           | claude,agy | admitted |
 ```
 
-These rows are read by `tests/lint/documented-defaults-are-executable.test.ts` and fed through
-`judgeBackendContainment` in `src/services/backend-containment-policy.ts`. The rows that matter are
-rows 4 and 7: **a grant applies to the backend it names and no other** (`FR-R3-125`). Row 3 is the
-one an operator most often misreads — `codex` was never refused, so it needs no grant.
+These examples assume a trusted primary macOS arm64 window, a resolved executable and first use with no prior binding. The gate checks the observed version of the selected executable. Updating a CLI at the same path invalidates its version observation. A change after admission requires a retry. A grant applies only to its named backend. [Admission decision](../../src/services/containment-qualification/admission.ts)
 
 ## Why the untrusted case is different
 

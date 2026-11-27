@@ -484,6 +484,7 @@ describe('an accepted candidate (RP3, RP5)', () => {
   it('states that nothing was tagged or published, in the record and as the last line', async () => {
     const { written, logs } = await run();
     const record = JSON.parse(written.at(0)?.text ?? '{}');
+    expect(record.distribution).toBe('private-to-author');
     expect(record.tagged).toBe(false);
     expect(record.published).toBe(false);
     expect(lastLine(logs)).toBe(FINAL_LINE);

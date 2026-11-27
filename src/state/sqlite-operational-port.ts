@@ -52,6 +52,7 @@ export interface SqliteCutoverSentinelPort {
 }
 
 export interface SqliteOperationalStorePort {
+  readonly writerCoordinator: { afterCommit(): void };
   readonly writerConnection: SqliteConnectionPort;
   readonly cutoverGuard: {
     getSentinel(scopeId: string): SqliteCutoverSentinelPort | null | undefined;
